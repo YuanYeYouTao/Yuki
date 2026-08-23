@@ -148,6 +148,36 @@ async def test_non_thinking_request_omits_unsupported_tool_choice() -> None:
         )
 
 
+@pytest.mark.parametrize("model", ["deepseek-v4-flash", "gpt-5.6-luna"])
+@pytest.mark.asyncio
+async def test_responses_omit_temperature_for_provider_defaults(model: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload["model"] == model
+        assert "temperature" not in payload
+        assert payload["reasoning"] == {"effort": "high"}
+        return httpx.Response(200, request=request, json=_fixture("text_completed.json"))
+
+    async with httpx.AsyncClient(
+        base_url="https://opencode.ai/zen/go/v1", transport=httpx.MockTransport(handler)
+    ) as client:
+        provider = DeepSeekResponsesProvider(
+            base_url="https://opencode.ai/zen/go/v1",
+            api_key="secret",
+            timeout_seconds=1,
+            max_retries=0,
+            client=client,
+        )
+        await provider.complete(
+            _request(
+                model=model,
+                temperature=0.7,
+                thinking_enabled=True,
+                reasoning_effort=ReasoningEffort.HIGH,
+            )
+        )
+
+
 @pytest.mark.asyncio
 async def test_function_output_follows_cumulative_continuation() -> None:
     requests: list[dict[str, object]] = []

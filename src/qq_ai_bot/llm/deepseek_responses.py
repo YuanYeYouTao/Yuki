@@ -161,8 +161,8 @@ class DeepSeekResponsesProvider(LLMProvider):
             payload["instructions"] = instructions
         if request.max_output_tokens is not None:
             payload["max_output_tokens"] = request.max_output_tokens
-        if request.temperature is not None:
-            payload["temperature"] = request.temperature
+        # Reasoning-oriented Responses providers either ignore temperature or reject it.
+        # Chat Completions keeps its independent, profile-controlled temperature path.
         tools: list[dict[str, Any]] = [
             {
                 "type": "function",
