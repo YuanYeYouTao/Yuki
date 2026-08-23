@@ -178,7 +178,9 @@ class DeepSeekResponsesProvider(LLMProvider):
         # DeepSeek Responses does not accept the OpenAI tool_choice field.
         # Tool schemas stay available and the model selects them from the
         # trusted instructions; AgentRunner validates terminal effects locally.
-        if request.thinking_enabled and request.reasoning_effort is not None:
+        if request.thinking_enabled is False:
+            payload["reasoning"] = {"effort": "none"}
+        elif request.thinking_enabled and request.reasoning_effort is not None:
             payload["reasoning"] = {"effort": request.reasoning_effort.value}
         if request.response_format is not None:
             payload["text"] = {"format": request.response_format}
