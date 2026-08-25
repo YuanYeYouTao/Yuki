@@ -7,12 +7,14 @@ from qq_ai_bot.gateway.provider import (
 )
 from qq_ai_bot.gateway.registry import (
     ConnectionResolution,
+    GatewayConnectionConflict,
     GatewayConnectionRegistry,
     RegistryClosed,
 )
 
 __all__ = [
     "ConnectionResolution",
+    "GatewayConnectionConflict",
     "GatewayConnectionProfile",
     "GatewayConnectionRegistry",
     "GatewayProvider",

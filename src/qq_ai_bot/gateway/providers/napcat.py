@@ -36,6 +36,6 @@ class NapCatProvider:
 
 
 def napcat_provider_catalog() -> GatewayProviderCatalog:
-    """Return the explicit provider catalog used by the current OneBot adapter."""
+    """Return a single-provider catalog for focused NapCat consumers and tests."""
 
     return GatewayProviderCatalog((NapCatProvider(),))

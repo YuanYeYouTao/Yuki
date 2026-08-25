@@ -277,7 +277,7 @@ def test_deterministic_text_contains_every_capability_and_onebot_scope() -> None
 
     assert "可修改运行时配置参数：220 项" in rendered
     assert "管理员业务接口：44 项，其中修改型 33 项" in rendered
-    assert "NapCat/OneBot 通用全接口网关：1 项" in rendered
+    assert "QQ/OneBot Provider 通用全接口网关：1 项" in rendered
     assert "全部公开 action" in rendered
     assert "无 action 白名单或 denylist" in rendered
     assert "不是只限于上面的 44 项应用业务接口" in rendered

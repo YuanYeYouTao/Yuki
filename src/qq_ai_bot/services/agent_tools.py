@@ -1,4 +1,4 @@
-"""Bounded model tools over NapCat and local person-centric memory."""
+"""Bounded model tools over the active OneBot Provider and local person memory."""
 
 from __future__ import annotations
 
@@ -282,7 +282,7 @@ class AgentToolService:
             ChatTool(
                 name="get_recent_chat_history",
                 description=(
-                    "直接从 NapCat 读取当前私聊或当前群最近 20 条消息。"
+                    "直接从当前 QQ/OneBot Provider 读取私聊或群聊最近 20 条消息。"
                     "当用户问刚才说了什么、当前对话历史或人物上下文时使用。"
                 ),
                 parameters=_object_schema({}),
@@ -312,7 +312,7 @@ class AgentToolService:
                 name="get_chat_history_around",
                 description=(
                     "读取当前会话账本中某条消息前后的原文。"
-                    "用 event_id 或 platform_message_id 定位，不调用 NapCat。"
+                    "用 event_id 或 platform_message_id 定位，不调用 QQ 网关。"
                     "默认半径很小；需要对齐摘要覆盖区间里的原话时使用。"
                 ),
                 parameters=_object_schema(
@@ -702,7 +702,7 @@ class AgentToolService:
                 ChatTool(
                     name="call_onebot_api",
                     description=(
-                        "以当前超级管理员身份调用任意 NapCat/OneBot action。"
+                        "以当前超级管理员身份调用任意 QQ/OneBot Provider action。"
                         "action 和 params 原样传递，不要编造执行结果。"
                     ),
                     parameters=_object_schema(
@@ -1206,7 +1206,7 @@ class AgentToolService:
         messages = [self._history_item_for_model(item) for item in raw_messages]
         return self._result(
             data={
-                "source": "NapCat",
+                "source": self._gateway_provider_id(runtime.gateway),
                 "scope": inbound.scope_type.value,
                 "count": len(messages),
                 "newly_recorded": stored,
@@ -1286,7 +1286,7 @@ class AgentToolService:
     @staticmethod
     def _segments(raw: Any) -> tuple[dict[str, Any], ...]:
         if isinstance(raw, str):
-            # Some NapCat history variants return a raw CQ-code string instead
+            # Some OneBot history implementations return a raw CQ-code string instead
             # of a segment array. Discard every CQ parameter so media URLs,
             # paths and inline payloads cannot bypass the structured sanitizer.
             text = _CQ_CODE.sub(lambda match: f"[{match.group(1).casefold()}]", raw)
@@ -1329,7 +1329,7 @@ class AgentToolService:
 
     @classmethod
     def _history_item_for_model(cls, item: dict[str, Any]) -> dict[str, Any]:
-        """Return a bounded text-only view of one untrusted NapCat history item."""
+        """Return a bounded text-only view of one untrusted OneBot history item."""
 
         segments = cls._segments(item.get("message"))
         sender = item.get("sender")
@@ -1346,6 +1346,13 @@ class AgentToolService:
             "sender": safe_sender,
             "text": cls._segments_text(segments) or "[空消息]",
         }
+
+    @staticmethod
+    def _gateway_provider_id(gateway: OneBotToolGateway) -> str:
+        provider_id = getattr(gateway, "provider_id", None)
+        if isinstance(provider_id, str) and provider_id.strip():
+            return provider_id.strip().casefold()[:32]
+        return "onebot"
 
     @staticmethod
     def _segments_text(segments: tuple[dict[str, Any], ...]) -> str:

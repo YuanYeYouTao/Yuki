@@ -9,6 +9,7 @@ from tests.support.gateway import napcat_registry
 
 from qq_ai_bot.gateway.models import ConnectionHealth
 from qq_ai_bot.gateway.registry import (
+    GatewayConnectionConflict,
     RegistryClosed,
     configure_process_registry,
     process_registry,
@@ -20,7 +21,7 @@ class _Bot:
     self_id: str
 
 
-def test_registry_zero_one_many_and_coexisting_presences() -> None:
+def test_registry_zero_one_and_coexisting_presences() -> None:
     registry = napcat_registry(gateway_instance_id="gw-1")
     first = _Bot("8000")
     second = _Bot("8001")
@@ -34,15 +35,13 @@ def test_registry_zero_one_many_and_coexisting_presences() -> None:
     with pytest.raises(RegistryClosed) as missing:
         registry.resolve_active("p-missing")
     assert missing.value.category == "disconnected"
-    unpinned = napcat_registry(gateway_instance_id="gw-2")
+    exclusive = napcat_registry(gateway_instance_id="gw-2")
     left = _Bot("8000")
     right = _Bot("8000")
-    unpinned.connect(left)
-    unpinned.connect(right)
-    unpinned.bind_presence(platform="qq", external_account_id="8000", presence_id="p-a")
-    with pytest.raises(RegistryClosed) as ambiguous:
-        unpinned.resolve_active("p-a")
-    assert ambiguous.value.category == "ambiguous"
+    exclusive.connect(left)
+    with pytest.raises(GatewayConnectionConflict) as conflict:
+        exclusive.connect(right)
+    assert conflict.value.category == "provider_conflict"
 
 
 def test_reconnect_same_handle_only_increments_connection_generation() -> None:
@@ -79,48 +78,40 @@ def test_resolve_by_handle_never_picks_another_presence() -> None:
         registry.resolve_by_handle(_Bot("8002"))
 
 
-def test_pinned_multi_keeps_incumbent_and_snapshot_matches() -> None:
-    registry = napcat_registry(gateway_instance_id="gw-pin")
+def test_duplicate_account_keeps_incumbent_and_snapshot_matches() -> None:
+    registry = napcat_registry(gateway_instance_id="gw-exclusive")
     first = _Bot("8000")
     extra = _Bot("8000")
     registry.connect(first, presence_id="p-a")
-    pinned = registry.resolve_active("p-a")
-    assert pinned.bot is first
-    registry.connect(extra, presence_id="p-a")
+    incumbent = registry.resolve_active("p-a")
+    with pytest.raises(GatewayConnectionConflict):
+        registry.connect(extra, presence_id="p-a")
     still = registry.resolve_active("p-a")
     assert still.bot is first
-    assert still.snapshot.connection_id == pinned.snapshot.connection_id
+    assert still.snapshot.connection_id == incumbent.snapshot.connection_id
     snap = registry.snapshot_presence(presence_id="p-a", platform="qq", external_account_id="8000")
     assert snap.health is ConnectionHealth.CONNECTED
-    assert snap.live_count == 2
-    assert snap.connection_id == pinned.snapshot.connection_id
+    assert snap.live_count == 1
+    assert snap.connection_id == incumbent.snapshot.connection_id
 
 
-def test_unpinned_multi_is_ambiguous_for_resolve_and_snapshot() -> None:
-    registry = napcat_registry(gateway_instance_id="gw-unpin")
+def test_one_presence_cannot_bind_two_accounts() -> None:
+    registry = napcat_registry(gateway_instance_id="gw-corrupt-binding")
     left = _Bot("8000")
-    right = _Bot("8000")
-    registry.connect(left)
-    registry.connect(right)
-    registry.bind_presence(platform="qq", external_account_id="8000", presence_id="p-a")
-    with pytest.raises(RegistryClosed) as ambiguous:
-        registry.resolve_active("p-a")
-    assert ambiguous.value.category == "ambiguous"
-    snap = registry.snapshot_presence(presence_id="p-a", platform="qq", external_account_id="8000")
-    assert snap.health is ConnectionHealth.AMBIGUOUS
-    assert snap.live_count == 2
-    assert snap.connection_id is None
+    right = _Bot("8001")
+    registry.connect(left, presence_id="p-a")
+    with pytest.raises(GatewayConnectionConflict):
+        registry.connect(right, presence_id="p-a")
+    assert registry.resolve_active("p-a").bot is left
 
 
-def test_pin_disconnect_redetermines_remaining_unique() -> None:
-    registry = napcat_registry(gateway_instance_id="gw-repin")
+def test_disconnect_allows_replacement_and_preserves_presence_binding() -> None:
+    registry = napcat_registry(gateway_instance_id="gw-replace")
     first = _Bot("8000")
     extra = _Bot("8000")
     registry.connect(first, presence_id="p-a")
-    registry.resolve_active("p-a")
-    registry.connect(extra, presence_id="p-a")
-    assert registry.resolve_active("p-a").bot is first
     registry.disconnect(first)
+    registry.connect(extra)
     rebound = registry.resolve_active("p-a")
     assert rebound.bot is extra
     snap = registry.snapshot_presence(presence_id="p-a", platform="qq", external_account_id="8000")
@@ -145,14 +136,14 @@ def test_snapshot_health_and_process_registry() -> None:
         assert live.health is ConnectionHealth.CONNECTED
         assert live.generation == 1
         left = _Bot("8000")
-        right = _Bot("8000")
         clash_registry = napcat_registry(gateway_instance_id="gw-clash")
-        clash_registry.connect(left)
-        clash_registry.connect(right)
-        clash_registry.bind_presence(platform="qq", external_account_id="8000", presence_id="p-a")
+        clash_registry.connect(left, presence_id="p-a")
+        with pytest.raises(GatewayConnectionConflict):
+            clash_registry.connect(_Bot("8001"), presence_id="p-a")
         clash = clash_registry.snapshot_presence(
             presence_id="p-a", platform="qq", external_account_id="8000"
         )
-        assert clash.health is ConnectionHealth.AMBIGUOUS
+        assert clash.health is ConnectionHealth.CONNECTED
+        assert clash.live_count == 1
     finally:
         configure_process_registry(None)

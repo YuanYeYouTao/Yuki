@@ -339,6 +339,7 @@ async def test_core_memory_tool_uses_scoped_query_retriever(database: Database) 
 class HistoryGateway:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.provider_id = "snowluma"
 
     async def call_api(self, action: str, params: dict[str, Any]) -> Any:
         self.calls.append((action, params))
@@ -355,7 +356,7 @@ class HistoryGateway:
 
 
 @pytest.mark.asyncio
-async def test_recent_history_always_calls_napcat_and_imports_unseen_events(
+async def test_recent_history_uses_active_provider_and_imports_unseen_events(
     database: Database,
 ) -> None:
     settings = make_settings(database.url)
@@ -379,7 +380,7 @@ async def test_recent_history_always_calls_napcat_and_imports_unseen_events(
         ToolRuntime(message, gateway, False),
     )
     assert gateway.calls == [("get_group_msg_history", {"group_id": "2001", "count": 20})]
-    assert '"source": "NapCat"' in result
+    assert '"source": "snowluma"' in result
     rows = await ledger.list_scope_recent(
         ConversationScope.group("8000", "2001"),
         limit=10,

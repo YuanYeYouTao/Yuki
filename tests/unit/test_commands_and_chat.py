@@ -111,7 +111,7 @@ def test_only_mutation_access_appends_the_write_receipt_contract() -> None:
     ("error_code", "expected"),
     [
         ("media_download_timeout", "图片下载超时"),
-        ("get_image_failed", "NapCat 未能取得图片资源"),
+        ("get_image_failed", "QQ 网关未能取得图片资源"),
         ("download_failed", "图片资源下载失败"),
         ("private_url", "图片资源下载失败"),
         ("corrupt_image", "图片文件无法解析"),
@@ -186,7 +186,7 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     assert "conversation.autonomous_batch_limit" in admin_text
     assert "relationship.set_affection" in admin_text
     assert "受保护配置（12 项，不可修改）" in admin_text
-    assert "NapCat/OneBot 通用全接口网关：1 项" in admin_text
+    assert "QQ/OneBot Provider 通用全接口网关：1 项" in admin_text
     assert "call_onebot_api:any_public_action" in admin_text
 
 

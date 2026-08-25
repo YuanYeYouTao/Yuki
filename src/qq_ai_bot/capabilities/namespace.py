@@ -194,7 +194,7 @@ CORE_NAMESPACES: tuple[CapabilityNamespace, ...] = (
         aliases=("提醒", "定时"),
         tags=("automation", "write"),
     ),
-    _ns("qq", "QQ 平台", description="OneBot/NapCat 平台操作", tags=("qq",)),
+    _ns("qq", "QQ 平台", description="OneBot Provider 平台操作", tags=("qq",)),
     _ns("qq.platform", "QQ 平台操作", description="好友与群管理", tags=("qq",)),
     _ns(
         "qq.platform.mutate",

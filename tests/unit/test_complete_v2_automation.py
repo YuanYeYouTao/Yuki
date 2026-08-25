@@ -58,6 +58,7 @@ from qq_ai_bot.conversation.hydrate import conversation_for_owner, primary_alias
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
+from qq_ai_bot.gateway.registry import GatewayConnectionConflict
 from qq_ai_bot.identity.backfill_repository import IdentityBackfillRepository
 from qq_ai_bot.identity.c22_automation import (
     C22_AUTOMATION_INCOMPLETE,
@@ -832,15 +833,10 @@ async def test_fail_closed_routes_never_send(database: Database) -> None:
 
     unpinned = napcat_registry(gateway_instance_id="gw-c22-unpin")
     left = _Bot("8000")
-    right = _Bot("8000")
-    unpinned.connect(left)
-    unpinned.connect(right)
-    unpinned.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
-    with pytest.raises(RouteSendError) as ambiguous:
-        await PresenceRouter(database, unpinned, membership_probe=_true).resolve_send_for_person(
-            person
-        )
-    assert ambiguous.value.category == "ambiguous"
+    right = _Bot("8001")
+    unpinned.connect(left, presence_id=presence)
+    with pytest.raises(GatewayConnectionConflict):
+        unpinned.connect(right, presence_id=presence)
     assert bot.calls == []
 
     bare = napcat_registry(gateway_instance_id="gw-c22-none")
@@ -1781,7 +1777,9 @@ async def test_dual_filled_target_blocks_even_if_trigger_bypassed(
 
 
 @pytest.mark.asyncio
-async def test_pinned_multi_connection_still_sends(database: Database) -> None:
+async def test_duplicate_connection_is_rejected_and_incumbent_still_sends(
+    database: Database,
+) -> None:
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     await _flip_v2(database)
     registry = napcat_registry(gateway_instance_id="gw-c22-pin")
@@ -1800,8 +1798,8 @@ async def test_pinned_multi_connection_still_sends(database: Database) -> None:
         person = row.canonical_target_person_id
         assert person is not None
     assert await router.cas_takeover_person(person) == "taken"
-    registry.connect(extra)
-    registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
+    with pytest.raises(GatewayConnectionConflict):
+        registry.connect(extra)
     clock = FakeClock(datetime(2026, 7, 27, tzinfo=UTC))
     result = await AutomationExecutor(
         settings=make_settings(database.url, automation_enabled=True, superusers_csv="9000"),

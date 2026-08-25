@@ -8,12 +8,16 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 import nonebot
-from nonebot.adapters.onebot.v11 import Adapter, Bot
+from nonebot.adapters.onebot.v11 import Bot
 from nonebot.drivers.fastapi import Driver as FastAPIDriver
 
+from qq_ai_bot.adapters.onebot.provider_adapter import (
+    NapCatOneBotAdapter,
+    SnowLumaOneBotAdapter,
+    provider_id_for_bot,
+)
 from qq_ai_bot.config import Settings
 from qq_ai_bot.container import ApplicationContainer, get_container, set_container
-from qq_ai_bot.gateway.providers.napcat import NAPCAT_PROVIDER_ID
 from qq_ai_bot.health import HealthPayload, build_health_payload
 from qq_ai_bot.logging import configure_logging
 from qq_ai_bot.persistence.instance_lock import SQLiteApplicationLock
@@ -53,7 +57,8 @@ def bootstrap(settings: Settings | None = None) -> None:
         )
     configure_logging(app_settings.log_level)
     driver = nonebot.get_driver()
-    driver.register_adapter(Adapter)
+    driver.register_adapter(NapCatOneBotAdapter)
+    driver.register_adapter(SnowLumaOneBotAdapter)
     application_lock = SQLiteApplicationLock(app_settings.sqlite_path)
 
     @driver.on_bot_connect
@@ -76,7 +81,7 @@ def bootstrap(settings: Settings | None = None) -> None:
                 presence_id = presence.id
         container.gateway_registry.connect(
             bot,
-            provider_id=NAPCAT_PROVIDER_ID,
+            provider_id=provider_id_for_bot(bot),
             presence_id=presence_id,
         )
         await container.route_monitor.on_connection_change()

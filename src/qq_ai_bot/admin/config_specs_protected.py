@@ -121,7 +121,7 @@ def protected_config_specs() -> tuple[ConfigSpec, ...]:
         _spec(
             "qq.login_credentials",
             "QQ 登录凭据",
-            "QQ 登录态属于 NapCat，应用不能读取或修改。",
+            "QQ 登录态属于所选网关 Provider，应用不能读取或修改。",
             value_type="string",
             mode=ConfigApplyMode.SECRET,
             getter=_constant(False),

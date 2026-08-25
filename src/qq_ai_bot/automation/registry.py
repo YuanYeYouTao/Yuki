@@ -387,7 +387,7 @@ def build_capability_registry(
         ),
         (
             "onebot.call_api",
-            "调用任意公开 NapCat/OneBot action。",
+            "调用任意公开 QQ/OneBot Provider action。",
             OneBotCallArguments,
             PermissionLevel.SUPERUSER,
             RiskClass.MUTATE,

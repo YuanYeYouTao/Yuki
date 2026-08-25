@@ -30,6 +30,21 @@ class OneBotSender:
     def bot(self) -> Bot:
         return self._bot
 
+    @property
+    def provider_id(self) -> str:
+        """Return the Provider owning the exact ingress connection."""
+
+        from qq_ai_bot.gateway.registry import RegistryClosed, process_registry
+
+        registry = process_registry()
+        if registry is not None:
+            try:
+                return registry.resolve_by_handle(self._bot).snapshot.provider
+            except RegistryClosed:
+                pass
+        provider_id = getattr(self._bot.adapter, "provider_id", None)
+        return provider_id if isinstance(provider_id, str) and provider_id else "onebot"
+
     async def send(self, message: OutboundMessage) -> OutboundSendReceipt:
         """Send via the ingress bot; failover only to the same Presence connection."""
 

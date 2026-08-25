@@ -334,7 +334,7 @@ class CapabilityReport:
                 f"{self.self_service_operation_count} 项，其中修改型 "
                 f"{self.self_service_mutation_count} 项"
             ),
-            f"NapCat/OneBot 通用全接口网关：{self.onebot_gateway_count} 项",
+            f"QQ/OneBot Provider 通用全接口网关：{self.onebot_gateway_count} 项",
         ]
 
         configurations = tuple(
@@ -361,14 +361,14 @@ class CapabilityReport:
         if onebot:
             lines.extend(
                 self._group_lines(
-                    "NapCat/OneBot 全接口权限（action 不设 denylist）",
+                    "QQ/OneBot Provider 全接口权限（action 不设 denylist）",
                     onebot,
                     id_prefix="onebot:",
                 )
             )
             lines.append(
                 "- 权限说明：超级管理员在当前真实消息触发的普通聊天轮中，可通过 "
-                "call_onebot_api(action, params) 调用当前 NapCat/OneBot 提供的全部公开 "
+                "call_onebot_api(action, params) 调用当前 QQ/OneBot Provider 提供的全部公开 "
                 "action，无 action 白名单或 denylist，也不需要二次确认；这不是只限于上面的 "
                 f"{self.business_action_count} 项应用业务接口。自主群聊轮不开放；本轮使用联网"
                 "工具后会撤销该网关。"
@@ -760,7 +760,7 @@ class PermissionCatalogService:
                 id="onebot:call_onebot_api:any_public_action",
                 kind=CapabilityKind.ONEBOT,
                 category="onebot",
-                display_name="调用全部 NapCat/OneBot 公开接口",
+                display_name="调用全部 QQ/OneBot Provider 公开接口",
                 description=(
                     "当前真实消息发送者属于 SUPERUSERS 的直接普通聊天轮可使用 "
                     "call_onebot_api(action, params)，action 不设 denylist，也不需要二次确认。"

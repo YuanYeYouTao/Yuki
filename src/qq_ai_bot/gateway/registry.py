@@ -23,6 +23,13 @@ class RegistryClosed(RuntimeError):
         super().__init__(category)
 
 
+class GatewayConnectionConflict(RegistryClosed):
+    """A second live connection tried to claim an already-connected account."""
+
+    def __init__(self) -> None:
+        super().__init__("provider_conflict")
+
+
 @dataclass
 class _LiveConnection:
     connection_id: str
@@ -107,9 +114,13 @@ class GatewayConnectionRegistry:
                 if presence_id:
                     self._bind_locked(account, presence_id)
                 return self._snapshot(live)
+            if self._live_ids_for_account(account):
+                raise GatewayConnectionConflict
+            bound_presence = presence_id or self._account_presence.get(account)
+            if bound_presence and self._live_ids_for_presence(bound_presence):
+                raise GatewayConnectionConflict
             generation = self._account_generation.get(account, 0) + 1
             self._account_generation[account] = generation
-            bound_presence = presence_id or self._account_presence.get(account)
             live = _LiveConnection(
                 connection_id=str(uuid4()),
                 gateway_instance_id=instance_id,
@@ -174,6 +185,12 @@ class GatewayConnectionRegistry:
             raise ValueError("presence_id is required")
         account = _account_key(platform, external_account_id)
         with self._lock:
+            account_connections = frozenset(self._live_ids_for_account(account))
+            if any(
+                connection_id not in account_connections
+                for connection_id in self._live_ids_for_presence(presence)
+            ):
+                raise GatewayConnectionConflict
             self._bind_locked(account, presence)
 
     def resolve_by_handle(self, bot: object) -> ConnectionResolution:
