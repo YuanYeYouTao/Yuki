@@ -16,6 +16,7 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, event, text
 from tests.unit.test_migration_0021 import _config
 
+from qq_ai_bot.identity.canonical_ownership_schema import C5_OWNERSHIP_TABLES
 from qq_ai_bot.identity.db_models import (
     CANONICAL_IDENTITY_CREATE_ORDER,
     CANONICAL_IDENTITY_TABLES,
@@ -138,7 +139,10 @@ def _identity_schema(path: Path) -> dict[tuple[str, str], str]:
         key: sql
         for key, sql in dump.items()
         if key[1] in CANONICAL_IDENTITY_TABLES
-        or any(table in sql for table in CANONICAL_IDENTITY_TABLES)
+        or (
+            key[1] not in C5_OWNERSHIP_TABLES
+            and any(table in sql for table in CANONICAL_IDENTITY_TABLES)
+        )
     }
 
 
@@ -216,7 +220,7 @@ def test_fresh_upgrade_head_creates_canonical_identity_foundation(
     path = tmp_path / "fresh-head.db"
     _upgrade(path, monkeypatch, "head")
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0045",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0046",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         tables = _tables(connection)
         assert set(CANONICAL_IDENTITY_TABLES) <= tables
@@ -242,14 +246,28 @@ def test_upgrade_from_real_0042_schema_to_head(
     before = _schema_dump(path)
     _upgrade(path, monkeypatch, "head")
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0045",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0046",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert set(CANONICAL_IDENTITY_TABLES) <= _tables(connection)
         assert connection.execute("SELECT state FROM identity_runtime_state").fetchall() == [
             ("v1",)
         ]
     after = _schema_dump(path)
-    preserved = {"alembic_version", "chat_events", "conversation_scopes"}
+    preserved = {
+        "alembic_version",
+        "chat_events",
+        "conversation_scopes",
+        "people",
+        "groups",
+        "person_aliases",
+        "memberships",
+        "person_relationships",
+        "relationship_events",
+        "relationship_jobs",
+        "person_time_settings",
+        "person_speech_preferences",
+        "memory_facts",
+    }
     assert all(after[key] == sql for key, sql in before.items() if key[1] not in preserved)
 
 
@@ -298,7 +316,7 @@ def test_orm_metadata_matches_0043_identity_schema(
 def test_alembic_heads_is_exactly_0044() -> None:
     config = Config("alembic.ini")
     heads = ScriptDirectory.from_config(config).get_heads()
-    assert heads == ["0045"]
+    assert heads == ["0046"]
 
 
 def test_fk_cutover_split_is_not_hardcoded_to_current_head() -> None:

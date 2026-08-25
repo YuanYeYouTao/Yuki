@@ -29,6 +29,7 @@ class PersonModel(Base):
     """One human identity permanently keyed by a QQ number string."""
 
     __tablename__ = "people"
+    __table_args__ = (Index("ix_people_canonical_person_id", "canonical_person_id"),)
 
     user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     nickname: Mapped[str] = mapped_column(String(128), nullable=False, default="")
@@ -36,6 +37,11 @@ class PersonModel(Base):
     is_bot: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    canonical_person_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
     aliases: Mapped[list[PersonAliasModel]] = relationship(
         back_populates="person",
@@ -73,6 +79,8 @@ class PersonAliasModel(Base):
     __table_args__ = (
         UniqueConstraint("user_id", "group_scope", "alias", name="uq_person_alias_scope"),
         Index("ix_person_aliases_user_last_seen", "user_id", "last_seen_at"),
+        Index("ix_person_aliases_canonical_person_id", "canonical_person_id"),
+        Index("ix_person_aliases_canonical_space_id", "canonical_space_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -84,6 +92,16 @@ class PersonAliasModel(Base):
     alias_type: Mapped[str] = mapped_column(String(24), nullable=False)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    canonical_person_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    canonical_space_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("spaces.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
     person: Mapped[PersonModel] = relationship(back_populates="aliases")
 
@@ -92,6 +110,7 @@ class GroupModel(Base):
     """A QQ group and its observation/participation settings."""
 
     __tablename__ = "groups"
+    __table_args__ = (Index("ix_groups_canonical_space_id", "canonical_space_id"),)
 
     group_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False, default="")
@@ -101,6 +120,11 @@ class GroupModel(Base):
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    canonical_space_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("spaces.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
     memberships: Mapped[list[MembershipModel]] = relationship(
         back_populates="group",
@@ -113,6 +137,10 @@ class MembershipModel(Base):
     """One person as known inside one exact group."""
 
     __tablename__ = "memberships"
+    __table_args__ = (
+        Index("ix_memberships_canonical_person_id", "canonical_person_id"),
+        Index("ix_memberships_canonical_space_id", "canonical_space_id"),
+    )
 
     user_id: Mapped[str] = mapped_column(
         ForeignKey("people.user_id", ondelete="CASCADE"), primary_key=True
@@ -123,6 +151,16 @@ class MembershipModel(Base):
     group_card: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    canonical_person_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    canonical_space_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("spaces.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
     person: Mapped[PersonModel] = relationship(back_populates="memberships")
     group: Mapped[GroupModel] = relationship(back_populates="memberships")
@@ -454,6 +492,13 @@ class MemoryFactModel(Base):
             "status",
             "updated_at",
         ),
+        Index("ix_memory_facts_canonical_subject_person_id", "canonical_subject_person_id"),
+        Index("ix_memory_facts_canonical_subject_space_id", "canonical_subject_space_id"),
+        Index(
+            "ix_memory_facts_canonical_visibility_person_id",
+            "canonical_visibility_person_id",
+        ),
+        Index("ix_memory_facts_canonical_visibility_space_id", "canonical_visibility_space_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -505,6 +550,26 @@ class MemoryFactModel(Base):
         nullable=False,
         default="verified",
         server_default="legacy_unreviewed",
+    )
+    canonical_subject_person_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    canonical_subject_space_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("spaces.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    canonical_visibility_person_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    canonical_visibility_space_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("spaces.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
     )
 
 
@@ -1361,6 +1426,7 @@ class PersonRelationshipModel(Base):
             "trust_score >= 0 AND trust_score <= 100",
             name="ck_person_relationships_trust_range",
         ),
+        Index("ix_person_relationships_canonical_person_id", "canonical_person_id"),
     )
 
     user_id: Mapped[str] = mapped_column(
@@ -1372,6 +1438,11 @@ class PersonRelationshipModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_automatic_change_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    canonical_person_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
     )
 
     person: Mapped[PersonModel] = relationship(back_populates="relationship_state")
@@ -1393,6 +1464,7 @@ class RelationshipEventModel(Base):
             unique=True,
             sqlite_where=text("source_event_id IS NOT NULL AND change_type = 'automatic'"),
         ),
+        Index("ix_relationship_events_canonical_person_id", "canonical_person_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -1413,6 +1485,11 @@ class RelationshipEventModel(Base):
     reason_code: Mapped[str] = mapped_column(String(64), nullable=False)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    canonical_person_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
 
 class RelationshipJobModel(Base):
@@ -1426,6 +1503,7 @@ class RelationshipJobModel(Base):
             name="ck_relationship_jobs_status",
         ),
         Index("ix_relationship_jobs_status_next", "status", "next_attempt_at"),
+        Index("ix_relationship_jobs_canonical_person_id", "canonical_person_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -1442,6 +1520,11 @@ class RelationshipJobModel(Base):
     error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    canonical_person_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
 
 class ProcessedEventModel(Base):
@@ -1624,6 +1707,7 @@ class PersonTimeSettingModel(Base):
     """The preferred IANA timezone for one globally identified person."""
 
     __tablename__ = "person_time_settings"
+    __table_args__ = (Index("ix_person_time_settings_canonical_person_id", "canonical_person_id"),)
 
     user_id: Mapped[str] = mapped_column(
         ForeignKey("people.user_id", ondelete="CASCADE"), primary_key=True
@@ -1631,6 +1715,11 @@ class PersonTimeSettingModel(Base):
     timezone: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    canonical_person_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
     person: Mapped[PersonModel] = relationship(back_populates="time_setting")
 

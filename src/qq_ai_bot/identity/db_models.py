@@ -22,8 +22,14 @@ from sqlalchemy import (
 )
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy.schema import Table
+from sqlalchemy.schema import MetaData, Table
 
+from qq_ai_bot.identity.canonical_ownership_schema import (
+    C5_OWNERSHIP_COLUMNS,
+    C5_OWNERSHIP_TABLES,
+    C5_TRIGGER_NAMES,
+    C5_TRIGGER_SQL,
+)
 from qq_ai_bot.persistence.models import Base
 
 CANONICAL_IDENTITY_TABLES: tuple[str, ...] = (
@@ -421,3 +427,60 @@ class IdentityConflictModel(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+_C5_PARENT_TABLES: tuple[str, ...] = ("persons", "spaces")
+
+
+def _is_sqlite_connection(connection: Connection) -> bool:
+    return connection.dialect.name == "sqlite"
+
+
+def _c5_hosts_and_parents_ready(connection: Connection) -> bool:
+    required = (*C5_OWNERSHIP_TABLES, *_C5_PARENT_TABLES)
+    present = connection.execute(
+        text(
+            "SELECT COUNT(*) FROM sqlite_master "
+            "WHERE type = 'table' AND name IN "
+            f"({', '.join(repr(name) for name in required)})"
+        )
+    ).scalar()
+    if int(present or 0) != len(required):
+        return False
+    for table, columns in C5_OWNERSHIP_COLUMNS.items():
+        info = {str(row[1]) for row in connection.execute(text(f'PRAGMA table_info("{table}")'))}
+        if not set(columns) <= info:
+            return False
+    return True
+
+
+def _install_c5_triggers_if_ready(connection: Connection) -> None:
+    """Install ownership-shadow guards once every C5 host and parent exists."""
+
+    if not _is_sqlite_connection(connection):
+        return
+    if not _c5_hosts_and_parents_ready(connection):
+        return
+    installed = connection.execute(
+        text("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = :name"),
+        {"name": C5_TRIGGER_NAMES[0]},
+    ).scalar()
+    if installed is not None:
+        return
+    for statement in C5_TRIGGER_SQL:
+        connection.execute(text(statement))
+
+
+@event.listens_for(Base.metadata, "after_create")
+def _install_c5_triggers_after_metadata_create(
+    target: MetaData,
+    connection: Connection,
+    **_kwargs: object,
+) -> None:
+    """Install C5 triggers after create_all, independent of table order."""
+
+    if target is not Base.metadata:
+        return
+    if not _is_sqlite_connection(connection):
+        return
+    _install_c5_triggers_if_ready(connection)

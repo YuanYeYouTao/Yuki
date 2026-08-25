@@ -100,7 +100,7 @@ def test_fresh_and_upgrade_matrix_have_equivalent_head_schema(tmp_path: Path) ->
     assert "conversation_history_states" not in expected_names
     assert "planner_runs" not in expected_names
     with sqlite3.connect(fresh) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0045",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0046",)
 
     for label, revision in MATRIX.items():
         database = tmp_path / f"{label}.db"
@@ -111,11 +111,11 @@ def test_fresh_and_upgrade_matrix_have_equivalent_head_schema(tmp_path: Path) ->
         assert names == expected_names, label
         with sqlite3.connect(database) as connection:
             assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-                "0045",
+                "0046",
             )
             assert connection.execute("SELECT COUNT(*) FROM memory_rebuild_runs").fetchone() == (0,)
 
 
 def test_conversation_scope_rollup_is_the_current_production_migration() -> None:
     versions = sorted((ROOT / "migrations/versions").glob("*.py"))
-    assert versions[-1].name == "0045_canonical_event_shadows.py"
+    assert versions[-1].name == "0046_canonical_ownership_shadows.py"

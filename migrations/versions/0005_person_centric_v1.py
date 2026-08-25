@@ -35,21 +35,49 @@ _C4_CHAT_EVENT_SHADOW_INDEXES: tuple[str, ...] = (
     "ix_chat_events_canonical_conversation_id",
     "uq_chat_events_canonical_event_keeper",
 )
+_C5_OWNERSHIP_SHADOW_COLUMNS: dict[str, tuple[str, ...]] = {
+    "people": ("canonical_person_id",),
+    "groups": ("canonical_space_id",),
+    "person_aliases": ("canonical_person_id", "canonical_space_id"),
+    "memberships": ("canonical_person_id", "canonical_space_id"),
+}
+_C5_OWNERSHIP_SHADOW_INDEXES: tuple[str, ...] = (
+    "ix_people_canonical_person_id",
+    "ix_groups_canonical_space_id",
+    "ix_person_aliases_canonical_person_id",
+    "ix_person_aliases_canonical_space_id",
+    "ix_memberships_canonical_person_id",
+    "ix_memberships_canonical_space_id",
+)
+_STRIPPED_AT_0005: tuple[str, ...] = (
+    "people",
+    "groups",
+    "person_aliases",
+    "memberships",
+    "chat_events",
+)
+_STRIPPED_PARENTS: dict[str, tuple[str, ...]] = {
+    "people": (),
+    "groups": (),
+    "person_aliases": ("people",),
+    "memberships": ("people", "groups"),
+    "chat_events": ("people", "groups", "automations", "automation_runs"),
+}
 
 
-def _chat_events_without_canonical_shadows() -> Table:
-    """Create the 0005 ledger table without later C4 shadow columns or FKs.
+def _excluded_future_columns(table_name: str) -> set[str]:
+    excluded = set(_C4_CHAT_EVENT_SHADOW_COLUMNS if table_name == "chat_events" else ())
+    excluded.update(_C5_OWNERSHIP_SHADOW_COLUMNS.get(table_name, ()))
+    return excluded
 
-    SQLite DROP COLUMN does not remove FOREIGN KEY clauses that were part of
-    the original CREATE TABLE, so a current ChatEventModel create_all would
-    make those later columns undeletable. The table is empty at 0005.
-    """
 
-    source = Base.metadata.tables["chat_events"]
-    excluded = set(_C4_CHAT_EVENT_SHADOW_COLUMNS)
-    side = MetaData()
-    for parent in ("people", "groups", "automations", "automation_runs"):
-        Base.metadata.tables[parent].to_metadata(side)
+def _copy_table_without_future_shadows(table_name: str, side: MetaData) -> Table:
+    """Copy one ORM table onto side metadata without later C4/C5 shadows."""
+
+    if table_name in side.tables:
+        return side.tables[table_name]
+    source = Base.metadata.tables[table_name]
+    excluded = _excluded_future_columns(table_name)
     table = Table(
         source.name,
         side,
@@ -90,6 +118,21 @@ def _chat_events_without_canonical_shadows() -> Table:
             kwargs["sqlite_where"] = sqlite_opts["where"]
         Index(index.name, *[table.c[name] for name in names], **kwargs)
     return table
+
+
+def _table_without_future_shadows(table_name: str) -> Table:
+    """Create an empty 0005 table without later C4/C5 shadow columns or FKs.
+
+    SQLite DROP COLUMN does not remove FOREIGN KEY clauses that were part of
+    the original CREATE TABLE, so current ORM create_all would make later
+    shadow columns undeletable. Parent copies are stripped too so a later
+    people.canonical_person_id → persons FK cannot leak into 0005.
+    """
+
+    side = MetaData()
+    for parent in _STRIPPED_PARENTS[table_name]:
+        _copy_table_without_future_shadows(parent, side)
+    return _copy_table_without_future_shadows(table_name, side)
 
 
 def upgrade() -> None:
@@ -215,14 +258,18 @@ def upgrade() -> None:
             "canonical_event_receipts",
         }
     ]
-    create_tables = [table for table in v1_tables if table.name != "chat_events"]
+    create_tables = [table for table in v1_tables if table.name not in _STRIPPED_AT_0005]
+    _table_without_future_shadows("people").create(bind, checkfirst=True)
+    _table_without_future_shadows("groups").create(bind, checkfirst=True)
     Base.metadata.create_all(bind=bind, tables=create_tables, checkfirst=True)
-    _chat_events_without_canonical_shadows().create(bind, checkfirst=True)
+    _table_without_future_shadows("person_aliases").create(bind, checkfirst=True)
+    _table_without_future_shadows("memberships").create(bind, checkfirst=True)
+    _table_without_future_shadows("chat_events").create(bind, checkfirst=True)
+    for index_name in (*_C4_CHAT_EVENT_SHADOW_INDEXES, *_C5_OWNERSHIP_SHADOW_INDEXES):
+        bind.exec_driver_sql(f"DROP INDEX IF EXISTS {index_name}")
     chat_event_columns = {
         str(row[1]) for row in bind.exec_driver_sql("PRAGMA table_info(chat_events)")
     }
-    for index_name in _C4_CHAT_EVENT_SHADOW_INDEXES:
-        bind.exec_driver_sql(f"DROP INDEX IF EXISTS {index_name}")
     for column_name in _C4_CHAT_EVENT_SHADOW_COLUMNS:
         if column_name in chat_event_columns:
             bind.exec_driver_sql(f"ALTER TABLE chat_events DROP COLUMN {column_name}")

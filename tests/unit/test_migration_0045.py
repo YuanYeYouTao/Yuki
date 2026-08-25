@@ -454,7 +454,7 @@ def test_fresh_upgrade_head_creates_c4_shadows(
     path = tmp_path / "fresh-head.db"
     _upgrade(path, monkeypatch, "head")
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0045",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0046",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         tables = _tables(connection)
         assert set(CANONICAL_EVENT_TABLES) <= tables
@@ -483,7 +483,7 @@ def test_empty_fresh_and_0044_to_0045_schemas_are_equivalent(
 ) -> None:
     fresh = tmp_path / "fresh.db"
     upgraded = tmp_path / "from-0044.db"
-    _upgrade(fresh, monkeypatch, "head")
+    _upgrade(fresh, monkeypatch, "0045")
     _upgrade(upgraded, monkeypatch, "0044")
     before = _schema_dump(upgraded)
     _upgrade(upgraded, monkeypatch, "0045")
@@ -500,7 +500,7 @@ def test_populated_downgrade_0045_to_0044_preserves_legacy_rows(
     expected = tmp_path / "expected-0044.db"
     path = tmp_path / "populated-downgrade.db"
     _upgrade(expected, monkeypatch, "0044")
-    _upgrade(path, monkeypatch, "head")
+    _upgrade(path, monkeypatch, "0045")
     now = "2026-08-24T00:00:00+00:00"
     with _connect(path) as connection:
         ids = _seed_identity(connection, now)
@@ -584,7 +584,7 @@ def test_orm_metadata_matches_0045_c4_schema(
 def test_alembic_heads_is_exactly_0045() -> None:
     config = Config("alembic.ini")
     heads = ScriptDirectory.from_config(config).get_heads()
-    assert heads == ["0045"]
+    assert heads == ["0046"]
 
 
 def test_0045_is_self_contained_alembic() -> None:
