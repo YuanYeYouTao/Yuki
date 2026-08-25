@@ -1,449 +1,96 @@
 <div align="center">
 
-<p>
-  <img src="img/Yuki_2.png" alt="Yuki" width="280">
-</p>
+<p><img src="img/Yuki_2.png" alt="Yuki" width="280"></p>
 
 <h1>Yuki-QQbot</h1>
 
 <p>面向个人部署、以长期关系和长期记忆为核心的 QQ AI Agent</p>
 
 <p>
-  <img src="https://img.shields.io/badge/Code-3.8.0--unreleased-orange" alt="Code version 3.8.0, unreleased">
-  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.7.1"><img src="https://img.shields.io/badge/Latest%20Release-3.7.1-blue" alt="Latest release 3.7.1"></a>
+  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.0"><img src="https://img.shields.io/badge/Release-3.8.0-blue" alt="Yuki 3.8.0 release"></a>
+  <img src="https://img.shields.io/badge/Schema-0049-blue" alt="Alembic head 0049">
+  <img src="https://img.shields.io/badge/Plugin%20API-2.0-8A2BE2" alt="Plugin API 2.0">
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
-  <img src="https://img.shields.io/badge/NoneBot2-OneBot%20v11-green" alt="NoneBot2 and OneBot v11">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
   <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/actions/workflows/quality.yml"><img src="https://github.com/YuanYeYouTao/Yuki-QQbot/actions/workflows/quality.yml/badge.svg" alt="Quality"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow" alt="MIT License"></a>
 </p>
 
-<p>
-  <a href="#项目概览">项目概览</a>
-  ·
-  <a href="#核心能力">核心能力</a>
-  ·
-  <a href="#memory-v2">Memory V2</a>
-  ·
-  <a href="#快速开始">快速开始</a>
-  ·
-  <a href="#文档">文档</a>
-</p>
-
 </div>
 
----
+Yuki 不是给 QQ 套一层模型回复的问答机器人。它把 Conversation、Memory、Relationship、
+Automation、Plugin 与 QQ 登录账号和 Gateway 连接分开，让同一个长期角色能够换账号、换
+Provider，并在权限边界内持续记住人与共同经历。
 
-Yuki 不是把大模型简单接到 QQ 上的问答机器人。它以 NapCat 或 SnowLuma 和 NoneBot2 为通信入口，使用
-Conversation / Memory / Capability Runtime、受控 Agent 工具循环、身份隔离的 Memory V2、持久化自动化和插件系统，
-让一个可自托管的 QQ 角色能够长期对话、记住人与共同经历，并安全地执行外部操作。
+当前版本为 **3.8.0**。3.8 只运行 canonical schema；Alembic head 为 `0049`。
 
-项目主要通过 Codex 协作开发。仓库当前代码版本为 **3.8.0（待发布）**，GitHub 最新正式版仍为
-**3.7.1**；尚不存在可供普通用户直接拉取的 3.8.0 GHCR 镜像或 Release 安装包。它适合愿意
-自行维护模型配置、QQ 登录态和本地数据的个人用户；不是面向多租户的托管机器人平台。
+## 3.8 核心合同
 
-## 项目概览
-
-一次普通消息的主路径如下。所有图都使用纯文本表示，方便在终端、移动端和任意 Markdown
-阅读器中查看。
-
-```text
-+---------+    OneBot     +------------+    event     +----------+
-| QQ User | ------------> | QQ Gateway | -----------> | NoneBot  |
-+---------+               +------------+              +-----+----+
-                                                       |
-                                                       v
-                    +------------+    +----------------+----------------+
-                    | Event DB   | <- | Normalize / Access / Dedupe     |
-                    +------------+    +----------------+----------------+
-                                                       |
-                                                       v
-                    +------------+    +----------------+----------------+
-                    | Memory V2  | <- | Conversation + Memory Runtime   |
-                    +------------+    +----------------+----------------+
-                                                       |
-                                                       v
-                    +------------+    +----------------+----------------+
-                    | Capability | <- | Local FTS search + Tool Kernel  |
-                    +------------+    +----------------+----------------+
-                                                       |
-                                                       v
-                    +------------+    +----------------+----------------+
-                    | Tool Kernel| <->| Main Agent + Model Runtime      |
-                    +------------+    +----------------+----------------+
-                                                       |
-                                                       v
-                    +------------+    +----------------+----------------+
-                    | Audit / DB | <- | Reply Sequence + OneBot Sender  |
-                    +------------+    +----------------+----------------+
-                                                       |
-                                                       v
-                                                  [ QQ Reply ]
-```
-
-关键边界：
-
-- QQ 事件先标准化、准入、去重并写入事件账本，再进入对话编排。
-- 管理命令和静态插件绑定可走确定性入口；普通聊天在本地 Runtime 准备后只进入 Main Agent。
-- Conversation Runtime 负责准入、自主群评分与 History Rollup，不能直接发送消息、修改数据或授予身份权限。
-- 主 Agent 只能看到本轮被授权的工具；数据库、OneBot、插件和外部服务都由后端执行。
-- 只有当前 QQ Gateway Provider 返回真实发送回执后，系统才把回复视为已投递，并启动相应后台工作。
-
-## 核心能力
-
-| 模块 | 当前能力 |
+| 领域 | 现行合同 |
 | --- | --- |
-| 永久身份 | 一个数据库对应一个永久 Yuki；Person、Binding、Space、Presence 和 canonical Conversation 解耦账号、平台与网关 |
-| QQ Gateway | NapCat、SnowLuma 同为正式 Provider；不同 QQ 可并存，同一 QQ 的重复活动连接失败关闭 |
-| 对话编排 | 私聊、群聊、回复与 @ 元数据、多轮历史、Conversation Runtime 准入、自主群评分与 History Rollup |
-| Main Agent | OpenAI-compatible Chat Completions / Responses、思考模型、有界工具循环、输出清理与分段发送 |
-| Memory V2 | 身份隔离、自动提炼、混合召回、结构化意图重排、自然衰减、使用强化、冲突与版本链 |
-| Tool Kernel | Core、Admin、Automation、Plugin、MCP、Web 能力统一注册、筛选、授权、预算和审计 |
-| 自动化 | 通过自然语言创建提醒与周期任务，保存真实创建者、作用域、权限和投递结果 |
-| 插件系统 | Plugin API 2.0、独立 SDK、命令、工具、事件、Prompt、AdmissionSignal、后台服务和持久通知 |
-| MCP Client | stdio 与 Streamable HTTP、动态发现、Schema 预算、并发控制、结果 Artifact |
-| 联网搜索 | DeepSeek 原生搜索、Tavily 或受控降级链路，最终回答可携带来源 |
-| 多模态 | 可选 Qwen 图片理解、持久化表情包系统、本地 Genie-TTS 语音回复 |
-| 关系系统 | 按永久 Person 保存好感度、信任度和关系阶段；换 Binding 或 Presence 不分裂关系 |
-| 运行治理 | SQLite、Alembic、热配置、权限审计、健康检查、无正文指标和质量门禁 |
+| 永久 Yuki | 一个数据库对应一个永久 Yuki；人格、SELF、记忆、关系和设置不属于 QQ 或 Gateway |
+| 人物与空间 | Person 可有多个 IdentityBinding；Space 可有多个 SpaceBinding |
+| Yuki 账号 | Presence 只表示 Yuki 的平台账号，不是 Person |
+| Conversation | 私聊按 Person，群聊按 Space；换账号或 Provider 不重置会话 |
+| QQ Provider | NapCat 与 SnowLuma 同为正式 OneBot v11 Provider |
+| 连接冲突 | 不同 QQ 可并存；同一 QQ 的第二条活动连接被拒绝 |
+| 路由 | Person 主动路由、Space ingest 路由、Space 主动路由相互独立 |
+| Memory | SELF、PERSON、GROUP、PERSON_GROUP 按 canonical owner 隔离 |
+| Plugin | Plugin API 2.0；旧 conversation key 固定映射到 primary alias |
+| 管理能力 | transport-neutral Control Plane 是未来 WebUI 的唯一业务后端边界 |
 
-## Memory V2
+完整结构见 [Yuki 3.8 canonical runtime](docs/architecture/canonical-runtime.md)。
 
-Memory V2 是 Yuki 规模最大、边界最多的模块。它不是一张“聊天摘要表”，而是一套把原始事件、
-证据、可验证事实、检索过程、变更记录和自适应生命周期分开的长期记忆系统。
-
-### 设计目标
-
-- **先隔离，再检索**：人物、群、群内人物和 Yuki 自身的记忆拥有不同作用域，语义相似不能
-  绕过身份与可见性边界。
-- **事实可追溯**：长期事实保留来源、Evidence、authority、confidence、有效期、状态、冲突和
-  版本关系，不把模型输出直接当作无来源真相。
-- **读取与写入分离**：自动召回、显式工具读取和记忆变更互斥，修改只能依据真实事务回执确认。
-- **相关性会变化**：Activation 随时间自然衰减，真正支撑已发送回复的记忆才会获得强化。
-- **后台工作不拖慢聊天**：提炼、Embedding、Dream、维护和使用归因由后台 Worker 完成。
-- **可审计但少留正文**：Recall Receipt 保存阶段与分数，不保存用户问题、回复或记忆正文。
-
-### 数据边界
+## 消息主路径
 
 ```text
-+------------------+
-| Chat Event Ledger|
-+--------+---------+
-         |
-         +--------------------> [Short History]
-         |
-         v
-+------------------+     +------------------+
-| Claims / Evidence| --->| Memory Fact      |
-+------------------+     | fact / preference|
-                         | episode          |
-                         +--------+---------+
-                                  |
-                 +----------------+----------------+
-                 |                |                |
-                 v                v                v
-          [Version Chain]  [Conflict State] [Activation State]
-                 |                |                |
-                 +----------------+----------------+
-                                  |
-                                  v
-                         [Audit / Receipts]
+QQ event
+   |
+   v
+NapCat or SnowLuma provider-aware OneBot adapter
+   |
+   v
+Presence / Person / Space / canonical Conversation resolution
+   |
+   v
+ingest fence -> transport receipt -> immutable event ledger
+   |
+   v
+Conversation runtime + Rollup + Memory retrieval
+   |
+   v
+Capability-filtered Agent tools
+   |
+   v
+reply through ingress connection or deterministic active route
 ```
 
-事实作用域由后端根据可信 QQ 元数据建立：
+事件账本保留真实 OneBot provenance。模型不能直接访问数据库、token、Cookie、任意 OneBot
+action 或宿主机；工具调用由后端进行权限、预算、幂等和审计检查。
 
-| Scope | 含义 | 典型内容 |
-| --- | --- | --- |
-| `person` | 某个人跨会话可见的本人记忆 | 明确偏好、稳定个人事实 |
-| `person_group` | 某个人在当前群语境中的记忆 | 群内称呼、局部共同经历 |
-| `group` | 当前群共享的事实 | 群规则、共同事件 |
-| `self` | Yuki 对自身与共同经历的记忆 | 自我经历、角色连续性 |
+## 功能
 
-模型给出的 `subjects` 只是软排序提示。真实发送者、当前群、回复对象、被 @ 成员和 SELF
-可见性始终由后端解析；模型不能凭名字创造新目标，也不能把一个人的记忆补给另一个人。
+- 私聊、群聊、回复与保序 mention 投影，多轮 Conversation 和 History Rollup。
+- Memory V2：证据、事实、混合召回、冲突、版本链、生命周期、Dream 与受控变更。
+- 按永久 Person 保存的好感度、信任度和偏好。
+- 有界 Agent 工具循环、联网搜索、MCP、自动化与 Plugin API 2.0。
+- 可选图片理解、表情资产管理和本地 Genie-TTS 语音。
+- NapCat/SnowLuma 多 Provider、多 Presence、确定性路由与连接健康投影。
+- transport-neutral Control Plane；3.8 本身不开放管理 HTTP API，也不包含 WebUI。
 
-### 四条访问路径
+## 快速安装
 
-Memory Runtime 按当前真实事件决定访问方式、召回目的和合法目标。`memory.access` 是首轮记忆编排的唯一入口：
+要求：
 
-```text
-                         +------------------+
-                         | Memory Runtime   |
-                         | memory.access    |
-                         +---------+--------+
-                                   |
-          +----------------+-------+-------+----------------+
-          |                |               |                |
-          v                v               v                v
-      [ none ]        [ automatic ]      [ tool ]       [ mutation ]
-          |                |               |                |
-     no memory       auto recall       read tools       write tools
-     no scope        no read tools      no recall        no recall
-          |                |               |                |
-          +----------------+-------+-------+----------------+
-                                   |
-                                   v
-                              [Main Agent]
-```
-
-- `none`：本轮不需要长期记忆，也不开放 Memory Scope。
-- `automatic`：普通回忆、概括、延续和核验使用自动召回；首轮不再同时暴露通用记忆工具。
-- `tool`：用户明确要求调用记忆工具时跳过自动注入，只开放合法的只读记忆能力。
-- `mutation`：创建、纠正、撤回和恢复跳过自动召回，只开放 `memory/write_state` 能力。
-
-如果写入定位失败，Agent 可以再通过 `request_tools` 加载只读工具后重试。这是受控降级，不会
-扩大人物、群、SELF、权限或事实状态范围。
-
-### 自动召回
-
-```text
-[Current Message]
-       +
-[Last 10 Events]
-       +
-[Trusted Reply / Mention Metadata]
-       |
-       v
-[Memory Runtime: MemoryQueryIntent]
-       |
-       v
-[Backend Target Resolution]
-       |
-       v
-[FTS Search] + [Optional Semantic Search]
-       |                  |
-       +--------+---------+
-                v
-          [RRF Fusion]
-                |
-                v
-   [Intent + Activation Rerank]
-                |
-                v
-          [MMR Diversity]
-                |
-                v
-        [Global Recall Limit]
-                |
-                v
-         [Context Budget]
-                |
-                v
-       [Injected Memories]
-```
-
-召回过程的含义：
-
-1. **Target Resolution** 先产生合法身份目标；这一层是硬边界。
-2. **FTS / Semantic** 使用 SQLite FTS 与可选 Qwen Embedding 生成候选；任一通道不可用时可局部降级。
-3. **RRF** 融合词法和语义名次，避免把不同量纲的原始分数直接相加。
-4. **Intent Rerank** 根据 `purpose`、主体、实体、时间、记忆类型与 Activation 调整相关度；它不
-   解析新身份，也不使用额外 rerank 模型。
-5. **MMR** 在同一身份分区内减少高度重复的候选。
-6. **Global Limit** 先保留精确命中和显式偏好，再执行稳定的整轮与每目标上限。
-7. **Context Budget** 只把预算内的最终事实放入主 Agent Prompt，并记录 injected 阶段。
-
-默认自动注入上限：
-
-| Purpose / Mode | 整轮上限 |
-| --- | ---: |
-| `background` | 3 |
-| `continuation` | 4 |
-| `recall` / `verify` / `correct` | 6 |
-| `overview` | 8 |
-
-每个合法目标最多 4 条。若用户明确要求 overview 返回 N 条，系统使用 `min(N + 2, 8)` 作为内部
-候选余量；显式工具读取、管理搜索和 Plugin Memory Facade 不受这组自动注入上限影响。
-
-### Activation、归因与强化
-
-Activation 只参与排序，不会让事实自动变成无效，也不是硬过滤条件。当前值在读取时按指数函数
-惰性计算，默认半衰期如下：
-
-| 记忆类型 / 来源 | 默认半衰期 |
-| --- | ---: |
-| Episode | 14 天 |
-| Fact | 60 天 |
-| Preference | 120 天 |
-| Explicit source / authority | 365 天 |
-
-高重要性事实会获得更长半衰期；低置信度或低重要性的自动记忆会更快衰减。高度精确但 Activation
-较低的旧事实仍可被召回。
-
-```text
-[candidate] -> [selected] -> [injected] -> [sent reply]
-                                              |
-                                              v
-                                      [In-memory Queue]
-                                              |
-                                              v
-                                      [Flash Attribution]
-                                              |
-                              +---------------+---------------+
-                              |                               |
-                              v                               v
-                         [not used]                       [used refs]
-                                                              |
-                                                              v
-                                                   [CAS Reinforcement]
-                                                              |
-                                                              v
-                                                        [reinforced]
-```
-
-主 Agent 不负责自报“用了哪些记忆”。正文或由正文生成的语音成功发送后，单实例后台 Worker 才
-使用 Flash 模型判断本轮白名单 Exposure 中哪些事实实质支撑了回答。新前台请求可以抢占仍在推理
-的后台归因；队列满、超时、异常、重启或非法输出只会跳过本轮强化，不会阻塞回复或改变事实状态。
-
-Recall Receipt 记录 `candidate -> selected -> injected -> used -> reinforced` 五个阶段及数值分数，
-默认保留 30 天。问题、回复、记忆正文和 ref 列表不会写入日志；归因 Job 也不会落库。
-
-### 记忆写入与纠正
-
-```text
-[Create / Correct / Invalidate / Restore]
-                    |
-                    v
-          [Memory Runtime: mutation]
-                    |
-                    v
-       [memory/write_state only]
-                    |
-                    v
-            [memory_change]
-                    |
-          +---------+----------+
-          |                    |
-          v                    v
- [Unique Exact Target]   [Ambiguous / Not Found]
-          |                    |
-          v                    v
- [Transactional Write]   [0..3 Safe Candidates]
-          |                    |
-          v                    v
- [Mutation Receipt]      [Read Tool Fallback]
-          |
-          v
- [Backend Final Message]
-```
-
-- 没有 `fact_id` 时，Locator 可用稳定 key、旧内容和分类在当前合法目标内精确定位。
-- 唯一精确命中才执行写入；歧义时最多返回 3 条合法候选，完全无结果则明确不执行。
-- Locator 不调用 Embedding，不跨人、跨群或绕过 SELF，可疑的 quarantined 事实永不作为候选。
-- 纠正创建新版本并让旧版本失效；撤回是 `invalidate`，不是物理删除，审计痕迹会保留。
-- 后端根据真实 `Mutation Receipt` 生成最终结果。未调用工具、noop、contest、歧义或未找到时，
-  模型不能声称操作成功。
-- DeepSeek 请求不发送任何 `tool_choice` 字段；正确性由能力隔离、事务和完成门保证。
-
-### 后台记忆循环
-
-```text
-[Chat Events]
-      |
-      +--------> [Live Extraction] -------> [Facts / Evidence]
-      |
-      +--------> [Self Reflection] -------> [Self Memories]
-      |
-      +--------> [Embedding Worker] ------> [Vector Index]
-      |
-      +--------> [Dream Worker] ----------> [Merge / Synthesize / Resolve]
-      |
-      +--------> [Maintenance] -----------> [Expiry / Cleanup / Receipts]
-      |
-      +--------> [Controlled Rebuild] ----> [Review / Commit]
-```
-
-Live Extraction 从事件账本提炼候选与 Evidence；Self Reflection 默认在每天 04:00、12:00、20:00
-处理 Yuki 自身经历；Dream 默认在 05:00 对记忆簇执行 keep、merge、synthesize、recompose、
-contest 或 resolve，并保留预览、来源与回滚信息。Maintenance 处理真实性生命周期、过期 Receipt
-和索引维护。受控 Rebuild 默认关闭，用于从历史事件重建记忆并经过 review 后提交。
-
-Memory V2 还提供版本化质量数据集、确定性 benchmark、跨人/跨群污染门、生产库只读审计与正式
-release check。更多细节见 [Memory V2 架构](docs/architecture/memory-v2.md)、
-[自适应生命周期实施计划](docs/architecture/Yuki_Adaptive_Memory_Lifecycle_Implementation_Plan.md)
-和 [3.5.1 发布说明](docs/releases/v3.5.1.md)。
-
-## Agent 与工具系统
-
-Conversation Runtime 负责准入与自主群评分，并把会话历史编译成 SESSION 摘要前沿加未覆盖近窗原文；
-Capability Runtime 用本地 FTS 决定首批工具；Main Agent 负责回答和实际工具调用。工具内核再按
-origin、namespace、effect、risk、创建者身份、当前群权限和轮次预算做最终治理。
-
-```text
-[Conversation Runtime]
-      |
-      +-- History Rollup (SESSION frontier + uncovered raw tail)
-      |
-      v
-[Memory Runtime]
-      |
-      v
-[Capability Catalog + Local Search]
-      |
-      v
-[Policy + Permission + Budget]
-      |
-      v
-[Selected Tools]
-      |
-      v
-[Main Agent] <----> [Bounded Tool Loop]
-                         |
-        +----------------+----------------+
-        |        |        |       |       |
-       Core    Admin  Automation Plugin  MCP / Web
-```
-
-`request_tools` 允许 Agent 在已有授权范围内按需加载更多能力，但不会授予新权限。Plugin Host、
-MCP Gateway、自动化 Scheduler 和后台通知最终都回到同一能力目录、Agent 与投递链路。
-
-## 扩展能力
-
-### Plugin API 2.0
-
-插件可以注册命令、工具、事件处理器、Prompt 片段、AdmissionSignal、后台服务和受控 Agent
-Session，也可以使用存储、网络、媒体、Memory Facade、Automation Facade 与 Notification
-Outbox。插件运行前需通过 Manifest、版本、权限和管理员批准检查。声明 1.x 的插件会被拒绝。
-
-- [插件快速开始](docs/plugin-development/quickstart.md)
-- [Plugin API 文档](docs/plugin-development/index.md)
-- [GitHub Monitor](plugins/github-monitor/README.md)
-
-### MCP
-
-MCP Client 支持 stdio 和 Streamable HTTP，包含动态发现、元数据缓存、Schema Token 预算、并发
-限制和大型结果 Artifact。示例包括麦当劳、网易云音乐和 Miniflux。
-
-- [MCP 配置](docs/mcp/configuration.md)
-- [能力检索与 Agent](docs/mcp/planner-and-agent.md)
-- [故障排查](docs/mcp/troubleshooting.md)
-
-### 图片、表情与语音
-
-- 图片理解：可选 Qwen Vision，只向视觉模型发送本轮选中的图片和当前问题。
-- 表情系统：支持收集、分析、选择、生命周期管理、自动回复与 Plugin API。
-- 本地语音：Genie-TTS Worker 使用独立 Compose profile、只读模型目录和 Unix Socket，运行时可
-  完全断网。
-
-## 快速开始
-
-### 环境要求
-
-- Docker Engine / Docker Desktop 与 Docker Compose
-- 一个可通过 NapCat 或 SnowLuma 登录的 QQ 账号
-- 一个 OpenAI-compatible 模型接口；后台结构化任务可另配低延迟 Flash 模型
-- 只有本地开发才需要 Python 3.12、[uv](https://docs.astral.sh/uv/) 和完整源码
-
-### 1. 运行引导安装器
-
-普通用户当前应从 [Yuki 3.7.1 Release](https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.7.1)
-下载正式安装器。仓库中的 3.8.0 安装器、SnowLuma profile 和永久身份迁移仍属于待发布代码；
-不要在 3.8.0 tag、GHCR 镜像和 Release 资产真正发布前把生产 `.env` 改成 `3.8.0`。源码验收与
-预发布升级必须阅读 [3.8.0 升级指南](docs/upgrade-3.8.0.md)。
+- Linux amd64，或在 Windows 上运行 Linux Containers 的 Docker Desktop
+- Docker Engine 与 Docker Compose v2
+- 一个可用的 OpenAI-compatible 模型配置
+- 至少一个 NapCat 或 SnowLuma QQ 登录账号
 
 Linux：
 
 ```bash
+curl -fLO https://github.com/YuanYeYouTao/Yuki-QQbot/releases/download/v3.8.0/install.sh
 chmod +x install.sh
 ./install.sh
 ```
@@ -451,237 +98,122 @@ chmod +x install.sh
 Windows PowerShell：
 
 ```powershell
+Invoke-WebRequest -Uri https://github.com/YuanYeYouTao/Yuki-QQbot/releases/download/v3.8.0/install.ps1 -OutFile install.ps1
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-默认安装到当前目录下的 `yuki/`。可使用 `./install.sh --dir /opt/yuki` 或
-`.\install.ps1 -InstallDir D:\Yuki` 指定位置。
+安装器默认版本为 `3.8.0`。它会校验 Release bundle、固定镜像版本、备份已有部署、运行引导配置、
+执行 Compose 检查并启动所选 Provider。密钥输入不回显，安装器不会在线试用 API key。
 
-### 2. 跟随 Guided Setup
+源码验证：
 
-向导依次询问管理员 QQ、主模型接入方式、Base URL、API Key 和模型名，再由你决定是否开启
-Flash、Embedding、Web、Vision、MCP、Plugin、Automation 与 Speech。关闭的功能不会追问
-密钥；API Key 不回显，最终摘要也不会显示任何密钥或 Token。
+```bash
+cp .env.example .env
+docker compose config --quiet
+docker compose up -d
+```
 
-任意输入框、选择框或确认框都可以输入 `:back` 返回上一逻辑页面，当前页尚未确认的修改会被
-丢弃；输入 `:quit`、按 `Ctrl+C` 或关闭输入流会安全退出且不写入草稿。命令开头的英文冒号
-必须一并输入，单独输入 `back` 或 `quit` 不会生效。已有部署先显示编号式
-区块多选，直接回车表示不修改任何区块；从所选区块的第一页返回会回到区块选择页。
+不要提交 `.env`、`data/`、Gateway 登录目录或 SnowLuma/NapCat Cookie。
 
-向导完成本地验证后，安装器固定执行：
+## NapCat 与 SnowLuma
+
+两者处于同一 Provider 层：
+
+- NapCat QQ A 与 SnowLuma QQ B 可以同时在线。
+- 同一 QQ 无论同 Provider 还是跨 Provider，只允许一条活动连接。重复连接拒绝新的，保留旧的。
+- 切换同一 QQ 必须先停止旧 Provider并确认连接注销，再启动新 Provider。
+- 切换只改变 GatewayConnection 和 ConnectionGeneration；Presence、Conversation、Memory 和
+  RouteGeneration 保持不变。
+
+安装向导通过 Compose profiles 管理 `napcat`、`snowluma` 和可选 `speech`。SnowLuma noVNC
+和 WebUI 默认只绑定 `127.0.0.1`。只有明确需要远程访问时才将
+`SNOWLUMA_NOVNC_BIND_ADDRESS` 或 `SNOWLUMA_WEBUI_BIND_ADDRESS` 设为 `0.0.0.0`；此时必须配置
+强密码、主机防火墙和可信来源限制，不能暴露 OneBot HTTP/WS 或 VNC 原始端口。
+
+首次登录、持久目录和故障恢复见
+[SnowLuma Provider 部署与切换](docs/deployment/snowluma.md)。Yuki 不宣称任何 Provider 或切换
+方式能够降低腾讯账号风控风险。
+
+## 数据库与升级
+
+3.8 的数据库合同：
+
+- fresh install：无父 revision 的 `0048` canonical baseline，随后升级到 `0049`。
+- historical bridge：只接受已完成 canonical v2 的旧 `0048` 数据库。
+- pre-3.8、v1、dual-write、backfill/cutover 中间态数据库不受支持，启动时失败关闭。
+- `0049` 不提供 downgrade；唯一数据回退方式是恢复升级前同一时点的 DB/WAL/SHM 快照。
+
+升级前必须停止 Bot 与 Provider，并把以下文件作为一组保存：
+
+- `data/qq_ai_bot.db`
+- `data/qq_ai_bot.db-wal`
+- `data/qq_ai_bot.db-shm`
+- `.env`、`config/`、Compose 文件与镜像 digest
+
+完整步骤见 [Yuki 3.8 升级指南](docs/upgrade-3.8.0.md)。不满足桥接前提时，新建 3.8 部署，
+不要让 3.8 自动猜测或修复旧身份数据。
+
+## 未来 WebUI
+
+未来 WebUI 必须只调用 `ControlPlaneBundle` 的 Query/Command 服务：
 
 ```text
-docker compose config
-        |
-        v
-docker compose pull
-        |
-        v
-docker compose up -d
-        |
-        v
-health / plugin approval / Gateway hint
+WebUI/HTTP -> authentication adapter -> ControlPrincipal/DecisionContext
+           -> ControlPlaneBundle -> repositories/runtime registries
 ```
 
-凭据不会在安装期间发起在线验证或计费请求。NapCat 使用 `http://127.0.0.1:6099`；SnowLuma
-使用 `http://127.0.0.1:6081` 扫码登录、`http://127.0.0.1:5099` 管理。SnowLuma 的协议和隐私
-确认必须由操作者在本地界面完成，安装器不会代为接受。完整步骤见
-[SnowLuma Provider 部署与切换](docs/deployment/snowluma.md)。
+WebUI 不得直接读取 ORM、数据库、Gateway 连接或 secret，也不得复用 QQ 消息中的 @/正文证明。
+3.8 已提供分页、Capability、乐观并发、幂等回执、审计和长任务投影；尚未实现 HTTP 管理 API、
+登录、Cookie、CSRF 或前端。
 
-### 3. 重开向导与升级
-
-在已有部署根目录再次运行同一安装器，会直接重开向导；你可以只修改选中的配置区块。数据库、
-QQ 登录态、插件文件和其他持久化目录不会被删除或覆盖。受影响配置会先备份到
-`.yuki/backups/`，最近保留 5 份。安装器每次都会校验对应版本部署包并只更新 Release 管理的
-Compose、环境模板、安装器和升级说明；`.env`、自定义配置及持久化目录保持原样。
-
-3.7.x 补丁升级前先备份 `data/`，再把 `.env` 中的 `YUKI_VERSION` 修改为目标版本：
-
-```bash
-docker compose pull
-docker compose up -d
-```
-
-版本镜像不可变；`docker compose pull` 只拉取 `.env` 当前指定的版本。**3.7.1 → 3.8.0 不能只
-执行上述两条命令**：3.8.0 包含 Alembic `0043`–`0048` 和一次停机 identity cutover，必须按
-[3.8.0 升级指南](docs/upgrade-3.8.0.md) 备份、回填、plan/apply 后再启动。不要用新部署包直接
-覆盖旧目录，保留现有 `config/`、`plugins/`、`data/`、`napcat-*` 与 `snowluma-*`。
-
-停止全部服务：
-
-```bash
-docker compose down
-```
-
-本地源码开发使用独立覆盖文件：
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
-```
-
-### 4. 可选 Pro / Flash 路由
-
-不提供模型档案时，全部任务使用 `LLM_*` 主配置。若要把聊天交给 Pro、把后台结构化
-任务交给 Flash：
-
-```powershell
-Copy-Item config/model_profiles.example.toml config/model_profiles.toml
-```
-
-然后在 `.env` 中设置：
-
-```dotenv
-MODEL_PROFILES_FILE=config/model_profiles.toml
-LLM_FLASH_BASE_URL=https://api.deepseek.com
-LLM_FLASH_API_KEY=你的Flash密钥
-LLM_FLASH_MODEL=你的Flash模型名称
-```
-
-示例路由中，`chat_agent`、`automation_agent`、`plugin_agent_session` 使用 Pro；Memory
-Extraction、Self Reflection、Consolidation、Attribution、Relationship 和 Emoji 等结构化
-任务使用 Flash。TOML 只引用环境变量名，不保存密钥。
-
-## 配置与运行
-
-常用配置组：
-
-| 配置组 | 关键入口 |
-| --- | --- |
-| 身份与准入 | `SUPERUSERS`、`ENABLED_GROUPS`、`IGNORED_BOT_USERS` |
-| 上下文 | `MAX_CONTEXT_CHARACTERS`、`CONTEXT_METADATA_BUDGET_RATIO`、历史水位 |
-| Memory V2 | `MEMORY_*` 提炼、召回、Activation、归因、Dream、维护与质量设置 |
-| Agent | `AGENT_MAX_TOOL_CALLS`、`AGENT_MAX_MODEL_REQUESTS`、工具结果预算 |
-| MCP | `MCP_ENABLED`、`.mcp.json`、发现与结果 Artifact 设置 |
-| Plugin | `PLUGIN_SYSTEM_ENABLED`、`PLUGIN_DIRECTORY`、审批与 Plugin API 设置 |
-| Vision / Web | `VISION_*`、`WEB_MODE`、Tavily 与受控 fallback 设置 |
-| Emoji / Speech | `EMOJI_*`、`SPEECH_*` 和 `speech` Compose profile |
-| Automation | `AUTOMATION_ENABLED`、时区、调度和投递设置 |
-
-常用诊断：
+## 日常运维
 
 ```bash
 docker compose ps
 docker compose logs --tail 200 bot
-docker compose exec bot qq-ai-bot-cli model profiles
-docker compose exec bot qq-ai-bot-cli model routes
-docker compose exec bot qq-ai-bot-cli model stats
-docker compose exec bot qq-ai-bot-cli gateway doctor --provider snowluma
-docker compose exec bot qq-ai-bot-cli memory audit \
-  --database-url sqlite+aiosqlite:////app/data/qq_ai_bot.db
+docker compose pull
+docker compose up -d
 ```
 
-健康检查位于 Bot 容器内的 `http://127.0.0.1:8080/healthz`；Compose 通过该端点决定何时启动
-已选择的 QQ Gateway Provider。
-
-## 数据、安全与升级
-
-Yuki 使用 SQLite 保存事件、身份、关系、记忆、自动化、插件状态和运行配置。默认数据库为
-`data/qq_ai_bot.db`；NapCat 登录数据位于 `napcat-data/`，SnowLuma 登录和配置位于
-`snowluma-*` 持久目录。
-
-- 不要提交 `.env`、数据库、QQ 登录数据、语音模型或第三方密钥。
-- `LOG_MESSAGE_CONTENT=false` 时常规日志不记录消息正文；质量报告和记忆指标采用无正文设计。
-- `SUPERUSERS`、群准入、能力权限、插件审批和工具风险策略是不同层级，不应互相替代。
-- 升级前先备份 `data/` 与当前镜像。从 3.5.3 升到 3.6.0 必须走安装器快照与 `setup migrate-3-6`，见 [3.6.0 升级指南](docs/upgrade-3.6.0.md)。
-- 从 2.x 升级到 3.x 前必须阅读 [Memory V2 升级指南](docs/upgrade-memory-v2.md)。
-
-## 项目结构
-
-```text
-Yuki-QQbot/
-+-- src/qq_ai_bot/
-|   +-- application/     # application wiring and runtime modules
-|   +-- conversation/    # admission, autonomous scoring and turn coordination
-|   +-- memory/          # Memory V2, retrieval, mutation and workers
-|   +-- capabilities/    # unified capability catalog, FTS search and policy
-|   +-- plugins/         # built-in NoneBot entrypoints
-|   +-- plugin_host/     # Plugin API host runtime
-|   +-- automation/      # persistent schedules and execution
-|   +-- mcp/             # MCP client and gateway
-|   +-- web/             # controlled web access
-|   +-- vision/          # optional image understanding
-|   +-- emoji/           # persistent emoji system
-|   +-- speech/          # speech orchestration
-|   +-- persistence/     # SQLAlchemy models and repositories
-|   +-- admin/           # runtime configuration and audit
-|   +-- model_runtime/   # model profiles, routing and statistics
-|   +-- prompting/       # prompt compilation and budgets
-|   +-- services/        # shared application services
-|   +-- llm/             # provider-specific model adapters
-|   +-- domain/          # core domain contracts
-|   +-- adapters/        # external transport adapters
-|   +-- time/            # trusted time services
-|   +-- references/      # controlled reference handling
-|   +-- config.py        # environment configuration
-|   +-- container.py     # dependency composition root
-|   +-- main.py          # NoneBot / FastAPI entrypoint
-|   +-- cli.py           # administration CLI
-+-- src/yuki_plugin_sdk/ # standalone Plugin API 2.0 SDK
-+-- migrations/          # Alembic migrations
-+-- plugins/             # installed local plugins
-+-- services/            # isolated auxiliary workers
-+-- config/              # persona, model routes and contracts
-+-- docs/                # architecture and operations guides
-+-- tests/               # unit, integration and contract tests
-+-- docker-compose.yml
-+-- Dockerfile
-```
-
-## 开发与质量
+Provider 状态：
 
 ```bash
-uv sync --frozen --all-extras
-uv run ruff format --check .
-uv run ruff check .
+docker compose --profile napcat --profile snowluma ps --all
+docker compose exec bot qq-ai-bot-cli gateway doctor --provider napcat
+docker compose exec bot qq-ai-bot-cli gateway doctor --provider snowluma
+```
+
+`/healthz` 只返回公开瘦健康信息。连接明细、路由状态、完整 external ID、内容和管理健康必须经过
+Control Plane capability；secret 永远不可回读。
+
+## 开发验证
+
+```bash
+uv sync --extra dev
+uv run ruff format --check
+uv run ruff check
 uv run mypy src
 uv run pytest
 ```
 
-数据库与 Memory V2 发布门：
-
-```bash
-uv run alembic upgrade head
-uv run qq-ai-bot-cli memory quality run --suite full
-uv run qq-ai-bot-cli memory release-check
-```
-
-GitHub Actions 还会验证 Docker Compose、运行时镜像、隔离的 Genie-TTS Worker、Migration Matrix、
-示例插件合同和冻结的 Memory Quality baseline。
+涉及 schema 或发布时还要验证 fresh `0048 -> 0049`、populated `0048 -> 0049`、SQLite
+`foreign_key_check`、FTS/trigger、release smoke 和 Docker Compose 配置。
 
 ## 文档
 
-- [完整使用帮助](docs/help.md)
-- [3.8.0 发布说明（待发布）](docs/releases/v3.8.0.md)
-- [从 3.7.1 升级到 3.8.0](docs/upgrade-3.8.0.md)
-- [永久主体 Identity Cutover](docs/upgrade-identity-cutover.md)
-- [SnowLuma Provider 部署与切换](docs/deployment/snowluma.md)
-- [3.7.1 发布说明](docs/releases/v3.7.1.md)
-- [3.7.0 发布说明](docs/releases/v3.7.0.md)
-- [从 3.6.1 升级到 3.7.0](docs/upgrade-3.7.0.md)
-- [ConversationScope 与单检查点 Rollup 合同](docs/architecture/conversation-rollup.md)
-- [3.6.1 History Rollup 性能报告](docs/performance/3.6.1-history-rollup-report.md)
-- [3.6.0 运行时架构](docs/architecture/yuki-3.6.0-runtime.md)
-- [3.6.0 发布与升级说明](docs/releases/v3.6.0.md)
-- [从 3.5.3 升级到 3.6.0](docs/upgrade-3.6.0.md)
-- [3.6.0 Runtime 性能报告](docs/performance/3.6.0-runtime-report.md)
-- [3.5.3 发布与升级说明](docs/releases/v3.5.3.md)
-- [3.5.2 发布与升级说明](docs/releases/v3.5.2.md)
-- [Memory V2 架构](docs/architecture/memory-v2.md)
-- [记忆检索与混合 RAG](docs/architecture/memory-v2-retrieval.md)
-- [记忆冲突](docs/architecture/memory-v2-conflicts.md)
-- [记忆生命周期](docs/architecture/memory-v2-lifecycle.md)
-- [记忆变更接口](docs/architecture/memory-change.md)
-- [自适应记忆生命周期](docs/architecture/Yuki_Adaptive_Memory_Lifecycle_Implementation_Plan.md)
-- [Memory 质量与运维](docs/operations/memory-quality.md)
-- [版本化 Docker 发布](docs/operations/versioned-docker-release.md)
-- [受控历史重建](docs/architecture/memory-v2-rebuild.md)
-- [Tool Kernel](docs/architecture/tool-kernel.md)
-- [Plugin 开发](docs/plugin-development/index.md)
-- [MCP 文档](docs/mcp/architecture.md)
-- [表情系统](docs/emoji-system/architecture.md)
-- [语音系统](docs/speech/architecture.md)
-- [版本记录](CHANGELOG.md)
+- [使用与运维帮助](docs/help.md)
+- [3.8 canonical runtime](docs/architecture/canonical-runtime.md)
+- [Conversation Rollup](docs/architecture/conversation-rollup.md)
+- [Memory V2](docs/architecture/memory-v2.md)
+- [Memory 变更合同](docs/architecture/memory-change.md)
+- [Plugin API 2.0](docs/plugin-development/index.md)
+- [MCP 架构](docs/mcp/architecture.md)
+- [SnowLuma Provider](docs/deployment/snowluma.md)
+- [3.8 升级指南](docs/upgrade-3.8.0.md)
+- [3.8 发布说明](docs/releases/v3.8.0.md)
+- [版本化 Docker Release](docs/operations/versioned-docker-release.md)
+- [CHANGELOG](CHANGELOG.md)
 
-## 开源协议
+## License
 
-本项目基于 [MIT License](LICENSE) 开源。
+[MIT](LICENSE)

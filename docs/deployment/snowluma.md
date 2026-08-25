@@ -1,7 +1,6 @@
 # SnowLuma Provider 部署与切换
 
-> 本文对应 Yuki 3.8.0 待发布代码。`v3.8.0` Release 与镜像出现前，只用于源码构建或
-> 预发布环境验证，不代表 3.7.1 正式安装包已经包含 SnowLuma。
+本文对应 Yuki 3.8.0。SnowLuma 与 NapCat 是同层正式 QQ/OneBot v11 Provider。
 
 SnowLuma 与 NapCat 都是 Yuki 的正式 QQ/OneBot v11 Provider。它们只负责连接 QQ；Yuki 的
 Presence、Conversation、Memory 和路由保存在 Bot 自己的身份与数据层，不属于任何 Provider。
@@ -28,6 +27,25 @@ SnowLuma 启动后：
 doctor 只报告 Yuki 依赖的 OneBot v11 核心 action、反向 WebSocket 路径和静态能力合同，不发送
 消息、不调用 Provider 私有 API，也不读取 token、Cookie 或 QQ 登录数据。实际连接的 Provider、
 ConnectionGeneration 和能力会由运行时 Registry 投影给控制面。
+
+## noVNC 与 WebUI 监听地址
+
+默认值只允许本机访问：
+
+```dotenv
+SNOWLUMA_NOVNC_BIND_ADDRESS=127.0.0.1
+SNOWLUMA_WEBUI_BIND_ADDRESS=127.0.0.1
+```
+
+只有明确需要从远端访问时，才把对应变量设为 `0.0.0.0`。公网绑定前必须同时做到：
+
+- 为 noVNC 设置不可复用的强 `SNOWLUMA_VNC_PASSWORD`，并确认 SnowLuma WebUI 自身的访问认证。
+- 用主机防火墙或云安全组只允许可信源地址；不要对全网开放。
+- 优先通过 VPN 或带 TLS 与额外认证的反向代理访问，不通过明文公网传输登录操作。
+- 绝不暴露 VNC 原始端口、OneBot HTTP/WS、access token、Cookie 或 QQ 登录目录。
+
+修改 bind address 后重新创建 SnowLuma 容器，并从非可信网络验证端口确实不可达。Yuki 安装器
+不会替你配置云防火墙、TLS 或 SnowLuma 的账户认证。
 
 ## 安全切换同一个 QQ
 
@@ -68,7 +86,8 @@ SNOWLUMA_SHM_SIZE=2gb
 - 查看 Bot 日志：`docker compose logs --tail 200 bot`
 - 若 `data/setup/gateway-action.json` 仍存在，修复停止失败、端口或登录问题后重新运行安装器；
   不要手工删除文件并强行同时启动两个 Provider。
-- noVNC 与 WebUI 默认只绑定 `127.0.0.1`。不要把 VNC、OneBot HTTP/WS 或 WebUI 直接暴露到公网。
+- noVNC 与 WebUI 默认只绑定 `127.0.0.1`。若使用可配置 bind address 暴露远程访问，必须遵守
+  上述强密码、防火墙和可信来源边界；VNC 与 OneBot HTTP/WS 始终不得暴露。
 - `/app/data`、`/app/.config`、`/app/.local/share` 与额外账号 HOME 都是持久登录数据，不要提交
   Git，也不要在升级时删除。
 

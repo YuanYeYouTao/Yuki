@@ -1493,7 +1493,7 @@ docs/releases/v3.0.0.md
 - `docs/architecture/memory-v2-quality.md`
 - `docs/architecture/memory-v2-quality-metrics.md`
 - `docs/operations/memory-quality.md`
-- `docs/upgrade-memory-v2.md`
+- Memory V2 历史升级指南（已在 3.8 canonical-only 收口时移除）
 - Plugin 文档
 -管理命令文档
 -隐私说明

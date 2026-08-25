@@ -2,42 +2,40 @@
 
 ## Unreleased — 3.8.0
 
-- 修复 3.7.1 → 3.8.0 真实数据库升级时历史 `chat_events` 作者 shadow 未回填、导致
-  identity cutover 永久停在 `shadows_incomplete` 的问题；回填现在原子写入完整作者三元组并保持
-  二次 apply 零差异。
-- 修复全新进程直接启动 3.8.0 时 persistence 包根的 eager export 触发 identity/conversation ORM
-  循环导入的问题；兼容导出改为惰性解析，并增加独立解释器冷启动回归测试。
+### Canonical-only identity
 
-### Permanent Yuki / Identity V2
+- 一个数据库对应一个永久 Yuki；Person、IdentityBinding、Space、SpaceBinding、Presence 与
+  canonical Conversation 成为唯一运行身份模型。
+- 私聊按 Person、群聊按 Space 聚合；关系、Memory、偏好、自动化与插件状态不再绑定 Yuki QQ
+  或 Gateway Provider。
+- 删除 v1、dual-write、identity backfill/cutover、3.6 配置迁移与旧 carrier 运行路径。
+- NapCat 与 SnowLuma 同为正式 Provider；不同 QQ 可并存，同一 QQ 的第二条活动连接失败关闭。
 
-- 一个数据库成为永久 Yuki 主体；Person、IdentityBinding、Space、SpaceBinding、Presence 与
-  canonical Conversation 把人格、记忆、关系和会话从 QQ 号及网关连接中解耦。
-- Alembic `0043`–`0048` 增加 canonical identity shadow、确定性路由、事件作者/provenance、
-  回填与原子 cutover。3.7.1 升级必须停机执行 backfill 和 plan/apply。
-- 自动化、插件、Memory、Config、Emoji、Speech 与 MCP 补齐 canonical owner；旧事件不会因
-  cutover 重新进入 Memory worker。
+### Database
 
-### Control Plane / Multi-Presence
+- Alembic `0048` 重置为无父 revision 的冻结 canonical baseline，fresh database 直接创建最终
+  canonical schema。
+- `0049` 只桥接已经完成 canonical v2 的历史 0048；v1、conflict、processing lease、ownership
+  缺口或 schema manifest 不匹配均失败关闭。
+- `0049` 原子删除 legacy carrier 和迁移状态，不提供 downgrade；回退只能恢复同一时点
+  DB/WAL/SHM 快照。
 
-- 新增 transport-neutral Principal、Capability、Query/Command、Cursor Page、审计、幂等回执和
-  OperationRef，可供未来 WebUI 复用；本版不新增管理 HTTP API 或前端。
-- 同一 Person 的多个 Binding 共享私聊 Conversation；多个 Yuki Presence 可以同时在线。
-- Person 主动路由、Space ingest 路由和 Space 主动路由各自确定；RouteGeneration、
-  ConnectionGeneration 与 ConversationGeneration 相互隔离。
+### Conversation / Memory fixes
 
-### QQ Gateway Providers
+- OneBot `original_message` 成为正文、附件和 mention 顺序的唯一来源；单/多/重复 @、引用、
+  mention-only 与历史 segments 共享 MentionProjection，修复 Issue #50。
+- PERSON、PERSON_GROUP、GROUP 的 `memory_change` 忽略合法但无意义的 SELF visibility hint，
+  不再产生 `visibility_only_valid_for_self_memory`；SELF 安全规则保持不变。
+- canonical Conversation、Rollup、Memory partition、Relationship 与 forget 行为不再经过
+  runtime epoch 或旧 ORM 分支。
 
-- NapCat 降为正式 Provider，并新增同层 SnowLuma Provider；运行时 Provider 归属由反向
-  WebSocket Adapter 入口确定，不依赖 `.env` 中可选的 NapCat 登录账号提示。
-- 不同 QQ 可分别通过 NapCat、SnowLuma 并存；同一 QQ 的第二条活动连接失败关闭。
-- Compose profiles、SnowLuma 配置渲染、持久目录、localhost-only noVNC/WebUI 和可重试
-  stop-old-before-start-new 安装动作进入发布包。
+### Control Plane / Provider / release
 
-### Prompt / Responses
-
-- 首轮工具与 native web 形状固定，消息 origin 不再分裂公共 Prompt 前缀。
-- 自主群聊准入后可以使用与显式 @ 相同的受控写能力。
-- Responses 请求省略 `temperature`；关闭思考时显式发送 `none` effort。
+- transport-neutral Control Plane 继续作为未来 WebUI 的唯一业务后端边界；本版不增加管理
+  HTTP API、登录或前端。
+- SnowLuma noVNC/WebUI bind address 可配置且默认 `127.0.0.1`；公网绑定必须由部署方提供强密码、
+  防火墙和可信来源限制。
+- 安装器默认版本改为 3.8.0；README、升级、Provider、架构与 Release 文档收口到 head 0049。
 
 ## 3.7.1 - 2026-08-21
 
@@ -73,13 +71,13 @@
 ### Conversation History
 
 - 近窗左沿只认落库 `coverage_end`，超预算时同步 extractive，不再按高低水位从尾巴滑动重切。
-  合同见 [conversation-rollup.md](docs/architecture/conversation-rollup.md)；实施见
-  [3.6.2 任务书](docs/architecture/Yuki-3.6.2-Frozen-History-Tail-Taskbook.md)。
+  历史合同见 [conversation-rollup.md](docs/architecture/conversation-rollup.md)；施工任务书已在
+  3.8 canonical-only 收口时移除。
 - 热尾改为条数帽与渲染字符帽的交集；短消息不再把整段未覆盖原文护住。
 - 有覆盖后仍可继续切 extractive。`raw_history_window_shifted` 仅在本 turn `coverage_end` 前进时为真。
 - 默认热尾 `32` 条 / `1600` 渲染字符，近窗预算比 `0.40`；同一 assemble 最多同步 extractive `3` 刀。
   这些键可运营，不写死在运行时分类器里。
-- 无需新 Alembic。升级见 [3.6.2 升级指南](docs/upgrade-3.6.2.md)。不在本版本改 `__init__.py` 版本号。
+- 无需新 Alembic。当时的独立升级指南已在 3.8 canonical-only 收口时移除。
 
 ## 3.6.1 - 2026-08-19
 
@@ -100,10 +98,8 @@
 
 ### 升级与观测
 
-- 从 3.6.0 升级见 [3.6.1 升级指南](docs/upgrade-3.6.1.md) 与
-  [发布说明](docs/releases/v3.6.1.md)。
-- 本地测量见 [3.6.1 History Rollup 性能报告](docs/performance/3.6.1-history-rollup-report.md)。
-  真实 Provider 的 `prompt_tokens - cached_tokens` 与 Flash 事实召回尚未测量，不外推。
+- 历史行为见 [3.6.1 发布说明](docs/releases/v3.6.1.md)。独立升级指南和施工期性能报告已在
+  3.8 canonical-only 收口时移除；未实测数据不外推。
 
 ## 3.6.0 - 2026-08-18
 
@@ -119,10 +115,8 @@
 
 ### 升级与观测
 
-- 从 3.5.3 升级见 [3.6.0 升级指南](docs/upgrade-3.6.0.md) 与
-  [发布说明](docs/releases/v3.6.0.md)。
-- 本地 Runtime 测量见 [3.6.0 性能报告](docs/performance/3.6.0-runtime-report.md)。
-  端到端成对回放门槛尚未认证。
+- 历史行为见 [3.6.0 发布说明](docs/releases/v3.6.0.md)。独立升级指南和施工期性能报告已在
+  3.8 canonical-only 收口时移除。
 
 ## 3.5.3 - 2026-08-16
 
