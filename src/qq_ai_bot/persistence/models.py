@@ -1588,6 +1588,8 @@ class RuntimeConfigOverrideModel(Base):
             "scope_id",
             "config_key",
         ),
+        Index("ix_runtime_config_overrides_canonical_person_id", "canonical_person_id"),
+        Index("ix_runtime_config_overrides_canonical_space_id", "canonical_space_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -1601,6 +1603,16 @@ class RuntimeConfigOverrideModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    canonical_person_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    canonical_space_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("spaces.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
 
 class AdminOperationEventModel(Base):
@@ -1661,6 +1673,7 @@ class WebSearchRunModel(Base):
             "conversation_key",
             "trigger_message_id",
         ),
+        Index("ix_web_search_runs_canonical_conversation_id", "canonical_conversation_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -1670,6 +1683,11 @@ class WebSearchRunModel(Base):
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     partial_failure: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    canonical_conversation_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("canonical_conversations.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
     sources: Mapped[list[WebSearchSourceModel]] = relationship(
         back_populates="run",
@@ -1738,6 +1756,10 @@ class AutomationModel(Base):
         Index("ix_automations_status_next", "status", "next_run_at"),
         Index("ix_automations_creator_updated", "creator_user_id", "updated_at"),
         Index("ix_automations_claim", "claimed_until", "claimed_by"),
+        Index("ix_automations_canonical_creator_person_id", "canonical_creator_person_id"),
+        Index("ix_automations_canonical_target_person_id", "canonical_target_person_id"),
+        Index("ix_automations_canonical_target_space_id", "canonical_target_space_id"),
+        Index("ix_automations_canonical_presence_id", "canonical_presence_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -1764,6 +1786,26 @@ class AutomationModel(Base):
     claimed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    canonical_creator_person_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    canonical_target_person_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    canonical_target_space_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("spaces.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    canonical_presence_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("presences.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
     creator: Mapped[PersonModel] = relationship(back_populates="automations")
     versions: Mapped[list[AutomationVersionModel]] = relationship(
@@ -1933,6 +1975,7 @@ class ToolInvocationModel(Base):
         CheckConstraint("result_size >= 0", name="ck_tool_invocations_result_size"),
         Index("ix_tool_invocations_provider_created", "provider_id", "created_at"),
         Index("ix_tool_invocations_runtime_turn", "runtime_turn_id"),
+        Index("ix_tool_invocations_canonical_conversation_id", "canonical_conversation_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -1947,6 +1990,11 @@ class ToolInvocationModel(Base):
     artifact_created: Mapped[bool] = mapped_column(Boolean, nullable=False)
     error_category: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    canonical_conversation_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("canonical_conversations.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
 
 class RuntimeTurnObservationModel(Base):
@@ -1969,6 +2017,12 @@ class RuntimeTurnObservationModel(Base):
             "origin",
             "created_at",
         ),
+        Index(
+            "ix_runtime_turn_observations_canonical_conversation_id",
+            "canonical_conversation_id",
+        ),
+        Index("ix_runtime_turn_observations_canonical_person_id", "canonical_person_id"),
+        Index("ix_runtime_turn_observations_canonical_space_id", "canonical_space_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -1983,6 +2037,21 @@ class RuntimeTurnObservationModel(Base):
     total_latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    canonical_conversation_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("canonical_conversations.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    canonical_person_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    canonical_space_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("spaces.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
 
 # Source-compatibility aliases for integrations that only inspect the old profile types.

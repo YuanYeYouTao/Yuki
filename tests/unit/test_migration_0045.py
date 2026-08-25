@@ -454,7 +454,7 @@ def test_fresh_upgrade_head_creates_c4_shadows(
     path = tmp_path / "fresh-head.db"
     _upgrade(path, monkeypatch, "head")
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0046",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0047",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         tables = _tables(connection)
         assert set(CANONICAL_EVENT_TABLES) <= tables
@@ -584,7 +584,7 @@ def test_orm_metadata_matches_0045_c4_schema(
 def test_alembic_heads_is_exactly_0045() -> None:
     config = Config("alembic.ini")
     heads = ScriptDirectory.from_config(config).get_heads()
-    assert heads == ["0046"]
+    assert heads == ["0047"]
 
 
 def test_0045_is_self_contained_alembic() -> None:

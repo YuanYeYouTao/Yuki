@@ -298,7 +298,7 @@ def test_fresh_upgrade_head_creates_only_inventory_columns(
     path = tmp_path / "fresh-head.db"
     _upgrade(path, monkeypatch, "head")
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0046",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0047",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         for table, columns in C5_OWNERSHIP_COLUMNS.items():
             assert set(columns) <= set(_column_names(connection, table))
@@ -341,7 +341,7 @@ def test_empty_fresh_and_0045_to_0046_schemas_are_equivalent(
 ) -> None:
     fresh = tmp_path / "fresh.db"
     upgraded = tmp_path / "from-0045.db"
-    _upgrade(fresh, monkeypatch, "head")
+    _upgrade(fresh, monkeypatch, "0046")
     _upgrade(upgraded, monkeypatch, "0045")
     before = _schema_dump(upgraded)
     _upgrade(upgraded, monkeypatch, "0046")
@@ -413,7 +413,7 @@ def test_c5_metadata_hook_skips_non_sqlite_dialect() -> None:
 def test_alembic_heads_is_exactly_0046() -> None:
     config = Config("alembic.ini")
     heads = ScriptDirectory.from_config(config).get_heads()
-    assert heads == ["0046"]
+    assert heads == ["0047"]
 
 
 def test_0046_is_self_contained_alembic() -> None:
@@ -439,9 +439,19 @@ def test_0046_is_self_contained_alembic() -> None:
         "alembic",
     }
     loaded = SourceFileLoader("revision_0046", str(_MIGRATION_PATH)).load_module()
-    assert loaded._C5_TRIGGER_SQL == C5_TRIGGER_SQL
     assert loaded._C5_TRIGGER_NAMES == C5_TRIGGER_NAMES
     assert loaded._OWNERSHIP_INDEXES == C5_OWNERSHIP_INDEXES
+    legacy_alias = next(
+        item
+        for item in loaded._C5_TRIGGER_SQL
+        if "trg_person_aliases_ownership_shadow_update" in item
+    )
+    current_alias = next(
+        item for item in C5_TRIGGER_SQL if "trg_person_aliases_ownership_shadow_update" in item
+    )
+    assert "UPDATE OF canonical_person_id, canonical_space_id ON person_aliases" in legacy_alias
+    assert "group_scope" not in legacy_alias.split("BEGIN", 1)[0]
+    assert "group_scope" in current_alias.split("BEGIN", 1)[0]
 
 
 def test_0005_lists_c5_people_group_shadows() -> None:
@@ -470,7 +480,7 @@ def test_populated_downgrade_0046_to_0045_preserves_legacy_rows(
     expected = tmp_path / "expected-0045.db"
     path = tmp_path / "populated-downgrade.db"
     _upgrade(expected, monkeypatch, "0045")
-    _upgrade(path, monkeypatch, "head")
+    _upgrade(path, monkeypatch, "0046")
     now = "2026-08-24T00:00:00+00:00"
     with _connect(path) as connection:
         ids = _seed_identity(connection, now)

@@ -94,6 +94,7 @@ class SpeechGenerationModel(Base):
         Index("ix_speech_generations_cache_key", "cache_key"),
         Index("ix_speech_generations_status_created", "status", "created_at"),
         Index("ix_speech_generations_expires", "expires_at"),
+        Index("ix_speech_generations_canonical_conversation_id", "canonical_conversation_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -123,6 +124,11 @@ class SpeechGenerationModel(Base):
     error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    canonical_conversation_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("canonical_conversations.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
 
 class PersonSpeechPreferenceModel(Base):

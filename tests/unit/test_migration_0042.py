@@ -107,7 +107,7 @@ def test_0042_fresh_upgrade_head_uses_fk_enforced_cutover(
     command.upgrade(config, "head")
 
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0046",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0047",)
         tables = _tables(connection)
         assert _NEW_TABLES <= tables
         assert not (_OLD_ROLLUP_TABLES & tables)

@@ -4,7 +4,16 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, Index, Integer, String
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from qq_ai_bot.persistence.models import Base
@@ -19,6 +28,7 @@ class ModelInvocationModel(Base):
         Index("ix_model_invocations_task_created", "task", "created_at"),
         Index("ix_model_invocations_profile_created", "profile_id", "created_at"),
         Index("ix_model_invocations_runtime_turn", "runtime_turn_id"),
+        Index("ix_model_invocations_canonical_conversation_id", "canonical_conversation_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -36,3 +46,8 @@ class ModelInvocationModel(Base):
     latency_seconds: Mapped[float] = mapped_column(Float, nullable=False)
     error_category: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    canonical_conversation_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("canonical_conversations.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )

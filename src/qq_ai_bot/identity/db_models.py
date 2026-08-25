@@ -24,6 +24,12 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.schema import MetaData, Table
 
+from qq_ai_bot.identity.canonical_extension_schema import (
+    C6_OWNERSHIP_COLUMNS,
+    C6_OWNERSHIP_TABLES,
+    C6_TRIGGER_NAMES,
+    C6_TRIGGER_SQL,
+)
 from qq_ai_bot.identity.canonical_ownership_schema import (
     C5_OWNERSHIP_COLUMNS,
     C5_OWNERSHIP_TABLES,
@@ -454,6 +460,26 @@ def _c5_hosts_and_parents_ready(connection: Connection) -> bool:
     return True
 
 
+def _sqlite_user_trigger_names(connection: Connection) -> set[str]:
+    rows = connection.execute(
+        text("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name NOT LIKE 'sqlite_%'")
+    )
+    return {str(row[0]) for row in rows}
+
+
+def _install_missing_triggers(
+    connection: Connection,
+    names: tuple[str, ...],
+    statements: tuple[str, ...],
+) -> None:
+    existing = _sqlite_user_trigger_names(connection)
+    if set(names) <= existing:
+        return
+    for name, statement in zip(names, statements, strict=True):
+        if name not in existing:
+            connection.execute(text(statement))
+
+
 def _install_c5_triggers_if_ready(connection: Connection) -> None:
     """Install ownership-shadow guards once every C5 host and parent exists."""
 
@@ -461,14 +487,7 @@ def _install_c5_triggers_if_ready(connection: Connection) -> None:
         return
     if not _c5_hosts_and_parents_ready(connection):
         return
-    installed = connection.execute(
-        text("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = :name"),
-        {"name": C5_TRIGGER_NAMES[0]},
-    ).scalar()
-    if installed is not None:
-        return
-    for statement in C5_TRIGGER_SQL:
-        connection.execute(text(statement))
+    _install_missing_triggers(connection, C5_TRIGGER_NAMES, C5_TRIGGER_SQL)
 
 
 @event.listens_for(Base.metadata, "after_create")
@@ -484,3 +503,54 @@ def _install_c5_triggers_after_metadata_create(
     if not _is_sqlite_connection(connection):
         return
     _install_c5_triggers_if_ready(connection)
+
+
+_C6_PARENT_TABLES: tuple[str, ...] = (
+    "persons",
+    "spaces",
+    "presences",
+    "canonical_conversations",
+)
+
+
+def _c6_hosts_and_parents_ready(connection: Connection) -> bool:
+    required = (*C6_OWNERSHIP_TABLES, *_C6_PARENT_TABLES)
+    present = connection.execute(
+        text(
+            "SELECT COUNT(*) FROM sqlite_master "
+            "WHERE type = 'table' AND name IN "
+            f"({', '.join(repr(name) for name in required)})"
+        )
+    ).scalar()
+    if int(present or 0) != len(required):
+        return False
+    for table, columns in C6_OWNERSHIP_COLUMNS.items():
+        info = {str(row[1]) for row in connection.execute(text(f'PRAGMA table_info("{table}")'))}
+        if not set(columns) <= info:
+            return False
+    return True
+
+
+def _install_c6_triggers_if_ready(connection: Connection) -> None:
+    """Install extension-shadow guards once every C6 host and parent exists."""
+
+    if not _is_sqlite_connection(connection):
+        return
+    if not _c6_hosts_and_parents_ready(connection):
+        return
+    _install_missing_triggers(connection, C6_TRIGGER_NAMES, C6_TRIGGER_SQL)
+
+
+@event.listens_for(Base.metadata, "after_create")
+def _install_c6_triggers_after_metadata_create(
+    target: MetaData,
+    connection: Connection,
+    **_kwargs: object,
+) -> None:
+    """Install C6 triggers after create_all, independent of table order."""
+
+    if target is not Base.metadata:
+        return
+    if not _is_sqlite_connection(connection):
+        return
+    _install_c6_triggers_if_ready(connection)

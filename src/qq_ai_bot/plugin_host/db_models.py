@@ -83,6 +83,8 @@ class PluginConfigValueModel(Base):
             "scope_type",
             "scope_id",
         ),
+        Index("ix_plugin_config_values_canonical_person_id", "canonical_person_id"),
+        Index("ix_plugin_config_values_canonical_space_id", "canonical_space_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -95,6 +97,16 @@ class PluginConfigValueModel(Base):
     value_json: Mapped[str] = mapped_column(Text, nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    canonical_person_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    canonical_space_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("spaces.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
 
 class PluginStateModel(Base):
@@ -107,6 +119,7 @@ class PluginStateModel(Base):
         Index("ix_plugin_state_plugin_namespace", "plugin_id", "namespace"),
         Index("ix_plugin_state_expires", "expires_at"),
         Index("ix_plugin_state_subject", "subject_user_id"),
+        Index("ix_plugin_state_canonical_person_id", "canonical_person_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -122,6 +135,11 @@ class PluginStateModel(Base):
     )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    canonical_person_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
 
 class PluginAuditEventModel(Base):
@@ -189,6 +207,8 @@ class PluginAgentSessionModel(Base):
             "last_active_at",
         ),
         Index("ix_plugin_agent_sessions_expires", "expires_at"),
+        Index("ix_plugin_agent_sessions_canonical_owner_person_id", "canonical_owner_person_id"),
+        Index("ix_plugin_agent_sessions_canonical_space_id", "canonical_space_id"),
     )
 
     session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -213,6 +233,16 @@ class PluginAgentSessionModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_active_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    canonical_owner_person_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    canonical_space_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("spaces.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
 
 class PluginAgentMessageModel(Base):
@@ -230,6 +260,7 @@ class PluginAgentMessageModel(Base):
         CheckConstraint("sequence >= 1", name="ck_plugin_agent_messages_sequence"),
         Index("ix_plugin_agent_messages_session_created", "session_id", "created_at"),
         Index("ix_plugin_agent_messages_sender", "sender_user_id"),
+        Index("ix_plugin_agent_messages_canonical_sender_person_id", "canonical_sender_person_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -244,6 +275,11 @@ class PluginAgentMessageModel(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    canonical_sender_person_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
 
 class PluginBackgroundTargetGrantModel(Base):
@@ -259,6 +295,19 @@ class PluginBackgroundTargetGrantModel(Base):
             name="ck_plugin_background_target_type",
         ),
         Index("ix_plugin_background_target_enabled", "plugin_id", "enabled"),
+        Index(
+            "ix_plugin_background_target_grants_canonical_target_person_id",
+            "canonical_target_person_id",
+        ),
+        Index(
+            "ix_plugin_background_target_grants_canonical_target_space_id",
+            "canonical_target_space_id",
+        ),
+        Index(
+            "ix_plugin_background_target_grants_canonical_created_by_person_id",
+            "canonical_created_by_person_id",
+        ),
+        Index("ix_plugin_background_target_grants_canonical_presence_id", "canonical_presence_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -274,6 +323,26 @@ class PluginBackgroundTargetGrantModel(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    canonical_target_person_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    canonical_target_space_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("spaces.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    canonical_created_by_person_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    canonical_presence_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("presences.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
 
 class PluginMediaArtifactModel(Base):
@@ -321,6 +390,19 @@ class PluginNotificationOutboxModel(Base):
         Index("ix_plugin_notification_outbox_due", "status", "next_attempt_at"),
         Index("ix_plugin_notification_outbox_plugin", "plugin_id", "status"),
         Index("ix_plugin_notification_outbox_source", "source_event_id"),
+        Index(
+            "ix_plugin_notification_outbox_canonical_target_person_id",
+            "canonical_target_person_id",
+        ),
+        Index(
+            "ix_plugin_notification_outbox_canonical_target_space_id",
+            "canonical_target_space_id",
+        ),
+        Index(
+            "ix_plugin_notification_outbox_canonical_conversation_id",
+            "canonical_conversation_id",
+        ),
+        Index("ix_plugin_notification_outbox_canonical_presence_id", "canonical_presence_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -350,6 +432,26 @@ class PluginNotificationOutboxModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    canonical_target_person_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    canonical_target_space_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("spaces.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    canonical_conversation_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("canonical_conversations.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    canonical_presence_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("presences.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
 
 class PluginBackgroundTurnJobModel(Base):
@@ -369,6 +471,19 @@ class PluginBackgroundTurnJobModel(Base):
         CheckConstraint("attempts >= 0 AND max_attempts >= 1", name="ck_plugin_turn_attempts"),
         Index("ix_plugin_background_turn_due", "status", "next_attempt_at"),
         Index("ix_plugin_background_turn_plugin", "plugin_id", "status"),
+        Index(
+            "ix_plugin_background_turn_jobs_canonical_target_person_id",
+            "canonical_target_person_id",
+        ),
+        Index(
+            "ix_plugin_background_turn_jobs_canonical_target_space_id",
+            "canonical_target_space_id",
+        ),
+        Index(
+            "ix_plugin_background_turn_jobs_canonical_conversation_id",
+            "canonical_conversation_id",
+        ),
+        Index("ix_plugin_background_turn_jobs_canonical_presence_id", "canonical_presence_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -394,3 +509,23 @@ class PluginBackgroundTurnJobModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    canonical_target_person_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    canonical_target_space_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("spaces.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    canonical_conversation_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("canonical_conversations.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    canonical_presence_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("presences.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )

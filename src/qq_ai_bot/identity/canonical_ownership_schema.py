@@ -290,6 +290,12 @@ def _memory_facts_shadow_valid_sql() -> str:
     )
 
 
+_C5_SHAPE_DISCRIMINATORS: dict[str, tuple[str, ...]] = {
+    "person_aliases": ("group_scope",),
+    "memory_facts": ("scope_type", "visibility_type"),
+}
+
+
 def _trigger_pair(
     table: str,
     columns: tuple[str, ...],
@@ -332,7 +338,8 @@ def _c5_trigger_sql() -> tuple[str, ...]:
         else:
             valid = _uuid4_columns_valid_sql(columns)
             message = f"invalid {table} ownership shadow"
-        statements.extend(_trigger_pair(table, columns, valid, message))
+        watch = (*columns, *_C5_SHAPE_DISCRIMINATORS.get(table, ()))
+        statements.extend(_trigger_pair(table, watch, valid, message))
     return tuple(statements)
 
 

@@ -41,6 +41,8 @@ class EmojiAssetModel(Base):
         Index("ix_emoji_assets_status_updated", "status", "updated_at"),
         Index("ix_emoji_assets_last_seen", "last_seen_at"),
         Index("ix_emoji_assets_perceptual_hash", "perceptual_hash"),
+        Index("ix_emoji_assets_canonical_first_seen_person_id", "canonical_first_seen_person_id"),
+        Index("ix_emoji_assets_canonical_first_seen_space_id", "canonical_first_seen_space_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -84,6 +86,16 @@ class EmojiAssetModel(Base):
     missing_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    canonical_first_seen_person_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    canonical_first_seen_space_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("spaces.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
 
 class EmojiScopeStateModel(Base):
@@ -98,6 +110,7 @@ class EmojiScopeStateModel(Base):
         ),
         CheckConstraint("weight >= 0", name="ck_emoji_scope_weight"),
         Index("ix_emoji_scope_lookup", "scope_type", "scope_id", "enabled"),
+        Index("ix_emoji_scope_states_canonical_space_id", "canonical_space_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -110,6 +123,11 @@ class EmojiScopeStateModel(Base):
     weight: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     adopted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    canonical_space_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("spaces.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
 
 class EmojiJobModel(Base):
@@ -154,6 +172,8 @@ class EmojiUsageEventModel(Base):
     __table_args__ = (
         Index("ix_emoji_usage_asset_created", "emoji_id", "created_at"),
         Index("ix_emoji_usage_scope_created", "group_id", "created_at"),
+        Index("ix_emoji_usage_events_canonical_actor_person_id", "canonical_actor_person_id"),
+        Index("ix_emoji_usage_events_canonical_space_id", "canonical_space_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -165,3 +185,13 @@ class EmojiUsageEventModel(Base):
     trigger_message_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     source: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    canonical_actor_person_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    canonical_space_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("spaces.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
