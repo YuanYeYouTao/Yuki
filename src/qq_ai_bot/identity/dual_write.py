@@ -8,7 +8,7 @@ like C7 backfill. Unique races use a SAVEPOINT, then re-read.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal, cast
 from uuid import uuid4
 
@@ -16,6 +16,12 @@ from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.conversation.canonical_db_models import (
+    CanonicalConversationModel,
+    ConversationLegacyAliasModel,
+    PersonActiveRouteModel,
+)
+from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
 from qq_ai_bot.identity.backfill_types import AccountEvidence
 from qq_ai_bot.identity.canonical_extension_schema import C6_EXTENSION_INVENTORY
 from qq_ai_bot.identity.canonical_ownership_schema import C5_OWNERSHIP_INVENTORY
@@ -30,6 +36,10 @@ from qq_ai_bot.identity.db_models import (
 )
 from qq_ai_bot.identity.errors import IdentityDualWriteError
 from qq_ai_bot.identity.inventory import IDENTITY_PLATFORM
+from qq_ai_bot.identity.runtime import (
+    identity_runtime_is_complete_v2,
+    require_identity_runtime,
+)
 from qq_ai_bot.identity.sanitize import normalize_external_id
 from qq_ai_bot.identity.write_settings import identity_write_settings
 from qq_ai_bot.persistence.models import (
@@ -290,6 +300,53 @@ async def _create_space_binding(
         return existing
 
 
+async def ensure_canonical_person_preconfig(
+    session: AsyncSession,
+    user_id: str,
+    *,
+    now: datetime,
+) -> str:
+    """Create Person+Binding for Settings preconfig. Never inserts a people row."""
+
+    await require_identity_runtime(session, allowed=frozenset({"v1", "v2"}))
+    external_id = _external_id(user_id)
+    binding = await _binding_for(session, external_id)
+    if binding is not None:
+        return binding.person_id
+    created = await _create_person_binding(
+        session,
+        external_id=external_id,
+        display_name="",
+        now=now,
+    )
+    return created.person_id
+
+
+async def ensure_canonical_space_preconfig(
+    session: AsyncSession,
+    group_id: str,
+    *,
+    now: datetime,
+) -> str:
+    """Create Space+Binding for Settings preconfig. Never inserts a groups row."""
+
+    await require_identity_runtime(session, allowed=frozenset({"v1", "v2"}))
+    external_id = _external_id(group_id)
+    binding = await _space_binding_for(session, external_id)
+    if binding is not None:
+        return binding.space_id
+    created = await _create_space_binding(
+        session,
+        group_id=external_id,
+        name="",
+        enabled=True,
+        autonomous_enabled=True,
+        require_mention=True,
+        now=now,
+    )
+    return created.space_id
+
+
 async def sync_account(
     session: AsyncSession,
     user_id: str,
@@ -366,6 +423,15 @@ async def sync_presence(
     )
     if presence_id is None:
         raise IdentityDualWriteError("canonical_kind_mismatch")
+    from qq_ai_bot.gateway.registry import process_registry
+
+    registry = process_registry()
+    if registry is not None:
+        registry.bind_presence(
+            platform=IDENTITY_PLATFORM,
+            external_account_id=_external_id(bot_user_id),
+            presence_id=presence_id,
+        )
     return presence_id
 
 
@@ -413,6 +479,131 @@ def _shadow_conflict(current: str | None, proven: str | None) -> None:
     raise IdentityDualWriteError("canonical_owner_mismatch")
 
 
+async def sync_person_enabled(session: AsyncSession, user_id: str, enabled: bool) -> None:
+    await require_identity_runtime(session, allowed=frozenset({"v1", "v2"}))
+    people = await session.get(PersonModel, _external_id(user_id))
+    person_id = people.canonical_person_id if people is not None else None
+    if person_id is None:
+        binding = await _binding_for(session, _external_id(user_id))
+        person_id = None if binding is None else binding.person_id
+    if person_id is None:
+        return
+    person = await session.get(CanonicalPersonModel, person_id)
+    if person is None:
+        return
+    person.enabled = enabled
+    person.updated_at = datetime.now(UTC)
+    person.revision = int(person.revision) + 1
+
+
+async def sync_space_flags(
+    session: AsyncSession,
+    group_id: str,
+    *,
+    enabled: bool | None = None,
+    autonomous_enabled: bool | None = None,
+    require_mention: bool | None = None,
+) -> None:
+    await require_identity_runtime(session, allowed=frozenset({"v1", "v2"}))
+    group = await session.get(GroupModel, _external_id(group_id))
+    space_id = group.canonical_space_id if group is not None else None
+    if space_id is None:
+        binding = await _space_binding_for(session, _external_id(group_id))
+        space_id = None if binding is None else binding.space_id
+    if space_id is None:
+        return
+    space = await session.get(CanonicalSpaceModel, space_id)
+    if space is None:
+        return
+    if enabled is not None:
+        space.enabled = enabled
+    if autonomous_enabled is not None:
+        space.autonomous_enabled = autonomous_enabled
+    if require_mention is not None:
+        space.require_mention = require_mention
+    space.updated_at = datetime.now(UTC)
+    space.revision = int(space.revision) + 1
+
+
+async def ensure_runtime_people_row(
+    session: AsyncSession,
+    user_id: str,
+    *,
+    nickname: str = "",
+    is_bot: bool = False,
+    now: datetime | None = None,
+) -> PersonModel:
+    """Insert the legacy people carrier on complete v2. Does not call require_v1."""
+
+    await require_identity_runtime(session, allowed=frozenset({"v2"}))
+    timestamp = now or datetime.now(UTC)
+    external_id = _external_id(user_id)
+    person = await session.get(PersonModel, external_id)
+    if person is None:
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+        await session.execute(
+            sqlite_insert(PersonModel)
+            .values(
+                user_id=external_id,
+                nickname=nickname[:128],
+                enabled=True,
+                is_bot=is_bot,
+                first_seen_at=timestamp,
+                last_seen_at=timestamp,
+            )
+            .on_conflict_do_nothing(index_elements=["user_id"])
+        )
+        person = await session.get(PersonModel, external_id)
+        if person is None:
+            raise IdentityDualWriteError("unclassified")
+    if nickname:
+        person.nickname = nickname[:128]
+    person.is_bot = person.is_bot or is_bot
+    person.last_seen_at = timestamp
+    binding = await _binding_for(session, external_id)
+    if binding is not None and person.canonical_person_id is None:
+        person.canonical_person_id = binding.person_id
+    return person
+
+
+async def ensure_runtime_group_row(
+    session: AsyncSession,
+    group_id: str,
+    *,
+    name: str = "",
+    now: datetime | None = None,
+) -> GroupModel:
+    await require_identity_runtime(session, allowed=frozenset({"v2"}))
+    timestamp = now or datetime.now(UTC)
+    external_id = _external_id(group_id)
+    group = await session.get(GroupModel, external_id)
+    if group is None:
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+        await session.execute(
+            sqlite_insert(GroupModel)
+            .values(
+                group_id=external_id,
+                name=name[:128],
+                enabled=True,
+                require_mention=True,
+                autonomous_enabled=True,
+                first_seen_at=timestamp,
+                last_seen_at=timestamp,
+                updated_at=timestamp,
+            )
+            .on_conflict_do_nothing(index_elements=["group_id"])
+        )
+        group = await session.get(GroupModel, external_id)
+        if group is None:
+            raise IdentityDualWriteError("unclassified")
+    binding = await _space_binding_for(session, external_id)
+    if binding is not None and group.canonical_space_id is None:
+        group.canonical_space_id = binding.space_id
+    return group
+
+
 async def fill_membership_shadows(
     session: AsyncSession,
     user_id: str,
@@ -420,7 +611,7 @@ async def fill_membership_shadows(
 ) -> None:
     """Fill C5 membership shadows when this write proves both owners."""
 
-    await require_v1_runtime(session)
+    await require_identity_runtime(session, allowed=frozenset({"v1", "v2"}))
     membership = await session.get(MembershipModel, {"user_id": user_id, "group_id": group_id})
     if membership is None:
         return
@@ -474,8 +665,15 @@ async def apply_event_identity_shadows(
     *,
     sender_is_bot: bool,
 ) -> None:
-    """Fill v1 event identity shadows. Conversation/event/receipt stay NULL."""
+    """Fill event identity shadows. Conversation/event/receipt stay NULL.
 
+    v1 still reads people. Complete v2 uses only existing Presence/Binding.
+    Incomplete or missing runtime still fail-closes via require_v1_runtime.
+    """
+
+    if await identity_runtime_is_complete_v2(session):
+        await _fill_v2_event_identity_shadows(session, event, sender_is_bot=sender_is_bot)
+        return
     await require_v1_runtime(session)
     trip("before_event_shadow")
     sender_id = _external_id(event.sender_user_id)
@@ -517,6 +715,54 @@ async def apply_event_identity_shadows(
     event.author_presence_id = None
 
 
+async def _fill_v2_event_identity_shadows(
+    session: AsyncSession,
+    event: ChatEventModel,
+    *,
+    sender_is_bot: bool,
+) -> None:
+    """Canonical-only author fill. Never reads or writes people/groups."""
+
+    trip("before_event_shadow")
+    sender_id = _external_id(event.sender_user_id)
+    bot_id = _external_id(event.bot_user_id)
+    settings = identity_write_settings()
+    ingress = await _presence_for(session, bot_id)
+    event.canonical_event_id = None
+    event.canonical_conversation_id = None
+    event.utterance_fingerprint = None
+    event.suppression_status = None
+    event.ingress_provider = None
+    event.ingress_gateway_instance_id = None
+    event.ingress_presence_id = ingress.id if ingress is not None else None
+    if event.event_kind == "external_event" or event.direction == "external":
+        event.author_kind = "system"
+        event.author_person_id = None
+        event.author_presence_id = None
+        return
+    if sender_id == bot_id:
+        if ingress is None:
+            raise IdentityDualWriteError("unclassified")
+        event.author_kind = "yuki"
+        event.author_presence_id = ingress.id
+        event.author_person_id = None
+        return
+    if sender_is_bot or sender_id in settings.ignored_bot_users:
+        event.author_kind = "external_bot"
+        event.author_person_id = None
+        event.author_presence_id = None
+        return
+    binding = await _binding_for(session, sender_id)
+    if binding is None or binding.status != "active":
+        raise IdentityDualWriteError("unclassified")
+    person = await session.get(CanonicalPersonModel, binding.person_id)
+    if person is None or not person.enabled:
+        raise IdentityDualWriteError("unclassified")
+    event.author_kind = "person"
+    event.author_person_id = person.id
+    event.author_presence_id = None
+
+
 def _person_fk_targets() -> tuple[tuple[str, str], ...]:
     items: list[tuple[str, str]] = []
     for spec in (*C5_OWNERSHIP_INVENTORY, *C6_EXTENSION_INVENTORY):
@@ -534,7 +780,7 @@ async def forget_canonical_for_external_account(session: AsyncSession, user_id: 
     fail the surrounding transaction instead of half-deleting.
     """
 
-    await require_v1_runtime(session)
+    await require_identity_runtime(session, allowed=frozenset({"v1", "v2"}))
     trip("before_forget_canonical")
     external_id = _external_id(user_id)
     binding = await _binding_for(session, external_id)
@@ -585,6 +831,36 @@ async def forget_canonical_for_external_account(session: AsyncSession, user_id: 
     session.expire_all()
     for item in bindings:
         await session.delete(item)
+    conversation = await session.scalar(
+        select(CanonicalConversationModel).where(
+            CanonicalConversationModel.kind == "private",
+            CanonicalConversationModel.person_id == person_id,
+        )
+    )
+    if conversation is not None:
+        await session.execute(
+            update(ConversationScopeModel)
+            .where(ConversationScopeModel.canonical_conversation_id == conversation.id)
+            .values(canonical_conversation_id=None)
+        )
+        await session.execute(
+            update(ChatEventModel)
+            .where(ChatEventModel.canonical_conversation_id == conversation.id)
+            .values(canonical_conversation_id=None, canonical_event_id=None)
+        )
+        aliases = (
+            await session.scalars(
+                select(ConversationLegacyAliasModel).where(
+                    ConversationLegacyAliasModel.conversation_id == conversation.id
+                )
+            )
+        ).all()
+        for alias in aliases:
+            await session.delete(alias)
+        await session.delete(conversation)
+    route = await session.get(PersonActiveRouteModel, person_id)
+    if route is not None:
+        await session.delete(route)
     person = await session.get(CanonicalPersonModel, person_id)
     if person is not None:
         await session.delete(person)

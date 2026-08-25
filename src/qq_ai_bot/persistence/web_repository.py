@@ -8,8 +8,10 @@ from typing import Any, cast
 from sqlalchemy import delete, func, select
 from sqlalchemy.engine import CursorResult
 
+from qq_ai_bot.identity.shadows import conversation_id_for_event
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
+    ChatEventModel,
     WebSearchRunModel,
     WebSearchSourceModel,
 )
@@ -46,6 +48,14 @@ class WebSearchSourceRepository:
             )
             session.add(run)
             await session.flush()
+            trigger = await session.scalar(
+                select(ChatEventModel.id).where(
+                    ChatEventModel.platform_message_id == trigger_message_id[:128]
+                )
+            )
+            proven = await conversation_id_for_event(session, trigger)
+            if proven is not None and run.canonical_conversation_id is None:
+                run.canonical_conversation_id = proven
             seen: set[str] = set()
             ordinal = 0
             for source in response.sources:

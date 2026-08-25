@@ -87,7 +87,11 @@ class SelfReflectionRepository:
                     .limit(max(1, limit))
                 )
             ).all()
+            from qq_ai_bot.identity.memory_guard import refuse_legacy_live_event
+
             for row in rows:
+                if await refuse_legacy_live_event(session, row):
+                    continue
                 scope_type = ScopeType(row.scope_type)
                 peer: str | None = None
                 if scope_type is ScopeType.PRIVATE:
@@ -234,7 +238,11 @@ class SelfReflectionRepository:
                 )
                 event_rows: list[ChatEventModel] = []
                 input_characters = 0
+                from qq_ai_bot.identity.memory_guard import refuse_legacy_live_event
+
                 for item in candidate_rows:
+                    if await refuse_legacy_live_event(session, item):
+                        continue
                     item_characters = len(item.content)
                     if event_rows and input_characters + item_characters > max_characters:
                         break

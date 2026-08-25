@@ -64,7 +64,7 @@ class PluginAdmissionSignalAdapter:
         runtime: RuntimeConfigSnapshot,
     ) -> tuple[SdkAdmissionSignal, ...]:
         signal_context = AdmissionSignalContext(
-            conversation_key=message.scope().key,
+            conversation_key=message.legacy_conversation_key or message.scope().key,
             origin=SdkTurnOrigin(origin.value),
             current=CurrentMessage(
                 message_id=message.message_id,
@@ -73,7 +73,15 @@ class PluginAdmissionSignalAdapter:
                 group_id=message.group_id,
                 text=message.text[:12_000],
                 received_at=message.received_at,
+                person_id=message.person_id,
+                space_id=message.space_id,
+                conversation_id=message.conversation_id,
+                presence_id=message.presence_id,
             ),
+            person_id=message.person_id,
+            space_id=message.space_id,
+            conversation_id=message.conversation_id,
+            presence_id=message.presence_id,
         )
         tasks = [
             self._collect_one(

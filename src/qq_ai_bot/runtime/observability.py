@@ -136,6 +136,8 @@ class RuntimeTurnObservation:
     total_latency_ms: int
     created_at: datetime
     expires_at: datetime
+    subject_user_id: str | None = None
+    group_id: str | None = None
 
 
 class TurnObservationRecorder(Protocol):
@@ -156,6 +158,8 @@ def build_turn_observation(
     total_latency_ms: int,
     retention_days: int = DEFAULT_OBSERVATION_RETENTION_DAYS,
     now: datetime | None = None,
+    subject_user_id: str | None = None,
+    group_id: str | None = None,
 ) -> RuntimeTurnObservation:
     """Project one finished turn onto the content-free observation row.
 
@@ -177,6 +181,8 @@ def build_turn_observation(
         total_latency_ms=max(0, total_latency_ms),
         created_at=created,
         expires_at=created + timedelta(days=max(1, retention_days)),
+        subject_user_id=subject_user_id,
+        group_id=group_id,
     )
 
 

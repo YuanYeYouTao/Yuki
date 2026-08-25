@@ -14,6 +14,8 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.identity.dual_write import fill_membership_shadows
+from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
+from qq_ai_bot.identity.shadows import fill_memory_fact_shadows
 from qq_ai_bot.memory.eligibility import MemoryEventEligibilityPolicy
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
@@ -566,10 +568,22 @@ class MemoryFactRepository:
         session: AsyncSession,
     ) -> MemoryFactModel:
         now = recorded_at or datetime.now(UTC)
+        from qq_ai_bot.identity.dual_write import (
+            ensure_runtime_group_row,
+            ensure_runtime_people_row,
+        )
+
+        v2 = await identity_runtime_is_complete_v2(session)
         if fact.subject_user_id:
-            await _ensure_person(session, fact.subject_user_id, now=now)
+            if v2:
+                await ensure_runtime_people_row(session, fact.subject_user_id, now=now)
+            else:
+                await _ensure_person(session, fact.subject_user_id, now=now)
         if fact.group_id:
-            await _ensure_group(session, fact.group_id, now=now)
+            if v2:
+                await ensure_runtime_group_row(session, fact.group_id, now=now)
+            else:
+                await _ensure_group(session, fact.group_id, now=now)
         if fact.subject_user_id and fact.group_id:
             membership = await session.get(
                 MembershipModel,
@@ -622,6 +636,7 @@ class MemoryFactRepository:
         )
         session.add(row)
         await session.flush()
+        await fill_memory_fact_shadows(session, row)
         session.add(
             MemoryActivationStateModel(
                 fact_id=row.id,
@@ -1272,6 +1287,14 @@ class MemoryJobRepository:
                     event_id,
                 )
                 return False
+            from qq_ai_bot.identity.memory_guard import refuse_legacy_live_event
+
+            if await refuse_legacy_live_event(session, event):
+                logger.info(
+                    "memory_job_enqueue_skipped event_id=%d reason=legacy_event_replay",
+                    event_id,
+                )
+                return False
             rejection_reason = self._eligibility.rejection_reason(
                 _event_record(event),
                 sender_is_bot=sender.is_bot,
@@ -1341,10 +1364,20 @@ class MemoryJobRepository:
                 )
             ).all()
             jobs: list[MemoryJob] = []
+            from qq_ai_bot.identity.memory_guard import refuse_legacy_live_event
+
             for row in rows:
                 event = await session.get(ChatEventModel, row.event_id)
                 if event is None:
                     await session.delete(row)
+                    continue
+                if (
+                    row.processing_source == MemoryProcessingSource.LIVE.value
+                    and await refuse_legacy_live_event(session, event)
+                ):
+                    row.status = MemoryJobStatus.FAILED.value
+                    row.error_category = "legacy_event_replay"
+                    row.updated_at = now
                     continue
                 row.status = MemoryJobStatus.PROCESSING.value
                 row.updated_at = now
@@ -1430,10 +1463,20 @@ class MemoryJobRepository:
             ).all()
             jobs: list[MemoryJob] = []
             characters = 0
+            from qq_ai_bot.identity.memory_guard import refuse_legacy_live_event
+
             for row in rows:
                 event = await session.get(ChatEventModel, row.event_id)
                 if event is None:
                     await session.delete(row)
+                    continue
+                if (
+                    row.processing_source == MemoryProcessingSource.LIVE.value
+                    and await refuse_legacy_live_event(session, event)
+                ):
+                    row.status = MemoryJobStatus.FAILED.value
+                    row.error_category = "legacy_event_replay"
+                    row.updated_at = claimed_at
                     continue
                 event_characters = len(event.content)
                 if jobs and characters + event_characters > max(1, max_characters):

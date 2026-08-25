@@ -23,6 +23,8 @@ from qq_ai_bot.identity.dual_write import (
     fill_alias_shadows,
     fill_membership_shadows,
     forget_canonical_for_external_account,
+    sync_person_enabled,
+    sync_space_flags,
 )
 from qq_ai_bot.identity.errors import IdentityDualWriteError
 from qq_ai_bot.identity.write_settings import identity_write_settings
@@ -508,6 +510,7 @@ class PeopleRepository:
         )
         person.enabled = enabled
         await session.flush()
+        await sync_person_enabled(session, user_id, enabled)
         return PrivateUserSetting(user_id=user_id, enabled=enabled)
 
     async def get_enabled(
@@ -810,6 +813,7 @@ class GroupSettingsRepository:
         now = datetime.now(UTC)
         row = await _ensure_group(session, group_id, enabled=enabled, now=now)
         await session.flush()
+        await sync_space_flags(session, group_id, enabled=enabled)
         return GroupSetting(
             group_id=group_id,
             enabled=enabled,
@@ -839,6 +843,7 @@ class GroupSettingsRepository:
         row.autonomous_enabled = enabled
         row.updated_at = now
         await session.flush()
+        await sync_space_flags(session, group_id, autonomous_enabled=enabled)
         return GroupSetting(
             group_id=group_id,
             enabled=row.enabled,

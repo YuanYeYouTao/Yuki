@@ -334,6 +334,26 @@ FILLABLE_SHADOWS: tuple[tuple[str, str, str], ...] = (
         "bot_user_id classified yuki_presence",
     ),
     (
+        "automations.canonical_target_person_id",
+        "person",
+        "private target classified person",
+    ),
+    (
+        "automations.canonical_target_space_id",
+        "space",
+        "group target has Space",
+    ),
+    (
+        "runtime_turn_observations.canonical_person_id",
+        "person",
+        "turn subject classified person",
+    ),
+    (
+        "runtime_turn_observations.canonical_space_id",
+        "space",
+        "group turn has Space",
+    ),
+    (
         "plugin_config_values.canonical_person_id",
         "person",
         "scope_type=user and scope classified person",
@@ -448,14 +468,6 @@ FILLABLE_SHADOWS: tuple[tuple[str, str, str], ...] = (
 
 DEFERRED_SHADOWS: tuple[tuple[str, str], ...] = (
     (
-        "automations.canonical_target_person_id/space_id",
-        "no typed target columns; script_json is not a reliable identity map (later commit)",
-    ),
-    (
-        "runtime_turn_observations.canonical_person_id/space_id",
-        "row has scope_type but no user/group key; hashing conversation_key is guessing",
-    ),
-    (
         "chat_events.canonical_event_id/canonical_conversation_id/"
         "author_person_id/author_presence_id/ingress_presence_id",
         "C4 event/conversation/author mapping; C26 cutover owns proven Conversation",
@@ -482,16 +494,42 @@ DEFERRED_SHADOWS: tuple[tuple[str, str], ...] = (
         "C6 conversation correlation; C26 cutover",
     ),
     (
-        "memory jobs/evidence/reflection/dream/tool receipts",
-        "C21 canonical memory ownership",
-    ),
-    (
         "canonical_conversations / aliases / routes / receipts",
         "C25/C26; C7 must not create them",
     ),
     (
         "identity_runtime_state v2 / source_fingerprint",
         "C7 stays v1; cutover later writes the epoch",
+    ),
+    (
+        "memory_jobs",
+        "no canonical_event_id column; C21 live enqueue/claim gated by "
+        "chat_events.canonical_event_id; C26 cutover baseline attaches remaining historical jobs",
+    ),
+    (
+        "memory_evidence",
+        "no canonical columns; C21 live attach gated via chat_events.canonical_event_id "
+        "and memory_facts.canonical_*; C26 backfill evidence ownership",
+    ),
+    (
+        "memory_tool_receipts",
+        "no canonical columns; C21 live write/load gated by trigger "
+        "chat_events.canonical_event_id; C26 rekeys receipts off bot_user_id",
+    ),
+    (
+        "memory_reflection_jobs",
+        "no canonical columns; C21 discover/enqueue gated via memory_facts.canonical_* "
+        "plus evidence event chain; C26 cutover baseline",
+    ),
+    (
+        "memory_self_reflection_states/memory_self_reflection_runs",
+        "still keyed by conversation_key_hash+bot_user_id; C21 scan refuses "
+        "NULL canonical_event_id events; C26 rekeys cursor off Presence",
+    ),
+    (
+        "memory_dream_runs/memory_dream_clusters/memory_dream_operations",
+        "no canonical columns; C21 candidate load skips legacy-NULL evidence "
+        "and keeps SELF unsplit by Presence; C26 cutover baseline",
     ),
 )
 

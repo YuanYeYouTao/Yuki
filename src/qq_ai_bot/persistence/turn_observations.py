@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import delete, select
 
+from qq_ai_bot.identity.shadows import fill_person_space_shadows
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import RuntimeTurnObservationModel
 from qq_ai_bot.runtime.observability import RuntimeTurnObservation
@@ -33,6 +34,14 @@ class RuntimeTurnObservationRepository:
         )
         async with self._database.sessions() as session, session.begin():
             session.add(row)
+            await fill_person_space_shadows(
+                session,
+                row,
+                person_attr="canonical_person_id",
+                space_attr="canonical_space_id",
+                user_id=observation.subject_user_id,
+                group_id=observation.group_id,
+            )
 
     async def cleanup_expired(self, *, now: datetime | None = None, limit: int = 500) -> int:
         """Delete one bounded batch of expired rows; call repeatedly to drain."""

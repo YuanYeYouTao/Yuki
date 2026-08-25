@@ -177,7 +177,11 @@ class DreamRepository:
                 if str(row.content_hash) != expected_hash:
                     missing += 1
                     continue
-                bot_ids = await self._fact_bot_ids(fact.id, session=active)
+                from qq_ai_bot.identity.memory_guard import refuse_legacy_live_fact
+
+                if await refuse_legacy_live_fact(active, fact.id):
+                    continue
+                bot_ids = await self._fact_bot_ids(fact, session=active)
                 if len(bot_ids) != 1:
                     ambiguous += 1
                     continue
@@ -198,12 +202,16 @@ class DreamRepository:
         )
 
     @staticmethod
-    async def _fact_bot_ids(fact_id: int, *, session: AsyncSession) -> set[str]:
+    async def _fact_bot_ids(fact: MemoryFact, *, session: AsyncSession) -> set[str]:
+        from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
+
+        if fact.scope_type.value == "self" and await identity_runtime_is_complete_v2(session):
+            return {"self"}
         event_ids = set(
             await session.scalars(
                 select(ChatEventModel.bot_user_id)
                 .join(MemoryEvidenceModel, MemoryEvidenceModel.event_id == ChatEventModel.id)
-                .where(MemoryEvidenceModel.fact_id == fact_id)
+                .where(MemoryEvidenceModel.fact_id == fact.id)
             )
         )
         tool_ids = set(
@@ -213,7 +221,7 @@ class DreamRepository:
                     MemoryEvidenceModel,
                     MemoryEvidenceModel.tool_receipt_id == MemoryToolReceiptModel.id,
                 )
-                .where(MemoryEvidenceModel.fact_id == fact_id)
+                .where(MemoryEvidenceModel.fact_id == fact.id)
             )
         )
         return {str(item) for item in (*event_ids, *tool_ids) if item}

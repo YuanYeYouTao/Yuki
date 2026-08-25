@@ -113,6 +113,10 @@ class CurrentMessage(StrictModel):
     text: str = Field(default="", max_length=12_000)
     mentioned_user_ids: tuple[str, ...] = Field(default=(), max_length=20)
     received_at: datetime
+    person_id: str | None = Field(default=None, max_length=36)
+    space_id: str | None = Field(default=None, max_length=36)
+    conversation_id: str | None = Field(default=None, max_length=36)
+    presence_id: str | None = Field(default=None, max_length=36)
 
 
 class AdmissionSignalContext(StrictModel):
@@ -122,6 +126,10 @@ class AdmissionSignalContext(StrictModel):
     origin: TurnOrigin
     current: CurrentMessage
     text_is_untrusted: bool = True
+    person_id: str | None = Field(default=None, max_length=36)
+    space_id: str | None = Field(default=None, max_length=36)
+    conversation_id: str | None = Field(default=None, max_length=36)
+    presence_id: str | None = Field(default=None, max_length=36)
 
 
 class EmojiSelectionCandidate(StrictModel):

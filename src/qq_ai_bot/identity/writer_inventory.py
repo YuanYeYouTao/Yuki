@@ -1,9 +1,9 @@
-"""Frozen C8 inventory of legacy identity writers.
+"""Frozen inventory of legacy identity writers.
 
 AST coverage walks production modules for people/groups/memberships/
 person_aliases/chat_events/conversation_scopes constructors, insert/update/
 delete helpers, and raw SQL. A writer fixture missing from this inventory
-fails. Epoch `c8` is wired in this commit; later epochs are explicit deferrals.
+fails. Epochs c8 and c20-c24 are wired; conversation cutover stays later.
 This module is persistence-free.
 """
 
@@ -15,11 +15,12 @@ from typing import Final, Literal
 WriterEpoch = Literal[
     "c8",
     "c7_offline",
-    "defer_c20",
-    "defer_c21",
-    "defer_c22",
-    "defer_c23",
-    "defer_c24",
+    "c17",
+    "c20",
+    "c21",
+    "c22",
+    "c23",
+    "c24",
     "tool",
 ]
 WriterOp = Literal["insert", "update", "delete", "upsert"]
@@ -270,10 +271,18 @@ _C8_ACTIVE_WRITERS: Final[tuple[WriterPoint, ...]] = (
     WriterPoint(
         "qq_ai_bot.identity.dual_write",
         "forget_canonical_for_external_account",
-        {"people", "chat_events"},
+        {"people", "chat_events", "conversation_scopes"},
         {"update", "delete"},
         "c8",
         "Person-level forget; extra Bindings with leftover legacy data fail-close",
+    ),
+    WriterPoint(
+        "qq_ai_bot.identity.canonical_uow",
+        "append_inbound",
+        {"chat_events"},
+        {"insert"},
+        "c17",
+        "v2 fence+receipt+canonical append; v1 ledger path unchanged",
     ),
     WriterPoint(
         "qq_ai_bot.automation.repository",
@@ -365,82 +374,86 @@ _C8_ACTIVE_WRITERS: Final[tuple[WriterPoint, ...]] = (
     ),
 )
 
-DEFERRED_IDENTITY_WRITERS: Final[tuple[WriterPoint, ...]] = (
+DEFERRED_IDENTITY_WRITERS: Final[tuple[WriterPoint, ...]] = ()
+
+_C20_C24_ACTIVE_WRITERS: Final[tuple[WriterPoint, ...]] = (
     WriterPoint(
         "qq_ai_bot.persistence.repository_helpers",
         "_ensure_relationship",
         frozenset(),
         {"insert"},
-        "defer_c20",
-        "person_relationships row; C20 dual-writes canonical_person_id",
+        "c20",
+        "person_relationships dual-writes canonical_person_id",
     ),
     WriterPoint(
         "qq_ai_bot.speech.preference_repository",
-        "upsert",
+        "set",
         frozenset(),
         {"insert", "update"},
-        "defer_c20",
-        "person_speech_preferences canonical shadow is C20",
+        "c20",
+        "person_speech_preferences canonical_person_id",
     ),
     WriterPoint(
         "qq_ai_bot.time.service",
         "set_timezone",
         frozenset(),
         {"upsert"},
-        "defer_c20",
-        "person_time_settings canonical shadow is C20",
+        "c20",
+        "person_time_settings canonical_person_id",
     ),
     WriterPoint(
         "qq_ai_bot.memory.repository",
         "create_fact",
         frozenset(),
         {"insert"},
-        "defer_c21",
-        "memory_facts canonical subject/visibility columns are C21",
+        "c21",
+        "memory_facts canonical subject/visibility columns",
     ),
     WriterPoint(
         "qq_ai_bot.automation.repository",
         "create",
         frozenset(),
         {"insert"},
-        "defer_c22",
-        "automations canonical creator/target/presence columns are C22",
+        "c22",
+        "automations canonical creator/target/presence columns",
     ),
     WriterPoint(
         "qq_ai_bot.plugin_host.session_repository",
         "create",
         frozenset(),
         {"insert"},
-        "defer_c23",
-        "plugin session/message canonical owners are C23",
+        "c23",
+        "plugin session/message canonical owners",
     ),
     WriterPoint(
         "qq_ai_bot.plugin_host.notification_repository",
         "grant_target",
         frozenset(),
         {"insert"},
-        "defer_c23",
-        "grant/outbox/background canonical targets are C23",
+        "c23",
+        "grant/outbox/background canonical targets",
     ),
     WriterPoint(
         "qq_ai_bot.emoji.repository",
-        "record_usage",
+        "mark_used",
         frozenset(),
         {"insert"},
-        "defer_c24",
-        "emoji first-seen/actor canonical columns are C24",
+        "c24",
+        "emoji first-seen/actor canonical columns",
     ),
     WriterPoint(
         "qq_ai_bot.admin.config_service",
-        "set_override",
+        "save_with_audit",
         frozenset(),
         {"upsert"},
-        "defer_c24",
-        "runtime_config_overrides canonical scope is C24",
+        "c24",
+        "runtime_config_overrides canonical scope",
     ),
 )
 
-C8_WRITER_INVENTORY: Final[tuple[WriterPoint, ...]] = _C8_ACTIVE_WRITERS + DEFERRED_IDENTITY_WRITERS
+C8_WRITER_INVENTORY: Final[tuple[WriterPoint, ...]] = (
+    _C8_ACTIVE_WRITERS + _C20_C24_ACTIVE_WRITERS + DEFERRED_IDENTITY_WRITERS
+)
 
 
 def writer_keys(

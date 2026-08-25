@@ -55,6 +55,9 @@ class ExternalIdVisibility(StrEnum):
 @final
 class PresenceConnectionState(StrEnum):
     UNAVAILABLE = "unavailable"
+    CONNECTED = "connected"
+    DISCONNECTED = "disconnected"
+    AMBIGUOUS = "ambiguous"
 
 
 @final

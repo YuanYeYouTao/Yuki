@@ -22,6 +22,7 @@ from qq_ai_bot.identity.dual_write import (
     sync_space,
 )
 from qq_ai_bot.identity.errors import IdentityDualWriteError
+from qq_ai_bot.identity.shadows import fill_person_space_shadows
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
     GroupModel,
@@ -104,6 +105,14 @@ async def _ensure_relationship(
         row = await session.get(PersonRelationshipModel, user_id)
         if row is None:
             raise IdentityDualWriteError("unclassified")
+    await fill_person_space_shadows(
+        session,
+        row,
+        person_attr="canonical_person_id",
+        space_attr=None,
+        user_id=user_id,
+        group_id=None,
+    )
     return row
 
 

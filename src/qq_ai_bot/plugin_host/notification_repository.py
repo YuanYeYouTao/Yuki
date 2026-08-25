@@ -14,7 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
 from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.identity.dual_write import sync_presence
+from qq_ai_bot.identity.dual_write import ensure_runtime_people_row, sync_presence
+from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
+from qq_ai_bot.identity.shadows import (
+    active_person_id_for,
+    active_space_id_for,
+    fill_person_space_shadows,
+    fill_presence_shadow,
+)
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel, GroupModel, PersonModel
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
@@ -50,6 +57,9 @@ class OutboxRecord:
     text: str
     media_handle_id: str | None
     attempts: int
+    canonical_target_person_id: str | None
+    canonical_target_space_id: str | None
+    canonical_presence_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +88,10 @@ class PluginNotificationRepository:
             config=RollupPolicyConfig(),
         )
 
+    async def runtime_is_complete_v2(self) -> bool:
+        async with self._database.sessions() as session:
+            return await identity_runtime_is_complete_v2(session)
+
     async def grant_target(
         self,
         *,
@@ -88,16 +102,12 @@ class PluginNotificationRepository:
     ) -> BackgroundTargetGrantView:
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
-            creator = await session.get(PersonModel, created_by_user_id)
-            if creator is None:
-                raise PluginPermissionError("grant creator is not a known person")
-            if target.target_type == "group":
-                group = await session.get(GroupModel, target.target_id)
-                if group is None or not group.enabled:
-                    raise PluginPermissionError("notification group is unknown or disabled")
-            elif await session.get(PersonModel, target.target_id) is None:
-                raise PluginPermissionError("notification private target is unknown")
-            await sync_presence(session, bot_user_id, now=now)
+            await _require_grant_identities(
+                session,
+                created_by_user_id=created_by_user_id,
+                target=target,
+            )
+            await _sync_grant_presence(session, bot_user_id, now=now)
             row = await session.scalar(
                 select(PluginBackgroundTargetGrantModel).where(
                     PluginBackgroundTargetGrantModel.plugin_id == plugin_id,
@@ -123,6 +133,28 @@ class PluginNotificationRepository:
                 row.created_by_user_id = created_by_user_id
                 row.updated_at = now
             await session.flush()
+            await fill_person_space_shadows(
+                session,
+                row,
+                person_attr="canonical_target_person_id",
+                space_attr="canonical_target_space_id",
+                user_id=target.target_id if target.target_type == "private" else None,
+                group_id=target.target_id if target.target_type == "group" else None,
+            )
+            await fill_person_space_shadows(
+                session,
+                row,
+                person_attr="canonical_created_by_person_id",
+                space_attr=None,
+                user_id=created_by_user_id,
+                group_id=None,
+            )
+            await fill_presence_shadow(
+                session,
+                row,
+                attr="canonical_presence_id",
+                bot_user_id=bot_user_id,
+            )
             return _grant_view(row)
 
     async def revoke_target(
@@ -201,13 +233,7 @@ class PluginNotificationRepository:
             )
             if creator is None:
                 return None
-            if target_type == "group":
-                enabled = await session.scalar(
-                    select(GroupModel.enabled).where(GroupModel.group_id == target_id)
-                )
-                if not enabled:
-                    return None
-            elif await session.get(PersonModel, target_id) is None:
+            if not await _publication_target_known(session, target_type, target_id):
                 return None
             return creator
 
@@ -281,12 +307,7 @@ class PluginNotificationRepository:
                 raise PluginPermissionError("notification target is not granted")
             if grant.bot_user_id != bot_user_id:
                 raise PluginPermissionError("notification target grant changed during publish")
-            if target.target_type == "group":
-                group = await session.get(GroupModel, target.target_id)
-                if group is None or not group.enabled:
-                    raise PluginPermissionError("notification group is unknown or disabled")
-            elif await session.get(PersonModel, target.target_id) is None:
-                raise PluginPermissionError("notification private target is unknown")
+            await _require_publication_target(session, target)
             notification_id = _notification_id(
                 plugin_id, request.event_key, target.target_type, target.target_id
             )
@@ -354,27 +375,34 @@ class PluginNotificationRepository:
                     )
                 )
                 if job is None:
-                    session.add(
-                        PluginBackgroundTurnJobModel(
-                            source_event_id=existing.id,
-                            plugin_id=plugin_id,
-                            target_type=target.target_type,
-                            target_id=target.target_id,
-                            bot_user_id=grant.bot_user_id,
-                            agent_intent=request.agent_intent,
-                            status="pending",
-                            attempts=0,
-                            max_attempts=3,
-                            next_attempt_at=now,
-                            lease_until=None,
-                            generated_text="",
-                            tool_calls_used=0,
-                            model_requests=0,
-                            last_error_category=None,
-                            created_at=now,
-                            updated_at=now,
-                            completed_at=None,
-                        )
+                    job = PluginBackgroundTurnJobModel(
+                        source_event_id=existing.id,
+                        plugin_id=plugin_id,
+                        target_type=target.target_type,
+                        target_id=target.target_id,
+                        bot_user_id=grant.bot_user_id,
+                        agent_intent=request.agent_intent,
+                        status="pending",
+                        attempts=0,
+                        max_attempts=3,
+                        next_attempt_at=now,
+                        lease_until=None,
+                        generated_text="",
+                        tool_calls_used=0,
+                        model_requests=0,
+                        last_error_category=None,
+                        created_at=now,
+                        updated_at=now,
+                        completed_at=None,
+                    )
+                    session.add(job)
+                    await session.flush()
+                    await _fill_target_shadows(
+                        session,
+                        job,
+                        target.target_type,
+                        target.target_id,
+                        grant.bot_user_id,
                     )
                     job_created = True
             return NotificationPublishReceipt(
@@ -408,14 +436,10 @@ class PluginNotificationRepository:
             )
             if grant is None:
                 raise PluginPermissionError("notification target is not granted")
+            await _require_publication_target(session, target)
             if target.target_type == "group":
-                group = await session.get(GroupModel, target.target_id)
-                if group is None or not group.enabled:
-                    raise PluginPermissionError("notification group is unknown or disabled")
                 scope = ConversationScope.group(grant.bot_user_id, target.target_id)
             else:
-                if await session.get(PersonModel, target.target_id) is None:
-                    raise PluginPermissionError("notification private target is unknown")
                 scope = ConversationScope.private(grant.bot_user_id, target.target_id)
         return scope, grant.bot_user_id
 
@@ -555,29 +579,36 @@ class PluginNotificationRepository:
                         job.target_type,
                         job.target_id,
                     )
-                    session.add(
-                        PluginNotificationOutboxModel(
-                            notification_id=notification_id,
-                            part_key="agent_reply",
-                            source_event_id=job.source_event_id,
-                            plugin_id=job.plugin_id,
-                            target_type=job.target_type,
-                            target_id=job.target_id,
-                            bot_user_id=job.bot_user_id,
-                            part_type="agent_reply",
-                            text=text[:12_000],
-                            media_handle_id=None,
-                            status="pending",
-                            attempts=0,
-                            max_attempts=5,
-                            next_attempt_at=now,
-                            lease_until=None,
-                            platform_message_id=None,
-                            last_error_category=None,
-                            created_at=now,
-                            updated_at=now,
-                            sent_at=None,
-                        )
+                    reply = PluginNotificationOutboxModel(
+                        notification_id=notification_id,
+                        part_key="agent_reply",
+                        source_event_id=job.source_event_id,
+                        plugin_id=job.plugin_id,
+                        target_type=job.target_type,
+                        target_id=job.target_id,
+                        bot_user_id=job.bot_user_id,
+                        part_type="agent_reply",
+                        text=text[:12_000],
+                        media_handle_id=None,
+                        status="pending",
+                        attempts=0,
+                        max_attempts=5,
+                        next_attempt_at=now,
+                        lease_until=None,
+                        platform_message_id=None,
+                        last_error_category=None,
+                        created_at=now,
+                        updated_at=now,
+                        sent_at=None,
+                    )
+                    session.add(reply)
+                    await session.flush()
+                    await _fill_target_shadows(
+                        session,
+                        reply,
+                        job.target_type,
+                        job.target_id,
+                        job.bot_user_id,
                     )
 
     async def fail_turn(self, job_id: int, *, error_category: str) -> None:
@@ -684,31 +715,97 @@ async def _ensure_outbox_part(
     )
     if existing is not None:
         return False
-    session.add(
-        PluginNotificationOutboxModel(
-            notification_id=notification_id,
-            part_key=part_key,
-            source_event_id=source_event_id,
-            plugin_id=plugin_id,
-            target_type=grant.target_type,
-            target_id=grant.target_id,
-            bot_user_id=grant.bot_user_id,
-            part_type=part_type,
-            text=text,
-            media_handle_id=media_handle_id,
-            status="pending",
-            attempts=0,
-            max_attempts=5,
-            next_attempt_at=now,
-            lease_until=None,
-            platform_message_id=None,
-            last_error_category=None,
-            created_at=now,
-            updated_at=now,
-            sent_at=None,
-        )
+    row = PluginNotificationOutboxModel(
+        notification_id=notification_id,
+        part_key=part_key,
+        source_event_id=source_event_id,
+        plugin_id=plugin_id,
+        target_type=grant.target_type,
+        target_id=grant.target_id,
+        bot_user_id=grant.bot_user_id,
+        part_type=part_type,
+        text=text,
+        media_handle_id=media_handle_id,
+        status="pending",
+        attempts=0,
+        max_attempts=5,
+        next_attempt_at=now,
+        lease_until=None,
+        platform_message_id=None,
+        last_error_category=None,
+        created_at=now,
+        updated_at=now,
+        sent_at=None,
     )
+    session.add(row)
+    await session.flush()
+    await _fill_target_shadows(session, row, grant.target_type, grant.target_id, grant.bot_user_id)
     return True
+
+
+async def _require_grant_identities(
+    session: AsyncSession,
+    *,
+    created_by_user_id: str,
+    target: NotificationTarget,
+) -> None:
+    if await identity_runtime_is_complete_v2(session):
+        if await active_person_id_for(session, created_by_user_id) is None:
+            raise PluginPermissionError("grant creator is not a known person")
+        await _require_publication_target(session, target)
+        await ensure_runtime_people_row(session, created_by_user_id, now=datetime.now(UTC))
+        return
+    creator = await session.get(PersonModel, created_by_user_id)
+    if creator is None:
+        raise PluginPermissionError("grant creator is not a known person")
+    await _require_publication_target(session, target)
+
+
+async def _sync_grant_presence(session: AsyncSession, bot_user_id: str, *, now: datetime) -> None:
+    if await identity_runtime_is_complete_v2(session):
+        from qq_ai_bot.identity.ingress import ensure_v2_presence
+
+        await ensure_v2_presence(session, bot_user_id)
+        return
+    await sync_presence(session, bot_user_id, now=now)
+
+
+async def _require_publication_target(session: AsyncSession, target: NotificationTarget) -> None:
+    if not await _publication_target_known(session, target.target_type, target.target_id):
+        if target.target_type == "group":
+            raise PluginPermissionError("notification group is unknown or disabled")
+        raise PluginPermissionError("notification private target is unknown")
+
+
+async def _publication_target_known(
+    session: AsyncSession, target_type: str, target_id: str
+) -> bool:
+    if await identity_runtime_is_complete_v2(session):
+        if target_type == "group":
+            return await active_space_id_for(session, target_id) is not None
+        return await active_person_id_for(session, target_id) is not None
+    if target_type == "group":
+        group = await session.get(GroupModel, target_id)
+        return group is not None and bool(group.enabled)
+    return await session.get(PersonModel, target_id) is not None
+
+
+async def _fill_target_shadows(
+    session: AsyncSession,
+    row: object,
+    target_type: str,
+    target_id: str,
+    bot_user_id: str,
+) -> None:
+    await fill_person_space_shadows(
+        session,
+        row,
+        person_attr="canonical_target_person_id",
+        space_attr="canonical_target_space_id",
+        user_id=target_id if target_type == "private" else None,
+        group_id=target_id if target_type == "group" else None,
+    )
+    await fill_presence_shadow(session, row, attr="canonical_presence_id", bot_user_id=bot_user_id)
 
 
 def _grant_view(row: PluginBackgroundTargetGrantModel) -> BackgroundTargetGrantView:
@@ -734,6 +831,9 @@ def _outbox_record(row: PluginNotificationOutboxModel) -> OutboxRecord:
         text=row.text,
         media_handle_id=row.media_handle_id,
         attempts=row.attempts,
+        canonical_target_person_id=row.canonical_target_person_id,
+        canonical_target_space_id=row.canonical_target_space_id,
+        canonical_presence_id=row.canonical_presence_id,
     )
 
 

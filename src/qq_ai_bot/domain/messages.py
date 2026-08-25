@@ -137,6 +137,11 @@ class InboundMessage:
     reply_to_message_id: str | None = None
     reply_sender_user_id: str | None = None
     received_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    legacy_conversation_key: str | None = None
+    person_id: str | None = None
+    space_id: str | None = None
+    conversation_id: str | None = None
+    presence_id: str | None = None
 
     def scope(self, *, bot_user_id: str | None = None) -> ConversationScope:
         """Build the bot-aware conversation scope for this message."""

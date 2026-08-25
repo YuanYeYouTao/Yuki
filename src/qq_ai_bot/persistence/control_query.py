@@ -6,7 +6,7 @@ import json
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import Protocol, TypeVar
+from typing import Protocol, TypedDict, TypeVar
 
 from sqlalchemy import Integer, Select, event, func, literal_column, select, tuple_
 from sqlalchemy.exc import DatabaseError
@@ -441,6 +441,50 @@ def _backfill_progress(status: str, processed: int, skipped: int, conflicts: int
     return min(1.0, processed / total)
 
 
+class _PresenceConnectionFields(TypedDict):
+    connection_state: PresenceConnectionState
+    connection_problem: Problem
+
+
+def _presence_connection_fields(
+    registry: object | None, row: PresenceModel
+) -> _PresenceConnectionFields:
+    if registry is None:
+        return {
+            "connection_state": PresenceConnectionState.UNAVAILABLE,
+            "connection_problem": Problem(ProblemCode.OPERATION_UNAVAILABLE),
+        }
+    snapshot = getattr(registry, "snapshot_presence", None)
+    if not callable(snapshot):
+        return {
+            "connection_state": PresenceConnectionState.UNAVAILABLE,
+            "connection_problem": Problem(ProblemCode.OPERATION_UNAVAILABLE),
+        }
+    view = snapshot(
+        presence_id=row.id,
+        platform=row.platform,
+        external_account_id=row.external_account_id,
+    )
+    health = str(getattr(view, "health", "disconnected"))
+    if health == "connected":
+        return {
+            "connection_state": PresenceConnectionState.CONNECTED,
+            "connection_problem": Problem(
+                ProblemCode.OPERATION_UNAVAILABLE,
+                {"live": True, "generation": int(getattr(view, "generation", 0) or 0)},
+            ),
+        }
+    if health == "ambiguous":
+        return {
+            "connection_state": PresenceConnectionState.AMBIGUOUS,
+            "connection_problem": Problem(ProblemCode.BINDING_AMBIGUOUS),
+        }
+    return {
+        "connection_state": PresenceConnectionState.DISCONNECTED,
+        "connection_problem": Problem(ProblemCode.NOT_FOUND),
+    }
+
+
 class ControlQueryAdapter:
     """Keyset reader over existing identity and conversation tables."""
 
@@ -450,12 +494,14 @@ class ControlQueryAdapter:
         *,
         settings: object | None = None,
         mcp_manager: MCPManager | None = None,
+        connection_registry: object | None = None,
     ) -> None:
         if type(database) is not Database:
             raise TypeError("database must be Database")
         self._database = database
         self._settings = settings
         self._mcp = mcp_manager
+        self._connections = connection_registry
 
     @asynccontextmanager
     async def _reader(self) -> AsyncIterator[AsyncSession]:
@@ -1119,8 +1165,7 @@ class ControlQueryAdapter:
                     enabled=bool(row.enabled),
                     ingest_eligible=bool(row.ingest_eligible),
                     revision=int(row.revision),
-                    connection_state=PresenceConnectionState.UNAVAILABLE,
-                    connection_problem=Problem(ProblemCode.OPERATION_UNAVAILABLE),
+                    **_presence_connection_fields(self._connections, row),
                 )
                 for row in rows
             ]

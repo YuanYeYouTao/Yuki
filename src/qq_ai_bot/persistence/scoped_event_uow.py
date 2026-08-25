@@ -442,6 +442,36 @@ class ScopedEventLedgerUnitOfWork:
         timestamp: datetime,
         observed_at: datetime,
     ) -> None:
+        from qq_ai_bot.identity.dual_write import (
+            ensure_runtime_group_row,
+            ensure_runtime_people_row,
+        )
+        from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
+
+        if await identity_runtime_is_complete_v2(session):
+            sender_is_yuki = sender_user_id == scope.bot_user_id
+            await ensure_runtime_people_row(
+                session,
+                sender_user_id,
+                nickname=sender_nickname,
+                is_bot=sender_is_bot or sender_is_yuki,
+                now=timestamp,
+            )
+            await ensure_runtime_people_row(
+                session,
+                scope.bot_user_id,
+                is_bot=True,
+                now=observed_at,
+            )
+            if scope.private_peer_user_id:
+                await ensure_runtime_people_row(
+                    session,
+                    scope.private_peer_user_id,
+                    now=timestamp,
+                )
+            if scope.group_id:
+                await ensure_runtime_group_row(session, scope.group_id, now=timestamp)
+            return
         settings = identity_write_settings()
         sender_role: AccountRole = (
             "yuki_self"

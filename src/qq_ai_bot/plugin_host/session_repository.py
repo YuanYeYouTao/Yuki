@@ -12,6 +12,12 @@ from typing import Any, cast
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.engine import CursorResult
 
+from qq_ai_bot.identity.dual_write import ensure_runtime_people_row
+from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
+from qq_ai_bot.identity.shadows import (
+    active_person_id_for,
+    fill_person_space_shadows,
+)
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repository_helpers import _ensure_person
 from qq_ai_bot.plugin_host.db_models import (
@@ -128,9 +134,22 @@ class PluginAgentSessionRepository:
         )
         async with self._database.sessions() as session, session.begin():
             if owner_user_id:
-                await _ensure_person(session, owner_user_id, now=timestamp)
+                if await identity_runtime_is_complete_v2(session):
+                    if await active_person_id_for(session, owner_user_id) is None:
+                        raise ValueError("session owner has no Person")
+                    await ensure_runtime_people_row(session, owner_user_id, now=timestamp)
+                else:
+                    await _ensure_person(session, owner_user_id, now=timestamp)
             session.add(row)
             await session.flush()
+            await fill_person_space_shadows(
+                session,
+                row,
+                person_attr="canonical_owner_person_id",
+                space_attr="canonical_space_id",
+                user_id=owner_user_id,
+                group_id=scope_id if scope_type == "group" else None,
+            )
             return _session_record(row)
 
     async def get(
@@ -217,7 +236,12 @@ class PluginAgentSessionRepository:
         )
         async with self._database.sessions() as session, session.begin():
             if sender_user_id:
-                await _ensure_person(session, sender_user_id, now=timestamp)
+                if await identity_runtime_is_complete_v2(session):
+                    if await active_person_id_for(session, sender_user_id) is None:
+                        raise ValueError("session sender has no Person")
+                    await ensure_runtime_people_row(session, sender_user_id, now=timestamp)
+                else:
+                    await _ensure_person(session, sender_user_id, now=timestamp)
             values: dict[str, object] = {
                 "next_sequence": PluginAgentSessionModel.next_sequence + 1,
                 "updated_at": timestamp,

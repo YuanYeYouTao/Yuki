@@ -59,12 +59,15 @@ def test_removed_runtime_symbols_are_absent_from_source_and_tests() -> None:
 
 
 def test_chat_event_model_is_only_constructed_by_scoped_uow() -> None:
-    allowed = Path("src/qq_ai_bot/persistence/scoped_event_uow.py")
+    allowed = {
+        Path("src/qq_ai_bot/persistence/scoped_event_uow.py"),
+        Path("src/qq_ai_bot/identity/canonical_uow.py"),
+    }
     violations: list[str] = []
     source_root = _REPO_ROOT / "src" / "qq_ai_bot"
     for path in source_root.rglob("*.py"):
         relative = path.relative_to(_REPO_ROOT)
-        if relative == allowed:
+        if relative in allowed:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):

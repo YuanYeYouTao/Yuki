@@ -86,12 +86,18 @@ def _command_and_content(text: str, ai_prefix: str) -> tuple[CommandName | None,
     return None, remainder, triggered
 
 
-def replies_to_bot(message: InboundMessage) -> bool:
+def replies_to_bot(
+    message: InboundMessage,
+    *,
+    yuki_account_ids: frozenset[str] = frozenset(),
+) -> bool:
     """Return whether this inbound message is a platform reply to Yuki."""
 
-    return (
-        bool(message.reply_sender_user_id) and message.reply_sender_user_id == message.bot_user_id
-    )
+    if not message.reply_sender_user_id:
+        return False
+    if message.reply_sender_user_id == message.bot_user_id:
+        return True
+    return message.reply_sender_user_id in yuki_account_ids
 
 
 def evaluate_message(
@@ -101,6 +107,7 @@ def evaluate_message(
     group_policy: EffectiveGroupPolicy | None = None,
     private_policy: EffectivePrivatePolicy | None = None,
     direct_triggered: bool = False,
+    yuki_account_ids: frozenset[str] = frozenset(),
 ) -> PolicyDecision:
     """Apply self/bot, allowlist, group, mention, reply-to-bot, prefix, and command rules."""
 
@@ -134,7 +141,7 @@ def evaluate_message(
                 reason="superuser_group_enable",
             )
         return PolicyDecision(False, reason="group_disabled")
-    reply_to_bot = replies_to_bot(message)
+    reply_to_bot = replies_to_bot(message, yuki_account_ids=yuki_account_ids)
     if message.mentions_bot or prefix_triggered or direct_triggered or reply_to_bot:
         reason = "group_triggered"
         if reply_to_bot and not (message.mentions_bot or prefix_triggered or direct_triggered):

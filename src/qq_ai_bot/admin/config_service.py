@@ -41,6 +41,7 @@ from qq_ai_bot.admin.models import (
     WebRuntimeConfig,
 )
 from qq_ai_bot.config import Settings, _csv_tuple
+from qq_ai_bot.identity.shadows import fill_person_space_shadows
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import RuntimeConfigOverrideModel
 from qq_ai_bot.persistence.unit_of_work import optional_session
@@ -202,6 +203,14 @@ class RuntimeConfigRepository:
             )
             if row is None:
                 raise RuntimeError("runtime override was not persisted")
+            await fill_person_space_shadows(
+                active,
+                row,
+                person_attr="canonical_person_id",
+                space_attr="canonical_space_id",
+                user_id=scope_id if scope_type is ConfigScopeType.USER else None,
+                group_id=scope_id if scope_type is ConfigScopeType.GROUP else None,
+            )
             after_state = _override_state(_record(row))
             audit = await add_audit_event(
                 active,

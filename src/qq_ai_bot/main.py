@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 import nonebot
-from nonebot.adapters.onebot.v11 import Adapter
+from nonebot.adapters.onebot.v11 import Adapter, Bot
 from nonebot.drivers.fastapi import Driver as FastAPIDriver
 
 from qq_ai_bot.config import Settings
@@ -55,11 +55,44 @@ def bootstrap(settings: Settings | None = None) -> None:
     driver.register_adapter(Adapter)
     application_lock = SQLiteApplicationLock(app_settings.sqlite_path)
 
+    @driver.on_bot_connect
+    async def _on_bot_connect(bot: Bot) -> None:
+        from sqlalchemy import select
+
+        from qq_ai_bot.identity.db_models import PresenceModel
+        from qq_ai_bot.identity.inventory import IDENTITY_PLATFORM
+
+        container = get_container()
+        presence_id = None
+        async with container.database.sessions() as session:
+            presence = await session.scalar(
+                select(PresenceModel).where(
+                    PresenceModel.platform == IDENTITY_PLATFORM,
+                    PresenceModel.external_account_id == str(bot.self_id),
+                )
+            )
+            if presence is not None:
+                presence_id = presence.id
+        container.gateway_registry.connect(bot, presence_id=presence_id)
+        await container.route_monitor.on_connection_change()
+
+    @driver.on_bot_disconnect
+    async def _on_bot_disconnect(bot: Bot) -> None:
+        container = get_container()
+        container.gateway_registry.disconnect(bot)
+        await container.route_monitor.on_connection_change()
+
     @driver.on_startup
     async def startup() -> None:
         application_lock.acquire()
         try:
             container = await ApplicationContainer.create(app_settings)
+            from qq_ai_bot.identity.binary_epoch import refuse_identity_binary_epoch
+            from qq_ai_bot.identity.runtime import load_identity_runtime
+
+            async with container.database.sessions() as session:
+                runtime = await load_identity_runtime(session)
+            refuse_identity_binary_epoch(runtime.state)
             set_container(container)
             await container.start()
         except BaseException:

@@ -900,3 +900,368 @@ async def test_three_consecutive_failures_stop_periodic_task(database) -> None:
     assert stopped.status is AutomationStatus.FAILED
     assert stopped.consecutive_failures == 3
     assert stopped.next_run_at is None
+
+
+def _script_to(user_id: str, extra: str | None = None) -> AutomationScript:
+    steps = [
+        {
+            "id": "send",
+            "call": "onebot.send_private_message",
+            "arguments": {"user_id": user_id, "text": "测试"},
+        }
+    ]
+    if extra is not None:
+        steps.append(
+            {
+                "id": "send2",
+                "call": "onebot.send_private_message",
+                "arguments": {"user_id": extra, "text": "另一人"},
+            }
+        )
+    return AutomationScript.model_validate(
+        {
+            "version": 1,
+            "name": "定向提醒",
+            "timezone": "Asia/Shanghai",
+            "schedule": {"type": "after", "seconds": 1},
+            "context": {"scene": "none"},
+            "steps": steps,
+            "limits": {
+                "max_steps": len(steps),
+                "max_llm_calls": 0,
+                "max_tool_calls": len(steps),
+                "max_messages": len(steps),
+                "timeout_seconds": 30,
+            },
+        }
+    )
+
+
+def _superuser_inbound(*targets: str) -> InboundMessage:
+    text = "1秒后提醒 " + " ".join(targets)
+    return InboundMessage(
+        message_id="automation-super",
+        event_type="private",
+        scope_type=ScopeType.PRIVATE,
+        sender=SenderIdentity(user_id="9000", nickname="超管"),
+        text=text,
+        raw_text=text,
+        bot_user_id="7777",
+    )
+
+
+@pytest.mark.asyncio
+async def test_superuser_script_persists_explicit_person_not_creator(database) -> None:
+    from qq_ai_bot.identity.shadows import person_id_for
+
+    clock = FakeClock(datetime(2026, 7, 27, tzinfo=UTC))
+    settings = make_settings(database.url, automation_enabled=True, superusers_csv="9000")
+    service = AutomationService(
+        settings=settings,
+        repository=AutomationRepository(database),
+        registry=build_capability_registry(),
+        time_service=TimeContextService(database, clock=clock),
+    )
+    row = await service.create(
+        _script_to("1808058482"),
+        inbound=_superuser_inbound("1808058482"),
+        conversation_key="private:9000",
+    )
+    assert row.canonical_target_person_id is not None
+    assert row.canonical_creator_person_id is not None
+    assert row.canonical_target_person_id != row.canonical_creator_person_id
+    async with database.sessions() as session:
+        assert await person_id_for(session, "1808058482") == row.canonical_target_person_id
+        assert await person_id_for(session, "9000") == row.canonical_creator_person_id
+        assert await person_id_for(session, "1808058482") != await person_id_for(session, "9000")
+
+
+@pytest.mark.asyncio
+async def test_multiple_distinct_send_targets_are_rejected(database) -> None:
+    clock = FakeClock(datetime(2026, 7, 27, tzinfo=UTC))
+    settings = make_settings(database.url, automation_enabled=True, superusers_csv="9000")
+    service = AutomationService(
+        settings=settings,
+        repository=AutomationRepository(database),
+        registry=build_capability_registry(),
+        time_service=TimeContextService(database, clock=clock),
+    )
+    with pytest.raises(ValueError, match="一个永久发送目标"):
+        await service.create(
+            _script_to("1808058482", extra="1808058483"),
+            inbound=_superuser_inbound("1808058482", "1808058483"),
+            conversation_key="private:9000",
+        )
+
+
+async def _flip_v2(database) -> None:
+    from qq_ai_bot.identity.db_models import IdentityRuntimeStateModel
+
+    async with database.sessions() as session, session.begin():
+        row = await session.get(IdentityRuntimeStateModel, 1)
+        assert row is not None
+        row.state = "v2"
+        row.cutover_id = "550e8400-e29b-41d4-a716-446655440099"
+        row.source_fingerprint = "cutover-fingerprint"
+        row.completed_at = datetime(2026, 8, 24, tzinfo=UTC)
+
+
+async def _v2_person(database, user_id: str) -> str:
+    from qq_ai_bot.identity.dual_write import ensure_canonical_person_preconfig
+
+    now = datetime(2026, 8, 24, tzinfo=UTC)
+    async with database.sessions() as session, session.begin():
+        return await ensure_canonical_person_preconfig(session, user_id, now=now)
+
+
+async def _v2_space(database, group_id: str) -> str:
+    from qq_ai_bot.identity.dual_write import ensure_canonical_space_preconfig
+
+    now = datetime(2026, 8, 24, tzinfo=UTC)
+    async with database.sessions() as session, session.begin():
+        return await ensure_canonical_space_preconfig(session, group_id, now=now)
+
+
+async def _people_count(database) -> int:
+    from qq_ai_bot.persistence.models import PersonModel
+
+    async with database.sessions() as session:
+        return int(await session.scalar(select(func.count()).select_from(PersonModel)) or 0)
+
+
+async def _person_count(database) -> int:
+    from qq_ai_bot.identity.db_models import CanonicalPersonModel
+
+    async with database.sessions() as session:
+        return int(
+            await session.scalar(select(func.count()).select_from(CanonicalPersonModel)) or 0
+        )
+
+
+async def _binding_count(database) -> int:
+    from qq_ai_bot.identity.db_models import IdentityBindingModel
+
+    async with database.sessions() as session:
+        return int(
+            await session.scalar(select(func.count()).select_from(IdentityBindingModel)) or 0
+        )
+
+
+async def _people_has(database, user_id: str) -> bool:
+    from qq_ai_bot.persistence.models import PersonModel
+
+    async with database.sessions() as session:
+        return await session.get(PersonModel, user_id) is not None
+
+
+def _v2_service(database):
+    clock = FakeClock(datetime(2026, 7, 27, tzinfo=UTC))
+    settings = make_settings(database.url, automation_enabled=True, superusers_csv="9000")
+    return AutomationService(
+        settings=settings,
+        repository=AutomationRepository(database),
+        registry=build_capability_registry(),
+        time_service=TimeContextService(database, clock=clock),
+    )
+
+
+@pytest.mark.asyncio
+async def test_v2_create_person_automation_does_not_insert_people(database) -> None:
+    await _flip_v2(database)
+    creator = await _v2_person(database, "9000")
+    target = await _v2_person(database, "1808058482")
+    persons_before = await _person_count(database)
+    bindings_before = await _binding_count(database)
+    row = await _v2_service(database).create(
+        _script_to("1808058482"),
+        inbound=_superuser_inbound("1808058482"),
+        conversation_key="private:9000",
+    )
+    assert row.canonical_creator_person_id == creator
+    assert row.canonical_target_person_id == target
+    assert row.canonical_target_space_id is None
+    assert await _person_count(database) == persons_before
+    assert await _binding_count(database) == bindings_before
+    assert await _people_count(database) == 1
+    assert not await _people_has(database, "1808058482")
+    assert await _people_has(database, "9000")
+
+
+@pytest.mark.asyncio
+async def test_v2_update_switches_to_same_person_alias(database) -> None:
+    from uuid import uuid4
+
+    from qq_ai_bot.identity.db_models import IdentityBindingModel
+
+    await _flip_v2(database)
+    await _v2_person(database, "9000")
+    target = await _v2_person(database, "1808058482")
+    now = datetime(2026, 8, 24, tzinfo=UTC)
+    async with database.sessions() as session, session.begin():
+        session.add(
+            IdentityBindingModel(
+                id=str(uuid4()),
+                person_id=target,
+                platform="qq",
+                external_account_id="1808058483",
+                display_name="alias",
+                status="active",
+                revision=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    service = _v2_service(database)
+    inbound = _superuser_inbound("1808058482", "1808058483")
+    row = await service.create(
+        _script_to("1808058482"),
+        inbound=inbound,
+        conversation_key="private:9000",
+    )
+    assert row.canonical_target_person_id == target
+    updated = await service.update(
+        row.id,
+        _script_to("1808058483"),
+        inbound=inbound,
+        conversation_key="private:9000",
+    )
+    assert updated.canonical_target_person_id == target
+    assert await _people_count(database) == 1
+    assert not await _people_has(database, "1808058482")
+    assert not await _people_has(database, "1808058483")
+    assert await _people_has(database, "9000")
+
+
+@pytest.mark.asyncio
+async def test_v2_unknown_person_and_space_targets_fail_closed(database) -> None:
+    await _flip_v2(database)
+    await _v2_person(database, "9000")
+    service = _v2_service(database)
+    with pytest.raises(ValueError, match="永久主体"):
+        await service.create(
+            _script_to("1808058482"),
+            inbound=_superuser_inbound("1808058482"),
+            conversation_key="private:9000",
+        )
+    inbound = InboundMessage(
+        message_id="automation-space-unknown",
+        event_type="group",
+        scope_type=ScopeType.GROUP,
+        sender=SenderIdentity(user_id="9000", nickname="超管"),
+        text="1秒后提醒群",
+        raw_text="1秒后提醒群",
+        bot_user_id="7777",
+        group_id="2001",
+    )
+    with pytest.raises(ValueError, match="永久空间"):
+        await service.create(
+            AutomationScript.model_validate(
+                {
+                    "version": 1,
+                    "name": "群提醒",
+                    "timezone": "Asia/Shanghai",
+                    "schedule": {"type": "after", "seconds": 1},
+                    "context": {"scene": "none"},
+                    "steps": [
+                        {
+                            "id": "send",
+                            "call": "onebot.send_group_message",
+                            "arguments": {"group_id": "$current_group_id", "text": "测"},
+                        }
+                    ],
+                    "limits": {
+                        "max_steps": 1,
+                        "max_llm_calls": 0,
+                        "max_tool_calls": 1,
+                        "max_messages": 1,
+                        "timeout_seconds": 30,
+                    },
+                }
+            ),
+            inbound=inbound,
+            conversation_key="group:2001",
+        )
+    assert await _people_count(database) == 0
+
+
+@pytest.mark.asyncio
+async def test_v2_creator_without_binding_fails_closed(database) -> None:
+    await _flip_v2(database)
+    with pytest.raises(ValueError, match="创建者没有对应的永久主体"):
+        await _v2_service(database).create(
+            _script(),
+            inbound=_inbound("10001"),
+            conversation_key="private:10001",
+        )
+    assert await _people_count(database) == 0
+
+
+@pytest.mark.asyncio
+async def test_v2_disabled_binding_and_space_fallback_are_canonical_only(database) -> None:
+    from qq_ai_bot.identity.db_models import IdentityBindingModel
+    from qq_ai_bot.persistence.models import GroupModel
+
+    await _flip_v2(database)
+    await _v2_person(database, "9000")
+    await _v2_person(database, "1808058482")
+    space = await _v2_space(database, "2001")
+    async with database.sessions() as session, session.begin():
+        binding = await session.scalar(
+            select(IdentityBindingModel).where(
+                IdentityBindingModel.external_account_id == "1808058482"
+            )
+        )
+        assert binding is not None
+        binding.status = "disabled"
+    service = _v2_service(database)
+    with pytest.raises(ValueError, match="永久主体"):
+        await service.create(
+            _script_to("1808058482"),
+            inbound=_superuser_inbound("1808058482"),
+            conversation_key="private:9000",
+        )
+    inbound = InboundMessage(
+        message_id="automation-space-ok",
+        event_type="group",
+        scope_type=ScopeType.GROUP,
+        sender=SenderIdentity(user_id="9000", nickname="超管"),
+        text="1秒后提醒群",
+        raw_text="1秒后提醒群",
+        bot_user_id="7777",
+        group_id="2001",
+    )
+    row = await service.create(
+        AutomationScript.model_validate(
+            {
+                "version": 1,
+                "name": "群提醒",
+                "timezone": "Asia/Shanghai",
+                "schedule": {"type": "after", "seconds": 1},
+                "context": {"scene": "none"},
+                "steps": [
+                    {
+                        "id": "send",
+                        "call": "onebot.send_group_message",
+                        "arguments": {"group_id": "$current_group_id", "text": "测"},
+                    }
+                ],
+                "limits": {
+                    "max_steps": 1,
+                    "max_llm_calls": 0,
+                    "max_tool_calls": 1,
+                    "max_messages": 1,
+                    "timeout_seconds": 30,
+                },
+            }
+        ),
+        inbound=inbound,
+        conversation_key="group:2001",
+    )
+    assert row.canonical_target_space_id == space
+    assert row.canonical_target_person_id is None
+    async with database.sessions() as session:
+        groups = int(await session.scalar(select(func.count()).select_from(GroupModel)) or 0)
+    assert groups == 0
+    assert await _people_count(database) == 1
+    assert not await _people_has(database, "1808058482")
+    assert await _people_has(database, "9000")

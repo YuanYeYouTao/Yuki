@@ -12,6 +12,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select, text
 
+from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
 from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
 from qq_ai_bot.domain.conversations import ConversationScope
@@ -20,6 +21,7 @@ from qq_ai_bot.identity.backfill_service import IdentityBackfillService
 from qq_ai_bot.identity.backfill_types import BackfillSettingsInput
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
+    CanonicalSpaceModel,
     IdentityBindingModel,
     IdentityRuntimeStateModel,
     PresenceModel,
@@ -138,11 +140,12 @@ def test_ast_writer_inventory_covers_every_legacy_write() -> None:
     assert missing == [], missing
     assert any(item.epoch == "c8" and "people" in item.tables for item in C8_WRITER_INVENTORY)
     assert any(item.epoch == "c7_offline" for item in C8_WRITER_INVENTORY)
-    assert any(item.epoch == "defer_c20" for item in C8_WRITER_INVENTORY)
-    assert any(item.epoch == "defer_c21" for item in C8_WRITER_INVENTORY)
-    assert any(item.epoch == "defer_c22" for item in C8_WRITER_INVENTORY)
-    assert any(item.epoch == "defer_c23" for item in C8_WRITER_INVENTORY)
-    assert any(item.epoch == "defer_c24" for item in C8_WRITER_INVENTORY)
+    assert any(item.epoch == "c20" for item in C8_WRITER_INVENTORY)
+    assert any(item.epoch == "c21" for item in C8_WRITER_INVENTORY)
+    assert any(item.epoch == "c22" for item in C8_WRITER_INVENTORY)
+    assert any(item.epoch == "c23" for item in C8_WRITER_INVENTORY)
+    assert any(item.epoch == "c24" for item in C8_WRITER_INVENTORY)
+    assert not any(item.epoch.startswith("defer_c2") for item in C8_WRITER_INVENTORY)
 
 
 def test_write_settings_module_does_not_use_contextvar() -> None:
@@ -206,6 +209,22 @@ def test_dual_write_does_not_import_c7_cli_or_renderer() -> None:
     assert "qq_ai_bot.cli" not in imported
     assert "qq_ai_bot.identity.reporting" not in imported
     assert DualWriteErrorAlias is IdentityDualWriteError
+
+
+@pytest.mark.asyncio
+async def test_enabled_flags_dual_write_person_and_space(database: Database) -> None:
+    _settings()
+    await PeopleRepository(database).set_enabled("1001", False)
+    await GroupSettingsRepository(database).set_enabled("2001", True)
+    async with database.sessions() as session:
+        people = await session.get(PersonModel, "1001")
+        group = await session.get(GroupModel, "2001")
+        assert people is not None and people.canonical_person_id
+        assert group is not None and group.canonical_space_id
+        person = await session.get(CanonicalPersonModel, people.canonical_person_id)
+        space = await session.get(CanonicalSpaceModel, group.canonical_space_id)
+        assert person is not None and person.enabled is False
+        assert space is not None and space.enabled is True
 
 
 @pytest.mark.asyncio
@@ -609,6 +628,7 @@ async def test_forgetme_clears_person_and_keeps_presence(database: Database) -> 
             )
         ).all()
         assert leftover_events == []
+        assert (await session.scalars(select(CanonicalConversationModel))).all() == []
 
 
 @pytest.mark.asyncio

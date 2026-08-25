@@ -9,7 +9,6 @@ from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
-from nonebot import get_bots
 from pydantic import BaseModel
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -36,6 +35,12 @@ from qq_ai_bot.application.modules import (
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.messages import InboundMessage
+from qq_ai_bot.gateway.registry import GatewayConnectionRegistry, configure_process_registry
+from qq_ai_bot.identity.bootstrap import bootstrap_settings_identity
+from qq_ai_bot.identity.canonical_uow import CanonicalIngressUnitOfWork
+from qq_ai_bot.identity.ingress import CanonicalIngressResolver
+from qq_ai_bot.identity.inventory import IDENTITY_PLATFORM
+from qq_ai_bot.identity.routing import PresenceRouter, RouteMonitor
 from qq_ai_bot.mcp.admin import MCPCommandHandler
 from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.persistence.database import Database
@@ -51,7 +56,10 @@ from qq_ai_bot.plugin_host.facades import (
 from qq_ai_bot.plugin_host.http_client import BoundHttpFacade
 from qq_ai_bot.plugin_host.manifest import PluginManifest
 from qq_ai_bot.plugin_host.media_artifacts import PluginMediaArtifactStore
-from qq_ai_bot.plugin_host.notification_delivery import PluginNotificationOutboxWorker
+from qq_ai_bot.plugin_host.notification_delivery import (
+    OneBotNotificationTransport,
+    PluginNotificationOutboxWorker,
+)
 from qq_ai_bot.plugin_host.notification_repository import PluginNotificationRepository
 from qq_ai_bot.plugin_host.secrets import BoundSecretsFacade
 from qq_ai_bot.plugin_host.session_facade import BoundAgentSessionFacade
@@ -96,6 +104,10 @@ class ApplicationContainer:
         self.persistence = persistence
         self.database = persistence.database
         self.runtime_config = persistence.runtime_config
+        self.gateway_registry = GatewayConnectionRegistry()
+        configure_process_registry(self.gateway_registry)
+        self.presence_router = PresenceRouter(self.database, self.gateway_registry)
+        self.route_monitor = RouteMonitor(self.presence_router)
         mcp = MCPModule(settings, self.database, lifecycle=self.lifecycle).build()
         self.mcp_bundle = mcp
         self.mcp_repository = mcp.repository
@@ -344,6 +356,8 @@ class ApplicationContainer:
             mcp_manager=self.mcp_manager,
             mcp_artifacts=self.tool_artifacts,
             bot_connected=self.bot_account_connected,
+            connection_registry=self.gateway_registry,
+            presence_router=self.presence_router,
         )
         automation = self.automation_module.build()
         self.automation_bundle = automation
@@ -366,6 +380,10 @@ class ApplicationContainer:
             repository=self.plugin_notification_repository,
             artifacts=self.plugin_media_artifacts,
             ledger=self.ledger,
+            transport=OneBotNotificationTransport(
+                self.gateway_registry,
+                router=self.presence_router,
+            ),
         )
         self.plugin_background_turns = PluginBackgroundTurnWorker(
             repository=self.plugin_notification_repository,
@@ -458,6 +476,12 @@ class ApplicationContainer:
             mcp_commands=self.mcp_commands,
             memory_rebuild=self.memory_rebuild_service,
         )
+        self.canonical_ingress = CanonicalIngressResolver(
+            self.database,
+            self.gateway_registry,
+            self.presence_router,
+        )
+        self.canonical_uow = CanonicalIngressUnitOfWork(self.database, self.presence_router)
         self.processor = MessageProcessor(
             settings=settings,
             ledger=self.ledger,
@@ -473,6 +497,8 @@ class ApplicationContainer:
             rate_limiter=self.rate_limiter,
             concurrency=self.concurrency,
             onebot_connected=self.onebot_connected,
+            canonical_ingress=self.canonical_ingress,
+            canonical_uow=self.canonical_uow,
             people=self.people,
             memories=self.memories,
             memory_worker=self.memory_worker,
@@ -708,14 +734,14 @@ class ApplicationContainer:
             raise
 
     def onebot_connected(self) -> bool:
-        """Return whether NoneBot currently has at least one connected adapter bot."""
+        """Return whether the Registry currently has at least one active connection."""
 
-        return bool(get_bots())
+        return self.gateway_registry.has_any_active()
 
     def bot_account_connected(self, bot_user_id: str) -> bool:
-        """Return whether the exact bot account delegated by a task is connected."""
+        """Return whether the exact bot account has one determined Registry connection."""
 
-        return any(str(getattr(bot, "self_id", "")) == bot_user_id for bot in get_bots().values())
+        return self.gateway_registry.has_unique_account(IDENTITY_PLATFORM, bot_user_id)
 
     def _register_lifecycle(self) -> None:
         self.lifecycle.register(
@@ -791,6 +817,7 @@ class ApplicationContainer:
     async def start(self) -> None:
         """Start maintenance tasks after migrations have run."""
 
+        await bootstrap_settings_identity(self.database, self.settings)
         await self.lifecycle.start()
 
     async def _cleanup_loop(self) -> None:

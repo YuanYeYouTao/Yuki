@@ -222,6 +222,11 @@ class PluginInvocation:
     visual_observation: VisualObservation | None = field(default=None, repr=False)
     web_was_used: bool = False
     reply_effects: list[ReplyEffect] | None = field(default=None, repr=False)
+    legacy_conversation_key: str | None = None
+    person_id: str | None = None
+    space_id: str | None = None
+    conversation_id: str | None = None
+    presence_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.plugin_id or not self.actor_user_id or not self.bot_user_id:
@@ -251,6 +256,10 @@ class PluginInvocation:
 
     @property
     def conversation_key(self) -> str:
+        if self.legacy_conversation_key:
+            return self.legacy_conversation_key
+        if self.inbound is not None and self.inbound.legacy_conversation_key:
+            return self.inbound.legacy_conversation_key
         if self.inbound is not None:
             return self.inbound.scope().key
         if self.current_group_id:

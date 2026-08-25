@@ -155,7 +155,9 @@ class AutomationWorker:
                 max_consecutive_failures=self._settings.automation_max_consecutive_failures,
             )
             return
-        if not self._bot_connected(automation.bot_user_id):
+        if not await self._uses_canonical_send(automation) and not self._bot_connected(
+            automation.bot_user_id
+        ):
             # No run row is created, so the exact scheduled slot remains eligible
             # after reconnection while still inside its misfire grace window.
             await self._repository.release_claim(
@@ -210,3 +212,14 @@ class AutomationWorker:
             result.llm_calls,
             result.tool_calls,
         )
+
+    async def _uses_canonical_send(self, automation: Any) -> bool:
+        if not (
+            getattr(automation, "canonical_target_person_id", None)
+            or getattr(automation, "canonical_target_space_id", None)
+        ):
+            return False
+        from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
+
+        async with self._repository._database.sessions() as session:
+            return await identity_runtime_is_complete_v2(session)

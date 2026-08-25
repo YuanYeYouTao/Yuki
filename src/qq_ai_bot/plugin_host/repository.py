@@ -14,6 +14,7 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.identity.shadows import fill_person_space_shadows
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.unit_of_work import optional_session
 from qq_ai_bot.plugin_host.db_models import (
@@ -388,6 +389,14 @@ class PluginConfigRepository:
                 )
             )
             assert row is not None
+            await fill_person_space_shadows(
+                session,
+                row,
+                person_attr="canonical_person_id",
+                space_attr="canonical_space_id",
+                user_id=scope_id if scope_type == "user" else None,
+                group_id=scope_id if scope_type == "group" else None,
+            )
             return _config_record(row)
 
     async def delete(
@@ -575,6 +584,14 @@ class PluginStateRepository:
                 )
             )
             assert row is not None
+            await fill_person_space_shadows(
+                session,
+                row,
+                person_attr="canonical_person_id",
+                space_attr=None,
+                user_id=row.subject_user_id,
+                group_id=None,
+            )
             return _state_record(row)
 
     async def delete(

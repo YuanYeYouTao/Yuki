@@ -12,7 +12,9 @@ from typing import Any
 from qq_ai_bot.automation.authority import (
     AuthorityContext,
     DelegatedAuthority,
+    PermissionLevel,
     effective_delegated_capabilities,
+    permission_for,
 )
 from qq_ai_bot.automation.gateway import ProactiveGatewayError
 from qq_ai_bot.automation.models import (
@@ -32,6 +34,8 @@ from qq_ai_bot.automation.registry import (
 from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.templates import TemplateError, resolve_templates
 from qq_ai_bot.config import Settings
+from qq_ai_bot.control_plane.principal import ControlPrincipal, PrincipalSource
+from qq_ai_bot.domain.identity import PersonId, PrincipalId
 from qq_ai_bot.time.service import TimeContextService
 
 logger = logging.getLogger(__name__)
@@ -96,6 +100,29 @@ class AutomationExecutor:
                 error_category="delegated_authority_revoked",
                 summary={"reason": "required capability is no longer delegated"},
             )
+        creator_person = None
+        if automation.canonical_creator_person_id:
+            creator_person = PersonId.parse(automation.canonical_creator_person_id)
+        principal = ControlPrincipal(
+            principal_id=PrincipalId.new(),
+            person_id=creator_person,
+            source=PrincipalSource.QQ if creator_person is not None else PrincipalSource.SYSTEM,
+            roles=(
+                ("superuser",)
+                if permission_for(self._settings, automation.creator_user_id)
+                is PermissionLevel.SUPERUSER
+                else ("user",)
+            ),
+            granted_capabilities=(),
+            authenticated=True,
+            active=True,
+        )
+        if not principal.authenticated or not principal.active:
+            return ExecutionResult(
+                status=RunStatus.BLOCKED,
+                error_category="delegated_authority_revoked",
+                summary={"reason": "control principal is no longer active"},
+            )
         local = self._time.at(run.actual_started_at, automation.timezone)
         authority_context = AuthorityContext(
             origin=TurnOrigin.SCHEDULED_AUTOMATION,
@@ -148,6 +175,8 @@ class AutomationExecutor:
                         automation_context=automation.script.context,
                         conversation_key=f"automation:{automation.id}",
                         web_was_used=web_was_used,
+                        canonical_target_person_id=automation.canonical_target_person_id,
+                        canonical_target_space_id=automation.canonical_target_space_id,
                     )
                     if self._gateway_factory is not None:
                         context = replace(
@@ -230,6 +259,23 @@ class AutomationExecutor:
                 error_category="runtime_timeout",
             )
         except AutomationExecutionError as exc:
+            if exc.category in {
+                "paused",
+                "ambiguous",
+                "none",
+                "disconnected",
+                "no_connection",
+                "capability",
+                "bot_unavailable",
+            }:
+                return ExecutionResult(
+                    status=RunStatus.BLOCKED,
+                    steps_completed=steps_completed,
+                    llm_calls=llm_calls,
+                    tool_calls=tool_calls,
+                    messages_sent=messages_sent,
+                    error_category=exc.category,
+                )
             return ExecutionResult(
                 status=RunStatus.UNCERTAIN if exc.uncertain else RunStatus.FAILED,
                 steps_completed=steps_completed,

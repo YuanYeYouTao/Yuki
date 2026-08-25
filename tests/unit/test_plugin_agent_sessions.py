@@ -326,3 +326,73 @@ async def test_durable_sessions_survive_service_recreation_but_ephemeral_session
         )
         is None
     )
+
+
+@pytest.mark.asyncio
+async def test_v2_session_create_and_append_use_active_binding_without_people(
+    database: Database,
+) -> None:
+    from datetime import UTC, datetime
+
+    from qq_ai_bot.identity.db_models import IdentityRuntimeStateModel
+    from qq_ai_bot.identity.dual_write import ensure_canonical_person_preconfig
+    from qq_ai_bot.persistence.models import PersonModel
+    from qq_ai_bot.plugin_host.db_models import PluginAgentSessionModel
+
+    await _install(database, "com.example.v2-session")
+    async with database.sessions() as session, session.begin():
+        row = await session.get(IdentityRuntimeStateModel, 1)
+        assert row is not None
+        row.state = "v2"
+        row.cutover_id = "550e8400-e29b-41d4-a716-446655440099"
+        row.source_fingerprint = "cutover-fingerprint"
+        row.completed_at = datetime(2026, 8, 24, tzinfo=UTC)
+    repository = PluginAgentSessionRepository(database)
+    with pytest.raises(ValueError, match="session owner has no Person"):
+        await repository.create(
+            plugin_id="com.example.v2-session",
+            owner_user_id="1001",
+            scope_type="user",
+            scope_id="1001",
+        )
+    now = datetime(2026, 8, 24, tzinfo=UTC)
+    async with database.sessions() as session, session.begin():
+        owner = await ensure_canonical_person_preconfig(session, "1001", now=now)
+    created = await repository.create(
+        plugin_id="com.example.v2-session",
+        owner_user_id="1001",
+        scope_type="user",
+        scope_id="1001",
+    )
+    with pytest.raises(ValueError, match="session sender has no Person"):
+        await repository.append_message(
+            plugin_id="com.example.v2-session",
+            session_id=created.session_id,
+            role="user",
+            content="unknown sender",
+            sender_user_id="404",
+        )
+    message = await repository.append_message(
+        plugin_id="com.example.v2-session",
+        session_id=created.session_id,
+        role="user",
+        content="known sender",
+        sender_user_id="1001",
+    )
+    assert message.sender_user_id == "1001"
+    async with database.sessions() as session:
+        from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel
+
+        stored = await session.get(PluginAgentSessionModel, created.session_id)
+        persons = int(
+            await session.scalar(select(func.count()).select_from(CanonicalPersonModel)) or 0
+        )
+        bindings = int(
+            await session.scalar(select(func.count()).select_from(IdentityBindingModel)) or 0
+        )
+        people = int(await session.scalar(select(func.count()).select_from(PersonModel)) or 0)
+    assert stored is not None
+    assert stored.canonical_owner_person_id == owner
+    assert persons == 1
+    assert bindings == 1
+    assert people == 1

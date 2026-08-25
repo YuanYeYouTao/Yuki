@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy.dialects.sqlite import insert
 
+from qq_ai_bot.identity.shadows import fill_person_space_shadows
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import PersonTimeSettingModel
 from qq_ai_bot.time.models import TimeContext
@@ -79,6 +80,16 @@ class TimeContextService:
                     set_={"timezone": normalized, "updated_at": now},
                 )
             )
+            row = await session.get(PersonTimeSettingModel, user_id)
+            if row is not None:
+                await fill_person_space_shadows(
+                    session,
+                    row,
+                    person_attr="canonical_person_id",
+                    space_attr=None,
+                    user_id=user_id,
+                    group_id=None,
+                )
         return normalized
 
     async def current(self, user_id: str) -> TimeContext:

@@ -26,6 +26,7 @@ from qq_ai_bot.emoji.models import (
     EmojiScopeState,
     StoredEmojiMedia,
 )
+from qq_ai_bot.identity.shadows import fill_person_space_shadows
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.unit_of_work import optional_session
 
@@ -172,6 +173,14 @@ class EmojiRepository:
             )
             if row is None:
                 raise RuntimeError("emoji candidate upsert did not return a row")
+            await fill_person_space_shadows(
+                session,
+                row,
+                person_attr="canonical_first_seen_person_id",
+                space_attr="canonical_first_seen_space_id",
+                user_id=row.first_seen_user_id,
+                group_id=row.first_seen_group_id,
+            )
             created = row.id == asset_id and _rowcount(result) == 1
             return self._asset(row), created
 
@@ -304,6 +313,14 @@ class EmojiRepository:
             )
             if row is None:
                 raise RuntimeError("emoji scope upsert did not return a row")
+            await fill_person_space_shadows(
+                session,
+                row,
+                person_attr=None,
+                space_attr="canonical_space_id",
+                user_id=None,
+                group_id=scope_id if scope_type == "group" else None,
+            )
             return self._scope(row)
 
     async def remove_scope(
@@ -523,6 +540,22 @@ class EmojiRepository:
                     set_={"enabled": enabled, "updated_at": now},
                 )
             )
+            row = await session.scalar(
+                select(EmojiScopeStateModel).where(
+                    EmojiScopeStateModel.emoji_id == emoji_id,
+                    EmojiScopeStateModel.scope_type == "group",
+                    EmojiScopeStateModel.scope_id == group_id,
+                )
+            )
+            if row is not None:
+                await fill_person_space_shadows(
+                    session,
+                    row,
+                    person_attr=None,
+                    space_attr="canonical_space_id",
+                    user_id=None,
+                    group_id=group_id,
+                )
             if enabled and asset.status == EmojiLifecycleStatus.RECOGNIZED.value:
                 asset.status = EmojiLifecycleStatus.ADOPTED.value
                 asset.updated_at = now
@@ -672,15 +705,23 @@ class EmojiRepository:
                     updated_at=now,
                 )
             )
-            session.add(
-                EmojiUsageEventModel(
-                    emoji_id=emoji_id,
-                    actor_user_id=actor_user_id,
-                    group_id=group_id,
-                    trigger_message_id=trigger_message_id,
-                    source=source[:32],
-                    created_at=now,
-                )
+            usage = EmojiUsageEventModel(
+                emoji_id=emoji_id,
+                actor_user_id=actor_user_id,
+                group_id=group_id,
+                trigger_message_id=trigger_message_id,
+                source=source[:32],
+                created_at=now,
+            )
+            session.add(usage)
+            await session.flush()
+            await fill_person_space_shadows(
+                session,
+                usage,
+                person_attr="canonical_actor_person_id",
+                space_attr="canonical_space_id",
+                user_id=actor_user_id,
+                group_id=group_id,
             )
 
     async def counts(self) -> dict[str, int]:

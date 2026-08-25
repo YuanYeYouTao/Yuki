@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from qq_ai_bot.identity.shadows import fill_person_space_shadows
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.speech.db_models import PersonSpeechPreferenceModel
 from qq_ai_bot.speech.models import VoicePreferenceMode
@@ -50,6 +51,14 @@ class VoicePreferenceRepository:
             row.mode = mode.value
             row.source_message_id = source_message_id[:128]
             row.updated_at = timestamp
+            await fill_person_space_shadows(
+                session,
+                row,
+                person_attr="canonical_person_id",
+                space_attr=None,
+                user_id=user_id,
+                group_id=None,
+            )
             await session.flush()
             return self._record(row)
 

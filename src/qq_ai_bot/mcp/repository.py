@@ -199,22 +199,19 @@ class MCPRepository:
     ) -> None:
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
-            session.add(
-                ToolInvocationModel(
-                    runtime_turn_id=claim_runtime_turn_id(),
-                    conversation_key_hash=hashlib.sha256(
-                        conversation_key.encode("utf-8")
-                    ).hexdigest(),
-                    provider_id=provider_id[:128],
-                    tool_name=tool_name[:255],
-                    success=success,
-                    latency_seconds=max(0.0, latency_seconds),
-                    result_size=max(0, result_size),
-                    artifact_created=artifact_created,
-                    error_category=error_category[:128] if error_category else None,
-                    created_at=now,
-                )
+            invocation = ToolInvocationModel(
+                runtime_turn_id=claim_runtime_turn_id(),
+                conversation_key_hash=hashlib.sha256(conversation_key.encode("utf-8")).hexdigest(),
+                provider_id=provider_id[:128],
+                tool_name=tool_name[:255],
+                success=success,
+                latency_seconds=max(0.0, latency_seconds),
+                result_size=max(0, result_size),
+                artifact_created=artifact_created,
+                error_category=error_category[:128] if error_category else None,
+                created_at=now,
             )
+            session.add(invocation)
             event = None
             if trigger_message_id and bot_user_id:
                 event = await session.scalar(
@@ -223,7 +220,11 @@ class MCPRepository:
                         ChatEventModel.platform_message_id == trigger_message_id,
                     )
                 )
-            if event is not None:
+            if event is not None and invocation.canonical_conversation_id is None:
+                invocation.canonical_conversation_id = event.canonical_conversation_id
+            from qq_ai_bot.identity.memory_guard import refuse_legacy_live_event
+
+            if event is not None and not await refuse_legacy_live_event(session, event):
                 conversation_key = (
                     f"group:{event.group_id}"
                     if event.group_id

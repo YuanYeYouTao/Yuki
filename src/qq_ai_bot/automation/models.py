@@ -160,6 +160,10 @@ class AutomationRecord(StrictModel):
     misfire_grace_seconds: int
     created_at: datetime
     updated_at: datetime
+    canonical_creator_person_id: str | None = None
+    canonical_target_person_id: str | None = None
+    canonical_target_space_id: str | None = None
+    canonical_presence_id: str | None = None
 
 
 class AutomationRunRecord(StrictModel):
