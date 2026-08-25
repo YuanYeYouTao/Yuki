@@ -161,8 +161,8 @@ class DeepSeekResponsesProvider(LLMProvider):
             payload["instructions"] = instructions
         if request.max_output_tokens is not None:
             payload["max_output_tokens"] = request.max_output_tokens
-        if request.temperature is not None:
-            payload["temperature"] = request.temperature
+        # Reasoning-oriented Responses providers either ignore temperature or reject it.
+        # Chat Completions keeps its independent, profile-controlled temperature path.
         tools: list[dict[str, Any]] = [
             {
                 "type": "function",
@@ -178,7 +178,9 @@ class DeepSeekResponsesProvider(LLMProvider):
         # DeepSeek Responses does not accept the OpenAI tool_choice field.
         # Tool schemas stay available and the model selects them from the
         # trusted instructions; AgentRunner validates terminal effects locally.
-        if request.thinking_enabled and request.reasoning_effort is not None:
+        if request.thinking_enabled is False:
+            payload["reasoning"] = {"effort": "none"}
+        elif request.thinking_enabled and request.reasoning_effort is not None:
             payload["reasoning"] = {"effort": request.reasoning_effort.value}
         if request.response_format is not None:
             payload["text"] = {"format": request.response_format}

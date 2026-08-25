@@ -120,7 +120,8 @@ async def test_non_thinking_request_omits_unsupported_tool_choice() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
         assert "tool_choice" not in payload
-        assert "reasoning" not in payload
+        assert "temperature" not in payload
+        assert payload["reasoning"] == {"effort": "none"}
         return httpx.Response(200, request=request, json=_fixture("text_completed.json"))
 
     async with httpx.AsyncClient(
@@ -144,6 +145,78 @@ async def test_non_thinking_request_omits_unsupported_tool_choice() -> None:
                     ),
                 ),
                 tool_choice="required",
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("thinking_enabled", "reasoning_effort", "expected_reasoning"),
+    [
+        (True, ReasoningEffort.HIGH, {"effort": "high"}),
+        (False, None, {"effort": "none"}),
+        (None, None, None),
+    ],
+)
+@pytest.mark.asyncio
+async def test_responses_reasoning_payload_matches_thinking_preference(
+    thinking_enabled: bool | None,
+    reasoning_effort: ReasoningEffort | None,
+    expected_reasoning: dict[str, str] | None,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert "temperature" not in payload
+        if expected_reasoning is None:
+            assert "reasoning" not in payload
+        else:
+            assert payload["reasoning"] == expected_reasoning
+        return httpx.Response(200, request=request, json=_fixture("text_completed.json"))
+
+    async with httpx.AsyncClient(
+        base_url="https://api.deepseek.com", transport=httpx.MockTransport(handler)
+    ) as client:
+        provider = DeepSeekResponsesProvider(
+            base_url="https://api.deepseek.com",
+            api_key="secret",
+            timeout_seconds=1,
+            max_retries=0,
+            client=client,
+        )
+        await provider.complete(
+            _request(
+                temperature=0.7,
+                thinking_enabled=thinking_enabled,
+                reasoning_effort=reasoning_effort,
+            )
+        )
+
+
+@pytest.mark.parametrize("model", ["deepseek-v4-flash", "gpt-5.6-luna"])
+@pytest.mark.asyncio
+async def test_responses_omit_temperature_for_provider_defaults(model: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload["model"] == model
+        assert "temperature" not in payload
+        assert payload["reasoning"] == {"effort": "high"}
+        return httpx.Response(200, request=request, json=_fixture("text_completed.json"))
+
+    async with httpx.AsyncClient(
+        base_url="https://opencode.ai/zen/go/v1", transport=httpx.MockTransport(handler)
+    ) as client:
+        provider = DeepSeekResponsesProvider(
+            base_url="https://opencode.ai/zen/go/v1",
+            api_key="secret",
+            timeout_seconds=1,
+            max_retries=0,
+            client=client,
+        )
+        await provider.complete(
+            _request(
+                model=model,
+                temperature=0.7,
+                thinking_enabled=True,
+                reasoning_effort=ReasoningEffort.HIGH,
             )
         )
 
