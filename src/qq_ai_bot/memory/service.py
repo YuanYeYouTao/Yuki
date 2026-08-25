@@ -17,6 +17,7 @@ from qq_ai_bot.memory.enums import (
     MemoryInvalidationReason,
     MemoryKind,
     MemoryResolutionAction,
+    MemoryReviewState,
     MemoryScopeType,
     MemorySourceType,
     MemoryStateAction,
@@ -642,8 +643,10 @@ class MemoryFactService:
             await self._clear_resolved_related_conflicts(fact_id, session=session)
         return changed
 
-    async def get_fact(self, fact_id: int) -> MemoryFact | None:
-        return await self._repository.get_fact(fact_id)
+    async def get_fact(
+        self, fact_id: int, *, session: AsyncSession | None = None
+    ) -> MemoryFact | None:
+        return await self._repository.get_fact(fact_id, session=session)
 
     async def confirm_fact(
         self,
@@ -1563,3 +1566,55 @@ class MemoryFactService:
         """Mark only facts that survived final context budgeting."""
 
         return await self._repository.mark_injected(fact_ids)
+
+    async def administrator_confirm(
+        self,
+        fact_id: int,
+        *,
+        actor_user_id: str,
+        session: AsyncSession,
+    ) -> MemoryFact | None:
+        """Confirm a fact through the existing state machine without extra evidence."""
+
+        current = await self._repository.get_fact(fact_id, session=session)
+        if current is None or current.status not in {
+            MemoryStatus.ACTIVE,
+            MemoryStatus.CONTESTED,
+        }:
+            return None
+        now = datetime.now(UTC)
+        await self._repository.transition(
+            fact_id,
+            status=current.status,
+            conflict_state=current.conflict_state,
+            invalidated_reason=current.invalidated_reason,
+            action=MemoryStateAction.CONFIRMED,
+            reason_code="administrator_confirm",
+            source_event_id=None,
+            actor_user_id=actor_user_id,
+            session=session,
+        )
+        await self._repository.update_confirmation_metadata(
+            fact_id,
+            authority=current.authority.value,
+            confidence=current.confidence,
+            confirmed_at=now,
+            session=session,
+        )
+        return await self._repository.get_fact(fact_id, session=session)
+
+    async def administrator_quarantine(
+        self,
+        fact_id: int,
+        *,
+        session: AsyncSession,
+    ) -> MemoryFact | None:
+        current = await self._repository.get_fact(fact_id, session=session)
+        if current is None:
+            return None
+        await self._repository.set_review_state(
+            fact_id,
+            review_state=MemoryReviewState.QUARANTINED,
+            session=session,
+        )
+        return await self._repository.get_fact(fact_id, session=session)

@@ -516,6 +516,19 @@ def test_dangerous_capabilities_are_absent_and_web_search_is_legal() -> None:
     assert "identity.binding.read_external" in CONTROL_CAPABILITY_IDS
     assert "conversation.metadata.read" in CONTROL_CAPABILITY_IDS
     assert "conversation.content.read" not in CONTROL_CAPABILITY_IDS
+    assert "control.relationship.read" in CONTROL_CAPABILITY_IDS
+    assert "control.relationship.mutate" in CONTROL_CAPABILITY_IDS
+    assert "control.preference.mutate" in CONTROL_CAPABILITY_IDS
+    assert "control.group.mutate" in CONTROL_CAPABILITY_IDS
+    assert "control.private_access.mutate" in CONTROL_CAPABILITY_IDS
+    assert "control.config.read" in CONTROL_CAPABILITY_IDS
+    assert "control.config.mutate" in CONTROL_CAPABILITY_IDS
+    assert "control.memory.metadata.read" in CONTROL_CAPABILITY_IDS
+    assert "control.memory.content.read" in CONTROL_CAPABILITY_IDS
+    assert "control.memory.mutate" in CONTROL_CAPABILITY_IDS
+    assert "control.automation.read" in CONTROL_CAPABILITY_IDS
+    assert "control.plugin.mutate" in CONTROL_CAPABILITY_IDS
+    assert "control.mcp.read" in CONTROL_CAPABILITY_IDS
     assert is_protocol_capability("conversation.metadata.read")
     assert is_protocol_capability("conversation.content.read") is False
     assert len(CONTROL_CAPABILITY_IDS) == len(CONTROL_CAPABILITY_DESCRIPTORS)

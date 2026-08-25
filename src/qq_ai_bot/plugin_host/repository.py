@@ -12,8 +12,10 @@ from sqlalchemy import LargeBinary, delete, func, or_, select, update
 from sqlalchemy import cast as sql_cast
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.unit_of_work import optional_session
 from qq_ai_bot.plugin_host.db_models import (
     PluginAuditEventModel,
     PluginConfigValueModel,
@@ -175,9 +177,11 @@ class PluginInstallationRepository:
             await session.flush()
             return _installation_record(row)
 
-    async def get(self, plugin_id: str) -> PluginInstallationRecord | None:
-        async with self._database.sessions() as session:
-            row = await session.get(PluginInstallationModel, plugin_id)
+    async def get(
+        self, plugin_id: str, *, session: AsyncSession | None = None
+    ) -> PluginInstallationRecord | None:
+        async with optional_session(self._database, session, write=False) as active:
+            row = await active.get(PluginInstallationModel, plugin_id)
             return _installation_record(row) if row is not None else None
 
     async def list_all(self) -> tuple[PluginInstallationRecord, ...]:
@@ -195,10 +199,11 @@ class PluginInstallationRepository:
         *,
         permissions: Iterable[str] | None = None,
         now: datetime | None = None,
+        session: AsyncSession | None = None,
     ) -> PluginInstallationRecord | None:
         timestamp = _aware_utc(now or datetime.now(UTC))
-        async with self._database.sessions() as session, session.begin():
-            row = await session.get(PluginInstallationModel, plugin_id)
+        async with optional_session(self._database, session, write=True) as active:
+            row = await active.get(PluginInstallationModel, plugin_id)
             if row is None:
                 return None
             requested = set(_decode_permissions(row.requested_permissions_json))
@@ -209,7 +214,7 @@ class PluginInstallationRepository:
             row.approved_at = timestamp
             row.status = "approved"
             row.updated_at = timestamp
-            await session.flush()
+            await active.flush()
             return _installation_record(row)
 
     async def set_enabled(
@@ -218,10 +223,11 @@ class PluginInstallationRepository:
         *,
         enabled: bool,
         now: datetime | None = None,
+        session: AsyncSession | None = None,
     ) -> PluginInstallationRecord | None:
         timestamp = _aware_utc(now or datetime.now(UTC))
-        async with self._database.sessions() as session, session.begin():
-            row = await session.get(PluginInstallationModel, plugin_id)
+        async with optional_session(self._database, session, write=True) as active:
+            row = await active.get(PluginInstallationModel, plugin_id)
             if row is None:
                 return None
             if enabled and row.approved_at is None:
@@ -229,7 +235,7 @@ class PluginInstallationRepository:
             row.enabled = enabled
             row.status = "approved" if enabled else "disabled"
             row.updated_at = timestamp
-            await session.flush()
+            await active.flush()
             return _installation_record(row)
 
     async def set_status(

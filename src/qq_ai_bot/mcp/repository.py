@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.mcp.models import MCPServerConfig, MCPToolMetadata
 from qq_ai_bot.mcp.redaction import redact_sensitive_data, redact_sensitive_text
@@ -58,9 +59,13 @@ class MCPRepository:
         self._reflection_excerpt_characters = max(1, min(reflection_excerpt_characters, 8000))
         self._reflection_retention_days = max(1, min(reflection_retention_days, 30))
 
-    async def state(self, server_id: str) -> MCPServerStateModel | None:
-        async with self._database.sessions() as session:
-            return await session.get(MCPServerStateModel, server_id)
+    async def state(
+        self, server_id: str, *, session: AsyncSession | None = None
+    ) -> MCPServerStateModel | None:
+        from qq_ai_bot.persistence.unit_of_work import optional_session
+
+        async with optional_session(self._database, session, write=False) as active:
+            return await active.get(MCPServerStateModel, server_id)
 
     async def save_state(
         self,
@@ -74,10 +79,13 @@ class MCPRepository:
         connected: bool = False,
         refreshed: bool = False,
         error_category: str | None = None,
+        session: AsyncSession | None = None,
     ) -> None:
         now = datetime.now(UTC)
-        async with self._database.sessions() as session:
-            row = await session.get(MCPServerStateModel, server_id)
+        from qq_ai_bot.persistence.unit_of_work import optional_session
+
+        async with optional_session(self._database, session, write=True) as active:
+            row = await active.get(MCPServerStateModel, server_id)
             if row is None:
                 row = MCPServerStateModel(
                     server_id=server_id,
@@ -92,7 +100,7 @@ class MCPRepository:
                     server_instructions="",
                     updated_at=now,
                 )
-                session.add(row)
+                active.add(row)
             row.transport = config.transport.value
             row.config_hash = config_hash
             row.enabled = enabled
@@ -109,17 +117,21 @@ class MCPRepository:
                 row.server_name = server_info.get("server_name", "")[:255]
                 row.server_version = server_info.get("server_version", "")[:128]
                 row.server_instructions = server_info.get("server_instructions", "")[:8000]
-            await session.commit()
+            await active.flush()
 
-    async def set_enabled(self, server_id: str, enabled: bool) -> bool:
-        async with self._database.sessions() as session:
-            row = await session.get(MCPServerStateModel, server_id)
+    async def set_enabled(
+        self, server_id: str, enabled: bool, *, session: AsyncSession | None = None
+    ) -> bool:
+        from qq_ai_bot.persistence.unit_of_work import optional_session
+
+        async with optional_session(self._database, session, write=True) as active:
+            row = await active.get(MCPServerStateModel, server_id)
             if row is None:
                 return False
             row.enabled = enabled
             row.status = "disconnected" if enabled else "disabled"
             row.updated_at = datetime.now(UTC)
-            await session.commit()
+            await active.flush()
             return True
 
     async def cached_tools(self, server_id: str) -> tuple[MCPToolMetadata, ...]:
@@ -137,12 +149,16 @@ class MCPRepository:
         self,
         server_id: str,
         tools: tuple[MCPToolMetadata, ...],
+        *,
+        session: AsyncSession | None = None,
     ) -> None:
-        async with self._database.sessions() as session:
-            await session.execute(
+        from qq_ai_bot.persistence.unit_of_work import optional_session
+
+        async with optional_session(self._database, session, write=True) as active:
+            await active.execute(
                 delete(MCPToolCacheModel).where(MCPToolCacheModel.server_id == server_id)
             )
-            session.add_all(
+            active.add_all(
                 MCPToolCacheModel(
                     server_id=item.server_id,
                     remote_tool_name=item.remote_tool_name,
@@ -157,7 +173,7 @@ class MCPRepository:
                 )
                 for item in tools
             )
-            await session.commit()
+            await active.flush()
 
     async def clear_cached_tools(self, server_id: str) -> None:
         async with self._database.sessions() as session:

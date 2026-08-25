@@ -40,6 +40,7 @@ from qq_ai_bot.persistence.models import (
 )
 from qq_ai_bot.persistence.repository_helpers import _ensure_person, _event_record
 from qq_ai_bot.persistence.repository_records import EventRecord
+from qq_ai_bot.persistence.unit_of_work import optional_session
 
 TERMINAL_STATUSES = {
     MemoryRebuildRunStatus.COMPLETED.value,
@@ -66,10 +67,11 @@ class MemoryRebuildRepository:
         fingerprint: str,
         statistics: MemoryRebuildPlanStatistics,
         actor_user_id: str,
+        session: AsyncSession | None = None,
     ) -> MemoryRebuildRun:
         now = datetime.now(UTC)
-        async with self.database.sessions() as session, session.begin():
-            await _ensure_person(session, actor_user_id, now=now)
+        async with optional_session(self.database, session, write=True) as active:
+            await _ensure_person(active, actor_user_id, now=now)
             row = MemoryRebuildRunModel(
                 public_id=str(uuid.uuid4()),
                 status=MemoryRebuildRunStatus.PLANNED.value,
@@ -98,13 +100,15 @@ class MemoryRebuildRepository:
                 completed_at=None,
                 cancelled_at=None,
             )
-            session.add(row)
-            await session.flush()
+            active.add(row)
+            await active.flush()
             return self._run(row)
 
-    async def get_run(self, public_id: str) -> MemoryRebuildRun | None:
-        async with self.database.sessions() as session:
-            row = await session.scalar(
+    async def get_run(
+        self, public_id: str, *, session: AsyncSession | None = None
+    ) -> MemoryRebuildRun | None:
+        async with optional_session(self.database, session, write=False) as active:
+            row = await active.scalar(
                 select(MemoryRebuildRunModel).where(MemoryRebuildRunModel.public_id == public_id)
             )
         return self._run(row) if row is not None else None
@@ -127,6 +131,7 @@ class MemoryRebuildRepository:
         expected: set[MemoryRebuildRunStatus],
         status: MemoryRebuildRunStatus,
         error_category: str | None = None,
+        session: AsyncSession | None = None,
     ) -> bool:
         now = datetime.now(UTC)
         values: dict[str, Any] = {
@@ -158,8 +163,8 @@ class MemoryRebuildRepository:
                     )
                 )
             )
-        async with self.database.sessions() as session, session.begin():
-            result = await session.execute(
+        async with optional_session(self.database, session, write=True) as active:
+            result = await active.execute(
                 update(MemoryRebuildRunModel).where(*conditions).values(**values)
             )
         return bool(cast(CursorResult[Any], result).rowcount)
@@ -209,10 +214,10 @@ class MemoryRebuildRepository:
             )
         return self._run(row) if row is not None else None
 
-    async def executing_count(self) -> int:
-        async with self.database.sessions() as session:
+    async def executing_count(self, *, session: AsyncSession | None = None) -> int:
+        async with optional_session(self.database, session, write=False) as active:
             return int(
-                await session.scalar(
+                await active.scalar(
                     select(func.count())
                     .select_from(MemoryRebuildRunModel)
                     .where(MemoryRebuildRunModel.status.in_(EXECUTING_STATUSES))

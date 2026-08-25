@@ -340,7 +340,6 @@ class MessageProcessor:
         self._voice_preferences = voice_preferences
         audit = AdminAuditService(database)
         self._relationship_admin = relationship_admin or RelationshipAdminService(
-            settings=settings,
             relationships=self._relationships,
             audit=audit,
             runtime_config=self._runtime_config,
@@ -356,13 +355,11 @@ class MessageProcessor:
             audit=audit,
         )
         self._group_admin = group_admin or GroupAdminService(
-            settings=settings,
             groups=self._groups,
             runtime_config=self._runtime_config,
             audit=audit,
         )
         self._private_access_admin = private_access_admin or PrivateAccessAdminService(
-            settings=settings,
             private_users=self._private_users,
             audit=audit,
             runtime_config=self._runtime_config,

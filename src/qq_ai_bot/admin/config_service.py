@@ -11,11 +11,11 @@ from typing import Any, cast
 
 from sqlalchemy import delete, or_, select
 from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from qq_ai_bot.admin.audit import AdminAuditService, add_audit_event, event_from_model
+from qq_ai_bot.admin.audit import AdminAuditService, AuditSubject, add_audit_event, event_from_model
 from qq_ai_bot.admin.config_registry import ConfigRegistry
 from qq_ai_bot.admin.models import (
-    AdminActor,
     AdminOperationEvent,
     AgentRuntimeConfig,
     ConfigApplyMode,
@@ -24,6 +24,7 @@ from qq_ai_bot.admin.models import (
     ConfigSpec,
     ConfigValue,
     ContextRuntimeConfig,
+    ControlAuditRef,
     ConversationRuntimeConfig,
     EffectiveConfigValue,
     EmojiRuntimeConfig,
@@ -42,6 +43,7 @@ from qq_ai_bot.admin.models import (
 from qq_ai_bot.config import Settings, _csv_tuple
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import RuntimeConfigOverrideModel
+from qq_ai_bot.persistence.unit_of_work import optional_session
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,12 +93,13 @@ class RuntimeConfigRepository:
         self,
         *,
         keys: tuple[str, ...] | None = None,
+        session: AsyncSession | None = None,
     ) -> tuple[RuntimeConfigOverrideRecord, ...]:
         statement = select(RuntimeConfigOverrideModel)
         if keys:
             statement = statement.where(RuntimeConfigOverrideModel.config_key.in_(keys))
-        async with self._database.sessions() as session:
-            rows = (await session.scalars(statement)).all()
+        async with optional_session(self._database, session, write=False) as active:
+            rows = (await active.scalars(statement)).all()
             return tuple(_record(row) for row in rows)
 
     async def list_relevant(
@@ -104,6 +107,7 @@ class RuntimeConfigRepository:
         *,
         user_id: str | None,
         group_id: str | None,
+        session: AsyncSession | None = None,
     ) -> tuple[RuntimeConfigOverrideRecord, ...]:
         conditions: list[Any] = [
             RuntimeConfigOverrideModel.scope_type == ConfigScopeType.GLOBAL.value
@@ -118,9 +122,9 @@ class RuntimeConfigRepository:
                 (RuntimeConfigOverrideModel.scope_type == ConfigScopeType.USER.value)
                 & (RuntimeConfigOverrideModel.scope_id == user_id)
             )
-        async with self._database.sessions() as session:
+        async with optional_session(self._database, session, write=False) as active:
             rows = (
-                await session.scalars(select(RuntimeConfigOverrideModel).where(or_(*conditions)))
+                await active.scalars(select(RuntimeConfigOverrideModel).where(or_(*conditions)))
             ).all()
             return tuple(_record(row) for row in rows)
 
@@ -130,9 +134,10 @@ class RuntimeConfigRepository:
         key: str,
         scope_type: ConfigScopeType,
         scope_id: str,
+        session: AsyncSession | None = None,
     ) -> RuntimeConfigOverrideRecord | None:
-        async with self._database.sessions() as session:
-            row = await session.scalar(
+        async with optional_session(self._database, session, write=False) as active:
+            row = await active.scalar(
                 select(RuntimeConfigOverrideModel).where(
                     RuntimeConfigOverrideModel.config_key == key,
                     RuntimeConfigOverrideModel.scope_type == scope_type.value,
@@ -148,11 +153,12 @@ class RuntimeConfigRepository:
         value: ConfigValue,
         scope_type: ConfigScopeType,
         scope_id: str,
-        actor: AdminActor,
+        actor: AuditSubject,
         before_state: dict[str, object],
         started: float,
         initial_version: int = 1,
         operation: str = "set_override",
+        session: AsyncSession | None = None,
     ) -> tuple[RuntimeConfigOverrideRecord, AdminOperationEvent]:
         now = datetime.now(UTC)
         statement = (
@@ -185,9 +191,9 @@ class RuntimeConfigRepository:
                 },
             )
         )
-        async with self._database.sessions() as session, session.begin():
-            await session.execute(statement)
-            row = await session.scalar(
+        async with optional_session(self._database, session, write=True) as active:
+            await active.execute(statement)
+            row = await active.scalar(
                 select(RuntimeConfigOverrideModel).where(
                     RuntimeConfigOverrideModel.config_key == spec.key,
                     RuntimeConfigOverrideModel.scope_type == scope_type.value,
@@ -198,7 +204,7 @@ class RuntimeConfigRepository:
                 raise RuntimeError("runtime override was not persisted")
             after_state = _override_state(_record(row))
             audit = await add_audit_event(
-                session,
+                active,
                 actor=actor,
                 capability="runtime_config",
                 operation=operation,
@@ -218,13 +224,14 @@ class RuntimeConfigRepository:
         spec: ConfigSpec,
         scope_type: ConfigScopeType,
         scope_id: str,
-        actor: AdminActor,
+        actor: AuditSubject,
         before: RuntimeConfigOverrideRecord,
         started: float,
         operation: str = "delete_override",
+        session: AsyncSession | None = None,
     ) -> AdminOperationEvent:
-        async with self._database.sessions() as session, session.begin():
-            await session.execute(
+        async with optional_session(self._database, session, write=True) as active:
+            await active.execute(
                 delete(RuntimeConfigOverrideModel).where(
                     RuntimeConfigOverrideModel.config_key == spec.key,
                     RuntimeConfigOverrideModel.scope_type == scope_type.value,
@@ -232,7 +239,7 @@ class RuntimeConfigRepository:
                 )
             )
             audit = await add_audit_event(
-                session,
+                active,
                 actor=actor,
                 capability="runtime_config",
                 operation=operation,
@@ -369,6 +376,7 @@ class RuntimeConfigService:
         *,
         user_id: str | None = None,
         group_id: str | None = None,
+        session: AsyncSession | None = None,
     ) -> EffectiveConfigValue:
         spec = self.registry.get(key)
         if spec.apply_mode is ConfigApplyMode.SECRET or spec.sensitive:
@@ -384,6 +392,7 @@ class RuntimeConfigService:
         records = await self._repository.list_relevant(
             user_id=user_id,
             group_id=group_id,
+            session=session,
         )
         return self._resolve(spec, records, user_id=user_id, group_id=group_id)
 
@@ -397,9 +406,11 @@ class RuntimeConfigService:
         actor_user_id: str,
         trigger_message_id: str,
         conversation_key: str = "",
+        expected_version: int | None = None,
+        session: AsyncSession | None = None,
     ) -> ConfigChangeResult:
         started = time.perf_counter()
-        actor = self._actor(
+        actor = self._audit_ref(
             actor_user_id,
             trigger_message_id=trigger_message_id,
             conversation_key=conversation_key,
@@ -428,6 +439,7 @@ class RuntimeConfigService:
                 success=False,
                 error_category=category,
                 duration_seconds=time.perf_counter() - started,
+                session=session,
             )
             return ConfigChangeResult(
                 success=False,
@@ -445,18 +457,32 @@ class RuntimeConfigService:
                     spec.key,
                     user_id=normalized_scope_id if scope is ConfigScopeType.USER else None,
                     group_id=normalized_scope_id if scope is ConfigScopeType.GROUP else None,
+                    session=session,
                 )
                 before_override = await self._repository.get(
                     key=spec.key,
                     scope_type=scope,
                     scope_id=normalized_scope_id,
+                    session=session,
                 )
+                actual_version = 0 if before_override is None else before_override.version
+                if expected_version is not None and actual_version != expected_version:
+                    return ConfigChangeResult(
+                        success=False,
+                        key=spec.key,
+                        scope_type=scope,
+                        scope_id=normalized_scope_id,
+                        apply_mode=spec.apply_mode,
+                        error_category="version_conflict",
+                        detail="expected_version does not match the current override",
+                    )
                 await self._validate_cross_key_change(
                     key=spec.key,
                     value=converted,
                     scope_type=scope,
                     scope_id=normalized_scope_id,
                     delete_override=False,
+                    session=session,
                 )
                 row, audit = await self._repository.save_with_audit(
                     spec=spec,
@@ -470,6 +496,7 @@ class RuntimeConfigService:
                         else _missing_override_state(spec.key, scope, normalized_scope_id)
                     ),
                     started=started,
+                    session=session,
                 )
                 pending_restart = (
                     spec.apply_mode is ConfigApplyMode.RESTART_REQUIRED
@@ -504,6 +531,7 @@ class RuntimeConfigService:
                     success=False,
                     error_category=category,
                     duration_seconds=time.perf_counter() - started,
+                    session=session,
                 )
                 return ConfigChangeResult(
                     success=False,
@@ -524,9 +552,11 @@ class RuntimeConfigService:
         actor_user_id: str,
         trigger_message_id: str,
         conversation_key: str = "",
+        expected_version: int | None = None,
+        session: AsyncSession | None = None,
     ) -> ConfigChangeResult:
         started = time.perf_counter()
-        actor = self._actor(
+        actor = self._audit_ref(
             actor_user_id,
             trigger_message_id=trigger_message_id,
             conversation_key=conversation_key,
@@ -551,6 +581,7 @@ class RuntimeConfigService:
                 success=False,
                 error_category=category,
                 duration_seconds=time.perf_counter() - started,
+                session=session,
             )
             return ConfigChangeResult(
                 False,
@@ -566,6 +597,7 @@ class RuntimeConfigService:
                 key=spec.key,
                 scope_type=scope,
                 scope_id=normalized_scope_id,
+                session=session,
             )
             if before is None:
                 await self._audit.record(
@@ -577,6 +609,7 @@ class RuntimeConfigService:
                     success=False,
                     error_category="not_found",
                     duration_seconds=time.perf_counter() - started,
+                    session=session,
                 )
                 return ConfigChangeResult(
                     False,
@@ -587,6 +620,16 @@ class RuntimeConfigService:
                     error_category="not_found",
                     detail="当前作用域没有数据库覆盖值",
                 )
+            if expected_version is not None and before.version != expected_version:
+                return ConfigChangeResult(
+                    False,
+                    spec.key,
+                    scope,
+                    normalized_scope_id,
+                    apply_mode=spec.apply_mode,
+                    error_category="version_conflict",
+                    detail="expected_version does not match the current override",
+                )
             try:
                 await self._validate_cross_key_change(
                     key=spec.key,
@@ -594,6 +637,7 @@ class RuntimeConfigService:
                     scope_type=scope,
                     scope_id=normalized_scope_id,
                     delete_override=True,
+                    session=session,
                 )
                 audit = await self._repository.delete_with_audit(
                     spec=spec,
@@ -602,10 +646,12 @@ class RuntimeConfigService:
                     actor=actor,
                     before=before,
                     started=started,
+                    session=session,
                 )
                 remaining = await self._repository.list_relevant(
                     user_id=normalized_scope_id if scope is ConfigScopeType.USER else None,
                     group_id=normalized_scope_id if scope is ConfigScopeType.GROUP else None,
+                    session=session,
                 )
                 after_effective = self._resolve(
                     spec,
@@ -618,6 +664,7 @@ class RuntimeConfigService:
                     spec.key,
                     user_id=normalized_scope_id if scope is ConfigScopeType.USER else None,
                     group_id=normalized_scope_id if scope is ConfigScopeType.GROUP else None,
+                    session=session,
                 )
                 pending_restart = (
                     spec.apply_mode is ConfigApplyMode.RESTART_REQUIRED
@@ -650,6 +697,7 @@ class RuntimeConfigService:
                     success=False,
                     error_category=category,
                     duration_seconds=time.perf_counter() - started,
+                    session=session,
                 )
                 return ConfigChangeResult(
                     False,
@@ -683,14 +731,16 @@ class RuntimeConfigService:
         actor_user_id: str,
         trigger_message_id: str = "",
         conversation_key: str = "",
+        expected_version: int | None = None,
+        session: AsyncSession | None = None,
     ) -> ConfigChangeResult:
         started = time.perf_counter()
-        actor = self._actor(
+        actor = self._audit_ref(
             actor_user_id,
             trigger_message_id=trigger_message_id,
             conversation_key=conversation_key,
         )
-        original = await self._audit.get(change_id)
+        original = await self._audit.get(change_id, session=session)
         fallback_scope = ConfigScopeType.GLOBAL
         if (
             original is None
@@ -707,6 +757,7 @@ class RuntimeConfigService:
                 success=False,
                 error_category="not_rollbackable",
                 duration_seconds=time.perf_counter() - started,
+                session=session,
             )
             return ConfigChangeResult(
                 False,
@@ -726,6 +777,7 @@ class RuntimeConfigService:
                 success=False,
                 error_category="permission_denied",
                 duration_seconds=time.perf_counter() - started,
+                session=session,
             )
             return ConfigChangeResult(
                 False,
@@ -757,6 +809,7 @@ class RuntimeConfigService:
                 success=False,
                 error_category=category,
                 duration_seconds=time.perf_counter() - started,
+                session=session,
             )
             return ConfigChangeResult(
                 False,
@@ -772,7 +825,19 @@ class RuntimeConfigService:
                 key=spec.key,
                 scope_type=scope,
                 scope_id=scope_id,
+                session=session,
             )
+            actual_version = 0 if current is None else current.version
+            if expected_version is not None and actual_version != expected_version:
+                return ConfigChangeResult(
+                    False,
+                    spec.key,
+                    scope,
+                    scope_id,
+                    apply_mode=spec.apply_mode,
+                    error_category="version_conflict",
+                    detail="expected_version does not match the current override",
+                )
             if not self._matches_state(current, after_state):
                 await self._audit.record(
                     actor=actor,
@@ -785,6 +850,7 @@ class RuntimeConfigService:
                     success=False,
                     error_category="rollback_conflict",
                     duration_seconds=time.perf_counter() - started,
+                    session=session,
                 )
                 return ConfigChangeResult(
                     False,
@@ -807,6 +873,7 @@ class RuntimeConfigService:
                         scope_type=scope,
                         scope_id=scope_id,
                         delete_override=False,
+                        session=session,
                     )
                     prior_version = _state_value(before_state, "version")
                     initial = (
@@ -828,11 +895,13 @@ class RuntimeConfigService:
                         started=started,
                         initial_version=initial,
                         operation=f"rollback:{change_id}",
+                        session=session,
                     )
                     active_effective = await self.get_effective(
                         spec.key,
                         user_id=scope_id if scope is ConfigScopeType.USER else None,
                         group_id=scope_id if scope is ConfigScopeType.GROUP else None,
+                        session=session,
                     )
                     pending_restart = (
                         spec.apply_mode is ConfigApplyMode.RESTART_REQUIRED
@@ -866,6 +935,7 @@ class RuntimeConfigService:
                         success=False,
                         error_category="validation_error",
                         duration_seconds=time.perf_counter() - started,
+                        session=session,
                     )
                     return ConfigChangeResult(
                         False,
@@ -888,6 +958,7 @@ class RuntimeConfigService:
                     success=False,
                     error_category="rollback_conflict",
                     duration_seconds=time.perf_counter() - started,
+                    session=session,
                 )
                 return ConfigChangeResult(
                     False,
@@ -905,6 +976,7 @@ class RuntimeConfigService:
                     scope_type=scope,
                     scope_id=scope_id,
                     delete_override=True,
+                    session=session,
                 )
             except ValueError as exc:
                 await self._audit.record(
@@ -918,6 +990,7 @@ class RuntimeConfigService:
                     success=False,
                     error_category="validation_error",
                     duration_seconds=time.perf_counter() - started,
+                    session=session,
                 )
                 return ConfigChangeResult(
                     False,
@@ -936,10 +1009,12 @@ class RuntimeConfigService:
                 before=current,
                 started=started,
                 operation=f"rollback:{change_id}",
+                session=session,
             )
             remaining = await self._repository.list_relevant(
                 user_id=scope_id if scope is ConfigScopeType.USER else None,
                 group_id=scope_id if scope is ConfigScopeType.GROUP else None,
+                session=session,
             )
             effective = self._resolve(
                 spec,
@@ -952,6 +1027,7 @@ class RuntimeConfigService:
                 spec.key,
                 user_id=scope_id if scope is ConfigScopeType.USER else None,
                 group_id=scope_id if scope is ConfigScopeType.GROUP else None,
+                session=session,
             )
             pending_restart = (
                 spec.apply_mode is ConfigApplyMode.RESTART_REQUIRED
@@ -1465,10 +1541,8 @@ class RuntimeConfigService:
         spec: ConfigSpec,
         scope_type: str,
         scope_id: str,
-        actor: AdminActor,
+        actor: AuditSubject,
     ) -> tuple[ConfigScopeType, str]:
-        if not actor.is_superuser or actor.user_id not in self._settings.superusers:
-            raise PermissionError("只有当前真实超级管理员可以修改运行时配置")
         if not spec.mutable:
             if spec.apply_mode is ConfigApplyMode.SECRET:
                 raise PermissionError("凭证只能确认是否配置，不能读取或修改")
@@ -1488,16 +1562,15 @@ class RuntimeConfigService:
             raise ValueError(f"该配置只允许以下作用域：{allowed}")
         return scope, normalized_scope_id
 
-    def _actor(
+    def _audit_ref(
         self,
         actor_user_id: str,
         *,
         trigger_message_id: str,
         conversation_key: str,
-    ) -> AdminActor:
-        return AdminActor(
+    ) -> ControlAuditRef:
+        return ControlAuditRef(
             user_id=actor_user_id,
-            is_superuser=actor_user_id in self._settings.superusers,
             trigger_message_id=trigger_message_id,
             conversation_key=conversation_key,
         )
@@ -1510,12 +1583,14 @@ class RuntimeConfigService:
         scope_type: ConfigScopeType,
         scope_id: str,
         delete_override: bool,
+        session: AsyncSession | None = None,
     ) -> None:
         if key not in {"reply.delay_min_seconds", "reply.delay_max_seconds"}:
             return
         records = list(
             await self._repository.list_all(
-                keys=("reply.delay_min_seconds", "reply.delay_max_seconds")
+                keys=("reply.delay_min_seconds", "reply.delay_max_seconds"),
+                session=session,
             )
         )
         records = [

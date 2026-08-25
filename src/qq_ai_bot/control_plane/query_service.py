@@ -9,19 +9,30 @@ from qq_ai_bot.control_plane.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_port import ControlQueryPort
 from qq_ai_bot.control_plane.query_types import (
     AuditEventView,
+    AutomationView,
     BackfillConflictView,
     BackfillOperationView,
+    ConfigSpecView,
     ControlQueryError,
     ConversationView,
+    EffectiveConfigView,
+    EmojiAssetView,
     IdentityBindingView,
     ManagementHealthView,
+    McpServerView,
+    MemoryEvidenceView,
+    MemoryFactView,
+    MemoryHealthView,
+    MemoryJobView,
     PersonActiveRouteView,
     PersonView,
+    PluginView,
     PresenceView,
     SpaceActiveRouteView,
     SpaceBindingIngestRouteView,
     SpaceBindingView,
     SpaceView,
+    SpeechProfileView,
     SystemSnapshot,
     YukiSummaryView,
 )
@@ -159,3 +170,74 @@ class ControlQueryService:
         authorized = _require_context(context)
         _require_capability(authorized, "control.operation.read")
         return await self._port.list_backfill_conflicts(request)
+
+    async def list_config_specs(
+        self, context: object, request: PageRequest
+    ) -> Page[ConfigSpecView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.config.read")
+        return await self._port.list_config_specs(request)
+
+    async def list_effective_configs(
+        self, context: object, request: PageRequest
+    ) -> Page[EffectiveConfigView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.config.read")
+        return await self._port.list_effective_configs(request)
+
+    async def list_memory_facts(
+        self, context: object, request: PageRequest
+    ) -> Page[MemoryFactView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.memory.metadata.read")
+        return await self._port.list_memory_facts(
+            request, include_content=authorized.principal.allows("control.memory.content.read")
+        )
+
+    async def list_memory_evidence(
+        self, context: object, request: PageRequest
+    ) -> Page[MemoryEvidenceView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.memory.metadata.read")
+        return await self._port.list_memory_evidence(
+            request, include_content=authorized.principal.allows("control.memory.content.read")
+        )
+
+    async def list_memory_jobs(self, context: object, request: PageRequest) -> Page[MemoryJobView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.memory.metadata.read")
+        return await self._port.list_memory_jobs(request)
+
+    async def read_memory_health(self, context: object) -> MemoryHealthView:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.memory.metadata.read")
+        return await self._port.read_memory_health()
+
+    async def list_automations(self, context: object, request: PageRequest) -> Page[AutomationView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.automation.read")
+        return await self._port.list_automations(request)
+
+    async def list_plugins(self, context: object, request: PageRequest) -> Page[PluginView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.plugin.read")
+        return await self._port.list_plugins(request)
+
+    async def list_mcp_servers(self, context: object, request: PageRequest) -> Page[McpServerView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.mcp.read")
+        return await self._port.list_mcp_servers(request)
+
+    async def list_emoji_assets(
+        self, context: object, request: PageRequest
+    ) -> Page[EmojiAssetView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.emoji.read")
+        return await self._port.list_emoji_assets(request)
+
+    async def list_speech_profiles(
+        self, context: object, request: PageRequest
+    ) -> Page[SpeechProfileView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.speech.read")
+        return await self._port.list_speech_profiles(request)

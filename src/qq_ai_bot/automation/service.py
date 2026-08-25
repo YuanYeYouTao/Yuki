@@ -8,10 +8,11 @@ import logging
 import time
 
 from pydantic import ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.admin.audit import AdminAuditService
 from qq_ai_bot.admin.models import AdminActor
-from qq_ai_bot.automation.authority import DelegatedAuthority, permission_for
+from qq_ai_bot.automation.authority import DelegatedAuthority, PermissionLevel, permission_for
 from qq_ai_bot.automation.compiler import AutomationCompiler, ExecutionPlan, TaskSpec
 from qq_ai_bot.automation.models import (
     AutomationRecord,
@@ -493,6 +494,161 @@ class AutomationService:
 
     async def set_timezone(self, user_id: str, timezone: str) -> str:
         return await self._time.set_timezone(user_id, timezone)
+
+    async def administer_create(
+        self,
+        script_payload: object,
+        *,
+        actor_user_id: str,
+        trigger_message_id: str,
+        session: AsyncSession | None = None,
+        max_runs: int | None = None,
+    ) -> AutomationRecord:
+        """Create a validated task after control-plane capability authorization."""
+
+        self._require_enabled()
+        try:
+            script = AutomationScript.model_validate(script_payload)
+        except ValidationError as exc:
+            raise ValueError(f"自动化脚本格式错误：{exc.errors()[0]['msg']}") from exc
+        now = self._time.clock.now()
+        provenance = CreationProvenance(
+            creator_user_id=actor_user_id,
+            bot_user_id=actor_user_id,
+            message_id=trigger_message_id,
+            original_text="",
+            current_group_id=None,
+            mentioned_user_ids=(),
+            permission=PermissionLevel.SUPERUSER,
+        )
+        validated = self._validator.validate(script, provenance, now_utc=now)
+        authority = DelegatedAuthority(
+            creator_user_id=actor_user_id,
+            bot_user_id=actor_user_id,
+            created_from_message_id=trigger_message_id,
+            created_at=now.isoformat(),
+            permission_level=PermissionLevel.SUPERUSER,
+            granted_capabilities=validated.required_capabilities,
+            capability_schema_versions={
+                name: self._registry.require(name).schema_version
+                for name in validated.required_capabilities
+            },
+            capability_provenance=self._capability_provenance(validated.required_capabilities),
+            current_group_id=None,
+        )
+        return await self._repository.create(
+            validated,
+            authority,
+            max_runs=max_runs,
+            misfire_grace_seconds=self._settings.automation_default_misfire_grace_seconds,
+            now=now,
+            session=session,
+        )
+
+    async def administer_update(
+        self,
+        automation_id: int,
+        script_payload: object,
+        *,
+        actor_user_id: str,
+        trigger_message_id: str,
+        session: AsyncSession | None = None,
+    ) -> AutomationRecord:
+        self._require_enabled()
+        existing = await self._repository.get(automation_id, session=session)
+        if existing is None:
+            raise LookupError("automation not found")
+        try:
+            script = AutomationScript.model_validate(script_payload)
+        except ValidationError as exc:
+            raise ValueError(f"自动化脚本格式错误：{exc.errors()[0]['msg']}") from exc
+        now = self._time.clock.now()
+        provenance = CreationProvenance(
+            creator_user_id=existing.creator_user_id,
+            bot_user_id=existing.bot_user_id,
+            message_id=trigger_message_id,
+            original_text="",
+            current_group_id=None,
+            mentioned_user_ids=(),
+            permission=PermissionLevel.SUPERUSER,
+        )
+        validated = self._validator.validate(script, provenance, now_utc=now)
+        authority = DelegatedAuthority(
+            creator_user_id=existing.creator_user_id,
+            bot_user_id=existing.bot_user_id,
+            created_from_message_id=existing.created_from_message_id,
+            created_at=now.isoformat(),
+            permission_level=PermissionLevel.SUPERUSER,
+            granted_capabilities=validated.required_capabilities,
+            capability_schema_versions={
+                name: self._registry.require(name).schema_version
+                for name in validated.required_capabilities
+            },
+            capability_provenance=self._capability_provenance(validated.required_capabilities),
+            current_group_id=None,
+        )
+        row = await self._repository.update_script(
+            automation_id,
+            creator_user_id=existing.creator_user_id,
+            validated=validated,
+            authority=authority,
+            now=now,
+            session=session,
+        )
+        if row is None:
+            raise ValueError("该任务已经结束，不能更新")
+        return row
+
+    async def administer_transition(
+        self,
+        automation_id: int,
+        *,
+        action: str,
+        session: AsyncSession | None = None,
+    ) -> AutomationRecord:
+        self._require_enabled()
+        existing = await self._repository.get(automation_id, session=session)
+        if existing is None:
+            raise LookupError("automation not found")
+        now = self._time.clock.now()
+        if action == "pause":
+            await self._repository.set_status(
+                automation_id,
+                creator_user_id=existing.creator_user_id,
+                status=AutomationStatus.PAUSED,
+                now=now,
+                session=session,
+            )
+        elif action == "cancel":
+            await self._repository.set_status(
+                automation_id,
+                creator_user_id=existing.creator_user_id,
+                status=AutomationStatus.CANCELLED,
+                now=now,
+                session=session,
+            )
+        elif action == "resume":
+            next_run = initial_run_at(existing.script.schedule, now, existing.timezone)
+            await self._repository.resume(
+                automation_id,
+                creator_user_id=existing.creator_user_id,
+                next_run_at=next_run,
+                now=now,
+                session=session,
+            )
+        elif action == "run_now":
+            await self._repository.schedule_now(
+                automation_id,
+                creator_user_id=existing.creator_user_id,
+                now=now,
+                session=session,
+            )
+        else:
+            raise ValueError(f"unsupported automation action: {action}")
+        current = await self._repository.get(automation_id, session=session)
+        if current is None:
+            raise LookupError("automation not found")
+        return current
 
     def _require_enabled(self) -> None:
         if not self._settings.automation_enabled:

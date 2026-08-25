@@ -9,6 +9,7 @@ from typing import Any, cast
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.automation.authority import DelegatedAuthority
 from qq_ai_bot.automation.models import (
@@ -27,6 +28,7 @@ from qq_ai_bot.persistence.models import (
     AutomationVersionModel,
 )
 from qq_ai_bot.persistence.repository_helpers import _ensure_person
+from qq_ai_bot.persistence.unit_of_work import optional_session
 
 
 class AutomationRepository:
@@ -43,14 +45,15 @@ class AutomationRepository:
         max_runs: int | None,
         misfire_grace_seconds: int,
         now: datetime,
+        session: AsyncSession | None = None,
     ) -> AutomationRecord:
         script_json = validated.script.model_dump_json(exclude_none=True)
         schedule_json = validated.script.schedule.model_dump_json(exclude_none=True)
         authority_json = authority.model_dump_json()
         timestamp = _aware_utc(now)
-        async with self._database.sessions() as session, session.begin():
+        async with optional_session(self._database, session, write=True) as active:
             await _ensure_person(
-                session,
+                active,
                 authority.creator_user_id,
                 now=timestamp,
                 canonical_role="human",
@@ -80,9 +83,9 @@ class AutomationRepository:
                 created_at=timestamp,
                 updated_at=timestamp,
             )
-            session.add(row)
-            await session.flush()
-            session.add(
+            active.add(row)
+            await active.flush()
+            active.add(
                 AutomationVersionModel(
                     automation_id=row.id,
                     version=1,
@@ -92,12 +95,14 @@ class AutomationRepository:
                     created_at=timestamp,
                 )
             )
-            await session.flush()
+            await active.flush()
             return _automation_record(row)
 
-    async def get(self, automation_id: int) -> AutomationRecord | None:
-        async with self._database.sessions() as session:
-            row = await session.get(AutomationModel, automation_id)
+    async def get(
+        self, automation_id: int, *, session: AsyncSession | None = None
+    ) -> AutomationRecord | None:
+        async with optional_session(self._database, session, write=False) as active:
+            row = await active.get(AutomationModel, automation_id)
         return _automation_record(row) if row is not None else None
 
     async def get_by_creation_key(
@@ -207,6 +212,7 @@ class AutomationRepository:
         creator_user_id: str,
         status: AutomationStatus,
         now: datetime,
+        session: AsyncSession | None = None,
     ) -> bool:
         values: dict[str, Any] = {
             "status": status.value,
@@ -216,8 +222,8 @@ class AutomationRepository:
         }
         if status in {AutomationStatus.CANCELLED, AutomationStatus.COMPLETED}:
             values["next_run_at"] = None
-        async with self._database.sessions() as session, session.begin():
-            result = await session.execute(
+        async with optional_session(self._database, session, write=True) as active:
+            result = await active.execute(
                 update(AutomationModel)
                 .where(
                     AutomationModel.id == automation_id,
@@ -234,9 +240,10 @@ class AutomationRepository:
         creator_user_id: str,
         next_run_at: datetime,
         now: datetime,
+        session: AsyncSession | None = None,
     ) -> bool:
-        async with self._database.sessions() as session, session.begin():
-            result = await session.execute(
+        async with optional_session(self._database, session, write=True) as active:
+            result = await active.execute(
                 update(AutomationModel)
                 .where(
                     AutomationModel.id == automation_id,
@@ -262,10 +269,11 @@ class AutomationRepository:
         *,
         creator_user_id: str,
         now: datetime,
+        session: AsyncSession | None = None,
     ) -> bool:
         timestamp = _aware_utc(now)
-        async with self._database.sessions() as session, session.begin():
-            result = await session.execute(
+        async with optional_session(self._database, session, write=True) as active:
+            result = await active.execute(
                 update(AutomationModel)
                 .where(
                     AutomationModel.id == automation_id,
@@ -292,10 +300,11 @@ class AutomationRepository:
         validated: ValidatedAutomation,
         authority: DelegatedAuthority,
         now: datetime,
+        session: AsyncSession | None = None,
     ) -> AutomationRecord | None:
         timestamp = _aware_utc(now)
-        async with self._database.sessions() as session, session.begin():
-            row = await session.scalar(
+        async with optional_session(self._database, session, write=True) as active:
+            row = await active.scalar(
                 select(AutomationModel).where(
                     AutomationModel.id == automation_id,
                     AutomationModel.creator_user_id == creator_user_id,
@@ -307,7 +316,7 @@ class AutomationRepository:
             }:
                 return None
             latest_version = int(
-                await session.scalar(
+                await active.scalar(
                     select(func.max(AutomationVersionModel.version)).where(
                         AutomationVersionModel.automation_id == automation_id
                     )
@@ -328,7 +337,7 @@ class AutomationRepository:
             row.claimed_by = None
             row.claimed_until = None
             row.updated_at = timestamp
-            session.add(
+            active.add(
                 AutomationVersionModel(
                     automation_id=automation_id,
                     version=latest_version + 1,
@@ -338,7 +347,7 @@ class AutomationRepository:
                     created_at=timestamp,
                 )
             )
-            await session.flush()
+            await active.flush()
             return _automation_record(row)
 
     async def claim_due(

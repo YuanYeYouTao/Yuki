@@ -10,6 +10,7 @@ from typing import Any, cast
 from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
 from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
@@ -65,9 +66,11 @@ class EventLedgerRepository:
     def set_scoped_writer(self, writer: ScopedEventLedgerUnitOfWork) -> None:
         self._writer = writer
 
-    async def maximum_event_id(self) -> int:
-        async with self._database.sessions() as session:
-            return int(await session.scalar(select(func.max(ChatEventModel.id))) or 0)
+    async def maximum_event_id(self, *, session: AsyncSession | None = None) -> int:
+        from qq_ai_bot.persistence.unit_of_work import optional_session
+
+        async with optional_session(self._database, session, write=False) as active:
+            return int(await active.scalar(select(func.max(ChatEventModel.id))) or 0)
 
     def _rebuild_conditions(
         self,
@@ -108,6 +111,7 @@ class EventLedgerRepository:
         selection: MemoryRebuildSelection,
         *,
         snapshot_max_event_id: int,
+        session: AsyncSession | None = None,
     ) -> MemoryRebuildPlanStatistics:
         base = self._rebuild_conditions(
             selection,
@@ -132,13 +136,15 @@ class EventLedgerRepository:
         if selection.maximum_events is not None:
             candidate = candidate.limit(selection.maximum_events)
         candidate_rows = candidate.subquery()
-        async with self._database.sessions() as session:
+        from qq_ai_bot.persistence.unit_of_work import optional_session
+
+        async with optional_session(self._database, session, write=False) as active:
             matched = int(
-                await session.scalar(select(func.count()).select_from(ChatEventModel).where(*base))
+                await active.scalar(select(func.count()).select_from(ChatEventModel).where(*base))
                 or 0
             )
             summary = (
-                await session.execute(
+                await active.execute(
                     select(
                         func.count(candidate_rows.c.id),
                         func.sum(func.length(candidate_rows.c.content)),
@@ -150,7 +156,7 @@ class EventLedgerRepository:
                 )
             ).one()
             status_result = (
-                await session.execute(
+                await active.execute(
                     select(MemoryJobModel.status, func.count())
                     .join(ChatEventModel, ChatEventModel.id == MemoryJobModel.event_id)
                     .where(*base)

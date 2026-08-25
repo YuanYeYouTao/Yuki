@@ -84,6 +84,14 @@ class QueryResourceKind(StrEnum):
     AUDIT = "audit"
     OPERATION = "operation"
     CONFLICT = "conflict"
+    CONFIG = "config"
+    MEMORY_FACT = "memory_fact"
+    MEMORY_JOB = "memory_job"
+    AUTOMATION = "automation"
+    PLUGIN = "plugin"
+    MCP = "mcp"
+    EMOJI = "emoji"
+    SPEECH = "speech"
 
 
 @final
@@ -734,3 +742,201 @@ class BackfillConflictView:
         require_opaque_token(self.status, name="status", max_length=16)
         if self.error_category is not None:
             require_opaque_token(self.error_category, name="error_category", max_length=64)
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class ConfigSpecView:
+    key: str
+    category: str
+    apply_mode: str
+    value_type: str
+    mutable: bool
+    sensitive: bool
+    configured: bool
+
+    def __post_init__(self) -> None:
+        require_opaque_token(self.key, name="key", max_length=128)
+        category = self.category.strip() or "general"
+        require_opaque_token(category, name="category", max_length=64)
+        object.__setattr__(self, "category", category)
+        require_opaque_token(self.apply_mode, name="apply_mode", max_length=32)
+        require_opaque_token(self.value_type, name="value_type", max_length=16)
+        _require_bool(self.mutable, "mutable")
+        _require_bool(self.sensitive, "sensitive")
+        _require_bool(self.configured, "configured")
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class EffectiveConfigView:
+    key: str
+    source: str
+    scope_type: str
+    apply_mode: str
+    configured: bool
+    pending_restart: bool
+    version: int | None
+    value: str | int | float | bool | None
+
+    def __post_init__(self) -> None:
+        require_opaque_token(self.key, name="key", max_length=128)
+        require_opaque_token(self.source, name="source", max_length=32)
+        require_opaque_token(self.scope_type, name="scope_type", max_length=16)
+        require_opaque_token(self.apply_mode, name="apply_mode", max_length=32)
+        _require_bool(self.configured, "configured")
+        _require_bool(self.pending_restart, "pending_restart")
+        if self.version is not None:
+            object.__setattr__(self, "version", _require_int(self.version, "version", minimum=1))
+        if self.apply_mode == "secret" and self.value is not None:
+            raise ValueError("secret config cannot carry a value")
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class MemoryFactView:
+    fact_id: int
+    scope_type: str
+    kind: str
+    category: str
+    status: str
+    content: str | None
+    excerpt: str | None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "fact_id", _require_int(self.fact_id, "fact_id", minimum=1))
+        require_opaque_token(self.scope_type, name="scope_type", max_length=16)
+        require_opaque_token(self.kind, name="kind", max_length=16)
+        if type(self.category) is not str or not self.category or len(self.category) > 64:
+            raise ValueError("category must be a nonempty display token")
+        require_opaque_token(self.status, name="status", max_length=16)
+        if self.content is not None and type(self.content) is not str:
+            raise TypeError("content must be a str or None")
+        if self.excerpt is not None and type(self.excerpt) is not str:
+            raise TypeError("excerpt must be a str or None")
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class MemoryEvidenceView:
+    evidence_id: int
+    fact_id: int
+    relation: str
+    excerpt: str | None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "evidence_id", _require_int(self.evidence_id, "evidence_id", minimum=1)
+        )
+        object.__setattr__(self, "fact_id", _require_int(self.fact_id, "fact_id", minimum=1))
+        require_opaque_token(self.relation, name="relation", max_length=32)
+        if self.excerpt is not None and type(self.excerpt) is not str:
+            raise TypeError("excerpt must be a str or None")
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class MemoryJobView:
+    job_id: str
+    kind: str
+    status: str
+    operation: OperationRef
+
+    def __post_init__(self) -> None:
+        require_opaque_token(self.job_id, name="job_id", max_length=128)
+        require_opaque_token(self.kind, name="kind", max_length=32)
+        require_opaque_token(self.status, name="status", max_length=16)
+        if type(self.operation) is not OperationRef:
+            raise TypeError("operation must be OperationRef")
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class MemoryHealthView:
+    index: str
+    embedding: str
+    consistency: str
+
+    def __post_init__(self) -> None:
+        require_opaque_token(self.index, name="index", max_length=32)
+        require_opaque_token(self.embedding, name="embedding", max_length=32)
+        require_opaque_token(self.consistency, name="consistency", max_length=32)
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class AutomationView:
+    automation_id: int
+    name: str
+    status: str
+    run_count: int
+    script_hash: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "automation_id", _require_int(self.automation_id, "automation_id", minimum=1)
+        )
+        if type(self.name) is not str or not self.name or len(self.name) > 128:
+            raise ValueError("name must be a nonempty display token")
+        require_opaque_token(self.status, name="status", max_length=16)
+        object.__setattr__(self, "run_count", _require_int(self.run_count, "run_count"))
+        require_opaque_token(self.script_hash, name="script_hash", max_length=64)
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class PluginView:
+    plugin_id: str
+    name: str
+    version: str
+    status: str
+    enabled: bool
+
+    def __post_init__(self) -> None:
+        require_opaque_token(self.plugin_id, name="plugin_id", max_length=128)
+        if type(self.name) is not str or not self.name or len(self.name) > 128:
+            raise ValueError("name must be a nonempty display token")
+        require_opaque_token(self.version, name="version", max_length=64)
+        require_opaque_token(self.status, name="status", max_length=32)
+        _require_bool(self.enabled, "enabled")
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class McpServerView:
+    server_id: str
+    enabled: bool
+    healthy: bool
+    tool_count: int
+
+    def __post_init__(self) -> None:
+        require_opaque_token(self.server_id, name="server_id", max_length=128)
+        _require_bool(self.enabled, "enabled")
+        _require_bool(self.healthy, "healthy")
+        object.__setattr__(self, "tool_count", _require_int(self.tool_count, "tool_count"))
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class EmojiAssetView:
+    asset_id: str
+    status: str
+    enabled: bool
+
+    def __post_init__(self) -> None:
+        require_opaque_token(self.asset_id, name="asset_id", max_length=128)
+        require_opaque_token(self.status, name="status", max_length=32)
+        _require_bool(self.enabled, "enabled")
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class SpeechProfileView:
+    profile_id: str
+    status: str
+    enabled: bool
+
+    def __post_init__(self) -> None:
+        require_opaque_token(self.profile_id, name="profile_id", max_length=128)
+        require_opaque_token(self.status, name="status", max_length=32)
+        _require_bool(self.enabled, "enabled")

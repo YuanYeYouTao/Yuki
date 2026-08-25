@@ -45,8 +45,10 @@ from qq_ai_bot.control_plane.query_cursors import (
     TWO_PHASE_RESOURCE_KINDS,
     allowed_cursor_phases,
     decode_integer_cursor_key,
+    decode_operation_cursor_key,
     decode_resource_cursor,
     decode_time_id_key,
+    encode_operation_cursor_key,
 )
 from qq_ai_bot.control_plane.query_types import (
     LAST4_MIN_SOURCE_LENGTH,
@@ -101,6 +103,14 @@ _READ_CAPS = (
     "control.health.read",
     "control.audit.read",
     "control.operation.read",
+    "control.config.read",
+    "control.memory.metadata.read",
+    "control.memory.content.read",
+    "control.automation.read",
+    "control.plugin.read",
+    "control.mcp.read",
+    "control.emoji.read",
+    "control.speech.read",
 )
 _COUNT_TABLES = (
     "persons",
@@ -974,11 +984,26 @@ _KIND_LISTERS: dict[QueryResourceKind, tuple[str, tuple[str, ...]]] = {
     QueryResourceKind.AUDIT: ("list_audit_events", ("control.audit.read",)),
     QueryResourceKind.OPERATION: ("list_backfill_operations", ("control.operation.read",)),
     QueryResourceKind.CONFLICT: ("list_backfill_conflicts", ("control.operation.read",)),
+    QueryResourceKind.CONFIG: ("list_config_specs", ("control.config.read",)),
+    QueryResourceKind.MEMORY_FACT: ("list_memory_facts", ("control.memory.metadata.read",)),
+    QueryResourceKind.MEMORY_JOB: ("list_memory_jobs", ("control.memory.metadata.read",)),
+    QueryResourceKind.AUTOMATION: ("list_automations", ("control.automation.read",)),
+    QueryResourceKind.PLUGIN: ("list_plugins", ("control.plugin.read",)),
+    QueryResourceKind.MCP: ("list_mcp_servers", ("control.mcp.read",)),
+    QueryResourceKind.EMOJI: ("list_emoji_assets", ("control.emoji.read",)),
+    QueryResourceKind.SPEECH: ("list_speech_profiles", ("control.speech.read",)),
 }
 
 
 def _phase_payload(kind: QueryResourceKind, phase: QueryCursorPhase) -> str:
-    if kind in {QueryResourceKind.OPERATION, QueryResourceKind.CONFLICT}:
+    if kind is QueryResourceKind.OPERATION:
+        return "2026-01-01T00:00:00+00:00#1#1"
+    if kind in {
+        QueryResourceKind.CONFLICT,
+        QueryResourceKind.MEMORY_FACT,
+        QueryResourceKind.MEMORY_JOB,
+        QueryResourceKind.AUTOMATION,
+    }:
         return "1"
     if kind in TWO_PHASE_RESOURCE_KINDS and phase is QueryCursorPhase.UNRESOLVED:
         return "0"
@@ -1051,6 +1076,7 @@ def test_decode_resource_cursor_rejects_unsupported_phase_and_payload() -> None:
         "c10v1|operation|c|0",
         "c10v1|operation|c|+1",
         "c10v1|operation|c|01",
+        "c10v1|operation|c|1",
         "c10v1|conflict|c|not-int",
         "c10v1|conflict|c|-1",
         "c10v1|conflict|c|0",
@@ -1233,6 +1259,11 @@ async def test_cursor_payload_errors_are_controlled_validation_errors(database: 
             "list_backfill_operations",
             ("control.operation.read",),
             "c10v1|operation|c|not-int",
+        ),
+        (
+            "list_backfill_operations",
+            ("control.operation.read",),
+            "c10v1|operation|c|1",
         ),
         (
             "list_backfill_operations",
@@ -1582,3 +1613,57 @@ async def test_legacy_unresolved_rowid_keyset_paginates_and_rejects_bad_integers
                 PageRequest(limit=5, cursor=Cursor(raw)),
             )
         assert rejected.value.problem.code is ProblemCode.VALIDATION_ERROR
+
+
+def test_operation_cursor_key_keeps_full_local_id() -> None:
+    stamp = datetime(2026, 1, 1, 0, 0, 0, 123456, tzinfo=UTC)
+    key = encode_operation_cursor_key(stamp, 1, 101)
+    assert decode_operation_cursor_key(key) == (stamp, 1, 101)
+    assert encode_operation_cursor_key(stamp, 1, 1) != key
+
+
+@pytest.mark.asyncio
+async def test_operation_keyset_pages_250_same_created_at_without_loss(
+    database: Database,
+) -> None:
+    stamp = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    async with database.sessions() as session, session.begin():
+        for index in range(250):
+            session.add(
+                IdentityBackfillRunModel(
+                    mode="dry_run",
+                    status="running",
+                    checkpoint=None,
+                    processed_count=index,
+                    persons_count=0,
+                    identity_bindings_count=0,
+                    spaces_count=0,
+                    space_bindings_count=0,
+                    presences_count=0,
+                    conflicts_count=0,
+                    skipped_count=0,
+                    error_category=None,
+                    started_at=stamp,
+                    finished_at=None,
+                    created_at=stamp,
+                    updated_at=stamp,
+                )
+            )
+    service = _service(database)
+    context = _context(_principal("control.operation.read"))
+    seen: list[str] = []
+    cursor = None
+    pages = 0
+    while True:
+        page = await service.list_backfill_operations(
+            context,
+            PageRequest(limit=50, cursor=cursor),
+        )
+        pages += 1
+        seen.extend(item.operation.operation_id for item in page.items)
+        if page.next_cursor is None:
+            break
+        cursor = page.next_cursor
+    assert pages == 5
+    assert len(seen) == 250
+    assert len(set(seen)) == 250

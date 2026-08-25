@@ -21,10 +21,12 @@ from typing import Any, Protocol, cast
 from uuid import UUID
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.admin.models import AdminActor, RuntimeConfigSnapshot
+from qq_ai_bot.admin.control_resolution import ControlAccess, audit_ref_from_actor
+from qq_ai_bot.admin.models import AdminActor, ControlAuditRef, RuntimeConfigSnapshot
 from qq_ai_bot.automation.authority import DelegatedAuthority
 from qq_ai_bot.automation.models import AutomationRecord, TurnOrigin
 from qq_ai_bot.automation.service import AutomationService
+from qq_ai_bot.control_plane.principal import ControlPrincipal
 from qq_ai_bot.conversation.reply import ReplyEffect
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage
@@ -661,6 +663,20 @@ class HostPluginContext:
 
     def _is_real_superuser(self, invocation: PluginInvocation) -> bool:
         return invocation.actor_user_id in self._superuser_ids
+
+    def _control_access(self) -> ControlAccess:
+        people = self._services.people
+        if people is None:
+            raise PluginPermissionError("control principal cannot be resolved")
+        return ControlAccess(people._database, superuser_ids=self._superuser_ids)
+
+    async def _control_principal(
+        self, invocation: PluginInvocation
+    ) -> tuple[ControlPrincipal, ControlAuditRef]:
+        return (
+            await self._control_access().principal_for_qq(invocation.actor_user_id),
+            audit_ref_from_actor(_admin_actor(invocation, is_superuser=False)),
+        )
 
     def _require_user_scope(
         self,
@@ -1363,9 +1379,13 @@ class _RelationshipFacade:
             self._host._services.relationship_admin,
             "relationship mutation",
         )
-        actor = _admin_actor(invocation, is_superuser=True)
+        principal, audit = await self._host._control_principal(invocation)
+        context = self._host._control_access().context(
+            principal,
+            await self._host._control_access().person_target(target),
+        )
         if affection_delta:
-            await service.adjust_affection(actor, target, affection_delta)
+            await service.adjust_affection(context, affection_delta, audit=audit)
         if trust_delta:
             relationships = _require_service(
                 self._host._services.relationships,
@@ -1373,9 +1393,9 @@ class _RelationshipFacade:
             )
             before = await relationships.get_or_create(target)
             await service.set_trust(
-                actor,
-                target,
+                context,
                 max(0, min(100, before.trust_score + trust_delta)),
+                audit=audit,
             )
         current = await self._get(target)
         await self._host._audit(

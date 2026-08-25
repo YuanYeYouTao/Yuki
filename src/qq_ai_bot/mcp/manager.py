@@ -10,6 +10,8 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from qq_ai_bot.capabilities.results import ToolExecutionResult
 from qq_ai_bot.mcp.config import LoadedMCPConfig, load_mcp_config, redacted_server_config
 from qq_ai_bot.mcp.connection import MCPConnection, MCPConnectionFactory, SDKMCPConnection
@@ -188,7 +190,13 @@ class MCPManager:
         for server_id in removed:
             await self._notify_tools_changed(server_id, ())
 
-    async def refresh(self, server_id: str, *, force: bool = True) -> tuple[MCPToolMetadata, ...]:
+    async def refresh(
+        self,
+        server_id: str,
+        *,
+        force: bool = True,
+        session: AsyncSession | None = None,
+    ) -> tuple[MCPToolMetadata, ...]:
         config = self._require_enabled(server_id)
         cached = self._tools.get(server_id, ())
         if (
@@ -199,7 +207,7 @@ class MCPManager:
         ):
             return cached
         async with self._lock(server_id):
-            connection = await self._connect_unlocked(server_id, config)
+            connection = await self._connect_unlocked(server_id, config, session=session)
             try:
                 raw_tools = await connection.list_tools()
                 tools = tuple(
@@ -209,7 +217,7 @@ class MCPManager:
                 )
                 self._tools[server_id] = tools
                 if self._cache_enabled:
-                    await self._repository.replace_cached_tools(server_id, tools)
+                    await self._repository.replace_cached_tools(server_id, tools, session=session)
                 await self._repository.save_state(
                     server_id,
                     config,
@@ -219,13 +227,14 @@ class MCPManager:
                     server_info=connection.server_info,
                     connected=True,
                     refreshed=True,
+                    session=session,
                 )
                 await self._notify_tools_changed(server_id, tools)
                 return tools
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                await self._save_error(server_id, config, exc)
+                await self._save_error(server_id, config, exc, session=session)
                 raise
 
     async def ensure_metadata(self, server_id: str) -> tuple[MCPToolMetadata, ...]:
@@ -367,7 +376,9 @@ class MCPManager:
             None,
         )
 
-    async def set_enabled(self, server_id: str, enabled: bool) -> None:
+    async def set_enabled(
+        self, server_id: str, enabled: bool, *, session: AsyncSession | None = None
+    ) -> None:
         config = self._require_server(server_id)
         self._enabled_servers[server_id] = enabled
         await self._repository.save_state(
@@ -376,16 +387,19 @@ class MCPManager:
             self._config.hashes[server_id],
             enabled=enabled,
             status="disconnected" if enabled else "disabled",
+            session=session,
         )
         if not enabled:
             self._cancel_reconnect(server_id)
             await self.disconnect(server_id)
             await self._notify_tools_changed(server_id, ())
 
-    async def reconnect(self, server_id: str) -> tuple[MCPToolMetadata, ...]:
+    async def reconnect(
+        self, server_id: str, *, session: AsyncSession | None = None
+    ) -> tuple[MCPToolMetadata, ...]:
         self._cancel_reconnect(server_id)
         await self.disconnect(server_id)
-        return await self.refresh(server_id)
+        return await self.refresh(server_id, session=session)
 
     async def disconnect(self, server_id: str) -> None:
         connection = self._connections.pop(server_id, None)
@@ -402,10 +416,12 @@ class MCPManager:
         for server_id in tuple(self._connections):
             await self.disconnect(server_id)
 
-    async def status(self, server_id: str) -> MCPServerStatus:
+    async def status(
+        self, server_id: str, *, session: AsyncSession | None = None
+    ) -> MCPServerStatus:
         config = self._require_server(server_id)
         connection = self._connections.get(server_id)
-        state = await self._repository.state(server_id)
+        state = await self._repository.state(server_id, session=session)
         return MCPServerStatus(
             server_id=server_id,
             transport=config.transport,
@@ -420,8 +436,13 @@ class MCPManager:
             server_version=state.server_version if state is not None else "",
         )
 
-    async def statuses(self) -> tuple[MCPServerStatus, ...]:
-        return tuple([await self.status(server_id) for server_id in self.configured_server_ids])
+    async def statuses(self, *, session: AsyncSession | None = None) -> tuple[MCPServerStatus, ...]:
+        return tuple(
+            [
+                await self.status(server_id, session=session)
+                for server_id in self.configured_server_ids
+            ]
+        )
 
     def health(self) -> MCPHealthSnapshot:
         """Return in-memory state only; never connects a lazy server."""
@@ -456,6 +477,8 @@ class MCPManager:
         self,
         server_id: str,
         config: MCPServerConfig,
+        *,
+        session: AsyncSession | None = None,
     ) -> MCPConnection:
         connection = self._connections.get(server_id)
         if connection is not None and connection.connected:
@@ -475,7 +498,7 @@ class MCPManager:
             raise
         except Exception as exc:
             await connection.close()
-            await self._save_error(server_id, config, exc)
+            await self._save_error(server_id, config, exc, session=session)
             raise
         self._connections[server_id] = connection
         await self._repository.save_state(
@@ -486,6 +509,7 @@ class MCPManager:
             status="connected",
             server_info=connection.server_info,
             connected=True,
+            session=session,
         )
         return connection
 
@@ -554,6 +578,8 @@ class MCPManager:
         server_id: str,
         config: MCPServerConfig,
         exc: Exception,
+        *,
+        session: AsyncSession | None = None,
     ) -> None:
         failure = classify_mcp_exception(exc)
         await self._repository.save_state(
@@ -563,6 +589,7 @@ class MCPManager:
             enabled=self._enabled_servers.get(server_id, True),
             status="failed",
             error_category=failure.code,
+            session=session,
         )
 
     def _require_server(self, server_id: str) -> MCPServerConfig:

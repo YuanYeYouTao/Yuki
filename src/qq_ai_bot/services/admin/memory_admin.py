@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from qq_ai_bot.admin.audit import AdminAuditService
@@ -58,6 +59,19 @@ from qq_ai_bot.memory.targets import MemoryTargetResolver
 from qq_ai_bot.persistence.people_repository import PeopleRepository
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.services.admin.common import require_self_or_superuser
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryPreferenceTrigger:
+    """Already-authorized preference mutation correlation. Not an AdminActor."""
+
+    user_id: str
+    bot_user_id: str
+    trigger_message_id: str
+    conversation_key: str
+    decision_actor_type: str = "admin"
+    decision_actor_id: str | None = None
+    actor_is_superuser: bool = False
 
 
 class MemoryAdminService:
@@ -118,7 +132,7 @@ class MemoryAdminService:
 
     async def set_explicit_preference(
         self,
-        actor: AdminActor,
+        trigger: MemoryPreferenceTrigger,
         target: str,
         key: str,
         value: str,
@@ -128,7 +142,7 @@ class MemoryAdminService:
         """Route deterministic preference writes through the mutation boundary."""
 
         mutation = await self._apply_mutation(
-            actor,
+            trigger,
             target=ResolvedSubject(MemoryScopeType.PERSON, target, None),
             operation=(
                 MemoryMutationOperation.CORRECT
@@ -152,14 +166,14 @@ class MemoryAdminService:
 
     async def delete_explicit_preference(
         self,
-        actor: AdminActor,
+        trigger: MemoryPreferenceTrigger,
         target: str,
         existing: MemoryFact,
     ) -> bool:
         """Route deterministic preference deletion through the mutation boundary."""
 
         mutation = await self._apply_mutation(
-            actor,
+            trigger,
             target=ResolvedSubject(MemoryScopeType.PERSON, target, None),
             operation=MemoryMutationOperation.INVALIDATE,
             fact_id=existing.id,
@@ -751,11 +765,16 @@ class MemoryAdminService:
         health = await self._fact_audit.health()
         return bool(self._maintenance and self._maintenance.running), health
 
-    async def maintenance_run(self, actor: AdminActor) -> int:
-        self._require_superuser(actor)
+    async def run_maintenance_once(self) -> int:
+        """Run one maintenance pass after capability authorization already happened."""
+
         if self._maintenance is None:
             raise RuntimeError("memory maintenance worker is unavailable")
         return await self._maintenance.process_once()
+
+    async def maintenance_run(self, actor: AdminActor) -> int:
+        self._require_superuser(actor)
+        return await self.run_maintenance_once()
 
     async def self_reflection_run(self, actor: AdminActor) -> SelfReflectionManualRun:
         """Run one bounded manual SELF reflection cycle for a real superuser."""
@@ -854,7 +873,7 @@ class MemoryAdminService:
 
     async def _apply_mutation(
         self,
-        actor: AdminActor,
+        actor: AdminActor | MemoryPreferenceTrigger,
         *,
         target: ResolvedSubject,
         operation: MemoryMutationOperation,
@@ -922,9 +941,7 @@ class MemoryAdminService:
                 decision_actor_type=decision_actor_type,
                 decision_actor_id=actor.decision_actor_id or actor.user_id,
                 executed_by_bot_user_id=event.bot_user_id,
-                actor_is_superuser=(
-                    actor.is_superuser and actor.user_id in self._settings.superusers
-                ),
+                actor_is_superuser=_mutation_is_superuser(actor, self._settings),
             ),
             target=target,
         )
@@ -957,3 +974,9 @@ class MemoryAdminService:
     def _require_superuser(self, actor: AdminActor) -> None:
         if not actor.is_superuser or actor.user_id not in self._settings.superusers:
             raise PermissionError("只有超级管理员可以执行此记忆管理操作")
+
+
+def _mutation_is_superuser(actor: AdminActor | MemoryPreferenceTrigger, settings: Settings) -> bool:
+    if isinstance(actor, MemoryPreferenceTrigger):
+        return actor.actor_is_superuser
+    return actor.is_superuser and actor.user_id in settings.superusers

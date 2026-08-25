@@ -735,6 +735,21 @@ class MemoryFactRepository:
             )
         )
 
+    async def set_review_state(
+        self,
+        fact_id: int,
+        *,
+        review_state: MemoryReviewState,
+        session: AsyncSession,
+    ) -> bool:
+        row = await session.get(MemoryFactModel, fact_id)
+        if row is None:
+            return False
+        row.review_state = review_state.value
+        row.updated_at = datetime.now(UTC)
+        await session.flush()
+        return True
+
     async def restore_confirmation_metadata(
         self,
         fact_id: int,
@@ -985,6 +1000,7 @@ class MemoryFactRepository:
         max_importance: int,
         max_confidence: float,
         limit: int,
+        session: AsyncSession | None = None,
     ) -> tuple[MemoryFact, ...]:
         stale_window = or_(
             (
@@ -1017,20 +1033,31 @@ class MemoryFactRepository:
                 ),
             ),
         ]
-        async with self._database.sessions() as session:
-            rows = (
-                await session.execute(
-                    select(MemoryFactModel, func.count(MemoryEvidenceModel.id))
-                    .outerjoin(
-                        MemoryEvidenceModel,
-                        MemoryEvidenceModel.fact_id == MemoryFactModel.id,
-                    )
-                    .where(*conditions)
-                    .group_by(MemoryFactModel.id)
-                    .order_by(MemoryFactModel.valid_until.asc(), MemoryFactModel.id)
-                    .limit(max(1, limit))
+        if session is None:
+            async with self._database.sessions() as owned:
+                return await self.list_lifecycle_candidates(
+                    now=now,
+                    automatic_cutoff=automatic_cutoff,
+                    third_party_cutoff=third_party_cutoff,
+                    contested_cutoff=contested_cutoff,
+                    max_importance=max_importance,
+                    max_confidence=max_confidence,
+                    limit=limit,
+                    session=owned,
                 )
-            ).all()
+        rows = (
+            await session.execute(
+                select(MemoryFactModel, func.count(MemoryEvidenceModel.id))
+                .outerjoin(
+                    MemoryEvidenceModel,
+                    MemoryEvidenceModel.fact_id == MemoryFactModel.id,
+                )
+                .where(*conditions)
+                .group_by(MemoryFactModel.id)
+                .order_by(MemoryFactModel.valid_until.asc(), MemoryFactModel.id)
+                .limit(max(1, limit))
+            )
+        ).all()
         return tuple(self._project_fact(row, int(count)) for row, count in rows)
 
     async def count_active(

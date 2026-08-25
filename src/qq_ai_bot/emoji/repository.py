@@ -10,6 +10,7 @@ from typing import Literal
 
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from qq_ai_bot.emoji.db_models import (
@@ -26,6 +27,7 @@ from qq_ai_bot.emoji.models import (
     StoredEmojiMedia,
 )
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.unit_of_work import optional_session
 
 EmojiJobType = Literal["analyze", "reanalyze", "rebuild_preview"]
 
@@ -44,9 +46,9 @@ class EmojiRepository:
     def __init__(self, database: Database) -> None:
         self._database = database
 
-    async def get(self, emoji_id: str) -> EmojiAsset | None:
-        async with self._database.sessions() as session:
-            row = await session.get(EmojiAssetModel, emoji_id)
+    async def get(self, emoji_id: str, *, session: AsyncSession | None = None) -> EmojiAsset | None:
+        async with optional_session(self._database, session, write=False) as active:
+            row = await active.get(EmojiAssetModel, emoji_id)
             return self._asset(row) if row is not None else None
 
     async def get_by_hash(self, sha256: str) -> EmojiAsset | None:
@@ -219,30 +221,33 @@ class EmojiRepository:
         status: EmojiLifecycleStatus,
         *,
         now: datetime | None = None,
+        session: AsyncSession | None = None,
     ) -> EmojiAsset:
         timestamp = now or datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
-            row = await session.get(EmojiAssetModel, emoji_id)
+        async with optional_session(self._database, session, write=True) as active:
+            row = await active.get(EmojiAssetModel, emoji_id)
             if row is None:
                 raise LookupError("emoji asset not found")
             row.status = status.value
             row.updated_at = timestamp
             row.missing_since = timestamp if status is EmojiLifecycleStatus.MISSING else None
             if status is not EmojiLifecycleStatus.ADOPTED:
-                await session.execute(
+                await active.execute(
                     delete(EmojiScopeStateModel).where(EmojiScopeStateModel.emoji_id == emoji_id)
                 )
-            await session.flush()
+            await active.flush()
             return self._asset(row)
 
-    async def set_pinned(self, emoji_id: str, pinned: bool) -> EmojiAsset:
-        async with self._database.sessions() as session, session.begin():
-            row = await session.get(EmojiAssetModel, emoji_id)
+    async def set_pinned(
+        self, emoji_id: str, pinned: bool, *, session: AsyncSession | None = None
+    ) -> EmojiAsset:
+        async with optional_session(self._database, session, write=True) as active:
+            row = await active.get(EmojiAssetModel, emoji_id)
             if row is None:
                 raise LookupError("emoji asset not found")
             row.pinned = pinned
             row.updated_at = datetime.now(UTC)
-            await session.flush()
+            await active.flush()
             return self._asset(row)
 
     async def adopt_scope(

@@ -18,6 +18,7 @@ from qq_ai_bot.identity.dual_write import sync_presence
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel, GroupModel, PersonModel
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from qq_ai_bot.persistence.unit_of_work import optional_session
 from qq_ai_bot.plugin_host.db_models import (
     PluginBackgroundTargetGrantModel,
     PluginBackgroundTurnJobModel,
@@ -467,10 +468,16 @@ class PluginNotificationRepository:
             row.updated_at = now
             row.sent_at = now if status == "sent" else None
 
-    async def retry_outbox(self, item_id: int, *, error_category: str) -> None:
+    async def retry_outbox(
+        self,
+        item_id: int,
+        *,
+        error_category: str,
+        session: AsyncSession | None = None,
+    ) -> None:
         now = datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
-            row = await session.get(PluginNotificationOutboxModel, item_id)
+        async with optional_session(self._database, session, write=True) as active:
+            row = await active.get(PluginNotificationOutboxModel, item_id)
             if row is None:
                 return
             if row.attempts >= row.max_attempts:

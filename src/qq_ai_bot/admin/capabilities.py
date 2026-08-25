@@ -496,7 +496,7 @@ class AdminCapabilityService:
             raise PermissionError("当前管理员工具没有绑定到真实超级管理员事件")
         return AdminActor(
             user_id=runtime.actor_user_id,
-            is_superuser=True,
+            is_superuser=runtime.actor_is_superuser,
             trigger_message_id=runtime.trigger_message_id,
             conversation_key=runtime.conversation_key,
             current_group_id=runtime.current_group_id,

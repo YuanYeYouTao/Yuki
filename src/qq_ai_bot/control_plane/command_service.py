@@ -141,3 +141,101 @@ class ControlCommandService:
         return await self._port.resume_route(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
+
+    async def set_config(self, context: object, command: object) -> ControlResult:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.config.mutate")
+        return await self._port.set_config(
+            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
+        )
+
+    async def unset_config(self, context: object, command: object) -> ControlResult:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.config.mutate")
+        return await self._port.unset_config(
+            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
+        )
+
+    async def rollback_config(self, context: object, command: object) -> ControlResult:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.config.mutate")
+        return await self._port.rollback_config(
+            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
+        )
+
+    async def mutate_memory(self, context: object, command: object) -> ControlResult:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.memory.mutate")
+        return await self._port.mutate_memory(
+            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
+        )
+
+    async def rebuild_memory(self, context: object, command: object) -> ControlResult:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.memory.rebuild")
+        return await self._port.rebuild_memory(
+            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
+        )
+
+    async def dream_memory(self, context: object, command: object) -> ControlResult:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.memory.dream")
+        return await self._port.dream_memory(
+            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
+        )
+
+    async def maintain_memory(self, context: object, command: object) -> ControlResult:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.memory.maintenance")
+        return await self._port.maintain_memory(
+            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
+        )
+
+    async def mutate_automation(self, context: object, command: object) -> ControlResult:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.automation.mutate")
+        return await self._port.mutate_automation(
+            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
+        )
+
+    async def mutate_plugin(self, context: object, command: object) -> ControlResult:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.plugin.mutate")
+        return await self._port.mutate_plugin(
+            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
+        )
+
+    async def mutate_mcp(self, context: object, command: object) -> ControlResult:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.mcp.mutate")
+        return await self._port.mutate_mcp(
+            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
+        )
+
+    async def mutate_emoji(self, context: object, command: object) -> ControlResult:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.emoji.mutate")
+        return await self._port.mutate_emoji(
+            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
+        )
+
+    async def mutate_speech(self, context: object, command: object) -> ControlResult:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.speech.mutate")
+        return await self._port.mutate_speech(
+            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
+        )
+
+    async def cancel_operation(self, context: object, command: object) -> ControlResult:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.operation.cancel")
+        return await self._port.cancel_operation(
+            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
+        )
+
+    async def retry_operation(self, context: object, command: object) -> ControlResult:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.operation.retry")
+        return await self._port.retry_operation(
+            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
+        )

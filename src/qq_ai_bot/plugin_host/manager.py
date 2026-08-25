@@ -63,6 +63,64 @@ class PluginDoctorReport(StrictModel):
     problems: tuple[str, ...] = ()
 
 
+def diagnose_plugin(
+    plugin_id: str,
+    *,
+    system_enabled: bool,
+    record: PluginInstallationRecord | None,
+    available_hash: str | None = None,
+    available_permissions: frozenset[str] | None = None,
+    running: bool = False,
+    extension_count: int = 0,
+    background_task_count: int = 0,
+) -> PluginDoctorReport:
+    """Project installation, manifest, and runtime facts into a doctor report."""
+
+    available = available_hash is not None
+    manifest_matches = bool(
+        record is not None and available and record.manifest_hash == available_hash
+    )
+    approval_valid = bool(
+        record is not None
+        and available
+        and manifest_matches
+        and record.approved_at is not None
+        and available_permissions is not None
+        and set(record.approved_permissions) <= set(available_permissions)
+    )
+    problems: list[str] = []
+    if not system_enabled:
+        problems.append("plugin_system_disabled")
+    if record is None:
+        problems.append("not_installed")
+    if not available:
+        problems.append("manifest_unavailable")
+    elif record is not None and not manifest_matches:
+        problems.append("manifest_hash_changed")
+    if record is not None and not approval_valid:
+        problems.append("approval_missing_or_stale")
+    if record is not None and not record.enabled:
+        problems.append("disabled")
+    if record is not None and record.last_error_category:
+        problems.append(f"last_error:{record.last_error_category}")
+    return PluginDoctorReport(
+        plugin_id=plugin_id,
+        system_enabled=system_enabled,
+        installed=record is not None,
+        manifest_available=available,
+        manifest_hash_matches=manifest_matches,
+        approval_valid=approval_valid,
+        enabled=record.enabled if record is not None else False,
+        running=running,
+        status=record.status if record is not None else None,
+        requested_permissions=record.requested_permissions if record else (),
+        approved_permissions=record.approved_permissions if record else (),
+        extension_count=extension_count,
+        background_task_count=background_task_count,
+        problems=tuple(problems),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _AvailablePlugin:
     manifest: PluginManifest
@@ -276,50 +334,22 @@ class PluginManager:
         async with self._lock:
             record = await self._installations.get(plugin_id)
             available = self._available.get(plugin_id)
-            manifest_matches = bool(
-                record is not None
-                and available is not None
-                and record.manifest_hash == available.manifest.manifest_hash
-            )
-            approval_valid = bool(
-                record is not None
-                and available is not None
-                and manifest_matches
-                and record.approved_at is not None
-                and set(record.approved_permissions)
-                <= {permission.value for permission in available.manifest.permissions}
-            )
-            problems: list[str] = []
-            if not self._enabled:
-                problems.append("plugin_system_disabled")
-            if record is None:
-                problems.append("not_installed")
-            if available is None:
-                problems.append("manifest_unavailable")
-            elif record is not None and not manifest_matches:
-                problems.append("manifest_hash_changed")
-            if record is not None and not approval_valid:
-                problems.append("approval_missing_or_stale")
-            if record is not None and not record.enabled:
-                problems.append("disabled")
-            if record is not None and record.last_error_category:
-                problems.append(f"last_error:{record.last_error_category}")
             managed = self._running.get(plugin_id)
-            return PluginDoctorReport(
-                plugin_id=plugin_id,
+            return diagnose_plugin(
+                plugin_id,
                 system_enabled=self._enabled,
-                installed=record is not None,
-                manifest_available=available is not None,
-                manifest_hash_matches=manifest_matches,
-                approval_valid=approval_valid,
-                enabled=record.enabled if record is not None else False,
+                record=record,
+                available_hash=(None if available is None else available.manifest.manifest_hash),
+                available_permissions=(
+                    None
+                    if available is None
+                    else frozenset(
+                        permission.value for permission in available.manifest.permissions
+                    )
+                ),
                 running=managed is not None,
-                status=record.status if record is not None else None,
-                requested_permissions=record.requested_permissions if record else (),
-                approved_permissions=record.approved_permissions if record else (),
                 extension_count=len(self._extensions.list(plugin_id=plugin_id)),
                 background_task_count=(len(managed.background_tasks) if managed is not None else 0),
-                problems=tuple(problems),
             )
 
     async def _discover_unlocked(self) -> tuple[PluginInstallationRecord, ...]:

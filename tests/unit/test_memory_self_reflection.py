@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 from qq_ai_bot.admin.audit import AdminAuditService
+from qq_ai_bot.admin.control_resolution import ControlAccess
 from qq_ai_bot.admin.models import AdminActor
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ScopeType
@@ -499,6 +500,7 @@ async def test_self_reflection_command_requires_superuser_and_reports_usage(
         memory_admin=memory_admin,
         preference_admin=cast(PreferenceAdminService, object()),
         relationship_admin=cast(RelationshipAdminService, object()),
+        control=cast(ControlAccess, object()),
     )
     admin = AdminActor(
         user_id="9000",

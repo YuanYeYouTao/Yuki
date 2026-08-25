@@ -507,7 +507,10 @@ class AutomationCapabilityHandlers:
         action_arguments = {key: value for key, value in arguments.items() if value is not None}
         actor = AdminActor(
             user_id=context.creator_user_id,
-            is_superuser=True,
+            is_superuser=(
+                context.authority.actor_is_superuser
+                and context.creator_user_id in self._settings.superusers
+            ),
             trigger_message_id=f"automation:{context.automation_id}:{context.automation_run_id}",
             conversation_key=context.conversation_key,
             current_group_id=context.current_group_id,

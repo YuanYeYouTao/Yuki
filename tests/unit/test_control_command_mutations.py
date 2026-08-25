@@ -2444,6 +2444,8 @@ async def test_non_cacheable_failed_problem_is_rejected(database: Database) -> N
         ("effective_state_json", None),
         ("operation_kind", "backfill"),
         ("operation_ref", "run-1"),
+        ("operation_kind", "rebuild"),
+        ("operation_ref", "rebuild:forged"),
     ),
 )
 async def test_bypassed_success_receipt_lifecycle_is_rejected(

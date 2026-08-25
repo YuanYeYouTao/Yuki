@@ -34,6 +34,14 @@ CANONICAL_RESOURCE_KINDS: Final[frozenset[QueryResourceKind]] = frozenset(
         QueryResourceKind.SPACE_ROUTE,
         QueryResourceKind.OPERATION,
         QueryResourceKind.CONFLICT,
+        QueryResourceKind.CONFIG,
+        QueryResourceKind.MEMORY_FACT,
+        QueryResourceKind.MEMORY_JOB,
+        QueryResourceKind.AUTOMATION,
+        QueryResourceKind.PLUGIN,
+        QueryResourceKind.MCP,
+        QueryResourceKind.EMOJI,
+        QueryResourceKind.SPEECH,
     }
 )
 TIME_ID_RESOURCE_KINDS: Final[frozenset[QueryResourceKind]] = frozenset({QueryResourceKind.AUDIT})
@@ -121,6 +129,36 @@ def decode_integer_cursor_key(key: str, *, minimum: int) -> int:
     return value
 
 
+def encode_operation_cursor_key(created_at: datetime, kind: int, local_id: int) -> str:
+    """Reversible keyset: full-precision created_at + kind + complete local id."""
+
+    stamp = require_aware_datetime(created_at, name="created_at").isoformat()
+    if type(kind) is bool or type(kind) is not int or kind < 1:
+        raise ValueError("kind must be a positive int")
+    if type(local_id) is bool or type(local_id) is not int or local_id < 1:
+        raise ValueError("local_id must be a positive int")
+    return f"{stamp}#{kind}#{local_id}"
+
+
+def decode_operation_cursor_key(key: str) -> tuple[datetime, int, int]:
+    try:
+        token = require_opaque_token(key, name="cursor_key", max_length=200)
+    except (TypeError, ValueError) as exc:
+        raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR)) from exc
+    stamp, first, rest = token.partition("#")
+    kind_token, second, raw_id = rest.partition("#")
+    if first != "#" or second != "#" or not stamp or not kind_token or not raw_id:
+        raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
+    kind = decode_integer_cursor_key(kind_token, minimum=1)
+    local_id = decode_integer_cursor_key(raw_id, minimum=1)
+    try:
+        created_at = datetime.fromisoformat(stamp)
+        require_aware_datetime(created_at, name="created_at")
+    except (TypeError, ValueError) as exc:
+        raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR)) from exc
+    return created_at, kind, local_id
+
+
 def encode_time_id_key(created_at: datetime, row_id: int) -> str:
     stamp = require_aware_datetime(created_at, name="created_at").isoformat()
     if type(row_id) is not int or type(row_id) is bool or row_id < 1:
@@ -156,7 +194,14 @@ def decode_resource_cursor(
         raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
     if expected_kind is QueryResourceKind.AUDIT:
         decode_time_id_key(key)
-    elif expected_kind in {QueryResourceKind.OPERATION, QueryResourceKind.CONFLICT}:
+    elif expected_kind is QueryResourceKind.OPERATION:
+        decode_operation_cursor_key(key)
+    elif expected_kind in {
+        QueryResourceKind.CONFLICT,
+        QueryResourceKind.MEMORY_FACT,
+        QueryResourceKind.MEMORY_JOB,
+        QueryResourceKind.AUTOMATION,
+    }:
         decode_integer_cursor_key(key, minimum=1)
     elif expected_kind in TWO_PHASE_RESOURCE_KINDS and phase is QueryCursorPhase.UNRESOLVED:
         decode_integer_cursor_key(key, minimum=0)

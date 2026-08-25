@@ -101,3 +101,101 @@ class ControlCommandPort(Protocol):
         target: object,
         command: ControlCommand,
     ) -> ControlResult: ...
+
+    async def set_config(
+        self,
+        principal: ControlPrincipal,
+        target: object,
+        command: ControlCommand,
+    ) -> ControlResult: ...
+
+    async def unset_config(
+        self,
+        principal: ControlPrincipal,
+        target: object,
+        command: ControlCommand,
+    ) -> ControlResult: ...
+
+    async def rollback_config(
+        self,
+        principal: ControlPrincipal,
+        target: object,
+        command: ControlCommand,
+    ) -> ControlResult: ...
+
+    async def mutate_memory(
+        self,
+        principal: ControlPrincipal,
+        target: object,
+        command: ControlCommand,
+    ) -> ControlResult: ...
+
+    async def rebuild_memory(
+        self,
+        principal: ControlPrincipal,
+        target: object,
+        command: ControlCommand,
+    ) -> ControlResult: ...
+
+    async def dream_memory(
+        self,
+        principal: ControlPrincipal,
+        target: object,
+        command: ControlCommand,
+    ) -> ControlResult: ...
+
+    async def maintain_memory(
+        self,
+        principal: ControlPrincipal,
+        target: object,
+        command: ControlCommand,
+    ) -> ControlResult: ...
+
+    async def mutate_automation(
+        self,
+        principal: ControlPrincipal,
+        target: object,
+        command: ControlCommand,
+    ) -> ControlResult: ...
+
+    async def mutate_plugin(
+        self,
+        principal: ControlPrincipal,
+        target: object,
+        command: ControlCommand,
+    ) -> ControlResult: ...
+
+    async def mutate_mcp(
+        self,
+        principal: ControlPrincipal,
+        target: object,
+        command: ControlCommand,
+    ) -> ControlResult: ...
+
+    async def mutate_emoji(
+        self,
+        principal: ControlPrincipal,
+        target: object,
+        command: ControlCommand,
+    ) -> ControlResult: ...
+
+    async def mutate_speech(
+        self,
+        principal: ControlPrincipal,
+        target: object,
+        command: ControlCommand,
+    ) -> ControlResult: ...
+
+    async def cancel_operation(
+        self,
+        principal: ControlPrincipal,
+        target: object,
+        command: ControlCommand,
+    ) -> ControlResult: ...
+
+    async def retry_operation(
+        self,
+        principal: ControlPrincipal,
+        target: object,
+        command: ControlCommand,
+    ) -> ControlResult: ...

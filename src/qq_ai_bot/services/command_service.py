@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 
 from qq_ai_bot import __version__
 from qq_ai_bot.admin.config_service import RuntimeConfigService
+from qq_ai_bot.admin.control_resolution import ControlAccess, audit_ref_from_actor
 from qq_ai_bot.admin.models import AdminActor
 from qq_ai_bot.admin.permission_catalog import PermissionCatalogService
 from qq_ai_bot.automation.repository import AutomationRepository
@@ -115,12 +116,14 @@ class CommandService:
         self._model_invocations = model_invocations
         self._mcp_commands = mcp_commands
         self._memory_rebuild = memory_rebuild
+        self._control = ControlAccess(people._database, superuser_ids=settings.superusers)
         self._profile_commands = ProfileCommandHandler(
             people=people,
             memories=memories,
             memory_admin=memory_admin,
             preference_admin=preference_admin,
             relationship_admin=relationship_admin,
+            control=self._control,
             memory_rebuild=memory_rebuild,
             bot_display_name=settings.bot_display_name,
         )
@@ -357,11 +360,21 @@ class CommandService:
                 text = "该命令只能在群聊中使用。"
             else:
                 enabled = command is CommandName.ON
-                if enabled:
-                    await self._group_admin.enable_current_group(actor, message.group_id)
+                try:
+                    principal = await self._control.principal_for_qq(message.sender.user_id)
+                    context = self._control.context(
+                        principal,
+                        await self._control.space_target(message.group_id),
+                    )
+                    audit = audit_ref_from_actor(actor)
+                    if enabled:
+                        await self._group_admin.enable_current_group(context, audit=audit)
+                    else:
+                        await self._group_admin.disable_current_group(context, audit=audit)
+                except PermissionError as exc:
+                    text = str(exc)
                 else:
-                    await self._group_admin.disable_current_group(actor, message.group_id)
-                text = "已启用当前群。" if enabled else "已停用当前群。"
+                    text = "已启用当前群。" if enabled else "已停用当前群。"
         elif command in {CommandName.PRIVATE, CommandName.GROUP}:
             parsed = self._parse_access_switch(argument)
             if parsed is None:
@@ -370,23 +383,39 @@ class CommandService:
             else:
                 target_id, enabled = parsed
                 try:
+                    principal = await self._control.principal_for_qq(message.sender.user_id)
+                    audit = audit_ref_from_actor(actor)
                     if command is CommandName.PRIVATE:
+                        person_context = self._control.context(
+                            principal,
+                            await self._control.person_target(target_id),
+                        )
                         if enabled:
-                            await self._private_access_admin.enable_user(actor, target_id)
+                            await self._private_access_admin.enable_user(
+                                person_context, audit=audit
+                            )
                         else:
-                            await self._private_access_admin.disable_user(actor, target_id)
+                            await self._private_access_admin.disable_user(
+                                person_context, audit=audit
+                            )
                         text = (
                             "已开启指定 QQ 用户的私聊权限。"
                             if enabled
                             else "已关闭指定 QQ 用户的私聊权限。"
                         )
                     else:
+                        space_context = self._control.context(
+                            principal,
+                            await self._control.space_target(target_id),
+                        )
                         if enabled:
-                            await self._group_admin.enable_current_group(actor, target_id)
+                            await self._group_admin.enable_current_group(space_context, audit=audit)
                         else:
-                            await self._group_admin.disable_current_group(actor, target_id)
+                            await self._group_admin.disable_current_group(
+                                space_context, audit=audit
+                            )
                         text = f"已{'启用' if enabled else '停用'}群 {target_id}。"
-                except ValueError as exc:
+                except (ValueError, PermissionError) as exc:
                     text = str(exc)
         elif command is CommandName.PING:
             text = f"pong ({(time.perf_counter() - started) * 1000:.1f} ms)"

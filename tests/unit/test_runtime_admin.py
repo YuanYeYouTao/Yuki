@@ -128,7 +128,6 @@ def admin_stack(
     runtime = RuntimeConfigService(settings=settings, database=database)
     audit = AdminAuditService(database)
     relationship_admin = RelationshipAdminService(
-        settings=settings,
         relationships=harness.relationships,
         audit=audit,
         runtime_config=runtime,
@@ -144,19 +143,18 @@ def admin_stack(
         audit=audit,
     )
     group_admin = GroupAdminService(
-        settings=settings,
         groups=harness.groups,
         runtime_config=runtime,
         audit=audit,
     )
     private_admin = PrivateAccessAdminService(
-        settings=settings,
         private_users=harness.private_users,
         audit=audit,
         runtime_config=runtime,
     )
     actions = AdminActionService(
         settings=settings,
+        database=database,
         relationships=relationship_admin,
         memories=memory_admin,
         preferences=preference_admin,
@@ -338,13 +336,17 @@ async def test_business_mutation_and_admin_audit_share_one_transaction(
     groups = GroupSettingsRepository(database)
     audit = AdminAuditService(database)
     service = GroupAdminService(
-        settings=settings,
         groups=groups,
         runtime_config=RuntimeConfigService(settings=settings, database=database),
         audit=audit,
     )
+    from qq_ai_bot.admin.control_resolution import ControlAccess, audit_ref_from_actor
 
-    enabled = await service.enable_current_group(actor(), "2001")
+    await UserProfileRepository(database).observe(user_id="9000", nickname="管理员")
+    access = ControlAccess(database, superuser_ids=settings.superusers)
+    principal = await access.principal_for_qq("9000")
+    context = access.context(principal, await access.space_target("2001"))
+    enabled = await service.enable_current_group(context, audit=audit_ref_from_actor(actor()))
     history = await audit.history(capability="group")
     assert enabled.enabled
     assert len(history) == 1
@@ -355,8 +357,12 @@ async def test_business_mutation_and_admin_audit_share_one_transaction(
         raise RuntimeError("simulated audit insert failure")
 
     monkeypatch.setattr(audit, "record", fail_audit_insert)
+    rollback = access.context(principal, await access.space_target("2002"))
     with pytest.raises(RuntimeError, match="simulated audit insert failure"):
-        await service.enable_current_group(actor(message_id="rollback"), "2002")
+        await service.enable_current_group(
+            rollback,
+            audit=audit_ref_from_actor(actor(message_id="rollback")),
+        )
 
     assert await groups.get("2002") is None
 

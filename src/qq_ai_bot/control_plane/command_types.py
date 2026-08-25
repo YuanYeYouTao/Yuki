@@ -84,6 +84,64 @@ _ROUTE_UPDATE_BEFORE_KEYS: Final[frozenset[str]] = frozenset(
     {"paused", "revision", "route_generation"}
 )
 _FAILURE_AFTER_KEYS: Final[frozenset[str]] = frozenset({"problem"})
+_MANAGEMENT_STATE_KEYS: Final[frozenset[str]] = frozenset({"resource", "revision", "status"})
+_MANAGEMENT_OPERATIONS: Final[frozenset[str]] = frozenset(
+    {
+        "control.config.set",
+        "control.config.unset",
+        "control.config.rollback",
+        "control.memory.mutate",
+        "control.memory.rebuild",
+        "control.memory.dream",
+        "control.memory.maintenance",
+        "control.automation.mutate",
+        "control.plugin.mutate",
+        "control.mcp.mutate",
+        "control.emoji.mutate",
+        "control.speech.mutate",
+        "control.operation.cancel",
+        "control.operation.retry",
+    }
+)
+_REBUILD_STATUSES: Final[frozenset[str]] = frozenset(
+    {
+        "planned",
+        "extracting",
+        "extraction_paused",
+        "review",
+        "committing",
+        "commit_paused",
+        "completed",
+        "cancelled",
+        "failed",
+    }
+)
+_REBUILD_START_STATUSES: Final[frozenset[str]] = frozenset(
+    {
+        "extracting",
+        "extraction_paused",
+        "review",
+        "committing",
+        "commit_paused",
+        "completed",
+    }
+)
+_DREAM_STATUSES: Final[frozenset[str]] = frozenset(
+    {
+        "planned",
+        "running",
+        "partial_failed",
+        "completed",
+        "cancelled",
+        "rolling_back",
+        "rolled_back",
+    }
+)
+_DREAM_START_STATUSES: Final[frozenset[str]] = frozenset({"running", "partial_failed", "completed"})
+_EMOJI_STATUSES: Final[frozenset[str]] = frozenset(
+    {"candidate", "recognized", "adopted", "rejected", "banned", "missing"}
+)
+_LONG_OPERATION_KINDS: Final[frozenset[str]] = frozenset({"rebuild", "dream"})
 
 _MAX_DISPLAY_NAME = 128
 _MAX_EXTERNAL_ID = 255
@@ -116,6 +174,20 @@ class CommandOperation(StrEnum):
     ROUTE_SET = "route.set"
     ROUTE_PAUSE = "route.pause"
     ROUTE_RESUME = "route.resume"
+    CONFIG_SET = "control.config.set"
+    CONFIG_UNSET = "control.config.unset"
+    CONFIG_ROLLBACK = "control.config.rollback"
+    MEMORY_MUTATE = "control.memory.mutate"
+    MEMORY_REBUILD = "control.memory.rebuild"
+    MEMORY_DREAM = "control.memory.dream"
+    MEMORY_MAINTENANCE = "control.memory.maintenance"
+    AUTOMATION_MUTATE = "control.automation.mutate"
+    PLUGIN_MUTATE = "control.plugin.mutate"
+    MCP_MUTATE = "control.mcp.mutate"
+    EMOJI_MUTATE = "control.emoji.mutate"
+    SPEECH_MUTATE = "control.speech.mutate"
+    OPERATION_CANCEL = "control.operation.cancel"
+    OPERATION_RETRY = "control.operation.retry"
 
 
 CACHEABLE_COMMAND_FAILURES: Final[frozenset[ProblemCode]] = frozenset(
@@ -128,6 +200,7 @@ CACHEABLE_COMMAND_FAILURES: Final[frozenset[ProblemCode]] = frozenset(
         ProblemCode.ROUTE_AMBIGUOUS,
         ProblemCode.POPULATED_MERGE_FORBIDDEN,
         ProblemCode.PENDING_CUTOVER,
+        ProblemCode.SECRET_NOT_READABLE,
     }
 )
 
@@ -392,6 +465,142 @@ def parse_route_action(payload: object) -> RouteActionPayload:
     if "kind" not in mapping:
         raise _invalid()
     return RouteActionPayload(kind=_require_kind(mapping["kind"]))
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class ConfigWritePayload:
+    key: str
+    scope_type: str
+    scope_id: str
+    value: JsonValue | None
+
+    def material(self) -> dict[str, JsonValue]:
+        payload: dict[str, JsonValue] = {
+            "key": self.key,
+            "scope_id": self.scope_id,
+            "scope_type": self.scope_type,
+        }
+        if self.value is not None:
+            encoded = json.dumps(
+                _jsonable(self.value), ensure_ascii=True, sort_keys=True, separators=(",", ":")
+            )
+            payload["value_digest"] = hashlib.sha256(encoded.encode()).hexdigest()
+        return payload
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class ConfigRollbackPayload:
+    change_id: int
+
+    def material(self) -> dict[str, JsonValue]:
+        return {"change_id": self.change_id}
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class ManagementActionPayload:
+    action: str
+    resource_id: str
+    spec: dict[str, JsonValue] | None = None
+
+    def material(self) -> dict[str, JsonValue]:
+        payload: dict[str, JsonValue] = {
+            "action": self.action,
+            "resource_id": self.resource_id,
+        }
+        if self.spec is not None:
+            payload["spec"] = dict(self.spec)
+        return payload
+
+
+def _require_scope_type(value: object) -> str:
+    if type(value) is not str:
+        raise _invalid()
+    token = value.strip().casefold()
+    if token not in {"global", "group", "user"}:
+        raise _invalid()
+    return token
+
+
+def parse_config_write(payload: object, *, require_value: bool) -> ConfigWritePayload:
+    mapping = _require_object(payload)
+    allowed = frozenset({"key", "scope_type", "scope_id", "value"})
+    _reject_unknown(mapping, allowed)
+    if "key" not in mapping or "scope_type" not in mapping:
+        raise _invalid()
+    try:
+        key = require_opaque_token(mapping["key"], name="key", max_length=128)
+    except (TypeError, ValueError) as exc:
+        raise _invalid() from exc
+    scope_type = _require_scope_type(mapping["scope_type"])
+    scope_id = "" if "scope_id" not in mapping else mapping["scope_id"]
+    if type(scope_id) is not str:
+        raise _invalid()
+    if scope_type == "global":
+        if scope_id:
+            raise _invalid()
+    elif not scope_id.strip() or scope_id != scope_id.strip():
+        raise _invalid()
+    if require_value and "value" not in mapping:
+        raise _invalid()
+    if not require_value and "value" in mapping:
+        raise _invalid()
+    return ConfigWritePayload(
+        key=key,
+        scope_type=scope_type,
+        scope_id=scope_id,
+        value=None if not require_value else mapping["value"],
+    )
+
+
+def parse_config_rollback(payload: object) -> ConfigRollbackPayload:
+    mapping = _require_object(payload)
+    _reject_unknown(mapping, frozenset({"change_id"}))
+    if "change_id" not in mapping:
+        raise _invalid()
+    change_id = mapping["change_id"]
+    if type(change_id) is bool or type(change_id) is not int or change_id < 1:
+        raise _invalid()
+    return ConfigRollbackPayload(change_id=change_id)
+
+
+def parse_management_action(payload: object) -> ManagementActionPayload:
+    mapping = _require_object(payload)
+    _reject_unknown(mapping, frozenset({"action", "resource_id", "spec"}))
+    if "action" not in mapping:
+        raise _invalid()
+    try:
+        action = require_opaque_token(mapping["action"], name="action", max_length=32)
+    except (TypeError, ValueError) as exc:
+        raise _invalid() from exc
+    resource_id = "yuki" if "resource_id" not in mapping else mapping["resource_id"]
+    try:
+        token = require_opaque_token(resource_id, name="resource_id", max_length=128)
+    except (TypeError, ValueError) as exc:
+        raise _invalid() from exc
+    raw_spec = mapping.get("spec")
+    spec: dict[str, JsonValue] | None = None
+    if raw_spec is not None:
+        if not isinstance(raw_spec, Mapping) or any(type(key) is not str for key in raw_spec):
+            raise _invalid()
+        spec = {str(key): _as_json_value(item) for key, item in raw_spec.items()}
+    return ManagementActionPayload(action=action, resource_id=token, spec=spec)
+
+
+def _as_json_value(value: object) -> JsonValue:
+    if value is None or type(value) is bool or type(value) is int or type(value) is float:
+        return value
+    if type(value) is str:
+        return value
+    if isinstance(value, Mapping):
+        if any(type(key) is not str for key in value):
+            raise _invalid()
+        return {str(key): _as_json_value(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return tuple(_as_json_value(item) for item in value)
+    raise _invalid()
 
 
 def _jsonable(value: JsonValue) -> object:
@@ -677,7 +886,27 @@ def _project_effective_shape(
         return _project_route_effective(
             routed[1], state, resource_id=resource_id, revision=revision
         )
+    if operation in _MANAGEMENT_OPERATIONS:
+        return _project_management_effective(state, resource_id=resource_id, revision=revision)
     raise _mismatch()
+
+
+def _project_management_effective(
+    state: Mapping[str, JsonValue],
+    *,
+    resource_id: str,
+    revision: int,
+) -> dict[str, JsonValue]:
+    _require_exact_keys(state, _MANAGEMENT_STATE_KEYS)
+    if type(state["resource"]) is not str or state["resource"] != resource_id:
+        raise _mismatch()
+    if _require_state_revision(state["revision"]) != revision:
+        raise _mismatch()
+    try:
+        status = require_opaque_token(state["status"], name="status", max_length=32)
+    except (TypeError, ValueError) as exc:
+        raise _mismatch() from exc
+    return {"resource": resource_id, "revision": revision, "status": status}
 
 
 def _project_binding_effective(
@@ -778,6 +1007,257 @@ def _project_route_effective(
     }
 
 
+def expected_operation_kind(operation: str, material: Mapping[str, JsonValue]) -> str | None:
+    if operation == CommandOperation.MEMORY_REBUILD.value:
+        return "rebuild"
+    if operation == CommandOperation.MEMORY_DREAM.value:
+        return "dream"
+    if operation in {
+        CommandOperation.OPERATION_CANCEL.value,
+        CommandOperation.OPERATION_RETRY.value,
+    }:
+        resource = material.get("resource_id")
+        if type(resource) is not str:
+            return None
+        kind, separator, rest = resource.partition(":")
+        if separator == ":" and kind in _LONG_OPERATION_KINDS and rest:
+            return kind
+    return None
+
+
+def require_receipt_operation_pair(
+    *,
+    operation: str,
+    material: Mapping[str, JsonValue],
+    resource_id: str,
+    kind: object,
+    ref: object,
+) -> tuple[str, str] | tuple[None, None]:
+    expected = expected_operation_kind(operation, material)
+    if expected is None:
+        if kind is not None or ref is not None:
+            raise _mismatch()
+        return None, None
+    if type(kind) is not str or type(ref) is not str:
+        raise _mismatch()
+    try:
+        token = require_opaque_token(kind, name="operation_kind", max_length=64)
+        stored = require_opaque_token(ref, name="operation_ref", max_length=128)
+    except (TypeError, ValueError) as exc:
+        raise _mismatch() from exc
+    if token != expected or stored != f"{expected}:{resource_id}":
+        raise _mismatch()
+    return token, stored
+
+
+def _material_action(material: Mapping[str, JsonValue]) -> str:
+    action = material.get("action")
+    if type(action) is not str:
+        raise _mismatch()
+    return action
+
+
+def _material_resource(material: Mapping[str, JsonValue]) -> str:
+    resource = material.get("resource_id")
+    if type(resource) is not str:
+        raise _mismatch()
+    return resource
+
+
+def _require_generated_id(resource_id: str) -> None:
+    if type(resource_id) is not str or not resource_id or resource_id == "yuki":
+        raise _mismatch()
+    if resource_id.isdigit():
+        if int(resource_id) < 1:
+            raise _mismatch()
+        return
+    if len(resource_id) < 32:
+        raise _mismatch()
+
+
+def _require_management_semantics(
+    operation: str,
+    state: Mapping[str, JsonValue],
+    *,
+    resource_id: str,
+    semantic_target_id: str,
+    material: Mapping[str, JsonValue],
+) -> None:
+    status = state["status"]
+    if type(status) is not str:
+        raise _mismatch()
+    if operation == CommandOperation.CONFIG_SET.value:
+        if (
+            status != "applied"
+            or resource_id != semantic_target_id
+            or resource_id != material.get("key")
+        ):
+            raise _mismatch()
+        return
+    if operation == CommandOperation.CONFIG_UNSET.value:
+        if (
+            status != "removed"
+            or resource_id != semantic_target_id
+            or resource_id != material.get("key")
+        ):
+            raise _mismatch()
+        return
+    if operation == CommandOperation.CONFIG_ROLLBACK.value:
+        if (
+            status != "rolled_back"
+            or resource_id != semantic_target_id
+            or resource_id != str(material.get("change_id"))
+        ):
+            raise _mismatch()
+        return
+    action = _material_action(material)
+    if operation == CommandOperation.MEMORY_MUTATE.value:
+        if action not in {"confirm", "quarantine"} or status != action:
+            raise _mismatch()
+        if resource_id != semantic_target_id or resource_id != _material_resource(material):
+            raise _mismatch()
+        return
+    if operation == CommandOperation.MEMORY_REBUILD.value:
+        if action not in {"plan", "start", "cancel"} or status not in _REBUILD_STATUSES:
+            raise _mismatch()
+        if action == "plan" and status != "planned":
+            raise _mismatch()
+        if action == "start" and status not in _REBUILD_START_STATUSES:
+            raise _mismatch()
+        if action == "cancel" and status != "cancelled":
+            raise _mismatch()
+        if action == "plan" or (action == "start" and _material_resource(material) == "index"):
+            _require_generated_id(resource_id)
+        elif resource_id != _material_resource(material):
+            raise _mismatch()
+        return
+    if operation == CommandOperation.MEMORY_DREAM.value:
+        if action not in {"plan", "start", "cancel"} or status not in _DREAM_STATUSES:
+            raise _mismatch()
+        if action == "plan" and status != "planned":
+            raise _mismatch()
+        if action == "start" and status not in _DREAM_START_STATUSES:
+            raise _mismatch()
+        if action == "cancel" and status != "cancelled":
+            raise _mismatch()
+        if action == "plan" or (action == "start" and _material_resource(material) == "index"):
+            _require_generated_id(resource_id)
+        elif resource_id != _material_resource(material):
+            raise _mismatch()
+        return
+    if operation == CommandOperation.MEMORY_MAINTENANCE.value:
+        if action not in {"plan", "start", "run"} or status != "completed":
+            raise _mismatch()
+        if resource_id != _material_resource(material):
+            raise _mismatch()
+        return
+    if operation == CommandOperation.AUTOMATION_MUTATE.value:
+        if action == "create":
+            if status != "active" or "spec" not in material:
+                raise _mismatch()
+            _require_generated_id(resource_id)
+            return
+        if resource_id != _material_resource(material):
+            raise _mismatch()
+        if action == "update":
+            if status not in {"active", "paused"} or "spec" not in material:
+                raise _mismatch()
+            return
+        expected = {
+            "pause": "paused",
+            "resume": "active",
+            "cancel": "cancelled",
+            "run_now": "active",
+        }.get(action)
+        if expected is None or status != expected:
+            raise _mismatch()
+        return
+    if operation == CommandOperation.PLUGIN_MUTATE.value:
+        if action == "retry":
+            if status not in {"pending", "failed"}:
+                raise _mismatch()
+            _require_generated_id(resource_id)
+            return
+        if resource_id != _material_resource(material):
+            raise _mismatch()
+        expected = {
+            "approve": "approved",
+            "enable": "approved",
+            "disable": "disabled",
+            "doctor": None,
+        }.get(action)
+        if action == "doctor":
+            if status not in {"healthy", "unhealthy"}:
+                raise _mismatch()
+            return
+        if expected is None or status != expected:
+            raise _mismatch()
+        return
+    if operation == CommandOperation.MCP_MUTATE.value:
+        if action not in {"enable", "disable", "refresh", "reconnect"}:
+            raise _mismatch()
+        if resource_id != _material_resource(material):
+            raise _mismatch()
+        if action == "enable" and status != "enabled":
+            raise _mismatch()
+        if action == "disable" and status != "disabled":
+            raise _mismatch()
+        if action in {"refresh", "reconnect"} and status not in {"enabled", "disabled"}:
+            raise _mismatch()
+        return
+    if operation == CommandOperation.EMOJI_MUTATE.value:
+        if action not in {"pin", "unpin", "reject", "ban"} or status not in _EMOJI_STATUSES:
+            raise _mismatch()
+        if resource_id != _material_resource(material):
+            raise _mismatch()
+        if action in {"pin", "unpin"} and status not in {
+            "candidate",
+            "recognized",
+            "adopted",
+        }:
+            raise _mismatch()
+        if action == "reject" and status != "rejected":
+            raise _mismatch()
+        if action == "ban" and status != "banned":
+            raise _mismatch()
+        return
+    if operation == CommandOperation.SPEECH_MUTATE.value:
+        if action not in {"enable", "disable"}:
+            raise _mismatch()
+        if resource_id != _material_resource(material):
+            raise _mismatch()
+        if action == "enable" and status != "enabled":
+            raise _mismatch()
+        if action == "disable" and status != "disabled":
+            raise _mismatch()
+        return
+    if operation == CommandOperation.OPERATION_CANCEL.value:
+        if status != "cancelled":
+            raise _mismatch()
+        kind, separator, rest = _material_resource(material).partition(":")
+        if (
+            separator != ":"
+            or kind not in {"rebuild", "dream", "automation"}
+            or rest != resource_id
+        ):
+            raise _mismatch()
+        return
+    if operation == CommandOperation.OPERATION_RETRY.value:
+        kind, separator, rest = _material_resource(material).partition(":")
+        if separator != ":" or rest != resource_id:
+            raise _mismatch()
+        allowed = {
+            "rebuild": _REBUILD_START_STATUSES,
+            "dream": _DREAM_START_STATUSES,
+            "plugin-outbox": frozenset({"pending", "failed"}),
+            "automation": frozenset({"active"}),
+        }.get(kind)
+        if allowed is None or status not in allowed:
+            raise _mismatch()
+        return
+    raise _mismatch()
+
+
 def _require_operation_semantics(
     operation: str,
     state: Mapping[str, JsonValue],
@@ -861,6 +1341,15 @@ def _require_operation_semantics(
             raise _mismatch()
         _require_state_uuid(semantic_target_id, PresenceId)
         return
+    if operation in _MANAGEMENT_OPERATIONS:
+        _require_management_semantics(
+            operation,
+            state,
+            resource_id=resource_id,
+            semantic_target_id=semantic_target_id,
+            material=material,
+        )
+        return
     routed = _route_operation(operation)
     if routed is None:
         raise _mismatch()
@@ -920,11 +1409,16 @@ def validate_success_audit_before(raw: object, *, operation: str) -> dict[str, J
     }:
         return _require_presence_update_before(payload)
     routed = _route_operation(operation)
-    if routed is None:
-        raise _mismatch()
-    if routed[0] == CommandOperation.ROUTE_SET.value and payload == {}:
-        return {}
-    return _require_route_update_before(payload)
+    if routed is not None:
+        if routed[0] == CommandOperation.ROUTE_SET.value and payload == {}:
+            return {}
+        return _require_route_update_before(payload)
+    if operation in _MANAGEMENT_OPERATIONS:
+        if payload == {}:
+            return {}
+        _require_exact_keys(payload, frozenset({"revision"}))
+        return {"revision": _require_state_revision(payload["revision"])}
+    raise _mismatch()
 
 
 def validate_success_audit_after(
@@ -979,6 +1473,8 @@ def validate_failure_audit_before(raw: object, *, operation: str) -> dict[str, J
         return _require_presence_update_before(payload)
     if _route_operation(operation) is not None:
         return _require_route_update_before(payload)
+    if operation in _MANAGEMENT_OPERATIONS:
+        return {}
     raise _mismatch()
 
 
@@ -1026,6 +1522,20 @@ def failure_audit_target_type(operation: str) -> str:
         return "space_active_route"
     if operation.startswith("route."):
         return "route"
+    if operation.startswith("control.config."):
+        return "config"
+    if operation.startswith("control.memory."):
+        return "memory"
+    if operation.startswith("control.automation."):
+        return "automation"
+    if operation.startswith("control.plugin."):
+        return "plugin"
+    if operation.startswith("control.mcp."):
+        return "mcp"
+    if operation.startswith("control.emoji."):
+        return "emoji"
+    if operation.startswith("control.speech."):
+        return "speech"
     return "command"
 
 
@@ -1057,4 +1567,6 @@ def success_audit_target_type(operation: str) -> str:
         return "space_binding_ingest_route"
     if "space_active" in operation:
         return "space_active_route"
+    if operation in _MANAGEMENT_OPERATIONS:
+        return failure_audit_target_type(operation)
     raise _mismatch()
