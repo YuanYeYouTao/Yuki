@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -27,6 +29,19 @@ def test_application_cli_import_has_no_service_cycle() -> None:
     from qq_ai_bot.main import run
 
     assert callable(run)
+
+
+def test_application_cli_cold_import_has_no_service_cycle() -> None:
+    """A fresh interpreter must import the graph without collection-order help."""
+
+    result = subprocess.run(
+        [sys.executable, "-c", "from qq_ai_bot.main import run; assert callable(run)"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.asyncio

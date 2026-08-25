@@ -43,6 +43,7 @@ from qq_ai_bot.identity.canonical_ownership_schema import (
     C5_TRIGGER_NAMES,
     C5_TRIGGER_SQL,
 )
+from qq_ai_bot.identity.sql_constraints import optional_uuid4_text36_sql, uuid4_text36_sql
 from qq_ai_bot.persistence.models import Base
 
 CANONICAL_IDENTITY_TABLES: tuple[str, ...] = (
@@ -70,13 +71,6 @@ CANONICAL_IDENTITY_CREATE_ORDER: tuple[str, ...] = (
     "identity_cutover_runs",
 )
 
-_UUID4_GLOB = (
-    "[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-"
-    "[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-4[0-9a-f][0-9a-f][0-9a-f]-"
-    "[89ab][0-9a-f][0-9a-f][0-9a-f]-"
-    "[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]"
-    "[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]"
-)
 _RUNTIME_STATE_V1_SEED_SQL = """
 INSERT INTO identity_runtime_state (
     id, state, cutover_id, source_fingerprint, completed_at,
@@ -87,18 +81,6 @@ WHERE NOT EXISTS (
     SELECT 1 FROM identity_runtime_state WHERE id = 1
 )
 """
-
-
-def uuid4_text36_sql(column: str) -> str:
-    """SQLite CHECK for canonical lowercase UUID4 TEXT(36)."""
-
-    return f"length({column}) = 36 AND {column} = lower({column}) AND {column} GLOB '{_UUID4_GLOB}'"
-
-
-def optional_uuid4_text36_sql(column: str) -> str:
-    """SQLite CHECK for a nullable canonical UUID4 TEXT(36)."""
-
-    return f"{column} IS NULL OR ({uuid4_text36_sql(column)})"
 
 
 def canonical_platform_sql(column: str) -> str:

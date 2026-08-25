@@ -34,7 +34,7 @@ from qq_ai_bot.conversation.canonical_schema import (
     SPACE_ACTIVE_ROUTE_TRIGGERS,
     SPACE_BINDING_INGEST_ROUTE_TRIGGERS,
 )
-from qq_ai_bot.identity.db_models import optional_uuid4_text36_sql, uuid4_text36_sql
+from qq_ai_bot.identity.sql_constraints import optional_uuid4_text36_sql, uuid4_text36_sql
 from qq_ai_bot.persistence.models import Base
 
 CANONICAL_CONVERSATION_TABLES: tuple[str, ...] = (

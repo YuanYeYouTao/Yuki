@@ -5,6 +5,8 @@
 - 修复 3.7.1 → 3.8.0 真实数据库升级时历史 `chat_events` 作者 shadow 未回填、导致
   identity cutover 永久停在 `shadows_incomplete` 的问题；回填现在原子写入完整作者三元组并保持
   二次 apply 零差异。
+- 修复全新进程直接启动 3.8.0 时 persistence 包根的 eager export 触发 identity/conversation ORM
+  循环导入的问题；兼容导出改为惰性解析，并增加独立解释器冷启动回归测试。
 
 ### Permanent Yuki / Identity V2
 
