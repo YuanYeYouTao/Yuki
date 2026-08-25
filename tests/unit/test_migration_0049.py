@@ -535,6 +535,65 @@ def _seed_production_alias_carriers(path: Path) -> None:
             )
 
 
+def _seed_inverted_identity_metadata(path: Path) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE people SET first_seen_at='2026-08-30', last_seen_at='2026-08-10' "
+            "WHERE canonical_person_id=?",
+            (_CARRIER_PERSON_IDS[0],),
+        )
+        connection.execute(
+            "UPDATE identity_bindings SET created_at='2026-08-05', "
+            "updated_at='2026-08-20' WHERE person_id=?",
+            (_CARRIER_PERSON_IDS[0],),
+        )
+        connection.execute(
+            "UPDATE persons SET created_at='2026-08-25', updated_at='2026-08-15' WHERE id=?",
+            (_CARRIER_PERSON_IDS[0],),
+        )
+        connection.execute(
+            "UPDATE identity_bindings SET created_at='2026-08-20', "
+            "updated_at='2026-08-05' WHERE person_id=?",
+            (_CARRIER_PERSON_IDS[1],),
+        )
+        connection.execute(
+            "UPDATE persons SET created_at='2026-08-15', updated_at='2026-08-10' WHERE id=?",
+            (_CARRIER_PERSON_IDS[1],),
+        )
+        connection.execute(
+            "UPDATE groups SET first_seen_at='2026-08-30', last_seen_at='2026-08-10', "
+            "updated_at='2026-08-25' WHERE canonical_space_id=?",
+            ("6439f510-e073-4c3d-8d51-106d3c0b7ee5",),
+        )
+        connection.execute(
+            "UPDATE space_bindings SET created_at='2026-08-20', updated_at='2026-08-05' "
+            "WHERE space_id=?",
+            ("6439f510-e073-4c3d-8d51-106d3c0b7ee5",),
+        )
+        connection.execute(
+            "UPDATE spaces SET created_at='2026-08-25', updated_at='2026-08-15' WHERE id=?",
+            ("6439f510-e073-4c3d-8d51-106d3c0b7ee5",),
+        )
+
+
+def _seed_event_automation_references(path: Path) -> None:
+    now = "2026-08-26T00:00:00+00:00"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO automation_runs "
+            "(id, automation_id, scheduled_for, actual_started_at, finished_at, status, "
+            "idempotency_key, steps_completed, llm_calls, tool_calls, messages_sent, "
+            "error_category, result_summary_json, created_at) "
+            "VALUES (1, 1, ?, ?, ?, 'succeeded', 'fixture-valid-run', 1, 0, 0, 1, "
+            "NULL, '{}', ?)",
+            (now, now, now, now),
+        )
+        connection.execute("UPDATE chat_events SET automation_id=1, automation_run_id=1 WHERE id=1")
+        connection.execute(
+            "UPDATE chat_events SET automation_id=999001, automation_run_id=999002 WHERE id=2"
+        )
+
+
 def _load_bridge() -> ModuleType:
     spec = importlib.util.spec_from_file_location("test_revision_0049", _BRIDGE_PATH)
     if spec is None or spec.loader is None:
@@ -903,6 +962,80 @@ def test_production_global_canonical_alias_carriers_upgrade(
             "WHERE person_id IN (?, ?, ?) AND status='active'",
             _CARRIER_PERSON_IDS,
         ).fetchone() == (3,)
+    _assert_final_health(path, populated=True)
+
+
+def test_inverted_legacy_metadata_is_merged_as_a_lossless_time_envelope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "inverted-identity-metadata.db"
+    _restore_production_historical_0048(path)
+    _seed_production_alias_carriers(path)
+    _seed_inverted_identity_metadata(path)
+
+    _upgrade(path, monkeypatch)
+
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT date(first_seen_at), date(last_seen_at) FROM identity_bindings "
+            "WHERE person_id=?",
+            (_CARRIER_PERSON_IDS[0],),
+        ).fetchone() == ("2026-08-05", "2026-08-30")
+        assert connection.execute(
+            "SELECT date(created_at), date(updated_at) FROM persons WHERE id=?",
+            (_CARRIER_PERSON_IDS[0],),
+        ).fetchone() == ("2026-08-05", "2026-08-30")
+        assert connection.execute(
+            "SELECT date(first_seen_at), date(last_seen_at) FROM identity_bindings "
+            "WHERE person_id=?",
+            (_CARRIER_PERSON_IDS[1],),
+        ).fetchone() == ("2026-08-05", "2026-08-20")
+        assert connection.execute(
+            "SELECT date(created_at), date(updated_at) FROM persons WHERE id=?",
+            (_CARRIER_PERSON_IDS[1],),
+        ).fetchone() == ("2026-08-05", "2026-08-20")
+        assert connection.execute(
+            "SELECT date(first_seen_at), date(last_seen_at) FROM space_bindings WHERE space_id=?",
+            ("6439f510-e073-4c3d-8d51-106d3c0b7ee5",),
+        ).fetchone() == ("2026-08-05", "2026-08-30")
+        assert connection.execute(
+            "SELECT date(created_at), date(updated_at) FROM spaces WHERE id=?",
+            ("6439f510-e073-4c3d-8d51-106d3c0b7ee5",),
+        ).fetchone() == ("2026-08-05", "2026-08-30")
+        assert connection.execute(
+            "SELECT COUNT(*) FROM person_aliases WHERE first_seen_at > last_seen_at"
+        ).fetchone() == (0,)
+    _assert_final_health(path, populated=True)
+
+
+def test_unconstrained_historical_event_automation_references_follow_set_null_semantics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "historical-event-provenance.db"
+    _restore_production_historical_0048(path)
+    _seed_event_automation_references(path)
+    with sqlite3.connect(path) as connection:
+        before = connection.execute(
+            "SELECT id, origin, canonical_event_id FROM chat_events ORDER BY id"
+        ).fetchall()
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+    _upgrade(path, monkeypatch)
+
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT id, automation_id, automation_run_id FROM chat_events ORDER BY id"
+        ).fetchall() == [(1, 1, 1), (2, None, None)]
+        assert (
+            connection.execute(
+                "SELECT id, origin, canonical_event_id FROM chat_events ORDER BY id"
+            ).fetchall()
+            == before
+        )
+        assert connection.execute("SELECT COUNT(*) FROM chat_events").fetchone() == (2,)
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     _assert_final_health(path, populated=True)
 
 

@@ -768,21 +768,43 @@ def _merge_legacy_identity_metadata(connection: Connection) -> None:
 
     connection.exec_driver_sql(
         "UPDATE identity_bindings SET "
-        "first_seen_at = COALESCE((SELECT p.first_seen_at FROM people p "
+        "first_seen_at = MIN(created_at, updated_at, "
+        "COALESCE((SELECT p.first_seen_at FROM people p "
         "WHERE p.user_id = identity_bindings.external_account_id "
         "AND identity_bindings.platform = 'qq'), created_at), "
-        "last_seen_at = COALESCE((SELECT p.last_seen_at FROM people p "
+        "COALESCE((SELECT p.last_seen_at FROM people p "
         "WHERE p.user_id = identity_bindings.external_account_id "
-        "AND identity_bindings.platform = 'qq'), updated_at)"
+        "AND identity_bindings.platform = 'qq'), updated_at)), "
+        "last_seen_at = MAX(created_at, updated_at, "
+        "COALESCE((SELECT p.first_seen_at FROM people p "
+        "WHERE p.user_id = identity_bindings.external_account_id "
+        "AND identity_bindings.platform = 'qq'), created_at), "
+        "COALESCE((SELECT p.last_seen_at FROM people p "
+        "WHERE p.user_id = identity_bindings.external_account_id "
+        "AND identity_bindings.platform = 'qq'), updated_at))"
     )
     connection.exec_driver_sql(
         "UPDATE space_bindings SET "
-        "first_seen_at = COALESCE((SELECT g.first_seen_at FROM groups g "
+        "first_seen_at = MIN(created_at, updated_at, "
+        "COALESCE((SELECT g.first_seen_at FROM groups g "
         "WHERE g.group_id = space_bindings.external_space_id "
         "AND space_bindings.platform = 'qq'), created_at), "
-        "last_seen_at = COALESCE((SELECT g.last_seen_at FROM groups g "
+        "COALESCE((SELECT g.last_seen_at FROM groups g "
         "WHERE g.group_id = space_bindings.external_space_id "
-        "AND space_bindings.platform = 'qq'), updated_at)"
+        "AND space_bindings.platform = 'qq'), updated_at), "
+        "COALESCE((SELECT g.updated_at FROM groups g "
+        "WHERE g.group_id = space_bindings.external_space_id "
+        "AND space_bindings.platform = 'qq'), updated_at)), "
+        "last_seen_at = MAX(created_at, updated_at, "
+        "COALESCE((SELECT g.first_seen_at FROM groups g "
+        "WHERE g.group_id = space_bindings.external_space_id "
+        "AND space_bindings.platform = 'qq'), created_at), "
+        "COALESCE((SELECT g.last_seen_at FROM groups g "
+        "WHERE g.group_id = space_bindings.external_space_id "
+        "AND space_bindings.platform = 'qq'), updated_at), "
+        "COALESCE((SELECT g.updated_at FROM groups g "
+        "WHERE g.group_id = space_bindings.external_space_id "
+        "AND space_bindings.platform = 'qq'), updated_at))"
     )
     connection.exec_driver_sql(
         "UPDATE identity_bindings SET display_name = COALESCE(NULLIF(display_name, ''), "
@@ -799,19 +821,20 @@ def _merge_legacy_identity_metadata(connection: Connection) -> None:
         "WHERE g.canonical_space_id = spaces.id ORDER BY g.last_seen_at DESC LIMIT 1), '')"
     )
     connection.exec_driver_sql(
-        "UPDATE persons SET created_at = MIN(created_at, COALESCE((SELECT MIN(p.first_seen_at) "
-        "FROM people p WHERE p.canonical_person_id = persons.id), created_at)), "
-        "updated_at = MAX(updated_at, COALESCE((SELECT MAX(p.last_seen_at) FROM people p "
-        "WHERE p.canonical_person_id = persons.id), updated_at))"
+        "UPDATE persons SET created_at = MIN(created_at, updated_at, "
+        "COALESCE((SELECT MIN(b.first_seen_at) FROM identity_bindings b "
+        "WHERE b.person_id = persons.id), created_at)), "
+        "updated_at = MAX(created_at, updated_at, "
+        "COALESCE((SELECT MAX(b.last_seen_at) FROM identity_bindings b "
+        "WHERE b.person_id = persons.id), updated_at))"
     )
     connection.exec_driver_sql(
-        "UPDATE spaces SET created_at = MIN(created_at, COALESCE((SELECT MIN(g.first_seen_at) "
-        "FROM groups g WHERE g.canonical_space_id = spaces.id), created_at)), "
-        "updated_at = MAX(updated_at, "
-        "COALESCE((SELECT MAX(g.last_seen_at) FROM groups g "
-        "WHERE g.canonical_space_id = spaces.id), updated_at), "
-        "COALESCE((SELECT MAX(g.updated_at) FROM groups g "
-        "WHERE g.canonical_space_id = spaces.id), updated_at))"
+        "UPDATE spaces SET created_at = MIN(created_at, updated_at, "
+        "COALESCE((SELECT MIN(b.first_seen_at) FROM space_bindings b "
+        "WHERE b.space_id = spaces.id), created_at)), "
+        "updated_at = MAX(created_at, updated_at, "
+        "COALESCE((SELECT MAX(b.last_seen_at) FROM space_bindings b "
+        "WHERE b.space_id = spaces.id), updated_at))"
     )
     _require_zero(
         connection,
@@ -825,12 +848,25 @@ def _merge_legacy_identity_metadata(connection: Connection) -> None:
         "OR last_seen_at IS NULL OR first_seen_at > last_seen_at",
         category="identity_metadata_conflict",
     )
+    _require_zero(
+        connection,
+        "SELECT COUNT(*) FROM persons WHERE created_at IS NULL OR updated_at IS NULL "
+        "OR created_at > updated_at",
+        category="identity_metadata_conflict",
+    )
+    _require_zero(
+        connection,
+        "SELECT COUNT(*) FROM spaces WHERE created_at IS NULL OR updated_at IS NULL "
+        "OR created_at > updated_at",
+        category="identity_metadata_conflict",
+    )
     # Preserve a distinct historical nickname as an ordinary global alias.
     connection.exec_driver_sql(
         "INSERT OR IGNORE INTO person_aliases "
         "(user_id, group_scope, alias, alias_type, first_seen_at, last_seen_at, "
         "canonical_person_id, canonical_space_id) "
-        "SELECT p.user_id, '', p.nickname, 'nickname', p.first_seen_at, p.last_seen_at, "
+        "SELECT p.user_id, '', p.nickname, 'nickname', "
+        "MIN(p.first_seen_at, p.last_seen_at), MAX(p.first_seen_at, p.last_seen_at), "
         "p.canonical_person_id, NULL FROM people p "
         "JOIN identity_bindings b ON b.platform = 'qq' "
         "AND b.external_account_id = p.user_id AND b.person_id = p.canonical_person_id "
@@ -842,7 +878,8 @@ def _merge_legacy_identity_metadata(connection: Connection) -> None:
         "(user_id, group_scope, alias, alias_type, first_seen_at, last_seen_at, "
         "canonical_person_id, canonical_space_id) "
         "SELECT m.user_id, m.group_id, m.group_card, 'group_card', "
-        "m.first_seen_at, m.last_seen_at, m.canonical_person_id, m.canonical_space_id "
+        "MIN(m.first_seen_at, m.last_seen_at), MAX(m.first_seen_at, m.last_seen_at), "
+        "m.canonical_person_id, m.canonical_space_id "
         "FROM memberships m WHERE m.group_card <> ''"
     )
     _require_zero(
@@ -857,6 +894,20 @@ def _merge_legacy_identity_metadata(connection: Connection) -> None:
 def _drop_retired_tables(connection: Connection) -> None:
     for table in _RETIRED_TABLES:
         connection.exec_driver_sql(f"DROP TABLE {_quote(table)}")
+
+
+def _normalize_nullable_historical_references(connection: Connection) -> None:
+    """Apply the final SET NULL semantics to unconstrained historical provenance."""
+
+    connection.exec_driver_sql(
+        "UPDATE chat_events SET automation_id = NULL WHERE automation_id IS NOT NULL "
+        "AND NOT EXISTS (SELECT 1 FROM automations a WHERE a.id = chat_events.automation_id)"
+    )
+    connection.exec_driver_sql(
+        "UPDATE chat_events SET automation_run_id = NULL WHERE automation_run_id IS NOT NULL "
+        "AND NOT EXISTS (SELECT 1 FROM automation_runs r "
+        "WHERE r.id = chat_events.automation_run_id)"
+    )
 
 
 def _normalize_schema_sql(statement: str) -> str:
@@ -1031,6 +1082,7 @@ def _upgrade_historical_0048(connection: Connection, tables: frozenset[str]) -> 
     )
     _merge_legacy_identity_metadata(connection)
     _trip("after_identity_merge")
+    _normalize_nullable_historical_references(connection)
     before = _content_summary(connection, retained)
 
     # Table rebuilds that remove legacy owner columns and tighten canonical
