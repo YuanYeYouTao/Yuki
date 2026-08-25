@@ -9,7 +9,6 @@ from typing import Protocol
 from uuid import uuid4
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import (
     PersonActiveRouteModel,
@@ -123,9 +122,6 @@ class PresenceRouter:
         self._registry = registry
         self._probe = membership_probe or default_membership_probe
         self._cas_hold: Callable[[], Awaitable[None]] | None = None
-
-    async def uses_canonical_send(self) -> bool:
-        return True
 
     async def person_owns_external(
         self,
@@ -893,8 +889,3 @@ class RouteMonitor:
         result = await self._router.reconcile_all()
         self.last_reconcile_id = str(uuid4())
         return result
-
-
-async def send_uses_canonical_route(session: AsyncSession) -> bool:
-    del session
-    return True

@@ -1,4 +1,4 @@
-"""Proactive OneBot gateway bound to one exact connected bot account."""
+"""Proactive OneBot gateway routed through canonical Person/Space targets."""
 
 from __future__ import annotations
 
@@ -8,11 +8,9 @@ import logging
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol
 
 from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.gateway.registry import GatewayConnectionRegistry, RegistryClosed
-from qq_ai_bot.identity.canonical_repository import IDENTITY_PLATFORM
 from qq_ai_bot.identity.routing import PresenceRouter, ResolvedSend, RouteSendError
 from qq_ai_bot.persistence.repositories import AgentActionRepository, EventLedgerRepository
 
@@ -29,9 +27,6 @@ class ProactiveGatewayError(RuntimeError):
 
 
 class ProactiveGateway(Protocol):
-    @property
-    def connected(self) -> bool: ...
-
     async def send_private(self, user_id: str, text: str) -> object: ...
 
     async def send_group(self, group_id: str, text: str) -> object: ...
@@ -75,29 +70,21 @@ class OneBotProactiveGateway:
         automation_run_id: int,
         ledger: EventLedgerRepository,
         actions: AgentActionRepository,
-        registry: GatewayConnectionRegistry | None = None,
-        router: PresenceRouter | None = None,
+        router: PresenceRouter,
         target_person_id: str | None = None,
         target_space_id: str | None = None,
     ) -> None:
+        if (target_person_id is None) == (target_space_id is None):
+            raise ValueError("exactly one canonical automation target is required")
         self._bot_user_id = bot_user_id
         self._creator_user_id = creator_user_id
         self._automation_id = automation_id
         self._automation_run_id = automation_run_id
         self._ledger = ledger
         self._actions = actions
-        self._registry = registry
         self._router = router
         self._target_person_id = target_person_id
         self._target_space_id = target_space_id
-
-    @property
-    def connected(self) -> bool:
-        if self._registry is None:
-            return False
-        if self._target_person_id or self._target_space_id:
-            return self._registry.has_any_active()
-        return self._registry.has_unique_account(IDENTITY_PLATFORM, self._bot_user_id)
 
     async def send_private(self, user_id: str, text: str) -> object:
         result, resolved = await self._invoke(
@@ -223,8 +210,6 @@ class OneBotProactiveGateway:
 
     async def _invoke(self, action: str, params: dict[str, object]) -> tuple[object, ResolvedSend]:
         resolved = await self._resolve_route(action=action)
-        if resolved is None:
-            raise ProactiveGatewayError("bot_unavailable")
         bound = await self._bound_onebot_params(action, params, resolved)
         bot = resolved.connection.bot
         call_api = getattr(bot, "call_api", None)
@@ -247,53 +232,21 @@ class OneBotProactiveGateway:
                 uncertain=action in {"send_private_msg", "send_group_msg"},
             ) from exc
 
-    async def _resolve_bot(self, *, action: str) -> Any | None:
-        resolved = await self._resolve_route(action=action)
-        if resolved is None:
-            return None
-        return resolved.connection.bot
-
-    async def _resolve_route(self, *, action: str) -> ResolvedSend | None:
+    async def _resolve_route(self, *, action: str) -> ResolvedSend:
         group_action = "group" in action
-        if self._target_person_id and self._target_space_id:
-            raise ProactiveGatewayError("state_mismatch")
-        if self._target_person_id or self._target_space_id:
-            if self._router is None:
-                raise ProactiveGatewayError("none")
-            if self._target_person_id:
-                if group_action:
-                    raise ProactiveGatewayError("capability")
-                try:
-                    return await self._router.resolve_send_for_person(self._target_person_id)
-                except RouteSendError as exc:
-                    raise ProactiveGatewayError(exc.category) from exc
-            if not group_action:
+        if self._target_person_id is not None:
+            if group_action:
                 raise ProactiveGatewayError("capability")
             try:
-                return await self._router.resolve_send_for_space(self._target_space_id or "")
+                return await self._router.resolve_send_for_person(self._target_person_id)
             except RouteSendError as exc:
                 raise ProactiveGatewayError(exc.category) from exc
-        if self._router is not None and await self._router.uses_canonical_send():
-            raise ProactiveGatewayError("none")
-        if self._registry is None:
-            return None
-        from qq_ai_bot.gateway.registry import require_capability
-
+        if group_action is False or self._target_space_id is None:
+            raise ProactiveGatewayError("capability")
         try:
-            resolution = self._registry.resolve_account(IDENTITY_PLATFORM, self._bot_user_id)
-            require_capability(resolution, "send_group" if group_action else "send_private")
-        except RegistryClosed:
-            return None
-        return ResolvedSend(
-            presence_id=resolution.snapshot.presence_id or "",
-            binding_id="",
-            platform=resolution.snapshot.platform,
-            external_target_id="",
-            route_generation=resolution.snapshot.generation,
-            connection=resolution,
-            kind="account",
-            sender_account_id=resolution.snapshot.external_account_id,
-        )
+            return await self._router.resolve_send_for_space(self._target_space_id)
+        except RouteSendError as exc:
+            raise ProactiveGatewayError(exc.category) from exc
 
     def _ledger_ids(
         self,
@@ -302,8 +255,6 @@ class OneBotProactiveGateway:
         private_peer_user_id: str | None,
         group_id: str | None,
     ) -> tuple[str, str | None, str | None]:
-        if resolved.kind == "account":
-            return self._bot_user_id, private_peer_user_id, group_id
         sender = resolved.sender_account_id
         if resolved.kind == "person":
             return sender, resolved.external_target_id, None
@@ -469,22 +420,20 @@ class OneBotProactiveGateway:
     async def _require_person_owner(self, external_id: str) -> None:
         if self._router is None or not self._target_person_id:
             raise ProactiveGatewayError("target_mismatch")
-        allow_unknown = await self._router.uses_canonical_send()
         if not await self._router.person_owns_external(
             self._target_person_id,
             external_id,
-            allow_unknown=allow_unknown,
+            allow_unknown=True,
         ):
             raise ProactiveGatewayError("target_mismatch")
 
     async def _require_space_owner(self, external_id: str) -> None:
         if self._router is None or not self._target_space_id:
             raise ProactiveGatewayError("target_mismatch")
-        allow_unknown = await self._router.uses_canonical_send()
         if not await self._router.space_owns_external(
             self._target_space_id,
             external_id,
-            allow_unknown=allow_unknown,
+            allow_unknown=True,
         ):
             raise ProactiveGatewayError("target_mismatch")
 

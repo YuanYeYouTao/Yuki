@@ -391,7 +391,7 @@ class AutomationService:
         return row
 
     async def list(self, creator_user_id: str) -> tuple[AutomationRecord, ...]:
-        """Return all tasks for backwards-compatible internal callers."""
+        """Return all tasks for internal callers that need every status."""
 
         self._require_enabled()
         creator_person_id = await self._resolve_creator_person(creator_user_id)

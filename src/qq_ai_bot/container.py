@@ -38,7 +38,6 @@ from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.gateway.providers import builtin_provider_catalog
 from qq_ai_bot.gateway.registry import GatewayConnectionRegistry, configure_process_registry
 from qq_ai_bot.identity.bootstrap import bootstrap_settings_identity
-from qq_ai_bot.identity.canonical_repository import IDENTITY_PLATFORM
 from qq_ai_bot.identity.canonical_uow import CanonicalIngressUnitOfWork
 from qq_ai_bot.identity.ingress import CanonicalIngressResolver
 from qq_ai_bot.identity.routing import PresenceRouter, RouteMonitor
@@ -357,8 +356,6 @@ class ApplicationContainer:
             speech=self.speech,
             mcp_manager=self.mcp_manager,
             mcp_artifacts=self.tool_artifacts,
-            bot_connected=self.bot_account_connected,
-            connection_registry=self.gateway_registry,
             presence_router=self.presence_router,
         )
         automation = self.automation_module.build()
@@ -741,11 +738,6 @@ class ApplicationContainer:
         """Return whether the Registry currently has at least one active connection."""
 
         return self.gateway_registry.has_any_active()
-
-    def bot_account_connected(self, bot_user_id: str) -> bool:
-        """Return whether the exact bot account has one determined Registry connection."""
-
-        return self.gateway_registry.has_unique_account(IDENTITY_PLATFORM, bot_user_id)
 
     def _register_lifecycle(self) -> None:
         self.lifecycle.register(

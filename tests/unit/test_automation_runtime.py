@@ -525,7 +525,6 @@ async def test_worker_executes_once_and_prevents_duplicate_claim(database) -> No
             router=_router(),
         ),
         time_service=time_service,
-        bot_connected=lambda _bot_id: True,
     )
     await worker.start()
     await asyncio.sleep(0.08)
@@ -678,7 +677,6 @@ async def test_unavailable_canonical_route_blocks_due_task(database) -> None:
             router=_router("no_connection"),
         ),
         time_service=time_service,
-        bot_connected=lambda _bot_id: False,
     )
     await worker.start()
     await asyncio.sleep(0.05)
@@ -729,7 +727,6 @@ async def test_misfired_once_task_is_marked_missed_without_sending(database) -> 
             time_service=time_service,
         ),
         time_service=time_service,
-        bot_connected=lambda _bot_id: True,
     )
     await worker.start()
     await asyncio.sleep(0.05)

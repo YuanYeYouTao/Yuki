@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 
 from qq_ai_bot.admin.action_service import AdminActionService
@@ -26,7 +25,6 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.emoji.repository import EmojiRepository
 from qq_ai_bot.emoji.selector import EmojiSelector
 from qq_ai_bot.emoji.storage import EmojiStorage
-from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
 from qq_ai_bot.identity.routing import PresenceRouter
 from qq_ai_bot.mcp.automation import MCPAutomationBridge
 from qq_ai_bot.mcp.manager import MCPManager
@@ -79,9 +77,7 @@ class AutomationModule:
         speech: SpeechService,
         mcp_manager: MCPManager,
         mcp_artifacts: ToolArtifactWriter,
-        bot_connected: Callable[[str], bool],
-        connection_registry: GatewayConnectionRegistry | None = None,
-        presence_router: PresenceRouter | None = None,
+        presence_router: PresenceRouter,
     ) -> None:
         self._settings = settings
         self._database = database
@@ -102,8 +98,6 @@ class AutomationModule:
         self._speech = speech
         self._mcp_manager = mcp_manager
         self._mcp_artifacts = mcp_artifacts
-        self._bot_connected = bot_connected
-        self._connection_registry = connection_registry
         self._presence_router = presence_router
 
     def build(self) -> AutomationBundle:
@@ -117,7 +111,6 @@ class AutomationModule:
                 automation_run_id=context.automation_run_id,
                 ledger=self._ledger,
                 actions=self._agent_actions,
-                registry=self._connection_registry,
                 router=self._presence_router,
                 target_person_id=context.canonical_target_person_id,
                 target_space_id=context.canonical_target_space_id,
@@ -177,7 +170,6 @@ class AutomationModule:
             repository=repository,
             executor=executor,
             time_service=self._time_service,
-            bot_connected=self._bot_connected,
         )
         return AutomationBundle(
             repository,

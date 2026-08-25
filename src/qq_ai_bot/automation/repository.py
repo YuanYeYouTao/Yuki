@@ -690,7 +690,7 @@ async def _bind_canonical_send_targets(
         current_group_id=authority.current_group_id,
     )
     if collected.kind is None:
-        return await _fallback_canonical_send_targets(session, authority)
+        return await _default_canonical_target(session, authority)
     if collected.kind == "person":
         owners: set[str] = set()
         for raw in collected.raw_ids:
@@ -712,10 +712,12 @@ async def _bind_canonical_send_targets(
     return None, owners.pop()
 
 
-async def _fallback_canonical_send_targets(
+async def _default_canonical_target(
     session: AsyncSession,
     authority: DelegatedAuthority,
 ) -> tuple[str | None, str | None]:
+    """Bind non-sending automations to their canonical creation context."""
+
     if authority.current_group_id:
         target_space = await active_space_id_for(session, authority.current_group_id)
         if target_space is None:

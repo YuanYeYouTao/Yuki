@@ -30,7 +30,8 @@ async def bind_automation_conversation(
     alias. Missing Conversation
     does not create a row and uses a stable ``person:{id}`` / ``space:{id}``
     key. An existing Conversation without exactly one primary alias is
-    ``state_mismatch``. NULL/NULL or dual target is not a legacy fallback.
+    ``state_mismatch``. NULL/NULL or dual target violates the canonical target
+    invariant and fails closed.
     """
 
     person_id = automation.canonical_target_person_id

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections.abc import Callable
 from typing import Any
 
 from qq_ai_bot.automation.executor import AutomationExecutor
@@ -28,13 +27,11 @@ class AutomationWorker:
         repository: AutomationRepository,
         executor: AutomationExecutor,
         time_service: TimeContextService,
-        bot_connected: Callable[[str], bool],
     ) -> None:
         self._settings = settings
         self._repository = repository
         self._executor = executor
         self._time = time_service
-        self._bot_connected = bot_connected
         self._worker_id = uuid.uuid4().hex
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -155,17 +152,6 @@ class AutomationWorker:
                 max_consecutive_failures=self._settings.automation_max_consecutive_failures,
             )
             return
-        if not await self._uses_canonical_send(automation) and not self._bot_connected(
-            automation.bot_user_id
-        ):
-            # No run row is created, so the exact scheduled slot remains eligible
-            # after reconnection while still inside its misfire grace window.
-            await self._repository.release_claim(
-                automation.id,
-                worker_id=self._worker_id,
-                next_run_at=scheduled_for,
-            )
-            return
         run = await self._repository.create_run(
             automation.id,
             scheduled_for=scheduled_for,
@@ -211,10 +197,4 @@ class AutomationWorker:
             result.messages_sent,
             result.llm_calls,
             result.tool_calls,
-        )
-
-    async def _uses_canonical_send(self, automation: Any) -> bool:
-        return bool(
-            getattr(automation, "canonical_target_person_id", None)
-            or getattr(automation, "canonical_target_space_id", None)
         )

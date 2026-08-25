@@ -412,7 +412,6 @@ async def test_automation_send_uses_current_binding_and_presence_provenance(
         automation_run_id=1,
         ledger=_Ledger(),  # type: ignore[arg-type]
         actions=_Actions(),  # type: ignore[arg-type]
-        registry=registry,
         router=router,
         target_person_id=person_id,
     )
@@ -739,7 +738,6 @@ async def test_created_automation_sends_persisted_person_not_creator(
         automation_run_id=1,
         ledger=_Ledger(),  # type: ignore[arg-type]
         actions=_Actions(),  # type: ignore[arg-type]
-        registry=registry,
         router=router,
         target_person_id=row.canonical_target_person_id,
     )
