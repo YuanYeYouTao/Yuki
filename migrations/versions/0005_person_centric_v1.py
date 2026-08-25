@@ -8,7 +8,8 @@ Create Date: 2026-07-25
 from collections.abc import Sequence
 
 from alembic import op
-from sqlalchemy import inspect
+from sqlalchemy import CheckConstraint, Index, MetaData, Table, UniqueConstraint, inspect
+from sqlalchemy.schema import ForeignKeyConstraint, PrimaryKeyConstraint
 
 from qq_ai_bot.persistence.metadata import Base
 
@@ -16,6 +17,79 @@ revision: str = "0005"
 down_revision: str | None = "0004"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+
+_C4_CHAT_EVENT_SHADOW_COLUMNS: tuple[str, ...] = (
+    "ingress_gateway_instance_id",
+    "ingress_provider",
+    "suppression_status",
+    "utterance_fingerprint",
+    "ingress_presence_id",
+    "author_presence_id",
+    "author_person_id",
+    "author_kind",
+    "canonical_conversation_id",
+    "canonical_event_id",
+)
+_C4_CHAT_EVENT_SHADOW_INDEXES: tuple[str, ...] = (
+    "ix_chat_events_canonical_event_id",
+    "ix_chat_events_canonical_conversation_id",
+    "uq_chat_events_canonical_event_keeper",
+)
+
+
+def _chat_events_without_canonical_shadows() -> Table:
+    """Create the 0005 ledger table without later C4 shadow columns or FKs.
+
+    SQLite DROP COLUMN does not remove FOREIGN KEY clauses that were part of
+    the original CREATE TABLE, so a current ChatEventModel create_all would
+    make those later columns undeletable. The table is empty at 0005.
+    """
+
+    source = Base.metadata.tables["chat_events"]
+    excluded = set(_C4_CHAT_EVENT_SHADOW_COLUMNS)
+    side = MetaData()
+    for parent in ("people", "groups", "automations", "automation_runs"):
+        Base.metadata.tables[parent].to_metadata(side)
+    table = Table(
+        source.name,
+        side,
+        *[column._copy() for column in source.columns if column.name not in excluded],
+    )
+    for constraint in list(source.constraints):
+        if isinstance(constraint, PrimaryKeyConstraint):
+            continue
+        if isinstance(constraint, ForeignKeyConstraint):
+            local_names = [element.parent.name for element in constraint.elements]
+            if set(local_names) & excluded:
+                continue
+            table.append_constraint(
+                ForeignKeyConstraint(
+                    local_names,
+                    [element.target_fullname for element in constraint.elements],
+                    name=constraint.name,
+                    ondelete=constraint.ondelete,
+                    onupdate=constraint.onupdate,
+                )
+            )
+            continue
+        if isinstance(constraint, UniqueConstraint):
+            names = [column.name for column in constraint.columns]
+            if set(names) & excluded:
+                continue
+            table.append_constraint(UniqueConstraint(*names, name=constraint.name))
+            continue
+        if isinstance(constraint, CheckConstraint):
+            table.append_constraint(CheckConstraint(constraint.sqltext, name=constraint.name))
+    for index in source.indexes:
+        names = [column.name for column in index.columns]
+        if set(names) & excluded:
+            continue
+        kwargs: dict[str, object] = {"unique": index.unique}
+        sqlite_opts = index.dialect_options.get("sqlite", {})
+        if "where" in sqlite_opts:
+            kwargs["sqlite_where"] = sqlite_opts["where"]
+        Index(index.name, *[table.c[name] for name in names], **kwargs)
+    return table
 
 
 def upgrade() -> None:
@@ -138,9 +212,20 @@ def upgrade() -> None:
             "space_binding_ingest_routes",
             "space_active_routes",
             "control_command_receipts",
+            "canonical_event_receipts",
         }
     ]
-    Base.metadata.create_all(bind=bind, tables=v1_tables, checkfirst=True)
+    create_tables = [table for table in v1_tables if table.name != "chat_events"]
+    Base.metadata.create_all(bind=bind, tables=create_tables, checkfirst=True)
+    _chat_events_without_canonical_shadows().create(bind, checkfirst=True)
+    chat_event_columns = {
+        str(row[1]) for row in bind.exec_driver_sql("PRAGMA table_info(chat_events)")
+    }
+    for index_name in _C4_CHAT_EVENT_SHADOW_INDEXES:
+        bind.exec_driver_sql(f"DROP INDEX IF EXISTS {index_name}")
+    for column_name in _C4_CHAT_EVENT_SHADOW_COLUMNS:
+        if column_name in chat_event_columns:
+            bind.exec_driver_sql(f"ALTER TABLE chat_events DROP COLUMN {column_name}")
     op.execute(
         """
         CREATE VIRTUAL TABLE chat_events_fts USING fts5(

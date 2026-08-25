@@ -24,6 +24,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.schema import Table
 
+from qq_ai_bot.conversation.canonical_event_schema import C4_TRIGGER_SQL
 from qq_ai_bot.conversation.canonical_schema import (
     ALIAS_PRIMARY_LOCK_TRIGGERS,
     CONVERSATION_PRIMARY_POINTER_TRIGGERS,
@@ -51,6 +52,7 @@ CANONICAL_CONVERSATION_CREATE_ORDER: tuple[str, ...] = (
     "space_active_routes",
     "control_command_receipts",
 )
+CANONICAL_EVENT_TABLES: tuple[str, ...] = ("canonical_event_receipts",)
 
 
 def sha256_hex_sql(column: str) -> str:
@@ -101,6 +103,27 @@ def _install_triggers(
 
 
 _PARENT_ROUTE_GUARD_MARKER = "trg_identity_bindings_route_consistency_update"
+
+
+def _install_c4_triggers_if_ready(connection: Connection) -> None:
+    """Install ledger/scope shadow guards once both host tables exist."""
+
+    present = connection.execute(
+        text(
+            "SELECT COUNT(*) FROM sqlite_master "
+            "WHERE type = 'table' AND name IN ('chat_events', 'conversation_scopes')"
+        )
+    ).scalar()
+    if int(present or 0) != 2:
+        return
+    installed = connection.execute(
+        text("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = :name"),
+        {"name": "trg_chat_events_canonical_shadow_insert"},
+    ).scalar()
+    if installed is not None:
+        return
+    for statement in C4_TRIGGER_SQL:
+        connection.execute(text(statement))
 
 
 def _install_parent_route_guards_if_ready(connection: Connection) -> None:
@@ -581,3 +604,61 @@ class ControlCommandReceiptModel(Base):
     operation_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CanonicalEventReceiptModel(Base):
+    """OneBot transport dedupe receipt. Secret-free; not a generic event bus."""
+
+    __tablename__ = "canonical_event_receipts"
+    __table_args__ = (
+        UniqueConstraint(
+            "ingress_presence_id",
+            "event_type",
+            "platform_message_id",
+            name="uq_canonical_event_receipts_transport",
+        ),
+        ForeignKeyConstraint(
+            ["ingress_presence_id"],
+            ["presences.id"],
+            name="fk_canonical_event_receipts_ingress_presence",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            uuid4_text36_sql("ingress_presence_id"),
+            name="ck_canonical_event_receipts_ingress_presence_id",
+        ),
+        CheckConstraint(
+            trimmed_token_sql("event_type", 64),
+            name="ck_canonical_event_receipts_event_type",
+        ),
+        CheckConstraint(
+            trimmed_token_sql("platform_message_id", 128),
+            name="ck_canonical_event_receipts_platform_message_id",
+        ),
+        CheckConstraint(
+            uuid4_text36_sql("canonical_event_id"),
+            name="ck_canonical_event_receipts_canonical_event_id",
+        ),
+        Index("ix_canonical_event_receipts_canonical_event_id", "canonical_event_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ingress_presence_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    platform_message_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    canonical_event_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+@event.listens_for(CanonicalEventReceiptModel.__table__, "after_create")
+def install_canonical_event_shadow_triggers(
+    target: Table,
+    connection: Connection,
+    **_kwargs: object,
+) -> None:
+    """Install ledger/scope shadow guards after the C4 receipt table exists."""
+
+    if target is not CanonicalEventReceiptModel.__table__:
+        raise RuntimeError("trigger installer is bound only to canonical_event_receipts")
+    _install_c4_triggers_if_ready(connection)

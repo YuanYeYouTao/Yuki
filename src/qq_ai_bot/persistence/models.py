@@ -166,6 +166,14 @@ class ChatEventModel(Base):
             unique=True,
             sqlite_where=text("event_kind = 'external_event'"),
         ),
+        Index("ix_chat_events_canonical_event_id", "canonical_event_id"),
+        Index("ix_chat_events_canonical_conversation_id", "canonical_conversation_id"),
+        Index(
+            "uq_chat_events_canonical_event_keeper",
+            "canonical_event_id",
+            unique=True,
+            sqlite_where=text("suppression_status = 'keeper'"),
+        ),
         CheckConstraint(
             "(event_kind = 'message' AND source_plugin_id IS NULL "
             "AND external_source IS NULL AND external_event_key IS NULL "
@@ -225,6 +233,32 @@ class ChatEventModel(Base):
     )
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    canonical_event_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    canonical_conversation_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("canonical_conversations.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    author_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    author_person_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    author_presence_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("presences.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    ingress_presence_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("presences.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    utterance_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    suppression_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    ingress_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    ingress_gateway_instance_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
 
 class MediaAnalysisModel(Base):

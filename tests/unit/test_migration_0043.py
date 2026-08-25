@@ -216,7 +216,7 @@ def test_fresh_upgrade_head_creates_canonical_identity_foundation(
     path = tmp_path / "fresh-head.db"
     _upgrade(path, monkeypatch, "head")
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0044",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0045",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         tables = _tables(connection)
         assert set(CANONICAL_IDENTITY_TABLES) <= tables
@@ -242,14 +242,15 @@ def test_upgrade_from_real_0042_schema_to_head(
     before = _schema_dump(path)
     _upgrade(path, monkeypatch, "head")
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0044",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0045",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert set(CANONICAL_IDENTITY_TABLES) <= _tables(connection)
         assert connection.execute("SELECT state FROM identity_runtime_state").fetchall() == [
             ("v1",)
         ]
     after = _schema_dump(path)
-    assert all(after[key] == sql for key, sql in before.items() if key[1] != "alembic_version")
+    preserved = {"alembic_version", "chat_events", "conversation_scopes"}
+    assert all(after[key] == sql for key, sql in before.items() if key[1] not in preserved)
 
 
 def test_fresh_head_and_0042_to_head_schemas_are_equivalent(
@@ -297,7 +298,7 @@ def test_orm_metadata_matches_0043_identity_schema(
 def test_alembic_heads_is_exactly_0044() -> None:
     config = Config("alembic.ini")
     heads = ScriptDirectory.from_config(config).get_heads()
-    assert heads == ["0044"]
+    assert heads == ["0045"]
 
 
 def test_fk_cutover_split_is_not_hardcoded_to_current_head() -> None:

@@ -320,7 +320,7 @@ def test_fresh_upgrade_head_creates_canonical_conversations(
     path = tmp_path / "fresh-head.db"
     _upgrade(path, monkeypatch, "head")
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0044",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0045",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         tables = _tables(connection)
         assert set(CANONICAL_CONVERSATION_TABLES) <= tables
@@ -461,7 +461,7 @@ def test_orm_metadata_matches_0044_conversation_schema(
 def test_alembic_heads_is_exactly_0044() -> None:
     config = Config("alembic.ini")
     heads = ScriptDirectory.from_config(config).get_heads()
-    assert heads == ["0044"]
+    assert heads == ["0045"]
 
 
 def test_0044_is_self_contained_alembic() -> None:
