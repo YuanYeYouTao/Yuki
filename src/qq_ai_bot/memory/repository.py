@@ -47,6 +47,7 @@ from qq_ai_bot.memory.partition import (
     resolve_fact_canonical_owners,
     resolve_memory_partition_for_event,
 )
+from qq_ai_bot.memory.projections import project_memory_fact_rows
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
@@ -136,7 +137,7 @@ def _sql_fact_conversation_aligns() -> Any:
 
 
 def readable_evidence_count_expression() -> Any:
-    """Correlated count of complete-v2 readable evidence. Not a full-table scan."""
+    """Correlated count of canonical readable evidence. Not a full-table scan."""
 
     live = and_(
         ChatEventModel.canonical_event_id.is_not(None),
@@ -286,7 +287,7 @@ class MemoryFactRepository:
         rows = await self._execute_facts_with_count(
             session, conditions, order_by=order, limit=max(1, limit)
         )
-        return tuple(self._project_fact(row, int(evidence_count)) for row, evidence_count in rows)
+        return await project_memory_fact_rows(session, rows)
 
     async def list_person_facts_projected_to_group(
         self,
@@ -360,7 +361,7 @@ class MemoryFactRepository:
             ),
             limit=max(1, limit),
         )
-        return tuple(self._project_fact(row, int(count)) for row, count in rows)
+        return await project_memory_fact_rows(session, rows)
 
     async def get_fact(
         self,
@@ -377,8 +378,8 @@ class MemoryFactRepository:
             order_by=(),
             limit=1,
         )
-        result = rows[0] if rows else None
-        return self._project_fact(result[0], int(result[1])) if result else None
+        projected = await project_memory_fact_rows(session, rows)
+        return projected[0] if projected else None
 
     async def get_active_for_target(
         self,
@@ -409,9 +410,8 @@ class MemoryFactRepository:
             ],
             order_by=(),
         )
-        projected = {
-            row.id: self._project_fact(row, int(evidence_count)) for row, evidence_count in rows
-        }
+        projected_rows = await project_memory_fact_rows(session, rows)
+        projected = {fact.id: fact for fact in projected_rows}
         return tuple(projected[fact_id] for fact_id in unique_ids if fact_id in projected)
 
     async def list_conflict_candidates(
@@ -461,7 +461,7 @@ class MemoryFactRepository:
             ),
             limit=max(1, limit),
         )
-        return tuple(self._project_fact(row, int(count)) for row, count in rows)
+        return await project_memory_fact_rows(session, rows)
 
     async def list_mutation_locator_candidates(
         self,
@@ -545,7 +545,7 @@ class MemoryFactRepository:
             ),
             limit=max(1, min(limit, 4)),
         )
-        return tuple(self._project_fact(row, int(count)) for row, count in rows)
+        return await project_memory_fact_rows(session, rows)
 
     async def list_overview(
         self,
@@ -573,7 +573,7 @@ class MemoryFactRepository:
                 ),
                 limit=max(1, limit),
             )
-        return tuple(self._project_fact(row, int(count)) for row, count in rows)
+            return await project_memory_fact_rows(session, rows)
 
     async def list_explicit_preferences(
         self,
@@ -605,7 +605,7 @@ class MemoryFactRepository:
                 ),
                 limit=limit,
             )
-        return tuple(self._project_fact(row, int(count)) for row, count in rows)
+            return await project_memory_fact_rows(session, rows)
 
     async def mark_injected(self, fact_ids: tuple[int, ...]) -> int:
         unique_ids = tuple(dict.fromkeys(fact_ids))
@@ -655,11 +655,7 @@ class MemoryFactRepository:
         owners = await resolve_fact_canonical_owners(session, fact)
         row = MemoryFactModel(
             scope_type=fact.scope_type.value,
-            subject_user_id=fact.subject_user_id,
-            group_id=fact.group_id,
             visibility_type=(fact.visibility_type.value if fact.visibility_type else None),
-            visibility_user_id=fact.visibility_user_id,
-            visibility_group_id=fact.visibility_group_id,
             kind=fact.kind.value,
             memory_key=fact.memory_key,
             category=fact.category,
@@ -1091,18 +1087,27 @@ class MemoryFactRepository:
         ]
         if scope_type is not None:
             conditions.append(MemoryFactModel.scope_type == scope_type)
-        if subject_user_id is not None:
-            conditions.append(MemoryFactModel.subject_user_id == subject_user_id)
-        if group_id is not None:
-            conditions.append(MemoryFactModel.group_id == group_id)
         async with self._database.sessions() as session:
+            try:
+                if subject_user_id is not None:
+                    conditions.append(
+                        MemoryFactModel.canonical_subject_person_id
+                        == await resolve_active_person_id(session, subject_user_id)
+                    )
+                if group_id is not None:
+                    conditions.append(
+                        MemoryFactModel.canonical_subject_space_id
+                        == await resolve_active_space_id(session, group_id)
+                    )
+            except MemoryPartitionResolutionError:
+                return ()
             rows = await self._execute_facts_with_count(
                 session,
                 conditions,
                 order_by=(MemoryFactModel.updated_at.desc(), MemoryFactModel.id),
                 limit=max(1, limit),
             )
-        return tuple(self._project_fact(row, int(count)) for row, count in rows)
+            return await project_memory_fact_rows(session, rows)
 
     async def list_lifecycle_candidates(
         self,
@@ -1165,7 +1170,7 @@ class MemoryFactRepository:
             order_by=(MemoryFactModel.valid_until.asc(), MemoryFactModel.id),
             limit=max(1, limit),
         )
-        return tuple(self._project_fact(row, int(count)) for row, count in rows)
+        return await project_memory_fact_rows(session, rows)
 
     async def count_active(
         self,
@@ -1243,45 +1248,6 @@ class MemoryFactRepository:
         )
 
     @staticmethod
-    def _project_fact(row: MemoryFactModel, evidence_count: int = 0) -> MemoryFact:
-        return MemoryFact(
-            id=row.id,
-            scope_type=row.scope_type,
-            subject_user_id=row.subject_user_id,
-            group_id=row.group_id,
-            visibility_type=row.visibility_type,
-            visibility_user_id=row.visibility_user_id,
-            visibility_group_id=row.visibility_group_id,
-            kind=row.kind,
-            memory_key=row.memory_key,
-            category=row.category,
-            content=row.content,
-            normalized_content=row.normalized_content,
-            importance=row.importance,
-            confidence=row.confidence,
-            source_type=row.source_type,
-            authority=row.authority,
-            status=row.status,
-            conflict_state=row.conflict_state,
-            supersedes_id=row.supersedes_id,
-            valid_from=row.valid_from,
-            valid_until=row.valid_until,
-            created_at=row.created_at,
-            updated_at=row.updated_at,
-            last_confirmed_at=row.last_confirmed_at,
-            invalidated_reason=row.invalidated_reason,
-            last_injected_at=row.last_injected_at,
-            evidence_count=evidence_count,
-            validation_version=row.validation_version,
-            last_audited_at=row.last_audited_at,
-            review_state=row.review_state,
-            canonical_subject_person_id=row.canonical_subject_person_id,
-            canonical_subject_space_id=row.canonical_subject_space_id,
-            canonical_visibility_person_id=row.canonical_visibility_person_id,
-            canonical_visibility_space_id=row.canonical_visibility_space_id,
-        )
-
-    @staticmethod
     def _unmatched_identity() -> tuple[Any, ...]:
         return (MemoryFactModel.id == -1,)
 
@@ -1336,7 +1302,7 @@ class MemoryFactRepository:
                 else MemoryFactModel.canonical_visibility_space_id.is_(None)
             )
         else:
-            conditions.extend(self._exact_visibility_conditions(query))
+            conditions.extend(self._exact_visibility_conditions())
         return tuple(conditions)
 
     async def _async_target_conditions(
@@ -1397,25 +1363,11 @@ class MemoryFactRepository:
         return tuple(conditions)
 
     @staticmethod
-    def _exact_visibility_conditions(
-        target: MemoryFactCreate | MemoryFactQuery | MemoryEntityTarget,
-    ) -> tuple[Any, ...]:
+    def _exact_visibility_conditions() -> tuple[Any, ...]:
         return (
-            (
-                MemoryFactModel.visibility_type.is_(None)
-                if target.visibility_type is None
-                else MemoryFactModel.visibility_type == target.visibility_type.value
-            ),
-            (
-                MemoryFactModel.visibility_user_id.is_(None)
-                if target.visibility_user_id is None
-                else MemoryFactModel.visibility_user_id == target.visibility_user_id
-            ),
-            (
-                MemoryFactModel.visibility_group_id.is_(None)
-                if target.visibility_group_id is None
-                else MemoryFactModel.visibility_group_id == target.visibility_group_id
-            ),
+            MemoryFactModel.visibility_type.is_(None),
+            MemoryFactModel.canonical_visibility_person_id.is_(None),
+            MemoryFactModel.canonical_visibility_space_id.is_(None),
         )
 
 

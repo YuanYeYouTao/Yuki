@@ -29,7 +29,7 @@ from qq_ai_bot.memory.quality.report import write_reports
 from qq_ai_bot.memory.quality.runner import MemoryQualityRunner
 from qq_ai_bot.persistence.database import Database
 
-_ALEMBIC_HEAD = "0048"
+_ALEMBIC_HEAD = "0049"
 _EXPECTED_RELEASE_VERSION = "3.8.0"
 
 
@@ -189,35 +189,8 @@ class MemoryReleaseCheck:
     def _migration_contract_item(self) -> ReleaseCheckItem:
         versions = {path.name for path in (self._root / "migrations/versions").glob("00*.py")}
         required = {
-            "0020_memory_v2_cutover.py",
-            "0021_memory_facts_fts.py",
-            "0022_memory_embeddings.py",
-            "0023_memory_conflicts_lifecycle.py",
-            "0024_memory_rebuild.py",
-            "0025_memory_mutation_receipts.py",
-            "0026_memory_reflection_jobs.py",
-            "0027_yuki_self_memory.py",
-            "0028_plugin_external_notifications.py",
-            "0029_chat_event_sender_identity.py",
-            "0030_memory_quality_candidates.py",
-            "0031_episode_self_reflection_baseline.py",
-            "0032_memory_dream.py",
-            "0033_memory_dream_recompose.py",
-            "0034_memory_dream_quality_and_evidence_provenance.py",
-            "0035_adaptive_memory_lifecycle.py",
-            "0036_async_memory_attribution.py",
-            "0037_runtime_turn_correlation.py",
-            "0038_revoke_legacy_planner_signal_approvals.py",
-            "0039_reply_effect_events.py",
-            "0040_drop_planner_persistence.py",
-            "0041_conversation_history_rollup.py",
-            "0042_replace_conversation_runtime.py",
-            "0043_canonical_identity_foundation.py",
-            "0044_canonical_conversations_and_routes.py",
-            "0045_canonical_event_shadows.py",
-            "0046_canonical_ownership_shadows.py",
-            "0047_canonical_extension_shadows.py",
-            "0048_identity_cutover.py",
+            "0048_canonical_3_8_baseline.py",
+            "0049_canonical_only_bridge.py",
         }
         missing = sorted(required - versions)
         return self._item(

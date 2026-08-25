@@ -40,6 +40,7 @@ class ReplyEffectEventModel(Base):
             name="ck_reply_effect_events_source",
         ),
         Index("ix_reply_effect_events_canonical_conversation_id", "canonical_conversation_id"),
+        {"sqlite_autoincrement": True},
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

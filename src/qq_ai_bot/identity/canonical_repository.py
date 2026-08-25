@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from typing import Final, Literal, cast
 from uuid import uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -123,6 +123,161 @@ async def find_space_binding(
     )
 
 
+async def require_person_binding(
+    session: AsyncSession,
+    user_id: str,
+    *,
+    allow_disabled: bool = False,
+) -> IdentityBindingModel:
+    """Resolve one active QQ Binding and its live canonical Person."""
+
+    binding = await find_identity_binding(session, external_id(user_id))
+    if binding is None:
+        raise CanonicalIdentityError("unclassified")
+    if binding.status != "active":
+        raise CanonicalIdentityError("canonical_owner_disabled")
+    person = await session.get(CanonicalPersonModel, binding.person_id)
+    if person is None:
+        raise CanonicalIdentityError("unclassified")
+    if not person.enabled and not allow_disabled:
+        raise CanonicalIdentityError("canonical_owner_disabled")
+    return binding
+
+
+async def require_space_binding(
+    session: AsyncSession,
+    group_id: str,
+    *,
+    allow_disabled: bool = False,
+) -> SpaceBindingModel:
+    """Resolve one active QQ group Binding and its live canonical Space."""
+
+    binding = await find_space_binding(session, external_id(group_id))
+    if binding is None:
+        raise CanonicalIdentityError("no_space_binding")
+    if binding.status != "active":
+        raise CanonicalIdentityError("canonical_owner_disabled")
+    space = await session.get(CanonicalSpaceModel, binding.space_id)
+    if space is None:
+        raise CanonicalIdentityError("unclassified")
+    if not space.enabled and not allow_disabled:
+        raise CanonicalIdentityError("canonical_owner_disabled")
+    return binding
+
+
+async def bindings_for_person(
+    session: AsyncSession,
+    person_id: str,
+) -> tuple[IdentityBindingModel, ...]:
+    rows = list(
+        await session.scalars(
+            select(IdentityBindingModel)
+            .where(IdentityBindingModel.person_id == person_id)
+            .order_by(IdentityBindingModel.external_account_id, IdentityBindingModel.id)
+        )
+    )
+    return tuple(rows)
+
+
+def representative_external_account_id(
+    bindings: tuple[IdentityBindingModel, ...],
+) -> str:
+    """Return the deterministic transport-facing account for one Person."""
+
+    active = tuple(binding for binding in bindings if binding.status == "active")
+    if not active:
+        raise CanonicalIdentityError("unclassified")
+    return min(active, key=lambda item: (item.external_account_id, item.id)).external_account_id
+
+
+async def external_accounts_for_person(
+    session: AsyncSession,
+    person_id: str,
+) -> tuple[str, ...]:
+    """Return immutable message-provenance identifiers for one Person."""
+
+    return tuple(
+        dict.fromkeys(
+            binding.external_account_id for binding in await bindings_for_person(session, person_id)
+        )
+    )
+
+
+async def person_id_for(session: AsyncSession, user_id: str | None) -> str | None:
+    external = optional_external_id(user_id)
+    if external is None:
+        return None
+    binding = await find_identity_binding(session, external)
+    return None if binding is None else binding.person_id
+
+
+async def space_id_for(session: AsyncSession, group_id: str | None) -> str | None:
+    external = optional_external_id(group_id)
+    if external is None:
+        return None
+    binding = await find_space_binding(session, external)
+    return None if binding is None else binding.space_id
+
+
+async def active_person_id_for(session: AsyncSession, user_id: str | None) -> str | None:
+    external = optional_external_id(user_id)
+    if external is None:
+        return None
+    binding = await find_identity_binding(session, external)
+    if binding is None or binding.status != "active":
+        return None
+    person = await session.get(CanonicalPersonModel, binding.person_id)
+    return person.id if person is not None and person.enabled else None
+
+
+async def active_space_id_for(session: AsyncSession, group_id: str | None) -> str | None:
+    external = optional_external_id(group_id)
+    if external is None:
+        return None
+    binding = await find_space_binding(session, external)
+    if binding is None or binding.status != "active":
+        return None
+    space = await session.get(CanonicalSpaceModel, binding.space_id)
+    return space.id if space is not None and space.enabled else None
+
+
+async def presence_id_for(session: AsyncSession, bot_user_id: str | None) -> str | None:
+    external = optional_external_id(bot_user_id)
+    if external is None:
+        return None
+    presence = await find_presence(session, external)
+    return None if presence is None else presence.id
+
+
+async def resolve_person_author_id_for_event(
+    session: AsyncSession,
+    event: ChatEventModel,
+) -> str | None:
+    """Resolve a canonical Person author, rejecting mismatched provenance."""
+
+    from qq_ai_bot.domain.identity import AuthorKind
+
+    if event.author_kind in {
+        AuthorKind.YUKI.value,
+        AuthorKind.EXTERNAL_BOT.value,
+        AuthorKind.SYSTEM.value,
+    }:
+        return None
+    if event.author_kind != AuthorKind.PERSON.value or not event.author_person_id:
+        raise CanonicalIdentityError("unclassified")
+    person = await session.get(CanonicalPersonModel, event.author_person_id)
+    if person is None:
+        raise CanonicalIdentityError("unclassified")
+    if event.sender_user_id:
+        sender = await find_identity_binding(session, external_id(event.sender_user_id))
+        if sender is not None:
+            if sender.status != "active":
+                raise CanonicalIdentityError("canonical_owner_disabled")
+            if sender.person_id != event.author_person_id:
+                raise CanonicalIdentityError("canonical_owner_mismatch")
+    return event.author_person_id
+
+
 async def create_person_binding(
     session: AsyncSession,
     *,
@@ -150,6 +305,8 @@ async def create_person_binding(
                 display_name=display_name[:128],
                 status="active",
                 revision=1,
+                first_seen_at=now,
+                last_seen_at=now,
                 created_at=now,
                 updated_at=now,
             )
@@ -227,6 +384,8 @@ async def create_space_binding(
                 display_name=name[:128],
                 status="active",
                 revision=1,
+                first_seen_at=now,
+                last_seen_at=now,
                 created_at=now,
                 updated_at=now,
             )
@@ -376,10 +535,7 @@ async def apply_event_identity(
 
     trip("before_event_shadow")
     ingress = await find_presence(session, external_id(event.bot_user_id))
-    event.canonical_event_id = None
-    event.canonical_conversation_id = None
     event.utterance_fingerprint = None
-    event.suppression_status = None
     event.ingress_provider = None
     event.ingress_gateway_instance_id = None
     event.ingress_presence_id = None if ingress is None else ingress.id
@@ -410,12 +566,6 @@ async def forget_person_for_external_account(session: AsyncSession, user_id: str
             select(IdentityBindingModel).where(IdentityBindingModel.person_id == person_id)
         )
     )
-    await session.execute(
-        update(ChatEventModel)
-        .where(ChatEventModel.author_person_id == person_id)
-        .values(author_kind=None, author_person_id=None)
-    )
-    session.expire_all()
     route = await session.get(PersonActiveRouteModel, person_id)
     if route is not None:
         await session.delete(route)
@@ -428,11 +578,6 @@ async def forget_person_for_external_account(session: AsyncSession, user_id: str
         )
     )
     if conversation is not None:
-        await session.execute(
-            update(ChatEventModel)
-            .where(ChatEventModel.canonical_conversation_id == conversation.id)
-            .values(canonical_conversation_id=None, canonical_event_id=None)
-        )
         await delete_canonical_rollup_projections(session, conversation.id)
         aliases = list(
             await session.scalars(
@@ -452,14 +597,18 @@ async def forget_person_for_external_account(session: AsyncSession, user_id: str
 
 __all__ = [
     "AccountRole",
+    "active_person_id_for",
+    "active_space_id_for",
     "apply_event_identity",
     "assert_same_shadow",
+    "bindings_for_person",
     "create_person_binding",
     "create_presence",
     "create_space_binding",
     "ensure_person",
     "ensure_presence",
     "ensure_space",
+    "external_accounts_for_person",
     "external_id",
     "find_identity_binding",
     "find_presence",
@@ -467,8 +616,15 @@ __all__ = [
     "forget_person_for_external_account",
     "new_identity_id",
     "optional_external_id",
+    "person_id_for",
+    "presence_id_for",
+    "representative_external_account_id",
+    "require_person_binding",
+    "require_space_binding",
+    "resolve_person_author_id_for_event",
     "set_identity_failpoint",
     "set_person_enabled_for_account",
     "set_space_flags_for_external",
+    "space_id_for",
     "trip",
 ]

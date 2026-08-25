@@ -41,9 +41,7 @@ class NotificationTransport(Protocol):
     async def send_text(
         self,
         *,
-        bot_user_id: str,
         target_type: str,
-        target_id: str,
         text: str,
         canonical_target_person_id: str | None = None,
         canonical_target_space_id: str | None = None,
@@ -52,9 +50,7 @@ class NotificationTransport(Protocol):
     async def send_media(
         self,
         *,
-        bot_user_id: str,
         target_type: str,
-        target_id: str,
         local_path: Path,
         canonical_target_person_id: str | None = None,
         canonical_target_space_id: str | None = None,
@@ -74,17 +70,13 @@ class OneBotNotificationTransport:
     async def send_text(
         self,
         *,
-        bot_user_id: str,
         target_type: str,
-        target_id: str,
         text: str,
         canonical_target_person_id: str | None = None,
         canonical_target_space_id: str | None = None,
     ) -> NotificationDeliveryReceipt:
         return await self._send(
-            bot_user_id=bot_user_id,
             target_type=target_type,
-            target_id=target_id,
             message=text,
             canonical_target_person_id=canonical_target_person_id,
             canonical_target_space_id=canonical_target_space_id,
@@ -93,9 +85,7 @@ class OneBotNotificationTransport:
     async def send_media(
         self,
         *,
-        bot_user_id: str,
         target_type: str,
-        target_id: str,
         local_path: Path,
         canonical_target_person_id: str | None = None,
         canonical_target_space_id: str | None = None,
@@ -105,9 +95,7 @@ class OneBotNotificationTransport:
         del content
         try:
             return await self._send(
-                bot_user_id=bot_user_id,
                 target_type=target_type,
-                target_id=target_id,
                 message=[{"type": "image", "data": {"file": f"base64://{encoded}"}}],
                 canonical_target_person_id=canonical_target_person_id,
                 canonical_target_space_id=canonical_target_space_id,
@@ -118,24 +106,20 @@ class OneBotNotificationTransport:
     async def _send(
         self,
         *,
-        bot_user_id: str,
         target_type: str,
-        target_id: str,
         message: object,
         canonical_target_person_id: str | None,
         canonical_target_space_id: str | None,
     ) -> NotificationDeliveryReceipt:
         resolved = await self._resolve(
-            bot_user_id=bot_user_id,
             target_type=target_type,
-            target_id=target_id,
             canonical_target_person_id=canonical_target_person_id,
             canonical_target_space_id=canonical_target_space_id,
         )
         bot = resolved.connection.bot
         if bot is None:
             raise ProactiveGatewayError("bot_unavailable")
-        onebot_target = resolved.external_target_id if resolved.kind != "account" else target_id
+        onebot_target = resolved.external_target_id
         action = "send_group_msg" if target_type == "group" else "send_private_msg"
         key = "group_id" if target_type == "group" else "user_id"
         call_api = getattr(bot, "call_api", None)
@@ -164,9 +148,7 @@ class OneBotNotificationTransport:
     async def _resolve(
         self,
         *,
-        bot_user_id: str,
         target_type: str,
-        target_id: str,
         canonical_target_person_id: str | None,
         canonical_target_space_id: str | None,
     ) -> ResolvedSend:
@@ -176,9 +158,6 @@ class OneBotNotificationTransport:
             raise ProactiveGatewayError("none")
         try:
             resolved = await self._resolve_via_router(
-                bot_user_id=bot_user_id,
-                target_type=target_type,
-                target_id=target_id,
                 canonical_target_person_id=canonical_target_person_id,
                 canonical_target_space_id=canonical_target_space_id,
             )
@@ -193,9 +172,6 @@ class OneBotNotificationTransport:
     async def _resolve_via_router(
         self,
         *,
-        bot_user_id: str,
-        target_type: str,
-        target_id: str,
         canonical_target_person_id: str | None,
         canonical_target_space_id: str | None,
     ) -> ResolvedSend:
@@ -287,18 +263,14 @@ class PluginNotificationOutboxWorker:
                     handle_id=item.media_handle_id,
                 )
                 receipt = await self._transport.send_media(
-                    bot_user_id=item.bot_user_id,
                     target_type=item.target_type,
-                    target_id=item.target_id,
                     local_path=artifact.local_path,
                     canonical_target_person_id=person_id,
                     canonical_target_space_id=space_id,
                 )
             else:
                 receipt = await self._transport.send_text(
-                    bot_user_id=item.bot_user_id,
                     target_type=item.target_type,
-                    target_id=item.target_id,
                     text=item.text,
                     canonical_target_person_id=person_id,
                     canonical_target_space_id=space_id,

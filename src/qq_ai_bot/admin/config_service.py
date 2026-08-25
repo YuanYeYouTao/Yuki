@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any, cast
 
 from sqlalchemy import delete, or_, select
-from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.admin.audit import AdminAuditService, AuditSubject, add_audit_event, event_from_model
@@ -52,7 +51,6 @@ from qq_ai_bot.persistence.unit_of_work import optional_session
 from qq_ai_bot.services.canonical_owners import (
     resolve_live_person_id,
     resolve_live_space_id,
-    stamp_canonical_owners,
 )
 
 
@@ -84,7 +82,7 @@ def _record(row: RuntimeConfigOverrideModel) -> RuntimeConfigOverrideRecord:
         id=row.id,
         config_key=row.config_key,
         scope_type=ConfigScopeType(row.scope_type),
-        scope_id=row.scope_id,
+        scope_id=row.canonical_person_id or row.canonical_space_id or "",
         value=decoded,
         value_type=row.value_type,
         apply_mode=ConfigApplyMode(row.apply_mode),
@@ -215,73 +213,41 @@ class RuntimeConfigRepository:
         session: AsyncSession | None = None,
     ) -> tuple[RuntimeConfigOverrideRecord, AdminOperationEvent]:
         now = datetime.now(UTC)
-        statement = (
-            insert(RuntimeConfigOverrideModel)
-            .values(
-                config_key=spec.key,
-                scope_type=scope_type.value,
-                scope_id=scope_id,
-                value_json=json.dumps(value, ensure_ascii=False),
-                value_type=spec.value_type,
-                apply_mode=spec.apply_mode.value,
-                version=max(1, initial_version),
-                created_at=now,
-                updated_at=now,
-                updated_by=actor.user_id,
-            )
-            .on_conflict_do_update(
-                index_elements=[
-                    RuntimeConfigOverrideModel.config_key,
-                    RuntimeConfigOverrideModel.scope_type,
-                    RuntimeConfigOverrideModel.scope_id,
-                ],
-                set_={
-                    "value_json": json.dumps(value, ensure_ascii=False),
-                    "value_type": spec.value_type,
-                    "apply_mode": spec.apply_mode.value,
-                    "version": RuntimeConfigOverrideModel.version + 1,
-                    "updated_at": now,
-                    "updated_by": actor.user_id,
-                },
-            )
-        )
         async with optional_session(self._database, session, write=True) as active:
-            await active.execute(statement)
+            owner_clause = _config_owner_clause(
+                scope_type,
+                person_id=person_id,
+                space_id=space_id,
+            )
             row = await active.scalar(
                 select(RuntimeConfigOverrideModel).where(
                     RuntimeConfigOverrideModel.config_key == spec.key,
-                    RuntimeConfigOverrideModel.scope_type == scope_type.value,
-                    RuntimeConfigOverrideModel.scope_id == scope_id,
+                    owner_clause,
                 )
             )
             if row is None:
-                raise RuntimeError("runtime override was not persisted")
-            if scope_type is ConfigScopeType.USER:
-                if not person_id:
-                    raise CanonicalIdentityError("missing_canonical_owner")
-                if row.canonical_space_id is not None:
-                    raise CanonicalIdentityError("canonical_owner_mismatch")
-                stamp_canonical_owners(
-                    row,
-                    person_attr="canonical_person_id",
-                    space_attr="canonical_space_id",
-                    person_id=person_id,
-                    space_id=None,
+                row = RuntimeConfigOverrideModel(
+                    config_key=spec.key,
+                    scope_type=scope_type.value,
+                    value_json=json.dumps(value, ensure_ascii=False),
+                    value_type=spec.value_type,
+                    apply_mode=spec.apply_mode.value,
+                    version=max(1, initial_version),
+                    created_at=now,
+                    updated_at=now,
+                    updated_by=actor.user_id,
+                    canonical_person_id=person_id,
+                    canonical_space_id=space_id,
                 )
-            elif scope_type is ConfigScopeType.GROUP:
-                if not space_id:
-                    raise CanonicalIdentityError("missing_canonical_owner")
-                if row.canonical_person_id is not None:
-                    raise CanonicalIdentityError("canonical_owner_mismatch")
-                stamp_canonical_owners(
-                    row,
-                    person_attr="canonical_person_id",
-                    space_attr="canonical_space_id",
-                    person_id=None,
-                    space_id=space_id,
-                )
-            elif row.canonical_person_id or row.canonical_space_id:
-                raise CanonicalIdentityError("canonical_owner_mismatch")
+                active.add(row)
+            else:
+                row.value_json = json.dumps(value, ensure_ascii=False)
+                row.value_type = spec.value_type
+                row.apply_mode = spec.apply_mode.value
+                row.version += 1
+                row.updated_at = now
+                row.updated_by = actor.user_id
+            await active.flush()
             after_state = _override_state(
                 _record(row),
                 public_scope_id=_public_owner_scope_id(
@@ -320,11 +286,16 @@ class RuntimeConfigRepository:
     ) -> AdminOperationEvent:
         exposed_scope_id = scope_id if public_scope_id is None else public_scope_id
         async with optional_session(self._database, session, write=True) as active:
+            person_id = scope_id if scope_type is ConfigScopeType.USER else None
+            space_id = scope_id if scope_type is ConfigScopeType.GROUP else None
             await active.execute(
                 delete(RuntimeConfigOverrideModel).where(
                     RuntimeConfigOverrideModel.config_key == spec.key,
-                    RuntimeConfigOverrideModel.scope_type == scope_type.value,
-                    RuntimeConfigOverrideModel.scope_id == scope_id,
+                    _config_owner_clause(
+                        scope_type,
+                        person_id=person_id,
+                        space_id=space_id,
+                    ),
                 )
             )
             audit = await add_audit_event(
@@ -349,9 +320,40 @@ def _public_owner_scope_id(
     space_id: str | None,
     storage_scope_id: str,
 ) -> str:
-    """Public owner id. complete-v2 uses Person/Space; storage UNIQUE may stay raw."""
+    """Public owner id for a canonical config scope."""
 
     return person_id or space_id or storage_scope_id
+
+
+def _config_owner_clause(
+    scope_type: ConfigScopeType,
+    *,
+    person_id: str | None,
+    space_id: str | None,
+) -> Any:
+    if scope_type is ConfigScopeType.USER:
+        if not person_id or space_id is not None:
+            raise CanonicalIdentityError("missing_canonical_owner")
+        return (
+            (RuntimeConfigOverrideModel.scope_type == scope_type.value)
+            & (RuntimeConfigOverrideModel.canonical_person_id == person_id)
+            & RuntimeConfigOverrideModel.canonical_space_id.is_(None)
+        )
+    if scope_type is ConfigScopeType.GROUP:
+        if not space_id or person_id is not None:
+            raise CanonicalIdentityError("missing_canonical_owner")
+        return (
+            (RuntimeConfigOverrideModel.scope_type == scope_type.value)
+            & RuntimeConfigOverrideModel.canonical_person_id.is_(None)
+            & (RuntimeConfigOverrideModel.canonical_space_id == space_id)
+        )
+    if person_id is not None or space_id is not None:
+        raise CanonicalIdentityError("canonical_owner_mismatch")
+    return (
+        (RuntimeConfigOverrideModel.scope_type == scope_type.value)
+        & RuntimeConfigOverrideModel.canonical_person_id.is_(None)
+        & RuntimeConfigOverrideModel.canonical_space_id.is_(None)
+    )
 
 
 def _missing_override_state(

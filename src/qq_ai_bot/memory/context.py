@@ -376,9 +376,7 @@ class MemoryContextService:
         selected = tuple(
             hit
             for hit in result.hits
-            if hit.fact.visibility_type is target.visibility_type
-            and hit.fact.visibility_user_id == target.visibility_user_id
-            and hit.fact.visibility_group_id == target.visibility_group_id
+            if hit.target == target and hit.fact.visibility_type is target.visibility_type
         )[:1]
         selected_ids = {hit.fact.id for hit in selected}
         blocks = tuple(

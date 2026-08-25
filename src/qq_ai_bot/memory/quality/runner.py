@@ -14,6 +14,7 @@ import time
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 from sqlalchemy import select
 
@@ -21,6 +22,13 @@ from qq_ai_bot import __version__
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.identity.db_models import (
+    CanonicalPersonModel,
+    CanonicalSpaceModel,
+    IdentityBindingModel,
+    PresenceModel,
+    SpaceBindingModel,
+)
 from qq_ai_bot.memory.context import MemoryContextService, retrieval_fact_context
 from qq_ai_bot.memory.embedding.fake import FakeEmbeddingProvider
 from qq_ai_bot.memory.embedding.jobs import MemoryEmbeddingJobRepository
@@ -222,6 +230,7 @@ class MemoryQualityRunner:
     ) -> QualityObservation:
         symbols = self._suite.manifest.symbolic_identities
         reverse_symbols = {value: key for key, value in symbols.items()}
+        await self._seed_canonical_identities(database, symbols)
         repository = MemoryFactRepository(database)
         facts = MemoryFactService(repository)
         ledger = EventLedgerRepository(database)
@@ -272,7 +281,9 @@ class MemoryQualityRunner:
                 segments=segments,
                 group_id=symbols[fixture.group] if fixture.group else None,
                 private_peer_user_id=(
-                    symbols[fixture.speaker] if fixture.scope_type == "private" else None
+                    symbols["person_a" if fixture.speaker == "bot" else fixture.speaker]
+                    if fixture.scope_type == "private"
+                    else None
                 ),
                 occurred_at=fixture.occurred_at,
                 sender_is_bot=fixture.speaker == "bot",
@@ -625,6 +636,83 @@ class MemoryQualityRunner:
             receipts=int(statistics["receipts_completed"]),
             historical_regressions=regressions,
         )
+
+    @staticmethod
+    async def _seed_canonical_identities(
+        database: Database,
+        symbols: dict[str, str],
+    ) -> None:
+        """Create the minimum real identity graph required by production services."""
+
+        now = datetime.now(UTC)
+        async with database.immediate_session() as session:
+            for symbolic_name in ("person_a", "person_b", "person_c"):
+                person_id = str(uuid4())
+                session.add(
+                    CanonicalPersonModel(
+                        id=person_id,
+                        enabled=True,
+                        revision=1,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+                session.add(
+                    IdentityBindingModel(
+                        id=str(uuid4()),
+                        person_id=person_id,
+                        platform="qq",
+                        external_account_id=symbols[symbolic_name],
+                        display_name=symbolic_name,
+                        status="active",
+                        revision=1,
+                        first_seen_at=now,
+                        last_seen_at=now,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+            for symbolic_name in ("group_a", "group_b"):
+                space_id = str(uuid4())
+                session.add(
+                    CanonicalSpaceModel(
+                        id=space_id,
+                        name=symbolic_name,
+                        enabled=True,
+                        autonomous_enabled=True,
+                        require_mention=False,
+                        revision=1,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+                session.add(
+                    SpaceBindingModel(
+                        id=str(uuid4()),
+                        space_id=space_id,
+                        platform="qq",
+                        external_space_id=symbols[symbolic_name],
+                        display_name=symbolic_name,
+                        status="active",
+                        revision=1,
+                        first_seen_at=now,
+                        last_seen_at=now,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+            session.add(
+                PresenceModel(
+                    id=str(uuid4()),
+                    platform="qq",
+                    external_account_id=symbols["bot"],
+                    enabled=True,
+                    ingest_eligible=True,
+                    revision=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
 
     @staticmethod
     def _claim_payload(claim: QualityClaim) -> dict[str, object]:

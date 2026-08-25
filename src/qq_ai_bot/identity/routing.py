@@ -135,7 +135,7 @@ class PresenceRouter:
         allow_unknown: bool = False,
     ) -> bool:
         async with self._database.sessions() as session:
-            from qq_ai_bot.identity.shadows import person_id_for
+            from qq_ai_bot.identity.canonical_repository import person_id_for
 
             found = await person_id_for(session, external_id)
         if found is None:
@@ -150,7 +150,7 @@ class PresenceRouter:
         allow_unknown: bool = False,
     ) -> bool:
         async with self._database.sessions() as session:
-            from qq_ai_bot.identity.shadows import space_id_for
+            from qq_ai_bot.identity.canonical_repository import space_id_for
 
             found = await space_id_for(session, external_id)
         if found is None:
@@ -197,11 +197,11 @@ class PresenceRouter:
             person_id = None
             space_id = None
             if target_type == "private":
-                from qq_ai_bot.identity.shadows import person_id_for
+                from qq_ai_bot.identity.canonical_repository import person_id_for
 
                 person_id = await person_id_for(session, target_id)
             elif target_type == "group":
-                from qq_ai_bot.identity.shadows import space_id_for
+                from qq_ai_bot.identity.canonical_repository import space_id_for
 
                 space_id = await space_id_for(session, target_id)
             else:

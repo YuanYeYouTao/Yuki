@@ -26,17 +26,14 @@ from qq_ai_bot.memory.quality.audit import MemoryProductionQualityAudit
 from qq_ai_bot.memory.quality.baseline import (
     load_baseline,
     write_baseline,
-    write_performance_baseline,
 )
 from qq_ai_bot.memory.quality.gates import compare_baseline, load_gate_configuration
 from qq_ai_bot.memory.quality.hygiene import MemoryProvenanceHygiene
 from qq_ai_bot.memory.quality.loader import load_quality_suite
 from qq_ai_bot.memory.quality.models import (
     MemoryQualityReport,
-    QualityPerformanceScenario,
     QualitySuiteMode,
 )
-from qq_ai_bot.memory.quality.performance import MemoryQualityPerformanceRunner
 from qq_ai_bot.memory.quality.release_check import MemoryReleaseCheck
 from qq_ai_bot.memory.quality.report import write_reports
 from qq_ai_bot.memory.quality.runner import MemoryQualityRunner
@@ -76,8 +73,6 @@ from yuki_plugin_sdk.testing.contract import run_plugin_contract_tests
 def _init_database(settings: Settings) -> None:
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
-    # 0042 requires an exact 0041 source and a fresh FK-enforced connection.
-    command.upgrade(config, "0041")
     command.upgrade(config, "head")
 
 
@@ -274,19 +269,6 @@ def _add_memory_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     report.add_argument("--format", choices=("json", "markdown"), default="markdown")
     update = quality_commands.add_parser("update-baseline")
     update.add_argument("--output", type=Path, default=Path("artifacts/memory-quality"))
-    performance = quality_commands.add_parser("performance")
-    performance.add_argument("--users", type=int, default=100)
-    performance.add_argument("--facts-per-user", type=int, default=100)
-    performance.add_argument("--groups", type=int, default=10)
-    performance.add_argument("--events", type=int, default=100_000)
-    performance.add_argument("--queries", type=int, default=50)
-    performance.add_argument("--batch-size", type=int, default=1_000)
-    performance.add_argument(
-        "--output",
-        type=Path,
-        default=Path("artifacts/memory-quality/performance.json"),
-    )
-    performance.add_argument("--update-baseline", action="store_true")
     audit = commands.add_parser("audit", help="只读、无内容的生产数据库检查")
     audit.add_argument("--database-url", required=True)
     hygiene = commands.add_parser("hygiene", help="指纹保护的显式来源治理")
@@ -872,37 +854,6 @@ async def _memory_command(settings: Settings, args: argparse.Namespace) -> int:
     action = str(args.memory_command)
     if action == "quality":
         quality_action = str(args.quality_command)
-        if quality_action == "performance":
-            scenario = QualityPerformanceScenario(
-                users=int(args.users),
-                facts_per_user=int(args.facts_per_user),
-                groups=int(args.groups),
-                chat_events=int(args.events),
-                query_count=int(args.queries),
-                keyset_batch_size=int(args.batch_size),
-            )
-            performance = await MemoryQualityPerformanceRunner(root).run(
-                scenario,
-                quality_report_path=report_path,
-            )
-            output = Path(args.output)
-            await asyncio.to_thread(output.parent.mkdir, parents=True, exist_ok=True)
-            await asyncio.to_thread(
-                output.write_text,
-                performance.model_dump_json(indent=2) + "\n",
-                encoding="utf-8",
-            )
-            if bool(args.update_baseline):
-                quality_report = MemoryQualityReport.model_validate_json(
-                    report_path.read_text(encoding="utf-8")
-                )
-                if not quality_report.passed:
-                    raise RuntimeError(
-                        "quality report must pass before updating performance baseline"
-                    )
-                write_performance_baseline(baseline_path, performance)
-            print(performance.model_dump_json(indent=2))
-            return 0
         suite = load_quality_suite(fixture_path)
         if quality_action == "validate-dataset":
             print(

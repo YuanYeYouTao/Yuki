@@ -9,6 +9,7 @@ from typing import Any, cast
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
@@ -17,6 +18,10 @@ from qq_ai_bot.memory.partition import (
     MemoryPartitionResolutionError,
     format_canonical_memory_partition,
     require_xor_memory_owner,
+)
+from qq_ai_bot.memory.projections import (
+    project_active_person_external_id,
+    project_active_space_external_id,
 )
 from qq_ai_bot.memory.self_reflection.models import (
     SelfReflectionBatch,
@@ -171,16 +176,6 @@ class SelfReflectionRepository:
 
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
-            # Older workers accidentally copied a group sender into this
-            # private-only field. Existing deployments heal on the next scan.
-            await session.execute(
-                update(MemorySelfReflectionStateModel)
-                .where(
-                    MemorySelfReflectionStateModel.scope_type == ScopeType.GROUP.value,
-                    MemorySelfReflectionStateModel.private_peer_user_id.is_not(None),
-                )
-                .values(private_peer_user_id=None, updated_at=now)
-            )
             await session.execute(
                 update(MemorySelfReflectionStateModel)
                 .where(MemorySelfReflectionStateModel.high_value_signal.is_(True))
@@ -226,14 +221,6 @@ class SelfReflectionRepository:
                     continue
                 if await refuse_legacy_live_event(session, row):
                     continue
-                scope_type = ScopeType(row.scope_type)
-                peer: str | None = None
-                if scope_type is ScopeType.PRIVATE:
-                    peer = row.private_peer_user_id or (
-                        row.sender_user_id if row.direction == "inbound" else None
-                    )
-                    if not peer:
-                        continue
                 conversation = await session.get(
                     CanonicalConversationModel, row.canonical_conversation_id
                 )
@@ -262,9 +249,6 @@ class SelfReflectionRepository:
                         bot_user_id=row.bot_user_id,
                         canonical_person_id=person_id,
                         canonical_space_id=space_id,
-                        scope_type=row.scope_type,
-                        group_id=row.group_id,
-                        private_peer_user_id=peer,
                         last_event_id=runtime.last_scanned_event_id,
                         latest_event_id=row.id,
                         pending_events=0,
@@ -467,9 +451,12 @@ class SelfReflectionRepository:
                 )
                 if run_id is None:
                     continue
+                projected_state = await self._state(session, row, has_tool=has_tool)
+                if projected_state is None:
+                    continue
                 claimed.append(
                     SelfReflectionBatch(
-                        state=self._state(row, has_tool=has_tool),
+                        state=projected_state,
                         events=tuple(_event_record(item) for item in event_rows),
                         context_events=tuple(_event_record(item) for item in context_rows),
                         trigger_reason=reason,
@@ -679,17 +666,34 @@ class SelfReflectionRepository:
             return int(cast(CursorResult[object], result).rowcount)
 
     @staticmethod
-    def _state(row: MemorySelfReflectionStateModel, *, has_tool: bool) -> SelfReflectionState:
-        scope_type = ScopeType(row.scope_type)
+    async def _state(
+        session: AsyncSession,
+        row: MemorySelfReflectionStateModel,
+        *,
+        has_tool: bool,
+    ) -> SelfReflectionState | None:
+        person_id, space_id = require_xor_memory_owner(
+            row.canonical_person_id,
+            row.canonical_space_id,
+        )
+        external_person_id = (
+            await project_active_person_external_id(session, person_id) if person_id else None
+        )
+        external_space_id = (
+            await project_active_space_external_id(session, space_id) if space_id else None
+        )
+        if person_id and external_person_id is None:
+            return None
+        if space_id and external_space_id is None:
+            return None
         return SelfReflectionState(
             id=row.id,
             conversation_key_hash=row.conversation_key_hash,
             bot_user_id=row.bot_user_id,
-            scope_type=scope_type,
-            group_id=row.group_id,
-            private_peer_user_id=(
-                None if scope_type is ScopeType.GROUP else row.private_peer_user_id
-            ),
+            canonical_person_id=person_id,
+            canonical_space_id=space_id,
+            external_person_id=external_person_id,
+            external_space_id=external_space_id,
             last_event_id=row.last_event_id,
             latest_event_id=row.latest_event_id,
             pending_events=row.pending_events,

@@ -169,8 +169,10 @@ class MemoryReflectionWorker:
             first.id != second.id
             and second.status in {MemoryStatus.ACTIVE, MemoryStatus.CONTESTED}
             and first.scope_type is second.scope_type
-            and first.subject_user_id == second.subject_user_id
-            and first.group_id == second.group_id
+            and first.canonical_subject_person_id == second.canonical_subject_person_id
+            and first.canonical_subject_space_id == second.canonical_subject_space_id
+            and first.canonical_visibility_person_id == second.canonical_visibility_person_id
+            and first.canonical_visibility_space_id == second.canonical_visibility_space_id
             and first.kind is second.kind
             and first.memory_key != second.memory_key
             and first.normalized_content

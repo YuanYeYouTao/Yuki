@@ -21,6 +21,7 @@ from qq_ai_bot.container import ApplicationContainer, get_container, set_contain
 from qq_ai_bot.health import HealthPayload, build_health_payload
 from qq_ai_bot.logging import configure_logging
 from qq_ai_bot.persistence.instance_lock import SQLiteApplicationLock
+from qq_ai_bot.persistence.schema_guard import require_canonical_schema
 
 
 @contextmanager
@@ -96,13 +97,8 @@ def bootstrap(settings: Settings | None = None) -> None:
     async def startup() -> None:
         application_lock.acquire()
         try:
+            await require_canonical_schema(app_settings.database_url)
             container = await ApplicationContainer.create(app_settings)
-            from qq_ai_bot.identity.binary_epoch import refuse_identity_binary_epoch
-            from qq_ai_bot.identity.runtime import load_identity_runtime
-
-            async with container.database.sessions() as session:
-                runtime = await load_identity_runtime(session)
-            refuse_identity_binary_epoch(runtime.state)
             set_container(container)
             await container.start()
         except BaseException:

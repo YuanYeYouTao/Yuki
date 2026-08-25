@@ -11,7 +11,6 @@ from qq_ai_bot.conversation import (  # noqa: F401
     canonical_db_models as _canonical_conversation_db_models,
 )
 from qq_ai_bot.conversation import db_models as _conversation_db_models  # noqa: F401
-from qq_ai_bot.conversation.rollup import db_models as _rollup_db_models  # noqa: F401
 from qq_ai_bot.emoji import db_models as _emoji_db_models  # noqa: F401
 from qq_ai_bot.identity import db_models as _identity_db_models  # noqa: F401
 from qq_ai_bot.memory.dream import db_models as _memory_dream_db_models  # noqa: F401

@@ -35,12 +35,18 @@ class MemoryReflectionRepository:
         left = aliased(MemoryFactModel, name="reflection_left")
         right = aliased(MemoryFactModel, name="reflection_right")
         same_subject = or_(
-            and_(left.subject_user_id.is_(None), right.subject_user_id.is_(None)),
-            left.subject_user_id == right.subject_user_id,
+            and_(
+                left.canonical_subject_person_id.is_(None),
+                right.canonical_subject_person_id.is_(None),
+            ),
+            left.canonical_subject_person_id == right.canonical_subject_person_id,
         )
         same_group = or_(
-            and_(left.group_id.is_(None), right.group_id.is_(None)),
-            left.group_id == right.group_id,
+            and_(
+                left.canonical_subject_space_id.is_(None),
+                right.canonical_subject_space_id.is_(None),
+            ),
+            left.canonical_subject_space_id == right.canonical_subject_space_id,
         )
         duplicate_query = (
             select(left.id, right.id)
@@ -80,9 +86,9 @@ class MemoryReflectionRepository:
             .limit(bounded)
         )
         member_exists = exists(
-            select(MembershipModel.user_id).where(
-                MembershipModel.user_id == MemoryFactModel.subject_user_id,
-                MembershipModel.group_id == MemoryFactModel.group_id,
+            select(MembershipModel.canonical_person_id).where(
+                MembershipModel.canonical_person_id == MemoryFactModel.canonical_subject_person_id,
+                MembershipModel.canonical_space_id == MemoryFactModel.canonical_subject_space_id,
             )
         )
         attribution_query = (
@@ -90,8 +96,8 @@ class MemoryReflectionRepository:
             .where(
                 MemoryFactModel.status.in_(_OPEN_FACT_STATUSES),
                 MemoryFactModel.scope_type == "person_group",
-                MemoryFactModel.subject_user_id.is_not(None),
-                MemoryFactModel.group_id.is_not(None),
+                MemoryFactModel.canonical_subject_person_id.is_not(None),
+                MemoryFactModel.canonical_subject_space_id.is_not(None),
                 ~member_exists,
             )
             .order_by(MemoryFactModel.updated_at, MemoryFactModel.id)

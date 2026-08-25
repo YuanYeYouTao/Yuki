@@ -25,7 +25,6 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.schema import Table
 
-from qq_ai_bot.conversation.canonical_event_schema import C4_TRIGGER_SQL
 from qq_ai_bot.conversation.canonical_schema import (
     ALIAS_PRIMARY_LOCK_TRIGGERS,
     CONVERSATION_PRIMARY_POINTER_TRIGGERS,
@@ -109,27 +108,6 @@ def _install_triggers(
 
 
 _PARENT_ROUTE_GUARD_MARKER = "trg_identity_bindings_route_consistency_update"
-
-
-def _install_c4_triggers_if_ready(connection: Connection) -> None:
-    """Install ledger/scope shadow guards once both host tables exist."""
-
-    present = connection.execute(
-        text(
-            "SELECT COUNT(*) FROM sqlite_master "
-            "WHERE type = 'table' AND name IN ('chat_events', 'conversation_scopes')"
-        )
-    ).scalar()
-    if int(present or 0) != 2:
-        return
-    installed = connection.execute(
-        text("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = :name"),
-        {"name": "trg_chat_events_canonical_shadow_insert"},
-    ).scalar()
-    if installed is not None:
-        return
-    for statement in C4_TRIGGER_SQL:
-        connection.execute(text(statement))
 
 
 def _install_parent_route_guards_if_ready(connection: Connection) -> None:
@@ -333,10 +311,6 @@ class CanonicalConversationRollupModel(Base):
             ondelete="CASCADE",
         ),
         CheckConstraint(
-            uuid4_text36_sql("conversation_id"),
-            name="ck_canonical_conversation_rollups_conversation_id",
-        ),
-        CheckConstraint(
             "summary_kind IN ('model', 'extractive', 'migration')",
             name="ck_canonical_conversation_rollups_kind",
         ),
@@ -372,10 +346,6 @@ class CanonicalConversationRollupJobModel(Base):
             ["canonical_conversations.id"],
             name="fk_canonical_conversation_rollup_jobs_conversation",
             ondelete="CASCADE",
-        ),
-        CheckConstraint(
-            uuid4_text36_sql("conversation_id"),
-            name="ck_canonical_conversation_rollup_jobs_conversation_id",
         ),
         CheckConstraint(
             "status IN ('pending', 'processing')",
@@ -785,16 +755,3 @@ class CanonicalEventReceiptModel(Base):
     canonical_event_id: Mapped[str] = mapped_column(String(36), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
-@event.listens_for(CanonicalEventReceiptModel.__table__, "after_create")
-def install_canonical_event_shadow_triggers(
-    target: Table,
-    connection: Connection,
-    **_kwargs: object,
-) -> None:
-    """Install ledger/scope shadow guards after the C4 receipt table exists."""
-
-    if target is not CanonicalEventReceiptModel.__table__:
-        raise RuntimeError("trigger installer is bound only to canonical_event_receipts")
-    _install_c4_triggers_if_ready(connection)

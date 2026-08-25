@@ -205,9 +205,10 @@ class MemoryAuditService:
             "active_slot_conflicts": """
                 SELECT COALESCE(SUM(c - 1), 0) FROM (
                     SELECT COUNT(*) AS c FROM memory_facts WHERE status = 'active'
-                    GROUP BY scope_type, COALESCE(subject_user_id, ''),
-                        COALESCE(group_id, ''), COALESCE(visibility_type, ''),
-                        COALESCE(visibility_user_id, ''), COALESCE(visibility_group_id, ''),
+                    GROUP BY scope_type, COALESCE(canonical_subject_person_id, ''),
+                        COALESCE(canonical_subject_space_id, ''), COALESCE(visibility_type, ''),
+                        COALESCE(canonical_visibility_person_id, ''),
+                        COALESCE(canonical_visibility_space_id, ''),
                         CASE WHEN scope_type='self' THEN '' ELSE kind END,
                         memory_key HAVING COUNT(*) > 1
                 )
@@ -228,11 +229,15 @@ class MemoryAuditService:
                 JOIN memory_facts s ON s.id=r.source_fact_id
                 JOIN memory_facts t ON t.id=r.target_fact_id
                 WHERE s.scope_type != t.scope_type
-                    OR COALESCE(s.subject_user_id, '') != COALESCE(t.subject_user_id, '')
-                    OR COALESCE(s.group_id, '') != COALESCE(t.group_id, '')
+                    OR COALESCE(s.canonical_subject_person_id, '')
+                        != COALESCE(t.canonical_subject_person_id, '')
+                    OR COALESCE(s.canonical_subject_space_id, '')
+                        != COALESCE(t.canonical_subject_space_id, '')
                     OR COALESCE(s.visibility_type, '') != COALESCE(t.visibility_type, '')
-                    OR COALESCE(s.visibility_user_id, '') != COALESCE(t.visibility_user_id, '')
-                    OR COALESCE(s.visibility_group_id, '') != COALESCE(t.visibility_group_id, '')
+                    OR COALESCE(s.canonical_visibility_person_id, '')
+                        != COALESCE(t.canonical_visibility_person_id, '')
+                    OR COALESCE(s.canonical_visibility_space_id, '')
+                        != COALESCE(t.canonical_visibility_space_id, '')
             """,
             "orphan_state_event_count": """
                 SELECT COUNT(*) FROM memory_fact_state_events e

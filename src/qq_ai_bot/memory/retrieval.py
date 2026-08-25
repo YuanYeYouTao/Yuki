@@ -513,9 +513,9 @@ class MemoryRetriever:
         fact = hit.fact
         return (
             fact.scope_type,
-            fact.subject_user_id,
-            fact.group_id,
+            fact.canonical_subject_person_id,
+            fact.canonical_subject_space_id,
             fact.visibility_type,
-            fact.visibility_user_id,
-            fact.visibility_group_id,
+            fact.canonical_visibility_person_id,
+            fact.canonical_visibility_space_id,
         )

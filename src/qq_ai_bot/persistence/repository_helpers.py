@@ -18,14 +18,13 @@ from qq_ai_bot.domain.relationships import (
     relationship_weight,
     stage_for_score,
 )
-from qq_ai_bot.identity.canonical_projections import resolve_canonical_relationship
 from qq_ai_bot.identity.canonical_repository import (
     AccountRole,
     ensure_person,
     ensure_presence,
     ensure_space,
+    require_person_binding,
 )
-from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
     PersonRelationshipModel,
@@ -92,16 +91,19 @@ async def _ensure_relationship(
     now: datetime | None = None,
 ) -> PersonRelationshipModel:
     timestamp = now or datetime.now(UTC)
-    row = await resolve_canonical_relationship(
-        session,
-        user_id,
-        create=True,
-        initial_affection=initial_affection,
-        initial_trust=initial_trust,
-        now=timestamp,
-    )
+    binding = await require_person_binding(session, user_id)
+    row = await session.get(PersonRelationshipModel, binding.person_id)
     if row is None:
-        raise CanonicalIdentityError("unclassified")
+        row = PersonRelationshipModel(
+            canonical_person_id=binding.person_id,
+            affection_score=initial_affection,
+            trust_score=initial_trust,
+            created_at=timestamp,
+            updated_at=timestamp,
+            last_automatic_change_at=None,
+        )
+        session.add(row)
+        await session.flush()
     return row
 
 
@@ -207,6 +209,7 @@ def _event_record(row: ChatEventModel | Mapping[str, Any]) -> EventRecord:
 def _relationship_snapshot(
     row: PersonRelationshipModel,
     *,
+    user_id: str,
     trust_cap_offset: int,
 ) -> RelationshipSnapshot:
     usable_trust = effective_trust(
@@ -215,7 +218,7 @@ def _relationship_snapshot(
         cap_offset=trust_cap_offset,
     )
     return RelationshipSnapshot(
-        user_id=row.user_id,
+        user_id=user_id,
         affection_score=row.affection_score,
         trust_score=row.trust_score,
         effective_trust=usable_trust,
@@ -225,10 +228,14 @@ def _relationship_snapshot(
     )
 
 
-def _relationship_event_record(row: RelationshipEventModel) -> RelationshipEventRecord:
+def _relationship_event_record(
+    row: RelationshipEventModel,
+    *,
+    user_id: str,
+) -> RelationshipEventRecord:
     return RelationshipEventRecord(
         id=row.id,
-        user_id=row.user_id,
+        user_id=user_id,
         source_event_id=row.source_event_id,
         actor_user_id=row.actor_user_id,
         change_type=row.change_type,

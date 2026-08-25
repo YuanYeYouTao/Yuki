@@ -71,6 +71,15 @@ class MemoryDreamClusterModel(Base):
             name="ck_memory_dream_clusters_status",
         ),
         CheckConstraint("kind IN ('fact','preference','episode')", name="ck_dream_cluster_kind"),
+        CheckConstraint(
+            "NOT (canonical_visibility_person_id IS NOT NULL "
+            "AND canonical_visibility_space_id IS NOT NULL) AND NOT ("
+            "(canonical_subject_person_id IS NOT NULL OR "
+            "canonical_subject_space_id IS NOT NULL) AND "
+            "(canonical_visibility_person_id IS NOT NULL OR "
+            "canonical_visibility_space_id IS NOT NULL))",
+            name="ck_memory_dream_clusters_owner",
+        ),
         Index("ix_memory_dream_clusters_run_status", "run_id", "status", "id"),
         Index(
             "ix_memory_dream_clusters_canonical_subject_person_id",

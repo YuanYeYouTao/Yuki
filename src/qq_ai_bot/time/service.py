@@ -6,16 +6,10 @@ from datetime import UTC, datetime
 from typing import Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from qq_ai_bot.identity.canonical_projections import resolve_canonical_time_setting
-from qq_ai_bot.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel, PresenceModel
-from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.models import PersonTimeSettingModel
+from qq_ai_bot.services.canonical_owners import resolve_live_person_id
 from qq_ai_bot.time.models import TimeContext
-
-_CANONICAL_KIND_MISMATCH = "canonical_kind_mismatch"
-_CANONICAL_OWNER_DISABLED = "canonical_owner_disabled"
 
 
 class Clock(Protocol):
@@ -65,30 +59,28 @@ class TimeContextService:
 
     async def timezone_for(self, user_id: str) -> str:
         async with self._database.sessions() as session:
-            try:
-                row = await resolve_canonical_time_setting(session, user_id)
-            except CanonicalIdentityError:
-                try:
-                    fallback = await _timezone_for_canonical_uuid(
-                        session, user_id, default_timezone=self._default_timezone
-                    )
-                except CanonicalIdentityError as mapped:
-                    raise mapped from None
-                if fallback is None:
-                    raise
-                return fallback
+            person_id = await resolve_live_person_id(session, user_id)
+            row = await session.get(PersonTimeSettingModel, person_id)
         return row.timezone if row is not None else self._default_timezone
 
     async def set_timezone(self, user_id: str, timezone: str) -> str:
         normalized = validate_timezone(timezone)
         now = self._utc_now()
         async with self._database.sessions() as session, session.begin():
-            await resolve_canonical_time_setting(
-                session,
-                user_id,
-                timezone=normalized,
-                now=now,
-            )
+            person_id = await resolve_live_person_id(session, user_id)
+            row = await session.get(PersonTimeSettingModel, person_id)
+            if row is None:
+                session.add(
+                    PersonTimeSettingModel(
+                        canonical_person_id=person_id,
+                        timezone=normalized,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+            else:
+                row.timezone = normalized
+                row.updated_at = now
         return normalized
 
     async def current(self, user_id: str) -> TimeContext:
@@ -107,24 +99,3 @@ class TimeContextService:
         if value.tzinfo is None:
             raise ValueError("clock must return an aware datetime")
         return value.astimezone(UTC)
-
-
-async def _timezone_for_canonical_uuid(
-    session: AsyncSession, user_id: str, *, default_timezone: str
-) -> str | None:
-    """Person UUID fallback: enabled Person may use default; others fail closed.
-
-    Returns None when user_id is not a Person/Presence/Space primary key so the
-    original binding error can be re-raised.
-    """
-
-    if await session.get(PresenceModel, user_id) is not None:
-        raise CanonicalIdentityError(_CANONICAL_KIND_MISMATCH)
-    if await session.get(CanonicalSpaceModel, user_id) is not None:
-        raise CanonicalIdentityError(_CANONICAL_KIND_MISMATCH)
-    person = await session.get(CanonicalPersonModel, user_id)
-    if person is None:
-        return None
-    if not person.enabled:
-        raise CanonicalIdentityError(_CANONICAL_OWNER_DISABLED)
-    return default_timezone

@@ -1249,7 +1249,11 @@ class ControlQueryAdapter:
             epoch, _revision = await self._runtime(session)
             _phase, key = self._cursor_state(request, QueryResourceKind.CONFIG, epoch=epoch)
             overrides = {
-                (row.config_key, row.scope_type, row.scope_id)
+                (
+                    row.config_key,
+                    row.scope_type,
+                    row.canonical_person_id or row.canonical_space_id or "",
+                )
                 for row in (await session.scalars(select(RuntimeConfigOverrideModel))).all()
             }
         specs = sorted(ConfigRegistry().list(), key=lambda item: item.key)

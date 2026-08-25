@@ -20,13 +20,13 @@ from qq_ai_bot.automation.models import (
     RunStatus,
 )
 from qq_ai_bot.automation.validator import ValidatedAutomation, collect_send_targets
-from qq_ai_bot.identity.canonical_repository import IDENTITY_PLATFORM
-from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel
-from qq_ai_bot.identity.shadows import (
+from qq_ai_bot.identity.canonical_repository import (
+    IDENTITY_PLATFORM,
     active_person_id_for,
     active_space_id_for,
     presence_id_for,
 )
+from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     AutomationModel,

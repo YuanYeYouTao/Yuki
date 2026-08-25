@@ -1596,6 +1596,8 @@ class ControlCommandAdapter:
                 display_name=payload.display_name,
                 status="active",
                 revision=1,
+                first_seen_at=stamp,
+                last_seen_at=stamp,
                 created_at=stamp,
                 updated_at=stamp,
             )
@@ -1659,6 +1661,8 @@ class ControlCommandAdapter:
                 display_name=payload.display_name,
                 status="active",
                 revision=1,
+                first_seen_at=stamp,
+                last_seen_at=stamp,
                 created_at=stamp,
                 updated_at=stamp,
             )

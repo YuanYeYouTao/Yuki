@@ -23,21 +23,6 @@ config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"
 target_metadata = Base.metadata
 
 
-def _current_revision(connection: Connection) -> str | None:
-    """Read the on-disk revision before Alembic opens its DDL transaction."""
-
-    if connection.dialect.name != "sqlite":
-        return None
-    exists = connection.exec_driver_sql(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='alembic_version'"
-    ).scalar_one_or_none()
-    if exists is None:
-        return None
-    return connection.exec_driver_sql(
-        "SELECT version_num FROM alembic_version"
-    ).scalar_one_or_none()
-
-
 def run_migrations_offline() -> None:
     """Run migrations without a live connection."""
 
@@ -52,60 +37,22 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
-_FK_CUTOVER_SOURCE = "0041"
-_FK_CUTOVER_REVISION = "0042"
-
-
-def _destination_revision() -> str | None:
-    destination = context.get_revision_argument()
-    if isinstance(destination, tuple):
-        return destination[0] if destination else None
-    return destination
-
-
-def _lineage_contains(revision: str | None, target: str) -> bool:
-    """True when ``revision`` is ``target`` or a descendant of ``target``."""
-
-    if revision is None:
-        return False
-    if revision == target:
-        return True
-    return any(
-        item.revision == target for item in context.script.iterate_revisions(revision, "base")
-    )
-
-
-def _should_split_fk_cutover(current: str | None, destination: str | None) -> bool:
-    """Stop at 0041 before the FK-on cutover when the destination is 0042 or later."""
-
-    if current in {_FK_CUTOVER_SOURCE, _FK_CUTOVER_REVISION}:
-        return False
-    if _lineage_contains(current, _FK_CUTOVER_REVISION):
-        return False
-    return _lineage_contains(destination, _FK_CUTOVER_REVISION)
-
-
 def _run_sqlite_migrations(
     connection: Connection,
-    *,
-    foreign_keys: str,
-    fn: object | None = None,
 ) -> None:
-    connection.exec_driver_sql(f"PRAGMA foreign_keys={foreign_keys}")
+    """Run the frozen baseline or bridge in one explicit SQLite transaction."""
+
+    connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
     connection.exec_driver_sql("PRAGMA busy_timeout=5000")
     connection.commit()
-    configure_kwargs: dict[str, object] = {
-        "connection": connection,
-        "target_metadata": target_metadata,
-        "render_as_batch": True,
-        "transactional_ddl": True,
-    }
-    if fn is not None:
-        configure_kwargs["fn"] = fn
-    context.configure(**configure_kwargs)  # type: ignore[arg-type]
-    # Python's sqlite3 driver does not reliably BEGIN for DDL. An explicit
-    # write transaction is required so 0042 failpoints restore dropped and
-    # newly created tables, not merely the Alembic version row.
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        render_as_batch=True,
+        transactional_ddl=True,
+    )
+    # sqlite3 does not reliably BEGIN for DDL. The explicit writer transaction
+    # makes both the frozen baseline and the destructive 0049 bridge atomic.
     connection.exec_driver_sql("BEGIN IMMEDIATE")
     try:
         context.run_migrations()
@@ -114,6 +61,8 @@ def _run_sqlite_migrations(
         raise
     else:
         connection.commit()
+    finally:
+        connection.exec_driver_sql("PRAGMA foreign_keys=ON")
 
 
 def do_run_migrations(connection: Connection) -> None:
@@ -130,35 +79,7 @@ def do_run_migrations(connection: Connection) -> None:
             context.run_migrations()
         return
 
-    current = _current_revision(connection)
-    destination = _destination_revision()
-    if _should_split_fk_cutover(current, destination):
-        script = context.script
-        assert destination is not None
-
-        def upgrade_to_cutover_source(rev: str | None, _ctx: object) -> object:
-            return script._upgrade_revs(_FK_CUTOVER_SOURCE, rev or "base")
-
-        def upgrade_remaining(rev: str | None, _ctx: object) -> object:
-            return script._upgrade_revs(destination, rev or "base")
-
-        _run_sqlite_migrations(
-            connection,
-            foreign_keys="OFF",
-            fn=upgrade_to_cutover_source,
-        )
-        _run_sqlite_migrations(connection, foreign_keys="ON", fn=upgrade_remaining)
-        return
-
-    # Historical SQLite batch migrations were authored with FK enforcement
-    # disabled. 0042 is a separate 0041 -> 0042 cutover and deliberately
-    # starts a fresh, FK-enforced transaction. Later descendants keep FK on.
-    foreign_keys = (
-        "ON"
-        if current == _FK_CUTOVER_SOURCE or _lineage_contains(current, _FK_CUTOVER_REVISION)
-        else "OFF"
-    )
-    _run_sqlite_migrations(connection, foreign_keys=foreign_keys)
+    _run_sqlite_migrations(connection)
 
 
 async def run_async_migrations() -> None:

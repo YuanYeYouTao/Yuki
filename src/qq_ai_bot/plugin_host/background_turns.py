@@ -116,11 +116,7 @@ class PluginBackgroundTurnWorker:
             origin=TurnOrigin.PLUGIN_BACKGROUND,
         )
         error_category: str | None = None
-        conversation_key = (
-            ConversationScope.group(job.bot_user_id, job.target_id).key
-            if job.target_type == "group"
-            else ConversationScope.private(job.bot_user_id, job.target_id).key
-        )
+        conversation_key = f"canonical-conversation:{job.canonical_conversation_id}"
         resolved_key = [conversation_key]
         canonical_conversation_id: str | None = None
         canonical_person_id: str | None = None

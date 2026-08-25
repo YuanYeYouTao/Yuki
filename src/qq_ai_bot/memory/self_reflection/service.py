@@ -297,8 +297,8 @@ class SelfReflectionService:
             for ref, fact in fact_map.items()
         )
         candidates = await self._candidates.list_pending_self(
-            group_id=batch.state.group_id,
-            private_user_id=batch.state.private_peer_user_id,
+            group_id=batch.state.external_space_id,
+            private_user_id=batch.state.external_person_id,
             limit=20,
         )
         candidate_map = {f"candidate_{index}": item for index, item in enumerate(candidates, 1)}
@@ -315,9 +315,9 @@ class SelfReflectionService:
         previous_episode = await self._previous_episode(batch)
         return (
             SelfReflectionInput(
-                scope_type=batch.state.scope_type,
-                group_id=batch.state.group_id,
-                private_peer_user_id=batch.state.private_peer_user_id,
+                scope_type=_batch_scope_type(batch),
+                group_id=batch.state.external_space_id,
+                private_peer_user_id=batch.state.external_person_id,
                 context_events=tuple(context_rows),
                 events=events,
                 tool_receipts=tools,
@@ -347,11 +347,11 @@ class SelfReflectionService:
         )
 
     async def _previous_episode(self, batch: SelfReflectionBatch) -> MemoryFact | None:
-        if batch.state.scope_type is ScopeType.GROUP:
+        if batch.state.canonical_space_id is not None:
             query = MemoryFactQuery(
                 scope_type=MemoryScopeType.SELF,
                 visibility_type=SelfMemoryVisibility.GROUP,
-                visibility_group_id=batch.state.group_id,
+                visibility_group_id=batch.state.external_space_id,
                 kind=MemoryKind.EPISODE,
                 status=MemoryStatus.ACTIVE,
             )
@@ -359,7 +359,7 @@ class SelfReflectionService:
             query = MemoryFactQuery(
                 scope_type=MemoryScopeType.SELF,
                 visibility_type=SelfMemoryVisibility.PRIVATE,
-                visibility_user_id=batch.state.private_peer_user_id,
+                visibility_user_id=batch.state.external_person_id,
                 kind=MemoryKind.EPISODE,
                 status=MemoryStatus.ACTIVE,
             )
@@ -379,18 +379,18 @@ class SelfReflectionService:
             ),
             limit=20,
         )
-        if batch.state.scope_type is ScopeType.GROUP:
+        if batch.state.canonical_space_id is not None:
             local_query = MemoryFactQuery(
                 scope_type=MemoryScopeType.SELF,
                 visibility_type=SelfMemoryVisibility.GROUP,
-                visibility_group_id=batch.state.group_id,
+                visibility_group_id=batch.state.external_space_id,
                 status=MemoryStatus.ACTIVE,
             )
         else:
             local_query = MemoryFactQuery(
                 scope_type=MemoryScopeType.SELF,
                 visibility_type=SelfMemoryVisibility.PRIVATE,
-                visibility_user_id=batch.state.private_peer_user_id,
+                visibility_user_id=batch.state.external_person_id,
                 status=MemoryStatus.ACTIVE,
             )
         local_rows = await self._facts.repository.list_facts(local_query, limit=20)
@@ -463,11 +463,7 @@ class SelfReflectionService:
             request,
             MemoryMutationContext(
                 event=event,
-                conversation_key=(
-                    f"group:{batch.state.group_id}:self-reflection"
-                    if batch.state.group_id
-                    else f"private:{batch.state.private_peer_user_id}:self-reflection"
-                ),
+                conversation_key=f"{batch.state.conversation_key_hash}:self-reflection",
                 turn_origin="memory_self_reflection",
                 delegation_mode="self_reflection",
                 trigger_actor_user_id=event.sender_user_id,
@@ -577,11 +573,7 @@ class SelfReflectionService:
             ),
             MemoryMutationContext(
                 event=anchor,
-                conversation_key=(
-                    f"group:{batch.state.group_id}:self-reflection"
-                    if batch.state.group_id
-                    else f"private:{batch.state.private_peer_user_id}:self-reflection"
-                ),
+                conversation_key=f"{batch.state.conversation_key_hash}:self-reflection",
                 turn_origin="memory_self_reflection",
                 delegation_mode=f"self_episode:{batch.events[0].id}:{batch.events[-1].id}",
                 trigger_actor_user_id=anchor.sender_user_id,
@@ -603,21 +595,21 @@ class SelfReflectionService:
     ) -> ResolvedSubject:
         if visibility is SelfReflectionVisibility.GLOBAL:
             return ResolvedSubject(MemoryScopeType.SELF, None, None, SelfMemoryVisibility.GLOBAL)
-        if batch.state.scope_type is ScopeType.GROUP:
+        if batch.state.canonical_space_id is not None:
             return ResolvedSubject(
                 MemoryScopeType.SELF,
                 None,
                 None,
                 SelfMemoryVisibility.GROUP,
                 None,
-                batch.state.group_id,
+                batch.state.external_space_id,
             )
         return ResolvedSubject(
             MemoryScopeType.SELF,
             None,
             None,
             SelfMemoryVisibility.PRIVATE,
-            batch.state.private_peer_user_id,
+            batch.state.external_person_id,
             None,
         )
 
@@ -634,3 +626,9 @@ class SelfReflectionService:
             raise ValueError("only abstract self memory may be global")
         if proposal.kind is not None and proposal.kind.value == "episode":
             raise ValueError("episodes cannot be global")
+
+
+def _batch_scope_type(batch: SelfReflectionBatch) -> ScopeType:
+    if bool(batch.state.canonical_person_id) == bool(batch.state.canonical_space_id):
+        raise ValueError("self-reflection batch requires one canonical owner")
+    return ScopeType.GROUP if batch.state.canonical_space_id is not None else ScopeType.PRIVATE

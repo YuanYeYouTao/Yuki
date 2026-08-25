@@ -41,8 +41,8 @@ from qq_ai_bot.plugin_host.ownership import (
     require_inherited_publication,
     require_live_conversation,
     require_live_person,
-    require_live_presence,
     require_live_space,
+    require_presence_provenance,
     resolve_grant_target_owners,
     resolve_human_person_id,
     stamp_grant_owners,
@@ -138,7 +138,6 @@ class PluginNotificationRepository:
                 session,
                 plugin_id=plugin_id,
                 target_type=target.target_type,
-                target_id=target.target_id,
                 person_id=person_id,
                 space_id=space_id,
             )
@@ -153,13 +152,12 @@ class PluginNotificationRepository:
                     created_at=now,
                     updated_at=now,
                 )
-                session.add(row)
             else:
+                row.target_id = target.target_id
                 row.bot_user_id = bot_user_id
                 row.enabled = True
                 row.created_by_user_id = created_by_user_id
                 row.updated_at = now
-            await session.flush()
             await stamp_grant_owners(
                 session,
                 row,
@@ -168,6 +166,8 @@ class PluginNotificationRepository:
                 target_id=target.target_id,
                 bot_user_id=bot_user_id,
             )
+            session.add(row)
+            await session.flush()
             return _grant_view(row)
 
     async def revoke_target(
@@ -187,7 +187,6 @@ class PluginNotificationRepository:
                 session,
                 plugin_id=plugin_id,
                 target_type=target.target_type,
-                target_id=target.target_id,
                 person_id=person_id,
                 space_id=space_id,
             )
@@ -238,13 +237,14 @@ class PluginNotificationRepository:
                     .where(PluginBackgroundTargetGrantModel.plugin_id == plugin_id)
                     .order_by(
                         PluginBackgroundTargetGrantModel.target_type,
-                        PluginBackgroundTargetGrantModel.target_id,
+                        PluginBackgroundTargetGrantModel.canonical_target_person_id,
+                        PluginBackgroundTargetGrantModel.canonical_target_space_id,
                     )
                 )
             ).all()
             for row in rows:
                 await require_grant_readable(session, row)
-        return tuple(_grant_view(row) for row in rows)
+            return tuple(_grant_view(row) for row in rows)
 
     async def grant_creator(
         self, *, plugin_id: str, target_type: str, target_id: str
@@ -258,7 +258,6 @@ class PluginNotificationRepository:
                     session,
                     plugin_id=plugin_id,
                     target_type=target_type,
-                    target_id=target_id,
                     person_id=person_id,
                     space_id=space_id,
                 )
@@ -414,7 +413,7 @@ class PluginNotificationRepository:
                         source_event_id=existing.id,
                         plugin_id=plugin_id,
                         target_type=grant.target_type,
-                        target_id=grant.target_id,
+                        target_id=target.target_id,
                         bot_user_id=grant.bot_user_id,
                         agent_intent=request.agent_intent,
                         status="pending",
@@ -430,14 +429,14 @@ class PluginNotificationRepository:
                         updated_at=now,
                         completed_at=None,
                     )
-                    session.add(job)
-                    await session.flush()
                     await _stamp_publication_child(
                         session,
                         job,
                         grant=grant,
                         event=existing,
                     )
+                    session.add(job)
+                    await session.flush()
                     job_created = True
             receipt = NotificationPublishReceipt(
                 notification_id=notification_id,
@@ -517,6 +516,10 @@ class PluginNotificationRepository:
             row = await active.get(PluginNotificationOutboxModel, item_id)
             if row is None:
                 return
+            # Historical terminal rows may legitimately lack canonical owners.
+            # They remain auditable, but can never re-enter the live queue by
+            # treating raw target provenance as routing authority.
+            await require_queued_work_readable(active, row)
             if row.attempts >= row.max_attempts:
                 row.status = "failed"
             else:
@@ -597,7 +600,7 @@ class PluginNotificationRepository:
                         job.plugin_id,
                         f"source:{job.source_event_id}",
                         job.target_type,
-                        job.target_id,
+                        job.canonical_target_person_id or job.canonical_target_space_id or "",
                     )
                     reply = PluginNotificationOutboxModel(
                         notification_id=notification_id,
@@ -885,9 +888,10 @@ async def require_queued_work_readable(session: AsyncSession, row: object) -> No
             raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
     elif conversation.space_id != space_id or conversation.person_id:
         raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
-    presence_id = getattr(row, "canonical_presence_id", None)
-    if presence_id:
-        await require_live_presence(session, presence_id)
+    await require_presence_provenance(
+        session,
+        getattr(row, "canonical_presence_id", None),
+    )
 
 
 async def _canonical_enabled_grant(
@@ -977,14 +981,14 @@ async def _ensure_outbox_part(
         updated_at=now,
         sent_at=None,
     )
-    session.add(row)
-    await session.flush()
     await _stamp_publication_child(
         session,
         row,
         grant=grant,
         event=event,
     )
+    session.add(row)
+    await session.flush()
     return True
 
 
@@ -1064,7 +1068,6 @@ async def _load_enabled_grant(
         session,
         plugin_id=plugin_id,
         target_type=target.target_type,
-        target_id=target.target_id,
         person_id=person_id,
         space_id=space_id,
     )

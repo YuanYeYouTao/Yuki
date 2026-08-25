@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
 
-from sqlalchemy import and_, delete, or_, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import (
@@ -18,8 +18,19 @@ from qq_ai_bot.conversation.db_models import ReplyEffectEventModel
 from qq_ai_bot.conversation.hydrate import delete_canonical_rollup_projections
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
-from qq_ai_bot.identity.canonical_projections import (
+from qq_ai_bot.emoji.db_models import EmojiAssetModel, EmojiUsageEventModel
+from qq_ai_bot.identity.canonical_repository import (
+    AccountRole,
     bindings_for_person,
+    external_id,
+    find_identity_binding,
+    find_presence,
+    forget_person_for_external_account,
+    trip,
+)
+from qq_ai_bot.identity.db_models import PresenceModel
+from qq_ai_bot.identity.errors import CanonicalIdentityError
+from qq_ai_bot.identity.person_state import (
     load_canonical_aliases,
     load_canonical_group,
     load_canonical_group_member_name_projections,
@@ -31,20 +42,9 @@ from qq_ai_bot.identity.canonical_projections import (
     load_canonical_profile,
     observe_canonical_person,
     observe_canonical_space,
-    owner_keys_for_person,
     set_canonical_person_enabled,
     set_canonical_space_flags,
 )
-from qq_ai_bot.identity.canonical_repository import (
-    AccountRole,
-    external_id,
-    find_identity_binding,
-    find_presence,
-    forget_person_for_external_account,
-    trip,
-)
-from qq_ai_bot.identity.db_models import PresenceModel
-from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.identity.write_settings import identity_write_settings
 from qq_ai_bot.memory.dream.db_models import MemoryDreamClusterModel
 from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
@@ -472,7 +472,6 @@ class PeopleRepository:
                 item.external_account_id for item in await bindings_for_person(session, person_id)
             )
         )
-        owner_keys = await owner_keys_for_person(session, person_id)
         if not owner_externals:
             raise CanonicalIdentityError("unclassified")
         affected_scopes = await self._affected_scopes_for_owners(session, owner_externals)
@@ -559,10 +558,7 @@ class PeopleRepository:
         await session.execute(
             delete(RuntimeConfigOverrideModel).where(
                 RuntimeConfigOverrideModel.scope_type == "user",
-                or_(
-                    RuntimeConfigOverrideModel.scope_id.in_(owner_externals),
-                    RuntimeConfigOverrideModel.canonical_person_id == person_id,
-                ),
+                RuntimeConfigOverrideModel.canonical_person_id == person_id,
             )
         )
         for owner in owner_externals:
@@ -591,43 +587,49 @@ class PeopleRepository:
                 audit.before_json = audit.before_json.replace(owner, marker)
                 audit.after_json = audit.after_json.replace(owner, marker)
         await session.execute(
-            delete(RelationshipJobModel).where(
+            delete(EmojiUsageEventModel).where(
                 or_(
-                    RelationshipJobModel.user_id.in_(owner_keys),
-                    RelationshipJobModel.canonical_person_id == person_id,
+                    EmojiUsageEventModel.canonical_actor_person_id == person_id,
+                    EmojiUsageEventModel.actor_user_id.in_(owner_externals),
                 )
+            )
+        )
+        await session.execute(
+            update(EmojiAssetModel)
+            .where(
+                or_(
+                    EmojiAssetModel.canonical_first_seen_person_id == person_id,
+                    EmojiAssetModel.first_seen_user_id.in_(owner_externals),
+                )
+            )
+            .values(
+                canonical_first_seen_person_id=None,
+                first_seen_user_id=None,
+            )
+        )
+        await session.execute(
+            delete(RelationshipJobModel).where(
+                RelationshipJobModel.canonical_person_id == person_id,
             )
         )
         await session.execute(
             delete(RelationshipEventModel).where(
-                or_(
-                    RelationshipEventModel.user_id.in_(owner_keys),
-                    RelationshipEventModel.canonical_person_id == person_id,
-                )
+                RelationshipEventModel.canonical_person_id == person_id,
             )
         )
         await session.execute(
             delete(PersonRelationshipModel).where(
-                or_(
-                    PersonRelationshipModel.user_id.in_(owner_keys),
-                    PersonRelationshipModel.canonical_person_id == person_id,
-                )
+                PersonRelationshipModel.canonical_person_id == person_id,
             )
         )
         await session.execute(
             delete(PersonSpeechPreferenceModel).where(
-                or_(
-                    PersonSpeechPreferenceModel.user_id.in_(owner_keys),
-                    PersonSpeechPreferenceModel.canonical_person_id == person_id,
-                )
+                PersonSpeechPreferenceModel.canonical_person_id == person_id,
             )
         )
         await session.execute(
             delete(PersonTimeSettingModel).where(
-                or_(
-                    PersonTimeSettingModel.user_id.in_(owner_keys),
-                    PersonTimeSettingModel.canonical_person_id == person_id,
-                )
+                PersonTimeSettingModel.canonical_person_id == person_id,
             )
         )
         await session.execute(
@@ -640,18 +642,12 @@ class PeopleRepository:
         )
         await session.execute(
             delete(MembershipModel).where(
-                or_(
-                    MembershipModel.user_id.in_(owner_keys),
-                    MembershipModel.canonical_person_id == person_id,
-                )
+                MembershipModel.canonical_person_id == person_id,
             )
         )
         await session.execute(
             delete(PersonAliasModel).where(
-                or_(
-                    PersonAliasModel.user_id.in_(owner_keys),
-                    PersonAliasModel.canonical_person_id == person_id,
-                )
+                PersonAliasModel.canonical_person_id == person_id,
             )
         )
         await forget_person_for_external_account(session, user_id)
@@ -661,23 +657,16 @@ class PeopleRepository:
     def _queued_target_belongs_to_forgotten_person(
         row: PluginNotificationOutboxModel | PluginBackgroundTurnJobModel,
         person_id: str,
-        owner_externals: tuple[str, ...],
         space_keys: set[tuple[str, str]],
     ) -> bool:
-        """Destructive forget match for private queues, including terminal-null rows.
-
-        Raw `target_id` fallback is forget-proof only. Runtime auth still requires
-        canonical Person ownership.
-        """
+        """Match queues by their canonical target ownership."""
 
         if row.canonical_target_person_id == person_id:
             return True
         space_id = row.canonical_target_space_id
         if space_id is not None and (str(row.plugin_id), str(space_id)) in space_keys:
             return True
-        return (
-            str(row.target_type or "") == "private" and str(row.target_id or "") in owner_externals
-        )
+        return False
 
     @staticmethod
     async def _forget_person_plugin(
@@ -711,12 +700,12 @@ class PeopleRepository:
         job_rows = (await session.scalars(select(PluginBackgroundTurnJobModel))).all()
         for row in outbox_rows:
             if PeopleRepository._queued_target_belongs_to_forgotten_person(
-                row, person_id, owner_externals, space_keys
+                row, person_id, space_keys
             ):
                 await session.delete(row)
         for job in job_rows:
             if PeopleRepository._queued_target_belongs_to_forgotten_person(
-                job, person_id, owner_externals, space_keys
+                job, person_id, space_keys
             ):
                 await session.delete(job)
         await session.execute(
@@ -725,59 +714,29 @@ class PeopleRepository:
                     PluginBackgroundTargetGrantModel.canonical_created_by_person_id == person_id,
                     PluginBackgroundTargetGrantModel.canonical_target_person_id == person_id,
                     PluginBackgroundTargetGrantModel.created_by_user_id.in_(owner_externals),
-                    and_(
-                        PluginBackgroundTargetGrantModel.target_type == "private",
-                        PluginBackgroundTargetGrantModel.target_id.in_(owner_externals),
-                    ),
                 )
             )
         )
         await session.execute(
             delete(PluginStateModel).where(
-                or_(
-                    PluginStateModel.canonical_person_id == person_id,
-                    PluginStateModel.subject_user_id.in_(owner_externals),
-                )
+                PluginStateModel.canonical_person_id == person_id,
             )
         )
         await session.execute(
             delete(PluginConfigValueModel).where(
-                or_(
-                    PluginConfigValueModel.canonical_person_id == person_id,
-                    and_(
-                        PluginConfigValueModel.scope_type == "user",
-                        PluginConfigValueModel.scope_id.in_(owner_externals),
-                    ),
-                )
+                PluginConfigValueModel.scope_type == "user",
+                PluginConfigValueModel.canonical_person_id == person_id,
             )
         )
         await session.execute(
             delete(PluginAgentSessionModel).where(
                 PluginAgentSessionModel.scope_type == "user",
-                or_(
-                    PluginAgentSessionModel.canonical_owner_person_id == person_id,
-                    PluginAgentSessionModel.owner_user_id.in_(owner_externals),
-                    PluginAgentSessionModel.scope_id.in_(owner_externals),
-                ),
+                PluginAgentSessionModel.canonical_owner_person_id == person_id,
             )
-        )
-        await session.execute(
-            update(PluginAgentSessionModel)
-            .where(
-                PluginAgentSessionModel.scope_type == "group",
-                or_(
-                    PluginAgentSessionModel.canonical_owner_person_id == person_id,
-                    PluginAgentSessionModel.owner_user_id.in_(owner_externals),
-                ),
-            )
-            .values(canonical_owner_person_id=None, owner_user_id=None)
         )
         await session.execute(
             delete(PluginAgentMessageModel).where(
-                or_(
-                    PluginAgentMessageModel.canonical_sender_person_id == person_id,
-                    PluginAgentMessageModel.sender_user_id.in_(owner_externals),
-                )
+                PluginAgentMessageModel.canonical_sender_person_id == person_id,
             )
         )
 

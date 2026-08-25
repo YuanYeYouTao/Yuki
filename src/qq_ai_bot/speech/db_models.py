@@ -141,16 +141,14 @@ class PersonSpeechPreferenceModel(Base):
             name="ck_person_speech_preferences_mode",
         ),
         Index("ix_person_speech_preferences_updated", "updated_at"),
-        Index("ix_person_speech_preferences_canonical_person_id", "canonical_person_id"),
     )
 
-    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    canonical_person_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        primary_key=True,
+    )
     mode: Mapped[str] = mapped_column(String(32), nullable=False)
     source_message_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    canonical_person_id: Mapped[str | None] = mapped_column(
-        String(36),
-        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
-        nullable=True,
-    )

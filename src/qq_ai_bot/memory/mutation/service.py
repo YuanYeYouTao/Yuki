@@ -81,6 +81,7 @@ from qq_ai_bot.memory.mutation.repository import MemoryMutationReceiptRepository
 from qq_ai_bot.memory.partition import (
     MemoryFactCanonicalOwners,
     MemoryPartitionResolutionError,
+    format_canonical_memory_partition,
 )
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import ResolvedSubject, SubjectResolver
@@ -922,11 +923,11 @@ class MemoryMutationService:
     def _dream_partition(fact: MemoryFact) -> tuple[object, ...]:
         return (
             fact.scope_type,
-            fact.subject_user_id,
-            fact.group_id,
+            fact.canonical_subject_person_id,
+            fact.canonical_subject_space_id,
             fact.visibility_type,
-            fact.visibility_user_id,
-            fact.visibility_group_id,
+            fact.canonical_visibility_person_id,
+            fact.canonical_visibility_space_id,
             fact.kind,
         )
 
@@ -1300,9 +1301,15 @@ class MemoryMutationService:
             MemoryMutationContext(
                 event=event,
                 conversation_key=(
-                    f"group:{fact.group_id}:reflection"
-                    if fact.group_id is not None
-                    else f"private:{fact.subject_user_id}:reflection"
+                    format_canonical_memory_partition(
+                        person_id=(
+                            fact.canonical_subject_person_id
+                            if fact.canonical_subject_space_id is None
+                            else None
+                        ),
+                        space_id=fact.canonical_subject_space_id,
+                    )
+                    + ":reflection"
                 ),
                 turn_origin="memory_reflection",
                 delegation_mode=f"reflection:{reason_code}"[:32],
@@ -2142,9 +2149,9 @@ class MemoryMutationService:
             if (
                 context.event.group_id is None
                 or fact.scope_type is not MemoryScopeType.PERSON_GROUP
-                or fact.group_id != context.event.group_id
+                or fact.canonical_subject_space_id != target_owners.subject_space_id
                 or target.scope_type is not MemoryScopeType.PERSON_GROUP
-                or target.group_id != context.event.group_id
+                or target_owners.subject_space_id is None
             ):
                 raise MemoryMutationRejected("reassign_must_remain_in_current_group")
             if (

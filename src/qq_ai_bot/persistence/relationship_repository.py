@@ -15,14 +15,11 @@ from qq_ai_bot.domain.relationships import (
     RelationshipEvaluation,
     RelationshipSnapshot,
 )
-from qq_ai_bot.identity.canonical_projections import (
+from qq_ai_bot.identity.canonical_repository import (
     bindings_for_person,
-    canonical_relationship_owner_keys,
-    load_canonical_relationship_events,
-    owner_keys_for_person,
+    external_accounts_for_person,
     representative_external_account_id,
     require_person_binding,
-    resolve_canonical_relationship,
     resolve_person_author_id_for_event,
 )
 from qq_ai_bot.identity.errors import CanonicalIdentityError
@@ -68,7 +65,11 @@ class RelationshipRepository:
         self, row: PersonRelationshipModel, user_id: str
     ) -> RelationshipSnapshot:
         return replace(
-            _relationship_snapshot(row, trust_cap_offset=self._trust_cap_offset),
+            _relationship_snapshot(
+                row,
+                user_id=user_id,
+                trust_cap_offset=self._trust_cap_offset,
+            ),
             user_id=user_id,
         )
 
@@ -81,18 +82,21 @@ class RelationshipRepository:
         initial_affection: int | None = None,
         initial_trust: int | None = None,
     ) -> PersonRelationshipModel:
-        row = await resolve_canonical_relationship(
-            session,
-            user_id,
-            create=True,
-            initial_affection=(
-                self._initial_affection if initial_affection is None else initial_affection
-            ),
-            initial_trust=(self._initial_trust if initial_trust is None else initial_trust),
-            now=now,
-        )
+        binding = await require_person_binding(session, user_id)
+        row = await session.get(PersonRelationshipModel, binding.person_id)
         if row is None:
-            raise CanonicalIdentityError("unclassified")
+            row = PersonRelationshipModel(
+                canonical_person_id=binding.person_id,
+                affection_score=(
+                    self._initial_affection if initial_affection is None else initial_affection
+                ),
+                trust_score=self._initial_trust if initial_trust is None else initial_trust,
+                created_at=now,
+                updated_at=now,
+                last_automatic_change_at=None,
+            )
+            session.add(row)
+            await session.flush()
         return row
 
     async def get_or_create(
@@ -124,13 +128,8 @@ class RelationshipRepository:
 
     async def get(self, user_id: str) -> RelationshipSnapshot | None:
         async with self._database.sessions() as session:
-            row = await resolve_canonical_relationship(
-                session,
-                user_id,
-                create=False,
-                initial_affection=self._initial_affection,
-                initial_trust=self._initial_trust,
-            )
+            binding = await require_person_binding(session, user_id)
+            row = await session.get(PersonRelationshipModel, binding.person_id)
             if row is None:
                 return None
             return self._projected_snapshot(row, user_id)
@@ -147,13 +146,8 @@ class RelationshipRepository:
         async with self._database.sessions() as session:
             loaded: dict[str, RelationshipSnapshot] = {}
             for item in unique_ids:
-                row = await resolve_canonical_relationship(
-                    session,
-                    item,
-                    create=False,
-                    initial_affection=self._initial_affection,
-                    initial_trust=self._initial_trust,
-                )
+                binding = await require_person_binding(session, item)
+                row = await session.get(PersonRelationshipModel, binding.person_id)
                 if row is not None:
                     loaded[item] = self._projected_snapshot(row, item)
             return loaded
@@ -165,8 +159,19 @@ class RelationshipRepository:
         limit: int = 10,
     ) -> tuple[RelationshipEventRecord, ...]:
         async with self._database.sessions() as session:
-            rows = await load_canonical_relationship_events(session, user_id, limit=limit)
-            return tuple(replace(_relationship_event_record(row), user_id=user_id) for row in rows)
+            binding = await require_person_binding(session, user_id)
+            rows = (
+                await session.scalars(
+                    select(RelationshipEventModel)
+                    .where(RelationshipEventModel.canonical_person_id == binding.person_id)
+                    .order_by(
+                        RelationshipEventModel.created_at.desc(),
+                        RelationshipEventModel.id.desc(),
+                    )
+                    .limit(max(1, min(limit, 100)))
+                )
+            ).all()
+            return tuple(_relationship_event_record(row, user_id=user_id) for row in rows)
 
     async def apply_automatic(
         self,
@@ -201,25 +206,16 @@ class RelationshipRepository:
                     raise ValueError("relationship source event does not belong to the user")
                 source_person = await resolve_person_author_id_for_event(session, source)
                 job_person = row.canonical_person_id
-                if job_person is None:
-                    raise CanonicalIdentityError("unclassified")
                 if source_person is None or source_person != job_person:
                     raise ValueError("relationship source event does not belong to the user")
 
                 effective_evaluation = evaluation
                 if daily_positive_cap or daily_negative_cap:
                     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-                    person_id, owner_keys = await canonical_relationship_owner_keys(
-                        session, user_id
-                    )
-                    daily_filter = or_(
-                        RelationshipEventModel.canonical_person_id == person_id,
-                        RelationshipEventModel.user_id.in_(owner_keys),
-                    )
                     daily_events = (
                         await session.scalars(
                             select(RelationshipEventModel).where(
-                                daily_filter,
+                                RelationshipEventModel.canonical_person_id == job_person,
                                 RelationshipEventModel.change_type == "automatic",
                                 RelationshipEventModel.created_at >= day_start,
                             )
@@ -263,7 +259,6 @@ class RelationshipRepository:
                 if affection_delta or trust_delta:
                     row.last_automatic_change_at = now
                 event = RelationshipEventModel(
-                    user_id=row.user_id,
                     source_event_id=source_event_id,
                     actor_user_id=None,
                     change_type="automatic",
@@ -403,8 +398,6 @@ class RelationshipRepository:
                 )
         now = datetime.now(UTC)
         row = await self._ensure_row(session, user_id, now=now)
-        if row.canonical_person_id is None:
-            raise CanonicalIdentityError("unclassified")
         affection_before = row.affection_score
         trust_before = row.trust_score
         row.affection_score = (
@@ -417,7 +410,6 @@ class RelationshipRepository:
         actual_trust_delta = row.trust_score - trust_before
         row.updated_at = now
         event = RelationshipEventModel(
-            user_id=row.user_id,
             source_event_id=None,
             actor_user_id=actor_user_id,
             change_type="manual",
@@ -466,7 +458,6 @@ class RelationshipJobRepository:
                 raise CanonicalIdentityError("canonical_owner_mismatch")
             values: dict[str, object] = {
                 "trigger_event_id": trigger_event_id,
-                "user_id": person_id,
                 "conversation_key": conversation_key,
                 "status": "pending",
                 "attempts": 0,
@@ -526,10 +517,7 @@ class RelationshipJobRepository:
                     ChatEventModel.id <= trigger.id,
                 )
                 person_id = row.canonical_person_id
-                if person_id is None:
-                    await session.delete(row)
-                    continue
-                owner_keys = await owner_keys_for_person(session, person_id)
+                owner_keys = await external_accounts_for_person(session, person_id)
                 bindings = await bindings_for_person(session, person_id)
                 try:
                     projected_user_id = representative_external_account_id(bindings)
