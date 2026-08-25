@@ -25,8 +25,8 @@ from qq_ai_bot.persistence.models import (
     AutomationRunModel,
     AutomationStepRunModel,
     AutomationVersionModel,
-    PersonModel,
 )
+from qq_ai_bot.persistence.repository_helpers import _ensure_person
 
 
 class AutomationRepository:
@@ -49,17 +49,12 @@ class AutomationRepository:
         authority_json = authority.model_dump_json()
         timestamp = _aware_utc(now)
         async with self._database.sessions() as session, session.begin():
-            person = await session.get(PersonModel, authority.creator_user_id)
-            if person is None:
-                person = PersonModel(
-                    user_id=authority.creator_user_id,
-                    nickname="",
-                    enabled=True,
-                    is_bot=False,
-                    first_seen_at=timestamp,
-                    last_seen_at=timestamp,
-                )
-                session.add(person)
+            await _ensure_person(
+                session,
+                authority.creator_user_id,
+                now=timestamp,
+                canonical_role="human",
+            )
             row = AutomationModel(
                 creator_user_id=authority.creator_user_id,
                 bot_user_id=authority.bot_user_id,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
+from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.domain.conversations import ScopeType
@@ -14,6 +15,13 @@ from qq_ai_bot.domain.relationships import (
     relationship_weight,
     stage_for_score,
 )
+from qq_ai_bot.identity.dual_write import (
+    AccountRole,
+    require_v1_runtime,
+    sync_account,
+    sync_space,
+)
+from qq_ai_bot.identity.errors import IdentityDualWriteError
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
     GroupModel,
@@ -34,25 +42,39 @@ async def _ensure_person(
     nickname: str = "",
     is_bot: bool = False,
     now: datetime | None = None,
+    canonical_role: AccountRole | None = None,
 ) -> PersonModel:
     timestamp = now or datetime.now(UTC)
+    await require_v1_runtime(session)
     person = await session.get(PersonModel, user_id)
     if person is None:
-        person = PersonModel(
-            user_id=user_id,
-            nickname=nickname,
-            enabled=True,
-            is_bot=is_bot,
-            first_seen_at=timestamp,
-            last_seen_at=timestamp,
+        await session.execute(
+            insert(PersonModel)
+            .values(
+                user_id=user_id,
+                nickname=nickname,
+                enabled=True,
+                is_bot=is_bot,
+                first_seen_at=timestamp,
+                last_seen_at=timestamp,
+            )
+            .on_conflict_do_nothing(index_elements=["user_id"])
         )
-        session.add(person)
-        await session.flush()
-    else:
-        if nickname:
-            person.nickname = nickname
-        person.is_bot = person.is_bot or is_bot
-        person.last_seen_at = timestamp
+        person = await session.get(PersonModel, user_id)
+        if person is None:
+            raise IdentityDualWriteError("unclassified")
+    if nickname:
+        person.nickname = nickname
+    person.is_bot = person.is_bot or is_bot
+    person.last_seen_at = timestamp
+    await sync_account(
+        session,
+        user_id,
+        role=canonical_role,
+        is_bot=person.is_bot,
+        display_name=person.nickname,
+        now=timestamp,
+    )
     return person
 
 
@@ -67,16 +89,21 @@ async def _ensure_relationship(
     timestamp = now or datetime.now(UTC)
     row = await session.get(PersonRelationshipModel, user_id)
     if row is None:
-        row = PersonRelationshipModel(
-            user_id=user_id,
-            affection_score=initial_affection,
-            trust_score=initial_trust,
-            created_at=timestamp,
-            updated_at=timestamp,
-            last_automatic_change_at=None,
+        await session.execute(
+            insert(PersonRelationshipModel)
+            .values(
+                user_id=user_id,
+                affection_score=initial_affection,
+                trust_score=initial_trust,
+                created_at=timestamp,
+                updated_at=timestamp,
+                last_automatic_change_at=None,
+            )
+            .on_conflict_do_nothing(index_elements=["user_id"])
         )
-        session.add(row)
-        await session.flush()
+        row = await session.get(PersonRelationshipModel, user_id)
+        if row is None:
+            raise IdentityDualWriteError("unclassified")
     return row
 
 
@@ -89,27 +116,41 @@ async def _ensure_group(
     now: datetime | None = None,
 ) -> GroupModel:
     timestamp = now or datetime.now(UTC)
+    await require_v1_runtime(session)
     group = await session.get(GroupModel, group_id)
     if group is None:
-        group = GroupModel(
-            group_id=group_id,
-            name=name,
-            enabled=bool(enabled),
-            require_mention=True,
-            autonomous_enabled=True,
-            first_seen_at=timestamp,
-            last_seen_at=timestamp,
-            updated_at=timestamp,
+        await session.execute(
+            insert(GroupModel)
+            .values(
+                group_id=group_id,
+                name=name,
+                enabled=bool(enabled),
+                require_mention=True,
+                autonomous_enabled=True,
+                first_seen_at=timestamp,
+                last_seen_at=timestamp,
+                updated_at=timestamp,
+            )
+            .on_conflict_do_nothing(index_elements=["group_id"])
         )
-        session.add(group)
-        await session.flush()
-    else:
-        if name:
-            group.name = name
-        if enabled is not None:
-            group.enabled = enabled
-        group.last_seen_at = timestamp
-        group.updated_at = timestamp
+        group = await session.get(GroupModel, group_id)
+        if group is None:
+            raise IdentityDualWriteError("unclassified")
+    if name:
+        group.name = name
+    if enabled is not None:
+        group.enabled = enabled
+    group.last_seen_at = timestamp
+    group.updated_at = timestamp
+    await sync_space(
+        session,
+        group_id,
+        name=group.name,
+        enabled=group.enabled,
+        autonomous_enabled=group.autonomous_enabled,
+        require_mention=group.require_mention,
+        now=timestamp,
+    )
     return group
 
 

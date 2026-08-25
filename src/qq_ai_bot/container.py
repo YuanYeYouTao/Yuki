@@ -685,7 +685,10 @@ class ApplicationContainer:
     async def create(cls, settings: Settings) -> ApplicationContainer:
         """Load restart overrides before constructing long-lived clients and limits."""
 
+        from qq_ai_bot.identity.write_settings import configure_identity_write_settings
+
         database = Database(settings.database_url)
+        configure_identity_write_settings(settings)
         runtime_config = RuntimeConfigService(
             settings=settings,
             database=database,

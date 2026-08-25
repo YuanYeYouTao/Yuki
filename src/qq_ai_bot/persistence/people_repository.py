@@ -18,6 +18,14 @@ from qq_ai_bot.conversation.rollup.db_models import (
 )
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
+from qq_ai_bot.identity.dual_write import (
+    AccountRole,
+    fill_alias_shadows,
+    fill_membership_shadows,
+    forget_canonical_for_external_account,
+)
+from qq_ai_bot.identity.errors import IdentityDualWriteError
+from qq_ai_bot.identity.write_settings import identity_write_settings
 from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
@@ -141,6 +149,10 @@ class PeopleRepository:
         """Update current values and retain historical aliases."""
 
         now = datetime.now(UTC)
+        settings = identity_write_settings()
+        canonical_role: AccountRole = (
+            "external_bot" if is_bot or user_id in settings.ignored_bot_users else "human"
+        )
         async with self._database.sessions() as session, session.begin():
             person = await _ensure_person(
                 session,
@@ -148,6 +160,7 @@ class PeopleRepository:
                 nickname=nickname if nickname_known else "",
                 is_bot=is_bot,
                 now=now,
+                canonical_role=canonical_role,
             )
             if not is_bot:
                 await _ensure_relationship(
@@ -163,6 +176,7 @@ class PeopleRepository:
                 person.nickname = nickname
             if nickname:
                 await self._upsert_alias(session, user_id, "", nickname, "nickname", now)
+                await fill_alias_shadows(session, user_id, "", nickname)
             if group_id is None:
                 return
             existing_group = await session.get(GroupModel, group_id)
@@ -177,20 +191,29 @@ class PeopleRepository:
                 MembershipModel, {"user_id": user_id, "group_id": group_id}
             )
             if membership is None:
-                membership = MembershipModel(
-                    user_id=user_id,
-                    group_id=group_id,
-                    group_card=group_card if group_card_known else "",
-                    first_seen_at=now,
-                    last_seen_at=now,
+                await session.execute(
+                    insert(MembershipModel)
+                    .values(
+                        user_id=user_id,
+                        group_id=group_id,
+                        group_card=group_card if group_card_known else "",
+                        first_seen_at=now,
+                        last_seen_at=now,
+                    )
+                    .on_conflict_do_nothing(index_elements=["user_id", "group_id"])
                 )
-                session.add(membership)
-            else:
-                if group_card_known:
-                    membership.group_card = group_card
-                membership.last_seen_at = now
+                membership = await session.get(
+                    MembershipModel, {"user_id": user_id, "group_id": group_id}
+                )
+                if membership is None:
+                    raise IdentityDualWriteError("unclassified")
+            if group_card_known:
+                membership.group_card = group_card
+            membership.last_seen_at = now
             if group_card:
                 await self._upsert_alias(session, user_id, group_id, group_card, "group_card", now)
+                await fill_alias_shadows(session, user_id, group_id, group_card)
+            await fill_membership_shadows(session, user_id, group_id)
 
     @staticmethod
     async def _upsert_alias(
@@ -508,6 +531,7 @@ class PeopleRepository:
             person = await session.get(PersonModel, user_id)
             if person is None:
                 return False
+            await forget_canonical_for_external_account(session, user_id)
             affected_scopes = await self.affected_conversation_scopes_in_session(
                 session,
                 user_id,
@@ -729,6 +753,7 @@ class UserProfileRepository(PeopleRepository):
         group_card_known: bool = True,
         initial_affection: int | None = None,
         initial_trust: int | None = None,
+        is_bot: bool = False,
     ) -> None:
         await self.observe(
             user_id=user_id,
@@ -739,6 +764,7 @@ class UserProfileRepository(PeopleRepository):
             group_card_known=group_card_known,
             initial_affection=initial_affection,
             initial_trust=initial_trust,
+            is_bot=is_bot,
         )
 
     async def delete_user(self, user_id: str) -> bool:

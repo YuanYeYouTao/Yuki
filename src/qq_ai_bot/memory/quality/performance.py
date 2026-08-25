@@ -52,6 +52,12 @@ class MemoryQualityPerformanceRunner:
         *,
         quality_report_path: Path | None = None,
     ) -> QualityPerformanceReport:
+        from qq_ai_bot.identity.write_settings import (
+            IdentityWriteSettings,
+            configure_identity_write_settings,
+        )
+
+        configure_identity_write_settings(IdentityWriteSettings())
         with tempfile.TemporaryDirectory(prefix="yuki-memory-performance-") as temporary:
             path = Path(temporary) / "performance.db"
             await asyncio.to_thread(migrate_sqlite_database, self._root, path)

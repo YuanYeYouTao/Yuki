@@ -13,3 +13,11 @@ class IdentityBackfillError(Exception):
 
 class IdentityBackfillPreconditionError(IdentityBackfillError):
     """Missing database, incomplete C7 schema, or invalid runtime state."""
+
+
+class IdentityDualWriteError(Exception):
+    """v1 dual-write failed closed. Messages never include paths or raw dumps."""
+
+    def __init__(self, category: str) -> None:
+        self.category = category
+        super().__init__("identity dual-write failed")

@@ -14,9 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
 from qq_ai_bot.domain.conversations import ConversationScope
+from qq_ai_bot.identity.dual_write import sync_presence
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel, GroupModel, PersonModel
-from qq_ai_bot.persistence.repository_helpers import _ensure_person
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from qq_ai_bot.plugin_host.db_models import (
     PluginBackgroundTargetGrantModel,
@@ -96,7 +96,7 @@ class PluginNotificationRepository:
                     raise PluginPermissionError("notification group is unknown or disabled")
             elif await session.get(PersonModel, target.target_id) is None:
                 raise PluginPermissionError("notification private target is unknown")
-            await _ensure_person(session, bot_user_id, is_bot=True, now=now)
+            await sync_presence(session, bot_user_id, now=now)
             row = await session.scalar(
                 select(PluginBackgroundTargetGrantModel).where(
                     PluginBackgroundTargetGrantModel.plugin_id == plugin_id,

@@ -30,6 +30,8 @@ from qq_ai_bot.conversation.rollup.repository import (
 )
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage
+from qq_ai_bot.identity.dual_write import AccountRole, apply_event_identity_shadows
+from qq_ai_bot.identity.write_settings import identity_write_settings
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.repository_helpers import _ensure_group, _ensure_person, _event_record
@@ -217,6 +219,7 @@ class ScopedEventLedgerUnitOfWork:
                 occurred_at=timestamp,
                 observed_at=observed_at,
             )
+            await apply_event_identity_shadows(session, row, sender_is_bot=sender_is_bot)
             session.add(row)
             await session.flush()
             event = _event_record(row)
@@ -283,6 +286,9 @@ class ScopedEventLedgerUnitOfWork:
                     origin="user_message",
                     occurred_at=inbound.received_at,
                     observed_at=now,
+                )
+                await apply_event_identity_shadows(
+                    session, row, sender_is_bot=inbound.sender.is_bot
                 )
                 session.add(row)
                 await session.flush()
@@ -436,16 +442,47 @@ class ScopedEventLedgerUnitOfWork:
         timestamp: datetime,
         observed_at: datetime,
     ) -> None:
+        settings = identity_write_settings()
+        sender_role: AccountRole = (
+            "yuki_self"
+            if sender_user_id == scope.bot_user_id
+            else (
+                "external_bot"
+                if sender_is_bot or sender_user_id in settings.ignored_bot_users
+                else "human"
+            )
+        )
         await _ensure_person(
             session,
             sender_user_id,
             nickname=sender_nickname,
             is_bot=sender_is_bot,
             now=timestamp,
+            canonical_role=sender_role,
         )
-        await _ensure_person(session, scope.bot_user_id, is_bot=True, now=observed_at)
+        await _ensure_person(
+            session,
+            scope.bot_user_id,
+            is_bot=True,
+            now=observed_at,
+            canonical_role="yuki_self",
+        )
         if scope.private_peer_user_id:
-            await _ensure_person(session, scope.private_peer_user_id, now=timestamp)
+            peer_role: AccountRole = (
+                "yuki_self"
+                if scope.private_peer_user_id == scope.bot_user_id
+                else (
+                    "external_bot"
+                    if scope.private_peer_user_id in settings.ignored_bot_users
+                    else "private_peer"
+                )
+            )
+            await _ensure_person(
+                session,
+                scope.private_peer_user_id,
+                now=timestamp,
+                canonical_role=peer_role,
+            )
         if scope.group_id:
             await _ensure_group(session, scope.group_id, now=timestamp)
 

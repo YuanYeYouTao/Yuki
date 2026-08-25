@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from itertools import count
 from pathlib import Path
 
+import pytest
 import pytest_asyncio
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
@@ -132,6 +134,9 @@ def build_harness(
     command_service: CommandService | None = None,
     direct_plugin_commands: DirectPluginCommandResolver | None = None,
 ) -> Harness:
+    from qq_ai_bot.identity.write_settings import configure_identity_write_settings
+
+    configure_identity_write_settings(settings)
     groups = GroupSettingsRepository(database)
     private_users = PrivateUserSettingsRepository(
         database,
@@ -307,12 +312,37 @@ def build_harness(
     )
 
 
+@pytest.fixture(autouse=True)
+def _identity_write_settings_isolation() -> Iterator[None]:
+    from qq_ai_bot.identity.write_settings import (
+        IdentityWriteSettings,
+        configure_identity_write_settings,
+        reset_identity_write_settings,
+    )
+
+    reset_identity_write_settings()
+    configure_identity_write_settings(IdentityWriteSettings())
+    try:
+        yield
+    finally:
+        reset_identity_write_settings()
+
+
 @pytest_asyncio.fixture
 async def database(tmp_path: Path) -> Database:
+    from qq_ai_bot.identity.write_settings import (
+        IdentityWriteSettings,
+        configure_identity_write_settings,
+        reset_identity_write_settings,
+    )
+
     path = (tmp_path / "test.db").as_posix()
     db = Database(f"sqlite+aiosqlite:///{path}")
     await db.create_schema()
+    reset_identity_write_settings()
+    configure_identity_write_settings(IdentityWriteSettings())
     try:
         yield db
     finally:
+        reset_identity_write_settings()
         await db.close()

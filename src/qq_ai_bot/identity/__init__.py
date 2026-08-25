@@ -1,6 +1,6 @@
-"""Canonical identity persistence and C7 audited backfill preflight.
+"""Canonical identity persistence, C7 backfill, and C8 v1 dual-write.
 
-Schema modules remain persistence metadata. Backfill lives in classifier,
-repository, and service modules. Control-plane and dual-write are later
-commits.
+Schema modules remain persistence metadata. Backfill is an offline sqlite3
+tool. Runtime dual-write lives in dual_write and joins the caller's
+AsyncSession. Control-plane is a later commit.
 """

@@ -138,6 +138,7 @@ class UserProfileService:
                 group_card_known=resolved.group_card_known,
                 initial_affection=initial_affection,
                 initial_trust=initial_trust,
+                is_bot=message.sender.is_bot,
             )
         except (OSError, RuntimeError, SQLAlchemyError) as exc:
             logger.warning(

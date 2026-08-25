@@ -13,6 +13,7 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.identity.dual_write import fill_membership_shadows
 from qq_ai_bot.memory.eligibility import MemoryEventEligibilityPolicy
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
@@ -575,15 +576,18 @@ class MemoryFactRepository:
                 {"user_id": fact.subject_user_id, "group_id": fact.group_id},
             )
             if membership is None:
-                session.add(
-                    MembershipModel(
+                await session.execute(
+                    insert(MembershipModel)
+                    .values(
                         user_id=fact.subject_user_id,
                         group_id=fact.group_id,
                         group_card="",
                         first_seen_at=now,
                         last_seen_at=now,
                     )
+                    .on_conflict_do_nothing(index_elements=["user_id", "group_id"])
                 )
+            await fill_membership_shadows(session, fact.subject_user_id, fact.group_id)
         row = MemoryFactModel(
             scope_type=fact.scope_type.value,
             subject_user_id=fact.subject_user_id,
