@@ -18,6 +18,13 @@ from qq_ai_bot.control_plane.capabilities import (
     project_catalog_capabilities,
     project_source_capability_id,
 )
+from qq_ai_bot.control_plane.command_port import ControlCommandPort
+from qq_ai_bot.control_plane.command_service import ControlCommandService
+from qq_ai_bot.control_plane.command_types import (
+    CommandOperation,
+    ControlCommandError,
+    bind_command_hash,
+)
 from qq_ai_bot.control_plane.commands import ControlCommand, ControlResult
 from qq_ai_bot.control_plane.decision import PolicyDecision, PolicyEffect, decide
 from qq_ai_bot.control_plane.json_types import JsonObject, JsonScalar, JsonValue
@@ -65,7 +72,7 @@ from qq_ai_bot.control_plane.query_types import (
     mask_external_id,
     sanitize_projected_display,
 )
-from qq_ai_bot.domain.control import DecisionContext, DecisionPrincipal
+from qq_ai_bot.domain.control import DecisionContext, DecisionPrincipal, YukiControlTarget
 
 __all__ = [
     "CONTROL_CAPABILITY_DESCRIPTORS",
@@ -81,8 +88,12 @@ __all__ = [
     "CapabilitySensitivity",
     "CatalogCapabilityView",
     "CatalogSourceKind",
+    "CommandOperation",
     "ControlCapabilityDescriptor",
     "ControlCommand",
+    "ControlCommandError",
+    "ControlCommandPort",
+    "ControlCommandService",
     "ControlPrincipal",
     "ControlQueryError",
     "ControlQueryPort",
@@ -125,7 +136,9 @@ __all__ = [
     "SpaceView",
     "StateEpoch",
     "SystemSnapshot",
+    "YukiControlTarget",
     "YukiSummaryView",
+    "bind_command_hash",
     "classify_route_reference",
     "control_capability_descriptor",
     "decide",

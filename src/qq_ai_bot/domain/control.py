@@ -10,9 +10,17 @@ capabilities, or command/result types.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from enum import StrEnum
+from typing import Protocol, final
 
 from qq_ai_bot.domain.identity import PrincipalId, RequestId
+
+
+@final
+class YukiControlTarget(StrEnum):
+    """Synthetic singleton for Yuki Presence registration. Not a table row."""
+
+    PERMANENT_YUKI = "permanent_yuki"
 
 
 class DecisionPrincipal(Protocol):
