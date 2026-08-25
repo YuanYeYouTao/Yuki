@@ -39,6 +39,7 @@ from qq_ai_bot.automation.worker import AutomationWorker
 from qq_ai_bot.capabilities.catalog import estimate_chat_tool_tokens
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
+from qq_ai_bot.identity.routing import PresenceRouter, RouteSendError
 from qq_ai_bot.persistence.models import AutomationStepRunModel, AutomationVersionModel
 from qq_ai_bot.services.agent_runner import AgentRuntime
 from qq_ai_bot.services.agent_tools import ToolRuntime
@@ -56,6 +57,25 @@ class FakeClock:
 
     def advance(self, seconds: int) -> None:
         self.value += timedelta(seconds=seconds)
+
+
+class _RouteStub:
+    def __init__(self, error_category: str | None = None) -> None:
+        self._error_category = error_category
+
+    async def resolve_send_for_person(self, _person_id: str) -> object:
+        if self._error_category is not None:
+            raise RouteSendError(self._error_category)
+        return object()
+
+    async def resolve_send_for_space(self, _space_id: str) -> object:
+        if self._error_category is not None:
+            raise RouteSendError(self._error_category)
+        return object()
+
+
+def _router(error_category: str | None = None) -> PresenceRouter:
+    return cast(PresenceRouter, _RouteStub(error_category))
 
 
 def _inbound(user_id: str = "10001") -> InboundMessage:
@@ -113,7 +133,7 @@ async def test_repository_persists_versions_and_owner_scope(database) -> None:
     assert row.id > 0
     assert (await repository.get(row.id)).script_hash == row.script_hash  # type: ignore[union-attr]
     assert len(await service.list("10001")) == 1
-    with pytest.raises(ValueError, match="当前用户"):
+    with pytest.raises(PermissionError, match="永久主体绑定"):
         await service.require_owned(row.id, "20002")
 
     assert [item.id for item in await service.list_current("10001")] == [row.id]
@@ -132,9 +152,10 @@ async def test_repository_persists_versions_and_owner_scope(database) -> None:
         argument=f"show {row.id}",
     )
     assert f"自动化 ID：{row.id}" in shown
+    assert row.canonical_creator_person_id is not None
     await repository.set_status(
         row.id,
-        creator_user_id="10001",
+        creator_person_id=row.canonical_creator_person_id,
         status=AutomationStatus.COMPLETED,
         now=clock.now(),
     )
@@ -408,6 +429,11 @@ async def test_delegated_followup_creation_is_owned_and_idempotent(database) -> 
         registry=build_capability_registry(),
         time_service=TimeContextService(database, clock=FakeClock(now)),
     )
+    parent = await service.create(
+        _script(),
+        inbound=_inbound(),
+        conversation_key="private:10001",
+    )
     granted = frozenset({"automation.create_task"})
     delegated = DelegatedAuthority(
         creator_user_id="10001",
@@ -427,7 +453,7 @@ async def test_delegated_followup_creation_is_owned_and_idempotent(database) -> 
             delegated_authority=delegated,
             allowed_capabilities=granted,
         ),
-        automation_id=19,
+        automation_id=parent.id,
         automation_run_id=23,
         step_id="execute",
         creator_user_id="10001",
@@ -452,8 +478,8 @@ async def test_delegated_followup_creation_is_owned_and_idempotent(database) -> 
 
     assert first.id == repeated.id
     assert first.creator_user_id == "10001"
-    assert len(await service.list_current("10001")) == 1
-    assert first.created_from_message_id.startswith("auto:19:23:execute:create:")
+    assert len(await service.list_current("10001")) == 2
+    assert first.created_from_message_id.startswith(f"auto:{parent.id}:23:execute:create:")
 
 
 @pytest.mark.asyncio
@@ -496,6 +522,7 @@ async def test_worker_executes_once_and_prevents_duplicate_claim(database) -> No
             registry=registry,
             repository=repository,
             time_service=time_service,
+            router=_router(),
         ),
         time_service=time_service,
         bot_connected=lambda _bot_id: True,
@@ -597,6 +624,7 @@ async def test_removed_capability_blocks_task_and_new_capability_is_not_granted(
         authority,
         settings=settings,
         registry=expanded,
+        current_permission=PermissionLevel.USER,
     )
     assert effective == frozenset({"onebot.send_private_message"})
     assert "future.read" not in effective
@@ -622,7 +650,7 @@ async def test_removed_capability_blocks_task_and_new_capability_is_not_granted(
 
 
 @pytest.mark.asyncio
-async def test_bot_disconnect_keeps_due_slot_without_creating_a_run(database) -> None:
+async def test_unavailable_canonical_route_blocks_due_task(database) -> None:
     clock = FakeClock(datetime(2026, 7, 27, tzinfo=UTC))
     settings = make_settings(
         database.url,
@@ -647,6 +675,7 @@ async def test_bot_disconnect_keeps_due_slot_without_creating_a_run(database) ->
             registry=build_capability_registry(),
             repository=repository,
             time_service=time_service,
+            router=_router("no_connection"),
         ),
         time_service=time_service,
         bot_connected=lambda _bot_id: False,
@@ -657,9 +686,10 @@ async def test_bot_disconnect_keeps_due_slot_without_creating_a_run(database) ->
 
     retained = await repository.get(row.id)
     assert retained is not None
-    assert retained.status is AutomationStatus.ACTIVE
-    assert retained.next_run_at == row.next_run_at
-    assert await repository.run_history(row.id) == ()
+    assert retained.status is AutomationStatus.BLOCKED
+    history = await repository.run_history(row.id)
+    assert len(history) == 1
+    assert history[0].error_category == "no_connection"
 
 
 @pytest.mark.asyncio
@@ -745,6 +775,7 @@ async def test_uncertain_send_is_never_retried(database) -> None:
         registry=registry,
         repository=repository,
         time_service=time_service,
+        router=_router(),
     ).execute(row, run)
     assert result.status.value == "uncertain"
     assert result.error_category == "onebot_transport_uncertain"
@@ -915,6 +946,7 @@ async def test_three_consecutive_failures_stop_periodic_task(database) -> None:
         registry=registry,
         repository=repository,
         time_service=time_service,
+        router=_router(),
     )
     for index in range(3):
         clock.advance(61)
@@ -1019,7 +1051,7 @@ def _superuser_inbound(*targets: str) -> InboundMessage:
 
 @pytest.mark.asyncio
 async def test_superuser_script_persists_explicit_person_not_creator(database) -> None:
-    from qq_ai_bot.identity.shadows import person_id_for
+    from qq_ai_bot.identity.canonical_repository import person_id_for
 
     clock = FakeClock(datetime(2026, 7, 27, tzinfo=UTC))
     settings = make_settings(database.url, automation_enabled=True, superusers_csv="9000")
@@ -1061,67 +1093,7 @@ async def test_multiple_distinct_send_targets_are_rejected(database) -> None:
         )
 
 
-async def _flip_v2(database) -> None:
-    from qq_ai_bot.identity.db_models import IdentityRuntimeStateModel
-
-    async with database.sessions() as session, session.begin():
-        row = await session.get(IdentityRuntimeStateModel, 1)
-        assert row is not None
-        row.state = "v2"
-        row.cutover_id = "550e8400-e29b-41d4-a716-446655440099"
-        row.source_fingerprint = "cutover-fingerprint"
-        row.completed_at = datetime(2026, 8, 24, tzinfo=UTC)
-
-
-async def _v2_person(database, user_id: str) -> str:
-    from qq_ai_bot.identity.dual_write import ensure_canonical_person_preconfig
-
-    now = datetime(2026, 8, 24, tzinfo=UTC)
-    async with database.sessions() as session, session.begin():
-        return await ensure_canonical_person_preconfig(session, user_id, now=now)
-
-
-async def _v2_space(database, group_id: str) -> str:
-    from qq_ai_bot.identity.dual_write import ensure_canonical_space_preconfig
-
-    now = datetime(2026, 8, 24, tzinfo=UTC)
-    async with database.sessions() as session, session.begin():
-        return await ensure_canonical_space_preconfig(session, group_id, now=now)
-
-
-async def _people_count(database) -> int:
-    from qq_ai_bot.persistence.models import PersonModel
-
-    async with database.sessions() as session:
-        return int(await session.scalar(select(func.count()).select_from(PersonModel)) or 0)
-
-
-async def _person_count(database) -> int:
-    from qq_ai_bot.identity.db_models import CanonicalPersonModel
-
-    async with database.sessions() as session:
-        return int(
-            await session.scalar(select(func.count()).select_from(CanonicalPersonModel)) or 0
-        )
-
-
-async def _binding_count(database) -> int:
-    from qq_ai_bot.identity.db_models import IdentityBindingModel
-
-    async with database.sessions() as session:
-        return int(
-            await session.scalar(select(func.count()).select_from(IdentityBindingModel)) or 0
-        )
-
-
-async def _people_has(database, user_id: str) -> bool:
-    from qq_ai_bot.persistence.models import PersonModel
-
-    async with database.sessions() as session:
-        return await session.get(PersonModel, user_id) is not None
-
-
-def _v2_service(database):
+def _canonical_service(database):
     clock = FakeClock(datetime(2026, 7, 27, tzinfo=UTC))
     settings = make_settings(database.url, automation_enabled=True, superusers_csv="9000")
     return AutomationService(
@@ -1133,46 +1105,15 @@ def _v2_service(database):
 
 
 @pytest.mark.asyncio
-async def test_v2_create_person_automation_does_not_insert_people(database) -> None:
-    await _flip_v2(database)
-    creator = await _v2_person(database, "9000")
-    target = await _v2_person(database, "1808058482")
-    persons_before = await _person_count(database)
-    bindings_before = await _binding_count(database)
-    row = await _v2_service(database).create(
-        _script_to("1808058482"),
-        inbound=_superuser_inbound("1808058482"),
-        conversation_key="private:9000",
-    )
-    assert row.canonical_creator_person_id == creator
-    assert row.canonical_target_person_id == target
-    assert row.canonical_target_space_id is None
-    assert await _person_count(database) == persons_before
-    assert await _binding_count(database) == bindings_before
-    assert await _people_count(database) == 0
-    assert not await _people_has(database, "1808058482")
-    assert not await _people_has(database, "9000")
-    async with database.sessions() as session:
-        from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
-        from qq_ai_bot.persistence.models import GroupModel
-
-        scopes = int(
-            await session.scalar(select(func.count()).select_from(ConversationScopeModel)) or 0
-        )
-        groups = int(await session.scalar(select(func.count()).select_from(GroupModel)) or 0)
-    assert scopes == 0
-    assert groups == 0
-
-
-@pytest.mark.asyncio
-async def test_v2_update_switches_to_same_person_alias(database) -> None:
+async def test_update_switches_to_same_person_alias(database) -> None:
     from uuid import uuid4
 
+    from qq_ai_bot.identity.canonical_repository import person_id_for
     from qq_ai_bot.identity.db_models import IdentityBindingModel
 
-    await _flip_v2(database)
-    await _v2_person(database, "9000")
-    target = await _v2_person(database, "1808058482")
+    async with database.sessions() as session:
+        target = await person_id_for(session, "1808058482")
+    assert target is not None
     now = datetime(2026, 8, 24, tzinfo=UTC)
     async with database.sessions() as session, session.begin():
         session.add(
@@ -1180,16 +1121,18 @@ async def test_v2_update_switches_to_same_person_alias(database) -> None:
                 id=str(uuid4()),
                 person_id=target,
                 platform="qq",
-                external_account_id="1808058483",
+                external_account_id="1808058499",
                 display_name="alias",
                 status="active",
                 revision=1,
+                first_seen_at=now,
+                last_seen_at=now,
                 created_at=now,
                 updated_at=now,
             )
         )
-    service = _v2_service(database)
-    inbound = _superuser_inbound("1808058482", "1808058483")
+    service = _canonical_service(database)
+    inbound = _superuser_inbound("1808058482", "1808058499")
     row = await service.create(
         _script_to("1808058482"),
         inbound=inbound,
@@ -1198,26 +1141,20 @@ async def test_v2_update_switches_to_same_person_alias(database) -> None:
     assert row.canonical_target_person_id == target
     updated = await service.update(
         row.id,
-        _script_to("1808058483"),
+        _script_to("1808058499"),
         inbound=inbound,
         conversation_key="private:9000",
     )
     assert updated.canonical_target_person_id == target
-    assert await _people_count(database) == 0
-    assert not await _people_has(database, "1808058482")
-    assert not await _people_has(database, "1808058483")
-    assert not await _people_has(database, "9000")
 
 
 @pytest.mark.asyncio
-async def test_v2_unknown_person_and_space_targets_fail_closed(database) -> None:
-    await _flip_v2(database)
-    await _v2_person(database, "9000")
-    service = _v2_service(database)
+async def test_unknown_person_and_space_targets_fail_closed(database) -> None:
+    service = _canonical_service(database)
     with pytest.raises(ValueError, match="永久主体"):
         await service.create(
-            _script_to("1808058482"),
-            inbound=_superuser_inbound("1808058482"),
+            _script_to("666666666"),
+            inbound=_superuser_inbound("666666666"),
             conversation_key="private:9000",
         )
     inbound = InboundMessage(
@@ -1228,7 +1165,7 @@ async def test_v2_unknown_person_and_space_targets_fail_closed(database) -> None
         text="1秒后提醒群",
         raw_text="1秒后提醒群",
         bot_user_id="7777",
-        group_id="2001",
+        group_id="666666667",
     )
     with pytest.raises(ValueError, match="永久空间"):
         await service.create(
@@ -1256,32 +1193,28 @@ async def test_v2_unknown_person_and_space_targets_fail_closed(database) -> None
                 }
             ),
             inbound=inbound,
-            conversation_key="group:2001",
+            conversation_key="group:666666667",
         )
-    assert await _people_count(database) == 0
 
 
 @pytest.mark.asyncio
-async def test_v2_creator_without_binding_fails_closed(database) -> None:
-    await _flip_v2(database)
-    with pytest.raises(ValueError, match="创建者没有对应的永久主体"):
-        await _v2_service(database).create(
+async def test_creator_without_binding_fails_closed(database) -> None:
+    with pytest.raises(PermissionError, match="永久主体绑定"):
+        await _canonical_service(database).create(
             _script(),
-            inbound=_inbound("10001"),
-            conversation_key="private:10001",
+            inbound=_inbound("666666668"),
+            conversation_key="private:666666668",
         )
-    assert await _people_count(database) == 0
 
 
 @pytest.mark.asyncio
-async def test_v2_disabled_binding_and_space_fallback_are_canonical_only(database) -> None:
+async def test_disabled_binding_fails_while_space_target_remains_canonical(database) -> None:
+    from qq_ai_bot.identity.canonical_repository import space_id_for
     from qq_ai_bot.identity.db_models import IdentityBindingModel
-    from qq_ai_bot.persistence.models import GroupModel
 
-    await _flip_v2(database)
-    await _v2_person(database, "9000")
-    await _v2_person(database, "1808058482")
-    space = await _v2_space(database, "2001")
+    async with database.sessions() as session:
+        space = await space_id_for(session, "2001")
+    assert space is not None
     async with database.sessions() as session, session.begin():
         binding = await session.scalar(
             select(IdentityBindingModel).where(
@@ -1290,7 +1223,7 @@ async def test_v2_disabled_binding_and_space_fallback_are_canonical_only(databas
         )
         assert binding is not None
         binding.status = "disabled"
-    service = _v2_service(database)
+    service = _canonical_service(database)
     with pytest.raises(ValueError, match="永久主体"):
         await service.create(
             _script_to("1808058482"),
@@ -1336,15 +1269,3 @@ async def test_v2_disabled_binding_and_space_fallback_are_canonical_only(databas
     )
     assert row.canonical_target_space_id == space
     assert row.canonical_target_person_id is None
-    async with database.sessions() as session:
-        from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
-
-        groups = int(await session.scalar(select(func.count()).select_from(GroupModel)) or 0)
-        scopes = int(
-            await session.scalar(select(func.count()).select_from(ConversationScopeModel)) or 0
-        )
-    assert groups == 0
-    assert scopes == 0
-    assert await _people_count(database) == 0
-    assert not await _people_has(database, "1808058482")
-    assert not await _people_has(database, "9000")

@@ -2303,7 +2303,6 @@ class AgentToolService:
             fact.scope_type is MemoryScopeType.PERSON_GROUP
             and space_id is not None
             and fact.canonical_subject_space_id == space_id
-            and fact.canonical_subject_person_id == person_id
         ):
             return True
         return bool(

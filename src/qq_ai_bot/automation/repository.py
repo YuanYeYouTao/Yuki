@@ -62,6 +62,13 @@ class AutomationRepository:
             creator = await active_person_id_for(active, authority.creator_user_id)
             if creator != creator_person_id:
                 raise ValueError("创建者没有对应的永久主体")
+            target_person, target_space = await _bind_canonical_send_targets(
+                active,
+                validated,
+                authority,
+                now=timestamp,
+            )
+            presence = await presence_id_for(active, authority.bot_user_id)
             row = AutomationModel(
                 creator_user_id=authority.creator_user_id,
                 bot_user_id=authority.bot_user_id,
@@ -87,19 +94,11 @@ class AutomationRepository:
                 created_at=timestamp,
                 updated_at=timestamp,
                 canonical_creator_person_id=creator_person_id,
+                canonical_target_person_id=target_person,
+                canonical_target_space_id=target_space,
+                canonical_presence_id=presence,
             )
             active.add(row)
-            await active.flush()
-            target_person, target_space = await _bind_canonical_send_targets(
-                active,
-                validated,
-                authority,
-                now=timestamp,
-            )
-            presence = await presence_id_for(active, authority.bot_user_id)
-            row.canonical_target_person_id = target_person
-            row.canonical_target_space_id = target_space
-            row.canonical_presence_id = presence
             await active.flush()
             active.add(
                 AutomationVersionModel(

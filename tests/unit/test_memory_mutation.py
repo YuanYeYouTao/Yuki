@@ -18,6 +18,7 @@ from qq_ai_bot.admin.models import AdminActor
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
+from qq_ai_bot.identity.canonical_repository import active_space_id_for
 from qq_ai_bot.memory.candidates import MemoryConflictCandidateResolver
 from qq_ai_bot.memory.claim_processor import MemoryClaimProcessor, MemoryProcessingContext
 from qq_ai_bot.memory.classifier import (
@@ -825,7 +826,10 @@ async def test_self_reflection_can_commit_tool_receipt_evidence(database: Databa
     )
     now = datetime.now(UTC)
     async with database.sessions() as session, session.begin():
+        canonical_space_id = await active_space_id_for(session, "3001")
+        assert canonical_space_id is not None
         receipt = MemoryToolReceiptModel(
+            canonical_space_id=canonical_space_id,
             conversation_key_hash=hashlib.sha256(b"group:3001").hexdigest(),
             trigger_event_id=event.id,
             bot_user_id="8000",
@@ -890,6 +894,7 @@ async def test_self_reflection_can_commit_tool_receipt_evidence(database: Databa
         linked.expires_at = now - timedelta(seconds=1)
         session.add(
             MemoryToolReceiptModel(
+                canonical_space_id=canonical_space_id,
                 conversation_key_hash=hashlib.sha256(b"group:3001").hexdigest(),
                 trigger_event_id=event.id,
                 bot_user_id="8000",
@@ -973,7 +978,10 @@ async def test_self_reflection_episode_commits_full_window_in_one_receipt(
     ]
     now = datetime.now(UTC)
     async with database.sessions() as session, session.begin():
+        canonical_space_id = await active_space_id_for(session, "3001")
+        assert canonical_space_id is not None
         tool = MemoryToolReceiptModel(
+            canonical_space_id=canonical_space_id,
             conversation_key_hash=hashlib.sha256(b"group:3001").hexdigest(),
             trigger_event_id=events[1].id,
             bot_user_id="8000",
@@ -1191,6 +1199,7 @@ async def test_bot_event_cannot_become_user_memory_evidence(database: Database) 
         message_id="bot-event",
         sender_user_id="8000",
         content="记住用户住在上海",
+        group_id="3001",
         direction="outbound",
         sender_is_bot=True,
     )
@@ -1350,6 +1359,7 @@ async def test_classifier_database_write_happens_before_receipt_transaction(
                 message_id="classifier-separate-database-write",
                 sender_user_id="8000",
                 content="模拟模型调用统计写入",
+                group_id="3001",
                 direction="outbound",
                 sender_is_bot=True,
             )
@@ -2291,6 +2301,13 @@ async def test_mentioned_member_read_is_limited_to_current_group_person_group(
 ) -> None:
     service, facts, ledger, _processor = _service(database)
     del service
+    people = PeopleRepository(database)
+    await people.observe(
+        user_id="2002",
+        nickname="Diana",
+        group_id="3001",
+        group_card="Diana",
+    )
     current_group_event = await _event(
         ledger,
         message_id="member-in-group",

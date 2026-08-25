@@ -1165,16 +1165,19 @@ class MemoryMutationService:
             or not self._validated_claim_matches_event(claim, event)
         ):
             return self._rejected(operation, "untrusted_trigger_event")
-        target_payload = {
-            "scope_type": claim.fact.scope_type.value,
-            "subject_user_id": claim.fact.subject_user_id,
-            "group_id": claim.fact.group_id,
-            "visibility_type": (
-                claim.fact.visibility_type.value if claim.fact.visibility_type is not None else None
-            ),
-            "visibility_user_id": claim.fact.visibility_user_id,
-            "visibility_group_id": claim.fact.visibility_group_id,
-        }
+        try:
+            async with self._facts.repository.transaction() as identity_session:
+                target_owners = await self._facts.requested_target_owners(
+                    claim.fact,
+                    session=identity_session,
+                )
+        except MemoryPartitionResolutionError:
+            return self._rejected(operation, "canonical_identity_unavailable")
+        target_payload = _canonical_target_payload(
+            claim.fact.scope_type,
+            claim.fact.visibility_type,
+            target_owners,
+        )
         common = {
             "event_id": event.id,
             "target": target_payload,
@@ -1479,16 +1482,11 @@ class MemoryMutationService:
             request.memory_key or (fact.memory_key if fact is not None else ""),
             maximum=128,
         )
-        target_payload = {
-            "scope_type": target.scope_type.value,
-            "canonical_subject_person_id": target_owners.subject_person_id,
-            "canonical_subject_space_id": target_owners.subject_space_id,
-            "visibility_type": (
-                target.visibility_type.value if target.visibility_type is not None else None
-            ),
-            "canonical_visibility_person_id": target_owners.visibility_person_id,
-            "canonical_visibility_space_id": target_owners.visibility_space_id,
-        }
+        target_payload = _canonical_target_payload(
+            target.scope_type,
+            target.visibility_type,
+            target_owners,
+        )
         target_fingerprint = _fingerprint(target_payload)
         common = {
             "event_id": event.id,
@@ -2512,6 +2510,23 @@ class MemoryMutationService:
             reason_code=reason_code,
             candidates=candidates,
         )
+
+
+def _canonical_target_payload(
+    scope_type: MemoryScopeType,
+    visibility_type: SelfMemoryVisibility | None,
+    owners: MemoryFactCanonicalOwners,
+) -> dict[str, str | None]:
+    """One receipt identity for both Agent tools and background Workers."""
+
+    return {
+        "scope_type": scope_type.value,
+        "canonical_subject_person_id": owners.subject_person_id,
+        "canonical_subject_space_id": owners.subject_space_id,
+        "visibility_type": visibility_type.value if visibility_type is not None else None,
+        "canonical_visibility_person_id": owners.visibility_person_id,
+        "canonical_visibility_space_id": owners.visibility_space_id,
+    }
 
 
 def _fingerprint(payload: object) -> str:
