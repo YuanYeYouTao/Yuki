@@ -616,17 +616,29 @@ def _empty_dream_statistics() -> DreamPlanStatistics:
 
 @pytest.mark.asyncio
 async def test_dream_health_counts_pending_only_on_live_runs(database: Database) -> None:
-    dreams = DreamRepository(database)
+    _mutations, facts, ledger, dreams = _services(database)
     await PeopleRepository(database).observe(user_id="1001", nickname="owner")
+    source_facts = tuple(
+        [
+            await _fact_with_evidence(
+                facts,
+                ledger,
+                message_id=f"dream-health-{index}",
+                memory_key=f"dream:health:{index}",
+                content=f"梦境健康检查事实 {index}",
+            )
+            for index in range(3)
+        ]
+    )
     statistics = _empty_dream_statistics()
     cancelled = await dreams.create_run(
         mode=DreamRunMode.FULL,
         statistics=statistics,
         clusters=(
-            ("dead-1", "partition", "8000", "fact", (1,), "fp-1"),
-            ("dead-2", "partition", "8000", "fact", (2,), "fp-2"),
+            ("dead-1", "partition", "8000", "fact", (source_facts[0].id,), "fp-1"),
+            ("dead-2", "partition", "8000", "fact", (source_facts[1].id,), "fp-2"),
         ),
-        snapshot_max_fact_id=2,
+        snapshot_max_fact_id=source_facts[1].id,
         actor_user_id="1001",
         scheduled_slot=None,
     )
@@ -634,8 +646,8 @@ async def test_dream_health_counts_pending_only_on_live_runs(database: Database)
     planned = await dreams.create_run(
         mode=DreamRunMode.FULL,
         statistics=statistics,
-        clusters=(("live-1", "partition", "8000", "fact", (3,), "fp-3"),),
-        snapshot_max_fact_id=3,
+        clusters=(("live-1", "partition", "8000", "fact", (source_facts[2].id,), "fp-3"),),
+        snapshot_max_fact_id=source_facts[2].id,
         actor_user_id="1001",
         scheduled_slot=None,
     )
@@ -1045,7 +1057,19 @@ async def test_dream_resolution_records_conflict_provenance(database: Database) 
 
 @pytest.mark.asyncio
 async def test_dream_reserves_actual_model_calls_before_execution(database: Database) -> None:
-    _mutations, _facts, _ledger, dreams = _services(database)
+    _mutations, facts, ledger, dreams = _services(database)
+    source_facts = tuple(
+        [
+            await _fact_with_evidence(
+                facts,
+                ledger,
+                message_id=f"dream-budget-{index}",
+                memory_key=f"dream:budget:{index}",
+                content=f"梦境预算事实 {index}",
+            )
+            for index in range(2)
+        ]
+    )
     run = await dreams.create_run(
         mode=DreamRunMode.INCREMENTAL,
         statistics=DreamPlanStatistics(
@@ -1058,8 +1082,17 @@ async def test_dream_reserves_actual_model_calls_before_execution(database: Data
             isolated_facts=0,
             estimated_model_calls=1,
         ),
-        clusters=(("cluster-budget", "partition", "8000", "fact", (1, 2), "fp"),),
-        snapshot_max_fact_id=2,
+        clusters=(
+            (
+                "cluster-budget",
+                "partition",
+                "8000",
+                "fact",
+                tuple(item.id for item in source_facts),
+                "fp",
+            ),
+        ),
+        snapshot_max_fact_id=max(item.id for item in source_facts),
         actor_user_id=None,
         scheduled_slot="2026-08-13:05",
     )

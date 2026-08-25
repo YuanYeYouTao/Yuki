@@ -376,180 +376,58 @@ async def test_trusted_legacy_subject_metadata_never_crosses_group(database: Dat
 
 
 @pytest.mark.asyncio
-async def test_complete_v2_hydrate_rebuild_subjects_drops_other_presence(
+async def test_hydrate_rebuild_subjects_drops_yuki_and_external_bot_targets(
     database: Database,
 ) -> None:
-    from qq_ai_bot.identity.db_models import IdentityRuntimeStateModel
-    from qq_ai_bot.identity.dual_write import (
-        ensure_canonical_presence_preconfig as ensure_v2_presence,
-    )
-    from qq_ai_bot.identity.dual_write import ensure_v2_space
-    from qq_ai_bot.persistence.models import ChatEventModel
-
     _settings, ledger, _facts, _provider, service = await _service(database)
     assert service is not None
-    now = datetime.now(UTC)
-    async with database.sessions() as session, session.begin():
-        runtime = await session.get(IdentityRuntimeStateModel, 1)
-        assert runtime is not None
-        runtime.state = "v2"
-        runtime.cutover_id = "550e8400-e29b-41d4-a716-446655440099"
-        runtime.source_fingerprint = "cutover-fingerprint"
-        runtime.completed_at = now
-        await ensure_v2_presence(session, "8000")
-        await ensure_v2_presence(session, "8001")
-        await ensure_v2_space(session, "3001")
-        session.add(
-            ChatEventModel(
-                bot_user_id="8000",
-                platform_message_id="yuki-other",
-                scope_type="group",
-                group_id="3001",
-                sender_user_id="8001",
-                sender_nickname="",
-                sender_group_card="",
-                direction="inbound",
-                event_kind="message",
-                content="另一号说的",
-                visual_summary="",
-                segments_json="[]",
-                origin="user_message",
-                occurred_at=now,
-                observed_at=now,
-                author_kind="yuki",
-                suppression_status="keeper",
-            )
-        )
-        mention = ChatEventModel(
-            bot_user_id="8000",
-            platform_message_id="hydrate-v2",
-            scope_type="group",
-            group_id="3001",
-            sender_user_id="1001",
-            sender_nickname="",
-            sender_group_card="",
-            direction="inbound",
-            event_kind="message",
-            content="回另一号",
-            visual_summary="",
-            segments_json='[{"type":"at","data":{"qq":"8001"}}]',
-            reply_to_message_id="yuki-other",
-            origin="user_message",
-            occurred_at=now,
-            observed_at=now,
-            author_kind="person",
-            suppression_status="keeper",
-        )
-        session.add(mention)
-    async with database.sessions() as session:
-        mention = await session.scalar(
-            select(ChatEventModel).where(ChatEventModel.platform_message_id == "hydrate-v2")
-        )
-        assert mention is not None
-        event = await ledger.get_event(mention.id)
-    assert event is not None
-    hydrated = await ledger.hydrate_rebuild_subjects(event)
-    assert hydrated.mentioned_user_ids == ()
-    assert hydrated.reply_sender_user_id is None
+    yuki, _ = await ledger.append(
+        bot_user_id="8000",
+        platform_message_id="yuki-other",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="8001",
+        direction="inbound",
+        content="另一号说的",
+        group_id="3001",
+        sender_is_bot=True,
+    )
+    mention_yuki, _ = await ledger.append(
+        bot_user_id="8000",
+        platform_message_id="hydrate-yuki",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="1001",
+        direction="inbound",
+        content="回另一号",
+        group_id="3001",
+        reply_to_message_id=yuki.platform_message_id,
+        segments=({"type": "at", "data": {"qq": "8001"}},),
+    )
+    external, _ = await ledger.append(
+        bot_user_id="8000",
+        platform_message_id="external-bot",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="7007",
+        direction="inbound",
+        content="第三方机器人",
+        group_id="3001",
+        sender_is_bot=True,
+    )
+    mention_external, _ = await ledger.append(
+        bot_user_id="8000",
+        platform_message_id="hydrate-external",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="1001",
+        direction="inbound",
+        content="回机器人",
+        group_id="3001",
+        reply_to_message_id=external.platform_message_id,
+        segments=({"type": "at", "data": {"qq": "7007"}},),
+    )
 
-    async with database.sessions() as session, session.begin():
-        session.add(
-            ChatEventModel(
-                bot_user_id="8000",
-                platform_message_id="ext-bot",
-                scope_type="group",
-                group_id="3001",
-                sender_user_id="7777",
-                sender_nickname="",
-                sender_group_card="",
-                direction="inbound",
-                event_kind="message",
-                content="机器人",
-                visual_summary="",
-                segments_json="[]",
-                origin="user_message",
-                occurred_at=now,
-                observed_at=now,
-                author_kind="external_bot",
-                suppression_status="keeper",
-            )
-        )
-        session.add(
-            ChatEventModel(
-                bot_user_id="8000",
-                platform_message_id="sys-note",
-                scope_type="group",
-                group_id="3001",
-                sender_user_id="0",
-                sender_nickname="",
-                sender_group_card="",
-                direction="inbound",
-                event_kind="message",
-                content="系统",
-                visual_summary="",
-                segments_json="[]",
-                origin="user_message",
-                occurred_at=now,
-                observed_at=now,
-                author_kind="system",
-                suppression_status="keeper",
-            )
-        )
-        session.add(
-            ChatEventModel(
-                bot_user_id="8000",
-                platform_message_id="hydrate-ext",
-                scope_type="group",
-                group_id="3001",
-                sender_user_id="1001",
-                sender_nickname="",
-                sender_group_card="",
-                direction="inbound",
-                event_kind="message",
-                content="回机器人",
-                visual_summary="",
-                segments_json='[{"type":"at","data":{"qq":"7777"}}]',
-                reply_to_message_id="ext-bot",
-                origin="user_message",
-                occurred_at=now,
-                observed_at=now,
-                author_kind="person",
-                suppression_status="keeper",
-            )
-        )
-        session.add(
-            ChatEventModel(
-                bot_user_id="8000",
-                platform_message_id="hydrate-sys",
-                scope_type="group",
-                group_id="3001",
-                sender_user_id="1001",
-                sender_nickname="",
-                sender_group_card="",
-                direction="inbound",
-                event_kind="message",
-                content="回系统",
-                visual_summary="",
-                segments_json="[]",
-                reply_to_message_id="sys-note",
-                origin="user_message",
-                occurred_at=now,
-                observed_at=now,
-                author_kind="person",
-                suppression_status="keeper",
-            )
-        )
-    for platform_id in ("hydrate-ext", "hydrate-sys"):
-        async with database.sessions() as session:
-            row = await session.scalar(
-                select(ChatEventModel).where(ChatEventModel.platform_message_id == platform_id)
-            )
-            assert row is not None
-            record = await ledger.get_event(row.id)
-        assert record is not None
-        cleaned = await ledger.hydrate_rebuild_subjects(record)
-        assert cleaned.mentioned_user_ids == ()
-        assert cleaned.reply_sender_user_id is None
+    for event in (mention_yuki, mention_external):
+        hydrated = await ledger.hydrate_rebuild_subjects(event)
+        assert hydrated.mentioned_user_ids == ()
+        assert hydrated.reply_sender_user_id is None
 
 
 @pytest.mark.asyncio

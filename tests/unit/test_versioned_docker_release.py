@@ -242,7 +242,7 @@ def test_release_smoke_reads_alembic_version_inside_container(
                         '"plugin_system_enabled":true,"plugin_running_count":0}'
                     )
                 if "SELECT version_num FROM alembic_version" in arguments[-1]:
-                    return "0048"
+                    return "0049"
             if arguments[:5] == ("exec", "-T", "bot", "qq-ai-bot-cli", "plugin"):
                 return ""
             if arguments[:5] == ("exec", "-T", "bot", "qq-ai-bot-cli", "setup"):
@@ -286,7 +286,7 @@ def test_release_smoke_writes_pending_inside_container_when_host_cannot(
                         '{"status":"ok","version":"3.8.0","database":"ok",'
                         '"plugin_system_enabled":true,"plugin_running_count":0}'
                     )
-                return "0048"
+                return "0049"
             if arguments[:5] == ("exec", "-T", "bot", "qq-ai-bot-cli", "plugin"):
                 return ""
             if arguments[:5] == ("exec", "-T", "bot", "qq-ai-bot-cli", "setup"):
@@ -330,7 +330,7 @@ def test_release_smoke_applies_builtin_plugin_pending(
             if arguments[:4] == ("exec", "-T", "bot", "python"):
                 if "urllib.request" in arguments[-1]:
                     return next(health_payloads)
-                return "0048"
+                return "0049"
             if arguments[:3] == ("up", "-d", "--no-deps"):
                 return ""
             if arguments[3:5] == ("qq-ai-bot-cli", "plugin"):
@@ -421,20 +421,12 @@ def test_installers_are_fixed_orchestrators_without_a_docker_socket_mount() -> N
         assert "SnowLuma.md" in installer
         assert "Yuki-$VERSION-Upgrade.md" in installer or "Yuki-$Version-Upgrade.md" in installer
         assert "Updated release-managed deployment files" in installer
-        assert "upgrade-3.6" in installer
-        assert "migrate-3-6" in installer
         assert "qq_ai_bot.db" in installer
         assert "qq_ai_bot.db-wal" in installer
         assert "qq_ai_bot.db-shm" in installer
     assert '--user "$(id -u):$(id -g)"' in shell
-    assert shell.index("docker pull") < shell.index("upgrade-3.6")
-    assert shell.index("upgrade-3.6") < shell.index("migrate-3-6")
-    assert shell.index("migrate-3-6") < shell.index("docker compose config")
     assert "docker compose stop bot" in shell
     assert "docker compose stop bot" in powershell
-    assert powershell.index("docker pull") < powershell.index("upgrade-3.6")
-    assert powershell.index("upgrade-3.6") < powershell.index("migrate-3-6")
-    assert powershell.index("migrate-3-6") < powershell.index("docker compose config")
     assert "wait_for_service genie-tts-worker" in shell
     assert shell.index('stop "$service"') < shell.index("docker compose up -d")
     assert shell.index("docker compose up -d") < shell.index('rm -f "$gateway_action"')

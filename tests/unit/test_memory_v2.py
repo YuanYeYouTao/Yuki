@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import ast
 import asyncio
 import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -17,6 +15,7 @@ from tests.conftest import MemorySender, build_harness, make_settings
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatRequest, ChatResponse, InboundMessage, SenderIdentity
+from qq_ai_bot.identity.canonical_repository import active_space_id_for
 from qq_ai_bot.llm.base import LLMProvider
 from qq_ai_bot.memory.claim_candidates import MemoryClaimCandidateRepository
 from qq_ai_bot.memory.enums import (
@@ -87,79 +86,6 @@ def _claim(**overrides: object) -> MemoryClaim:
     }
     values.update(overrides)
     return MemoryClaim.model_validate(values)
-
-
-def test_production_memory_path_has_no_legacy_semantic_detectors() -> None:
-    root = Path(__file__).parents[2] / "src/qq_ai_bot"
-    source = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in (
-            root / "memory/quality_policy.py",
-            root / "memory/validation.py",
-            root / "memory/subjects.py",
-            root / "memory/self_reflection/repository.py",
-            root / "memory/self_reflection/service.py",
-            root / "services/chat.py",
-        )
-    )
-    for forbidden in (
-        "event_requests_memory_mutation",
-        "event_requests_explicit_memory",
-        "_semantically_anchored",
-        "_LEADING_NAMED_OTHER",
-        "_NAMED_SUBJECT",
-        "_HIGH_VALUE",
-        "_PRIVATE_IDENTIFIER",
-    ):
-        assert forbidden not in source
-
-
-def test_live_memory_job_writers_call_refuse_legacy_live_event() -> None:
-    def call_name(node: ast.expr) -> str:
-        if isinstance(node, ast.Name):
-            return node.id
-        if isinstance(node, ast.Attribute):
-            return node.attr
-        return ""
-
-    def writes_live_job(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-        for node in ast.walk(fn):
-            if not isinstance(node, ast.Call):
-                continue
-            name = call_name(node.func)
-            if name == "insert":
-                for argument in node.args:
-                    if isinstance(argument, ast.Name) and argument.id == "MemoryJobModel":
-                        return True
-            if name == "MemoryJobModel":
-                return True
-        return False
-
-    def calls_guard(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-        return any(
-            isinstance(node, ast.Call) and call_name(node.func) == "refuse_legacy_live_event"
-            for node in ast.walk(fn)
-        )
-
-    found: list[str] = []
-    rebuild_receipts = "src/qq_ai_bot/memory/rebuild/repository.py:complete_item_receipts"
-    root = Path("src/qq_ai_bot")
-    for path in sorted(root.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for fn in ast.walk(tree):
-            if not isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
-                continue
-            if not writes_live_job(fn):
-                continue
-            key = f"{path.as_posix()}:{fn.name}"
-            if key == rebuild_receipts:
-                rendered = ast.unparse(fn)
-                assert "rebuild" in rendered
-                assert "done" in rendered
-                continue
-            if not calls_guard(fn):
-                found.append(key)
-    assert found == []
 
 
 def test_extraction_schema_rejects_model_selected_identity_fields() -> None:
@@ -587,6 +513,7 @@ async def test_jobs_accept_only_real_inbound_non_bot_events(database: Database) 
         ledger,
         message_id="job-outbound",
         user_id="8000",
+        group_id="2001",
         direction="outbound",
         sender_is_bot=True,
     )
@@ -594,6 +521,7 @@ async def test_jobs_accept_only_real_inbound_non_bot_events(database: Database) 
         ledger,
         message_id="job-bot",
         user_id="7000",
+        group_id="2001",
         sender_is_bot=True,
     )
     blank = await _append_event(ledger, message_id="job-blank", content="   ")
@@ -628,8 +556,13 @@ async def test_group_messages_from_different_senders_share_memory_batch_key(
         )
     async with database.sessions() as session:
         rows = (await session.scalars(select(MemoryJobModel).order_by(MemoryJobModel.id))).all()
+        canonical_space_id = await active_space_id_for(session, "2001")
 
-    assert [row.conversation_key for row in rows] == ["group:2001", "group:2001"]
+    assert canonical_space_id is not None
+    assert [row.conversation_key for row in rows] == [
+        f"space:{canonical_space_id}",
+        f"space:{canonical_space_id}",
+    ]
 
 
 @pytest.mark.asyncio
@@ -675,8 +608,11 @@ async def test_ready_batch_waits_for_twelve_events_and_never_mixes_conversations
         max_wait_seconds=300,
     )
 
+    async with database.sessions() as session:
+        canonical_space_id = await active_space_id_for(session, "2001")
+    assert canonical_space_id is not None
     assert len(claimed) == 12
-    assert {job.conversation_key for job in claimed} == {"group:2001"}
+    assert {job.conversation_key for job in claimed} == {f"space:{canonical_space_id}"}
 
 
 @pytest.mark.asyncio
@@ -1295,15 +1231,13 @@ def test_eligibility_author_kind_domain_matches_sql() -> None:
     yuki = replace(_event(event_id=2, sender_user_id="8000"), author_kind="yuki")
     external = replace(_event(event_id=3, sender_user_id="7777"), author_kind="external_bot")
     system = replace(_event(event_id=4, sender_user_id="8000"), author_kind="system")
-    legacy_bot = _event(event_id=5, sender_user_id="8000")
-    legacy_human = _event(event_id=6, sender_user_id="1001")
     duplicate = replace(
-        _event(event_id=7, sender_user_id="1001"),
+        _event(event_id=5, sender_user_id="1001"),
         author_kind="person",
         suppression_status="duplicate",
     )
     suppressed = replace(
-        _event(event_id=8, sender_user_id="1001"),
+        _event(event_id=6, sender_user_id="1001"),
         author_kind="person",
         suppression_status="suppressed",
     )
@@ -1311,202 +1245,13 @@ def test_eligibility_author_kind_domain_matches_sql() -> None:
     assert policy.rejection_reason(yuki) == "bot_sender"
     assert policy.rejection_reason(external) == "bot_sender"
     assert policy.rejection_reason(system) == "bot_sender"
-    assert policy.rejection_reason(legacy_bot) == "bot_sender"
-    assert policy.is_eligible(legacy_human) is True
-    assert policy.rejection_reason(legacy_human, sender_is_bot=True) == "bot_sender"
     assert policy.rejection_reason(duplicate) == "suppressed_duplicate"
     assert policy.rejection_reason(suppressed) == "suppressed_duplicate"
     keeper = replace(person, suppression_status="keeper")
-    legacy_keeper = replace(legacy_human, suppression_status="keeper")
-    legacy_duplicate = replace(legacy_human, suppression_status="duplicate")
     unknown = replace(person, suppression_status="shadow")
     empty_status = replace(person, suppression_status="")
     assert policy.is_eligible(keeper) is True
-    assert policy.is_eligible(legacy_keeper) is True
-    assert policy.rejection_reason(legacy_duplicate) == "suppressed_duplicate"
     assert policy.rejection_reason(unknown) == "suppressed_duplicate"
     assert policy.rejection_reason(empty_status) == "suppressed_duplicate"
     assert policy.is_eligible(unknown) is False
     assert policy.is_eligible(empty_status) is False
-
-
-@pytest.mark.asyncio
-async def test_eligibility_sql_matches_domain_author_kinds(database: Database) -> None:
-    from sqlalchemy import and_, select
-
-    from qq_ai_bot.memory.eligibility import MemoryEventEligibilityPolicy
-    from qq_ai_bot.persistence.models import ChatEventModel
-    from qq_ai_bot.persistence.repository_helpers import _event_record
-
-    policy = MemoryEventEligibilityPolicy()
-    now = datetime.now(UTC)
-    specs = (
-        ("person", "1001", "hello person", None),
-        ("yuki", "8000", "hello yuki", None),
-        ("external_bot", "7777", "hello bot", None),
-        ("system", "8000", "hello system", None),
-        (None, "1001", "legacy human", None),
-        (None, "8000", "legacy bot", None),
-        ("person", "1001", "dup person", "duplicate"),
-        ("person", "1001", "sup person", "suppressed"),
-        ("person", "1001", "keeper person", "keeper"),
-        (None, "1001", "legacy keeper", "keeper"),
-        (None, "1001", "legacy dup", "duplicate"),
-        ("person", "1001", "unknown person", "shadow"),
-    )
-    async with database.sessions() as session, session.begin():
-        for index, (kind, sender, content, suppression) in enumerate(specs, start=1):
-            session.add(
-                ChatEventModel(
-                    bot_user_id="8000",
-                    platform_message_id=f"elig-{index}",
-                    scope_type="private",
-                    private_peer_user_id="1001",
-                    sender_user_id=sender,
-                    sender_nickname="",
-                    sender_group_card="",
-                    direction="inbound",
-                    event_kind="message",
-                    content=content,
-                    visual_summary="",
-                    segments_json="[]",
-                    origin="user_message",
-                    occurred_at=now,
-                    observed_at=now,
-                    author_kind=kind,
-                    suppression_status=suppression,
-                )
-            )
-    async with database.sessions() as session:
-        rows = list(await session.scalars(select(ChatEventModel).order_by(ChatEventModel.id)))
-        matched = set(
-            await session.scalars(
-                select(ChatEventModel.id).where(
-                    and_(*policy.sql_conditions(include_failed_live_jobs=False))
-                )
-            )
-        )
-    for row in rows:
-        record = _event_record(row)
-        domain = policy.is_eligible(record, sender_is_bot=False)
-        assert domain == (row.id in matched)
-
-
-@pytest.mark.asyncio
-async def test_eligibility_policy_raw_sql_and_sqlalchemy_fail_closed(database: Database) -> None:
-    from sqlalchemy import and_, select, text
-
-    from qq_ai_bot.memory.eligibility import (
-        MemoryEventEligibilityPolicy,
-        sql_human_evidence_predicate,
-    )
-    from qq_ai_bot.memory.enums import MemoryJobStatus
-    from qq_ai_bot.persistence.models import ChatEventModel
-    from qq_ai_bot.persistence.repository_helpers import (
-        _event_record,
-        keeper_event_clause,
-        sql_keeper_event_predicate,
-        suppression_is_canonical_live,
-    )
-
-    policy = MemoryEventEligibilityPolicy()
-    now = datetime.now(UTC)
-    specs = (
-        ("person", "1001", "null live", None),
-        ("person", "1001", "keeper live", "keeper"),
-        ("person", "1001", "dup closed", "duplicate"),
-        ("person", "1001", "sup closed", "suppressed"),
-        ("person", "1001", "unknown closed", "shadow"),
-        ("yuki", "8000", "yuki keeper", "keeper"),
-        (None, "1001", "legacy null", None),
-        (None, "1001", "legacy unknown", "shadow"),
-    )
-    async with database.sessions() as session, session.begin():
-        for index, (kind, sender, content, suppression) in enumerate(specs, start=1):
-            session.add(
-                ChatEventModel(
-                    bot_user_id="8000",
-                    platform_message_id=f"elig-sync-{index}",
-                    scope_type="private",
-                    private_peer_user_id="1001",
-                    sender_user_id=sender,
-                    sender_nickname="",
-                    sender_group_card="",
-                    direction="inbound",
-                    event_kind="message",
-                    content=content,
-                    visual_summary="",
-                    segments_json="[]",
-                    origin="user_message",
-                    occurred_at=now,
-                    observed_at=now,
-                    author_kind=kind,
-                    suppression_status=suppression,
-                )
-            )
-    excluded = (
-        MemoryJobStatus.DONE.value,
-        MemoryJobStatus.PENDING.value,
-        MemoryJobStatus.PROCESSING.value,
-        MemoryJobStatus.FAILED.value,
-    )
-    async with database.sessions() as session:
-        rows = list(await session.scalars(select(ChatEventModel).order_by(ChatEventModel.id)))
-        sqlalchemy_ids = set(
-            await session.scalars(
-                select(ChatEventModel.id).where(
-                    and_(*policy.sql_conditions(include_failed_live_jobs=False))
-                )
-            )
-        )
-        raw_ids = set(
-            (
-                await session.execute(
-                    text(
-                        "SELECT c.id FROM chat_events c "
-                        "WHERE c.direction='inbound' "
-                        f"AND {sql_human_evidence_predicate('c')} "
-                        "AND length(trim(c.content)) > 0 "
-                        "AND c.origin IN ('user_message','onebot_history') "
-                        "AND c.scope_type IN ('private','group') "
-                        "AND (c.scope_type!='group' OR c.group_id IS NOT NULL) "
-                        "AND (c.scope_type!='private' OR c.private_peer_user_id IS NOT NULL) "
-                        "AND NOT EXISTS ("
-                        "SELECT 1 FROM memory_jobs j "
-                        "WHERE j.event_id=c.id AND j.status IN "
-                        f"({','.join(repr(item) for item in excluded)})"
-                        ")"
-                    )
-                )
-            ).scalars()
-        )
-        keeper_sa = set(
-            await session.scalars(select(ChatEventModel.id).where(keeper_event_clause()))
-        )
-        keeper_raw = set(
-            (
-                await session.execute(
-                    text(f"SELECT c.id FROM chat_events c WHERE {sql_keeper_event_predicate('c')}")
-                )
-            ).scalars()
-        )
-    domain_ids = {
-        row.id for row in rows if policy.is_eligible(_event_record(row), sender_is_bot=False)
-    }
-    live_ids = {row.id for row in rows if suppression_is_canonical_live(row.suppression_status)}
-    by_status = {row.content: row.suppression_status for row in rows}
-    assert by_status["unknown closed"] == "shadow"
-    assert sqlalchemy_ids == raw_ids == domain_ids
-    assert keeper_sa == keeper_raw == live_ids
-    rejected = {row.content: row.id for row in rows}
-    assert rejected["dup closed"] not in domain_ids
-    assert rejected["sup closed"] not in domain_ids
-    assert rejected["unknown closed"] not in domain_ids
-    assert rejected["yuki keeper"] not in domain_ids
-    assert rejected["null live"] in domain_ids
-    assert rejected["keeper live"] in domain_ids
-    assert rejected["legacy null"] in domain_ids
-    assert rejected["legacy unknown"] not in domain_ids
-    assert rejected["unknown closed"] not in live_ids
-    assert rejected["dup closed"] not in live_ids
-    assert rejected["sup closed"] not in live_ids

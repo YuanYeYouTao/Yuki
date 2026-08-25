@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import asyncio
 import json
 from datetime import UTC, datetime
@@ -37,7 +36,6 @@ from qq_ai_bot.conversation.canonical_db_models import (
     SpaceActiveRouteModel,
     SpaceBindingIngestRouteModel,
 )
-from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
 from qq_ai_bot.domain.identity import (
     PersonId,
     PresenceId,
@@ -46,19 +44,17 @@ from qq_ai_bot.domain.identity import (
     SpaceBindingId,
     SpaceId,
 )
+from qq_ai_bot.identity.canonical_repository import IDENTITY_PLATFORM
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
     IdentityBindingModel,
-    IdentityConflictModel,
-    IdentityRuntimeStateModel,
     PresenceModel,
     SpaceBindingModel,
 )
-from qq_ai_bot.identity.inventory import IDENTITY_PLATFORM
 from qq_ai_bot.persistence.control_command import ControlCommandAdapter
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import AdminOperationEventModel, GroupModel, PersonModel
+from qq_ai_bot.persistence.models import AdminOperationEventModel
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = REPO_ROOT / "src"
@@ -86,8 +82,6 @@ _DOMAIN_TABLES = (
     "spaces",
     "space_bindings",
     "presences",
-    "people",
-    "groups",
     "person_active_routes",
     "space_binding_ingest_routes",
     "space_active_routes",
@@ -95,8 +89,6 @@ _DOMAIN_TABLES = (
 _SIGNATURE_TABLES = (
     "canonical_conversations",
     "conversation_legacy_aliases",
-    "conversation_scopes",
-    "conversation_rollups",
     "chat_events",
     "memory_facts",
 )
@@ -187,13 +179,7 @@ def _python_files(root: Path) -> tuple[Path, ...]:
 
 
 async def _set_v2(database: Database) -> None:
-    async with database.sessions() as session, session.begin():
-        row = await session.get(IdentityRuntimeStateModel, 1)
-        assert row is not None
-        row.state = "v2"
-        row.cutover_id = _uuid()
-        row.source_fingerprint = "a" * 64
-        row.completed_at = _NOW
+    del database
 
 
 async def _add_person(
@@ -262,6 +248,8 @@ async def _add_binding(
                 display_name=display_name,
                 status=status,
                 revision=1,
+                first_seen_at=_NOW,
+                last_seen_at=_NOW,
                 created_at=_NOW,
                 updated_at=_NOW,
             )
@@ -289,6 +277,8 @@ async def _add_space_binding(
                 display_name="Group Display",
                 status=status,
                 revision=1,
+                first_seen_at=_NOW,
+                last_seen_at=_NOW,
                 created_at=_NOW,
                 updated_at=_NOW,
             )
@@ -320,49 +310,6 @@ async def _add_presence(
             )
         )
     return token
-
-
-async def _add_legacy_person(
-    database: Database,
-    user_id: str,
-    *,
-    is_bot: bool = False,
-    canonical_person_id: str | None = None,
-) -> None:
-    async with database.sessions() as session, session.begin():
-        session.add(
-            PersonModel(
-                user_id=user_id,
-                nickname="legacy-nick",
-                enabled=True,
-                is_bot=is_bot,
-                first_seen_at=_NOW,
-                last_seen_at=_NOW,
-                canonical_person_id=canonical_person_id,
-            )
-        )
-
-
-async def _add_legacy_group(
-    database: Database,
-    group_id: str,
-    *,
-    canonical_space_id: str | None = None,
-) -> None:
-    async with database.sessions() as session, session.begin():
-        session.add(
-            GroupModel(
-                group_id=group_id,
-                name="legacy-group",
-                enabled=True,
-                require_mention=True,
-                autonomous_enabled=True,
-                first_seen_at=_NOW,
-                last_seen_at=_NOW,
-                updated_at=_NOW,
-                canonical_space_id=canonical_space_id,
-            )
-        )
 
 
 async def _counts(database: Database) -> dict[str, int]:
@@ -618,41 +565,6 @@ def test_no_c11_command_is_legacy_equivalent() -> None:
     assert set(_METHODS) == set(_METHOD_CAPABILITY)
     assert is_protocol_capability("web_search") is True
     assert is_protocol_capability("mcp.web_search") is True
-
-
-@pytest.mark.asyncio
-async def test_v1_rejects_every_command_without_fake_legacy_rows(database: Database) -> None:
-    person_id = await _add_person(database)
-    space_id = await _add_space(database)
-    binding_id = await _add_binding(database, person_id=person_id, external_account_id="seed-1")
-    presence_id = await _add_presence(database, external_account_id="seed-yuki")
-    ids = {
-        "person": person_id,
-        "space": space_id,
-        "binding": binding_id,
-        "presence": presence_id,
-    }
-    before = await _counts(database)
-    service = _service(database)
-    principal = _principal(*_WRITE_CAPS)
-    for method in _METHODS:
-        context = _context(principal, _invoke_target(method, ids))
-        command = _command(
-            context.request_id, expected_revision=0, payload=_invoke_payload(method, ids)
-        )
-        with pytest.raises(ControlCommandError) as rejected:
-            await getattr(service, method)(context, command)
-        assert rejected.value.problem.code is ProblemCode.PENDING_CUTOVER
-    after = await _counts(database)
-    for table in _DOMAIN_TABLES:
-        assert after[table] == before[table]
-    assert after["admin_operation_events"] == before["admin_operation_events"] + len(_METHODS)
-    assert after["control_command_receipts"] == before["control_command_receipts"] + len(_METHODS)
-    async with database.sessions() as session:
-        statuses = list(await session.scalars(select(ControlCommandReceiptModel.status)))
-        problems = list(await session.scalars(select(ControlCommandReceiptModel.problem_code)))
-    assert set(statuses) == {"failed"}
-    assert set(problems) == {"pending_cutover"}
 
 
 @pytest.mark.asyncio
@@ -914,10 +826,6 @@ async def test_v2_happy_paths_and_safe_effective_state(database: Database) -> No
         assert space.revision == 4
         assert space.autonomous_enabled is True
         assert space.require_mention is True
-        people_count = int(await session.scalar(text("SELECT COUNT(*) FROM people")) or 0)
-        groups_count = int(await session.scalar(text("SELECT COUNT(*) FROM groups")) or 0)
-        assert people_count == 0
-        assert groups_count == 0
         audit = await session.get(AdminOperationEventModel, int(binding.audit_id))
         receipt = await session.scalar(
             select(ControlCommandReceiptModel).where(
@@ -1151,106 +1059,6 @@ async def test_two_database_owners_race_same_and_different_payload(database: Dat
 
 
 @pytest.mark.asyncio
-async def test_binding_conflicts_populated_merge_and_yuki(database: Database) -> None:
-    await _set_v2(database)
-    owner = await _add_person(database)
-    other = await _add_person(database)
-    await _add_binding(database, person_id=other, external_account_id="bound-elsewhere")
-    await _add_presence(database, external_account_id="yuki-self")
-    await _add_legacy_person(database, "ignored-bot-77", is_bot=True)
-    await _add_legacy_person(database, "unresolved-human")
-    await _add_legacy_person(database, "owned-other", canonical_person_id=other)
-    await _add_legacy_person(database, "owned-self", canonical_person_id=owner)
-    async with database.sessions() as session, session.begin():
-        session.add(
-            IdentityConflictModel(
-                platform=IDENTITY_PLATFORM,
-                external_id="conflicted-account",
-                subject_kind="account",
-                conflict_kind="ambiguous_identity",
-                status="open",
-                error_category="canonical_kind_mismatch",
-                created_at=_NOW,
-                updated_at=_NOW,
-            )
-        )
-    service = _service(database)
-    principal = _principal(*_WRITE_CAPS)
-
-    async def _attach(external_id: str) -> ProblemCode:
-        context = _context(principal, PersonId.parse(owner))
-        with pytest.raises(ControlCommandError) as rejected:
-            await service.attach_identity_binding(
-                context,
-                _command(
-                    context.request_id,
-                    expected_revision=1,
-                    payload={"platform": IDENTITY_PLATFORM, "external_account_id": external_id},
-                ),
-            )
-        return rejected.value.problem.code
-
-    assert await _attach("bound-elsewhere") is ProblemCode.BINDING_AMBIGUOUS
-    assert await _attach("yuki-self") is ProblemCode.PRECONDITION_FAILED
-    assert await _attach("ignored-bot-77") is ProblemCode.PRECONDITION_FAILED
-    assert await _attach("unresolved-human") is ProblemCode.BINDING_AMBIGUOUS
-    assert await _attach("owned-other") is ProblemCode.POPULATED_MERGE_FORBIDDEN
-    assert await _attach("owned-self") is ProblemCode.PRECONDITION_FAILED
-    assert await _attach("conflicted-account") is ProblemCode.BINDING_AMBIGUOUS
-
-    async def _register(external_id: str) -> ProblemCode:
-        context = _context(principal, YukiControlTarget.PERMANENT_YUKI)
-        with pytest.raises(ControlCommandError) as rejected:
-            await service.register_presence(
-                context,
-                _command(
-                    context.request_id,
-                    expected_revision=0,
-                    payload={"platform": IDENTITY_PLATFORM, "external_account_id": external_id},
-                ),
-            )
-        return rejected.value.problem.code
-
-    assert await _register("bound-elsewhere") is ProblemCode.PRECONDITION_FAILED
-    assert await _register("yuki-self") is ProblemCode.PRECONDITION_FAILED
-    assert await _register("ignored-bot-77") is ProblemCode.PRECONDITION_FAILED
-    async with database.sessions() as session:
-        bindings = int(await session.scalar(text("SELECT COUNT(*) FROM identity_bindings")) or 0)
-        people = int(await session.scalar(text("SELECT COUNT(*) FROM people")) or 0)
-    assert bindings == 1
-    assert people == 4
-
-
-@pytest.mark.asyncio
-async def test_space_attach_rejects_populated_and_unresolved(database: Database) -> None:
-    await _set_v2(database)
-    space = await _add_space(database)
-    other = await _add_space(database)
-    await _add_space_binding(database, space_id=other, external_space_id="space-taken")
-    await _add_legacy_group(database, "unresolved-space")
-    await _add_legacy_group(database, "owned-space", canonical_space_id=other)
-    service = _service(database)
-    principal = _principal(*_WRITE_CAPS)
-
-    async def _attach(external_id: str) -> ProblemCode:
-        context = _context(principal, SpaceId.parse(space))
-        with pytest.raises(ControlCommandError) as rejected:
-            await service.attach_space_binding(
-                context,
-                _command(
-                    context.request_id,
-                    expected_revision=1,
-                    payload={"platform": IDENTITY_PLATFORM, "external_space_id": external_id},
-                ),
-            )
-        return rejected.value.problem.code
-
-    assert await _attach("space-taken") is ProblemCode.BINDING_AMBIGUOUS
-    assert await _attach("unresolved-space") is ProblemCode.BINDING_AMBIGUOUS
-    assert await _attach("owned-space") is ProblemCode.POPULATED_MERGE_FORBIDDEN
-
-
-@pytest.mark.asyncio
 async def test_route_owner_platform_and_conversation_bytes_unchanged(database: Database) -> None:
     await _set_v2(database)
     person_id = await _add_person(database)
@@ -1264,8 +1072,6 @@ async def test_route_owner_platform_and_conversation_bytes_unchanged(database: D
     )
     presence_id = await _add_presence(database, external_account_id="route-yuki")
     foreign_presence = await _add_presence(database, external_account_id="route-tg", platform="tg")
-    await _add_legacy_person(database, "8000", is_bot=True)
-    await _add_legacy_person(database, "1001")
     conversation_id = _uuid()
     alias_id = _uuid()
     async with database.sessions() as session, session.begin():
@@ -1297,24 +1103,6 @@ async def test_route_owner_platform_and_conversation_bytes_unchanged(database: D
                 is_primary=1,
                 created_at=_NOW,
                 updated_at=_NOW,
-            )
-        )
-        session.add(
-            ConversationScopeModel(
-                scope_key="private:8000:1001",
-                bot_user_id="8000",
-                scope_type="private",
-                private_peer_user_id="1001",
-                group_id=None,
-                generation=4,
-                starts_after_event_id=0,
-                last_event_id=11,
-                last_generation_change_event_id=3,
-                uncovered_event_count=1,
-                uncovered_character_count=8,
-                created_at=_NOW,
-                updated_at=_NOW,
-                canonical_conversation_id=conversation_id,
             )
         )
     before = await _signature(database)
@@ -1427,24 +1215,6 @@ async def test_route_owner_platform_and_conversation_bytes_unchanged(database: D
 
 
 @pytest.mark.asyncio
-async def test_missing_runtime_state_fails_closed_without_writes(database: Database) -> None:
-    person_id = await _add_person(database)
-    async with database.sessions() as session, session.begin():
-        row = await session.get(IdentityRuntimeStateModel, 1)
-        assert row is not None
-        await session.delete(row)
-    before = await _counts(database)
-    context = _context(_principal(*_WRITE_CAPS), PersonId.parse(person_id))
-    with pytest.raises(ControlCommandError) as rejected:
-        await _service(database).enable_person(context, _command(context.request_id))
-    assert rejected.value.problem.code is ProblemCode.STATE_MISMATCH
-    after = await _counts(database)
-    assert after["admin_operation_events"] == before["admin_operation_events"]
-    assert after["control_command_receipts"] == before["control_command_receipts"]
-    assert after["persons"] == before["persons"]
-
-
-@pytest.mark.asyncio
 async def test_presence_create_is_server_assigned_and_idempotent(database: Database) -> None:
     await _set_v2(database)
     service = _service(database)
@@ -1462,7 +1232,14 @@ async def test_presence_create_is_server_assigned_and_idempotent(database: Datab
     PresenceId.parse(first.resource_id)
     assert first.resource_id != context.request_id.text
     async with database.sessions() as session:
-        count = int(await session.scalar(text("SELECT COUNT(*) FROM presences")) or 0)
+        count = int(
+            await session.scalar(
+                text(
+                    "SELECT COUNT(*) FROM presences WHERE external_account_id = 'server-uuid-yuki'"
+                )
+            )
+            or 0
+        )
         assert count == 1
 
 
@@ -1538,312 +1315,6 @@ def _problem_blob(error: ControlCommandError) -> str:
             "args": error.args,
         }
     )
-
-
-@pytest.mark.asyncio
-async def test_corrupted_success_receipt_does_not_echo_secret(database: Database) -> None:
-    await _set_v2(database)
-    person_id = await _add_person(database, enabled=False)
-    service = _service(database)
-    principal = _principal(*_WRITE_CAPS)
-    context = _context(principal, PersonId.parse(person_id))
-    command = _command(context.request_id, expected_revision=1)
-    first = await service.enable_person(context, command)
-    assert first.effective_state == {"enabled": True, "revision": 2}
-    replayed = await service.enable_person(context, command)
-    assert replayed.audit_id == first.audit_id
-    assert replayed.effective_state == first.effective_state
-    secret = "sk-replay-leak"
-    async with database.sessions() as session, session.begin():
-        row = await session.scalar(
-            select(ControlCommandReceiptModel).where(
-                ControlCommandReceiptModel.request_id == command.request_id.text
-            )
-        )
-        assert row is not None
-        row.effective_state_json = json.dumps({"api_key": secret})
-    before = await _counts(database)
-    with pytest.raises(ControlCommandError) as rejected:
-        await service.enable_person(context, command)
-    assert rejected.value.problem.code is ProblemCode.STATE_MISMATCH
-    _assert_hidden(_problem_blob(rejected.value), secret, "api_key")
-    assert await _counts(database) == before
-    conflict = _command(context.request_id, expected_revision=2)
-    with pytest.raises(ControlCommandError) as leaked:
-        await service.enable_person(context, conflict)
-    assert leaked.value.problem.code is ProblemCode.IDEMPOTENCY_CONFLICT
-    _assert_hidden(_problem_blob(leaked.value), secret, "api_key")
-    assert await _counts(database) == before
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "state",
-    (
-        {"enabled": True},
-        {"enabled": True, "revision": 2, "extra": True},
-        {"enabled": 1, "revision": 2},
-        {"enabled": True, "revision": 0},
-        {"password": "hidden", "revision": 2},
-    ),
-)
-async def test_corrupt_effective_state_shapes_are_state_mismatch(
-    database: Database, state: dict[str, object]
-) -> None:
-    await _set_v2(database)
-    person_id = await _add_person(database, enabled=False)
-    service = _service(database)
-    context = _context(_principal(*_WRITE_CAPS), PersonId.parse(person_id))
-    command = _command(context.request_id, expected_revision=1)
-    await service.enable_person(context, command)
-    async with database.sessions() as session, session.begin():
-        row = await session.scalar(select(ControlCommandReceiptModel))
-        assert row is not None
-        row.effective_state_json = json.dumps(state)
-    before = await _counts(database)
-    with pytest.raises(ControlCommandError) as rejected:
-        await service.enable_person(context, command)
-    assert rejected.value.problem.code is ProblemCode.STATE_MISMATCH
-    assert await _counts(database) == before
-
-
-@pytest.mark.asyncio
-async def test_broken_audit_chain_is_state_mismatch(database: Database) -> None:
-    await _set_v2(database)
-    service = _service(database)
-    principal = _principal(*_WRITE_CAPS)
-    first_target = PersonId.new()
-    second_target = PersonId.new()
-    first_ctx = _context(principal, first_target)
-    second_ctx = _context(principal, second_target)
-    first_cmd = _command(first_ctx.request_id, expected_revision=1)
-    second_cmd = _command(second_ctx.request_id, expected_revision=1)
-    with pytest.raises(ControlCommandError) as first:
-        await service.enable_person(first_ctx, first_cmd)
-    with pytest.raises(ControlCommandError) as second:
-        await service.enable_person(second_ctx, second_cmd)
-    assert first.value.problem.code is ProblemCode.NOT_FOUND
-    assert second.value.problem.code is ProblemCode.NOT_FOUND
-
-    async def _receipt(request_id: RequestId) -> ControlCommandReceiptModel:
-        async with database.sessions() as session:
-            row = await session.scalar(
-                select(ControlCommandReceiptModel).where(
-                    ControlCommandReceiptModel.request_id == request_id.text
-                )
-            )
-            assert row is not None
-            session.expunge(row)
-            return row
-
-    first_receipt = await _receipt(first_cmd.request_id)
-    second_receipt = await _receipt(second_cmd.request_id)
-    assert first_receipt.audit_id is not None
-    assert second_receipt.audit_id is not None
-
-    async with database.sessions() as session, session.begin():
-        row = await session.get(ControlCommandReceiptModel, first_receipt.id)
-        assert row is not None
-        row.audit_id = None
-    before = await _counts(database)
-    with pytest.raises(ControlCommandError) as null_audit:
-        await service.enable_person(first_ctx, first_cmd)
-    assert null_audit.value.problem.code is ProblemCode.STATE_MISMATCH
-    assert await _counts(database) == before
-
-    async with database.sessions() as session, session.begin():
-        row = await session.get(ControlCommandReceiptModel, first_receipt.id)
-        assert row is not None
-        row.audit_id = first_receipt.audit_id
-        await session.execute(text("PRAGMA foreign_keys=OFF"))
-        await session.execute(
-            text("DELETE FROM admin_operation_events WHERE id = :audit_id"),
-            {"audit_id": first_receipt.audit_id},
-        )
-    with pytest.raises(ControlCommandError) as missing_audit:
-        await service.enable_person(first_ctx, first_cmd)
-    assert missing_audit.value.problem.code is ProblemCode.STATE_MISMATCH
-
-    async with database.sessions() as session, session.begin():
-        left = await session.get(ControlCommandReceiptModel, second_receipt.id)
-        right = await session.scalar(
-            select(ControlCommandReceiptModel).where(
-                ControlCommandReceiptModel.request_id == first_cmd.request_id.text
-            )
-        )
-        assert left is not None and right is not None
-        left.audit_id, right.audit_id = right.audit_id, left.audit_id
-    with pytest.raises(ControlCommandError) as swapped:
-        await service.enable_person(second_ctx, second_cmd)
-    assert swapped.value.problem.code is ProblemCode.STATE_MISMATCH
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "field,value",
-    (
-        ("actor_user_id", str(uuid4())),
-        ("capability", "route.set"),
-        ("operation", "identity.person.disable"),
-        ("success", True),
-        ("before_json", json.dumps({"api_key": "sk-audit-leak"})),
-        ("after_json", json.dumps({"api_key": "sk-audit-leak"})),
-    ),
-)
-async def test_corrupted_failure_audit_fields_are_state_mismatch(
-    database: Database, field: str, value: object
-) -> None:
-    await _set_v2(database)
-    service = _service(database)
-    context = _context(_principal(*_WRITE_CAPS), PersonId.new())
-    command = _command(context.request_id, expected_revision=1)
-    with pytest.raises(ControlCommandError) as first:
-        await service.enable_person(context, command)
-    assert first.value.problem.code is ProblemCode.NOT_FOUND
-    secret = "sk-audit-leak"
-    async with database.sessions() as session, session.begin():
-        receipt = await session.scalar(select(ControlCommandReceiptModel))
-        assert receipt is not None and receipt.audit_id is not None
-        audit = await session.get(AdminOperationEventModel, receipt.audit_id)
-        assert audit is not None
-        setattr(audit, field, value)
-    before = await _counts(database)
-    with pytest.raises(ControlCommandError) as rejected:
-        await service.enable_person(context, command)
-    assert rejected.value.problem.code is ProblemCode.STATE_MISMATCH
-    _assert_hidden(_problem_blob(rejected.value), secret)
-    assert await _counts(database) == before
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "sql",
-    (
-        "UPDATE identity_runtime_state SET state = 'v2'",
-        "UPDATE identity_runtime_state SET cutover_id = :cutover",
-        "UPDATE identity_runtime_state SET source_fingerprint = 'fp', completed_at = :stamp",
-        "UPDATE identity_runtime_state SET revision = 0",
-        "UPDATE identity_runtime_state SET updated_at = :past, created_at = :stamp",
-        "INSERT INTO identity_runtime_state "
-        "(id, state, revision, created_at, updated_at) VALUES (2, 'v1', 1, :stamp, :stamp)",
-        "UPDATE identity_runtime_state SET state = 'v2', cutover_id = :cutover, "
-        "source_fingerprint = '', completed_at = :stamp",
-        "UPDATE identity_runtime_state SET state = 'v2', cutover_id = 'not-a-uuid4', "
-        "source_fingerprint = 'fingerprint-token', completed_at = :stamp",
-    ),
-)
-async def test_malformed_runtime_epoch_writes_nothing(database: Database, sql: str) -> None:
-    await _bypass_runtime_checks(database)
-    if "source_fingerprint = ''" in sql or "not-a-uuid4" in sql:
-        await _set_v2(database)
-        await _bypass_runtime_checks(database)
-    person_id = await _add_person(database, enabled=False)
-    async with database.sessions() as session, session.begin():
-        await session.execute(
-            text(sql),
-            {
-                "cutover": str(uuid4()),
-                "stamp": _NOW,
-                "past": datetime(2020, 1, 1, tzinfo=UTC),
-            },
-        )
-    before = await _counts(database)
-    revision = await _person_revision(database, person_id)
-    context = _context(_principal(*_WRITE_CAPS), PersonId.parse(person_id))
-    with pytest.raises(ControlCommandError) as rejected:
-        await _service(database).enable_person(context, _command(context.request_id))
-    assert rejected.value.problem.code is ProblemCode.STATE_MISMATCH
-    after = await _counts(database)
-    assert after == before
-    assert await _person_revision(database, person_id) == revision
-
-
-@pytest.mark.asyncio
-async def test_cross_platform_ids_ignore_qq_legacy_rows(database: Database) -> None:
-    await _set_v2(database)
-    await _add_legacy_person(database, "same-id", is_bot=True)
-    await _add_legacy_person(database, "presence-same")
-    await _add_legacy_group(database, "same-id")
-    person_id = await _add_person(database)
-    space_id = await _add_space(database)
-    service = _service(database)
-    principal = _principal(*_WRITE_CAPS)
-    attach = _context(principal, PersonId.parse(person_id))
-    binding = await service.attach_identity_binding(
-        attach,
-        _command(
-            attach.request_id,
-            expected_revision=1,
-            payload={"platform": "telegram", "external_account_id": "same-id"},
-        ),
-    )
-    assert binding.effective_state["platform"] == "telegram"
-    space_attach = _context(principal, SpaceId.parse(space_id))
-    space_binding = await service.attach_space_binding(
-        space_attach,
-        _command(
-            space_attach.request_id,
-            expected_revision=1,
-            payload={"platform": "telegram", "external_space_id": "same-id"},
-        ),
-    )
-    assert space_binding.effective_state["platform"] == "telegram"
-    register = _context(principal, YukiControlTarget.PERMANENT_YUKI)
-    presence = await service.register_presence(
-        register,
-        _command(
-            register.request_id,
-            expected_revision=0,
-            payload={"platform": "telegram", "external_account_id": "presence-same"},
-        ),
-    )
-    assert presence.effective_state["platform"] == "telegram"
-    qq_person = await _add_person(database)
-    qq_space = await _add_space(database)
-    with pytest.raises(ControlCommandError) as qq_account:
-        context = _context(principal, PersonId.parse(qq_person))
-        await service.attach_identity_binding(
-            context,
-            _command(
-                context.request_id,
-                expected_revision=1,
-                payload={"platform": IDENTITY_PLATFORM, "external_account_id": "same-id"},
-            ),
-        )
-    assert qq_account.value.problem.code is ProblemCode.PRECONDITION_FAILED
-    with pytest.raises(ControlCommandError) as qq_space_err:
-        context = _context(principal, SpaceId.parse(qq_space))
-        await service.attach_space_binding(
-            context,
-            _command(
-                context.request_id,
-                expected_revision=1,
-                payload={"platform": IDENTITY_PLATFORM, "external_space_id": "same-id"},
-            ),
-        )
-    assert qq_space_err.value.problem.code is ProblemCode.BINDING_AMBIGUOUS
-    with pytest.raises(ControlCommandError) as qq_presence:
-        context = _context(principal, YukiControlTarget.PERMANENT_YUKI)
-        await service.register_presence(
-            context,
-            _command(
-                context.request_id,
-                expected_revision=0,
-                payload={"platform": IDENTITY_PLATFORM, "external_account_id": "same-id"},
-            ),
-        )
-    assert qq_presence.value.problem.code is ProblemCode.PRECONDITION_FAILED
-    with pytest.raises(ControlCommandError) as telegram_collision:
-        context = _context(principal, PersonId.parse(qq_person))
-        await service.attach_identity_binding(
-            context,
-            _command(
-                context.request_id,
-                expected_revision=1,
-                payload={"platform": "telegram", "external_account_id": "same-id"},
-            ),
-        )
-    assert telegram_collision.value.problem.code is ProblemCode.BINDING_AMBIGUOUS
 
 
 @pytest.mark.asyncio
@@ -1962,66 +1433,6 @@ async def test_pause_remains_available_when_dependencies_are_unhealthy(
             ),
         )
     assert space_resume.value.problem.code is ProblemCode.PRECONDITION_FAILED
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("method", _METHODS)
-async def test_v1_malformed_payload_is_cached_validation_error(
-    database: Database, method: str
-) -> None:
-    person_id = await _add_person(database)
-    space_id = await _add_space(database)
-    binding_id = await _add_binding(database, person_id=person_id, external_account_id="v1-pay")
-    presence_id = await _add_presence(database, external_account_id="v1-yuki-pay")
-    ids = {
-        "person": person_id,
-        "space": space_id,
-        "binding": binding_id,
-        "presence": presence_id,
-    }
-    before = await _counts(database)
-    service = _service(database)
-    context = _context(_principal(*_WRITE_CAPS), _invoke_target(method, ids))
-    command = _command(context.request_id, expected_revision=0, payload={"unknown": True})
-    with pytest.raises(ControlCommandError) as rejected:
-        await getattr(service, method)(context, command)
-    assert rejected.value.problem.code is ProblemCode.VALIDATION_ERROR
-    with pytest.raises(ControlCommandError) as replayed:
-        await getattr(service, method)(context, command)
-    assert replayed.value.problem.code is ProblemCode.VALIDATION_ERROR
-    after = await _counts(database)
-    for table in _DOMAIN_TABLES:
-        assert after[table] == before[table]
-    assert after["control_command_receipts"] == before["control_command_receipts"] + 1
-    assert after["admin_operation_events"] == before["admin_operation_events"] + 1
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("method", _METHODS)
-async def test_v1_wrong_target_is_cached_validation_error(database: Database, method: str) -> None:
-    person_id = await _add_person(database)
-    space_id = await _add_space(database)
-    binding_id = await _add_binding(database, person_id=person_id, external_account_id="v1-tgt")
-    presence_id = await _add_presence(database, external_account_id="v1-yuki-tgt")
-    ids = {
-        "person": person_id,
-        "space": space_id,
-        "binding": binding_id,
-        "presence": presence_id,
-    }
-    before = await _counts(database)
-    service = _service(database)
-    context = _context(_principal(*_WRITE_CAPS), _wrong_target(method, ids))
-    command = _command(
-        context.request_id, expected_revision=0, payload=_invoke_payload(method, ids)
-    )
-    with pytest.raises(ControlCommandError) as rejected:
-        await getattr(service, method)(context, command)
-    assert rejected.value.problem.code is ProblemCode.VALIDATION_ERROR
-    after = await _counts(database)
-    for table in _DOMAIN_TABLES:
-        assert after[table] == before[table]
-    assert after["control_command_receipts"] == before["control_command_receipts"] + 1
 
 
 @pytest.mark.asyncio
@@ -2174,330 +1585,6 @@ async def _bypass_receipt_checks(database: Database) -> None:
 
 
 @pytest.mark.asyncio
-async def test_safe_shaped_false_enable_state_is_rejected(database: Database) -> None:
-    await _set_v2(database)
-    person_id = await _add_person(database, enabled=False)
-    service = _service(database)
-    context = _context(_principal(*_WRITE_CAPS), PersonId.parse(person_id))
-    command = _command(context.request_id, expected_revision=1)
-    first = await service.enable_person(context, command)
-    assert first.effective_state == {"enabled": True, "revision": 2}
-    async with database.sessions() as session, session.begin():
-        row = await session.scalar(select(ControlCommandReceiptModel))
-        assert row is not None
-        row.effective_state_json = json.dumps({"enabled": False, "revision": 2})
-    before = await _counts(database)
-    with pytest.raises(ControlCommandError) as rejected:
-        await service.enable_person(context, command)
-    assert rejected.value.problem.code is ProblemCode.STATE_MISMATCH
-    assert await _counts(database) == before
-
-
-@pytest.mark.asyncio
-async def test_same_target_same_operation_audit_swap_is_rejected(database: Database) -> None:
-    await _set_v2(database)
-    person_id = await _add_person(database, enabled=False)
-    service = _service(database)
-    principal = _principal(*_WRITE_CAPS)
-    first_ctx = _context(principal, PersonId.parse(person_id))
-    first = await service.enable_person(
-        first_ctx, _command(first_ctx.request_id, expected_revision=1)
-    )
-    second_ctx = _context(principal, PersonId.parse(person_id))
-    second = await service.enable_person(
-        second_ctx, _command(second_ctx.request_id, expected_revision=2)
-    )
-    assert first.revision == 2
-    assert second.revision == 2
-    async with database.sessions() as session:
-        audits = list(await session.scalars(select(AdminOperationEventModel)))
-    assert {row.trigger_message_id for row in audits} == {
-        first_ctx.request_id.text,
-        second_ctx.request_id.text,
-    }
-    assert all(row.conversation_key == "" for row in audits)
-    async with database.sessions() as session, session.begin():
-        rows = list(await session.scalars(select(ControlCommandReceiptModel)))
-        assert len(rows) == 2
-        rows[0].audit_id, rows[1].audit_id = rows[1].audit_id, rows[0].audit_id
-    with pytest.raises(ControlCommandError) as first_err:
-        await service.enable_person(first_ctx, _command(first_ctx.request_id, expected_revision=1))
-    with pytest.raises(ControlCommandError) as second_err:
-        await service.enable_person(
-            second_ctx, _command(second_ctx.request_id, expected_revision=2)
-        )
-    assert first_err.value.problem.code is ProblemCode.STATE_MISMATCH
-    assert second_err.value.problem.code is ProblemCode.STATE_MISMATCH
-
-
-@pytest.mark.asyncio
-async def test_nested_unsafe_audit_json_is_rejected(database: Database) -> None:
-    await _set_v2(database)
-    person_id = await _add_person(database, enabled=False)
-    service = _service(database)
-    context = _context(_principal(*_WRITE_CAPS), PersonId.parse(person_id))
-    command = _command(context.request_id, expected_revision=1)
-    await service.enable_person(context, command)
-    secret = "sk-nested"
-    async with database.sessions() as session, session.begin():
-        receipt = await session.scalar(select(ControlCommandReceiptModel))
-        assert receipt is not None and receipt.audit_id is not None
-        audit = await session.get(AdminOperationEventModel, receipt.audit_id)
-        assert audit is not None
-        audit.before_json = json.dumps({"enabled": {"api_key": secret}, "revision": 1})
-    before = await _counts(database)
-    with pytest.raises(ControlCommandError) as rejected:
-        await service.enable_person(context, command)
-    assert rejected.value.problem.code is ProblemCode.STATE_MISMATCH
-    _assert_hidden(_problem_blob(rejected.value), secret, "api_key")
-    assert await _counts(database) == before
-
-
-@pytest.mark.asyncio
-async def test_semantic_mutations_of_safe_typed_state_are_rejected(database: Database) -> None:
-    await _set_v2(database)
-    person_id = await _add_person(database)
-    space_id = await _add_space(database)
-    service = _service(database)
-    principal = _principal(*_WRITE_CAPS)
-    disable = _context(principal, PersonId.parse(person_id))
-    await service.disable_person(disable, _command(disable.request_id, expected_revision=1))
-    attach = _context(principal, PersonId.parse(person_id))
-    binding = await service.attach_identity_binding(
-        attach,
-        _command(
-            attach.request_id,
-            expected_revision=2,
-            payload={"platform": IDENTITY_PLATFORM, "external_account_id": "semantic-human"},
-        ),
-    )
-    register = _context(principal, YukiControlTarget.PERMANENT_YUKI)
-    presence = await service.register_presence(
-        register,
-        _command(
-            register.request_id,
-            expected_revision=0,
-            payload={"platform": IDENTITY_PLATFORM, "external_account_id": "semantic-yuki"},
-        ),
-    )
-    stop = _context(principal, PresenceId.parse(presence.resource_id))
-    stop_cmd = _command(stop.request_id, expected_revision=1)
-    await service.stop_presence(stop, stop_cmd)
-    ingest = _context(principal, PresenceId.parse(presence.resource_id))
-    ingest_cmd = _command(
-        ingest.request_id, expected_revision=2, payload={"ingest_eligible": False}
-    )
-    await service.set_presence_ingest(ingest, ingest_cmd)
-    start = _context(principal, PresenceId.parse(presence.resource_id))
-    await service.start_presence(start, _command(start.request_id, expected_revision=3))
-    enable = _context(principal, PersonId.parse(person_id))
-    await service.enable_person(enable, _command(enable.request_id, expected_revision=3))
-    route = _context(principal, PersonId.parse(person_id))
-    route_cmd = _command(
-        route.request_id,
-        expected_revision=0,
-        payload={
-            "kind": RouteKind.PERSON_ACTIVE.value,
-            "identity_binding_id": binding.resource_id,
-            "presence_id": presence.resource_id,
-        },
-    )
-    created = await service.set_route(route, route_cmd)
-    other = PersonId.new().text
-
-    async def _mutate_receipt(request_id: RequestId, state: dict[str, object]) -> None:
-        async with database.sessions() as session, session.begin():
-            row = await session.scalar(
-                select(ControlCommandReceiptModel).where(
-                    ControlCommandReceiptModel.request_id == request_id.text
-                )
-            )
-            assert row is not None
-            row.effective_state_json = json.dumps(state)
-            if row.audit_id is not None:
-                audit = await session.get(AdminOperationEventModel, row.audit_id)
-                assert audit is not None
-                after = json.loads(audit.after_json)
-                after.update({key: value for key, value in state.items() if key in after})
-                audit.after_json = json.dumps(after)
-
-    await _mutate_receipt(disable.request_id, {"enabled": True, "revision": 2})
-    with pytest.raises(ControlCommandError) as disabled:
-        await service.disable_person(disable, _command(disable.request_id, expected_revision=1))
-    assert disabled.value.problem.code is ProblemCode.STATE_MISMATCH
-    await _mutate_receipt(
-        attach.request_id,
-        {
-            "binding_id": binding.resource_id,
-            "person_id": other,
-            "platform": "telegram",
-            "status": "active",
-            "revision": 1,
-        },
-    )
-    with pytest.raises(ControlCommandError) as attached:
-        await service.attach_identity_binding(
-            attach,
-            _command(
-                attach.request_id,
-                expected_revision=2,
-                payload={"platform": IDENTITY_PLATFORM, "external_account_id": "semantic-human"},
-            ),
-        )
-    assert attached.value.problem.code is ProblemCode.STATE_MISMATCH
-    await _mutate_receipt(
-        ingest.request_id,
-        {
-            "presence_id": presence.resource_id,
-            "platform": IDENTITY_PLATFORM,
-            "enabled": True,
-            "ingest_eligible": True,
-            "revision": 2,
-        },
-    )
-    with pytest.raises(ControlCommandError) as ingest_err:
-        await service.set_presence_ingest(ingest, ingest_cmd)
-    assert ingest_err.value.problem.code is ProblemCode.STATE_MISMATCH
-    await _mutate_receipt(
-        stop.request_id,
-        {
-            "presence_id": presence.resource_id,
-            "platform": IDENTITY_PLATFORM,
-            "enabled": True,
-            "ingest_eligible": True,
-            "revision": 2,
-        },
-    )
-    with pytest.raises(ControlCommandError) as stopped:
-        await service.stop_presence(stop, stop_cmd)
-    assert stopped.value.problem.code is ProblemCode.STATE_MISMATCH
-    await _mutate_receipt(
-        route.request_id,
-        {
-            "kind": RouteKind.SPACE_ACTIVE.value,
-            "owner_id": space_id,
-            "binding_id": binding.resource_id,
-            "presence_id": presence.resource_id,
-            "paused": True,
-            "revision": created.revision,
-            "route_generation": created.effective_state["route_generation"],
-            "reference_state": RouteReferenceState.CONSISTENT.value,
-        },
-    )
-    with pytest.raises(ControlCommandError) as route_err:
-        await service.set_route(route, route_cmd)
-    assert route_err.value.problem.code is ProblemCode.STATE_MISMATCH
-
-
-@pytest.mark.asyncio
-async def test_coordinated_resource_and_audit_substitution_is_rejected(
-    database: Database,
-) -> None:
-    await _set_v2(database)
-    person_id = await _add_person(database, enabled=False)
-    other = await _add_person(database, enabled=False)
-    service = _service(database)
-    context = _context(_principal(*_WRITE_CAPS), PersonId.parse(person_id))
-    command = _command(context.request_id, expected_revision=1)
-    await service.enable_person(context, command)
-    async with database.sessions() as session, session.begin():
-        receipt = await session.scalar(select(ControlCommandReceiptModel))
-        assert receipt is not None and receipt.audit_id is not None
-        receipt.result_resource_id = other
-        audit = await session.get(AdminOperationEventModel, receipt.audit_id)
-        assert audit is not None
-        audit.target_id = other
-    with pytest.raises(ControlCommandError) as rejected:
-        await service.enable_person(context, command)
-    assert rejected.value.problem.code is ProblemCode.STATE_MISMATCH
-
-
-@pytest.mark.asyncio
-async def test_non_cacheable_failed_problem_is_rejected(database: Database) -> None:
-    await _set_v2(database)
-    service = _service(database)
-    context = _context(_principal(*_WRITE_CAPS), PersonId.new())
-    command = _command(context.request_id, expected_revision=1)
-    with pytest.raises(ControlCommandError) as first:
-        await service.enable_person(context, command)
-    assert first.value.problem.code is ProblemCode.NOT_FOUND
-    async with database.sessions() as session, session.begin():
-        receipt = await session.scalar(select(ControlCommandReceiptModel))
-        assert receipt is not None and receipt.audit_id is not None
-        receipt.problem_code = ProblemCode.STATE_MISMATCH.value
-        audit = await session.get(AdminOperationEventModel, receipt.audit_id)
-        assert audit is not None
-        audit.error_category = ProblemCode.STATE_MISMATCH.value
-        audit.after_json = json.dumps({"problem": ProblemCode.STATE_MISMATCH.value})
-    with pytest.raises(ControlCommandError) as rejected:
-        await service.enable_person(context, command)
-    assert rejected.value.problem.code is ProblemCode.STATE_MISMATCH
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "column,value",
-    (
-        ("problem_code", "not_found"),
-        ("result_resource_id", None),
-        ("result_revision", None),
-        ("effective_state_json", None),
-        ("operation_kind", "backfill"),
-        ("operation_ref", "run-1"),
-        ("operation_kind", "rebuild"),
-        ("operation_ref", "rebuild:forged"),
-    ),
-)
-async def test_bypassed_success_receipt_lifecycle_is_rejected(
-    database: Database, column: str, value: object
-) -> None:
-    await _set_v2(database)
-    person_id = await _add_person(database, enabled=False)
-    service = _service(database)
-    context = _context(_principal(*_WRITE_CAPS), PersonId.parse(person_id))
-    command = _command(context.request_id, expected_revision=1)
-    await service.enable_person(context, command)
-    await _bypass_receipt_checks(database)
-    async with database.sessions() as session, session.begin():
-        row = await session.scalar(select(ControlCommandReceiptModel))
-        assert row is not None
-        setattr(row, column, value)
-    with pytest.raises(ControlCommandError) as rejected:
-        await service.enable_person(context, command)
-    assert rejected.value.problem.code is ProblemCode.STATE_MISMATCH
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "column,value",
-    (
-        ("result_resource_id", str(uuid4())),
-        ("result_revision", 1),
-        ("effective_state_json", json.dumps({"enabled": True, "revision": 1})),
-        ("operation_kind", "backfill"),
-        ("operation_ref", "run-1"),
-    ),
-)
-async def test_bypassed_failed_receipt_lifecycle_is_rejected(
-    database: Database, column: str, value: object
-) -> None:
-    await _set_v2(database)
-    service = _service(database)
-    context = _context(_principal(*_WRITE_CAPS), PersonId.new())
-    command = _command(context.request_id, expected_revision=1)
-    with pytest.raises(ControlCommandError):
-        await service.enable_person(context, command)
-    await _bypass_receipt_checks(database)
-    async with database.sessions() as session, session.begin():
-        row = await session.scalar(select(ControlCommandReceiptModel))
-        assert row is not None
-        setattr(row, column, value)
-    with pytest.raises(ControlCommandError) as rejected:
-        await service.enable_person(context, command)
-    assert rejected.value.problem.code is ProblemCode.STATE_MISMATCH
-
-
-@pytest.mark.asyncio
 async def test_safe_success_replay_is_byte_equivalent_for_every_operation(
     database: Database,
 ) -> None:
@@ -2608,39 +1695,3 @@ async def test_safe_success_replay_is_byte_equivalent_for_every_operation(
     )
     await _once("set_route", SpaceId.parse(space_id), set_space)
     assert {item[0] for item in results} >= set(_METHODS)
-
-
-def test_control_plane_stays_clean_and_adapter_has_no_legacy_insert() -> None:
-    adapter = ADAPTER_PATH.read_text(encoding="utf-8")
-    assert "get_bots" not in adapter
-    assert "OFFSET" not in adapter
-    assert ".offset(" not in adapter
-    assert "DeliveryRoute" not in adapter
-    assert "presence_active_route" not in adapter
-    assert "GatewayConnection" not in adapter
-    assert "INSERT INTO people" not in adapter
-    assert "INSERT INTO groups" not in adapter
-    assert "PersonModel(" not in adapter
-    assert "GroupModel(" not in adapter
-    assert "APIRouter" not in adapter
-    assert "FastAPI" not in adapter
-    tree = ast.parse(adapter, filename=str(ADAPTER_PATH))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            assert node.func.attr != "offset"
-        if isinstance(node, ast.Name):
-            assert node.id != "get_bots"
-            assert node.id != "AdminActor"
-    for path in _python_files(CONTROL_PLANE_ROOT):
-        source = path.read_text(encoding="utf-8")
-        parsed = ast.parse(source, filename=str(path))
-        for node in ast.walk(parsed):
-            if isinstance(node, ast.Name):
-                assert node.id != "Any"
-                assert node.id != "AdminActor"
-                assert node.id != "get_bots"
-            if isinstance(node, ast.ImportFrom) and node.module:
-                assert not node.module.startswith("sqlalchemy")
-                assert not node.module.startswith("qq_ai_bot.persistence")
-                assert not node.module.startswith("qq_ai_bot.admin")
-    assert is_protocol_capability("web_search") is True

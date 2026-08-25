@@ -100,6 +100,18 @@ jobs:
         run: uv run ruff check .
       - name: Mypy
         run: uv run mypy src
+      - name: Enforce test budget
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$(uv run pytest --collect-only -q)"
+          printf '%s\n' "$output"
+          count="$(printf '%s\n' "$output" | sed -nE 's/^([0-9]+) tests? collected.*$/\1/p' | tail -n 1)"
+          test -n "$count"
+          if (( count > 800 )); then
+            echo "test budget exceeded: $count collected (maximum 800)" >&2
+            exit 1
+          fi
       - name: Installer syntax
         shell: bash
         run: |
@@ -119,10 +131,6 @@ jobs:
           '
       - name: Pytest
         run: uv run pytest -q
-      - name: Prompt benchmark
-        run: uv run pytest -q tests/unit/test_rising_sea_architecture.py -k prompt_benchmark
-      - name: Model route validation
-        run: uv run pytest -q tests/unit/test_rising_sea_architecture.py -k model_profiles
       - name: Example plugin contract
         run: uv run pytest -q examples/plugins/com.example.echo/tests
       - name: Alembic fresh install
@@ -131,8 +139,8 @@ jobs:
         run: |
           mkdir -p data
           uv run alembic upgrade head
-      - name: Memory migration matrix
-        run: uv run pytest -q tests/unit/test_memory_migration_matrix.py
+      - name: Canonical migration matrix
+        run: uv run pytest -q tests/unit/test_migration_0049.py
 
   docker:
     needs: changes

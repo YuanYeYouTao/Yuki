@@ -381,7 +381,8 @@ async def test_access_commands_validate_permission_target_and_switch(database: D
         non_admin_sender,
     )
     assert "权限不足" in non_admin_sender.messages[0].text
-    assert await harness.private_users.get("12345678") is None
+    unchanged = await harness.private_users.get("12345678")
+    assert unchanged is not None and unchanged.enabled is True
 
     invalid_sender = MemorySender()
     await harness.processor.handle(
@@ -718,9 +719,10 @@ async def test_status_command_labels_overlay_and_omits_summary_text(database: Da
 
     from sqlalchemy import select
 
-    from qq_ai_bot.conversation.rollup.db_models import (
-        ConversationRollupEmergencyOverlayModel,
-        ConversationScopeModel,
+    from qq_ai_bot.conversation.canonical_db_models import (
+        CanonicalConversationModel,
+        CanonicalConversationRollupEmergencyOverlayModel,
+        ConversationLegacyAliasModel,
     )
 
     harness = build_harness(database, make_settings(database.url))
@@ -732,13 +734,17 @@ async def test_status_command_labels_overlay_and_omits_summary_text(database: Da
     secret = "SECRET_OVERLAY_SUMMARY_MUST_NOT_APPEAR"
     now = datetime.now(UTC)
     async with database.sessions() as session, session.begin():
-        row = await session.scalar(
-            select(ConversationScopeModel).where(ConversationScopeModel.scope_key == scope.key)
+        alias = await session.scalar(
+            select(ConversationLegacyAliasModel).where(
+                ConversationLegacyAliasModel.scope_key == scope.key
+            )
         )
+        assert alias is not None
+        row = await session.get(CanonicalConversationModel, alias.conversation_id)
         assert row is not None
         session.add(
-            ConversationRollupEmergencyOverlayModel(
-                scope_id=row.id,
+            CanonicalConversationRollupEmergencyOverlayModel(
+                conversation_id=row.id,
                 generation=row.generation,
                 covered_through_event_id=cover,
                 summary_text=secret,
