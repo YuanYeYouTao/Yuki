@@ -18,6 +18,7 @@ from qq_ai_bot.automation.registry import (
     CapabilityHandler,
     CapabilityResult,
 )
+from qq_ai_bot.plugin_host.canonical_projection import projection_from_automation
 from qq_ai_bot.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
 from qq_ai_bot.plugin_host.facades import PluginInvocation
 from qq_ai_bot.plugin_host.manifest import PluginManifest
@@ -156,6 +157,12 @@ def _automation_invocation(
         raise RuntimeError("plugin automation delegation belongs to another bot")
     if delegated.current_group_id != context.current_group_id:
         raise RuntimeError("plugin automation group does not match delegated authority")
+    identity = projection_from_automation(
+        conversation_key=context.conversation_key,
+        conversation_id=context.canonical_conversation_id,
+        person_id=context.canonical_target_person_id,
+        space_id=context.canonical_target_space_id,
+    )
     return PluginInvocation(
         plugin_id=plugin_id,
         origin=TurnOrigin.SCHEDULED_AUTOMATION,
@@ -165,6 +172,11 @@ def _automation_invocation(
         allowed_capabilities=authority.allowed_capabilities,
         web_was_used=context.web_was_used,
         gateway=cast(Any, context.gateway),
+        legacy_conversation_key=identity.conversation_key,
+        person_id=identity.person_id,
+        space_id=identity.space_id,
+        conversation_id=identity.conversation_id,
+        presence_id=identity.presence_id,
     )
 
 

@@ -6,9 +6,11 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from qq_ai_bot.admin.control_resolution import ControlAccess, audit_ref_from_actor
 from qq_ai_bot.admin.models import AdminActor
 from qq_ai_bot.config import Settings
 from qq_ai_bot.emoji.admin import EmojiAdminService
+from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.services.admin import (
     GroupAdminService,
     MemoryAdminService,
@@ -369,6 +371,7 @@ class AdminActionService:
         self,
         *,
         settings: Settings,
+        database: Database,
         relationships: RelationshipAdminService,
         memories: MemoryAdminService,
         preferences: PreferenceAdminService,
@@ -379,6 +382,7 @@ class AdminActionService:
         registry: ActionRegistry | None = None,
     ) -> None:
         self._settings = settings
+        self._control = ControlAccess(database, superuser_ids=settings.superusers)
         self._relationships = relationships
         self._memories = memories
         self._preferences = preferences
@@ -411,14 +415,29 @@ class AdminActionService:
             if spec.target_kind == "user"
             else TargetResolver.group(arguments, actor)
         )
+        person_context = None
+        space_context = None
+        audit = audit_ref_from_actor(actor)
+        if action.startswith(("relationship.", "preference.", "private_access.")):
+            principal = await self._control.principal_for_qq(actor.user_id)
+            person_context = self._control.context(
+                principal, await self._control.person_target(target)
+            )
+        elif action.startswith("group."):
+            principal = await self._control.principal_for_qq(actor.user_id)
+            space_context = self._control.context(
+                principal, await self._control.space_target(target)
+            )
         if action == "relationship.get":
-            row = await self._relationships.get_relationship(actor, target)
+            assert person_context is not None
+            row = await self._relationships.get_relationship(person_context, audit)
             return _relationship_json(row)
         if action == "relationship.set_affection":
+            assert person_context is not None
             before, after = await self._relationships.set_affection(
-                actor,
-                target,
+                person_context,
                 _required_int(arguments, "value"),
+                audit=audit,
             )
             return {
                 "target_user_id": target,
@@ -426,10 +445,11 @@ class AdminActionService:
                 "after": _relationship_json(after),
             }
         if action == "relationship.adjust_affection":
+            assert person_context is not None
             before, after = await self._relationships.adjust_affection(
-                actor,
-                target,
+                person_context,
                 _required_int(arguments, "delta"),
+                audit=audit,
             )
             return {
                 "target_user_id": target,
@@ -437,10 +457,11 @@ class AdminActionService:
                 "after": _relationship_json(after),
             }
         if action == "relationship.set_trust":
+            assert person_context is not None
             before, after = await self._relationships.set_trust(
-                actor,
-                target,
+                person_context,
                 _required_int(arguments, "value"),
+                audit=audit,
             )
             return {
                 "target_user_id": target,
@@ -448,7 +469,8 @@ class AdminActionService:
                 "after": _relationship_json(after),
             }
         if action == "relationship.history":
-            relationship_events = await self._relationships.get_history(actor, target)
+            assert person_context is not None
+            relationship_events = await self._relationships.get_history(person_context, audit)
             return {
                 "target_user_id": target,
                 "events": [
@@ -520,17 +542,19 @@ class AdminActionService:
                 "deleted_count": deleted_count,
             }
         if action == "preference.list":
-            preference_rows = await self._preferences.list_preferences(actor, target)
+            assert person_context is not None
+            preference_rows = await self._preferences.list_preferences(person_context, audit)
             return {
                 "target_user_id": target,
                 "preferences": [{"key": row.key, "value": row.value} for row in preference_rows],
             }
         if action == "preference.set":
+            assert person_context is not None
             preference_row = await self._preferences.set_preference(
-                actor,
-                target,
+                person_context,
                 _required_text(arguments, "key"),
                 _required_text(arguments, "value"),
+                audit=audit,
             )
             return {
                 "target_user_id": target,
@@ -538,34 +562,41 @@ class AdminActionService:
                 "value": preference_row.value,
             }
         if action == "preference.delete":
+            assert person_context is not None
             key = _required_text(arguments, "key")
-            deleted = await self._preferences.delete_preference(actor, target, key)
+            deleted = await self._preferences.delete_preference(person_context, key, audit=audit)
             if not deleted:
                 raise ValueError("没有找到该偏好")
             return {"target_user_id": target, "key": key, "deleted": True}
         if action == "group.enable":
-            group_row = await self._groups.enable_current_group(actor, target)
+            assert space_context is not None
+            group_row = await self._groups.enable_current_group(space_context, audit=audit)
             return {"group_id": target, "enabled": group_row.enabled}
         if action == "group.disable":
-            group_row = await self._groups.disable_current_group(actor, target)
+            assert space_context is not None
+            group_row = await self._groups.disable_current_group(space_context, audit=audit)
             return {"group_id": target, "enabled": group_row.enabled}
         if action == "group.autonomous_enable":
-            group_row = await self._groups.set_autonomous_enabled(actor, target, True)
+            assert space_context is not None
+            group_row = await self._groups.set_autonomous_enabled(space_context, True, audit=audit)
             return {
                 "group_id": target,
                 "autonomous_enabled": group_row.autonomous_enabled,
             }
         if action == "group.autonomous_disable":
-            group_row = await self._groups.set_autonomous_enabled(actor, target, False)
+            assert space_context is not None
+            group_row = await self._groups.set_autonomous_enabled(space_context, False, audit=audit)
             return {
                 "group_id": target,
                 "autonomous_enabled": group_row.autonomous_enabled,
             }
         if action == "private_access.enable":
-            private_row = await self._private_access.enable_user(actor, target)
+            assert person_context is not None
+            private_row = await self._private_access.enable_user(person_context, audit=audit)
             return {"target_user_id": target, "enabled": private_row.enabled}
         if action == "private_access.disable":
-            private_row = await self._private_access.disable_user(actor, target)
+            assert person_context is not None
+            private_row = await self._private_access.disable_user(person_context, audit=audit)
             return {"target_user_id": target, "enabled": private_row.enabled}
         raise KeyError(f"未实现管理员 action：{action}")
 

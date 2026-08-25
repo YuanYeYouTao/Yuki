@@ -352,6 +352,147 @@ class AutomationValidator:
         return re.search(rf"(?<!\d){re.escape(target)}(?!\d)", text) is not None
 
 
+_SEND_PERSON_CALLS = frozenset(
+    {
+        "onebot.send_private_message",
+        "speech.send_private",
+    }
+)
+_SEND_SPACE_CALLS = frozenset(
+    {
+        "onebot.send_group_message",
+        "speech.send_group",
+    }
+)
+_SEND_EITHER_CALLS = frozenset(
+    {
+        "emoji.send",
+        "emoji.send_by_id",
+        "admin.execute_action",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class CollectedSendTargets:
+    kind: str | None
+    raw_ids: tuple[str, ...]
+
+
+def collect_send_targets(
+    script: AutomationScript,
+    *,
+    creator_user_id: str,
+    current_group_id: str | None,
+) -> CollectedSendTargets:
+    """Collect unique send owners. Mixed Person/Space or untrusted targets fail closed."""
+
+    person_ids: list[str] = []
+    space_ids: list[str] = []
+    for step in script.steps:
+        _collect_step_send_targets(
+            step.call,
+            step.arguments,
+            person_ids,
+            space_ids,
+            creator_user_id=creator_user_id,
+            current_group_id=current_group_id,
+        )
+    if person_ids and space_ids:
+        raise ValueError("一条自动化不能同时发送给不同的永久主体类型")
+    if not person_ids and not space_ids:
+        return CollectedSendTargets(kind=None, raw_ids=())
+    if person_ids:
+        return CollectedSendTargets(kind="person", raw_ids=tuple(dict.fromkeys(person_ids)))
+    return CollectedSendTargets(kind="space", raw_ids=tuple(dict.fromkeys(space_ids)))
+
+
+def _collect_step_send_targets(
+    call: str,
+    arguments: dict[str, Any],
+    person_ids: list[str],
+    space_ids: list[str],
+    *,
+    creator_user_id: str,
+    current_group_id: str | None,
+) -> None:
+    if call in _SEND_PERSON_CALLS:
+        person_ids.append(
+            _resolved_send_user(arguments.get("user_id"), creator_user_id=creator_user_id)
+        )
+        return
+    if call in _SEND_SPACE_CALLS:
+        space_ids.append(
+            _resolved_send_group(arguments.get("group_id"), current_group_id=current_group_id)
+        )
+        return
+    if call in _SEND_EITHER_CALLS:
+        if arguments.get("user_id"):
+            person_ids.append(
+                _resolved_send_user(arguments.get("user_id"), creator_user_id=creator_user_id)
+            )
+        if arguments.get("group_id"):
+            space_ids.append(
+                _resolved_send_group(arguments.get("group_id"), current_group_id=current_group_id)
+            )
+        return
+    if call == "onebot.call_api":
+        _collect_onebot_send_params(
+            arguments.get("params"),
+            person_ids,
+            space_ids,
+            creator_user_id=creator_user_id,
+            current_group_id=current_group_id,
+        )
+
+
+def _collect_onebot_send_params(
+    value: Any,
+    person_ids: list[str],
+    space_ids: list[str],
+    *,
+    creator_user_id: str,
+    current_group_id: str | None,
+) -> None:
+    if not isinstance(value, dict):
+        return
+    if "user_id" in value:
+        person_ids.append(
+            _resolved_send_user(value.get("user_id"), creator_user_id=creator_user_id)
+        )
+    if "group_id" in value:
+        space_ids.append(
+            _resolved_send_group(value.get("group_id"), current_group_id=current_group_id)
+        )
+    for child in value.values():
+        if isinstance(child, dict):
+            _collect_onebot_send_params(
+                child,
+                person_ids,
+                space_ids,
+                creator_user_id=creator_user_id,
+                current_group_id=current_group_id,
+            )
+
+
+def _resolved_send_user(target: Any, *, creator_user_id: str) -> str:
+    if target == "$creator_user_id":
+        return creator_user_id
+    if not isinstance(target, str) or "${" in target or not target.strip():
+        raise ValueError("发送目标不可信")
+    return target
+
+
+def _resolved_send_group(target: Any, *, current_group_id: str | None) -> str:
+    if target == "$current_group_id":
+        if current_group_id is None:
+            raise ValueError("当前消息不是群聊，不能使用 $current_group_id")
+        return current_group_id
+    if not isinstance(target, str) or "${" in target or not target.strip():
+        raise ValueError("发送目标不可信")
+    return target
+
+
 def canonical_script_hash(script: AutomationScript) -> str:
     payload = json.dumps(
         script.model_dump(mode="json", exclude_none=True),

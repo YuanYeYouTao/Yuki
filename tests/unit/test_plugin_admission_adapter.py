@@ -119,6 +119,42 @@ async def test_contextual_provider_receives_real_message_origin_and_scope() -> N
     assert signals[0].source_plugin_id == "com.example.context"
 
 
+async def test_admission_context_uses_legacy_conversation_key() -> None:
+    registry = ExtensionRegistry()
+    received: list[AdmissionSignalContext] = []
+
+    async def provider(context: AdmissionSignalContext) -> SdkAdmissionSignal:
+        received.append(context)
+        return SdkAdmissionSignal(
+            source_plugin_id="com.example.context",
+            score_delta=1,
+            reason_code="ok",
+            summary="ok",
+            confidence=0.9,
+        )
+
+    _register(registry, "com.example.context", "context", provider)
+    message = InboundMessage(
+        message_id="message-legacy",
+        event_type="message",
+        scope_type=ScopeType.GROUP,
+        sender=SenderIdentity(user_id="10001"),
+        text="hello",
+        bot_user_id="8001",
+        group_id="20002",
+        legacy_conversation_key="bot:8000:group:20002",
+        received_at=datetime(2026, 7, 28, 3, 4, 5, tzinfo=UTC),
+    )
+    signals = await PluginAdmissionSignalAdapter(registry).collect(
+        message=message,
+        origin=TurnOrigin.AUTONOMOUS_GROUP,
+        runtime=_runtime(),
+    )
+    assert signals
+    assert received[0].conversation_key == "bot:8000:group:20002"
+    assert received[0].conversation_key != message.scope().key
+
+
 async def test_parameterless_provider_still_collects() -> None:
     registry = ExtensionRegistry()
     calls = 0

@@ -34,6 +34,7 @@ from qq_ai_bot.memory.runtime.finalizer import (
     finalize_mutation_text,
     mutation_view_from_tool_result,
 )
+from qq_ai_bot.memory.runtime.partition_lookup import MemoryPartitionLookup
 from qq_ai_bot.memory.runtime.query_plane import MemoryQueryPlane, MemoryReadConsumer
 from qq_ai_bot.memory.runtime.resolver import (
     MemoryAccessDecision,
@@ -119,6 +120,7 @@ class TurnMemorySession:
         identity: ConversationScope,
         runtime: RuntimeConfigSnapshot,
         memory_context: MemoryContextService,
+        partition_lookup: MemoryPartitionLookup,
         origin: TurnOrigin,
         user_question: str,
         runtime_turn_id: str,
@@ -130,6 +132,7 @@ class TurnMemorySession:
         self._identity = identity
         self._runtime = runtime
         self._memory_context = memory_context
+        self._partition_lookup = partition_lookup
         self._query = MemoryQueryPlane(memory_context)
         self._origin = origin
         self._user_question = user_question
@@ -152,6 +155,7 @@ class TurnMemorySession:
         identity: ConversationScope,
         runtime: RuntimeConfigSnapshot,
         memory_context: MemoryContextService,
+        partition_lookup: MemoryPartitionLookup,
         origin: TurnOrigin,
         user_question: str,
         authority: TurnAuthority,
@@ -176,6 +180,7 @@ class TurnMemorySession:
             identity=identity,
             runtime=runtime,
             memory_context=memory_context,
+            partition_lookup=partition_lookup,
             origin=origin,
             user_question=user_question,
             runtime_turn_id=runtime_turn_id or str(uuid.uuid4()),
@@ -265,8 +270,15 @@ class TurnMemorySession:
         self._staged_fact_ids = fact_ids
         self._staged_exposures = exposures
 
+    async def _memory_partition_key(self) -> str:
+        return await self._partition_lookup.resolve_from_scope(
+            group_id=self._inbound.group_id,
+            private_peer_user_id=(None if self._inbound.group_id else self._inbound.sender.user_id),
+        )
+
     async def confirm_prompt_exposure(self, token: str | None = None) -> MemoryReceiptHandle | None:
         del token
+        self._state.require_open()
         handle: MemoryReceiptHandle | None = None
         if (
             not self._prefetch_confirmed
@@ -276,7 +288,7 @@ class TurnMemorySession:
         ):
             recall = await self._query.publish_exposure(
                 MemoryReadConsumer.AUTOMATIC_CONTEXT,
-                conversation_key=self._identity.key,
+                conversation_key=await self._memory_partition_key(),
                 trigger_message_id=self._inbound.message_id,
                 origin=self._origin.value,
                 intent=self._prefetch_intent,

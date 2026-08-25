@@ -6,11 +6,12 @@ import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from typing import Protocol
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from qq_ai_bot.admin.models import AdminActor, AdminOperationEvent
+from qq_ai_bot.admin.models import AdminOperationEvent
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import AdminOperationEventModel
 
@@ -88,10 +89,23 @@ def event_from_model(row: AdminOperationEventModel) -> AdminOperationEvent:
     )
 
 
+class AuditSubject(Protocol):
+    """Minimal actor fields persisted on an administrator audit row."""
+
+    @property
+    def user_id(self) -> str: ...
+
+    @property
+    def trigger_message_id(self) -> str: ...
+
+    @property
+    def conversation_key(self) -> str: ...
+
+
 async def add_audit_event(
     session: AsyncSession,
     *,
-    actor: AdminActor,
+    actor: AuditSubject,
     capability: str,
     operation: str,
     target_type: str,
@@ -140,7 +154,7 @@ class AdminAuditService:
     async def record(
         self,
         *,
-        actor: AdminActor,
+        actor: AuditSubject,
         capability: str,
         operation: str,
         target_type: str,
@@ -206,7 +220,12 @@ class AdminAuditService:
             rows = (await session.scalars(statement)).all()
             return tuple(event_from_model(row) for row in rows)
 
-    async def get(self, event_id: int) -> AdminOperationEvent | None:
-        async with self._database.sessions() as session:
+    async def get(
+        self, event_id: int, *, session: AsyncSession | None = None
+    ) -> AdminOperationEvent | None:
+        if session is not None:
             row = await session.get(AdminOperationEventModel, event_id)
+            return event_from_model(row) if row is not None else None
+        async with self._database.sessions() as owned:
+            row = await owned.get(AdminOperationEventModel, event_id)
             return event_from_model(row) if row is not None else None

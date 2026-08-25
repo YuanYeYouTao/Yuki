@@ -82,13 +82,22 @@ class MemoryTargetResolver:
             )
         except ValidationError as exc:
             raise MemoryRetrievalError("memory_target_invalid") from exc
-        candidates: list[str] = []
-        for candidate in (*inbound.mentioned_user_ids, inbound.reply_sender_user_id):
-            if not candidate or candidate in {user_id, inbound.bot_user_id}:
-                continue
-            if candidate not in candidates:
-                candidates.append(candidate)
-        members = await self._people.members_in_group(tuple(candidates), group_id)
+        candidates = list(
+            await self._people.person_reference_ids(
+                tuple(
+                    item
+                    for item in (*inbound.mentioned_user_ids, inbound.reply_sender_user_id)
+                    if item
+                ),
+                speaker_user_id=user_id,
+                bot_user_id=inbound.bot_user_id,
+            )
+        )
+        members = (
+            await self._people.members_in_group(tuple(candidates), group_id)
+            if candidates
+            else frozenset()
+        )
         referenced_count = 0
         for candidate in candidates:
             if candidate not in members:

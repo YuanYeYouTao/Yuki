@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime
+from typing import Any
 
+from sqlalchemy import or_
+from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.relationships import (
@@ -14,6 +19,14 @@ from qq_ai_bot.domain.relationships import (
     relationship_weight,
     stage_for_score,
 )
+from qq_ai_bot.identity.dual_write import (
+    AccountRole,
+    require_v1_runtime,
+    sync_account,
+    sync_space,
+)
+from qq_ai_bot.identity.errors import IdentityDualWriteError
+from qq_ai_bot.identity.shadows import fill_person_space_shadows
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
     GroupModel,
@@ -26,6 +39,32 @@ from qq_ai_bot.persistence.repository_records import (
     RelationshipEventRecord,
 )
 
+CANONICAL_KEEPER_STATUS = "keeper"
+
+
+def suppression_is_canonical_live(status: str | None) -> bool:
+    """True only for legacy-null or explicit keeper. Unknown nonempty fails closed."""
+
+    return status is None or status == CANONICAL_KEEPER_STATUS
+
+
+def keeper_event_clause() -> ColumnElement[bool]:
+    """SQLAlchemy live-event filter shared by complete-v2 history, rollup, and Memory."""
+
+    return or_(
+        ChatEventModel.suppression_status.is_(None),
+        ChatEventModel.suppression_status == CANONICAL_KEEPER_STATUS,
+    )
+
+
+def sql_keeper_event_predicate(alias: str = "c") -> str:
+    """Raw-SQL form of ``keeper_event_clause`` for hygiene/audit text queries."""
+
+    return (
+        f"({alias}.suppression_status IS NULL OR "
+        f"{alias}.suppression_status='{CANONICAL_KEEPER_STATUS}')"
+    )
+
 
 async def _ensure_person(
     session: AsyncSession,
@@ -34,25 +73,39 @@ async def _ensure_person(
     nickname: str = "",
     is_bot: bool = False,
     now: datetime | None = None,
+    canonical_role: AccountRole | None = None,
 ) -> PersonModel:
     timestamp = now or datetime.now(UTC)
+    await require_v1_runtime(session)
     person = await session.get(PersonModel, user_id)
     if person is None:
-        person = PersonModel(
-            user_id=user_id,
-            nickname=nickname,
-            enabled=True,
-            is_bot=is_bot,
-            first_seen_at=timestamp,
-            last_seen_at=timestamp,
+        await session.execute(
+            insert(PersonModel)
+            .values(
+                user_id=user_id,
+                nickname=nickname,
+                enabled=True,
+                is_bot=is_bot,
+                first_seen_at=timestamp,
+                last_seen_at=timestamp,
+            )
+            .on_conflict_do_nothing(index_elements=["user_id"])
         )
-        session.add(person)
-        await session.flush()
-    else:
-        if nickname:
-            person.nickname = nickname
-        person.is_bot = person.is_bot or is_bot
-        person.last_seen_at = timestamp
+        person = await session.get(PersonModel, user_id)
+        if person is None:
+            raise IdentityDualWriteError("unclassified")
+    if nickname:
+        person.nickname = nickname
+    person.is_bot = person.is_bot or is_bot
+    person.last_seen_at = timestamp
+    await sync_account(
+        session,
+        user_id,
+        role=canonical_role,
+        is_bot=person.is_bot,
+        display_name=person.nickname,
+        now=timestamp,
+    )
     return person
 
 
@@ -67,16 +120,29 @@ async def _ensure_relationship(
     timestamp = now or datetime.now(UTC)
     row = await session.get(PersonRelationshipModel, user_id)
     if row is None:
-        row = PersonRelationshipModel(
-            user_id=user_id,
-            affection_score=initial_affection,
-            trust_score=initial_trust,
-            created_at=timestamp,
-            updated_at=timestamp,
-            last_automatic_change_at=None,
+        await session.execute(
+            insert(PersonRelationshipModel)
+            .values(
+                user_id=user_id,
+                affection_score=initial_affection,
+                trust_score=initial_trust,
+                created_at=timestamp,
+                updated_at=timestamp,
+                last_automatic_change_at=None,
+            )
+            .on_conflict_do_nothing(index_elements=["user_id"])
         )
-        session.add(row)
-        await session.flush()
+        row = await session.get(PersonRelationshipModel, user_id)
+        if row is None:
+            raise IdentityDualWriteError("unclassified")
+    await fill_person_space_shadows(
+        session,
+        row,
+        person_attr="canonical_person_id",
+        space_attr=None,
+        user_id=user_id,
+        group_id=None,
+    )
     return row
 
 
@@ -89,34 +155,57 @@ async def _ensure_group(
     now: datetime | None = None,
 ) -> GroupModel:
     timestamp = now or datetime.now(UTC)
+    await require_v1_runtime(session)
     group = await session.get(GroupModel, group_id)
     if group is None:
-        group = GroupModel(
-            group_id=group_id,
-            name=name,
-            enabled=bool(enabled),
-            require_mention=True,
-            autonomous_enabled=True,
-            first_seen_at=timestamp,
-            last_seen_at=timestamp,
-            updated_at=timestamp,
+        await session.execute(
+            insert(GroupModel)
+            .values(
+                group_id=group_id,
+                name=name,
+                enabled=bool(enabled),
+                require_mention=True,
+                autonomous_enabled=True,
+                first_seen_at=timestamp,
+                last_seen_at=timestamp,
+                updated_at=timestamp,
+            )
+            .on_conflict_do_nothing(index_elements=["group_id"])
         )
-        session.add(group)
-        await session.flush()
-    else:
-        if name:
-            group.name = name
-        if enabled is not None:
-            group.enabled = enabled
-        group.last_seen_at = timestamp
-        group.updated_at = timestamp
+        group = await session.get(GroupModel, group_id)
+        if group is None:
+            raise IdentityDualWriteError("unclassified")
+    if name:
+        group.name = name
+    if enabled is not None:
+        group.enabled = enabled
+    group.last_seen_at = timestamp
+    group.updated_at = timestamp
+    await sync_space(
+        session,
+        group_id,
+        name=group.name,
+        enabled=group.enabled,
+        autonomous_enabled=group.autonomous_enabled,
+        require_mention=group.require_mention,
+        now=timestamp,
+    )
     return group
 
 
-def _event_record(row: ChatEventModel) -> EventRecord:
+def _row_value(row: ChatEventModel | Mapping[str, Any], name: str) -> Any:
+    if isinstance(row, Mapping):
+        return row.get(name)
+    return getattr(row, name)
+
+
+def _event_record(row: ChatEventModel | Mapping[str, Any]) -> EventRecord:
+    raw_segments = _row_value(row, "segments_json")
     try:
-        decoded = json.loads(row.segments_json)
+        decoded = json.loads(raw_segments) if isinstance(raw_segments, str) else raw_segments
     except json.JSONDecodeError:
+        decoded = []
+    if not isinstance(decoded, list):
         decoded = []
     segments = tuple(item for item in decoded if isinstance(item, dict))
     context: dict[str, object] = next(
@@ -135,40 +224,54 @@ def _event_record(row: ChatEventModel) -> EventRecord:
     )
     raw_reply_sender = context.get("reply_sender_user_id")
     external_payload: dict[str, object] | None = None
-    if row.external_payload_json:
+    raw_external = _row_value(row, "external_payload_json")
+    if raw_external:
         try:
-            raw_payload = json.loads(row.external_payload_json)
+            raw_payload = (
+                json.loads(raw_external) if isinstance(raw_external, str) else raw_external
+            )
         except json.JSONDecodeError:
             raw_payload = None
         if isinstance(raw_payload, dict):
             external_payload = raw_payload
+    occurred = _row_value(row, "occurred_at")
+    if isinstance(occurred, str):
+        occurred = datetime.fromisoformat(occurred)
+    scope_type = _row_value(row, "scope_type")
     return EventRecord(
-        id=row.id,
-        bot_user_id=row.bot_user_id,
-        platform_message_id=row.platform_message_id,
-        scope_type=ScopeType(row.scope_type),
-        sender_user_id=row.sender_user_id,
-        sender_nickname=row.sender_nickname,
-        sender_group_card=row.sender_group_card,
-        direction=row.direction,
-        content=row.content,
-        visual_summary=row.visual_summary,
+        id=int(_row_value(row, "id")),
+        bot_user_id=str(_row_value(row, "bot_user_id")),
+        platform_message_id=str(_row_value(row, "platform_message_id")),
+        scope_type=scope_type if isinstance(scope_type, ScopeType) else ScopeType(str(scope_type)),
+        sender_user_id=str(_row_value(row, "sender_user_id")),
+        sender_nickname=str(_row_value(row, "sender_nickname") or ""),
+        sender_group_card=str(_row_value(row, "sender_group_card") or ""),
+        direction=str(_row_value(row, "direction")),
+        content=str(_row_value(row, "content") or ""),
+        visual_summary=str(_row_value(row, "visual_summary") or ""),
         segments=segments,
-        occurred_at=row.occurred_at,
-        group_id=row.group_id,
-        private_peer_user_id=row.private_peer_user_id,
-        reply_to_message_id=row.reply_to_message_id,
-        origin=row.origin,
-        automation_id=row.automation_id,
-        automation_run_id=row.automation_run_id,
+        occurred_at=occurred,
+        group_id=_row_value(row, "group_id"),
+        private_peer_user_id=_row_value(row, "private_peer_user_id"),
+        reply_to_message_id=_row_value(row, "reply_to_message_id"),
+        origin=str(_row_value(row, "origin") or "user_message"),
+        automation_id=_row_value(row, "automation_id"),
+        automation_run_id=_row_value(row, "automation_run_id"),
         mentioned_user_ids=mentioned_user_ids,
         reply_sender_user_id=str(raw_reply_sender) if raw_reply_sender else None,
-        event_kind=row.event_kind,
-        source_plugin_id=row.source_plugin_id,
-        external_source=row.external_source,
-        external_event_key=row.external_event_key,
-        external_event_type=row.external_event_type,
+        event_kind=str(_row_value(row, "event_kind") or "message"),
+        source_plugin_id=_row_value(row, "source_plugin_id"),
+        external_source=_row_value(row, "external_source"),
+        external_event_key=_row_value(row, "external_event_key"),
+        external_event_type=_row_value(row, "external_event_type"),
         external_payload=external_payload,
+        canonical_conversation_id=_row_value(row, "canonical_conversation_id"),
+        canonical_event_id=_row_value(row, "canonical_event_id"),
+        author_kind=_row_value(row, "author_kind"),
+        author_person_id=_row_value(row, "author_person_id"),
+        author_presence_id=_row_value(row, "author_presence_id"),
+        ingress_presence_id=_row_value(row, "ingress_presence_id"),
+        suppression_status=_row_value(row, "suppression_status"),
     )
 
 

@@ -38,6 +38,10 @@ _EMPTY_DIRECTORIES = (
     "napcat-data",
     "napcat-config",
     "napcat-plugins",
+    "snowluma-data",
+    "snowluma-qq-config",
+    "snowluma-qq-data",
+    "snowluma-extra-accounts",
 )
 _FORBIDDEN_NAMES = frozenset(
     {
@@ -63,13 +67,15 @@ def tracked_files(root: Path) -> set[str]:
 def select_bundle_files(files: Iterable[str], version: str) -> dict[str, str]:
     tracked = set(files)
     release_note = f"docs/releases/v{version}.md"
-    required = _ROOT_FILES | _CONFIG_FILES | {release_note}
+    snowluma_guide = "docs/deployment/snowluma.md"
+    required = _ROOT_FILES | _CONFIG_FILES | {release_note, snowluma_guide}
     missing = sorted(required - tracked)
     if missing:
         raise BundleBuildError(f"required tracked deployment files are missing: {missing}")
 
-    selected = {path: path for path in required - {release_note}}
+    selected = {path: path for path in required - {release_note, snowluma_guide}}
     selected[release_note] = f"Yuki-{version}-Upgrade.md"
+    selected[snowluma_guide] = "SnowLuma.md"
     for path in sorted(tracked):
         pure = PurePosixPath(path)
         if pure.parts[:1] == ("plugins",):

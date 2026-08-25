@@ -9,6 +9,10 @@ from math import ceil
 from sqlalchemy import delete, select
 
 from qq_ai_bot.conversation.db_models import ReplyEffectEventModel
+from qq_ai_bot.identity.c24_conversation import (
+    resolve_conversation_id_for_chat_event,
+    stamp_conversation_correlation,
+)
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.runtime.observability import claim_runtime_turn_id, stable_identifier_hash
 
@@ -60,6 +64,9 @@ class ReplyEffectRepository:
         occurred_at: datetime | None = None,
         runtime_turn_id: str | None = None,
         voice_cadence_eligible: bool | None = None,
+        canonical_conversation_id: str | None = None,
+        bot_user_id: str | None = None,
+        ingress_presence_id: str | None = None,
     ) -> None:
         if voice_request_basis not in {"user_requested", "agent_initiated", "none"}:
             raise ValueError("invalid voice_request_basis")
@@ -91,6 +98,14 @@ class ReplyEffectRepository:
             )
             if existing is None:
                 session.add(row)
+                await stamp_conversation_correlation(session, row, canonical_conversation_id)
+                proven = await resolve_conversation_id_for_chat_event(
+                    session,
+                    platform_message_id=source_event_id,
+                    bot_user_id=bot_user_id,
+                    ingress_presence_id=ingress_presence_id,
+                )
+                await stamp_conversation_correlation(session, row, proven)
             await session.commit()
         await self.maintain(conversation_key)
 

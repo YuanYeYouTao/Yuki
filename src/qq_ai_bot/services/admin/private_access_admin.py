@@ -6,13 +6,20 @@ import time
 
 from qq_ai_bot.admin.audit import AdminAuditService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.admin.models import AdminActor
-from qq_ai_bot.config import Settings
+from qq_ai_bot.admin.models import ControlAuditRef
+from qq_ai_bot.control_plane.principal import ControlPrincipal, PrincipalSource
+from qq_ai_bot.control_plane.targets import PersonControlTarget
+from qq_ai_bot.domain.control import DecisionContext
+from qq_ai_bot.identity.errors import IdentityDualWriteError
 from qq_ai_bot.persistence.repositories import (
     PrivateUserSetting,
     PrivateUserSettingsRepository,
 )
-from qq_ai_bot.services.admin.common import require_real_superuser
+from qq_ai_bot.services.admin.control_auth import person_storage_id, require_capability
+
+_CANONICAL_OWNER_DISABLED = "canonical_owner_disabled"
+
+type PersonAdminContext = DecisionContext[ControlPrincipal, PrincipalSource, PersonControlTarget]
 
 
 class PrivateAccessAdminService:
@@ -21,44 +28,54 @@ class PrivateAccessAdminService:
     def __init__(
         self,
         *,
-        settings: Settings,
         private_users: PrivateUserSettingsRepository,
         audit: AdminAuditService,
         runtime_config: RuntimeConfigService | None = None,
     ) -> None:
-        self._settings = settings
         self._private_users = private_users
         self._audit = audit
         self._runtime_config = runtime_config
 
     async def enable_user(
         self,
-        actor: AdminActor,
-        target_user_id: str,
+        context: PersonAdminContext,
+        *,
+        audit: ControlAuditRef,
     ) -> PrivateUserSetting:
-        return await self._set(actor, target_user_id, True)
+        return await self._set(context, True, audit=audit)
 
     async def disable_user(
         self,
-        actor: AdminActor,
-        target_user_id: str,
+        context: PersonAdminContext,
+        *,
+        audit: ControlAuditRef,
     ) -> PrivateUserSetting:
-        if target_user_id in self._settings.superusers:
+        target = context.canonical_target
+        if type(target) is not PersonControlTarget:
+            raise TypeError("canonical_target must be PersonControlTarget")
+        if target.lockout_protected:
             raise ValueError("不能关闭超级用户的私聊权限。")
-        return await self._set(actor, target_user_id, False)
+        return await self._set(context, False, audit=audit)
 
     async def _set(
         self,
-        actor: AdminActor,
-        target_user_id: str,
+        context: PersonAdminContext,
         enabled: bool,
+        *,
+        audit: ControlAuditRef,
     ) -> PrivateUserSetting:
-        require_real_superuser(actor, self._settings)
+        require_capability(context, "control.private_access.mutate")
+        target_user_id = person_storage_id(context)
         started = time.perf_counter()
         initial_affection: int | None = None
         initial_trust: int | None = None
         if self._runtime_config is not None:
-            runtime = await self._runtime_config.snapshot(user_id=target_user_id)
+            try:
+                runtime = await self._runtime_config.snapshot(user_id=target_user_id)
+            except IdentityDualWriteError as exc:
+                if not enabled or exc.category != _CANONICAL_OWNER_DISABLED:
+                    raise
+                runtime = await self._runtime_config.snapshot()
             initial_affection = runtime.relationship.initial_affection
             initial_trust = runtime.relationship.initial_trust
         async with self._audit.transaction() as session:
@@ -71,7 +88,7 @@ class PrivateAccessAdminService:
                 session=session,
             )
             await self._audit.record(
-                actor=actor,
+                actor=audit,
                 capability="private_access",
                 operation="enable" if enabled else "disable",
                 target_type="user",

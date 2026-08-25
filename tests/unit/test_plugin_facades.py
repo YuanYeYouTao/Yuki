@@ -6,6 +6,7 @@ import asyncio
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -26,6 +27,12 @@ from qq_ai_bot.memory.context import MemoryContextService
 from qq_ai_bot.memory.enums import MemoryScopeType, MemorySourceType
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
 from qq_ai_bot.memory.models import MemoryFactCreate
+from qq_ai_bot.memory.mutation.models import (
+    MemoryMutationAppliedOperation,
+    MemoryMutationOperation,
+    MemoryMutationOutcome,
+    MemoryMutationResult,
+)
 from qq_ai_bot.memory.query import MemoryQueryBuilder
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.retrieval import MemoryRetriever
@@ -40,7 +47,7 @@ from qq_ai_bot.plugin_host.facades import (
     PluginInvocation,
 )
 from qq_ai_bot.plugin_host.repository import PluginAuditRepository
-from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
+from qq_ai_bot.services.admin.memory_admin import MemoryAdminService, MemoryPreferenceTrigger
 from qq_ai_bot.web.base import WebSearchValidationError
 from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.permissions import PluginPermission
@@ -747,3 +754,195 @@ def test_context_exposes_every_sdk_facade_but_not_dependency_bundle() -> None:
     )
     assert all(getattr(context, name) is not None for name in names)
     assert not hasattr(context, "services")
+
+
+def test_plugin_facade_source_has_no_admin_actor_constructor() -> None:
+    source = (
+        Path(__file__).resolve().parents[2] / "src" / "qq_ai_bot" / "plugin_host" / "facades.py"
+    ).read_text(encoding="utf-8")
+    assert "AdminActor" not in source
+    assert "_admin_actor" not in source
+
+
+def _memory_stack(
+    database: Database, *, superuser_ids: tuple[str, ...] = ()
+) -> tuple[HostPluginContext, MemoryFactService]:
+    facts = MemoryFactService(MemoryFactRepository(database))
+    context = HostPluginContext(
+        plugin_id="example.plugin",
+        approved_permissions=(
+            PluginPermission.MEMORY_WRITE,
+            PluginPermission.MEMORY_DELETE,
+            PluginPermission.MEMORY_PERSON_READ,
+        ),
+        superuser_ids=superuser_ids,
+        services=PluginFacadeServices(
+            memories=facts,
+            memory_admin=MemoryAdminService(
+                settings=make_settings(database.url),
+                memories=facts,
+                audit=AdminAuditService(database),
+            ),
+        ),
+    )
+    return context, facts
+
+
+@pytest.mark.asyncio
+async def test_plugin_memory_facade_rejects_foreign_person_write(database: Database) -> None:
+    context, _facts = _memory_stack(database)
+    with context.bind(invocation()):
+        with pytest.raises(PluginPermissionError, match="outside the current real turn"):
+            await context.memory.add(
+                scope_type="person",
+                subject_id="10002",
+                content="别人的记忆",
+                source_type="plugin",
+                confidence=0.9,
+            )
+    with context.bind(invocation(group_id="20001", mentioned_user_ids=("10002",))):
+        with pytest.raises(PluginPermissionError, match="current person's memory"):
+            await context.memory.add(
+                scope_type="person",
+                subject_id="10002",
+                content="被@也不能写别人",
+                source_type="plugin",
+                confidence=0.9,
+            )
+
+
+@pytest.mark.asyncio
+async def test_plugin_memory_facade_update_delete_missing_or_foreign_is_not_found(
+    database: Database,
+) -> None:
+    context, facts = _memory_stack(database)
+    own = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="10001",
+            kind="fact",
+            memory_key="own-hobby",
+            category="hobby",
+            content="喜欢围棋",
+            importance=4,
+            confidence=0.9,
+            source_type=MemorySourceType.AUTOMATIC,
+        )
+    )
+    foreign = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="10002",
+            kind="fact",
+            memory_key="other-hobby",
+            category="hobby",
+            content="喜欢桥牌",
+            importance=4,
+            confidence=0.9,
+            source_type=MemorySourceType.AUTOMATIC,
+        )
+    )
+    with context.bind(invocation()):
+        missing = await context.memory.update("person:999999", content="不存在")
+        stolen = await context.memory.update(f"person:{foreign.id}", content="改别人的")
+        deleted = await context.memory.delete(f"person:{foreign.id}")
+        updated = await context.memory.update(f"person:{own.id}", content="改成象棋")
+
+    assert missing.ok is False and missing.error_code == "memory.not_found"
+    assert stolen.ok is False and stolen.error_code == "memory.not_found"
+    assert deleted.ok is False and deleted.error_code == "memory.not_found"
+    assert updated.ok is True
+    assert (await facts.get_fact(foreign.id)).content == "喜欢桥牌"  # type: ignore[union-attr]
+    visible = [
+        row
+        for row in await facts.list_person("10001", limit=20)
+        if row.content == "改成象棋" and row.subject_user_id == "10001"
+    ]
+    assert len(visible) == 1
+    assert updated.data["memory_id"] == f"person:{visible[0].id}"
+
+
+@pytest.mark.asyncio
+async def test_plugin_memory_facade_update_is_not_ok_when_correction_is_not_visible(
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context, facts = _memory_stack(database)
+    own = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="10001",
+            kind="fact",
+            memory_key="own-hobby",
+            category="hobby",
+            content="喜欢围棋",
+            importance=4,
+            confidence=0.9,
+            source_type=MemorySourceType.AUTOMATIC,
+        )
+    )
+    service = context._services.memory_admin
+    assert service is not None
+
+    captured: dict[str, object] = {}
+
+    async def _rejected_mutation(
+        actor: object, *_args: object, **_kwargs: object
+    ) -> MemoryMutationResult:
+        captured["actor"] = actor
+        return MemoryMutationResult(
+            ok=False,
+            mutation_id=None,
+            requested_operation=MemoryMutationOperation.CORRECT,
+            applied_operation=MemoryMutationAppliedOperation.NOOP,
+            outcome=MemoryMutationOutcome.REJECTED,
+            old_fact_id=own.id,
+            new_fact_id=None,
+            reason_code="rejected",
+        )
+
+    monkeypatch.setattr(service, "_apply_mutation", _rejected_mutation)
+    with context.bind(invocation()):
+        updated = await context.memory.update(f"person:{own.id}", content="改成象棋")
+    subject = captured["actor"]
+    assert isinstance(subject, MemoryPreferenceTrigger)
+    assert subject.decision_actor_type == "plugin"
+    assert subject.decision_actor_id == "example.plugin"
+    assert updated.ok is False
+    assert updated.error_code == "memory.not_found"
+    assert not any(row.content == "改成象棋" for row in await facts.list_person("10001", limit=20))
+    remaining = await facts.get_fact(own.id)
+    assert remaining is not None and remaining.content == "喜欢围棋"
+
+
+@pytest.mark.asyncio
+async def test_memory_admin_accepts_already_authorized_plugin_subject(
+    database: Database,
+) -> None:
+    facts = MemoryFactService(MemoryFactRepository(database))
+    service = MemoryAdminService(
+        settings=make_settings(database.url),
+        memories=facts,
+        audit=AdminAuditService(database),
+    )
+    subject = MemoryPreferenceTrigger(
+        user_id="10001",
+        bot_user_id="99999",
+        trigger_message_id="plugin-task",
+        conversation_key="private:10001",
+        decision_actor_type="plugin",
+        decision_actor_id="example.plugin",
+        actor_is_superuser=False,
+    )
+    row = await service.add_memory(subject, "10001", "插件记住的事")
+    assert row.content == "插件记住的事"
+    with pytest.raises(PermissionError, match="超级管理员"):
+        await service.add_memory(subject, "10002", "不能写别人")
+    corrected = await service.correct_fact(subject, row.id, "插件更正的事")
+    assert corrected is not None
+    assert corrected.content == "插件更正的事"
+    assert any(
+        item.id == corrected.id and item.content == "插件更正的事"
+        for item in await facts.list_person("10001", limit=20)
+    )
+    assert await service.invalidate_fact(subject, corrected.id) is True

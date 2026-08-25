@@ -6,17 +6,19 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
 
 from qq_ai_bot import __version__
 from qq_ai_bot.admin.config_service import RuntimeConfigService
+from qq_ai_bot.admin.control_resolution import ControlAccess, audit_ref_from_actor
 from qq_ai_bot.admin.models import AdminActor
 from qq_ai_bot.admin.permission_catalog import PermissionCatalogService
 from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.automation.worker import AutomationWorker
 from qq_ai_bot.config import Settings
+from qq_ai_bot.conversation.rollup.renderer import render_rollup_status_lines
 from qq_ai_bot.conversation.rollup.repository import ConversationRollupRepository
+from qq_ai_bot.conversation.scope import runtime_conversation_key
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, OutboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
@@ -47,13 +49,6 @@ from qq_ai_bot.services.vision_service import VisionService
 from qq_ai_bot.speech.admin import SpeechAdminService
 
 _NUMERIC_PLATFORM_ID = re.compile(r"[1-9][0-9]{4,19}")
-
-
-def _job_age_seconds(value: object) -> int:
-    if not isinstance(value, datetime):
-        return 0
-    created_at = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
-    return max(0, int((datetime.now(UTC) - created_at).total_seconds()))
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,12 +110,14 @@ class CommandService:
         self._model_invocations = model_invocations
         self._mcp_commands = mcp_commands
         self._memory_rebuild = memory_rebuild
+        self._control = ControlAccess(people._database, superuser_ids=settings.superusers)
         self._profile_commands = ProfileCommandHandler(
             people=people,
             memories=memories,
             memory_admin=memory_admin,
             preference_admin=preference_admin,
             relationship_admin=relationship_admin,
+            control=self._control,
             memory_rebuild=memory_rebuild,
             bot_display_name=settings.bot_display_name,
         )
@@ -187,7 +184,7 @@ class CommandService:
         if command is CommandName.VOICE:
             return operation in {"use", "reload", "cache", "test"}
         if command is CommandName.MCP:
-            return operation in {"refresh", "reconnect", "enable", "disable", "doctor", "call"}
+            return operation in {"refresh", "reconnect", "enable", "disable", "doctor"}
         return False
 
     async def execute(
@@ -201,11 +198,12 @@ class CommandService:
         gateway: OneBotMediaGateway | None = None,
     ) -> CommandExecution:
         is_superuser = message.sender.user_id in self._settings.superusers
+        conversation_key = runtime_conversation_key(identity=identity, inbound=message)
         actor = AdminActor(
             user_id=message.sender.user_id,
             is_superuser=is_superuser,
             trigger_message_id=message.message_id,
-            conversation_key=identity.key,
+            conversation_key=conversation_key,
             current_group_id=message.group_id,
             mentioned_user_ids=message.mentioned_user_ids,
             current_message_text=message.text,
@@ -229,7 +227,7 @@ class CommandService:
                 else "已开始新的私聊会话；永久聊天账本和长期记忆仍然保留。"
             )
         elif command is CommandName.STATUS:
-            scope_state, rollup, job = await self._rollups.status(identity)
+            rollup_status = await self._rollups.detailed_status(identity)
             pending_restart = await self._runtime_config.pending_restart_count()
             vision_busy = self._vision is not None and self._vision.busy
             vision_queue_depth = self._vision.queue_depth if self._vision is not None else 0
@@ -277,18 +275,7 @@ class CommandService:
                 if mcp_health is not None and mcp_health.last_error_category is not None
                 else "无"
             )
-            job_age = _job_age_seconds(job.get("created_at") if job else None)
-            job_age_text = f"{job_age} 秒" if job else "无"
-            rollup_coverage = (
-                rollup.covered_through_event_id
-                if rollup is not None
-                else (scope_state.starts_after_event_id if scope_state is not None else 0)
-            )
-            last_rollup_error = (
-                job["last_error_category"]
-                if job is not None and job["last_error_category"]
-                else "无"
-            )
+            rollup_lines = render_rollup_status_lines(rollup_status, scope_key=conversation_key)
             text = (
                 f"OneBot 连接：{'已连接' if self._onebot_connected() else '未连接'}\n"
                 f"模型：{self._settings.llm_model or '未配置'}\n"
@@ -301,23 +288,9 @@ class CommandService:
                 f"表情候选/已采用/待处理："
                 f"{emoji_counts.get('candidate', 0)}/"
                 f"{emoji_counts.get('adopted', 0)}/"
-                f"{emoji_counts.get('jobs_pending', 0)}\n"
-                f"Scope key：{identity.key}\n"
-                f"Scope generation：{scope_state.generation if scope_state else '未建立'}\n"
-                f"当前 generation 起始事件边界："
-                f"{scope_state.starts_after_event_id if scope_state else 0}\n"
-                f"最后事件 ID：{scope_state.last_event_id if scope_state else 0}\n"
-                f"Rollup coverage：{rollup_coverage}\n"
-                f"未覆盖事件数：{scope_state.uncovered_event_count if scope_state else 0}\n"
-                f"未覆盖字符数：{scope_state.uncovered_character_count if scope_state else 0}\n"
-                f"Rollup kind：{rollup.summary_kind.value if rollup else '无'}\n"
-                f"Rollup revision：{rollup.revision if rollup else 0}\n"
-                f"Job 状态：{job['status'] if job else '无'}\n"
-                f"Job signal revision：{job['signal_revision'] if job else 0}\n"
-                f"Job failure count：{job['failure_count'] if job else 0}\n"
-                f"Job age：{job_age_text}\n"
-                f"最近错误类别：{last_rollup_error}\n"
-                f"请求处理中：{'是' if self._concurrency.is_processing(identity.key) else '否'}\n"
+                f"{emoji_counts.get('jobs_pending', 0)}\n" + "\n".join(rollup_lines) + "\n"
+                f"请求处理中："
+                f"{'是' if self._concurrency.is_processing(conversation_key) else '否'}\n"
                 f"待重启配置数：{pending_restart}\n"
                 f"自动化：{'已启用' if self._settings.automation_enabled else '未启用'}\n"
                 f"自动化 Worker：{automation_worker_status}\n"
@@ -343,13 +316,10 @@ class CommandService:
                 f"服务版本：{__version__}"
             )
         elif command is CommandName.STOP:
-            cancelled = await self._concurrency.cancel(identity.key)
+            cancelled = await self._concurrency.cancel(conversation_key)
             if self._turn_coordinator is not None:
                 cancelled = (
-                    await self._turn_coordinator.cancel_interruptible(
-                        self._turn_coordinator.key_for(message)
-                    )
-                    or cancelled
+                    await self._turn_coordinator.cancel_interruptible(conversation_key) or cancelled
                 )
             text = "已取消当前 AI 请求。" if cancelled else "当前没有正在处理的 AI 请求。"
         elif command in {CommandName.ON, CommandName.OFF}:
@@ -357,11 +327,21 @@ class CommandService:
                 text = "该命令只能在群聊中使用。"
             else:
                 enabled = command is CommandName.ON
-                if enabled:
-                    await self._group_admin.enable_current_group(actor, message.group_id)
+                try:
+                    principal = await self._control.principal_for_qq(message.sender.user_id)
+                    context = self._control.context(
+                        principal,
+                        await self._control.space_target(message.group_id),
+                    )
+                    audit = audit_ref_from_actor(actor)
+                    if enabled:
+                        await self._group_admin.enable_current_group(context, audit=audit)
+                    else:
+                        await self._group_admin.disable_current_group(context, audit=audit)
+                except PermissionError as exc:
+                    text = str(exc)
                 else:
-                    await self._group_admin.disable_current_group(actor, message.group_id)
-                text = "已启用当前群。" if enabled else "已停用当前群。"
+                    text = "已启用当前群。" if enabled else "已停用当前群。"
         elif command in {CommandName.PRIVATE, CommandName.GROUP}:
             parsed = self._parse_access_switch(argument)
             if parsed is None:
@@ -370,23 +350,39 @@ class CommandService:
             else:
                 target_id, enabled = parsed
                 try:
+                    principal = await self._control.principal_for_qq(message.sender.user_id)
+                    audit = audit_ref_from_actor(actor)
                     if command is CommandName.PRIVATE:
+                        person_context = self._control.context(
+                            principal,
+                            await self._control.person_target(target_id),
+                        )
                         if enabled:
-                            await self._private_access_admin.enable_user(actor, target_id)
+                            await self._private_access_admin.enable_user(
+                                person_context, audit=audit
+                            )
                         else:
-                            await self._private_access_admin.disable_user(actor, target_id)
+                            await self._private_access_admin.disable_user(
+                                person_context, audit=audit
+                            )
                         text = (
                             "已开启指定 QQ 用户的私聊权限。"
                             if enabled
                             else "已关闭指定 QQ 用户的私聊权限。"
                         )
                     else:
+                        space_context = self._control.context(
+                            principal,
+                            await self._control.space_target(target_id),
+                        )
                         if enabled:
-                            await self._group_admin.enable_current_group(actor, target_id)
+                            await self._group_admin.enable_current_group(space_context, audit=audit)
                         else:
-                            await self._group_admin.disable_current_group(actor, target_id)
+                            await self._group_admin.disable_current_group(
+                                space_context, audit=audit
+                            )
                         text = f"已{'启用' if enabled else '停用'}群 {target_id}。"
-                except ValueError as exc:
+                except (ValueError, PermissionError) as exc:
                     text = str(exc)
         elif command is CommandName.PING:
             text = f"pong ({(time.perf_counter() - started) * 1000:.1f} ms)"
@@ -554,7 +550,7 @@ class CommandService:
             "/ai emoji stats|cleanup|doctor|import\n"
             "/ai voice status|profiles|show|use|styles|test|reload|cache cleanup\n"
             "/ai model stats（超级管理员）\n"
-            "/ai mcp list|show|status|tools|search|refresh|reconnect|enable|disable|doctor|call\n"
+            "/ai mcp list|show|status|tools|search|refresh|reconnect|enable|disable|doctor\n"
             "/ai on|off（超级管理员，当前群）\n"
             "/ai group <群号> on|off（超级管理员）\n"
             "/ai private <QQ号> on|off（超级管理员；阻止/恢复私聊）\n"

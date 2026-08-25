@@ -114,11 +114,20 @@ class MemoryReflectionRepository:
             for fact_id in contested_ids
         )
         unique: dict[tuple[MemoryReflectionIssue, int, int | None], MemoryReflectionCandidate] = {}
-        for candidate in candidates:
-            key = (candidate.issue_type, candidate.fact_id, candidate.related_fact_id)
-            unique.setdefault(key, candidate)
-            if len(unique) >= bounded:
-                break
+        from qq_ai_bot.identity.memory_guard import refuse_legacy_live_fact
+
+        async with self._database.sessions() as guard_session:
+            for candidate in candidates:
+                if await refuse_legacy_live_fact(guard_session, candidate.fact_id):
+                    continue
+                if candidate.related_fact_id is not None and await refuse_legacy_live_fact(
+                    guard_session, candidate.related_fact_id
+                ):
+                    continue
+                key = (candidate.issue_type, candidate.fact_id, candidate.related_fact_id)
+                unique.setdefault(key, candidate)
+                if len(unique) >= bounded:
+                    break
         return tuple(unique.values())
 
     async def enqueue(

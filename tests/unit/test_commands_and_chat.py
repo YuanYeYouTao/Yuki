@@ -11,6 +11,8 @@ from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import (
     ChatMessage,
+    ChatRequest,
+    ChatResponse,
     InboundMessage,
     SenderIdentity,
 )
@@ -30,7 +32,11 @@ from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.runtime.contracts import MemoryCapabilityView
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.services.chat import _with_memory_mutation_contract
-from qq_ai_bot.services.processor import MENTION_ONLY_CONTEXT, _vision_failure_message
+from qq_ai_bot.services.processor import (
+    MENTION_ONLY_CONTEXT,
+    ProcessResult,
+    _vision_failure_message,
+)
 
 
 def inbound(
@@ -105,7 +111,7 @@ def test_only_mutation_access_appends_the_write_receipt_contract() -> None:
     ("error_code", "expected"),
     [
         ("media_download_timeout", "图片下载超时"),
-        ("get_image_failed", "NapCat 未能取得图片资源"),
+        ("get_image_failed", "QQ 网关未能取得图片资源"),
         ("download_failed", "图片资源下载失败"),
         ("private_url", "图片资源下载失败"),
         ("corrupt_image", "图片文件无法解析"),
@@ -180,7 +186,7 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     assert "conversation.autonomous_batch_limit" in admin_text
     assert "relationship.set_affection" in admin_text
     assert "受保护配置（12 项，不可修改）" in admin_text
-    assert "NapCat/OneBot 通用全接口网关：1 项" in admin_text
+    assert "QQ/OneBot Provider 通用全接口网关：1 项" in admin_text
     assert "call_onebot_api:any_public_action" in admin_text
 
 
@@ -406,27 +412,104 @@ async def test_access_commands_validate_permission_target_and_switch(database: D
     assert protected_setting is not None and protected_setting.enabled
 
 
+def _arm_provider_entry(provider: FakeLLMProvider) -> tuple[asyncio.Event, dict[str, int]]:
+    """Watch FakeLLM.complete entry; ``run_llm`` has already registered is_processing."""
+
+    entered = asyncio.Event()
+    started = {"count": 0}
+    original_complete = provider.complete
+
+    async def complete(request: ChatRequest) -> ChatResponse:
+        started["count"] += 1
+        entered.set()
+        return await original_complete(request)
+
+    provider.complete = complete  # type: ignore[method-assign]
+    return entered, started
+
+
+async def _wait_provider_requests(
+    started: dict[str, int],
+    entered: asyncio.Event,
+    count: int,
+    *tasks: asyncio.Task[ProcessResult],
+) -> None:
+    """Wait until FakeLLM.complete has been entered ``count`` times, or a turn dies."""
+
+    while started["count"] < count:
+        entered.clear()
+        if started["count"] >= count:
+            return
+        request_wait = asyncio.create_task(entered.wait())
+        try:
+            done, _pending = await asyncio.wait(
+                {request_wait, *tasks},
+                timeout=15,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if request_wait in done:
+                await request_wait
+                continue
+            for task in tasks:
+                if task.done():
+                    await task
+            raise AssertionError(f"FakeLLM did not accept {count} in-flight request(s)")
+        finally:
+            if not request_wait.done():
+                request_wait.cancel()
+                await asyncio.gather(request_wait, return_exceptions=True)
+
+
 @pytest.mark.asyncio
 async def test_stop_cancels_only_current_task(database: Database) -> None:
     provider = FakeLLMProvider(delay_seconds=5)
+    entered, started = _arm_provider_entry(provider)
     harness = build_harness(database, make_settings(database.url), provider)
     chat_sender = MemorySender()
-    chat_task = asyncio.create_task(
-        harness.processor.handle(inbound("slow", message_id="slow"), chat_sender)
-    )
-    identity = ConversationScope.private("9999", "1001")
-    for _ in range(500):
-        if harness.concurrency.is_processing(identity.key):
-            break
-        await asyncio.sleep(0.01)
-    assert harness.concurrency.is_processing(identity.key)
+    other_sender = MemorySender()
+    chat_message = inbound("slow", message_id="slow")
+    other_message = inbound("other", message_id="other", user_id="1002")
+    coordinator = harness.processor._turn_coordinator
+    chat_key = coordinator.key_for(chat_message)
+    other_key = coordinator.key_for(other_message)
+    assert chat_key == ConversationScope.private("9999", "1001").key
+    assert other_key == ConversationScope.private("9999", "1002").key
+    assert chat_key != other_key
+    chat_task = asyncio.create_task(harness.processor.handle(chat_message, chat_sender))
+    other_task: asyncio.Task[ProcessResult] | None = None
+    try:
+        await _wait_provider_requests(started, entered, 1, chat_task)
+        assert provider.requests
+        assert harness.concurrency.is_processing(chat_key)
+        other_task = asyncio.create_task(harness.processor.handle(other_message, other_sender))
+        await _wait_provider_requests(started, entered, 2, chat_task, other_task)
+        assert harness.concurrency.is_processing(chat_key)
+        assert harness.concurrency.is_processing(other_key)
 
-    stop_sender = MemorySender()
-    await harness.processor.handle(inbound("/ai stop", message_id="stop"), stop_sender)
-    result = await chat_task
-    assert result.reason == "cancelled"
-    assert "已取消" in stop_sender.messages[0].text
-    assert not harness.concurrency.is_processing(identity.key)
+        stop_sender = MemorySender()
+        await harness.processor.handle(inbound("/ai stop", message_id="stop"), stop_sender)
+        result = await chat_task
+        assert result.reason == "cancelled"
+        assert result.sent_messages == 0
+        assert "已取消" in stop_sender.messages[0].text
+        assert chat_sender.messages == []
+        assert not harness.concurrency.is_processing(chat_key)
+        assert harness.concurrency.is_processing(other_key)
+
+        other_result = await other_task
+        assert other_result.reason == "chat"
+        assert other_result.handled
+        assert other_result.sent_messages >= 1
+        assert any("FakeLLM" in (message.text or "") for message in other_sender.messages)
+        assert not harness.concurrency.is_processing(other_key)
+    finally:
+        leftover = [
+            task for task in (chat_task, other_task) if task is not None and not task.done()
+        ]
+        for task in leftover:
+            task.cancel()
+        if leftover:
+            await asyncio.gather(*leftover, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -606,3 +689,79 @@ async def test_send_failure_is_not_retried_or_persisted_as_assistant(database: D
     identity = ConversationScope.private("9999", "1001")
     history = await harness.conversation_rollups.load_prompt_snapshot(identity)
     assert [(item.direction, item.content) for item in history.raw_events] == [("inbound", "hello")]
+
+
+@pytest.mark.asyncio
+async def test_status_command_labels_semantic_when_no_overlay(database: Database) -> None:
+    harness = build_harness(database, make_settings(database.url))
+    await harness.processor.handle(inbound("hello", message_id="status-plain"), MemorySender())
+    sender = MemorySender()
+    result = await harness.processor.handle(
+        inbound("/ai status", message_id="status-no-overlay"), sender
+    )
+    assert result.handled
+    text = sender.messages[0].text
+    lines = text.splitlines()
+    assert "紧急 overlay：无" in lines
+    assert "紧急 overlay coverage：无" in lines
+    assert "rewrite_pending：否" in lines
+    assert any(line.startswith("语义 Rollup coverage：") for line in lines)
+    assert any(line.startswith("有效 Prompt coverage：") for line in lines)
+    assert any(line.startswith("语义未覆盖事件数：") for line in lines)
+    assert not any(line.startswith("Rollup coverage：") for line in lines)
+    assert not any(line.startswith("未覆盖事件数：") for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_status_command_labels_overlay_and_omits_summary_text(database: Database) -> None:
+    from datetime import UTC, datetime
+
+    from sqlalchemy import select
+
+    from qq_ai_bot.conversation.rollup.db_models import (
+        ConversationRollupEmergencyOverlayModel,
+        ConversationScopeModel,
+    )
+
+    harness = build_harness(database, make_settings(database.url))
+    await harness.processor.handle(inbound("hello", message_id="status-ov-1"), MemorySender())
+    await harness.processor.handle(inbound("again", message_id="status-ov-2"), MemorySender())
+    scope = ConversationScope.private("9999", "1001")
+    snapshot = await harness.conversation_rollups.load_prompt_snapshot(scope)
+    cover = snapshot.raw_events[0].id
+    secret = "SECRET_OVERLAY_SUMMARY_MUST_NOT_APPEAR"
+    now = datetime.now(UTC)
+    async with database.sessions() as session, session.begin():
+        row = await session.scalar(
+            select(ConversationScopeModel).where(ConversationScopeModel.scope_key == scope.key)
+        )
+        assert row is not None
+        session.add(
+            ConversationRollupEmergencyOverlayModel(
+                scope_id=row.id,
+                generation=row.generation,
+                covered_through_event_id=cover,
+                summary_text=secret,
+                source_fingerprint="a" * 64,
+                base_semantic_revision=0,
+                revision=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    sender = MemorySender()
+    result = await harness.processor.handle(
+        inbound("/ai status", message_id="status-with-overlay"), sender
+    )
+    assert result.handled
+    text = sender.messages[0].text
+    lines = text.splitlines()
+    assert secret not in text
+    assert "紧急 overlay：有" in lines
+    assert f"紧急 overlay coverage：{cover}" in lines
+    assert "rewrite_pending：是" in lines
+    assert any(line.startswith("语义未覆盖事件数：") for line in lines)
+    assert any(line.startswith("有效 Prompt coverage：") for line in lines)
+    assert f"有效 Prompt coverage：{cover}" in lines
+    assert not any(line.startswith("Rollup coverage：") for line in lines)
+    assert not any(line.startswith("未覆盖事件数：") for line in lines)

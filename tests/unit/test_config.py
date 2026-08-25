@@ -308,7 +308,7 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
     assert settings.conversation_rollup_batch_max_characters == 32_768
     assert settings.conversation_rollup_worker_max_batches_per_claim == 5
     assert settings.conversation_rollup_foreground_max_batches == 5
-    assert settings.conversation_rollup_summary_max_characters == 1200
+    assert settings.conversation_rollup_summary_max_characters == 2400
     assert settings.conversation_rollup_retry_max_seconds == 960
     assert settings.conversation_rollup_lease_heartbeat_seconds == 60
     assert settings.tooling_selected_tool_limit == 32

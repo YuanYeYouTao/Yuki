@@ -86,9 +86,15 @@ class CountingModelExecutor:
         request: ChatRequest,
         *,
         priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
+        canonical_conversation_id: str | None = None,
     ) -> ChatResponse:
         self._counts[task] += 1
-        return await self._delegate.execute(task, request, priority=priority)
+        return await self._delegate.execute(
+            task,
+            request,
+            priority=priority,
+            canonical_conversation_id=canonical_conversation_id,
+        )
 
     def model_name(self, task: ModelTask) -> str:
         return self._delegate.model_name(task)

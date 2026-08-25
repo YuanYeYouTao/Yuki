@@ -10,12 +10,17 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.identity.c24_conversation import (
+    load_unique_live_chat_event,
+    require_live_conversation,
+    stamp_conversation_correlation,
+)
 from qq_ai_bot.mcp.models import MCPServerConfig, MCPToolMetadata
 from qq_ai_bot.mcp.redaction import redact_sensitive_data, redact_sensitive_text
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
-    ChatEventModel,
     MCPServerStateModel,
     MCPToolCacheModel,
     MemoryToolReceiptModel,
@@ -58,9 +63,13 @@ class MCPRepository:
         self._reflection_excerpt_characters = max(1, min(reflection_excerpt_characters, 8000))
         self._reflection_retention_days = max(1, min(reflection_retention_days, 30))
 
-    async def state(self, server_id: str) -> MCPServerStateModel | None:
-        async with self._database.sessions() as session:
-            return await session.get(MCPServerStateModel, server_id)
+    async def state(
+        self, server_id: str, *, session: AsyncSession | None = None
+    ) -> MCPServerStateModel | None:
+        from qq_ai_bot.persistence.unit_of_work import optional_session
+
+        async with optional_session(self._database, session, write=False) as active:
+            return await active.get(MCPServerStateModel, server_id)
 
     async def save_state(
         self,
@@ -74,10 +83,13 @@ class MCPRepository:
         connected: bool = False,
         refreshed: bool = False,
         error_category: str | None = None,
+        session: AsyncSession | None = None,
     ) -> None:
         now = datetime.now(UTC)
-        async with self._database.sessions() as session:
-            row = await session.get(MCPServerStateModel, server_id)
+        from qq_ai_bot.persistence.unit_of_work import optional_session
+
+        async with optional_session(self._database, session, write=True) as active:
+            row = await active.get(MCPServerStateModel, server_id)
             if row is None:
                 row = MCPServerStateModel(
                     server_id=server_id,
@@ -92,7 +104,7 @@ class MCPRepository:
                     server_instructions="",
                     updated_at=now,
                 )
-                session.add(row)
+                active.add(row)
             row.transport = config.transport.value
             row.config_hash = config_hash
             row.enabled = enabled
@@ -109,17 +121,21 @@ class MCPRepository:
                 row.server_name = server_info.get("server_name", "")[:255]
                 row.server_version = server_info.get("server_version", "")[:128]
                 row.server_instructions = server_info.get("server_instructions", "")[:8000]
-            await session.commit()
+            await active.flush()
 
-    async def set_enabled(self, server_id: str, enabled: bool) -> bool:
-        async with self._database.sessions() as session:
-            row = await session.get(MCPServerStateModel, server_id)
+    async def set_enabled(
+        self, server_id: str, enabled: bool, *, session: AsyncSession | None = None
+    ) -> bool:
+        from qq_ai_bot.persistence.unit_of_work import optional_session
+
+        async with optional_session(self._database, session, write=True) as active:
+            row = await active.get(MCPServerStateModel, server_id)
             if row is None:
                 return False
             row.enabled = enabled
             row.status = "disconnected" if enabled else "disabled"
             row.updated_at = datetime.now(UTC)
-            await session.commit()
+            await active.flush()
             return True
 
     async def cached_tools(self, server_id: str) -> tuple[MCPToolMetadata, ...]:
@@ -137,12 +153,16 @@ class MCPRepository:
         self,
         server_id: str,
         tools: tuple[MCPToolMetadata, ...],
+        *,
+        session: AsyncSession | None = None,
     ) -> None:
-        async with self._database.sessions() as session:
-            await session.execute(
+        from qq_ai_bot.persistence.unit_of_work import optional_session
+
+        async with optional_session(self._database, session, write=True) as active:
+            await active.execute(
                 delete(MCPToolCacheModel).where(MCPToolCacheModel.server_id == server_id)
             )
-            session.add_all(
+            active.add_all(
                 MCPToolCacheModel(
                     server_id=item.server_id,
                     remote_tool_name=item.remote_tool_name,
@@ -157,7 +177,7 @@ class MCPRepository:
                 )
                 for item in tools
             )
-            await session.commit()
+            await active.flush()
 
     async def clear_cached_tools(self, server_id: str) -> None:
         async with self._database.sessions() as session:
@@ -165,6 +185,26 @@ class MCPRepository:
                 delete(MCPToolCacheModel).where(MCPToolCacheModel.server_id == server_id)
             )
             await session.commit()
+
+    async def preflight_conversation_correlation(
+        self,
+        canonical_conversation_id: str | None,
+    ) -> None:
+        """Fail-closed live Conversation check. v1/None is a no-op.
+
+        Uses the same complete-v2 kind/existence helpers as
+        ``stamp_conversation_correlation`` (``require_live_conversation``).
+        The short read-only session is closed before the caller may connect.
+        A provided id that is the wrong kind, a Presence/Person/Space id, or a
+        missing/stale Conversation fails closed here.
+        """
+
+        from qq_ai_bot.persistence.unit_of_work import optional_session
+
+        if canonical_conversation_id is None or not str(canonical_conversation_id).strip():
+            return
+        async with optional_session(self._database, None, write=False) as session:
+            await require_live_conversation(session, canonical_conversation_id)
 
     async def record_invocation(
         self,
@@ -180,39 +220,49 @@ class MCPRepository:
         trigger_message_id: str = "",
         bot_user_id: str = "",
         result_excerpt: str = "",
+        canonical_conversation_id: str | None = None,
+        ingress_presence_id: str | None = None,
     ) -> None:
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
-            session.add(
-                ToolInvocationModel(
-                    runtime_turn_id=claim_runtime_turn_id(),
-                    conversation_key_hash=hashlib.sha256(
-                        conversation_key.encode("utf-8")
-                    ).hexdigest(),
-                    provider_id=provider_id[:128],
-                    tool_name=tool_name[:255],
-                    success=success,
-                    latency_seconds=max(0.0, latency_seconds),
-                    result_size=max(0, result_size),
-                    artifact_created=artifact_created,
-                    error_category=error_category[:128] if error_category else None,
-                    created_at=now,
-                )
+            invocation = ToolInvocationModel(
+                runtime_turn_id=claim_runtime_turn_id(),
+                conversation_key_hash=hashlib.sha256(conversation_key.encode("utf-8")).hexdigest(),
+                provider_id=provider_id[:128],
+                tool_name=tool_name[:255],
+                success=success,
+                latency_seconds=max(0.0, latency_seconds),
+                result_size=max(0, result_size),
+                artifact_created=artifact_created,
+                error_category=error_category[:128] if error_category else None,
+                created_at=now,
             )
-            event = None
-            if trigger_message_id and bot_user_id:
-                event = await session.scalar(
-                    select(ChatEventModel).where(
-                        ChatEventModel.bot_user_id == bot_user_id,
-                        ChatEventModel.platform_message_id == trigger_message_id,
-                    )
-                )
+            session.add(invocation)
+            await stamp_conversation_correlation(session, invocation, canonical_conversation_id)
+            event = await load_unique_live_chat_event(
+                session,
+                platform_message_id=trigger_message_id,
+                bot_user_id=bot_user_id,
+                ingress_presence_id=ingress_presence_id,
+                require_bot_or_presence=True,
+            )
             if event is not None:
-                conversation_key = (
-                    f"group:{event.group_id}"
-                    if event.group_id
-                    else f"private:{event.private_peer_user_id or event.sender_user_id}"
+                await stamp_conversation_correlation(
+                    session, invocation, event.canonical_conversation_id
                 )
+            from qq_ai_bot.identity.memory_guard import refuse_legacy_live_event
+
+            if event is not None and not await refuse_legacy_live_event(session, event):
+                from qq_ai_bot.memory.partition import resolve_memory_partition_for_event
+
+                partition = await resolve_memory_partition_for_event(session, event)
+                conversation_key = partition.value
+                person_id = partition.person_id
+                space_id = partition.space_id
+                if person_id is None and space_id is None:
+                    from qq_ai_bot.identity.owner_dual_write import optional_xor_owner_for_event
+
+                    person_id, space_id = await optional_xor_owner_for_event(session, event)
                 redacted = _redact_reflection_result(result_excerpt.strip())
                 session.add(
                     MemoryToolReceiptModel(
@@ -221,6 +271,8 @@ class MCPRepository:
                         ).hexdigest(),
                         trigger_event_id=event.id,
                         bot_user_id=event.bot_user_id,
+                        canonical_person_id=person_id,
+                        canonical_space_id=space_id,
                         provider_id=provider_id[:128],
                         tool_name=tool_name[:255],
                         success=success,

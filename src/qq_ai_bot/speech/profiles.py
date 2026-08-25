@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Protocol
 
 from pydantic import ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.services.plugin_events import LifecycleEventPublisher, publish_notification
 from qq_ai_bot.speech.models import (
@@ -129,8 +130,10 @@ class VoiceProfileService:
     async def list_profiles(self, *, enabled_only: bool = False) -> tuple[VoiceProfile, ...]:
         return await self._repository.list_profiles(enabled_only=enabled_only)
 
-    async def get_profile(self, profile_id: str) -> VoiceProfile | None:
-        return await self._repository.get_profile(profile_id)
+    async def get_profile(
+        self, profile_id: str, *, session: AsyncSession | None = None
+    ) -> VoiceProfile | None:
+        return await self._repository.get_profile(profile_id, session=session)
 
     async def list_styles(self, profile_id: str) -> tuple[str, ...]:
         profile = await self._required(profile_id)

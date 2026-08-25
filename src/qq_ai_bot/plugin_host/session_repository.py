@@ -12,11 +12,22 @@ from typing import Any, cast
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.engine import CursorResult
 
+from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repository_helpers import _ensure_person
 from qq_ai_bot.plugin_host.db_models import (
     PluginAgentMessageModel,
     PluginAgentSessionModel,
+)
+from qq_ai_bot.plugin_host.ownership import (
+    actor_matches_session,
+    apply_inherited_sender,
+    inherit_message_sender_person,
+    require_live_actor,
+    require_v2_session_readable,
+    resolve_active_space_id,
+    resolve_human_person_id,
+    stamp_session_owners,
 )
 
 _SESSION_ROLES = frozenset({"user", "assistant", "tool"})
@@ -57,6 +68,8 @@ class PluginAgentSessionRecord:
     updated_at: datetime
     last_active_at: datetime
     expires_at: datetime | None
+    canonical_owner_person_id: str | None = None
+    canonical_space_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +82,7 @@ class PluginAgentMessageRecord:
     content: str
     metadata: object
     created_at: datetime
+    canonical_sender_person_id: str | None = None
 
 
 class PluginAgentSessionRepository:
@@ -127,10 +141,12 @@ class PluginAgentSessionRepository:
             expires_at=expiry,
         )
         async with self._database.sessions() as session, session.begin():
-            if owner_user_id:
+            complete_v2 = await identity_runtime_is_complete_v2(session)
+            if owner_user_id and not complete_v2:
                 await _ensure_person(session, owner_user_id, now=timestamp)
             session.add(row)
             await session.flush()
+            await stamp_session_owners(session, row, complete_v2=complete_v2)
             return _session_record(row)
 
     async def get(
@@ -155,7 +171,62 @@ class PluginAgentSessionRepository:
             )
         async with self._database.sessions() as session:
             row = await session.scalar(statement)
-            return _session_record(row) if row is not None else None
+            if row is None:
+                return None
+            if await identity_runtime_is_complete_v2(session):
+                await require_v2_session_readable(session, row)
+            return _session_record(row)
+
+    async def get_for_actor(
+        self,
+        *,
+        plugin_id: str,
+        session_id: str,
+        actor_user_id: str,
+        current_group_id: str | None,
+        include_expired: bool = False,
+        now: datetime | None = None,
+    ) -> PluginAgentSessionRecord | None:
+        """Load one session and authorize the Host actor.
+
+        Unbound or different actors get not-found. Only a matching actor
+        sees PluginOwnershipError from the persisted row itself.
+        """
+
+        statement = select(PluginAgentSessionModel).where(
+            PluginAgentSessionModel.plugin_id == plugin_id,
+            PluginAgentSessionModel.session_id == session_id,
+        )
+        if not include_expired:
+            timestamp = _aware_utc(now or datetime.now(UTC))
+            statement = statement.where(
+                or_(
+                    PluginAgentSessionModel.expires_at.is_(None),
+                    PluginAgentSessionModel.expires_at > timestamp,
+                )
+            )
+        async with self._database.sessions() as session:
+            row = await session.scalar(statement)
+            if row is None:
+                return None
+            complete_v2 = await identity_runtime_is_complete_v2(session)
+            if not await actor_matches_session(
+                session,
+                row,
+                actor_user_id=actor_user_id,
+                current_group_id=current_group_id,
+                complete_v2=complete_v2,
+            ):
+                return None
+            if complete_v2:
+                await require_v2_session_readable(session, row)
+                await require_live_actor(
+                    session,
+                    row,
+                    actor_user_id=actor_user_id,
+                    current_group_id=current_group_id,
+                )
+            return _session_record(row)
 
     async def list_scope(
         self,
@@ -170,23 +241,41 @@ class PluginAgentSessionRepository:
         if scope_type not in _SESSION_SCOPES:
             raise ValueError("unsupported plugin Agent session scope")
         timestamp = _aware_utc(now or datetime.now(UTC))
-        statement = select(PluginAgentSessionModel).where(
-            PluginAgentSessionModel.plugin_id == plugin_id,
-            PluginAgentSessionModel.scope_type == scope_type,
-            PluginAgentSessionModel.scope_id == scope_id,
-            or_(
-                PluginAgentSessionModel.expires_at.is_(None),
-                PluginAgentSessionModel.expires_at > timestamp,
-            ),
-        )
-        if not include_closed:
-            statement = statement.where(PluginAgentSessionModel.status == "active")
-        statement = statement.order_by(
-            PluginAgentSessionModel.last_active_at.desc(),
-            PluginAgentSessionModel.session_id,
-        ).limit(max(1, min(limit, 1_000)))
         async with self._database.sessions() as session:
+            complete_v2 = await identity_runtime_is_complete_v2(session)
+            statement = select(PluginAgentSessionModel).where(
+                PluginAgentSessionModel.plugin_id == plugin_id,
+                PluginAgentSessionModel.scope_type == scope_type,
+                or_(
+                    PluginAgentSessionModel.expires_at.is_(None),
+                    PluginAgentSessionModel.expires_at > timestamp,
+                ),
+            )
+            if complete_v2 and scope_type == "user":
+                person_id = await resolve_human_person_id(
+                    session,
+                    scope_id,
+                    complete_v2=True,
+                    missing_message="session owner has no Person",
+                )
+                statement = statement.where(
+                    PluginAgentSessionModel.canonical_owner_person_id == person_id
+                )
+            elif complete_v2 and scope_type == "group":
+                space_id = await resolve_active_space_id(session, scope_id, complete_v2=True)
+                statement = statement.where(PluginAgentSessionModel.canonical_space_id == space_id)
+            else:
+                statement = statement.where(PluginAgentSessionModel.scope_id == scope_id)
+            if not include_closed:
+                statement = statement.where(PluginAgentSessionModel.status == "active")
+            statement = statement.order_by(
+                PluginAgentSessionModel.last_active_at.desc(),
+                PluginAgentSessionModel.session_id,
+            ).limit(max(1, min(limit, 1_000)))
             rows = (await session.scalars(statement)).all()
+            if complete_v2:
+                for row in rows:
+                    await require_v2_session_readable(session, row)
             return tuple(_session_record(row) for row in rows)
 
     async def append_message(
@@ -216,7 +305,8 @@ class PluginAgentSessionRepository:
             separators=(",", ":"),
         )
         async with self._database.sessions() as session, session.begin():
-            if sender_user_id:
+            complete_v2 = await identity_runtime_is_complete_v2(session)
+            if sender_user_id and not complete_v2:
                 await _ensure_person(session, sender_user_id, now=timestamp)
             values: dict[str, object] = {
                 "next_sequence": PluginAgentSessionModel.next_sequence + 1,
@@ -242,6 +332,16 @@ class PluginAgentSessionRepository:
             next_sequence = result.scalar_one_or_none()
             if next_sequence is None:
                 raise PluginSessionUnavailableError("plugin Agent session is unavailable")
+            parent = await session.get(PluginAgentSessionModel, session_id)
+            if parent is None or parent.plugin_id != plugin_id:
+                raise PluginSessionUnavailableError("plugin Agent session is unavailable")
+            sender_person = await inherit_message_sender_person(
+                session,
+                parent,
+                role=role,
+                sender_user_id=sender_user_id,
+                complete_v2=complete_v2,
+            )
             row = PluginAgentMessageModel(
                 session_id=session_id,
                 sequence=int(next_sequence) - 1,
@@ -251,6 +351,7 @@ class PluginAgentSessionRepository:
                 metadata_json=metadata_json,
                 created_at=timestamp,
             )
+            apply_inherited_sender(row, sender_person)
             session.add(row)
             await session.flush()
             return _message_record(row)
@@ -264,19 +365,21 @@ class PluginAgentSessionRepository:
     ) -> tuple[PluginAgentMessageRecord, ...]:
         bounded = max(1, min(limit, 10_000))
         async with self._database.sessions() as session:
+            parent = await session.scalar(
+                select(PluginAgentSessionModel).where(
+                    PluginAgentSessionModel.plugin_id == plugin_id,
+                    PluginAgentSessionModel.session_id == session_id,
+                )
+            )
+            if parent is None:
+                return ()
+            if await identity_runtime_is_complete_v2(session):
+                await require_v2_session_readable(session, parent)
             rows = list(
                 (
                     await session.scalars(
                         select(PluginAgentMessageModel)
-                        .join(
-                            PluginAgentSessionModel,
-                            PluginAgentSessionModel.session_id
-                            == PluginAgentMessageModel.session_id,
-                        )
-                        .where(
-                            PluginAgentSessionModel.plugin_id == plugin_id,
-                            PluginAgentMessageModel.session_id == session_id,
-                        )
+                        .where(PluginAgentMessageModel.session_id == session_id)
                         .order_by(PluginAgentMessageModel.sequence.desc())
                         .limit(bounded)
                     )
@@ -331,6 +434,8 @@ class PluginAgentSessionRepository:
             )
             if row is None:
                 return None
+            if await identity_runtime_is_complete_v2(session):
+                await require_v2_session_readable(session, row)
             await session.execute(
                 delete(PluginAgentMessageModel).where(
                     PluginAgentMessageModel.session_id == session_id
@@ -399,6 +504,8 @@ def _session_record(row: PluginAgentSessionModel) -> PluginAgentSessionRecord:
         updated_at=_aware_utc(row.updated_at),
         last_active_at=_aware_utc(row.last_active_at),
         expires_at=_aware_utc(row.expires_at) if row.expires_at else None,
+        canonical_owner_person_id=row.canonical_owner_person_id,
+        canonical_space_id=row.canonical_space_id,
     )
 
 
@@ -416,6 +523,7 @@ def _message_record(row: PluginAgentMessageModel) -> PluginAgentMessageRecord:
         content=row.content,
         metadata=metadata,
         created_at=_aware_utc(row.created_at),
+        canonical_sender_person_id=row.canonical_sender_person_id,
     )
 
 

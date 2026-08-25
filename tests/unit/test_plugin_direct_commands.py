@@ -229,10 +229,35 @@ async def test_adapter_rechecks_lifecycle_permission_and_trusted_context() -> No
     assert captured["arguments"] == {"text": "攻击 @玩家"}
     runtime = cast(ToolRuntime, captured["runtime"])
     assert runtime.inbound is message
+    assert runtime.conversation_key == ConversationScope.group("99999", "20001").key
     assert runtime.trigger_message_id == "direct-1"
     assert runtime.actor_user_id == "10001"
     assert runtime.current_group_id == "20001"
     assert runtime.mentioned_user_ids == ("10002",)
+
+    v2_message = InboundMessage(
+        message_id="direct-v2",
+        event_type="message",
+        scope_type=ScopeType.GROUP,
+        sender=SenderIdentity("10001"),
+        text="*攻击 @玩家",
+        bot_user_id="8001",
+        group_id="20001",
+        mentioned_user_ids=("10002",),
+        received_at=datetime.now(UTC),
+        legacy_conversation_key="bot:8000:group:20001",
+    )
+    captured.clear()
+    result = await adapter.execute_direct(
+        message=v2_message,
+        identity=ConversationScope.group("8001", "20001"),
+        match=match,
+        runtime=cast(RuntimeConfigSnapshot, SimpleNamespace()),
+    )
+    assert result == "played"
+    v2_runtime = cast(ToolRuntime, captured["runtime"])
+    assert v2_runtime.conversation_key == "bot:8000:group:20001"
+    assert v2_runtime.inbound is v2_message
 
     manager.running_plugin_ids = ()
     assert "未运行" in await adapter.execute_direct(

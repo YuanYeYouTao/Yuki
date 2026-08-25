@@ -28,6 +28,10 @@ config/mcp.json
 napcat-data/
 napcat-config/
 napcat-plugins/
+snowluma-data/
+snowluma-qq-config/
+snowluma-qq-data/
+snowluma-extra-accounts/
 *.db
 *.db-shm
 *.db-wal

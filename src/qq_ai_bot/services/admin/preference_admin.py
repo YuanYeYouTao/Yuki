@@ -5,12 +5,21 @@ from __future__ import annotations
 import time
 
 from qq_ai_bot.admin.audit import AdminAuditService
-from qq_ai_bot.admin.models import AdminActor
+from qq_ai_bot.admin.models import ControlAuditRef
 from qq_ai_bot.config import Settings
+from qq_ai_bot.control_plane.principal import ControlPrincipal, PrincipalSource
+from qq_ai_bot.control_plane.targets import PersonControlTarget
+from qq_ai_bot.domain.control import DecisionContext
 from qq_ai_bot.memory.models import MemoryFact
 from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.services.admin.common import require_self_or_superuser
-from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
+from qq_ai_bot.services.admin.control_auth import (
+    person_storage_id,
+    require_capability,
+    require_self_or_capability,
+)
+from qq_ai_bot.services.admin.memory_admin import MemoryAdminService, MemoryPreferenceTrigger
+
+type PersonAdminContext = DecisionContext[ControlPrincipal, PrincipalSource, PersonControlTarget]
 
 
 class PreferenceAdminService:
@@ -31,23 +40,26 @@ class PreferenceAdminService:
 
     async def list_preferences(
         self,
-        actor: AdminActor,
-        target: str,
+        context: PersonAdminContext,
+        audit: ControlAuditRef,
     ) -> tuple[MemoryFact, ...]:
-        require_self_or_superuser(actor, target, self._settings)
+        require_self_or_capability(context, "control.preference.mutate", audit)
+        require_capability(context, "control.preference.read")
         return await self._memories.list_preferences(
-            target,
+            person_storage_id(context),
             limit=self._settings.preference_max_entries,
         )
 
     async def set_preference(
         self,
-        actor: AdminActor,
-        target: str,
+        context: PersonAdminContext,
         key: str,
         value: str,
+        *,
+        audit: ControlAuditRef,
     ) -> MemoryFact:
-        require_self_or_superuser(actor, target, self._settings)
+        require_self_or_capability(context, "control.preference.mutate", audit)
+        target = person_storage_id(context)
         normalized_key = key.strip()
         normalized_value = " ".join(value.split()).strip()
         if not normalized_key or not normalized_value:
@@ -62,14 +74,14 @@ class PreferenceAdminService:
                 )
             }.get(normalized_key)
             row = await self._memory_mutations.set_explicit_preference(
-                actor,
+                _preference_trigger(context, audit),
                 target,
                 normalized_key,
                 normalized_value,
                 existing=existing,
             )
             await self._audit.record(
-                actor=actor,
+                actor=audit,
                 capability="preference",
                 operation="set",
                 target_type="user",
@@ -100,7 +112,7 @@ class PreferenceAdminService:
                 session=session,
             )
             await self._audit.record(
-                actor=actor,
+                actor=audit,
                 capability="preference",
                 operation="set",
                 target_type="user",
@@ -119,11 +131,13 @@ class PreferenceAdminService:
 
     async def delete_preference(
         self,
-        actor: AdminActor,
-        target: str,
+        context: PersonAdminContext,
         key: str,
+        *,
+        audit: ControlAuditRef,
     ) -> bool:
-        require_self_or_superuser(actor, target, self._settings)
+        require_self_or_capability(context, "control.preference.mutate", audit)
+        target = person_storage_id(context)
         normalized_key = key.strip()
         started = time.perf_counter()
         if self._memory_mutations is not None:
@@ -137,13 +151,13 @@ class PreferenceAdminService:
             deleted = bool(
                 existing is not None
                 and await self._memory_mutations.delete_explicit_preference(
-                    actor,
+                    _preference_trigger(context, audit),
                     target,
                     existing,
                 )
             )
             await self._audit.record(
-                actor=actor,
+                actor=audit,
                 capability="preference",
                 operation="delete",
                 target_type="user",
@@ -173,7 +187,7 @@ class PreferenceAdminService:
                 session=session,
             )
             await self._audit.record(
-                actor=actor,
+                actor=audit,
                 capability="preference",
                 operation="delete",
                 target_type="user",
@@ -189,3 +203,19 @@ class PreferenceAdminService:
                 session=session,
             )
         return deleted
+
+
+def _preference_trigger(
+    context: PersonAdminContext,
+    audit: ControlAuditRef,
+) -> MemoryPreferenceTrigger:
+    principal = context.principal
+    return MemoryPreferenceTrigger(
+        user_id=audit.user_id,
+        bot_user_id=audit.bot_user_id,
+        trigger_message_id=audit.trigger_message_id,
+        conversation_key=audit.conversation_key,
+        decision_actor_type=audit.decision_actor_type,
+        decision_actor_id=audit.decision_actor_id,
+        actor_is_superuser="superuser" in principal.roles,
+    )

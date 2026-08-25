@@ -8,7 +8,8 @@ Create Date: 2026-07-25
 from collections.abc import Sequence
 
 from alembic import op
-from sqlalchemy import inspect
+from sqlalchemy import CheckConstraint, Index, MetaData, Table, UniqueConstraint, inspect
+from sqlalchemy.schema import ForeignKeyConstraint, PrimaryKeyConstraint
 
 from qq_ai_bot.persistence.metadata import Base
 
@@ -16,6 +17,153 @@ revision: str = "0005"
 down_revision: str | None = "0004"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+
+_C4_CHAT_EVENT_SHADOW_COLUMNS: tuple[str, ...] = (
+    "ingress_gateway_instance_id",
+    "ingress_provider",
+    "suppression_status",
+    "utterance_fingerprint",
+    "ingress_presence_id",
+    "author_presence_id",
+    "author_person_id",
+    "author_kind",
+    "canonical_conversation_id",
+    "canonical_event_id",
+)
+_C4_CHAT_EVENT_SHADOW_INDEXES: tuple[str, ...] = (
+    "ix_chat_events_canonical_event_id",
+    "ix_chat_events_canonical_conversation_id",
+    "uq_chat_events_canonical_event_keeper",
+    "uq_chat_events_bot_platform_message",
+)
+_C27_0005_RESTORED_CARRIER_FKS: dict[str, tuple[tuple[str, str, str, str], ...]] = {
+    "person_aliases": (("user_id", "people", "user_id", "CASCADE"),),
+    "memberships": (
+        ("user_id", "people", "user_id", "CASCADE"),
+        ("group_id", "groups", "group_id", "CASCADE"),
+    ),
+    "chat_events": (
+        ("sender_user_id", "people", "user_id", "CASCADE"),
+        ("private_peer_user_id", "people", "user_id", "CASCADE"),
+        ("group_id", "groups", "group_id", "CASCADE"),
+    ),
+}
+_C5_OWNERSHIP_SHADOW_COLUMNS: dict[str, tuple[str, ...]] = {
+    "people": ("canonical_person_id",),
+    "groups": ("canonical_space_id",),
+    "person_aliases": ("canonical_person_id", "canonical_space_id"),
+    "memberships": ("canonical_person_id", "canonical_space_id"),
+}
+_C5_OWNERSHIP_SHADOW_INDEXES: tuple[str, ...] = (
+    "ix_people_canonical_person_id",
+    "ix_groups_canonical_space_id",
+    "ix_person_aliases_canonical_person_id",
+    "ix_person_aliases_canonical_space_id",
+    "ix_memberships_canonical_person_id",
+    "ix_memberships_canonical_space_id",
+)
+_STRIPPED_AT_0005: tuple[str, ...] = (
+    "people",
+    "groups",
+    "person_aliases",
+    "memberships",
+    "chat_events",
+)
+_STRIPPED_PARENTS: dict[str, tuple[str, ...]] = {
+    "people": (),
+    "groups": (),
+    "person_aliases": ("people",),
+    "memberships": ("people", "groups"),
+    "chat_events": ("people", "groups", "automations", "automation_runs"),
+}
+
+
+def _excluded_future_columns(table_name: str) -> set[str]:
+    excluded = set(_C4_CHAT_EVENT_SHADOW_COLUMNS if table_name == "chat_events" else ())
+    excluded.update(_C5_OWNERSHIP_SHADOW_COLUMNS.get(table_name, ()))
+    return excluded
+
+
+def _copy_table_without_future_shadows(table_name: str, side: MetaData) -> Table:
+    """Copy one ORM table onto side metadata without later C4/C5 shadows."""
+
+    if table_name in side.tables:
+        return side.tables[table_name]
+    source = Base.metadata.tables[table_name]
+    excluded = _excluded_future_columns(table_name)
+    table = Table(
+        source.name,
+        side,
+        *[column._copy() for column in source.columns if column.name not in excluded],
+    )
+    for constraint in list(source.constraints):
+        if isinstance(constraint, PrimaryKeyConstraint):
+            continue
+        if isinstance(constraint, ForeignKeyConstraint):
+            local_names = [element.parent.name for element in constraint.elements]
+            if set(local_names) & excluded:
+                continue
+            table.append_constraint(
+                ForeignKeyConstraint(
+                    local_names,
+                    [element.target_fullname for element in constraint.elements],
+                    name=constraint.name,
+                    ondelete=constraint.ondelete,
+                    onupdate=constraint.onupdate,
+                )
+            )
+            continue
+        if isinstance(constraint, UniqueConstraint):
+            names = [column.name for column in constraint.columns]
+            if set(names) & excluded:
+                continue
+            table.append_constraint(UniqueConstraint(*names, name=constraint.name))
+            continue
+        if isinstance(constraint, CheckConstraint):
+            table.append_constraint(CheckConstraint(constraint.sqltext, name=constraint.name))
+    for index in source.indexes:
+        if index.name == "uq_chat_events_bot_platform_message":
+            continue
+        names = [column.name for column in index.columns]
+        if set(names) & excluded:
+            continue
+        kwargs: dict[str, object] = {"unique": index.unique}
+        sqlite_opts = index.dialect_options.get("sqlite", {})
+        if "where" in sqlite_opts:
+            continue
+        Index(index.name, *[table.c[name] for name in names], **kwargs)
+    if table_name == "chat_events":
+        table.append_constraint(
+            UniqueConstraint(
+                "bot_user_id",
+                "platform_message_id",
+                name="uq_chat_events_bot_platform_message",
+            )
+        )
+    for local, parent, remote, ondelete in _C27_0005_RESTORED_CARRIER_FKS.get(table_name, ()):
+        table.append_constraint(
+            ForeignKeyConstraint(
+                [local],
+                [f"{parent}.{remote}"],
+                ondelete=ondelete,
+            )
+        )
+    return table
+
+
+def _table_without_future_shadows(table_name: str) -> Table:
+    """Create an empty 0005 table without later C4/C5 shadow columns or FKs.
+
+    SQLite DROP COLUMN does not remove FOREIGN KEY clauses that were part of
+    the original CREATE TABLE, so current ORM create_all would make later
+    shadow columns undeletable. Parent copies are stripped too so a later
+    people.canonical_person_id → persons FK cannot leak into 0005.
+    """
+
+    side = MetaData()
+    for parent in _STRIPPED_PARENTS[table_name]:
+        _copy_table_without_future_shadows(parent, side)
+    return _copy_table_without_future_shadows(table_name, side)
 
 
 def upgrade() -> None:
@@ -45,7 +193,7 @@ def upgrade() -> None:
     # migration deterministic so a fresh install does not create future tables early.
     v1_tables = [
         table
-        for table in Base.metadata.sorted_tables
+        for table in Base.metadata.tables.values()
         if table.name
         not in {
             "web_search_runs",
@@ -124,9 +272,44 @@ def upgrade() -> None:
             "conversation_scopes",
             "conversation_rollups",
             "conversation_rollup_jobs",
+            "persons",
+            "identity_bindings",
+            "spaces",
+            "space_bindings",
+            "presences",
+            "identity_runtime_state",
+            "identity_backfill_runs",
+            "identity_conflicts",
+            "canonical_conversations",
+            "conversation_legacy_aliases",
+            "person_active_routes",
+            "space_binding_ingest_routes",
+            "space_active_routes",
+            "control_command_receipts",
+            "canonical_event_receipts",
+            "identity_cutover_manifests",
+            "identity_cutover_runs",
+            "canonical_conversation_rollups",
+            "canonical_conversation_rollup_jobs",
+            "conversation_rollup_emergency_overlays",
+            "canonical_conversation_rollup_emergency_overlays",
         }
     ]
-    Base.metadata.create_all(bind=bind, tables=v1_tables, checkfirst=True)
+    create_tables = [table for table in v1_tables if table.name not in _STRIPPED_AT_0005]
+    _table_without_future_shadows("people").create(bind, checkfirst=True)
+    _table_without_future_shadows("groups").create(bind, checkfirst=True)
+    Base.metadata.create_all(bind=bind, tables=create_tables, checkfirst=True)
+    _table_without_future_shadows("person_aliases").create(bind, checkfirst=True)
+    _table_without_future_shadows("memberships").create(bind, checkfirst=True)
+    _table_without_future_shadows("chat_events").create(bind, checkfirst=True)
+    for index_name in (*_C4_CHAT_EVENT_SHADOW_INDEXES, *_C5_OWNERSHIP_SHADOW_INDEXES):
+        bind.exec_driver_sql(f"DROP INDEX IF EXISTS {index_name}")
+    chat_event_columns = {
+        str(row[1]) for row in bind.exec_driver_sql("PRAGMA table_info(chat_events)")
+    }
+    for column_name in _C4_CHAT_EVENT_SHADOW_COLUMNS:
+        if column_name in chat_event_columns:
+            bind.exec_driver_sql(f"ALTER TABLE chat_events DROP COLUMN {column_name}")
     op.execute(
         """
         CREATE VIRTUAL TABLE chat_events_fts USING fts5(

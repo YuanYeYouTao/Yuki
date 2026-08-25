@@ -59,7 +59,18 @@ def validate_production_compose(deploy_directory: Path, version: str, compose: C
     if "build:" in raw:
         raise SmokeError("production Compose must not contain build")
     rendered = json.loads(
-        compose.run("--profile", "speech", "config", "--format", "json", capture=True)
+        compose.run(
+            "--profile",
+            "speech",
+            "--profile",
+            "napcat",
+            "--profile",
+            "snowluma",
+            "config",
+            "--format",
+            "json",
+            capture=True,
+        )
     )
     services: dict[str, dict[str, Any]] = rendered["services"]
     expected = {
@@ -73,8 +84,23 @@ def validate_production_compose(deploy_directory: Path, version: str, compose: C
             )
         if services[service].get("platform") != "linux/amd64":
             raise SmokeError(f"{service} does not resolve to linux/amd64")
+    snowluma = services["snowluma"]
+    if snowluma["image"] != "motricseven7/snowluma:latest":
+        raise SmokeError("SnowLuma image does not resolve to the configured official image")
+    if snowluma.get("platform") != "linux/amd64":
+        raise SmokeError("SnowLuma does not resolve to linux/amd64")
+    if "SYS_PTRACE" not in snowluma.get("cap_add", []):
+        raise SmokeError("SnowLuma is missing SYS_PTRACE")
+    if "seccomp=unconfined" not in snowluma.get("security_opt", []):
+        raise SmokeError("SnowLuma is missing its required seccomp setting")
     required_mounts = {
-        "bot": {"/app/data", "/app/config", "/app/plugins", "/app/napcat-config"},
+        "bot": {
+            "/app/data",
+            "/app/config",
+            "/app/plugins",
+            "/app/napcat-config",
+            "/app/snowluma-data",
+        },
         "genie-tts-worker": {
             "/data/speech/genie_data",
             "/data/speech/voices",
@@ -83,6 +109,12 @@ def validate_production_compose(deploy_directory: Path, version: str, compose: C
             "/run/yuki-speech",
         },
         "napcat": {"/app/.config/QQ", "/app/napcat/config", "/app/napcat/plugins"},
+        "snowluma": {
+            "/app/data",
+            "/app/.config",
+            "/app/.local/share",
+            "/app/qq-accounts",
+        },
     }
     for service, destinations in required_mounts.items():
         actual = {mount["target"] for mount in services[service]["volumes"]}
@@ -151,6 +183,10 @@ capabilities = ["tools", "structured_output", "long_context"]
         deploy_directory / "napcat-data/.release-smoke-login": "napcat-login",
         deploy_directory / "napcat-config/.release-smoke-config": "napcat-config",
         deploy_directory / "napcat-plugins/.release-smoke-plugin": "napcat-plugins",
+        deploy_directory / "snowluma-data/.release-smoke-data": "snowluma-data",
+        deploy_directory / "snowluma-qq-config/.release-smoke-config": "snowluma-qq-config",
+        deploy_directory / "snowluma-qq-data/.release-smoke-data": "snowluma-qq-data",
+        deploy_directory / "snowluma-extra-accounts/.release-smoke-data": "snowluma-extra-accounts",
         deploy_directory
         / "data/speech/genie_data/chinese-hubert-base/.release-smoke": "offline-directory",
         deploy_directory / "data/speech/genie_data/speaker_encoder.onnx": "offline-file-sentinel",
@@ -276,7 +312,7 @@ def verify_bot(compose: Compose, deploy_directory: Path, version: str) -> None:
     alembic_version = compose.run(
         "exec", "-T", "bot", "python", "-c", migration_command, capture=True
     )
-    if alembic_version != "0042":
+    if alembic_version != "0048":
         raise SmokeError(f"unexpected Alembic version: {alembic_version!r}")
     compose.run("exec", "-T", "bot", "qq-ai-bot-cli", "plugin", "discover", capture=True)
     selected = write_plugin_pending(deploy_directory, compose)
@@ -471,7 +507,17 @@ def run_smoke(deploy_directory: Path, version: str, *, full: bool) -> None:
             verify_persistence(compose, deploy_directory, sentinels)
             verify_napcat_mount_recreation(compose, deploy_directory)
     finally:
-        compose.run("--profile", "speech", "down", "--volumes", "--remove-orphans")
+        compose.run(
+            "--profile",
+            "speech",
+            "--profile",
+            "napcat",
+            "--profile",
+            "snowluma",
+            "down",
+            "--volumes",
+            "--remove-orphans",
+        )
 
 
 def main() -> int:

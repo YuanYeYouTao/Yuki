@@ -53,3 +53,5 @@ docker compose up -d --no-deps --force-recreate bot
 5. 验证 revision 为 `0041`、健康检查正常，并抽查聊天与 Memory V2。
 
 恢复快照之后，3.7.0 运行期间产生的消息和配置变更不会存在；这是不可逆 schema 切换的预期代价。
+
+0043 之后的永久主体 / 多 Presence / v2 cutover 见 `docs/upgrade-identity-cutover.md`。`0048` 的数据回滚同样只允许恢复 plan 记录的 DB/WAL/SHM 快照，不能用 Alembic downgrade 或 git revert。

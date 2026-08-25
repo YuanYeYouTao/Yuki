@@ -15,6 +15,7 @@ from qq_ai_bot.conversation.participation import AdmissionFeatures, AdmissionSig
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.persistence.repositories import EventLedgerRepository, RelationshipRepository
 from qq_ai_bot.persistence.repository_records import EventRecord
+from qq_ai_bot.services.policies import replies_to_bot
 
 _HISTORY_LIMIT = 10
 
@@ -54,10 +55,16 @@ class AdmissionFeatureBuilder:
 
         del runtime
         current_time = now or datetime.now(UTC)
-        recent = await self._ledger.list_scope_recent(
-            inbound.scope(),
-            limit=_HISTORY_LIMIT + 1,
-        )
+        if inbound.conversation_id:
+            recent = await self._ledger.list_canonical_recent(
+                inbound.conversation_id,
+                limit=_HISTORY_LIMIT + 1,
+            )
+        else:
+            recent = await self._ledger.list_scope_recent(
+                inbound.scope(),
+                limit=_HISTORY_LIMIT + 1,
+            )
         relationship = await self._relationships.get(inbound.sender.user_id)
         metrics = self._metrics(recent, inbound.bot_user_id, current_time)
         relationship_adjustment = 0.0
@@ -69,10 +76,7 @@ class AdmissionFeatureBuilder:
         return AdmissionFeatures(
             scope_type=inbound.scope_type,
             text=content,
-            reply_target_is_bot=(
-                bool(inbound.reply_sender_user_id)
-                and inbound.reply_sender_user_id == inbound.bot_user_id
-            ),
+            reply_target_is_bot=replies_to_bot(inbound),
             mentions_bot=inbound.mentions_bot,
             continuation=metrics.last_was_bot,
             pending_message_count=metrics.pending,
@@ -91,15 +95,11 @@ class AdmissionFeatureBuilder:
     @staticmethod
     def _metrics(
         rows: tuple[EventRecord, ...],
-        bot_user_id: str,
+        _bot_user_id: str,
         now: datetime,
     ) -> _ConversationMetrics:
-        human = [
-            row for row in rows if row.event_kind == "message" and row.sender_user_id != bot_user_id
-        ]
-        bot = [
-            row for row in rows if row.event_kind == "message" and row.sender_user_id == bot_user_id
-        ]
+        human = [row for row in rows if row.event_kind == "message" and row.author_is_human()]
+        bot = [row for row in rows if row.event_kind == "message" and row.author_is_yuki()]
         messages = [row for row in rows if row.event_kind == "message"]
         normalized_now = AdmissionFeatureBuilder._aware_utc(now)
         intervals = [
@@ -116,14 +116,14 @@ class AdmissionFeatureBuilder:
             (
                 index
                 for index, row in enumerate(rows)
-                if row.event_kind == "message" and row.sender_user_id == bot_user_id
+                if row.event_kind == "message" and row.author_is_yuki()
             ),
             default=-1,
         )
         pending = sum(
             1
             for row in rows[last_bot_index + 1 :]
-            if row.event_kind == "message" and row.sender_user_id != bot_user_id
+            if row.event_kind == "message" and row.author_is_human()
         )
         last_time = (
             AdmissionFeatureBuilder._aware_utc(messages[-1].occurred_at)
@@ -141,7 +141,7 @@ class AdmissionFeatureBuilder:
                 if last_bot_time is not None
                 else None
             ),
-            last_was_bot=bool(messages and messages[-1].sender_user_id == bot_user_id),
+            last_was_bot=bool(messages and messages[-1].author_is_yuki()),
         )
 
     @staticmethod

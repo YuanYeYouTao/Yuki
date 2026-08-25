@@ -63,13 +63,26 @@ def _destination_revision() -> str | None:
     return destination
 
 
-def _should_split_fk_cutover(current: str | None, destination: str | None) -> bool:
-    """One-shot `upgrade head` must stop at 0041 before the FK-on cutover."""
+def _lineage_contains(revision: str | None, target: str) -> bool:
+    """True when ``revision`` is ``target`` or a descendant of ``target``."""
 
-    return (
-        current not in {_FK_CUTOVER_SOURCE, _FK_CUTOVER_REVISION}
-        and destination == _FK_CUTOVER_REVISION
+    if revision is None:
+        return False
+    if revision == target:
+        return True
+    return any(
+        item.revision == target for item in context.script.iterate_revisions(revision, "base")
     )
+
+
+def _should_split_fk_cutover(current: str | None, destination: str | None) -> bool:
+    """Stop at 0041 before the FK-on cutover when the destination is 0042 or later."""
+
+    if current in {_FK_CUTOVER_SOURCE, _FK_CUTOVER_REVISION}:
+        return False
+    if _lineage_contains(current, _FK_CUTOVER_REVISION):
+        return False
+    return _lineage_contains(destination, _FK_CUTOVER_REVISION)
 
 
 def _run_sqlite_migrations(
@@ -139,8 +152,12 @@ def do_run_migrations(connection: Connection) -> None:
 
     # Historical SQLite batch migrations were authored with FK enforcement
     # disabled. 0042 is a separate 0041 -> 0042 cutover and deliberately
-    # starts a fresh, FK-enforced transaction.
-    foreign_keys = "ON" if current in {_FK_CUTOVER_SOURCE, _FK_CUTOVER_REVISION} else "OFF"
+    # starts a fresh, FK-enforced transaction. Later descendants keep FK on.
+    foreign_keys = (
+        "ON"
+        if current == _FK_CUTOVER_SOURCE or _lineage_contains(current, _FK_CUTOVER_REVISION)
+        else "OFF"
+    )
     _run_sqlite_migrations(connection, foreign_keys=foreign_keys)
 
 

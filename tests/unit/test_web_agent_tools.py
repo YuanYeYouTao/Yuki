@@ -330,3 +330,46 @@ def test_disabled_web_mode_omits_web_tools_from_catalog(database: Database) -> N
     names = {tool.name for tool in tools.definitions(runtime())}
     assert "web_search" not in names
     assert "read_webpage" not in names
+
+
+def test_event_json_recognizes_old_presence_yuki_author() -> None:
+    from qq_ai_bot.persistence.repository_records import EventRecord
+
+    settings = make_settings("sqlite+aiosqlite:///:memory:")
+    service = AgentToolService.__new__(AgentToolService)
+    service._settings = settings
+    now = datetime.now(UTC)
+    old_presence = EventRecord(
+        id=1,
+        bot_user_id="8001",
+        platform_message_id="e-old",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="8000",
+        direction="outbound",
+        content="prior reply",
+        visual_summary="",
+        segments=(),
+        occurred_at=now,
+        group_id="2001",
+        author_kind="yuki",
+    )
+    payload = service._event_json(old_presence)
+    assert old_presence.author_is_yuki() is True
+    assert payload["sender_display_name"] == settings.bot_display_name
+    external = EventRecord(
+        id=2,
+        bot_user_id="8001",
+        platform_message_id="e-ext",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="8000",
+        direction="inbound",
+        content="spoof",
+        visual_summary="",
+        segments=(),
+        occurred_at=now,
+        group_id="2001",
+        author_kind="external_bot",
+    )
+    spoofed = service._event_json(external)
+    assert external.author_is_yuki() is False
+    assert spoofed["sender_display_name"] == "external bot"

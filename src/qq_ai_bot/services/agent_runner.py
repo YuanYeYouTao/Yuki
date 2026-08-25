@@ -74,6 +74,7 @@ class AgentRuntime:
     before_model_request: Callable[[], Awaitable[None]] | None = None
     force_tavily_fallback: bool = False
     web_route: WebRouteDecision | None = None
+    canonical_conversation_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,37 +267,44 @@ class AgentRunner:
                 if runtime.before_model_request is not None:
                     await runtime.before_model_request()
                 diagnostics = runtime.prompt_diagnostics
-                response = await self._concurrency.run_llm(
-                    runtime.conversation_key,
+                request = ChatRequest(
+                    messages=tuple(messages),
+                    model=runtime.runtime_config.llm.model or "fake",
+                    temperature=runtime.runtime_config.llm.temperature,
+                    max_output_tokens=runtime.runtime_config.llm.max_output_tokens,
+                    thinking_enabled=runtime.runtime_config.llm.thinking_enabled,
+                    tools=definitions,
+                    tool_choice=(
+                        "none"
+                        if finalization_only and (definitions or native_definitions)
+                        else ("auto" if definitions or native_definitions else None)
+                    ),
+                    native_tools=native_definitions,
+                    continuation=continuation,
+                    function_outputs=pending_function_outputs,
+                    conversation_prefix_hash=(
+                        diagnostics.conversation_prefix_hash if diagnostics else ""
+                    ),
+                    prompt_snapshot_fingerprint=(
+                        diagnostics.prompt_snapshot_fingerprint if diagnostics else ""
+                    ),
+                    static_prompt_revision=(
+                        diagnostics.static_prompt_revision if diagnostics else ""
+                    ),
+                )
+                execute = (
                     partial(
                         self._models.execute,
                         self._task,
-                        ChatRequest(
-                            messages=tuple(messages),
-                            model=runtime.runtime_config.llm.model or "fake",
-                            temperature=runtime.runtime_config.llm.temperature,
-                            max_output_tokens=runtime.runtime_config.llm.max_output_tokens,
-                            thinking_enabled=runtime.runtime_config.llm.thinking_enabled,
-                            tools=definitions,
-                            tool_choice=(
-                                "none"
-                                if finalization_only and (definitions or native_definitions)
-                                else ("auto" if definitions or native_definitions else None)
-                            ),
-                            native_tools=native_definitions,
-                            continuation=continuation,
-                            function_outputs=pending_function_outputs,
-                            conversation_prefix_hash=(
-                                diagnostics.conversation_prefix_hash if diagnostics else ""
-                            ),
-                            prompt_snapshot_fingerprint=(
-                                diagnostics.prompt_snapshot_fingerprint if diagnostics else ""
-                            ),
-                            static_prompt_revision=(
-                                diagnostics.static_prompt_revision if diagnostics else ""
-                            ),
-                        ),
-                    ),
+                        request,
+                        canonical_conversation_id=runtime.canonical_conversation_id,
+                    )
+                    if runtime.canonical_conversation_id is not None
+                    else partial(self._models.execute, self._task, request)
+                )
+                response = await self._concurrency.run_llm(
+                    runtime.conversation_key,
+                    execute,
                 )
             except (LLMTimeoutError, LLMUnavailableError) as exc:
                 recovered = self._recover_committed_mutation(

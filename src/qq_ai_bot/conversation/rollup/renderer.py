@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import UTC, datetime
 
+from qq_ai_bot.conversation.rollup.models import ConversationRollupDetailedStatus
 from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.time.formatting import local_datetime
@@ -60,13 +62,13 @@ def source_fingerprint(
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
-def extractive_compact(
+def truncate_conversation_tail(
     previous_summary: str,
     events: tuple[EventRecord, ...],
     *,
     max_characters: int,
 ) -> str:
-    """Advance coverage deterministically when model summarization is unavailable."""
+    """Bounded tail truncation for emergency overlays only. Not a semantic summary."""
 
     parts: list[str] = []
     if previous_summary.strip():
@@ -74,12 +76,27 @@ def extractive_compact(
     parts.extend(rollup_source_projection(event) for event in events)
     source = "\n".join(parts).strip()
     if not source:
-        raise ValueError("cannot compact an empty source")
+        raise ValueError("cannot truncate an empty source")
     if len(source) <= max_characters:
         return source
     marker = "[… earlier conversation compacted …]\n"
     remaining = max(1, max_characters - len(marker))
     return (marker + source[-remaining:])[:max_characters]
+
+
+def extractive_compact(
+    previous_summary: str,
+    events: tuple[EventRecord, ...],
+    *,
+    max_characters: int,
+) -> str:
+    """Read-compatible alias. New tail truncation must use truncate_conversation_tail()."""
+
+    return truncate_conversation_tail(
+        previous_summary,
+        events,
+        max_characters=max_characters,
+    )
 
 
 def render_rollup_message(summary_text: str) -> ChatMessage:
@@ -94,3 +111,58 @@ def render_event_message(event: EventRecord) -> ChatMessage:
     if event.event_kind == "external_event":
         role = "user"
     return ChatMessage(role=role, content=content)
+
+
+def _job_age_seconds(value: datetime | None) -> int:
+    if value is None:
+        return 0
+    created_at = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    return max(0, int((datetime.now(UTC) - created_at).total_seconds()))
+
+
+def render_rollup_status_lines(
+    status: ConversationRollupDetailedStatus,
+    *,
+    scope_key: str,
+) -> list[str]:
+    """Label semantic vs emergency/effective metadata. Never emit summary text."""
+
+    semantic_coverage = (
+        status.semantic.covered_through_event_id
+        if status.semantic is not None
+        else (status.scope.starts_after_event_id if status.scope is not None else 0)
+    )
+    overlay_coverage = (
+        str(status.overlay.covered_through_event_id) if status.overlay is not None else "无"
+    )
+    job_age_text = f"{_job_age_seconds(status.job.created_at)} 秒" if status.job else "无"
+    last_error = (
+        status.job.last_error_category
+        if status.job is not None and status.job.last_error_category
+        else "无"
+    )
+    return [
+        f"Scope key：{scope_key}",
+        f"Scope generation：{status.scope.generation if status.scope else '未建立'}",
+        f"当前 generation 起始事件边界："
+        f"{status.scope.starts_after_event_id if status.scope else 0}",
+        f"最后事件 ID：{status.scope.last_event_id if status.scope else 0}",
+        f"语义 Rollup coverage：{semantic_coverage}",
+        f"语义未覆盖事件数：{status.semantic_uncovered_event_count}",
+        f"语义未覆盖字符数：{status.semantic_uncovered_character_count}",
+        f"语义 Rollup kind：{status.semantic.kind.value if status.semantic else '无'}",
+        f"语义 Rollup revision：{status.semantic.revision if status.semantic else 0}",
+        f"紧急 overlay：{'有' if status.overlay is not None else '无'}",
+        f"紧急 overlay coverage：{overlay_coverage}",
+        f"紧急 overlay kind：{status.overlay.kind.value if status.overlay else '无'}",
+        f"紧急 overlay revision：{status.overlay.revision if status.overlay else 0}",
+        f"有效 Prompt coverage：{status.effective_coverage}",
+        f"有效 Prompt 尾部事件数：{status.effective_prompt_tail_event_count}",
+        f"有效 Prompt 尾部字符数：{status.effective_prompt_tail_character_count}",
+        f"rewrite_pending：{'是' if status.rewrite_pending else '否'}",
+        f"Job 状态：{status.job.status if status.job else '无'}",
+        f"Job signal revision：{status.job.signal_revision if status.job else 0}",
+        f"Job failure count：{status.job.failure_count if status.job else 0}",
+        f"Job age：{job_age_text}",
+        f"最近错误类别：{last_error}",
+    ]

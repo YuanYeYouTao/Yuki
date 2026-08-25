@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 
 from qq_ai_bot.domain.conversations import ConversationScope
@@ -13,11 +13,27 @@ from qq_ai_bot.persistence.repository_records import EventRecord
 class RollupKind(StrEnum):
     MODEL = "model"
     EXTRACTIVE = "extractive"
+    MIGRATION = "migration"
+    EMERGENCY = "emergency"
 
 
 class RollupJobStatus(StrEnum):
     PENDING = "pending"
     PROCESSING = "processing"
+
+
+class EmergencyOverlayDisposition(StrEnum):
+    """How to release the job after an overlay write. No schema change."""
+
+    FOREGROUND = "foreground"
+    MODEL_FAILURE = "model_failure"
+    POLICY = "policy"
+
+
+LLM_ORIGIN_INELIGIBLE = "llm_origin_ineligible"
+# Park policy-ineligible jobs far enough that claim_next will not pick them,
+# without using a database infinity. A later force signal sets next_attempt_at=now.
+POLICY_PARK_DELAY = timedelta(days=30)
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,7 +46,7 @@ class RollupPolicyConfig:
     stop_characters: int = 0
     batch_max_events: int = 256
     batch_max_characters: int = 32_768
-    summary_max_characters: int = 1200
+    summary_max_characters: int = 2400
     bot_display_name: str = "Yuki"
     timezone: str = "Asia/Shanghai"
     llm_origins: frozenset[str] = frozenset({"user_message"})
@@ -71,6 +87,7 @@ class ConversationScopeState:
     uncovered_character_count: int
     created_at: datetime
     updated_at: datetime
+    runtime_scope_key: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +112,7 @@ class RollupJobClaim:
     lease_owner: str
     lease_token: str
     lease_until: datetime
+    conversation_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +126,7 @@ class RollupCandidate:
     event_count: int
     projection_characters: int
     fingerprint: str
+    conversation_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,9 +136,45 @@ class ConversationPromptSnapshot:
     raw_events: tuple[EventRecord, ...]
     effective_coverage: int
     raw_tail_end_event_id: int
+    overlay: ConversationRollupState | None = None
+    rewrite_pending: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class RollupCommitResult:
     rollup: ConversationRollupState
     claim_retained: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RollupCheckpointStatus:
+    """Metadata-only checkpoint view. Never carries summary text."""
+
+    kind: RollupKind
+    revision: int
+    covered_through_event_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class RollupJobMetadata:
+    status: str
+    signal_revision: int
+    failure_count: int
+    created_at: datetime | None
+    last_error_category: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationRollupDetailedStatus:
+    """Transport-neutral rollup observability. Metadata only; no summary content."""
+
+    scope: ConversationScopeState | None
+    semantic: RollupCheckpointStatus | None
+    overlay: RollupCheckpointStatus | None
+    effective_coverage: int
+    rewrite_pending: bool
+    semantic_uncovered_event_count: int
+    semantic_uncovered_character_count: int
+    effective_prompt_tail_event_count: int
+    effective_prompt_tail_character_count: int
+    job: RollupJobMetadata | None

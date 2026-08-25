@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import text
 
+from qq_ai_bot.memory.eligibility import sql_human_evidence_predicate
 from qq_ai_bot.memory.embedding.text import EmbeddingDocumentBuilder
 from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.quality.audit import MemoryProductionQualityAudit
@@ -32,7 +33,7 @@ class MemoryProvenanceHygiene:
                 int(item)
                 for item in await session.scalars(
                     text(
-                        """
+                        f"""
                         SELECT DISTINCT f.id FROM memory_facts f
                         WHERE f.source_type IN ('automatic','rebuild')
                           AND f.status!='invalidated'
@@ -42,7 +43,7 @@ class MemoryProvenanceHygiene:
                             WHERE e.fact_id=f.id
                               AND c.direction='inbound'
                               AND trim(c.content)!=''
-                              AND c.sender_user_id!=c.bot_user_id
+                              AND {sql_human_evidence_predicate("c")}
                               AND e.source_speaker_user_id=c.sender_user_id
                               AND trim(e.excerpt)!=''
                               AND instr(c.content,e.excerpt)>0

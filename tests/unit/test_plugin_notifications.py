@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select, update
+from tests.support.gateway import napcat_registry
 
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
@@ -189,3 +190,459 @@ async def test_completed_media_can_expire_without_breaking_publish_idempotency(
 
     assert receipt.deduplicated
     assert not receipt.delivery_enqueued
+
+
+async def _true(*_args: object, **_kwargs: object) -> bool:
+    return True
+
+
+async def _flip_v2(database: Database) -> None:
+    from qq_ai_bot.identity.db_models import IdentityRuntimeStateModel
+
+    async with database.sessions() as session, session.begin():
+        row = await session.get(IdentityRuntimeStateModel, 1)
+        assert row is not None
+        row.state = "v2"
+        row.cutover_id = "550e8400-e29b-41d4-a716-446655440099"
+        row.source_fingerprint = "cutover-fingerprint"
+        row.completed_at = datetime(2026, 8, 24, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_outbox_delivers_persisted_person_after_legacy_remap(
+    database: Database,
+    tmp_path: Path,
+) -> None:
+    from uuid import uuid4
+
+    from qq_ai_bot.identity.db_models import IdentityBindingModel
+    from qq_ai_bot.identity.dual_write import (
+        ensure_canonical_presence_preconfig as ensure_v2_presence,
+    )
+    from qq_ai_bot.identity.dual_write import sync_account
+    from qq_ai_bot.identity.routing import PresenceRouter
+    from qq_ai_bot.identity.shadows import person_id_for
+    from qq_ai_bot.identity.write_settings import (
+        IdentityWriteSettings,
+        configure_identity_write_settings,
+    )
+    from qq_ai_bot.persistence.models import PersonModel
+    from qq_ai_bot.plugin_host.notification_delivery import (
+        OneBotNotificationTransport,
+        PluginNotificationOutboxWorker,
+    )
+
+    configure_identity_write_settings(
+        IdentityWriteSettings(superusers=frozenset({"1001", "1002", "9000"}))
+    )
+    await _running_plugin(database)
+    await PeopleRepository(database).observe(user_id="9000", nickname="Admin")
+    await PeopleRepository(database).observe(user_id="1001", nickname="A")
+    await PeopleRepository(database).observe(user_id="1002", nickname="B")
+    now = datetime.now(UTC)
+    async with database.sessions() as session, session.begin():
+        await sync_account(session, "1001", role="human", now=now)
+        await sync_account(session, "1002", role="human", now=now)
+        person_a = await person_id_for(session, "1001")
+        person_b = await person_id_for(session, "1002")
+    assert person_a and person_b and person_a != person_b
+    notifications = PluginNotificationRepository(database)
+    target = NotificationTarget(target_type="private", target_id="1001")
+    await notifications.grant_target(
+        plugin_id=PLUGIN_ID,
+        target=target,
+        bot_user_id="8001",
+        created_by_user_id="9000",
+    )
+    await notifications.publish(
+        plugin_id=PLUGIN_ID,
+        request=PublishNotificationRequest(
+            event_key="person-persist",
+            event_type="test",
+            external_source="test",
+            target=target,
+            occurred_at=now,
+            summary="persist A",
+            text="hello-A",
+        ),
+    )
+    async with database.sessions() as session:
+        stored = await session.scalar(select(PluginNotificationOutboxModel))
+    assert stored is not None
+    assert stored.target_id == "1001"
+    assert stored.canonical_target_person_id == person_a
+    assert stored.canonical_target_space_id is None
+    await _flip_v2(database)
+    registry = napcat_registry(gateway_instance_id="gw-outbox-person")
+    router = PresenceRouter(database, registry, membership_probe=_true)
+
+    class _RecordBot:
+        def __init__(self, self_id: str) -> None:
+            self.self_id = self_id
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def call_api(self, action: str, **kwargs: object) -> dict[str, object]:
+            self.calls.append((action, dict(kwargs)))
+            return {"message_id": "persist-person"}
+
+    bot = _RecordBot("8001")
+    async with database.sessions() as session, session.begin():
+        presence = await ensure_v2_presence(session, "8001")
+        binding_a = await session.scalar(
+            select(IdentityBindingModel).where(IdentityBindingModel.person_id == person_a)
+        )
+        assert binding_a is not None
+        binding_a.external_account_id = "1009"
+        people = await session.get(PersonModel, "1001")
+        assert people is not None
+        people.canonical_person_id = person_b
+        session.add(
+            IdentityBindingModel(
+                id=str(uuid4()),
+                person_id=person_b,
+                platform="qq",
+                external_account_id="1001",
+                display_name="moved",
+                status="active",
+                revision=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    registry.connect(bot)
+    registry.bind_presence(platform="qq", external_account_id="8001", presence_id=presence)
+    assert await router.cas_takeover_person(person_a) == "taken"
+    ledger: list[dict[str, object]] = []
+
+    class _Ledger:
+        async def get_event(self, _event_id: int) -> None:
+            return None
+
+        async def append(self, **kwargs: object) -> None:
+            ledger.append(dict(kwargs))
+
+    worker = PluginNotificationOutboxWorker(
+        repository=notifications,
+        artifacts=PluginMediaArtifactStore(database, root=tmp_path / "artifacts"),
+        ledger=_Ledger(),  # type: ignore[arg-type]
+        transport=OneBotNotificationTransport(registry, router=router),
+    )
+    item = await notifications.claim_outbox()
+    assert item is not None
+    assert item.canonical_target_person_id == person_a
+    await worker._deliver(item)
+    assert bot.calls == [("send_private_msg", {"user_id": "1009", "message": "hello-A"})]
+    assert ledger[-1]["private_peer_user_id"] == "1009"
+    assert ledger[-1]["bot_user_id"] == "8001"
+    async with database.sessions() as session:
+        assert await person_id_for(session, "1001") == person_b
+
+
+@pytest.mark.asyncio
+async def test_outbox_delivers_persisted_space_after_legacy_remap(
+    database: Database,
+    tmp_path: Path,
+) -> None:
+    from uuid import uuid4
+
+    from qq_ai_bot.identity.db_models import SpaceBindingModel
+    from qq_ai_bot.identity.dual_write import (
+        ensure_canonical_presence_preconfig as ensure_v2_presence,
+    )
+    from qq_ai_bot.identity.dual_write import sync_space
+    from qq_ai_bot.identity.routing import PresenceRouter
+    from qq_ai_bot.identity.shadows import space_id_for
+    from qq_ai_bot.identity.write_settings import (
+        IdentityWriteSettings,
+        configure_identity_write_settings,
+    )
+    from qq_ai_bot.persistence.models import GroupModel
+    from qq_ai_bot.plugin_host.notification_delivery import (
+        OneBotNotificationTransport,
+        PluginNotificationOutboxWorker,
+    )
+
+    configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
+    await _running_plugin(database)
+    await PeopleRepository(database).observe(user_id="9000", nickname="Admin")
+    await GroupSettingsRepository(database).set_enabled("2001", True)
+    await GroupSettingsRepository(database).set_enabled("2002", True)
+    now = datetime.now(UTC)
+    async with database.sessions() as session, session.begin():
+        await sync_space(session, "2001", enabled=True, now=now)
+        await sync_space(session, "2002", enabled=True, now=now)
+        space_a = await space_id_for(session, "2001")
+        space_b = await space_id_for(session, "2002")
+    assert space_a and space_b and space_a != space_b
+    notifications = PluginNotificationRepository(database)
+    target = NotificationTarget(target_type="group", target_id="2001")
+    await notifications.grant_target(
+        plugin_id=PLUGIN_ID,
+        target=target,
+        bot_user_id="8001",
+        created_by_user_id="9000",
+    )
+    await notifications.publish(
+        plugin_id=PLUGIN_ID,
+        request=PublishNotificationRequest(
+            event_key="space-persist",
+            event_type="test",
+            external_source="test",
+            target=target,
+            occurred_at=now,
+            summary="persist space",
+            text="hello-space",
+        ),
+    )
+    async with database.sessions() as session:
+        stored = await session.scalar(select(PluginNotificationOutboxModel))
+    assert stored is not None
+    assert stored.canonical_target_space_id == space_a
+    assert stored.canonical_target_person_id is None
+    await _flip_v2(database)
+    async with database.sessions() as session, session.begin():
+        binding_a = await session.scalar(
+            select(SpaceBindingModel).where(SpaceBindingModel.space_id == space_a)
+        )
+        assert binding_a is not None
+        binding_a.external_space_id = "2009"
+        group = await session.get(GroupModel, "2001")
+        assert group is not None
+        group.canonical_space_id = space_b
+        session.add(
+            SpaceBindingModel(
+                id=str(uuid4()),
+                space_id=space_b,
+                platform="qq",
+                external_space_id="2001",
+                display_name="moved",
+                status="active",
+                revision=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        presence = await ensure_v2_presence(session, "8001")
+    registry = napcat_registry(gateway_instance_id="gw-outbox-space")
+    router = PresenceRouter(database, registry, membership_probe=_true)
+
+    class _RecordBot:
+        def __init__(self, self_id: str) -> None:
+            self.self_id = self_id
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def call_api(self, action: str, **kwargs: object) -> dict[str, object]:
+            self.calls.append((action, dict(kwargs)))
+            return {"message_id": "persist-space"}
+
+    bot = _RecordBot("8001")
+    registry.connect(bot)
+    registry.bind_presence(platform="qq", external_account_id="8001", presence_id=presence)
+    assert await router.cas_takeover_space(space_a) == "taken"
+    ledger: list[dict[str, object]] = []
+
+    class _Ledger:
+        async def get_event(self, _event_id: int) -> None:
+            return None
+
+        async def append(self, **kwargs: object) -> None:
+            ledger.append(dict(kwargs))
+
+    worker = PluginNotificationOutboxWorker(
+        repository=notifications,
+        artifacts=PluginMediaArtifactStore(database, root=tmp_path / "artifacts"),
+        ledger=_Ledger(),  # type: ignore[arg-type]
+        transport=OneBotNotificationTransport(registry, router=router),
+    )
+    item = await notifications.claim_outbox()
+    assert item is not None
+    assert item.canonical_target_space_id == space_a
+    await worker._deliver(item)
+    assert bot.calls == [("send_group_msg", {"group_id": "2009", "message": "hello-space"})]
+    assert ledger[-1]["group_id"] == "2009"
+    async with database.sessions() as session:
+        assert await space_id_for(session, "2001") == space_b
+
+
+@pytest.mark.asyncio
+async def test_v2_outbox_without_canonical_shadows_fails_closed(
+    database: Database,
+) -> None:
+    await _running_plugin(database)
+    await PeopleRepository(database).observe(user_id="9000", nickname="Admin")
+    await GroupSettingsRepository(database).set_enabled("2001", True)
+    notifications = PluginNotificationRepository(database)
+    target = NotificationTarget(target_type="group", target_id="2001")
+    await notifications.grant_target(
+        plugin_id=PLUGIN_ID,
+        target=target,
+        bot_user_id="9999",
+        created_by_user_id="9000",
+    )
+    await notifications.publish(
+        plugin_id=PLUGIN_ID,
+        request=PublishNotificationRequest(
+            event_key="missing-shadow",
+            event_type="test",
+            external_source="test",
+            target=target,
+            occurred_at=datetime.now(UTC),
+            summary="missing",
+            text="should-not-send",
+        ),
+    )
+    async with database.sessions() as session, session.begin():
+        row = await session.scalar(select(PluginNotificationOutboxModel))
+        assert row is not None
+        row.canonical_target_person_id = None
+        row.canonical_target_space_id = None
+    await _flip_v2(database)
+    item = await notifications.claim_outbox()
+    assert item is None
+    async with database.sessions() as session:
+        row = await session.scalar(select(PluginNotificationOutboxModel))
+    assert row is not None
+    assert row.status == "failed"
+    assert row.last_error_category == "canonical_target_missing"
+
+
+@pytest.mark.asyncio
+async def test_v2_grant_and_publish_use_active_bindings_without_people(
+    database: Database,
+) -> None:
+    from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
+    from qq_ai_bot.identity.dual_write import (
+        ensure_canonical_person_preconfig,
+        ensure_canonical_presence_preconfig,
+    )
+    from qq_ai_bot.identity.shadows import active_person_id_for
+    from qq_ai_bot.persistence.models import GroupModel, PersonModel
+
+    await _running_plugin(database)
+    await _flip_v2(database)
+    now = datetime.now(UTC)
+    async with database.sessions() as session, session.begin():
+        creator = await ensure_canonical_person_preconfig(session, "9000", now=now)
+        target = await ensure_canonical_person_preconfig(session, "1001", now=now)
+        await ensure_canonical_presence_preconfig(session, "8001", now=now)
+    notifications = PluginNotificationRepository(database)
+    grant_target = NotificationTarget(target_type="private", target_id="1001")
+    with pytest.raises(PluginPermissionError, match="unknown"):
+        await notifications.grant_target(
+            plugin_id=PLUGIN_ID,
+            target=NotificationTarget(target_type="private", target_id="404"),
+            bot_user_id="8001",
+            created_by_user_id="9000",
+        )
+    await notifications.grant_target(
+        plugin_id=PLUGIN_ID,
+        target=grant_target,
+        bot_user_id="8001",
+        created_by_user_id="9000",
+    )
+    receipt = await notifications.publish(
+        plugin_id=PLUGIN_ID,
+        request=PublishNotificationRequest(
+            event_key="v2-canonical-only",
+            event_type="test",
+            external_source="test",
+            target=grant_target,
+            occurred_at=now,
+            summary="v2 publish",
+            text="hello-v2",
+        ),
+    )
+    assert receipt.event_created
+    assert receipt.delivery_enqueued
+    async with database.sessions() as session:
+        from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel
+
+        persons = int(
+            await session.scalar(select(func.count()).select_from(CanonicalPersonModel)) or 0
+        )
+        bindings = int(
+            await session.scalar(select(func.count()).select_from(IdentityBindingModel)) or 0
+        )
+        outbox = await session.scalar(select(PluginNotificationOutboxModel))
+        event = await session.scalar(
+            select(ChatEventModel).where(ChatEventModel.external_event_key == "v2-canonical-only")
+        )
+        assert await active_person_id_for(session, "9000") == creator
+        assert await active_person_id_for(session, "1001") == target
+    assert persons == 2
+    assert bindings == 2
+    assert outbox is not None
+    assert outbox.canonical_target_person_id == target
+    assert outbox.canonical_target_space_id is None
+    assert event is not None
+    assert event.author_kind == "system"
+    assert event.author_person_id is None
+    async with database.sessions() as session:
+        people = int(await session.scalar(select(func.count()).select_from(PersonModel)) or 0)
+        groups = int(await session.scalar(select(func.count()).select_from(GroupModel)) or 0)
+        scopes = int(
+            await session.scalar(select(func.count()).select_from(ConversationScopeModel)) or 0
+        )
+    assert people == 0
+    assert groups == 0
+    assert scopes == 0
+
+
+@pytest.mark.asyncio
+async def test_v2_grant_unknown_disabled_and_missing_creator_fail_closed(
+    database: Database,
+) -> None:
+    from qq_ai_bot.identity.db_models import IdentityBindingModel
+    from qq_ai_bot.identity.dual_write import (
+        ensure_canonical_person_preconfig,
+        ensure_canonical_presence_preconfig,
+        ensure_canonical_space_preconfig,
+    )
+    from qq_ai_bot.persistence.models import GroupModel, PersonModel
+
+    await _running_plugin(database)
+    await _flip_v2(database)
+    now = datetime.now(UTC)
+    async with database.sessions() as session, session.begin():
+        await ensure_canonical_person_preconfig(session, "9000", now=now)
+        await ensure_canonical_person_preconfig(session, "1001", now=now)
+        await ensure_canonical_space_preconfig(session, "2001", now=now)
+        await ensure_canonical_presence_preconfig(session, "8001", now=now)
+        binding = await session.scalar(
+            select(IdentityBindingModel).where(IdentityBindingModel.external_account_id == "1001")
+        )
+        assert binding is not None
+        binding.status = "disabled"
+    notifications = PluginNotificationRepository(database)
+    with pytest.raises(PluginPermissionError, match="grant creator is not a known person"):
+        await notifications.grant_target(
+            plugin_id=PLUGIN_ID,
+            target=NotificationTarget(target_type="private", target_id="1001"),
+            bot_user_id="8001",
+            created_by_user_id="404",
+        )
+    with pytest.raises(PluginPermissionError, match="unknown"):
+        await notifications.grant_target(
+            plugin_id=PLUGIN_ID,
+            target=NotificationTarget(target_type="private", target_id="1001"),
+            bot_user_id="8001",
+            created_by_user_id="9000",
+        )
+    with pytest.raises(PluginPermissionError, match="unknown or disabled"):
+        await notifications.grant_target(
+            plugin_id=PLUGIN_ID,
+            target=NotificationTarget(target_type="group", target_id="404"),
+            bot_user_id="8001",
+            created_by_user_id="9000",
+        )
+    async with database.sessions() as session:
+        from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
+
+        people = int(await session.scalar(select(func.count()).select_from(PersonModel)) or 0)
+        groups = int(await session.scalar(select(func.count()).select_from(GroupModel)) or 0)
+        scopes = int(
+            await session.scalar(select(func.count()).select_from(ConversationScopeModel)) or 0
+        )
+    assert people == 0
+    assert groups == 0
+    assert scopes == 0

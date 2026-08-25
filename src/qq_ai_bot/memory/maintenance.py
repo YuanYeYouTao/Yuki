@@ -6,10 +6,13 @@ import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.config import Settings
 from qq_ai_bot.memory.lifecycle import MemoryLifecycleConfig, MemoryLifecyclePolicy
 from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
+from qq_ai_bot.memory.models import MemoryFact
 from qq_ai_bot.memory.mutation.models import (
     MemoryMutationAppliedOperation,
     MemoryMutationOperation,
@@ -85,12 +88,12 @@ class MemoryMaintenanceWorker:
             if not self._stop.is_set() and runtime.enabled:
                 await self.process_once()
 
-    async def process_once(self) -> int:
+    async def process_once(self, *, session: AsyncSession | None = None) -> int:
         runtime = await self._snapshot()
         if not runtime.enabled:
             return 0
         now = datetime.now(UTC)
-        if self._receipts is not None:
+        if self._receipts is not None and session is None:
             cleaned = await self._receipts.cleanup_expired(
                 now=now,
                 limit=runtime.batch_limit,
@@ -112,9 +115,12 @@ class MemoryMaintenanceWorker:
             max_importance=config.stale_max_importance,
             max_confidence=config.stale_max_confidence,
             limit=runtime.batch_limit,
+            session=session,
         )
         changed = 0
         if self._mutations is not None:
+            if session is not None:
+                raise RuntimeError("maintenance mutations cannot share an external session")
             for candidate in rows:
                 fact = await self._facts.repository.get_fact(candidate.id)
                 if fact is None:
@@ -138,30 +144,45 @@ class MemoryMaintenanceWorker:
                     )
             self.metrics.record_maintenance_success(now)
             return changed
-        async with self._facts.repository.transaction() as session:
-            for candidate in rows:
-                # Candidate loading is intentionally bounded and read-only. Re-read each
-                # fact inside the write transaction so a concurrent confirmation or
-                # correction cannot be invalidated from a stale snapshot.
-                fact = await self._facts.repository.get_fact(candidate.id, session=session)
-                if fact is None:
-                    continue
-                reason = self._policy.reason(fact, now=now, config=config)
-                if reason is None:
-                    continue
-                if await self._facts.invalidate_fact(
-                    fact.id,
-                    reason=reason,
-                    actor_user_id=None,
-                    session=session,
-                ):
-                    changed += 1
-                    self.metrics.increment(
-                        "maintenance_expired"
-                        if reason.value == "expired"
-                        else "maintenance_stale_invalidated"
-                    )
+        if session is not None:
+            changed = await self._invalidate_candidates(
+                rows, now=now, config=config, session=session
+            )
+            self.metrics.record_maintenance_success(now)
+            return changed
+        async with self._facts.repository.transaction() as owned:
+            changed = await self._invalidate_candidates(rows, now=now, config=config, session=owned)
         self.metrics.record_maintenance_success(now)
+        return changed
+
+    async def _invalidate_candidates(
+        self,
+        rows: tuple[MemoryFact, ...],
+        *,
+        now: datetime,
+        config: MemoryLifecycleConfig,
+        session: AsyncSession,
+    ) -> int:
+        changed = 0
+        for candidate in rows:
+            fact = await self._facts.repository.get_fact(candidate.id, session=session)
+            if fact is None:
+                continue
+            reason = self._policy.reason(fact, now=now, config=config)
+            if reason is None:
+                continue
+            if await self._facts.invalidate_fact(
+                fact.id,
+                reason=reason,
+                actor_user_id=None,
+                session=session,
+            ):
+                changed += 1
+                self.metrics.increment(
+                    "maintenance_expired"
+                    if reason.value == "expired"
+                    else "maintenance_stale_invalidated"
+                )
         return changed
 
     async def _snapshot(self) -> _MaintenanceRuntime:

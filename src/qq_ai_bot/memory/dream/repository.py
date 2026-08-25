@@ -54,6 +54,8 @@ from qq_ai_bot.persistence.models import (
     MemoryFactModel,
     MemoryToolReceiptModel,
 )
+from qq_ai_bot.persistence.repository_helpers import _ensure_person
+from qq_ai_bot.persistence.unit_of_work import optional_session
 
 _DREAM_PREVIEW_SCHEMA_VERSION = 2
 
@@ -64,10 +66,23 @@ class DreamCandidate:
     bot_user_id: str
     vector: EmbeddingVector
     signature: str
+    complete_v2: bool = False
 
     @property
     def partition_identity(self) -> tuple[object, ...]:
         fact = self.fact
+        if self.complete_v2:
+            from qq_ai_bot.memory.partition import dream_canonical_owner_complete
+
+            if not dream_canonical_owner_complete(fact):
+                raise ValueError("incomplete_dream_owner")
+            return (
+                fact.canonical_subject_person_id,
+                fact.canonical_subject_space_id,
+                fact.canonical_visibility_person_id,
+                fact.canonical_visibility_space_id,
+                fact.kind.value,
+            )
         return (
             self.bot_user_id,
             fact.scope_type.value,
@@ -124,6 +139,7 @@ class DreamRepository:
         dimensions: int,
         documents: EmbeddingDocumentBuilder,
         maximum_fact_id: int | None = None,
+        session: AsyncSession | None = None,
     ) -> DreamCandidateLoad:
         now = datetime.now(UTC)
         conditions: list[Any] = [
@@ -133,9 +149,11 @@ class DreamRepository:
         ]
         if maximum_fact_id is not None:
             conditions.append(MemoryFactModel.id <= maximum_fact_id)
-        async with self.database.sessions() as session:
+        from qq_ai_bot.persistence.unit_of_work import optional_session
+
+        async with optional_session(self.database, session, write=False) as active:
             rows = (
-                await session.execute(
+                await active.execute(
                     select(
                         MemoryFactModel.id,
                         MemoryEmbeddingModel.content_hash,
@@ -155,7 +173,7 @@ class DreamRepository:
             missing = 0
             ambiguous = 0
             for row in rows:
-                fact = await self._facts.get_fact(int(row.id), session=session)
+                fact = await self._facts.get_fact(int(row.id), session=active)
                 if fact is None:
                     continue
                 signature = fact_signature(fact)
@@ -172,7 +190,31 @@ class DreamRepository:
                 if str(row.content_hash) != expected_hash:
                     missing += 1
                     continue
-                bot_ids = await self._fact_bot_ids(fact.id, session=session)
+                from qq_ai_bot.identity.memory_guard import refuse_legacy_live_fact
+                from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
+                from qq_ai_bot.memory.partition import dream_canonical_owner_complete
+
+                if await refuse_legacy_live_fact(active, fact.id):
+                    continue
+                complete_v2 = await identity_runtime_is_complete_v2(active)
+                if complete_v2:
+                    if not dream_canonical_owner_complete(fact):
+                        continue
+                    bot_ids = await self._fact_bot_ids(fact, session=active)
+                    provenance_bot = next(iter(bot_ids), "self")
+                    candidates.append(
+                        DreamCandidate(
+                            fact=fact,
+                            bot_user_id=provenance_bot,
+                            vector=self._codec.decode(
+                                bytes(row.vector_blob), dimensions=dimensions
+                            ),
+                            signature=signature,
+                            complete_v2=True,
+                        )
+                    )
+                    continue
+                bot_ids = await self._fact_bot_ids(fact, session=active)
                 if len(bot_ids) != 1:
                     ambiguous += 1
                     continue
@@ -193,12 +235,16 @@ class DreamRepository:
         )
 
     @staticmethod
-    async def _fact_bot_ids(fact_id: int, *, session: AsyncSession) -> set[str]:
+    async def _fact_bot_ids(fact: MemoryFact, *, session: AsyncSession) -> set[str]:
+        from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
+
+        if fact.scope_type.value == "self" and await identity_runtime_is_complete_v2(session):
+            return {"self"}
         event_ids = set(
             await session.scalars(
                 select(ChatEventModel.bot_user_id)
                 .join(MemoryEvidenceModel, MemoryEvidenceModel.event_id == ChatEventModel.id)
-                .where(MemoryEvidenceModel.fact_id == fact_id)
+                .where(MemoryEvidenceModel.fact_id == fact.id)
             )
         )
         tool_ids = set(
@@ -208,7 +254,7 @@ class DreamRepository:
                     MemoryEvidenceModel,
                     MemoryEvidenceModel.tool_receipt_id == MemoryToolReceiptModel.id,
                 )
-                .where(MemoryEvidenceModel.fact_id == fact_id)
+                .where(MemoryEvidenceModel.fact_id == fact.id)
             )
         )
         return {str(item) for item in (*event_ids, *tool_ids) if item}
@@ -255,10 +301,16 @@ class DreamRepository:
         snapshot_max_fact_id: int,
         actor_user_id: str | None,
         scheduled_slot: str | None,
+        session: AsyncSession | None = None,
     ) -> DreamRun:
         now = datetime.now(UTC)
         public_id = str(uuid.uuid4())
-        async with self.database.sessions() as session, session.begin():
+        async with optional_session(self.database, session, write=True) as active:
+            from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
+
+            complete_v2 = await identity_runtime_is_complete_v2(active)
+            if actor_user_id and not complete_v2:
+                await _ensure_person(active, actor_user_id, now=now)
             row = MemoryDreamRunModel(
                 public_id=public_id,
                 mode=mode.value,
@@ -283,15 +335,54 @@ class DreamRepository:
                 cancelled_at=None,
                 rolled_back_at=None,
             )
-            session.add(row)
-            await session.flush()
+            active.add(row)
+            await active.flush()
             for cluster_key, partition_key, bot_user_id, kind, fact_ids, fingerprint in clusters:
-                session.add(
+                subject_person_id = None
+                subject_space_id = None
+                visibility_person_id = None
+                visibility_space_id = None
+                if complete_v2:
+                    first_fact = (
+                        await self._facts.get_fact(fact_ids[0], session=active)
+                        if fact_ids
+                        else None
+                    )
+                    if first_fact is not None:
+                        subject_person_id = first_fact.canonical_subject_person_id
+                        subject_space_id = first_fact.canonical_subject_space_id
+                        visibility_person_id = first_fact.canonical_visibility_person_id
+                        visibility_space_id = first_fact.canonical_visibility_space_id
+                else:
+                    from qq_ai_bot.identity.owner_dual_write import (
+                        optional_dream_owner_from_facts,
+                    )
+
+                    source_facts: list[MemoryFact] = []
+                    for fact_id in fact_ids:
+                        fact = await self._facts.get_fact(fact_id, session=active)
+                        if fact is None:
+                            source_facts = []
+                            break
+                        source_facts.append(fact)
+                    shape = optional_dream_owner_from_facts(tuple(source_facts))
+                    if shape is not None:
+                        (
+                            subject_person_id,
+                            subject_space_id,
+                            visibility_person_id,
+                            visibility_space_id,
+                        ) = shape
+                active.add(
                     MemoryDreamClusterModel(
                         run_id=row.id,
                         cluster_key=cluster_key,
                         partition_key=partition_key,
                         bot_user_id=bot_user_id,
+                        canonical_subject_person_id=subject_person_id,
+                        canonical_subject_space_id=subject_space_id,
+                        canonical_visibility_person_id=visibility_person_id,
+                        canonical_visibility_space_id=visibility_space_id,
                         kind=kind,
                         status=DreamClusterStatus.PENDING.value,
                         fact_ids_json=json.dumps(fact_ids),
@@ -305,7 +396,7 @@ class DreamRepository:
                         completed_at=None,
                     )
                 )
-            await session.flush()
+            await active.flush()
             return self._run(row)
 
     async def checkpoint_candidates(
@@ -372,9 +463,11 @@ class DreamRepository:
             )
         )
 
-    async def get_run(self, public_id: str) -> DreamRun | None:
-        async with self.database.sessions() as session:
-            row = await session.scalar(
+    async def get_run(
+        self, public_id: str, *, session: AsyncSession | None = None
+    ) -> DreamRun | None:
+        async with optional_session(self.database, session, write=False) as active:
+            row = await active.scalar(
                 select(MemoryDreamRunModel).where(MemoryDreamRunModel.public_id == public_id)
             )
         return self._run(row) if row is not None else None
@@ -477,10 +570,10 @@ class DreamRepository:
             )
         return self._cluster(row) if row is not None else None
 
-    async def start_run(self, public_id: str) -> bool:
+    async def start_run(self, public_id: str, *, session: AsyncSession | None = None) -> bool:
         now = datetime.now(UTC)
-        async with self.database.sessions() as session, session.begin():
-            other = await session.scalar(
+        async with optional_session(self.database, session, write=True) as active:
+            other = await active.scalar(
                 select(func.count())
                 .select_from(MemoryDreamRunModel)
                 .where(
@@ -492,7 +585,7 @@ class DreamRepository:
             )
             if other:
                 return False
-            result = await session.execute(
+            result = await active.execute(
                 update(MemoryDreamRunModel)
                 .where(
                     MemoryDreamRunModel.public_id == public_id,
@@ -669,10 +762,10 @@ class DreamRepository:
             await session.flush()
             return self._run(row)
 
-    async def cancel(self, public_id: str) -> bool:
+    async def cancel(self, public_id: str, *, session: AsyncSession | None = None) -> bool:
         now = datetime.now(UTC)
-        async with self.database.sessions() as session, session.begin():
-            result = await session.execute(
+        async with optional_session(self.database, session, write=True) as active:
+            result = await active.execute(
                 update(MemoryDreamRunModel)
                 .where(
                     MemoryDreamRunModel.public_id == public_id,

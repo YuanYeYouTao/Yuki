@@ -8,6 +8,11 @@ from typing import Any, cast
 from sqlalchemy import delete, func, select
 from sqlalchemy.engine import CursorResult
 
+from qq_ai_bot.identity.c24_conversation import (
+    require_live_conversation,
+    resolve_conversation_id_for_chat_event,
+    stamp_conversation_correlation,
+)
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     WebSearchRunModel,
@@ -23,6 +28,24 @@ class WebSearchSourceRepository:
     def __init__(self, database: Database) -> None:
         self._database = database
 
+    async def preflight_conversation_correlation(
+        self,
+        canonical_conversation_id: str | None,
+    ) -> None:
+        """Fail-closed live Conversation check. v1/None is a no-op.
+
+        Uses the same complete-v2 kind/existence helpers as
+        ``stamp_conversation_correlation`` (``require_live_conversation``).
+        The short read-only session is closed before the caller may search.
+        A provided id that is the wrong kind, a Presence/Person/Space id, or a
+        missing/stale Conversation fails closed here.
+        """
+
+        if canonical_conversation_id is None or not str(canonical_conversation_id).strip():
+            return
+        async with self._database.sessions() as session:
+            await require_live_conversation(session, canonical_conversation_id)
+
     async def save_response(
         self,
         *,
@@ -31,6 +54,10 @@ class WebSearchSourceRepository:
         provider: str,
         response: WebSearchResponse,
         max_runs: int,
+        canonical_conversation_id: str | None = None,
+        bot_user_id: str | None = None,
+        ingress_presence_id: str | None = None,
+        infer_trigger_event: bool = True,
     ) -> int:
         """Persist one successful tool run and prune older runs in this conversation."""
 
@@ -46,6 +73,15 @@ class WebSearchSourceRepository:
             )
             session.add(run)
             await session.flush()
+            await stamp_conversation_correlation(session, run, canonical_conversation_id)
+            if infer_trigger_event:
+                proven = await resolve_conversation_id_for_chat_event(
+                    session,
+                    platform_message_id=trigger_message_id[:128],
+                    bot_user_id=bot_user_id,
+                    ingress_presence_id=ingress_presence_id,
+                )
+                await stamp_conversation_correlation(session, run, proven)
             seen: set[str] = set()
             ordinal = 0
             for source in response.sources:

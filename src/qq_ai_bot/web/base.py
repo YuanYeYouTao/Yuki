@@ -14,6 +14,7 @@ _BLOCKED_HOSTS = frozenset(
         "docker",
         "bot",
         "napcat",
+        "snowluma",
         "host.docker.internal",
         "gateway.docker.internal",
     }

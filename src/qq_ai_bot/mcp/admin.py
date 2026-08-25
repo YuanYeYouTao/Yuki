@@ -4,15 +4,12 @@ from __future__ import annotations
 
 import json
 
-from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.capabilities.invocation import ToolInvocationContext
-from qq_ai_bot.capabilities.results import ToolArtifactWriter, ToolResultBudgeter
-from qq_ai_bot.mcp.binding import MCPPolicyRuntime, MCPToolBinding
 from qq_ai_bot.mcp.errors import classify_mcp_exception
 from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.mcp.models import MCPHealthSnapshot
 
-_MUTATING = frozenset({"refresh", "reconnect", "enable", "disable", "doctor", "call"})
+_MUTATING = frozenset({"refresh", "reconnect", "enable", "disable", "doctor"})
+_CALL_UNAVAILABLE = "MCP 任意调用当前不可用。"
 
 
 class MCPCommandHandler:
@@ -21,15 +18,14 @@ class MCPCommandHandler:
         manager: MCPManager,
         *,
         result_max_characters: int = 8000,
-        artifacts: ToolArtifactWriter | None = None,
+        artifacts: object | None = None,
         artifact_retention_seconds: int | None = None,
     ) -> None:
         if result_max_characters <= 0:
             raise ValueError("MCP command result budget must be positive")
         self._manager = manager
-        self._result_max = result_max_characters
-        self._artifacts = artifacts
-        self._artifact_retention_seconds = artifact_retention_seconds
+        _ = artifacts
+        _ = artifact_retention_seconds
 
     def health(self) -> MCPHealthSnapshot:
         return self._manager.health()
@@ -37,6 +33,8 @@ class MCPCommandHandler:
     async def execute(self, argument: str, *, is_superuser: bool) -> str:
         parts = argument.strip().split(maxsplit=3)
         operation = parts[0].casefold() if parts else "list"
+        if operation == "call":
+            return _CALL_UNAVAILABLE
         if operation in _MUTATING and not is_superuser:
             return "权限不足：该 MCP 命令仅限超级管理员"
         if operation == "list":
@@ -95,39 +93,6 @@ class MCPCommandHandler:
                     f"MCP 诊断通过：{server_id}，协议 {status.protocol_version or '未知'}，"
                     f"工具 {len(tools)} 个"
                 )
-            if operation == "call":
-                if len(parts) < 4:
-                    return "格式：/ai mcp call <server_id> <tool_name> <JSON>"
-                tool_name = parts[2]
-                raw = json.loads(parts[3])
-                if not isinstance(raw, dict):
-                    return "MCP 调用参数必须是 JSON 对象"
-                runtime = MCPPolicyRuntime(
-                    origin=TurnOrigin.USER_MESSAGE,
-                    actor_user_id="deterministic-superuser",
-                    actor_is_superuser=True,
-                )
-                result = await MCPToolBinding(
-                    self._manager,
-                    server_id,
-                    tool_name,
-                    record_invocation=True,
-                ).invoke(
-                    {str(key): value for key, value in raw.items()},
-                    ToolInvocationContext(
-                        runtime=runtime,
-                        conversation_key="deterministic-command",
-                        actor_user_id=runtime.actor_user_id,
-                    ),
-                )
-                rendered = await ToolResultBudgeter(
-                    max_characters=self._result_max,
-                    artifacts=self._artifacts,
-                    artifact_retention_seconds=self._artifact_retention_seconds,
-                ).render(result)
-                return rendered.text
-        except json.JSONDecodeError:
-            return "MCP 调用参数不是有效 JSON"
         except Exception as exc:
             failure = classify_mcp_exception(exc)
             return f"MCP 操作失败：{failure.public_message}"

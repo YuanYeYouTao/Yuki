@@ -94,7 +94,7 @@ try {
     } else {
         $Stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ')
         $ManagedBackup = Join-Path $InstallDir ".yuki\backups\installer-$Stamp"
-        foreach ($Relative in @('docker-compose.yml', '.env.example', 'install.sh', 'install.ps1', "Yuki-$Version-Upgrade.md")) {
+        foreach ($Relative in @('docker-compose.yml', '.env.example', 'install.sh', 'install.ps1', 'SnowLuma.md', "Yuki-$Version-Upgrade.md")) {
             $SourceFile = Join-Path $Source $Relative
             if (-not (Test-Path -LiteralPath $SourceFile -PathType Leaf)) {
                 Fail "Release bundle is missing $Relative."
@@ -109,12 +109,6 @@ try {
             Move-Item -LiteralPath $TemporaryTarget -Destination $TargetFile -Force
         }
         Write-Host "Updated release-managed deployment files; mutable data and configuration were preserved." -ForegroundColor Green
-    }
-
-    if (-not $Existing -and (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue)) {
-        if (Get-NetTCPConnection -LocalPort 6099 -State Listen -ErrorAction SilentlyContinue) {
-            Fail "TCP port 6099 is already in use."
-        }
     }
 
     $Image = "${BotImage}:$Version"
@@ -240,6 +234,45 @@ if db.is_file():
         & docker compose pull
         if ($LASTEXITCODE -ne 0) { Fail "docker compose pull failed." }
         $OldBot = (& docker compose ps -q bot).Trim()
+
+        $GatewayActionPath = "data/setup/gateway-action.json"
+        $GatewayTargets = @()
+        if (Test-Path -LiteralPath $GatewayActionPath) {
+            try {
+                $GatewayAction = Get-Content -LiteralPath $GatewayActionPath -Raw | ConvertFrom-Json
+            } catch {
+                Fail "Pending QQ Gateway action is invalid."
+            }
+            $AllowedGateways = @('napcat', 'snowluma')
+            if ($GatewayAction.previous -isnot [System.Array] -or
+                $GatewayAction.target -isnot [System.Array]) {
+                Fail "Pending QQ Gateway action is invalid."
+            }
+            $GatewayPrevious = @($GatewayAction.previous)
+            $GatewayTargets = @($GatewayAction.target)
+            if ($GatewayAction.schema_version -ne 1 -or $GatewayTargets.Count -eq 0) {
+                Fail "Pending QQ Gateway action is invalid."
+            }
+            foreach ($Provider in @($GatewayPrevious) + @($GatewayTargets)) {
+                if ($Provider -isnot [string] -or $Provider -notin $AllowedGateways) {
+                    Fail "Pending QQ Gateway action contains an invalid Provider."
+                }
+            }
+            if ((@($GatewayPrevious | Select-Object -Unique)).Count -ne $GatewayPrevious.Count -or
+                (@($GatewayTargets | Select-Object -Unique)).Count -ne $GatewayTargets.Count) {
+                Fail "Pending QQ Gateway action contains duplicate Providers."
+            }
+            $GatewayRemoved = @($GatewayPrevious | Where-Object { $_ -notin $GatewayTargets })
+            foreach ($Service in $GatewayRemoved) {
+                & docker compose --profile napcat --profile snowluma stop $Service
+                if ($LASTEXITCODE -ne 0) { Fail "Unable to stop old QQ Gateway Provider." }
+                & docker compose --profile napcat --profile snowluma rm -f $Service
+                if ($LASTEXITCODE -ne 0) { Fail "Unable to remove old QQ Gateway Provider." }
+                $Remaining = (& docker compose --profile napcat --profile snowluma ps --all --quiet $Service).Trim()
+                if ($Remaining) { Fail "Old QQ Gateway Provider is still present." }
+            }
+        }
+
         & docker compose up -d
         if ($LASTEXITCODE -ne 0) { Fail "docker compose up failed." }
 
@@ -271,7 +304,29 @@ if db.is_file():
             return $false
         }
 
+        function Wait-ForGateway([string]$Service) {
+            $Deadline = [DateTime]::UtcNow.AddSeconds(180)
+            while ([DateTime]::UtcNow -lt $Deadline) {
+                $Container = (& docker compose --profile napcat --profile snowluma ps -q $Service).Trim()
+                if ($Container) {
+                    $Status = (& docker inspect --format '{{.State.Status}}' $Container).Trim()
+                    if ($Status -eq 'running') { return $true }
+                    if ($Status -eq 'exited') { return $false }
+                }
+                Start-Sleep -Seconds 2
+            }
+            return $false
+        }
+
         if (-not (Wait-ForBot)) { Fail "Bot did not become healthy within 180 seconds." }
+        if (Test-Path -LiteralPath $GatewayActionPath) {
+            foreach ($Service in $GatewayTargets) {
+                if (-not (Wait-ForGateway $Service)) {
+                    Fail "QQ Gateway Provider did not start."
+                }
+            }
+            Remove-Item -LiteralPath $GatewayActionPath -Force
+        }
         $NewBot = (& docker compose ps -q bot).Trim()
         if ((Test-Path -LiteralPath "data/setup/restart-required") -and ($OldBot -ne $NewBot)) {
             Remove-Item -LiteralPath "data/setup/restart-required" -Force

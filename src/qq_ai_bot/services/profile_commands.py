@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import re
 
-from qq_ai_bot.admin.models import AdminActor
+from qq_ai_bot.admin.control_resolution import ControlAccess, audit_ref_from_actor
+from qq_ai_bot.admin.models import AdminActor, ControlAuditRef
+from qq_ai_bot.control_plane.principal import ControlPrincipal
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
@@ -31,6 +33,7 @@ class ProfileCommandHandler:
         memory_admin: MemoryAdminService,
         preference_admin: PreferenceAdminService,
         relationship_admin: RelationshipAdminService,
+        control: ControlAccess,
         memory_rebuild: MemoryRebuildService | None = None,
         bot_display_name: str = "Yuki",
     ) -> None:
@@ -39,6 +42,7 @@ class ProfileCommandHandler:
         self._memory_admin = memory_admin
         self._preference_admin = preference_admin
         self._relationship_admin = relationship_admin
+        self._control = control
         self._memory_rebuild = memory_rebuild
         self._bot_display_name = bot_display_name
 
@@ -530,30 +534,35 @@ class ProfileCommandHandler:
         if isinstance(parsed, str):
             return parsed
         operation, target, rest = parsed
-        if operation == "list":
-            rows = await self._preference_admin.list_preferences(actor, target)
-            if not rows:
-                return f"QQ {target} 暂无交互偏好。"
-            return "\n".join(f"{row.key} = {row.value}" for row in rows)
-        if operation == "set":
-            if len(rest) < 2:
-                return "格式：/ai preference set <键> <值>"
-            await self._preference_admin.set_preference(
-                actor,
-                target,
-                rest[0],
-                " ".join(rest[1:]),
-            )
-            return f"偏好 {rest[0]} 已设置。"
-        if operation == "delete":
-            if len(rest) != 1:
-                return "格式：/ai preference delete <键>"
-            deleted = await self._preference_admin.delete_preference(
-                actor,
-                target,
-                rest[0],
-            )
-            return "偏好已删除。" if deleted else "没有找到该偏好。"
+        try:
+            principal, audit = await self._authorized_call(actor)
+            context = self._control.context(principal, await self._control.person_target(target))
+            if operation == "list":
+                rows = await self._preference_admin.list_preferences(context, audit)
+                if not rows:
+                    return f"QQ {target} 暂无交互偏好。"
+                return "\n".join(f"{row.key} = {row.value}" for row in rows)
+            if operation == "set":
+                if len(rest) < 2:
+                    return "格式：/ai preference set <键> <值>"
+                await self._preference_admin.set_preference(
+                    context,
+                    rest[0],
+                    " ".join(rest[1:]),
+                    audit=audit,
+                )
+                return f"偏好 {rest[0]} 已设置。"
+            if operation == "delete":
+                if len(rest) != 1:
+                    return "格式：/ai preference delete <键>"
+                deleted = await self._preference_admin.delete_preference(
+                    context,
+                    rest[0],
+                    audit=audit,
+                )
+                return "偏好已删除。" if deleted else "没有找到该偏好。"
+        except PermissionError as exc:
+            return str(exc)
         return "可用操作：list、set、delete。"
 
     async def affection(
@@ -576,15 +585,22 @@ class ProfileCommandHandler:
                 if _NUMERIC_PLATFORM_ID.fullmatch(parts[1]) is None:
                     return "目标 QQ 号格式错误。"
                 target = parts[1]
-            if operation == "show":
-                snapshot = await self._relationship_admin.get_relationship(actor, target)
-                return (
-                    f"好感度：{snapshot.affection_score}\n"
-                    f"信任度：{snapshot.trust_score}\n"
-                    f"有效信任度：{snapshot.effective_trust}\n"
-                    f"当前关系阶段：{snapshot.stage.name}"
+            try:
+                principal, audit = await self._authorized_call(actor)
+                context = self._control.context(
+                    principal, await self._control.person_target(target)
                 )
-            history = await self._relationship_admin.get_history(actor, target, limit=10)
+                if operation == "show":
+                    snapshot = await self._relationship_admin.get_relationship(context, audit)
+                    return (
+                        f"好感度：{snapshot.affection_score}\n"
+                        f"信任度：{snapshot.trust_score}\n"
+                        f"有效信任度：{snapshot.effective_trust}\n"
+                        f"当前关系阶段：{snapshot.stage.name}"
+                    )
+                history = await self._relationship_admin.get_history(context, audit, limit=10)
+            except PermissionError as exc:
+                return str(exc)
             if not history:
                 return "暂无关系变化记录。"
             return "\n".join(
@@ -612,16 +628,22 @@ class ProfileCommandHandler:
             return "分数必须是整数。"
         target = parts[1]
         try:
+            principal, audit = await self._authorized_call(actor)
+            context = self._control.context(principal, await self._control.person_target(target))
             if operation == "set":
-                _, snapshot = await self._relationship_admin.set_affection(actor, target, value)
+                _, snapshot = await self._relationship_admin.set_affection(
+                    context, value, audit=audit
+                )
             elif operation == "adjust":
                 _, snapshot = await self._relationship_admin.adjust_affection(
-                    actor,
-                    target,
+                    context,
                     value,
+                    audit=audit,
                 )
             else:
-                _, snapshot = await self._relationship_admin.set_trust(actor, target, value)
+                _, snapshot = await self._relationship_admin.set_trust(context, value, audit=audit)
+        except PermissionError as exc:
+            return str(exc)
         except ValueError:
             return "好感度/信任度必须在 0～100；好感度单次调整必须在 -20～20。"
         return (
@@ -647,6 +669,9 @@ class ProfileCommandHandler:
             target = candidate
             del parts[:2]
         return operation, target, parts
+
+    async def _authorized_call(self, actor: AdminActor) -> tuple[ControlPrincipal, ControlAuditRef]:
+        return await self._control.principal_for_qq(actor.user_id), audit_ref_from_actor(actor)
 
     async def whoami(
         self,

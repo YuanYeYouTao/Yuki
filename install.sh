@@ -108,7 +108,7 @@ if [ "$existing" = false ]; then
 else
     stamp=$(date -u +%Y%m%dT%H%M%SZ)
     managed_backup="$INSTALL_DIR/.yuki/backups/installer-$stamp"
-    for relative in docker-compose.yml .env.example install.sh install.ps1 "Yuki-$VERSION-Upgrade.md"; do
+    for relative in docker-compose.yml .env.example install.sh install.ps1 SnowLuma.md "Yuki-$VERSION-Upgrade.md"; do
         [ -f "$source/$relative" ] || fail "release bundle is missing $relative"
         if [ -f "$INSTALL_DIR/$relative" ]; then
             mkdir -p "$managed_backup/$(dirname "$relative")"
@@ -118,11 +118,6 @@ else
         mv -f "$INSTALL_DIR/$relative.yuki-new" "$INSTALL_DIR/$relative"
     done
     printf '%s\n' "Updated release-managed deployment files; mutable data and configuration were preserved."
-fi
-
-if [ "$existing" = false ] && command -v ss >/dev/null 2>&1 && \
-    ss -ltn 2>/dev/null | grep -Eq '[:.]6099[[:space:]]'; then
-    fail "TCP port 6099 is already in use"
 fi
 
 image="$BOT_IMAGE:$VERSION"
@@ -207,6 +202,45 @@ cd "$INSTALL_DIR"
 docker compose config --quiet
 docker compose pull
 old_bot=$(docker compose ps -q bot 2>/dev/null || true)
+
+gateway_action="data/setup/gateway-action.json"
+gateway_target=""
+if [ -f "$gateway_action" ]; then
+    gateway_reader='import json, pathlib
+path = pathlib.Path("/deploy/data/setup/gateway-action.json")
+payload = json.loads(path.read_text(encoding="utf-8"))
+allowed = {"napcat", "snowluma"}
+previous = payload.get("previous")
+target = payload.get("target")
+if payload.get("schema_version") != 1 or not isinstance(previous, list) or not isinstance(target, list):
+    raise SystemExit("invalid gateway action")
+if not target or any(type(item) is not str or item not in allowed for item in [*previous, *target]):
+    raise SystemExit("invalid gateway provider")
+if len(set(previous)) != len(previous) or len(set(target)) != len(target):
+    raise SystemExit("duplicate gateway provider")
+print("removed=" + " ".join(item for item in previous if item not in target))
+print("target=" + " ".join(target))'
+    if ! gateway_plan=$(docker run --rm \
+        --user "$(id -u):$(id -g)" \
+        --entrypoint python \
+        --volume "$INSTALL_DIR:/deploy:ro" \
+        "$image" -c "$gateway_reader"); then
+        fail "pending QQ Gateway action is invalid"
+    fi
+    gateway_removed=$(printf '%s\n' "$gateway_plan" | sed -n 's/^removed=//p')
+    gateway_target=$(printf '%s\n' "$gateway_plan" | sed -n 's/^target=//p')
+    [ -n "$gateway_target" ] || fail "pending QQ Gateway action has no target"
+    for service in $gateway_removed; do
+        docker compose --profile napcat --profile snowluma stop "$service" \
+            || fail "unable to stop old QQ Gateway Provider"
+        docker compose --profile napcat --profile snowluma rm -f "$service" \
+            || fail "unable to remove old QQ Gateway Provider"
+        remaining=$(docker compose --profile napcat --profile snowluma \
+            ps --all --quiet "$service" 2>/dev/null || true)
+        [ -z "$remaining" ] || fail "old QQ Gateway Provider is still present"
+    done
+fi
+
 docker compose up -d
 
 wait_for_bot() {
@@ -238,7 +272,29 @@ wait_for_service() {
     return 1
 }
 
+wait_for_gateway() {
+    service=$1
+    deadline=$(( $(date +%s) + 180 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        container=$(docker compose --profile napcat --profile snowluma \
+            ps -q "$service" 2>/dev/null || true)
+        if [ -n "$container" ]; then
+            status=$(docker inspect --format '{{.State.Status}}' "$container" 2>/dev/null || true)
+            [ "$status" = running ] && return 0
+            [ "$status" = exited ] && return 1
+        fi
+        sleep 2
+    done
+    return 1
+}
+
 wait_for_bot || fail "Bot did not become healthy within 180 seconds"
+if [ -f "$gateway_action" ]; then
+    for service in $gateway_target; do
+        wait_for_gateway "$service" || fail "QQ Gateway Provider did not start"
+    done
+    rm -f "$gateway_action"
+fi
 new_bot=$(docker compose ps -q bot 2>/dev/null || true)
 if [ -f "data/setup/restart-required" ] && [ "$old_bot" != "$new_bot" ]; then
     rm -f "data/setup/restart-required"

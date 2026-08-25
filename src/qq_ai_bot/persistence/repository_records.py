@@ -7,7 +7,54 @@ from datetime import datetime
 from typing import Any
 
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
+from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.domain.messages import sanitize_display_name
+
+_NON_PERSON_AUTHOR_KINDS = frozenset(
+    {
+        AuthorKind.YUKI.value,
+        AuthorKind.EXTERNAL_BOT.value,
+        AuthorKind.SYSTEM.value,
+    }
+)
+
+
+def event_author_is_yuki(
+    *,
+    author_kind: str | None,
+    sender_user_id: str,
+    bot_user_id: str,
+) -> bool:
+    """Yuki author: canonical kind wins; legacy null falls back to sender==bot."""
+
+    if author_kind == AuthorKind.YUKI.value:
+        return True
+    if author_kind is None:
+        return sender_user_id == bot_user_id
+    return False
+
+
+def event_author_is_human(
+    *,
+    author_kind: str | None,
+    sender_user_id: str,
+    bot_user_id: str,
+) -> bool:
+    """Human author: person wins; non-person kinds are never human; legacy uses sender."""
+
+    if author_kind == AuthorKind.PERSON.value:
+        return True
+    if author_kind in _NON_PERSON_AUTHOR_KINDS:
+        return False
+    if author_kind is None:
+        return sender_user_id != bot_user_id
+    return False
+
+
+def legacy_v1_reference_blocklist(*, sender_user_id: str, bot_user_id: str) -> frozenset[str]:
+    """v1 / author_kind-is-None mention block: current speaker and current handle."""
+
+    return frozenset({"", sender_user_id, bot_user_id})
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +106,13 @@ class EventRecord:
     external_event_key: str | None = None
     external_event_type: str | None = None
     external_payload: dict[str, Any] | None = None
+    canonical_conversation_id: str | None = None
+    canonical_event_id: str | None = None
+    author_kind: str | None = None
+    author_person_id: str | None = None
+    author_presence_id: str | None = None
+    ingress_presence_id: str | None = None
+    suppression_status: str | None = None
 
     @property
     def scope(self) -> ConversationScope:
@@ -71,6 +125,20 @@ class EventRecord:
             self.private_peer_user_id or self.sender_user_id,
         )
 
+    def author_is_yuki(self) -> bool:
+        return event_author_is_yuki(
+            author_kind=self.author_kind,
+            sender_user_id=self.sender_user_id,
+            bot_user_id=self.bot_user_id,
+        )
+
+    def author_is_human(self) -> bool:
+        return event_author_is_human(
+            author_kind=self.author_kind,
+            sender_user_id=self.sender_user_id,
+            bot_user_id=self.bot_user_id,
+        )
+
     @property
     def sender_display_name(self) -> str:
         """Return the immutable event-time display identity without a database lookup."""
@@ -81,8 +149,14 @@ class EventRecord:
         nickname = sanitize_display_name(self.sender_nickname)
         if nickname:
             return nickname
-        if self.sender_user_id == self.bot_user_id:
+        if self.author_kind == AuthorKind.YUKI.value:
             return "Yuki"
+        if self.author_kind is None and self.sender_user_id == self.bot_user_id:
+            return "Yuki"
+        if self.author_kind == AuthorKind.EXTERNAL_BOT.value:
+            return "external bot"
+        if self.author_kind == AuthorKind.SYSTEM.value:
+            return "system"
         return f"QQ {self.sender_user_id}"
 
 

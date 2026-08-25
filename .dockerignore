@@ -6,6 +6,10 @@ data
 napcat-data
 napcat-config
 napcat-plugins
+snowluma-data
+snowluma-qq-config
+snowluma-qq-data
+snowluma-extra-accounts
 __pycache__
 .pytest_cache
 .mypy_cache

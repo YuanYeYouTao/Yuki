@@ -136,6 +136,12 @@ class MemoryQualityRunner:
         mode: QualitySuiteMode = QualitySuiteMode.FULL,
         baseline: QualityBaseline | None = None,
     ) -> MemoryQualityReport:
+        from qq_ai_bot.identity.write_settings import (
+            IdentityWriteSettings,
+            configure_identity_write_settings,
+        )
+
+        configure_identity_write_settings(IdentityWriteSettings())
         started_at = datetime.now(UTC)
         started = time.perf_counter()
         categories = _MODE_CATEGORIES[mode]

@@ -9,8 +9,11 @@ import pytest
 from sqlalchemy import text
 from tests.conftest import MemorySender, build_harness, make_settings
 
-from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
+from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage, SenderIdentity
+from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
 from qq_ai_bot.memory.enums import MemoryScopeType, MemorySourceType
 from qq_ai_bot.memory.models import MemoryFactCreate
@@ -185,6 +188,81 @@ async def test_context_exposes_event_bound_memory_subject_refs(database: Databas
         {"subject_ref": "replied_message_author", "display_name": "查无此人"},
     ]
     assert all("user_id" not in subject for subject in subjects)
+
+
+@pytest.mark.asyncio
+async def test_complete_v2_assembler_drops_presence_and_dedupes_bindings(
+    database: Database,
+) -> None:
+    from uuid import uuid4
+
+    from qq_ai_bot.identity.db_models import IdentityBindingModel, IdentityRuntimeStateModel
+    from qq_ai_bot.identity.dual_write import _create_person_binding, ensure_v2_space
+    from qq_ai_bot.identity.dual_write import (
+        ensure_canonical_presence_preconfig as ensure_v2_presence,
+    )
+    from qq_ai_bot.identity.inventory import IDENTITY_PLATFORM
+
+    now = datetime(2026, 8, 24, tzinfo=UTC)
+    settings = make_settings(database.url, self_memory_enabled=True)
+    harness = build_harness(database, settings)
+    async with database.sessions() as session, session.begin():
+        runtime = await session.get(IdentityRuntimeStateModel, 1)
+        assert runtime is not None
+        runtime.state = "v2"
+        runtime.cutover_id = "550e8400-e29b-41d4-a716-446655440099"
+        runtime.source_fingerprint = "cutover-fingerprint"
+        runtime.completed_at = now
+        await ensure_v2_presence(session, "8000")
+        await ensure_v2_presence(session, "8001")
+        await ensure_v2_space(session, "2001")
+        created = await _create_person_binding(
+            session, external_id="1001", display_name="提问者", now=now
+        )
+        session.add(
+            IdentityBindingModel(
+                id=str(uuid4()),
+                person_id=created.person_id,
+                platform=IDENTITY_PLATFORM,
+                external_account_id="1002",
+                display_name="乙",
+                status="active",
+                revision=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    people = PeopleRepository(database)
+    await people.observe(user_id="1002", nickname="乙", group_id="2001", group_card="乙卡")
+    inbound = InboundMessage(
+        message_id="v2-subjects",
+        event_type="message:group:normal",
+        scope_type=ScopeType.GROUP,
+        sender=SenderIdentity(user_id="1001", nickname="提问者"),
+        text="提一下",
+        group_id="2001",
+        mentions_bot=True,
+        bot_user_id="8000",
+        mentioned_user_ids=("8001", "1002"),
+        reply_sender_user_id="8001",
+    )
+    profile = await people.get(user_id="1001", group_id="2001") or UserProfileSnapshot(
+        user_id="1001",
+        scope_type=ScopeType.GROUP,
+        nickname="提问者",
+        group_id="2001",
+        group_card="",
+    )
+    subjects = await harness.processor._chat._context_assembler._available_memory_subjects(
+        inbound,
+        profile,
+    )
+    refs = [item["subject_ref"] for item in subjects]
+    assert "mentioned_user_1" in refs
+    assert refs.count("mentioned_user_1") == 1
+    assert "mentioned_user_2" not in refs
+    assert "replied_message_author" not in refs
+    assert all(item.get("display_name") != "8001" for item in subjects)
 
 
 @pytest.mark.asyncio
@@ -836,3 +914,92 @@ def test_external_current_message_matches_next_hop_history_render() -> None:
     )
     history_contents = [item.content for item in next_hop.history_messages]
     assert current.current_message.content in history_contents
+
+
+def _external_event(*, bot_user_id: str = "8000") -> EventRecord:
+    return EventRecord(
+        id=11,
+        bot_user_id=bot_user_id,
+        platform_message_id="ext-fence",
+        scope_type=ScopeType.PRIVATE,
+        sender_user_id="system",
+        direction="inbound",
+        content="hello",
+        visual_summary="",
+        segments=(),
+        occurred_at=datetime.now(UTC),
+        private_peer_user_id="1001",
+        event_kind="external_event",
+    )
+
+
+def test_external_history_identity_uses_snapshot_transport_for_v2() -> None:
+    primary = ConversationScope.private("8000", "1001")
+    current = ConversationScope.private("8001", "1001")
+    turn = ConversationTurnSnapshot(
+        scope_id=1,
+        scope_key=primary.key,
+        generation=1,
+        trigger_event_id=11,
+        coordinator_version=1,
+        transport_scope_key=current.key,
+    )
+    identity = ContextAssembler._external_history_identity(
+        _external_event(),
+        turn,
+        authorization_user_id="9000",
+        conversation_id="conv-1",
+    )
+    assert identity == current
+
+
+def test_external_history_identity_missing_or_invalid_snapshot_transport_fails() -> None:
+    primary = ConversationScope.private("8000", "1001")
+    missing = ConversationTurnSnapshot(
+        scope_id=1,
+        scope_key=primary.key,
+        generation=1,
+        trigger_event_id=11,
+        coordinator_version=1,
+    )
+    with pytest.raises(ConversationCoverageError, match="snapshot transport"):
+        ContextAssembler._external_history_identity(
+            _external_event(),
+            missing,
+            authorization_user_id="9000",
+            conversation_id="conv-1",
+        )
+    invalid = ConversationTurnSnapshot(
+        scope_id=1,
+        scope_key=primary.key,
+        generation=1,
+        trigger_event_id=11,
+        coordinator_version=1,
+        transport_scope_key="not-a-scope-key",
+    )
+    with pytest.raises(ConversationCoverageError, match="invalid"):
+        ContextAssembler._external_history_identity(
+            _external_event(),
+            invalid,
+            authorization_user_id="9000",
+            conversation_id="conv-1",
+        )
+
+
+def test_external_history_identity_v1_keeps_event_bot() -> None:
+    primary = ConversationScope.private("8000", "1001")
+    turn = ConversationTurnSnapshot(
+        scope_id=1,
+        scope_key=primary.key,
+        generation=1,
+        trigger_event_id=11,
+        coordinator_version=1,
+        transport_scope_key=ConversationScope.private("8001", "1001").key,
+    )
+    identity = ContextAssembler._external_history_identity(
+        _external_event(),
+        turn,
+        authorization_user_id="9000",
+        conversation_id=None,
+    )
+    assert identity == ConversationScope.private("8000", "1001")

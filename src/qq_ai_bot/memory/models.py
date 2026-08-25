@@ -70,6 +70,10 @@ class MemoryFact(_MemoryModel):
     validation_version: str = "memory-v2-quality-v1"
     last_audited_at: datetime | None = None
     review_state: MemoryReviewState = MemoryReviewState.VERIFIED
+    canonical_subject_person_id: str | None = None
+    canonical_subject_space_id: str | None = None
+    canonical_visibility_person_id: str | None = None
+    canonical_visibility_space_id: str | None = None
 
     @field_validator(
         "valid_from",

@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 
+from qq_ai_bot.identity.c24_conversation import stamp_conversation_correlation
 from qq_ai_bot.model_runtime.db_models import ModelInvocationModel
 from qq_ai_bot.model_runtime.models import ModelInvocationRecord, ModelStats, ModelTask
 from qq_ai_bot.persistence.database import Database
@@ -44,6 +45,7 @@ class ModelInvocationRepository:
         cached_prompt_tokens: int | None,
         latency_seconds: float,
         error_category: str | None,
+        canonical_conversation_id: str | None = None,
     ) -> ModelInvocationRecord:
         row = ModelInvocationModel(
             runtime_turn_id=claim_runtime_turn_id(),
@@ -62,6 +64,7 @@ class ModelInvocationRepository:
         )
         async with self._database.sessions() as session, session.begin():
             session.add(row)
+            await stamp_conversation_correlation(session, row, canonical_conversation_id)
             await session.flush()
             return self._record(row)
 

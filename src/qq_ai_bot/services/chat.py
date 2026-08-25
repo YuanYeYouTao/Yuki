@@ -9,7 +9,7 @@ import random
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
-from typing import Any, Protocol, TypeVar, cast
+from typing import Any, Protocol, TypedDict, TypeVar, cast
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
@@ -54,7 +54,11 @@ from qq_ai_bot.conversation.rollup.repository import (
     ConversationScopeRepository,
 )
 from qq_ai_bot.conversation.rollup.service import ConversationRollupService
-from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
+from qq_ai_bot.conversation.scope import (
+    ConversationTurnSnapshot,
+    runtime_conversation_key,
+    snapshot_transport_key,
+)
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import (
     AttachmentKind,
@@ -92,6 +96,7 @@ from qq_ai_bot.memory.query import MemoryQueryBuilder
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.retrieval import MemoryRetriever
 from qq_ai_bot.memory.runtime.contract import MemoryReadPolicy
+from qq_ai_bot.memory.runtime.partition_lookup import MemoryPartitionLookup
 from qq_ai_bot.memory.runtime.resolver import MemoryStructuredCommand
 from qq_ai_bot.memory.runtime.turn_session import (
     TurnMemorySession,
@@ -155,7 +160,7 @@ from qq_ai_bot.speech.reply_effect import (
 )
 from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.vision.models import VisualObservation
-from qq_ai_bot.web.models import WebMode, WebProvider, WebRouteReason
+from qq_ai_bot.web.models import WebMode, WebProvider, WebRouteReason, WebSearchResponse
 from qq_ai_bot.web.native_sources import recover_native_web_response
 from qq_ai_bot.web.router import WebProviderRouter
 from yuki_plugin_sdk.events import EventName
@@ -363,7 +368,25 @@ class ToolInvocationRecorder(Protocol):
         trigger_message_id: str,
         bot_user_id: str,
         result_excerpt: str,
+        canonical_conversation_id: str | None = None,
+        ingress_presence_id: str | None = None,
     ) -> None: ...
+
+
+class _TrustedConversationWrite(TypedDict):
+    canonical_conversation_id: str | None
+    bot_user_id: str | None
+    ingress_presence_id: str | None
+
+
+def _trusted_conversation_write_kwargs(inbound: InboundMessage) -> _TrustedConversationWrite:
+    """Pass Host-stamped Conversation and ingress provenance. Never infer from hash."""
+
+    return {
+        "canonical_conversation_id": inbound.conversation_id,
+        "bot_user_id": inbound.bot_user_id or None,
+        "ingress_presence_id": inbound.presence_id,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -997,8 +1020,8 @@ class _ChatAgentBackend(AgentToolBackend):
                     outcome.ok,
                 )
                 if self._service._tool_invocations is not None:
-                    await self._service._tool_invocations.record_invocation(
-                        conversation_key=execution_runtime.conversation_key,
+                    await self._service._record_mcp_invocation(
+                        runtime=execution_runtime,
                         provider_id=descriptor.provider_id,
                         tool_name=descriptor.provider_tool_name or descriptor.model_name,
                         success=outcome.ok,
@@ -1006,8 +1029,6 @@ class _ChatAgentBackend(AgentToolBackend):
                         result_size=len(result.encode("utf-8")),
                         artifact_created=budgeted.artifact_id is not None,
                         error_category=outcome.error_code,
-                        trigger_message_id=execution_runtime.trigger_message_id,
-                        bot_user_id=execution_runtime.inbound.bot_user_id,
                         result_excerpt=result,
                     )
             if contains_internal_capability_payload(result):
@@ -1443,6 +1464,7 @@ class ChatService:
         source_policy: SourceDisplayPolicy | None = None,
         source_renderer: SourceRenderer | None = None,
         memory_context: MemoryContextService | None = None,
+        memory_partition_lookup: MemoryPartitionLookup,
         memory_attribution: MemoryAttributionWorker | None = None,
         context_assembler: ContextAssembler | None = None,
         prompt_composer: PromptComposer | None = None,
@@ -1460,6 +1482,10 @@ class ChatService:
         conversation_scopes: ConversationScopeRepository | None = None,
         effect_gate: ConversationEffectGate | None = None,
     ) -> None:
+        lookup: object = memory_partition_lookup
+        if lookup is None or not callable(getattr(lookup, "resolve_from_scope", None)):
+            raise TypeError("memory_partition_lookup must provide callable resolve_from_scope")
+        self._memory_partition_lookup = memory_partition_lookup
         self._settings = settings
         self._ledger_origin = TurnOrigin.USER_MESSAGE.value
         models = require_model_executor(
@@ -1835,14 +1861,19 @@ class ChatService:
         self._ledger_origin = (
             TurnOrigin.AUTONOMOUS_GROUP.value if autonomous else TurnOrigin.USER_MESSAGE.value
         )
+        conversation_key = runtime_conversation_key(
+            identity=identity,
+            turn=turn_snapshot,
+            inbound=inbound,
+        )
 
-        async with self._concurrency.conversation(identity.key):
+        async with self._concurrency.conversation(conversation_key):
             runtime_config = runtime_snapshot or await self._runtime_config.snapshot(
                 user_id=inbound.sender.user_id,
                 group_id=inbound.group_id,
             )
             if not visual_input_present and self._source_policy.standalone_request(content):
-                sources = await self._web_sources.latest(identity.key)
+                sources = await self._web_sources.latest(conversation_key)
                 source_text = self._source_renderer.render(
                     sources,
                     maximum=runtime_config.web.extract_max_results,
@@ -1943,7 +1974,7 @@ class ChatService:
                 logger.info(
                     "web_route_selected conversation_hash=%s provider=%s reason=%s "
                     "matched_domain=%s attempt=%d fallback_allowed=%s",
-                    identifier_hash(identity.key) or "missing",
+                    identifier_hash(conversation_key) or "missing",
                     logged_web_route.provider.value,
                     logged_web_route.reason.value,
                     logged_web_route.matched_domain or "none",
@@ -1951,7 +1982,7 @@ class ChatService:
                     logged_web_route.fallback_allowed,
                 )
             voice_spontaneous_allowed = await self._voice_spontaneous_allowed(
-                identity.key,
+                conversation_key,
                 inbound.sender.user_id,
                 runtime_config,
             )
@@ -1965,7 +1996,7 @@ class ChatService:
                     not visual_input_present and inbound.sender.user_id in self._settings.superusers
                 ),
                 allow_automation=not visual_input_present,
-                conversation_key=identity.key,
+                conversation_key=conversation_key,
                 trigger_message_id=inbound.message_id,
                 source_display_requested=source_display_requested,
                 actor_user_id=inbound.sender.user_id,
@@ -1997,9 +2028,9 @@ class ChatService:
             )
             if turn_token is not None:
                 async with self._turn_coordinator.track(turn_token, "generation"):
-                    completed_agent = await self._run_agent(identity.key, messages, runtime)
+                    completed_agent = await self._run_agent(conversation_key, messages, runtime)
             else:
-                completed_agent = await self._run_agent(identity.key, messages, runtime)
+                completed_agent = await self._run_agent(conversation_key, messages, runtime)
             agent_result = completed_agent.result
             if agent_result.suppress_delivery:
 
@@ -2023,10 +2054,9 @@ class ChatService:
                 )
 
                 async def save_native_response() -> None:
-                    await self._web_sources.save_response(
-                        conversation_key=identity.key,
-                        trigger_message_id=inbound.message_id,
-                        provider="deepseek_native",
+                    await self._save_native_web_response(
+                        inbound=inbound,
+                        conversation_key=conversation_key,
                         response=native_response,
                         max_runs=runtime_config.web.source_max_runs_per_conversation,
                     )
@@ -2035,7 +2065,7 @@ class ChatService:
                 if not native_response.sources:
                     logger.warning(
                         "native_web_source_parse_failed conversation_hash=%s action_count=%d",
-                        identifier_hash(identity.key) or "missing",
+                        identifier_hash(conversation_key) or "missing",
                         len(agent_result.native_tool_events),
                     )
                     completed_route = agent_result.web_route
@@ -2065,19 +2095,19 @@ class ChatService:
                             max_model_requests_override=fallback_limit,
                         )
                         completed_agent = await self._run_agent(
-                            identity.key,
+                            conversation_key,
                             messages,
                             fallback_runtime,
                         )
                         agent_result = completed_agent.result
                         response_text = agent_result.text
             sources = await self._web_sources.for_trigger(
-                conversation_key=identity.key,
+                conversation_key=conversation_key,
                 trigger_message_id=inbound.message_id,
             )
             reply_to_message_id = await self._resolve_reply_target(
                 inbound=inbound,
-                conversation_key=identity.key,
+                conversation_key=conversation_key,
                 control=reply_target_control,
             )
             response_text = self._source_renderer.sanitize_model_text(response_text, sources)
@@ -2382,11 +2412,12 @@ class ChatService:
 
                 async def finish_delivery() -> None:
                     await self._record_reply_effects(
-                        conversation_key=identity.key,
+                        conversation_key=conversation_key,
                         source_event_id=inbound.message_id,
                         user_id=inbound.sender.user_id,
                         control=reply_control,
                         cancelled=sequence.cancelled,
+                        inbound=inbound,
                     )
                     await self._finish_memory_turn(
                         memory_session,
@@ -2578,6 +2609,7 @@ class ChatService:
             identity=identity,
             runtime=runtime,
             memory_context=self._memory_context,
+            partition_lookup=self._memory_partition_lookup,
             origin=origin,
             user_question=content,
             authority=TurnAuthority(
@@ -2637,6 +2669,54 @@ class ChatService:
             frequency=runtime.speech.spontaneous_frequency,
         )
 
+    async def _save_native_web_response(
+        self,
+        *,
+        inbound: InboundMessage,
+        conversation_key: str,
+        response: WebSearchResponse,
+        max_runs: int,
+    ) -> None:
+        await self._web_sources.save_response(
+            conversation_key=conversation_key,
+            trigger_message_id=inbound.message_id,
+            provider="deepseek_native",
+            response=response,
+            max_runs=max_runs,
+            **_trusted_conversation_write_kwargs(inbound),
+        )
+
+    async def _record_mcp_invocation(
+        self,
+        *,
+        runtime: ToolRuntime,
+        provider_id: str,
+        tool_name: str,
+        success: bool,
+        latency_seconds: float,
+        result_size: int,
+        artifact_created: bool,
+        error_category: str | None,
+        result_excerpt: str,
+    ) -> None:
+        if self._tool_invocations is None:
+            return
+        await self._tool_invocations.record_invocation(
+            conversation_key=runtime.conversation_key,
+            provider_id=provider_id,
+            tool_name=tool_name,
+            success=success,
+            latency_seconds=latency_seconds,
+            result_size=result_size,
+            artifact_created=artifact_created,
+            error_category=error_category,
+            trigger_message_id=runtime.trigger_message_id,
+            bot_user_id=runtime.inbound.bot_user_id,
+            result_excerpt=result_excerpt,
+            canonical_conversation_id=runtime.inbound.conversation_id,
+            ingress_presence_id=runtime.inbound.presence_id,
+        )
+
     async def _record_reply_effects(
         self,
         *,
@@ -2645,6 +2725,7 @@ class ChatService:
         user_id: str,
         control: ReplyControlState,
         cancelled: bool,
+        inbound: InboundMessage | None = None,
     ) -> None:
         if cancelled or self._reply_effects is None:
             return
@@ -2655,6 +2736,15 @@ class ChatService:
             mode = await self._voice_preferences.current_mode(user_id)
             if mode is VoicePreferenceMode.TEXT_ONLY:
                 eligible = False
+        trusted = (
+            _trusted_conversation_write_kwargs(inbound)
+            if inbound is not None
+            else _TrustedConversationWrite(
+                canonical_conversation_id=None,
+                bot_user_id=None,
+                ingress_presence_id=None,
+            )
+        )
         await self._reply_effects.record(
             conversation_key=conversation_key,
             source_event_id=source_event_id,
@@ -2663,6 +2753,9 @@ class ChatService:
             emoji_sent=control.emoji_sent,
             voice_request_basis=control.voice_request_basis or "none",
             voice_cadence_eligible=eligible,
+            canonical_conversation_id=trusted["canonical_conversation_id"],
+            bot_user_id=trusted["bot_user_id"],
+            ingress_presence_id=trusted["ingress_presence_id"],
         )
 
     async def handle_turn(
@@ -2846,6 +2939,7 @@ class ChatService:
                 before_model_request=before_model_request,
                 force_tavily_fallback=runtime.native_web_fallback,
                 web_route=runtime.web_route,
+                canonical_conversation_id=runtime.inbound.conversation_id,
             ),
             backend,
         )
@@ -2861,6 +2955,7 @@ class ChatService:
         ) and await self._conversation_scopes.generation_matches(
             snapshot.scope_id,
             snapshot.generation,
+            scope_key=snapshot.scope_key,
         )
 
     async def _run_effect(
@@ -2919,6 +3014,10 @@ class ChatService:
         agent_intent: str,
         turn_token: TurnToken,
         turn_snapshot: ConversationTurnSnapshot,
+        person_id: str | None = None,
+        space_id: str | None = None,
+        presence_id: str | None = None,
+        conversation_id: str | None = None,
     ) -> AgentRunResult:
         """Generate one tool-free reply for a persisted external event.
 
@@ -2928,8 +3027,17 @@ class ChatService:
         """
 
         self._ledger_origin = TurnOrigin.PLUGIN_BACKGROUND.value
-        conversation_key = event.scope.key
-        if turn_snapshot.scope_key != conversation_key:
+        conversation_key = runtime_conversation_key(
+            identity=event.scope,
+            turn=turn_snapshot,
+        )
+        if conversation_id:
+            if (
+                event.canonical_conversation_id
+                and conversation_id != event.canonical_conversation_id
+            ):
+                raise TurnSupersededError("external turn snapshot scope mismatch")
+        elif snapshot_transport_key(turn_snapshot) != event.scope.key:
             raise TurnSupersededError("external turn snapshot scope mismatch")
         context = await self._context_assembler.assemble_external(
             event=event,
@@ -2937,6 +3045,10 @@ class ChatService:
             authorization_user_id=authorization_user_id,
             runtime=runtime,
             agent_intent=agent_intent,
+            person_id=person_id,
+            space_id=space_id,
+            presence_id=presence_id,
+            conversation_id=conversation_id,
         )
         composition = self._prompt_composer.compose_external(
             context=context,
@@ -2955,6 +3067,11 @@ class ChatService:
             bot_user_id=event.bot_user_id,
             group_id=event.group_id,
             received_at=event.occurred_at,
+            legacy_conversation_key=conversation_key,
+            person_id=person_id,
+            space_id=space_id,
+            conversation_id=conversation_id or event.canonical_conversation_id,
+            presence_id=presence_id or event.ingress_presence_id,
         )
         tool_runtime = ToolRuntime(
             inbound=inbound,

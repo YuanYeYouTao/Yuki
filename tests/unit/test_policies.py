@@ -8,6 +8,7 @@ from qq_ai_bot.services.policies import (
     EffectiveGroupPolicy,
     EffectivePrivatePolicy,
     evaluate_message,
+    replies_to_bot,
 )
 
 
@@ -19,6 +20,11 @@ def message(
     group_id: str | None = None,
     mentions_bot: bool = False,
     is_bot: bool = False,
+    bot_user_id: str = "8000",
+    reply_sender_user_id: str | None = None,
+    canonical_reply_to_yuki: bool | None = None,
+    canonical_reply_author_kind: str | None = None,
+    is_self_message: bool = False,
 ) -> InboundMessage:
     return InboundMessage(
         message_id="1",
@@ -26,8 +32,13 @@ def message(
         scope_type=scope,
         sender=SenderIdentity(user_id, is_bot=is_bot),
         text=text,
+        bot_user_id=bot_user_id,
         group_id=group_id,
         mentions_bot=mentions_bot,
+        reply_sender_user_id=reply_sender_user_id,
+        canonical_reply_to_yuki=canonical_reply_to_yuki,
+        canonical_reply_author_kind=canonical_reply_author_kind,
+        is_self_message=is_self_message,
     )
 
 
@@ -160,6 +171,98 @@ def test_self_and_known_bot_messages_are_rejected() -> None:
     )
     assert not evaluate_message(bot_message, settings()).should_respond
     assert not evaluate_message(self_message, settings()).should_respond
+
+
+def test_require_mention_false_opens_plain_group_chat() -> None:
+    opened = evaluate_message(
+        message(scope=ScopeType.GROUP, group_id="2001", text="ordinary chat"),
+        settings(),
+        group_policy=EffectiveGroupPolicy(enabled=True, require_mention=False),
+    )
+    mentioned = evaluate_message(
+        message(
+            scope=ScopeType.GROUP,
+            group_id="2001",
+            mentions_bot=True,
+            text="question",
+        ),
+        settings(),
+        group_policy=EffectiveGroupPolicy(enabled=True, require_mention=False),
+    )
+    disabled = evaluate_message(
+        message(scope=ScopeType.GROUP, group_id="2001", text="ordinary chat"),
+        settings(),
+        group_policy=EffectiveGroupPolicy(enabled=False, require_mention=False),
+    )
+    self_msg = evaluate_message(
+        message(
+            scope=ScopeType.GROUP,
+            group_id="2001",
+            text="ordinary chat",
+            is_self_message=True,
+        ),
+        settings(),
+        group_policy=EffectiveGroupPolicy(enabled=True, require_mention=False),
+    )
+    bot_msg = evaluate_message(
+        message(scope=ScopeType.GROUP, group_id="2001", text="ordinary chat", is_bot=True),
+        settings(),
+        group_policy=EffectiveGroupPolicy(enabled=True, require_mention=False),
+    )
+    required = evaluate_message(
+        message(scope=ScopeType.GROUP, group_id="2001", text="ordinary chat"),
+        settings(),
+        group_policy=EffectiveGroupPolicy(enabled=True, require_mention=True),
+    )
+    assert opened.should_respond and opened.reason == "group_open"
+    assert mentioned.should_respond and mentioned.reason == "group_triggered"
+    assert not disabled.should_respond and disabled.reason == "group_disabled"
+    assert not self_msg.should_respond and self_msg.reason == "bot_message"
+    assert not bot_msg.should_respond and bot_msg.reason == "bot_message"
+    assert not required.should_respond and required.reason == "group_not_triggered"
+
+
+def test_canonical_reply_verdict_beats_spoofed_reply_sender() -> None:
+    yuki = message(
+        scope=ScopeType.GROUP,
+        group_id="2001",
+        text="接话",
+        canonical_reply_to_yuki=True,
+        canonical_reply_author_kind="yuki",
+    )
+    spoofed = message(
+        scope=ScopeType.GROUP,
+        group_id="2001",
+        text="接话",
+        reply_sender_user_id="8000",
+        canonical_reply_to_yuki=False,
+        canonical_reply_author_kind="external_bot",
+    )
+    missing = message(
+        scope=ScopeType.GROUP,
+        group_id="2001",
+        text="接话",
+        reply_sender_user_id="8001",
+    )
+    policy = EffectiveGroupPolicy(enabled=True)
+    yuki_decision = evaluate_message(yuki, settings(), group_policy=policy)
+    spoofed_decision = evaluate_message(
+        spoofed,
+        settings(),
+        group_policy=policy,
+        yuki_account_ids=frozenset({"8000", "8001"}),
+    )
+    fallback = evaluate_message(
+        missing,
+        settings(),
+        group_policy=policy,
+        yuki_account_ids=frozenset({"8000", "8001"}),
+    )
+    assert yuki_decision.should_respond and yuki_decision.reason == "group_reply_to_bot"
+    assert not spoofed_decision.should_respond
+    assert fallback.should_respond and fallback.reason == "group_reply_to_bot"
+    assert replies_to_bot(yuki) is True
+    assert replies_to_bot(spoofed, yuki_account_ids=frozenset({"8000"})) is False
 
 
 def test_conversation_keys_are_isolated() -> None:

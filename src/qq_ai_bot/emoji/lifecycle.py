@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Literal
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from qq_ai_bot.admin.models import EmojiRuntimeConfig
 from qq_ai_bot.emoji.models import EmojiAnalysis, EmojiAsset, EmojiLifecycleStatus
 from qq_ai_bot.emoji.replacement import EmojiReplacementService
@@ -121,13 +123,15 @@ class EmojiLifecycleService:
         self,
         emoji_id: str,
         target: EmojiLifecycleStatus,
+        *,
+        session: AsyncSession | None = None,
     ) -> EmojiAsset:
-        asset = await self._require(emoji_id)
+        asset = await self._require(emoji_id, session=session)
         if target == asset.status:
             return asset
         if target not in _ALLOWED_TRANSITIONS[asset.status]:
             raise ValueError(f"illegal emoji transition: {asset.status.value} -> {target.value}")
-        updated = await self._repository.set_status(emoji_id, target)
+        updated = await self._repository.set_status(emoji_id, target, session=session)
         event = {
             EmojiLifecycleStatus.REJECTED: EventName.EMOJI_REJECTED,
             EmojiLifecycleStatus.BANNED: EventName.EMOJI_BANNED,
@@ -223,8 +227,8 @@ class EmojiLifecycleService:
             )
         return removed
 
-    async def _require(self, emoji_id: str) -> EmojiAsset:
-        asset = await self._repository.get(emoji_id)
+    async def _require(self, emoji_id: str, *, session: AsyncSession | None = None) -> EmojiAsset:
+        asset = await self._repository.get(emoji_id, session=session)
         if asset is None:
             raise LookupError("emoji asset not found")
         return asset

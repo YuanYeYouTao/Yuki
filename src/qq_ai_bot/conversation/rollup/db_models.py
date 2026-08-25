@@ -4,10 +4,22 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    String,
+    Text,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from qq_ai_bot.persistence.models import Base
+
+_HEX64 = "[0-9a-f]" * 64
 
 
 class ConversationScopeModel(Base):
@@ -41,20 +53,18 @@ class ConversationScopeModel(Base):
             unique=True,
             sqlite_where=text("scope_type = 'group'"),
         ),
+        Index(
+            "ix_conversation_scopes_canonical_conversation_id",
+            "canonical_conversation_id",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     scope_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
-    bot_user_id: Mapped[str] = mapped_column(
-        ForeignKey("people.user_id", ondelete="CASCADE"), nullable=False
-    )
+    bot_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     scope_type: Mapped[str] = mapped_column(String(16), nullable=False)
-    private_peer_user_id: Mapped[str | None] = mapped_column(
-        ForeignKey("people.user_id", ondelete="CASCADE"), nullable=True
-    )
-    group_id: Mapped[str | None] = mapped_column(
-        ForeignKey("groups.group_id", ondelete="CASCADE"), nullable=True
-    )
+    private_peer_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    group_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     starts_after_event_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_event_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -63,6 +73,11 @@ class ConversationScopeModel(Base):
     uncovered_character_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    canonical_conversation_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("canonical_conversations.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
 
 class ConversationRollupModel(Base):
@@ -122,5 +137,40 @@ class ConversationRollupJobModel(Base):
     lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ConversationRollupEmergencyOverlayModel(Base):
+    """Temporary prompt overlay. Does not move semantic conversation_rollups."""
+
+    __tablename__ = "conversation_rollup_emergency_overlays"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["scope_id"],
+            ["conversation_scopes.id"],
+            name="fk_conversation_rollup_emergency_overlays_scope",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "generation >= 1 AND covered_through_event_id >= 0 "
+            "AND base_semantic_revision >= 0 AND revision >= 1 "
+            "AND length(summary_text) > 0",
+            name="ck_conversation_rollup_emergency_overlays_state",
+        ),
+        CheckConstraint(
+            f"length(source_fingerprint) = 64 AND source_fingerprint = lower(source_fingerprint) "
+            f"AND source_fingerprint GLOB '{_HEX64}'",
+            name="ck_conversation_rollup_emergency_overlays_fingerprint",
+        ),
+    )
+
+    scope_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    covered_through_event_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    summary_text: Mapped[str] = mapped_column(Text, nullable=False)
+    source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    base_semantic_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

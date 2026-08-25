@@ -29,14 +29,14 @@ from scripts.release_validate import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSION = "3.7.1"
+VERSION = "3.8.0"
 
 
 def test_release_identity_matches_all_version_surfaces() -> None:
-    assert validate_release_identity(ROOT, "v3.7.1") == VERSION
+    assert validate_release_identity(ROOT, "v3.8.0") == VERSION
 
 
-@pytest.mark.parametrize("tag", ["3.7.1", "v3.5", "v3.5.3-rc1", "v03.5.3", "latest"])
+@pytest.mark.parametrize("tag", ["3.8.0", "v3.5", "v3.5.3-rc1", "v03.5.3", "latest"])
 def test_release_identity_rejects_non_final_tags(tag: str) -> None:
     with pytest.raises(ReleaseValidationError, match=r"vX\.Y\.Z"):
         validate_release_identity(ROOT, tag)
@@ -67,7 +67,7 @@ def test_bundle_allowlist_requires_persona() -> None:
     tracked = {
         "docker-compose.yml",
         ".env.example",
-        "docs/releases/v3.7.1.md",
+        "docs/releases/v3.8.0.md",
         "install.sh",
         "install.ps1",
         "config/memory_contracts.toml",
@@ -82,27 +82,32 @@ def test_bundle_allowlist_requires_persona() -> None:
 
 
 def test_bundle_contains_only_deployment_files_and_expected_assets(tmp_path: Path) -> None:
-    tracked = tracked_files(ROOT) | {"docs/releases/v3.7.1.md", "install.sh", "install.ps1"}
+    tracked = tracked_files(ROOT) | {"docs/releases/v3.8.0.md", "install.sh", "install.ps1"}
     assets = build_release_bundle(ROOT, tmp_path, VERSION, tracked=tracked)
     assert {path.name for path in assets} == {
-        "yuki-3.7.1-deploy.zip",
-        "yuki-3.7.1-deploy.tar.gz",
+        "yuki-3.8.0-deploy.zip",
+        "yuki-3.8.0-deploy.tar.gz",
         "docker-compose.yml",
         ".env.example",
-        "Yuki-3.7.1-Upgrade.md",
+        "Yuki-3.8.0-Upgrade.md",
         "install.sh",
         "install.ps1",
         "SHA256SUMS",
     }
-    with zipfile.ZipFile(tmp_path / "yuki-3.7.1-deploy.zip") as archive:
+    with zipfile.ZipFile(tmp_path / "yuki-3.8.0-deploy.zip") as archive:
         names = set(archive.namelist())
-        shell_mode = archive.getinfo("yuki-3.7.1-deploy/install.sh").external_attr >> 16
-    prefix = "yuki-3.7.1-deploy/"
+        shell_mode = archive.getinfo("yuki-3.8.0-deploy/install.sh").external_attr >> 16
+    prefix = "yuki-3.8.0-deploy/"
     assert f"{prefix}docker-compose.yml" in names
     assert f"{prefix}.env.example" in names
     assert f"{prefix}config/persona.md" in names
     assert f"{prefix}data/speech/japanese_frontend/lexicon.toml" in names
     assert f"{prefix}napcat-data/" in names
+    assert f"{prefix}snowluma-data/" in names
+    assert f"{prefix}snowluma-qq-config/" in names
+    assert f"{prefix}snowluma-qq-data/" in names
+    assert f"{prefix}snowluma-extra-accounts/" in names
+    assert f"{prefix}SnowLuma.md" in names
     assert f"{prefix}install.sh" in names
     assert f"{prefix}install.ps1" in names
     assert shell_mode & 0o111
@@ -113,7 +118,7 @@ def test_bundle_contains_only_deployment_files_and_expected_assets(tmp_path: Pat
     assert f"{prefix}.mcp.json" not in names
     assert f"{prefix}config/system_prompt.md" not in names
     assert f"{prefix}config/model_profiles.toml" not in names
-    with tarfile.open(tmp_path / "yuki-3.7.1-deploy.tar.gz", "r:gz") as archive:
+    with tarfile.open(tmp_path / "yuki-3.8.0-deploy.tar.gz", "r:gz") as archive:
         assert archive.getmember(f"{prefix}install.sh").mode & 0o111
     checksum_lines = (tmp_path / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
     checksums = {
@@ -130,9 +135,18 @@ def test_production_and_development_compose_are_separated() -> None:
     assert "build:" not in production
     assert "ghcr.io/yuanyeyoutao/yuki-qqbot:${YUKI_VERSION:?missing}" in production
     assert "ghcr.io/yuanyeyoutao/yuki-genie-tts-worker:${YUKI_VERSION:?missing}" in production
-    assert production.count("platform: linux/amd64") == 2
+    assert production.count("platform: linux/amd64") == 3
     assert production.count("pull_policy: missing") == 2
     assert "./.mcp.json:/app/.mcp.json:ro" in production
+    assert 'profiles: ["napcat"]' in production
+    assert 'profiles: ["snowluma"]' in production
+    assert "motricseven7/snowluma:latest" in production
+    assert "seccomp=unconfined" in production
+    assert "SYS_PTRACE" in production
+    assert '"127.0.0.1:${SNOWLUMA_NOVNC_PORT:-6081}:6081"' in production
+    assert '"127.0.0.1:${SNOWLUMA_WEBUI_HOST_PORT:-5099}:5099"' in production
+    assert "3000:3000" not in production
+    assert "3001:3001" not in production
     assert "image: yuki-qqbot:dev" in development
     assert "image: yuki-genie-tts-worker:dev" in development
     assert development.count("pull_policy: build") == 2
@@ -224,11 +238,11 @@ def test_release_smoke_reads_alembic_version_inside_container(
             if arguments[:4] == ("exec", "-T", "bot", "python"):
                 if "urllib.request" in arguments[-1]:
                     return (
-                        '{"status":"ok","version":"3.7.1","database":"ok",'
+                        '{"status":"ok","version":"3.8.0","database":"ok",'
                         '"plugin_system_enabled":true,"plugin_running_count":0}'
                     )
                 if "SELECT version_num FROM alembic_version" in arguments[-1]:
-                    return "0042"
+                    return "0048"
             if arguments[:5] == ("exec", "-T", "bot", "qq-ai-bot-cli", "plugin"):
                 return ""
             if arguments[:5] == ("exec", "-T", "bot", "qq-ai-bot-cli", "setup"):
@@ -269,10 +283,10 @@ def test_release_smoke_writes_pending_inside_container_when_host_cannot(
                     return ""
                 if "urllib.request" in arguments[-1]:
                     return (
-                        '{"status":"ok","version":"3.7.1","database":"ok",'
+                        '{"status":"ok","version":"3.8.0","database":"ok",'
                         '"plugin_system_enabled":true,"plugin_running_count":0}'
                     )
-                return "0042"
+                return "0048"
             if arguments[:5] == ("exec", "-T", "bot", "qq-ai-bot-cli", "plugin"):
                 return ""
             if arguments[:5] == ("exec", "-T", "bot", "qq-ai-bot-cli", "setup"):
@@ -303,9 +317,9 @@ def test_release_smoke_applies_builtin_plugin_pending(
     calls: list[tuple[str, ...]] = []
     health_payloads = iter(
         (
-            '{"status":"ok","version":"3.7.1","database":"ok",'
+            '{"status":"ok","version":"3.8.0","database":"ok",'
             '"plugin_system_enabled":true,"plugin_running_count":0}',
-            '{"status":"ok","version":"3.7.1","database":"ok",'
+            '{"status":"ok","version":"3.8.0","database":"ok",'
             '"plugin_system_enabled":true,"plugin_running_count":1}',
         )
     )
@@ -316,7 +330,7 @@ def test_release_smoke_applies_builtin_plugin_pending(
             if arguments[:4] == ("exec", "-T", "bot", "python"):
                 if "urllib.request" in arguments[-1]:
                     return next(health_payloads)
-                return "0042"
+                return "0048"
             if arguments[:3] == ("up", "-d", "--no-deps"):
                 return ""
             if arguments[3:5] == ("qq-ai-bot-cli", "plugin"):
@@ -403,6 +417,8 @@ def test_installers_are_fixed_orchestrators_without_a_docker_socket_mount() -> N
         assert "setup verify" in installer
         assert "restart-required" in installer
         assert "speech-action" in installer
+        assert "gateway-action.json" in installer
+        assert "SnowLuma.md" in installer
         assert "Yuki-$VERSION-Upgrade.md" in installer or "Yuki-$Version-Upgrade.md" in installer
         assert "Updated release-managed deployment files" in installer
         assert "upgrade-3.6" in installer
@@ -420,9 +436,15 @@ def test_installers_are_fixed_orchestrators_without_a_docker_socket_mount() -> N
     assert powershell.index("upgrade-3.6") < powershell.index("migrate-3-6")
     assert powershell.index("migrate-3-6") < powershell.index("docker compose config")
     assert "wait_for_service genie-tts-worker" in shell
+    assert shell.index('stop "$service"') < shell.index("docker compose up -d")
+    assert shell.index("docker compose up -d") < shell.index('rm -f "$gateway_action"')
     assert shell.index('download "$base/$archive"') < shell.index('if [ "$existing" = false ]')
     assert "icacls" in powershell
     assert 'Wait-ForService "genie-tts-worker"' in powershell
+    assert powershell.index("stop $Service") < powershell.index("docker compose up -d")
+    assert powershell.index("docker compose up -d") < powershell.index(
+        "Remove-Item -LiteralPath $GatewayActionPath"
+    )
     assert powershell.index('Invoke-WebRequest -Uri "$Base/$ArchiveName"') < powershell.index(
         "if (-not $Existing)"
     )

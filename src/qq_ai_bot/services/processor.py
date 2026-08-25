@@ -29,12 +29,16 @@ from qq_ai_bot.conversation.rollup.repository import (
     ConversationRollupRepository,
     ConversationScopeRepository,
 )
-from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
+from qq_ai_bot.conversation.scope import ConversationTurnSnapshot, runtime_conversation_key
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
+from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.domain.messages import InboundMessage, OutboundMessage, OutboundSendReceipt
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.emoji.collector import EmojiCollector
 from qq_ai_bot.emoji.worker import EmojiWorker
+from qq_ai_bot.identity.canonical_uow import CanonicalIngressUnitOfWork
+from qq_ai_bot.identity.ingress import CanonicalIngressResolver, IngressPreAdmit
+from qq_ai_bot.identity.readers import v2_group_policy, v2_private_policy
 from qq_ai_bot.llm.base import LLMConfigurationError, LLMEmptyResponseError, LLMError
 from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepository
 from qq_ai_bot.memory.service import MemoryFactService
@@ -112,6 +116,26 @@ from yuki_plugin_sdk.models import AdmissionSignal as SdkAdmissionSignal
 
 logger = logging.getLogger(__name__)
 
+_UNRESOLVED_ADMISSION = object()
+
+
+def _observation_canonical_refs(
+    message: InboundMessage,
+    admitted: IngressPreAdmit | None,
+) -> tuple[str | None, str | None, str | None]:
+    """Project hydrate IDs onto observation shadows without legacy lookups.
+
+    Group rows store Space, not the speaker Person. Yuki / external_bot /
+    system authors never receive ``canonical_person_id``.
+    """
+
+    conversation_id = message.conversation_id
+    if message.scope_type is ScopeType.GROUP:
+        return conversation_id, None, message.space_id
+    author_kind = admitted.author_kind if admitted is not None else None
+    person_id = message.person_id if author_kind == AuthorKind.PERSON.value else None
+    return conversation_id, person_id, None
+
 
 class AdmissionSignalProvider(Protocol):
     async def collect(
@@ -134,7 +158,7 @@ IMAGE_RATE_LIMIT_MESSAGE = "图片理解请求过于频繁，请稍后再试。"
 IMAGE_QUEUE_BUSY_MESSAGE = "当前图片识别任务较多，请稍后再试。"
 IMAGE_DOWNLOAD_TIMEOUT_MESSAGE = "图片下载超时，请稍后重试；如果仍然失败，请重新发送原图。"
 IMAGE_DOWNLOAD_FAILED_MESSAGE = "图片资源下载失败或已经失效，请重新发送原图。"
-IMAGE_RESOURCE_QUERY_FAILED_MESSAGE = "NapCat 未能取得图片资源，请重新发送原图。"
+IMAGE_RESOURCE_QUERY_FAILED_MESSAGE = "QQ 网关未能取得图片资源，请重新发送原图。"
 IMAGE_FORMAT_FAILED_MESSAGE = "图片文件无法解析，请尝试重新保存或转换为 PNG、JPEG 后发送。"
 IMAGE_TOO_LARGE_MESSAGE = "图片尺寸、帧数或文件大小超过处理范围，请压缩后重新发送。"
 IMAGE_PROVIDER_TIMEOUT_MESSAGE = "图片已取得，但视觉模型响应超时，请稍后再试。"
@@ -282,6 +306,8 @@ class MessageProcessor:
         emoji_worker: EmojiWorker | None = None,
         voice_preferences: VoicePreferenceService | None = None,
         turn_observations: TurnObservationRecorder | None = None,
+        canonical_ingress: CanonicalIngressResolver | None = None,
+        canonical_uow: CanonicalIngressUnitOfWork | None = None,
     ) -> None:
         database = ledger._database
         self._turn_observations = turn_observations
@@ -340,7 +366,6 @@ class MessageProcessor:
         self._voice_preferences = voice_preferences
         audit = AdminAuditService(database)
         self._relationship_admin = relationship_admin or RelationshipAdminService(
-            settings=settings,
             relationships=self._relationships,
             audit=audit,
             runtime_config=self._runtime_config,
@@ -356,13 +381,11 @@ class MessageProcessor:
             audit=audit,
         )
         self._group_admin = group_admin or GroupAdminService(
-            settings=settings,
             groups=self._groups,
             runtime_config=self._runtime_config,
             audit=audit,
         )
         self._private_access_admin = private_access_admin or PrivateAccessAdminService(
-            settings=settings,
             private_users=self._private_users,
             audit=audit,
             runtime_config=self._runtime_config,
@@ -402,6 +425,8 @@ class MessageProcessor:
         self._event_publisher: LifecycleEventPublisher | None = None
         self._emoji_collector = emoji_collector
         self._emoji_worker = emoji_worker
+        self._canonical_ingress = canonical_ingress
+        self._canonical_uow = canonical_uow
         if event_publisher is not None:
             self.set_event_publisher(event_publisher)
 
@@ -433,24 +458,59 @@ class MessageProcessor:
         )
         result: ProcessResult | None = None
         error_category: str | None = None
+        working = message
+        admitted: IngressPreAdmit | None = None
         with bind_runtime_turn(correlation):
             try:
-                result = await self._handle_admitted(message, sender, profile_resolver)
+                if self._canonical_ingress is not None:
+                    admitted = await self._canonical_ingress.pre_admit(
+                        getattr(sender, "bot", None),
+                        message,
+                    )
+                    if admitted is not None and admitted.dropped:
+                        await self._rate_limiter.check(
+                            user_id=message.sender.user_id,
+                            group_id=message.group_id,
+                            category="ingress_drop",
+                        )
+                        logger.info("canonical_ingress_dropped reason=%s", admitted.reason)
+                        result = ProcessResult(False, reason=admitted.reason)
+                        return result
+                    if admitted is not None:
+                        working = admitted.message
+                result = await self._handle_admitted(
+                    working,
+                    sender,
+                    profile_resolver,
+                    admitted=admitted,
+                )
                 return result
             except BaseException as exc:
                 error_category = type(exc).__name__
                 raise
             finally:
                 if correlation.touched or error_category is not None:
+                    conversation_id, person_id, space_id = _observation_canonical_refs(
+                        working,
+                        admitted,
+                    )
                     observation = build_turn_observation(
                         correlation,
-                        scope_type=message.scope_type.value,
-                        conversation_key=self._turn_coordinator.key_for(message),
+                        scope_type=working.scope_type.value,
+                        conversation_key=runtime_conversation_key(
+                            identity=working.scope(),
+                            inbound=working,
+                        ),
                         admission_outcome=result.reason if result is not None else None,
                         handled=result.handled if result is not None else False,
                         sent_messages=result.sent_messages if result is not None else 0,
                         error_category=error_category,
                         total_latency_ms=int((time.perf_counter() - started) * 1000),
+                        subject_user_id=working.sender.user_id,
+                        group_id=working.group_id,
+                        canonical_conversation_id=conversation_id,
+                        canonical_person_id=person_id,
+                        canonical_space_id=space_id,
                     )
                     await record_observation_safely(self._turn_observations, observation)
 
@@ -459,10 +519,30 @@ class MessageProcessor:
         message: InboundMessage,
         sender: OutboundSender,
         profile_resolver: UserProfileResolver | None = None,
+        admitted: IngressPreAdmit | None | object = _UNRESOLVED_ADMISSION,
     ) -> ProcessResult:
         """Process one message without deriving authority from model-visible data."""
 
         started = time.perf_counter()
+        if admitted is _UNRESOLVED_ADMISSION:
+            admitted = None
+            if self._canonical_ingress is not None:
+                admitted = await self._canonical_ingress.pre_admit(
+                    getattr(sender, "bot", None),
+                    message,
+                )
+                if admitted is not None and admitted.dropped:
+                    await self._rate_limiter.check(
+                        user_id=message.sender.user_id,
+                        group_id=message.group_id,
+                        category="ingress_drop",
+                    )
+                    logger.info("canonical_ingress_dropped reason=%s", admitted.reason)
+                    return ProcessResult(False, reason=admitted.reason)
+                if admitted is not None:
+                    message = admitted.message
+        admitted = cast(IngressPreAdmit | None, admitted)
+        yuki_account_ids = admitted.yuki_account_ids if admitted is not None else frozenset()
         await publish_notification(
             self._event_publisher,
             EventName.MESSAGE_NORMALIZED,
@@ -489,6 +569,7 @@ class MessageProcessor:
             group_policy=group_policy,
             private_policy=private_policy,
             direct_triggered=direct_match is not None,
+            yuki_account_ids=yuki_account_ids,
         )
         if decision.reason == "bot_message":
             await self._publish_turn_rejected(message, decision.reason)
@@ -517,9 +598,14 @@ class MessageProcessor:
             return ProcessResult(False, reason=decision.reason)
 
         identity = message.scope()
+        coordinator_key = runtime_conversation_key(
+            identity=identity,
+            inbound=message,
+            primary_alias=admitted.primary_alias if admitted is not None else None,
+        )
         event_key = build_event_key(message, identity.key)
         repairing_dedup_gap = False
-        if not await self._deduplication.claim(event_key):
+        if admitted is None and not await self._deduplication.claim(event_key):
             existing = await self._ledger.find_by_platform_message(
                 bot_user_id=identity.bot_user_id,
                 platform_message_id=message.message_id,
@@ -557,7 +643,7 @@ class MessageProcessor:
             configure_hook_timeout(runtime_snapshot.plugins.hook_timeout_seconds)
         direct_turn = decision.should_respond or admin_candidate
         turn_token = await self._turn_coordinator.notify_message(
-            self._turn_coordinator.key_for(message),
+            coordinator_key,
             TurnOrigin.USER_MESSAGE,
             observation=not direct_turn,
             protect_from_observations=direct_turn,
@@ -620,16 +706,22 @@ class MessageProcessor:
             and (message.scope_type is ScopeType.PRIVATE or is_superuser)
         )
         if is_authorized_new:
-            await self._turn_coordinator.cancel_running_before_boundary(identity.key)
+            await self._turn_coordinator.cancel_running_before_boundary(coordinator_key)
             try:
                 async with self._effect_gate.hold(
-                    identity.key,
+                    coordinator_key,
                     timeout_seconds=self._settings.conversation_effect_gate_timeout_seconds,
                 ):
-                    switched = await self._scoped_events.append_new_generation_command(
-                        scope=identity,
-                        inbound=message,
-                    )
+                    if admitted is not None and self._canonical_uow is not None:
+                        switched = await self._canonical_uow.append_new_generation(
+                            message,
+                            admitted,
+                        )
+                    else:
+                        switched = await self._scoped_events.append_new_generation_command(
+                            scope=identity,
+                            inbound=message,
+                        )
             except EffectGateTimeoutError:
                 sent = await self._send_text(
                     message,
@@ -641,7 +733,10 @@ class MessageProcessor:
             created = switched.generation_changed
             scope_state = switched.scope
         else:
-            appended = await self._scoped_events.append_inbound(message)
+            if admitted is not None and self._canonical_uow is not None:
+                appended = await self._canonical_uow.append_inbound(message, admitted)
+            else:
+                appended = await self._scoped_events.append_inbound(message)
             record = appended.event
             created = appended.created
             scope_state = appended.scope
@@ -649,10 +744,11 @@ class MessageProcessor:
                 self._scoped_events.metrics.scoped_append_repairs += 1
         turn_snapshot = ConversationTurnSnapshot(
             scope_id=scope_state.id,
-            scope_key=identity.key,
+            scope_key=coordinator_key,
             generation=scope_state.generation,
             trigger_event_id=record.id,
             coordinator_version=turn_token.version,
+            transport_scope_key=(identity.key if identity.key != coordinator_key else None),
         )
         # Deterministic native and direct-plugin commands execute their own reviewed
         # mutation path. Feeding command syntax to the extraction Worker would create
@@ -783,7 +879,7 @@ class MessageProcessor:
             message=message,
             question=visual_question,
             source_event_id=record.id,
-            conversation_key=identity.key,
+            conversation_key=coordinator_key,
             event_key=event_key,
             sender=sender,
             runtime=runtime_snapshot,
@@ -830,7 +926,7 @@ class MessageProcessor:
             content_free_turn_payload(
                 origin=TurnOrigin.USER_MESSAGE.value,
                 scope_type=message.scope_type.value,
-                conversation_key=identity.key,
+                conversation_key=coordinator_key,
                 reason=decision.reason,
             ),
         )
@@ -913,7 +1009,7 @@ class MessageProcessor:
                     await self._relationship_worker.enqueue(
                         trigger_event_id=record.id,
                         user_id=message.sender.user_id,
-                        conversation_key=identity.key,
+                        conversation_key=coordinator_key,
                     )
                 except (SQLAlchemyError, OSError, RuntimeError, ValueError) as exc:
                     logger.warning(
@@ -928,6 +1024,7 @@ class MessageProcessor:
                 handler="chat",
                 started=started,
                 success=True,
+                conversation_key=coordinator_key,
             )
             result = ProcessResult(True, sent_count, "chat")
         await publish_notification(
@@ -936,7 +1033,7 @@ class MessageProcessor:
             content_free_turn_payload(
                 origin=TurnOrigin.USER_MESSAGE.value,
                 scope_type=message.scope_type.value,
-                conversation_key=identity.key,
+                conversation_key=coordinator_key,
                 outcome=result.reason,
                 handled=result.handled,
                 sent_messages=result.sent_messages,
@@ -1039,12 +1136,15 @@ class MessageProcessor:
             return None
         setting = await self._groups.get(group_id)
         if setting is None:
-            return EffectiveGroupPolicy(enabled=group_id in self._settings.enabled_groups)
-        return EffectiveGroupPolicy(
-            enabled=setting.enabled,
-            require_mention=setting.require_mention,
-            autonomous_enabled=setting.autonomous_enabled,
-        )
+            fallback = EffectiveGroupPolicy(enabled=group_id in self._settings.enabled_groups)
+        else:
+            fallback = EffectiveGroupPolicy(
+                enabled=setting.enabled,
+                require_mention=setting.require_mention,
+                autonomous_enabled=setting.autonomous_enabled,
+            )
+        async with self._ledger._database.sessions() as session:
+            return await v2_group_policy(session, group_id, fallback=fallback)
 
     async def _effective_private_policy(
         self, message: InboundMessage
@@ -1052,7 +1152,9 @@ class MessageProcessor:
         if message.scope_type is not ScopeType.PRIVATE:
             return None
         setting = await self._private_users.get(message.sender.user_id)
-        return EffectivePrivatePolicy(enabled=True if setting is None else setting.enabled)
+        fallback = EffectivePrivatePolicy(enabled=True if setting is None else setting.enabled)
+        async with self._ledger._database.sessions() as session:
+            return await v2_private_policy(session, message.sender.user_id, fallback=fallback)
 
     async def _handle_command(
         self,
@@ -1244,6 +1346,11 @@ class MessageProcessor:
             handler=handler,
             started=started,
             success=sent,
+            conversation_key=runtime_conversation_key(
+                identity=identity,
+                inbound=message,
+                turn=turn_snapshot,
+            ),
         )
         return ProcessResult(True, int(sent), handler)
 
@@ -1362,6 +1469,7 @@ class MessageProcessor:
         ) and await self._conversation_scopes.generation_matches(
             snapshot.scope_id,
             snapshot.generation,
+            scope_key=snapshot.scope_key,
         )
 
     async def _publish_turn_rejected(self, message: InboundMessage, reason: str) -> None:
@@ -1371,7 +1479,10 @@ class MessageProcessor:
             content_free_turn_payload(
                 origin=TurnOrigin.USER_MESSAGE.value,
                 scope_type=message.scope_type.value,
-                conversation_key=self._turn_coordinator.key_for(message),
+                conversation_key=runtime_conversation_key(
+                    identity=message.scope(),
+                    inbound=message,
+                ),
                 reason=reason,
             ),
         )
@@ -1385,12 +1496,14 @@ class MessageProcessor:
         handler: str,
         started: float,
         success: bool,
+        conversation_key: str | None = None,
     ) -> None:
+        owner_key = conversation_key or identity.key
         logger.info(
             "message_handled",
             extra={
                 "event_key": event_key,
-                "conversation_hash": hashlib.sha256(identity.key.encode()).hexdigest()[:16],
+                "conversation_hash": hashlib.sha256(owner_key.encode()).hexdigest()[:16],
                 "message_type": message.scope_type.value,
                 "handler": handler,
                 "total_latency_seconds": round(time.perf_counter() - started, 4),

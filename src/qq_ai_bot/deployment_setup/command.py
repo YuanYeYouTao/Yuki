@@ -27,12 +27,14 @@ from qq_ai_bot.deployment_setup.service import (
     apply_pending_plugins,
     build_model_profiles,
     commit_configuration,
+    compose_profiles_with_features,
     discover_speech_profiles,
     infer_main_protocol,
     load_plugin_setup_states,
     missing_mcp_environment,
     model_profiles_use_flash,
     sanitize_mcp_document,
+    selected_gateway_providers,
     validate_configuration,
     verify_health,
 )
@@ -49,6 +51,7 @@ _SECTIONS = (
     "plugin",
     "automation",
     "speech",
+    "gateway",
 )
 _PERSISTENT_DIRECTORIES = (
     "data",
@@ -62,6 +65,10 @@ _PERSISTENT_DIRECTORIES = (
     "napcat-data",
     "napcat-config",
     "napcat-plugins",
+    "snowluma-data",
+    "snowluma-qq-config",
+    "snowluma-qq-data",
+    "snowluma-extra-accounts",
 )
 
 
@@ -173,10 +180,12 @@ def run_setup_command(args: argparse.Namespace) -> int:
         health = verify_health(str(args.health_url), timeout_seconds=float(args.timeout))
         if health.get("version") != __version__ or health.get("database") != "ok":
             raise SetupValidationError("Bot 版本或数据库健康状态与当前部署不一致")
+        configuration, _document = _load_current_configuration(paths)
         _render_health(
             ui,
             health,
             flash_enabled=model_profiles_use_flash(paths.model_profiles),
+            environment=configuration.environment,
         )
         return 0
     except (QuitRequested, KeyboardInterrupt, EOFError):
@@ -219,6 +228,9 @@ def _configure(paths: SetupPaths, ui: TerminalUI) -> int:
     )
     draft.environment["NAPCAT_WEBUI_TOKEN"] = _token_or_existing(
         draft.environment.get("NAPCAT_WEBUI_TOKEN", "")
+    )
+    draft.environment["SNOWLUMA_VNC_PASSWORD"] = _token_or_existing(
+        draft.environment.get("SNOWLUMA_VNC_PASSWORD", "")
     )
 
     forced_sections: set[str] = set()
@@ -278,6 +290,7 @@ def _run_page_state_machine(
         "plugin": "Plugin",
         "automation": "Automation",
         "speech": "Speech",
+        "gateway": "QQ Gateway Provider",
     }
     handlers = {
         "basic": _page_basic,
@@ -289,6 +302,7 @@ def _run_page_state_machine(
         "plugin": _page_plugin,
         "automation": _page_automation,
         "speech": _page_speech,
+        "gateway": _page_gateway,
     }
     pages = tuple(_WizardPage(section, titles[section]) for section in sections)
     session_entry = copy.deepcopy(draft)
@@ -566,7 +580,11 @@ def _page_speech(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
         default=_as_bool(environment.get("SPEECH_ENABLED", "false")),
     )
     environment["SPEECH_ENABLED"] = _bool_text(enabled)
-    environment["COMPOSE_PROFILES"] = "speech" if enabled else ""
+    environment["COMPOSE_PROFILES"] = compose_profiles_with_features(
+        environment,
+        gateways=selected_gateway_providers(environment),
+        speech_enabled=enabled,
+    )
     if not enabled:
         return
     speech_root = paths.root / "data/speech"
@@ -589,6 +607,31 @@ def _page_speech(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
         tuple((item.profile_id, f"{item.display_name} ({item.profile_id})") for item in candidates),
         default=default_profile,
     )
+
+
+def _page_gateway(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
+    del paths
+    environment = draft.environment
+    current = selected_gateway_providers(environment)
+    default = "both" if len(current) == 2 else current[0]
+    selection = ui.choose(
+        "启用哪些 QQ Gateway Provider？",
+        (
+            ("napcat", "仅 NapCat"),
+            ("snowluma", "仅 SnowLuma"),
+            ("both", "NapCat 与 SnowLuma（必须登录不同 QQ）"),
+        ),
+        default=default,
+    )
+    gateways = ("napcat", "snowluma") if selection == "both" else (selection,)
+    environment["COMPOSE_PROFILES"] = compose_profiles_with_features(
+        environment,
+        gateways=gateways,
+        speech_enabled=_as_bool(environment.get("SPEECH_ENABLED", "false")),
+    )
+    if "snowluma" in gateways:
+        ui.info("SnowLuma 首次启动后，请在本机 WebUI 手动确认协议并扫码登录。")
+        ui.info("同一 QQ 已连接其他 Provider 时，新连接会被 Yuki 拒绝。")
 
 
 def _review_and_commit(
@@ -669,6 +712,7 @@ def _select_sections(ui: TerminalUI, draft: _SetupDraft) -> tuple[str, ...]:
         "speech": _feature_label(
             "Speech", _as_bool(draft.environment.get("SPEECH_ENABLED", "false"))
         ),
+        "gateway": "QQ Gateway（" + ", ".join(selected_gateway_providers(draft.environment)) + "）",
     }
     return ui.choose_many(
         "配置区块：",
@@ -952,6 +996,7 @@ def _render_summary(
         ui.line(f"默认时区：{environment.get('DEFAULT_TIMEZONE', '未配置')}")
     if states["Speech"]:
         ui.line(f"默认声线：{environment.get('SPEECH_DEFAULT_PROFILE', '未配置')}")
+    ui.line("QQ Gateway：" + ", ".join(selected_gateway_providers(environment)))
 
 
 def _render_health(
@@ -959,6 +1004,7 @@ def _render_health(
     health: dict[str, Any],
     *,
     flash_enabled: bool,
+    environment: dict[str, str],
 ) -> None:
     ui.title("Yuki 部署状态")
     ui.success(f"Yuki 版本：{health.get('version', 'unknown')}")
@@ -977,8 +1023,15 @@ def _render_health(
         if bool(health.get(key)):
             enabled.append(label)
     ui.info("已启用功能：" + (", ".join(enabled) if enabled else "仅基础功能"))
-    ui.info("NapCat WebUI：http://127.0.0.1:6099")
-    ui.info("登录 Token 保存在部署目录 .env 的 NAPCAT_WEBUI_TOKEN 中")
+    providers = selected_gateway_providers(environment)
+    if "napcat" in providers:
+        ui.info("NapCat WebUI：http://127.0.0.1:6099")
+        ui.info("登录 Token 保存在部署目录 .env 的 NAPCAT_WEBUI_TOKEN 中")
+    if "snowluma" in providers:
+        webui_port = environment.get("SNOWLUMA_WEBUI_HOST_PORT", "5099")
+        novnc_port = environment.get("SNOWLUMA_NOVNC_PORT", "6081")
+        ui.info(f"SnowLuma WebUI：http://127.0.0.1:{webui_port}")
+        ui.info(f"SnowLuma noVNC：http://127.0.0.1:{novnc_port}")
 
 
 def _ask_required_secret(ui: TerminalUI, label: str, existing: str) -> str:

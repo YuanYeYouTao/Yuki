@@ -8,6 +8,10 @@ from datetime import UTC, datetime
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.identity.c24_conversation import (
+    resolve_conversation_id_for_event,
+    stamp_conversation_correlation,
+)
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.speech.db_models import (
     SpeechGenerationModel,
@@ -38,12 +42,16 @@ class VoiceProfileRepository:
             references = await self._references_for(session, [row.profile_id for row in rows])
             return tuple(self._profile(row, references.get(row.profile_id, ())) for row in rows)
 
-    async def get_profile(self, profile_id: str) -> VoiceProfile | None:
-        async with self._database.sessions() as session:
-            row = await session.get(SpeechVoiceProfileModel, profile_id)
+    async def get_profile(
+        self, profile_id: str, *, session: AsyncSession | None = None
+    ) -> VoiceProfile | None:
+        from qq_ai_bot.persistence.unit_of_work import optional_session
+
+        async with optional_session(self._database, session, write=False) as active:
+            row = await active.get(SpeechVoiceProfileModel, profile_id)
             if row is None:
                 return None
-            references = await self._references_for(session, [profile_id])
+            references = await self._references_for(active, [profile_id])
             return self._profile(row, references.get(profile_id, ()))
 
     async def get_default(self) -> VoiceProfile | None:
@@ -171,16 +179,26 @@ class VoiceProfileRepository:
             raise RuntimeError("activated voice profile disappeared")
         return profile
 
-    async def set_enabled(self, profile_id: str, *, enabled: bool) -> VoiceProfile:
-        async with self._database.sessions() as session, session.begin():
-            row = await session.get(SpeechVoiceProfileModel, profile_id)
+    async def set_enabled(
+        self,
+        profile_id: str,
+        *,
+        enabled: bool,
+        session: AsyncSession | None = None,
+    ) -> VoiceProfile:
+        from qq_ai_bot.persistence.unit_of_work import optional_session
+
+        async with optional_session(self._database, session, write=True) as active:
+            row = await active.get(SpeechVoiceProfileModel, profile_id)
             if row is None:
                 raise LookupError("voice profile not found")
             row.enabled = enabled
             if not enabled:
                 row.is_default = False
             row.updated_at = datetime.now(UTC)
-        profile = await self.get_profile(profile_id)
+            await active.flush()
+            references = await self._references_for(active, [profile_id])
+            profile = self._profile(row, references.get(profile_id, ()))
         if profile is None:
             raise RuntimeError("updated voice profile disappeared")
         return profile
@@ -317,6 +335,7 @@ class SpeechGenerationRepository:
         character_count: int,
         cache_key: str,
         expires_at: datetime | None,
+        canonical_conversation_id: str | None = None,
     ) -> SpeechGeneration:
         row = SpeechGenerationModel(
             request_id=request_id,
@@ -337,6 +356,9 @@ class SpeechGenerationRepository:
         async with self._database.sessions() as session, session.begin():
             session.add(row)
             await session.flush()
+            await stamp_conversation_correlation(session, row, canonical_conversation_id)
+            proven = await resolve_conversation_id_for_event(session, trigger_event_id)
+            await stamp_conversation_correlation(session, row, proven)
             return self._generation(row)
 
     async def get(self, generation_id: int) -> SpeechGeneration | None:

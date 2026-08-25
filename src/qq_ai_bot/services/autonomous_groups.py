@@ -19,7 +19,7 @@ from qq_ai_bot.conversation.participation import (
     AdmissionSignalHint,
     LocalAutonomousParticipationPolicy,
 )
-from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
+from qq_ai_bot.conversation.scope import ConversationTurnSnapshot, runtime_conversation_key
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
@@ -44,6 +44,16 @@ from qq_ai_bot.services.turn_coordinator import (
 from yuki_plugin_sdk.events import EventName
 
 logger = logging.getLogger(__name__)
+
+
+def _authoritative_autonomous_observation_refs(
+    message: InboundMessage | None,
+) -> tuple[str | None, str | None]:
+    """Thread hydrated Conversation/Space only. Never derive from raw group/QQ."""
+
+    if message is None:
+        return None, None
+    return message.conversation_id, message.space_id
 
 
 @dataclass(slots=True)
@@ -96,7 +106,7 @@ class AutonomousGroupService:
         group_id = message.group_id
         if group_id is None:
             return
-        scope_key = message.scope().key
+        scope_key = runtime_conversation_key(identity=message.scope(), inbound=message)
         state = self._states.setdefault(scope_key, _GroupState())
         state.messages.append(message)
         state.profiles.append(profile)
@@ -221,6 +231,11 @@ class AutonomousGroupService:
         )
         error_category: str | None = None
         observation_key = scope_key
+        state = self._states.get(scope_key)
+        selected = state.messages[-1] if state is not None and state.messages else None
+        canonical_conversation_id, canonical_space_id = _authoritative_autonomous_observation_refs(
+            selected
+        )
         with bind_runtime_turn(correlation):
             try:
                 await self._admit_latest(scope_key, revision, runtime)
@@ -238,6 +253,9 @@ class AutonomousGroupService:
                         sent_messages=0,
                         error_category=error_category,
                         total_latency_ms=int((time.perf_counter() - started) * 1000),
+                        canonical_conversation_id=canonical_conversation_id,
+                        canonical_person_id=None,
+                        canonical_space_id=canonical_space_id,
                     )
                     await record_observation_safely(self._turn_observations, observation)
 
@@ -256,7 +274,7 @@ class AutonomousGroupService:
         token = state.latest_token
         if token is None:
             token = await self._coordinator.notify_message(
-                last.scope().key,
+                scope_key,
                 TurnOrigin.AUTONOMOUS_GROUP,
             )
         else:
@@ -282,7 +300,7 @@ class AutonomousGroupService:
         snapshot = LocalAutonomousParticipationPolicy(
             threshold=policy.autonomous_admission_threshold,
         ).evaluate(features)
-        conversation_key = last.scope().key
+        conversation_key = scope_key
         publisher = getattr(self._chat, "_event_publisher", None)
         if not snapshot.should_participate:
             await publish_notification(
@@ -310,12 +328,18 @@ class AutonomousGroupService:
         )
         if scope_state is None or trigger_event is None:
             return
+        runtime_key = runtime_conversation_key(
+            identity=identity,
+            inbound=last,
+            primary_alias=scope_state.runtime_scope_key,
+        )
         turn_snapshot = ConversationTurnSnapshot(
             scope_id=scope_state.id,
-            scope_key=identity.key,
+            scope_key=runtime_key,
             generation=scope_state.generation,
             trigger_event_id=trigger_event.id,
             coordinator_version=token.version,
+            transport_scope_key=(identity.key if identity.key != runtime_key else None),
         )
         await publish_notification(
             publisher,

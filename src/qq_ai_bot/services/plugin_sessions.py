@@ -42,6 +42,7 @@ class PluginSessionAuthority:
     actor_user_id: str
     current_group_id: str | None
     approved_permissions: frozenset[str]
+    conversation_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,7 +173,10 @@ class PluginAgentSessionService:
             # Tools deliberately remain unavailable in Plugin API 2.0's first
             # session runtime.  Capability intersections are still persisted
             # and passed through AgentRuntime for a future reviewed backend.
+            # Isolated plugin Agent sessions have no Conversation column; never
+            # fabricate one. Forward a Host-stamped id only when actually present.
             _ = max_tool_calls
+            persisted_conversation_id = getattr(session, "canonical_conversation_id", None)
             result = await self._runner.run(
                 messages,
                 AgentRuntime(
@@ -191,6 +195,9 @@ class PluginAgentSessionService:
                     max_model_requests=min(
                         max(1, max_model_requests or runtime.agent.max_model_requests),
                         max(1, runtime.agent.max_model_requests),
+                    ),
+                    canonical_conversation_id=(
+                        persisted_conversation_id or authority.conversation_id
                     ),
                 ),
                 tools=None,
@@ -260,9 +267,11 @@ class PluginAgentSessionService:
     async def _get_authorized(
         self, authority: PluginSessionAuthority, session_id: str
     ) -> PluginAgentSessionRecord:
-        record = await self._repository.get(
+        record = await self._repository.get_for_actor(
             plugin_id=authority.plugin_id,
             session_id=session_id,
+            actor_user_id=authority.actor_user_id,
+            current_group_id=authority.current_group_id,
         )
         if record is None or record.status != "active":
             raise PluginSessionNotFoundError("plugin Agent session is unavailable")
@@ -270,10 +279,6 @@ class PluginAgentSessionService:
             record.persistence == "ephemeral"
             and record.session_id not in self._ephemeral_session_ids
         ):
-            raise PluginSessionNotFoundError("plugin Agent session is unavailable")
-        if record.scope_type == "user" and record.scope_id != authority.actor_user_id:
-            raise PluginSessionNotFoundError("plugin Agent session is unavailable")
-        if record.scope_type == "group" and record.scope_id != authority.current_group_id:
             raise PluginSessionNotFoundError("plugin Agent session is unavailable")
         return record
 

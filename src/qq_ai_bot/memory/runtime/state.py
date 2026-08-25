@@ -511,6 +511,11 @@ class MemorySessionState:
     def close(self) -> None:
         self._closed = True
 
+    def require_open(self) -> None:
+        """Public guard: session must still be open before I/O."""
+
+        self._require_open()
+
     def _replace_contract(self, contract: MemoryTurnContract) -> None:
         self._contract = contract
         self._transition_revision += 1

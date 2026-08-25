@@ -6,6 +6,8 @@ import hashlib
 import logging
 from collections import defaultdict
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from qq_ai_bot.config import Settings
 from qq_ai_bot.memory.dream.models import (
     DreamAction,
@@ -115,6 +117,45 @@ SELF 合成正文
 """
 
 
+async def plan_full_core(
+    *,
+    settings: Settings,
+    repository: DreamRepository,
+    embeddings: MemoryEmbeddingRuntime,
+    actor_user_id: str,
+    session: AsyncSession | None = None,
+) -> DreamRun:
+    """Session-aware full Dream plan. Does not invent empty statistics."""
+
+    if not settings.memory_embedding_enabled:
+        raise RuntimeError("Memory Dream 需要启用 memory embedding")
+    profile_id = embeddings.profile_id
+    if profile_id is None:
+        raise RuntimeError("Memory Dream embedding profile 尚未就绪")
+    if embeddings.jobs is not None:
+        await embeddings.jobs.reconcile()
+    loaded = await repository.load_candidates(
+        profile_id=profile_id,
+        dimensions=embeddings.dimensions,
+        documents=embeddings.documents,
+        session=session,
+    )
+    planner = object.__new__(DreamService)
+    planner._settings = settings
+    planner._codec = Float32VectorCodec()
+    clusters, isolated = await planner._clusters(loaded, incremental=False)
+    statistics = DreamService._statistics(loaded, clusters=clusters, isolated=isolated)
+    return await repository.create_run(
+        mode=DreamRunMode.FULL,
+        statistics=statistics,
+        clusters=planner._stored_clusters(clusters),
+        snapshot_max_fact_id=max((item.fact.id for item in loaded.candidates), default=0),
+        actor_user_id=actor_user_id,
+        scheduled_slot=None,
+        session=session,
+    )
+
+
 class DreamService:
     def __init__(
         self,
@@ -168,17 +209,15 @@ class DreamService:
         loaded = await self._load()
         return await self._repository.initialize_baseline(loaded.fact_signatures)
 
-    async def plan_full(self, *, actor_user_id: str) -> DreamRun:
-        loaded = await self._load()
-        clusters, isolated = await self._clusters(loaded, incremental=False)
-        statistics = self._statistics(loaded, clusters=clusters, isolated=isolated)
-        return await self._repository.create_run(
-            mode=DreamRunMode.FULL,
-            statistics=statistics,
-            clusters=self._stored_clusters(clusters),
-            snapshot_max_fact_id=max((item.fact.id for item in loaded.candidates), default=0),
+    async def plan_full(
+        self, *, actor_user_id: str, session: AsyncSession | None = None
+    ) -> DreamRun:
+        return await plan_full_core(
+            settings=self._settings,
+            repository=self._repository,
+            embeddings=self._embeddings,
             actor_user_id=actor_user_id,
-            scheduled_slot=None,
+            session=session,
         )
 
     async def plan_incremental(self, *, scheduled_slot: str) -> DreamRun:

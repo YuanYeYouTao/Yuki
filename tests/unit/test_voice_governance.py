@@ -112,6 +112,201 @@ async def test_autonomous_turn_can_write_voice_preference(database: Database) ->
     assert (await repository.get("1001")).mode is VoicePreferenceMode.PREFER_VOICE
 
 
+_V2_NOW = datetime(2026, 8, 25, tzinfo=UTC)
+_V2_CUTOVER = "550e8400-e29b-41d4-a716-4466554400ab"
+
+
+async def _flip_complete_v2(database: Database) -> None:
+    from qq_ai_bot.identity.db_models import IdentityRuntimeStateModel
+
+    async with database.sessions() as session, session.begin():
+        row = await session.get(IdentityRuntimeStateModel, 1)
+        assert row is not None
+        row.state = "v2"
+        row.cutover_id = _V2_CUTOVER
+        row.source_fingerprint = "cutover-fingerprint"
+        row.completed_at = _V2_NOW
+
+
+async def _two_bindings_one_person(database: Database, first: str = "1001", second: str = "1002"):
+    from uuid import uuid4
+
+    from qq_ai_bot.identity.db_models import IdentityBindingModel
+    from qq_ai_bot.identity.dual_write import _create_person_binding
+    from qq_ai_bot.identity.inventory import IDENTITY_PLATFORM
+
+    async with database.sessions() as session, session.begin():
+        created = await _create_person_binding(
+            session, external_id=first, display_name="", now=_V2_NOW
+        )
+        session.add(
+            IdentityBindingModel(
+                id=str(uuid4()),
+                person_id=created.person_id,
+                platform=IDENTITY_PLATFORM,
+                external_account_id=second,
+                display_name="",
+                status="active",
+                revision=1,
+                created_at=_V2_NOW,
+                updated_at=_V2_NOW,
+            )
+        )
+        return created.person_id
+
+
+@pytest.mark.asyncio
+async def test_v2_voice_preference_is_shared_across_bindings_without_people(
+    database: Database,
+) -> None:
+    from sqlalchemy import func, select
+
+    from qq_ai_bot.identity.canonical_projections import canonical_person_storage_key
+    from qq_ai_bot.persistence.models import PersonModel
+    from qq_ai_bot.speech.db_models import PersonSpeechPreferenceModel
+
+    await _flip_complete_v2(database)
+    person_id = await _two_bindings_one_person(database)
+    repository = VoicePreferenceRepository(database)
+    service = VoicePreferenceService(repository)
+
+    saved = await service.set_persistent(
+        user_id="1001",
+        mode=VoicePreferenceMode.TEXT_ONLY,
+        source_message_id="from-a",
+        origin=TurnOrigin.USER_MESSAGE,
+    )
+    assert saved is not None
+    assert saved.user_id == "1001"
+    assert await service.current_mode("1002") is VoicePreferenceMode.TEXT_ONLY
+
+    updated = await service.set_persistent(
+        user_id="1002",
+        mode=VoicePreferenceMode.PREFER_VOICE,
+        source_message_id="from-b",
+        origin=TurnOrigin.USER_MESSAGE,
+    )
+    assert updated is not None
+    assert await service.current_mode("1001") is VoicePreferenceMode.PREFER_VOICE
+    assert await repository.delete("1001") is True
+    assert await service.current_mode("1002") is None
+
+    async with database.sessions() as session:
+        rows = list(await session.scalars(select(PersonSpeechPreferenceModel)))
+        people = int(await session.scalar(select(func.count()).select_from(PersonModel)) or 0)
+    assert people == 0
+    assert rows == []
+    saved_again = await service.set_persistent(
+        user_id="1002",
+        mode=VoicePreferenceMode.AUTO,
+        source_message_id="again",
+        origin=TurnOrigin.USER_MESSAGE,
+    )
+    assert saved_again is not None
+    async with database.sessions() as session:
+        rows = list(await session.scalars(select(PersonSpeechPreferenceModel)))
+    assert len(rows) == 1
+    assert rows[0].user_id == canonical_person_storage_key(person_id)
+    assert rows[0].canonical_person_id == person_id
+
+
+@pytest.mark.asyncio
+async def test_v2_conflicting_speech_preferences_fail_closed(database: Database) -> None:
+    from qq_ai_bot.identity.errors import IdentityDualWriteError
+    from qq_ai_bot.speech.db_models import PersonSpeechPreferenceModel
+
+    await _flip_complete_v2(database)
+    person_id = await _two_bindings_one_person(database)
+    async with database.sessions() as session, session.begin():
+        session.add(
+            PersonSpeechPreferenceModel(
+                user_id="1001",
+                mode=VoicePreferenceMode.TEXT_ONLY.value,
+                source_message_id="a",
+                created_at=_V2_NOW,
+                updated_at=_V2_NOW,
+                canonical_person_id=person_id,
+            )
+        )
+        session.add(
+            PersonSpeechPreferenceModel(
+                user_id="1002",
+                mode=VoicePreferenceMode.PREFER_VOICE.value,
+                source_message_id="b",
+                created_at=_V2_NOW,
+                updated_at=_V2_NOW,
+                canonical_person_id=person_id,
+            )
+        )
+    with pytest.raises(IdentityDualWriteError) as exc:
+        await VoicePreferenceRepository(database).get("1002")
+    assert exc.value.category == "canonical_owner_mismatch"
+    assert "1002" not in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_v2_missing_binding_fail_closed_for_speech(database: Database) -> None:
+    from qq_ai_bot.identity.errors import IdentityDualWriteError
+
+    await _flip_complete_v2(database)
+    with pytest.raises(IdentityDualWriteError) as exc:
+        await VoicePreferenceRepository(database).get("1001")
+    assert exc.value.category == "unclassified"
+    assert "1001" not in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_v2_disabled_person_qq_speech_fails_closed_and_admin_can_reenable(
+    database: Database,
+) -> None:
+    from qq_ai_bot.identity.errors import IdentityDualWriteError
+    from qq_ai_bot.persistence.repositories import PeopleRepository
+
+    await _flip_complete_v2(database)
+    await _two_bindings_one_person(database)
+    people = PeopleRepository(database)
+    repository = VoicePreferenceRepository(database)
+    service = VoicePreferenceService(repository)
+    saved = await service.set_persistent(
+        user_id="1001",
+        mode=VoicePreferenceMode.TEXT_ONLY,
+        source_message_id="before-disable",
+        origin=TurnOrigin.USER_MESSAGE,
+    )
+    assert saved is not None
+    assert await service.current_mode("1001") is VoicePreferenceMode.TEXT_ONLY
+
+    disabled = await people.set_enabled("1001", False)
+    assert disabled.enabled is False
+    with pytest.raises(IdentityDualWriteError) as read_exc:
+        await service.current_mode("1001")
+    assert read_exc.value.category == "canonical_owner_disabled"
+    assert "1001" not in str(read_exc.value)
+    with pytest.raises(IdentityDualWriteError) as write_exc:
+        await repository.set(
+            "1001",
+            VoicePreferenceMode.PREFER_VOICE,
+            source_message_id="while-disabled",
+        )
+    assert write_exc.value.category == "canonical_owner_disabled"
+    assert "1001" not in str(write_exc.value)
+    with pytest.raises(IdentityDualWriteError) as sibling_exc:
+        await service.current_mode("1002")
+    assert sibling_exc.value.category == "canonical_owner_disabled"
+    assert "1002" not in str(sibling_exc.value)
+
+    restored = await people.set_enabled("1001", True)
+    assert restored.enabled is True
+    assert await service.current_mode("1001") is VoicePreferenceMode.TEXT_ONLY
+    updated = await repository.set(
+        "1002",
+        VoicePreferenceMode.PREFER_VOICE,
+        source_message_id="after-enable",
+    )
+    assert updated.mode is VoicePreferenceMode.PREFER_VOICE
+    assert await service.current_mode("1001") is VoicePreferenceMode.PREFER_VOICE
+
+
 def test_voice_ledger_separates_spoken_text_from_internal_metadata() -> None:
     technical_summary = "Yuki 发送了一条语音，声线：roxy，风格：happy，语言：jp"
     media_only = OutboundMessage(

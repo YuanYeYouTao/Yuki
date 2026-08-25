@@ -26,6 +26,8 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.emoji.repository import EmojiRepository
 from qq_ai_bot.emoji.selector import EmojiSelector
 from qq_ai_bot.emoji.storage import EmojiStorage
+from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
+from qq_ai_bot.identity.routing import PresenceRouter
 from qq_ai_bot.mcp.automation import MCPAutomationBridge
 from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.memory.service import MemoryFactService
@@ -78,6 +80,8 @@ class AutomationModule:
         mcp_manager: MCPManager,
         mcp_artifacts: ToolArtifactWriter,
         bot_connected: Callable[[str], bool],
+        connection_registry: GatewayConnectionRegistry | None = None,
+        presence_router: PresenceRouter | None = None,
     ) -> None:
         self._settings = settings
         self._database = database
@@ -99,6 +103,8 @@ class AutomationModule:
         self._mcp_manager = mcp_manager
         self._mcp_artifacts = mcp_artifacts
         self._bot_connected = bot_connected
+        self._connection_registry = connection_registry
+        self._presence_router = presence_router
 
     def build(self) -> AutomationBundle:
         repository = AutomationRepository(self._database)
@@ -111,6 +117,10 @@ class AutomationModule:
                 automation_run_id=context.automation_run_id,
                 ledger=self._ledger,
                 actions=self._agent_actions,
+                registry=self._connection_registry,
+                router=self._presence_router,
+                target_person_id=context.canonical_target_person_id,
+                target_space_id=context.canonical_target_space_id,
             )
 
         handlers = AutomationCapabilityHandlers(
@@ -160,6 +170,7 @@ class AutomationModule:
             repository=repository,
             time_service=self._time_service,
             gateway_factory=gateway_factory,
+            router=self._presence_router,
         )
         worker = AutomationWorker(
             settings=self._settings,

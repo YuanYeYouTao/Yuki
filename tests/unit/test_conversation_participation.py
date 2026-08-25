@@ -142,3 +142,56 @@ def test_same_plugin_and_expired_signals_cannot_bypass_caps() -> None:
         )
     )
     assert result.plugin_adjustment == 10
+
+
+def test_admission_metrics_use_author_kind_across_presences() -> None:
+    from qq_ai_bot.conversation.features import AdmissionFeatureBuilder
+    from qq_ai_bot.persistence.repository_records import EventRecord
+
+    now = datetime(2026, 8, 25, tzinfo=UTC)
+
+    def _row(
+        event_id: int,
+        *,
+        bot_user_id: str,
+        sender_user_id: str,
+        author_kind: str | None,
+        seconds: int,
+    ) -> EventRecord:
+        return EventRecord(
+            id=event_id,
+            bot_user_id=bot_user_id,
+            platform_message_id=f"m{event_id}",
+            scope_type=ScopeType.PRIVATE,
+            sender_user_id=sender_user_id,
+            direction="outbound" if author_kind == "yuki" else "inbound",
+            content="x",
+            visual_summary="",
+            segments=(),
+            occurred_at=now + timedelta(seconds=seconds),
+            private_peer_user_id="1001",
+            author_kind=author_kind,
+        )
+
+    rows = (
+        _row(1, bot_user_id="8000", sender_user_id="1001", author_kind="person", seconds=0),
+        _row(2, bot_user_id="8000", sender_user_id="8000", author_kind="yuki", seconds=1),
+        _row(3, bot_user_id="8001", sender_user_id="7777", author_kind="external_bot", seconds=2),
+        _row(4, bot_user_id="8001", sender_user_id="1001", author_kind="person", seconds=3),
+        _row(5, bot_user_id="8001", sender_user_id="8001", author_kind="yuki", seconds=4),
+    )
+    after_yuki = AdmissionFeatureBuilder._metrics(rows, "8001", now + timedelta(seconds=5))
+    assert after_yuki.bot_count == 2
+    assert after_yuki.last_was_bot is True
+    assert after_yuki.pending == 0
+    pending_human = AdmissionFeatureBuilder._metrics(
+        (
+            *rows,
+            _row(6, bot_user_id="8001", sender_user_id="1001", author_kind="person", seconds=5),
+        ),
+        "8001",
+        now + timedelta(seconds=6),
+    )
+    assert pending_human.last_was_bot is False
+    assert pending_human.pending == 1
+    assert pending_human.bot_count == 2

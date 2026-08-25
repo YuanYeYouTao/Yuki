@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from qq_ai_bot.admin.audit import AdminAuditService
@@ -55,9 +56,27 @@ from qq_ai_bot.memory.self_reflection.worker import SelfReflectionWorker
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import ResolvedSubject
 from qq_ai_bot.memory.targets import MemoryTargetResolver
+from qq_ai_bot.memory.validation import normalize_memory_text
 from qq_ai_bot.persistence.people_repository import PeopleRepository
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.services.admin.common import require_self_or_superuser
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryPreferenceTrigger:
+    """Already-authorized memory mutation correlation. Not an AdminActor.
+
+    The host or adapter derives ``actor_is_superuser`` from immutable
+    SUPERUSERS. Callers must not accept plugin-supplied authority.
+    """
+
+    user_id: str
+    bot_user_id: str
+    trigger_message_id: str
+    conversation_key: str
+    decision_actor_type: str = "admin"
+    decision_actor_id: str | None = None
+    actor_is_superuser: bool = False
 
 
 class MemoryAdminService:
@@ -118,7 +137,7 @@ class MemoryAdminService:
 
     async def set_explicit_preference(
         self,
-        actor: AdminActor,
+        trigger: MemoryPreferenceTrigger,
         target: str,
         key: str,
         value: str,
@@ -128,7 +147,7 @@ class MemoryAdminService:
         """Route deterministic preference writes through the mutation boundary."""
 
         mutation = await self._apply_mutation(
-            actor,
+            trigger,
             target=ResolvedSubject(MemoryScopeType.PERSON, target, None),
             operation=(
                 MemoryMutationOperation.CORRECT
@@ -152,14 +171,14 @@ class MemoryAdminService:
 
     async def delete_explicit_preference(
         self,
-        actor: AdminActor,
+        trigger: MemoryPreferenceTrigger,
         target: str,
         existing: MemoryFact,
     ) -> bool:
         """Route deterministic preference deletion through the mutation boundary."""
 
         mutation = await self._apply_mutation(
-            actor,
+            trigger,
             target=ResolvedSubject(MemoryScopeType.PERSON, target, None),
             operation=MemoryMutationOperation.INVALIDATE,
             fact_id=existing.id,
@@ -171,13 +190,13 @@ class MemoryAdminService:
 
     async def add_memory(
         self,
-        actor: AdminActor,
+        actor: AdminActor | MemoryPreferenceTrigger,
         target: str,
         content: str,
         *,
         evidence: MemoryEvidenceCreate | None = None,
     ) -> MemoryFact:
-        require_self_or_superuser(actor, target, self._settings)
+        self._require_authorized_person_target(actor, target)
         normalized = " ".join(content.split()).strip()
         if not normalized:
             raise ValueError("记忆内容不能为空")
@@ -601,12 +620,16 @@ class MemoryAdminService:
 
     async def correct_fact(
         self,
-        actor: AdminActor,
+        actor: AdminActor | MemoryPreferenceTrigger,
         fact_id: int,
         content: str,
     ) -> MemoryFact | None:
         fact = await self._fact_audit.get_fact(fact_id)
-        self._require_fact_mutation(actor, fact)
+        self._require_authorized_fact_mutation(actor, fact)
+        expected = normalize_memory_text(content, maximum=4000)
+        if not expected:
+            raise ValueError("memory correction cannot be empty")
+        result: MemoryFact | None = None
         if fact is not None:
             mutation = await self._apply_mutation(
                 actor,
@@ -617,7 +640,7 @@ class MemoryAdminService:
                 ),
                 operation=MemoryMutationOperation.CORRECT,
                 fact_id=fact_id,
-                new_content=content,
+                new_content=expected,
                 memory_key=fact.memory_key,
                 category=fact.category,
                 kind=fact.kind,
@@ -626,27 +649,43 @@ class MemoryAdminService:
                 importance=fact.importance,
             )
             if mutation is not None:
-                return await self._mutation_fact(mutation, required=False)
-        return await self._memories.correct_fact(
-            fact_id,
-            content=content,
-            actor_user_id=actor.user_id,
+                if mutation.ok and mutation.new_fact_id is not None:
+                    result = await self._memories.get_fact(mutation.new_fact_id)
+                else:
+                    return None
+            else:
+                result = await self._memories.correct_fact(
+                    fact_id,
+                    content=expected,
+                    actor_user_id=actor.user_id,
+                )
+        else:
+            result = await self._memories.correct_fact(
+                fact_id,
+                content=expected,
+                actor_user_id=actor.user_id,
+            )
+        return await self._visible_person_correction(
+            result,
+            expected_content=expected,
+            subject_user_id=fact.subject_user_id if fact is not None else None,
         )
 
     async def invalidate_fact(
         self,
-        actor: AdminActor,
+        actor: AdminActor | MemoryPreferenceTrigger,
         fact_id: int,
         reason: str | None = None,
     ) -> bool:
         fact = await self._fact_audit.get_fact(fact_id)
-        self._require_fact_mutation(actor, fact)
+        self._require_authorized_fact_mutation(actor, fact)
+        privileged = _authorized_is_superuser(actor)
         selected = (
             MemoryInvalidationReason.ADMINISTRATOR_INVALIDATED
-            if actor.is_superuser
+            if privileged
             else MemoryInvalidationReason.USER_RETRACTED
         )
-        if reason and actor.is_superuser:
+        if reason and privileged:
             selected = MemoryInvalidationReason(reason)
         if fact is not None:
             mutation = await self._apply_mutation(
@@ -751,11 +790,16 @@ class MemoryAdminService:
         health = await self._fact_audit.health()
         return bool(self._maintenance and self._maintenance.running), health
 
-    async def maintenance_run(self, actor: AdminActor) -> int:
-        self._require_superuser(actor)
+    async def run_maintenance_once(self) -> int:
+        """Run one maintenance pass after capability authorization already happened."""
+
         if self._maintenance is None:
             raise RuntimeError("memory maintenance worker is unavailable")
         return await self._maintenance.process_once()
+
+    async def maintenance_run(self, actor: AdminActor) -> int:
+        self._require_superuser(actor)
+        return await self.run_maintenance_once()
 
     async def self_reflection_run(self, actor: AdminActor) -> SelfReflectionManualRun:
         """Run one bounded manual SELF reflection cycle for a real superuser."""
@@ -854,7 +898,7 @@ class MemoryAdminService:
 
     async def _apply_mutation(
         self,
-        actor: AdminActor,
+        actor: AdminActor | MemoryPreferenceTrigger,
         *,
         target: ResolvedSubject,
         operation: MemoryMutationOperation,
@@ -922,12 +966,31 @@ class MemoryAdminService:
                 decision_actor_type=decision_actor_type,
                 decision_actor_id=actor.decision_actor_id or actor.user_id,
                 executed_by_bot_user_id=event.bot_user_id,
-                actor_is_superuser=(
-                    actor.is_superuser and actor.user_id in self._settings.superusers
-                ),
+                actor_is_superuser=_mutation_is_superuser(actor, self._settings),
             ),
             target=target,
         )
+
+    async def _visible_person_correction(
+        self,
+        fact: MemoryFact | None,
+        *,
+        expected_content: str,
+        subject_user_id: str | None,
+    ) -> MemoryFact | None:
+        if (
+            fact is None
+            or fact.content != expected_content
+            or fact.scope_type is not MemoryScopeType.PERSON
+            or fact.subject_user_id is None
+            or (subject_user_id is not None and fact.subject_user_id != subject_user_id)
+        ):
+            return None
+        projection = await self._memories.list_person(
+            fact.subject_user_id,
+            limit=self._settings.person_memory_max_entries,
+        )
+        return next((row for row in projection if row.id == fact.id), None)
 
     async def _mutation_fact(
         self,
@@ -940,6 +1003,34 @@ class MemoryAdminService:
         if row is None and required:
             raise ValueError(f"记忆变更未提交：{mutation.reason_code}")
         return row
+
+    def _require_authorized_person_target(
+        self,
+        actor: AdminActor | MemoryPreferenceTrigger,
+        target: str,
+    ) -> None:
+        if isinstance(actor, MemoryPreferenceTrigger):
+            if target == actor.user_id or actor.actor_is_superuser:
+                return
+            raise PermissionError("只有当前真实超级管理员可以执行该操作")
+        require_self_or_superuser(actor, target, self._settings)
+
+    def _require_authorized_fact_mutation(
+        self,
+        actor: AdminActor | MemoryPreferenceTrigger,
+        fact: MemoryFact | None,
+    ) -> None:
+        if isinstance(actor, MemoryPreferenceTrigger):
+            if fact is None:
+                return
+            if actor.actor_is_superuser:
+                return
+            if fact.subject_user_id != actor.user_id:
+                raise PermissionError("只能查看与本人有关的人物记忆")
+            if fact.scope_type is MemoryScopeType.GROUP:
+                raise PermissionError("普通用户不能修改群共同事实")
+            return
+        self._require_fact_mutation(actor, fact)
 
     def _require_fact_access(self, actor: AdminActor, fact: MemoryFact | None) -> None:
         if fact is None:
@@ -957,3 +1048,15 @@ class MemoryAdminService:
     def _require_superuser(self, actor: AdminActor) -> None:
         if not actor.is_superuser or actor.user_id not in self._settings.superusers:
             raise PermissionError("只有超级管理员可以执行此记忆管理操作")
+
+
+def _authorized_is_superuser(actor: AdminActor | MemoryPreferenceTrigger) -> bool:
+    if isinstance(actor, MemoryPreferenceTrigger):
+        return actor.actor_is_superuser
+    return actor.is_superuser
+
+
+def _mutation_is_superuser(actor: AdminActor | MemoryPreferenceTrigger, settings: Settings) -> bool:
+    if isinstance(actor, MemoryPreferenceTrigger):
+        return actor.actor_is_superuser
+    return actor.is_superuser and actor.user_id in settings.superusers

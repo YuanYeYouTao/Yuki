@@ -202,7 +202,7 @@ def restart_config_specs() -> tuple[ConfigSpec, ...]:
         _spec(
             "vision.media_download_timeout_seconds",
             "图片下载超时",
-            "重启后下载 QQ 图片或调用 NapCat get_image 等待资源时允许的最长秒数。",
+            "重启后下载 QQ 图片或调用 OneBot get_image 等待资源时允许的最长秒数。",
             aliases=("媒体下载超时", "QQ图片下载时间"),
             value_type="number",
             minimum=1,

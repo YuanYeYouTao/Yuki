@@ -115,7 +115,6 @@ class AdminModule:
     def build(self) -> AdminBundle:
         audit = AdminAuditService(self._database)
         relationships = RelationshipAdminService(
-            settings=self._settings,
             relationships=self._relationships,
             audit=audit,
             runtime_config=self._runtime_config,
@@ -142,13 +141,11 @@ class AdminModule:
             memory_mutations=memories,
         )
         groups = GroupAdminService(
-            settings=self._settings,
             groups=self._groups,
             runtime_config=self._runtime_config,
             audit=audit,
         )
         private_access = PrivateAccessAdminService(
-            settings=self._settings,
             private_users=self._private_users,
             audit=audit,
             runtime_config=self._runtime_config,
@@ -164,6 +161,7 @@ class AdminModule:
         )
         actions = AdminActionService(
             settings=self._settings,
+            database=self._database,
             relationships=relationships,
             memories=memories,
             preferences=preferences,

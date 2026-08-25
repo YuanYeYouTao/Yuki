@@ -1,5 +1,11 @@
 # Yuki-QQbot
 
+> **3.8.0 待发布：**永久 Yuki、canonical identity、多 Presence、transport-neutral 控制面以及
+> NapCat/SnowLuma 双正式 Provider 已进入当前代码。Alembic head 为 `0048`，Plugin API 仍为
+> `2.0`。3.7.1 升级必须停机 backfill 并执行 identity cutover，不能直接 `pull && up`；fresh
+> install 的首个 Presence bootstrap 和真实双 Provider smoke 仍是发布阻断项。见
+> [3.8.0 发布说明](releases/v3.8.0.md)与 [升级指南](upgrade-3.8.0.md)。
+
 > **3.7.1 正式版：**烧钱扫描剩余缺陷热修。Rollup 水位改用 Prompt 尺子，观察轮次不再入队
 > Memory V2，Turn Vision 结果可复用给表情分类缓存，自主门槛默认 80，并真正执行
 > `CONVERSATION_ROLLUP_LLM_ORIGINS`。Alembic head 仍为 `0042`，Plugin API 仍为 `2.0`。
@@ -1307,6 +1313,7 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `CONVERSATION_ROLLUP_TRIGGER_CHARACTERS` / `STOP_CHARACTERS` | `81920` / `0` |
 | `CONVERSATION_ROLLUP_FOREGROUND_MAX_BATCHES` | `5` |
 | `CONVERSATION_ROLLUP_WORKER_MAX_BATCHES_PER_CLAIM` | `5` |
+| `CONVERSATION_ROLLUP_SUMMARY_MAX_CHARACTERS` | `2400` |
 | `CONVERSATION_EFFECT_GATE_TIMEOUT_SECONDS` | `30` |
 | `TOOLING_SELECTED_TOOL_LIMIT` | `32` |
 | `TOOLING_SCHEMA_TOKEN_BUDGET` | `12000` |

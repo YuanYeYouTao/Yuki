@@ -651,7 +651,7 @@ async def test_dream_health_counts_pending_only_on_live_runs(database: Database)
 @pytest.mark.asyncio
 async def test_dream_merge_is_atomic_audited_and_reversible(database: Database) -> None:
     mutations, facts, ledger, dreams = _services(database)
-    await PeopleRepository(database).observe(user_id="8000", nickname="Yuki")
+    await PeopleRepository(database).observe(user_id="8000", nickname="Yuki", is_bot=True)
     first = await _fact_with_evidence(
         facts,
         ledger,
@@ -800,7 +800,7 @@ async def test_episode_recompose_is_atomic_one_to_many_and_reversible(
     database: Database,
 ) -> None:
     mutations, facts, ledger, dreams = _services(database)
-    await PeopleRepository(database).observe(user_id="8000", nickname="Yuki")
+    await PeopleRepository(database).observe(user_id="8000", nickname="Yuki", is_bot=True)
     source_content = "上午处理点单失败；晚上和群友讨论音乐。" * 60
     first_output = "一次点单工具链失败后，我确认需要减少无意义的中间步骤。" * 12
     second_output = "晚上和群友集中聊了音乐，留下了几次有趣的推荐和争论。" * 12
@@ -958,7 +958,7 @@ async def test_dream_never_modifies_an_explicit_anchor(database: Database) -> No
 @pytest.mark.asyncio
 async def test_dream_resolution_records_conflict_provenance(database: Database) -> None:
     mutations, facts, ledger, dreams = _services(database)
-    await PeopleRepository(database).observe(user_id="8000", nickname="Yuki")
+    await PeopleRepository(database).observe(user_id="8000", nickname="Yuki", is_bot=True)
     preferred = await _fact_with_evidence(
         facts,
         ledger,

@@ -8,13 +8,16 @@ import time
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.conversation.rollup.repository import ConversationScopeRepository
-from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
+from qq_ai_bot.conversation.scope import ConversationTurnSnapshot, runtime_conversation_key
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
+from qq_ai_bot.identity.routing import PresenceRouter, RouteSendError
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.plugin_host.notification_repository import (
     BackgroundTurnJobRecord,
     PluginNotificationRepository,
+    queued_work_error_category,
 )
+from qq_ai_bot.plugin_host.ownership import PluginOwnershipError
 from qq_ai_bot.runtime.observability import (
     RuntimeTurnCorrelation,
     TurnObservationRecorder,
@@ -34,6 +37,19 @@ from qq_ai_bot.services.turn_coordinator import (
 logger = logging.getLogger(__name__)
 
 
+def _authoritative_plugin_observation_refs(
+    job: BackgroundTurnJobRecord,
+) -> tuple[str | None, str | None, str | None]:
+    """Project persisted job canonicals. Never derive from raw QQ/group keys."""
+
+    conversation_id = job.canonical_conversation_id or None
+    if job.target_type == "private":
+        return conversation_id, job.canonical_target_person_id or None, None
+    if job.target_type == "group":
+        return conversation_id, None, job.canonical_target_space_id or None
+    return conversation_id, None, None
+
+
 class PluginBackgroundTurnWorker:
     """Generate tool-free Yuki replies in the target's normal conversation."""
 
@@ -47,6 +63,7 @@ class PluginBackgroundTurnWorker:
         turns: ConversationTurnCoordinator,
         conversation_scopes: ConversationScopeRepository,
         turn_observations: TurnObservationRecorder | None = None,
+        router: PresenceRouter | None = None,
     ) -> None:
         self._repository = repository
         self._ledger = ledger
@@ -55,6 +72,7 @@ class PluginBackgroundTurnWorker:
         self._turns = turns
         self._conversation_scopes = conversation_scopes
         self._turn_observations = turn_observations
+        self._router = router
         self._stop = asyncio.Event()
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -103,9 +121,19 @@ class PluginBackgroundTurnWorker:
             if job.target_type == "group"
             else ConversationScope.private(job.bot_user_id, job.target_id).key
         )
+        resolved_key = [conversation_key]
+        canonical_conversation_id: str | None = None
+        canonical_person_id: str | None = None
+        canonical_space_id: str | None = None
         with bind_runtime_turn(correlation):
             try:
-                await self._execute_admitted(job)
+                if await self._repository.runtime_is_complete_v2():
+                    (
+                        canonical_conversation_id,
+                        canonical_person_id,
+                        canonical_space_id,
+                    ) = _authoritative_plugin_observation_refs(job)
+                await self._execute_admitted(job, resolved_key)
             except BaseException as exc:
                 error_category = type(exc).__name__
                 raise
@@ -114,16 +142,26 @@ class PluginBackgroundTurnWorker:
                     observation = build_turn_observation(
                         correlation,
                         scope_type=job.target_type,
-                        conversation_key=conversation_key,
+                        conversation_key=resolved_key[0],
                         admission_outcome="plugin_background",
                         handled=error_category is None,
                         sent_messages=0,
                         error_category=error_category,
                         total_latency_ms=int((time.perf_counter() - started) * 1000),
+                        canonical_conversation_id=canonical_conversation_id,
+                        canonical_person_id=canonical_person_id,
+                        canonical_space_id=canonical_space_id,
                     )
                     await record_observation_safely(self._turn_observations, observation)
 
-    async def _execute_admitted(self, job: BackgroundTurnJobRecord) -> None:
+    async def _execute_admitted(
+        self,
+        job: BackgroundTurnJobRecord,
+        resolved_key: list[str] | None = None,
+    ) -> None:
+        if await self._repository.runtime_is_complete_v2():
+            await self._execute_v2_admitted(job, resolved_key)
+            return
         creator = await self._repository.grant_creator(
             plugin_id=job.plugin_id,
             target_type=job.target_type,
@@ -149,7 +187,19 @@ class PluginBackgroundTurnWorker:
             if event.scope_type is ScopeType.GROUP
             else ConversationScope.private(event.bot_user_id, job.target_id)
         )
-        conversation_key = scope.key
+        scope_state = await self._conversation_scopes.get(scope)
+        if scope_state is None:
+            await self._repository.fail_turn(
+                job.id,
+                error_category="conversation_scope_missing",
+            )
+            return
+        conversation_key = runtime_conversation_key(
+            identity=scope,
+            primary_alias=scope_state.runtime_scope_key,
+        )
+        if resolved_key is not None:
+            resolved_key[0] = conversation_key
         token = await self._turns.begin_background(conversation_key)
         if token is None:
             await self._repository.defer_turn(
@@ -172,19 +222,13 @@ class PluginBackgroundTurnWorker:
                 runtime.conversation_policy().interrupt_autonomous_on_new_message
             ),
         )
-        scope_state = await self._conversation_scopes.get(scope)
-        if scope_state is None:
-            await self._repository.fail_turn(
-                job.id,
-                error_category="conversation_scope_missing",
-            )
-            return
         turn_snapshot = ConversationTurnSnapshot(
             scope_id=scope_state.id,
-            scope_key=scope.key,
+            scope_key=conversation_key,
             generation=scope_state.generation,
             trigger_event_id=event.id,
             coordinator_version=token.version,
+            transport_scope_key=(scope.key if scope.key != conversation_key else None),
         )
         try:
             async with self._turns.track(token, "generation"):
@@ -195,6 +239,158 @@ class PluginBackgroundTurnWorker:
                     agent_intent=job.agent_intent,
                     turn_token=token,
                     turn_snapshot=turn_snapshot,
+                )
+            await self._repository.finish_turn(
+                job.id,
+                text=result.text,
+                tool_calls_used=result.tool_calls_used,
+                model_requests=result.model_requests,
+            )
+            logger.info(
+                "plugin_background_turn_completed plugin_id=%s event_id=%d "
+                "reply=%s model_requests=%d",
+                job.plugin_id,
+                event.id,
+                bool(result.text),
+                result.model_requests,
+            )
+        except (
+            TurnInterruptedError,
+            TurnSupersededError,
+        ):
+            if job.attempts >= 2:
+                await self._repository.abandon_turn(
+                    job.id,
+                    error_category="interrupted_twice",
+                )
+            else:
+                await self._repository.defer_turn(
+                    job.id,
+                    error_category="interrupted_by_user",
+                    delay_seconds=5,
+                )
+        except asyncio.CancelledError:
+            await self._repository.defer_turn(
+                job.id,
+                error_category="worker_stopped",
+                delay_seconds=5,
+                preserve_attempt=True,
+            )
+            raise
+        except Exception as exc:
+            logger.exception(
+                "plugin_background_turn_failed plugin_id=%s event_id=%d error_category=%s",
+                job.plugin_id,
+                job.source_event_id,
+                type(exc).__name__,
+            )
+            await self._repository.fail_turn(
+                job.id,
+                error_category=type(exc).__name__,
+            )
+
+    async def _execute_v2_admitted(
+        self,
+        job: BackgroundTurnJobRecord,
+        resolved_key: list[str] | None = None,
+    ) -> None:
+        """Execute from persisted Conversation + current Presence. No raw QQ fallback."""
+
+        try:
+            context = await self._repository.load_v2_background_context(job)
+        except PluginOwnershipError as exc:
+            await self._repository.fail_turn(
+                job.id,
+                error_category=queued_work_error_category(exc, job),
+            )
+            return
+        event = await self._ledger.get_event(job.source_event_id)
+        if (
+            event is None
+            or event.event_kind != "external_event"
+            or event.source_plugin_id != job.plugin_id
+            or event.canonical_conversation_id != context.conversation_id
+        ):
+            await self._repository.fail_turn(job.id, error_category="source_event_invalid")
+            return
+        if self._router is None:
+            await self._repository.fail_turn(job.id, error_category="none")
+            return
+        try:
+            if context.person_id and context.space_id:
+                raise RouteSendError("none")
+            if context.person_id:
+                resolved = await self._router.resolve_send_for_person(context.person_id)
+            elif context.space_id:
+                resolved = await self._router.resolve_send_for_space(context.space_id)
+            else:
+                raise RouteSendError("none")
+        except RouteSendError as exc:
+            await self._repository.fail_turn(job.id, error_category=exc.category)
+            return
+        if job.target_type == "group":
+            transport = ConversationScope.group(
+                resolved.sender_account_id, resolved.external_target_id
+            )
+        else:
+            transport = ConversationScope.private(
+                resolved.sender_account_id, resolved.external_target_id
+            )
+        try:
+            await self._repository.ensure_resolved_transport_alias(
+                conversation_id=context.conversation_id,
+                transport_key=transport.key,
+            )
+        except PluginOwnershipError as exc:
+            await self._repository.fail_turn(
+                job.id,
+                error_category=queued_work_error_category(exc, job),
+            )
+            return
+        conversation_key = context.primary_alias
+        if resolved_key is not None:
+            resolved_key[0] = conversation_key
+        token = await self._turns.begin_background(conversation_key)
+        if token is None:
+            await self._repository.defer_turn(
+                job.id,
+                error_category="conversation_busy",
+                delay_seconds=3,
+                preserve_attempt=True,
+            )
+            return
+        runtime = await self._runtime_config.snapshot(
+            user_id=context.creator_person_id,
+            group_id=context.space_id,
+        )
+        self._chat.configure_runtime_controls(runtime)
+        self._turns.configure_policy(
+            cancel_replies_on_new_message=runtime.reply.cancel_on_new_message,
+            interrupt_autonomous_on_new_message=(
+                runtime.conversation_policy().interrupt_autonomous_on_new_message
+            ),
+        )
+        turn_snapshot = ConversationTurnSnapshot(
+            scope_id=context.scope_id,
+            scope_key=conversation_key,
+            generation=context.generation,
+            trigger_event_id=event.id,
+            coordinator_version=token.version,
+            transport_scope_key=transport.key,
+        )
+        try:
+            async with self._turns.track(token, "generation"):
+                result = await self._chat.generate_external_reply(
+                    event=event,
+                    authorization_user_id=context.creator_person_id,
+                    runtime=runtime,
+                    agent_intent=job.agent_intent,
+                    turn_token=token,
+                    turn_snapshot=turn_snapshot,
+                    person_id=context.person_id,
+                    space_id=context.space_id,
+                    presence_id=resolved.presence_id,
+                    conversation_id=context.conversation_id,
                 )
             await self._repository.finish_turn(
                 job.id,

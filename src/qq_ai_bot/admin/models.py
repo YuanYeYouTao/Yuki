@@ -132,6 +132,18 @@ class AdminActor:
 
 
 @dataclass(frozen=True, slots=True)
+class ControlAuditRef:
+    """Transport-neutral audit correlation already resolved at the adapter."""
+
+    user_id: str
+    trigger_message_id: str = ""
+    conversation_key: str = ""
+    bot_user_id: str = ""
+    decision_actor_type: str = "command"
+    decision_actor_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ContextRuntimeConfig:
     local_event_limit: int
 

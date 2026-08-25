@@ -21,7 +21,7 @@ async def test_proactive_emoji_send_uses_onebot_emoji_sub_type() -> None:
         ledger=cast(EventLedgerRepository, AsyncMock()),
         actions=cast(AgentActionRepository, AsyncMock()),
     )
-    invoke = AsyncMock(return_value={"message_id": 30001})
+    invoke = AsyncMock(return_value=({"message_id": 30001}, object()))
     record = AsyncMock()
     gateway._invoke = invoke  # type: ignore[method-assign]
     gateway._record_media_message = record  # type: ignore[method-assign]

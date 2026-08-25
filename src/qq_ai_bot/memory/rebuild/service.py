@@ -8,6 +8,8 @@ import json
 from dataclasses import replace
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from qq_ai_bot.config import Settings
 from qq_ai_bot.memory.claim_processor import MemoryClaimProcessor, MemoryProcessingContext
 from qq_ai_bot.memory.eligibility import MemoryEventEligibilityPolicy
@@ -46,6 +48,97 @@ def canonical_json(value: Any) -> str:
     if hasattr(value, "model_dump"):
         value = value.model_dump(mode="json")
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+async def plan_rebuild_core(
+    *,
+    settings: Settings,
+    repository: MemoryRebuildRepository,
+    ledger: EventLedgerRepository,
+    selection: MemoryRebuildSelection,
+    actor_user_id: str,
+    model_name: str | None = None,
+    session: AsyncSession | None = None,
+) -> MemoryRebuildRun:
+    """Plan a rebuild after capability authorization already happened."""
+
+    if not settings.memory_rebuild_enabled:
+        raise RuntimeError("MEMORY_REBUILD_ENABLED is false")
+    configured_max = settings.memory_rebuild_max_events_per_run
+    if configured_max is not None and (
+        selection.maximum_events is None or selection.maximum_events > configured_max
+    ):
+        raise ValueError(f"selection.maximum_events must be set and <= {configured_max}")
+    snapshot = await ledger.maximum_event_id(session=session)
+    statistics = await ledger.count_rebuild_candidates(
+        selection,
+        snapshot_max_event_id=snapshot,
+        session=session,
+    )
+    selection_json = canonical_json(selection)
+    return await repository.create_run(
+        selection=selection,
+        selection_json=selection_json,
+        selection_hash=hashlib.sha256(selection_json.encode()).hexdigest(),
+        snapshot_max_event_id=snapshot,
+        fingerprint=extraction_fingerprint(settings, model_name=model_name),
+        statistics=statistics,
+        actor_user_id=actor_user_id,
+        session=session,
+    )
+
+
+async def start_rebuild_core(
+    repository: MemoryRebuildRepository,
+    run_id: str,
+    *,
+    settings: Settings,
+    session: AsyncSession | None = None,
+) -> MemoryRebuildRun:
+    if not settings.memory_rebuild_enabled:
+        raise RuntimeError("MEMORY_REBUILD_ENABLED is false")
+    if await repository.executing_count(session=session):
+        raise RuntimeError("another memory rebuild run is executing")
+    changed = await repository.transition(
+        run_id,
+        expected={MemoryRebuildRunStatus.PLANNED},
+        status=MemoryRebuildRunStatus.EXTRACTING,
+        session=session,
+    )
+    if not changed:
+        raise ValueError("run is not in planned state")
+    run = await repository.get_run(run_id, session=session)
+    if run is None:
+        raise ValueError("memory rebuild run not found")
+    return run
+
+
+async def cancel_rebuild_core(
+    repository: MemoryRebuildRepository,
+    run_id: str,
+    *,
+    session: AsyncSession | None = None,
+) -> MemoryRebuildRun:
+    run = await repository.get_run(run_id, session=session)
+    if run is None:
+        raise ValueError("memory rebuild run not found")
+    if run.status in {
+        MemoryRebuildRunStatus.COMPLETED,
+        MemoryRebuildRunStatus.CANCELLED,
+    }:
+        return run
+    changed = await repository.transition(
+        run_id,
+        expected={run.status},
+        status=MemoryRebuildRunStatus.CANCELLED,
+        session=session,
+    )
+    if not changed:
+        raise RuntimeError("memory rebuild state changed concurrently")
+    current = await repository.get_run(run_id, session=session)
+    if current is None:
+        raise ValueError("memory rebuild run not found")
+    return current
 
 
 def extraction_fingerprint(settings: Settings, *, model_name: str | None = None) -> str:
@@ -99,9 +192,15 @@ class MemoryRebuildService:
             raise RuntimeError("MEMORY_REBUILD_ENABLED is false")
 
     async def plan(
-        self, selection: MemoryRebuildSelection, *, actor_user_id: str
+        self,
+        selection: MemoryRebuildSelection,
+        *,
+        actor_user_id: str,
+        authorize: bool = True,
+        session: AsyncSession | None = None,
     ) -> MemoryRebuildRun:
-        self._authorize(actor_user_id)
+        if authorize:
+            self._authorize(actor_user_id)
         self._available()
         configured_max = self.settings.memory_rebuild_max_events_per_run
         if configured_max is not None and (
@@ -128,6 +227,7 @@ class MemoryRebuildService:
             ),
             statistics=statistics,
             actor_user_id=actor_user_id,
+            session=session,
         )
 
     async def list(self, *, actor_user_id: str) -> tuple[MemoryRebuildRun, ...]:
@@ -144,20 +244,29 @@ class MemoryRebuildService:
             "pending_commit": await self.repository.remaining_commit_count(run_id),
         }
 
-    async def start(self, run_id: str, *, actor_user_id: str) -> MemoryRebuildRun:
-        self._authorize(actor_user_id)
+    async def start(
+        self,
+        run_id: str,
+        *,
+        actor_user_id: str,
+        authorize: bool = True,
+        session: AsyncSession | None = None,
+    ) -> MemoryRebuildRun:
+        if authorize:
+            self._authorize(actor_user_id)
         self._available()
-        if await self.repository.executing_count():
+        if await self.repository.executing_count(session=session):
             raise RuntimeError("another memory rebuild run is executing")
         changed = await self.repository.transition(
             run_id,
             expected={MemoryRebuildRunStatus.PLANNED},
             status=MemoryRebuildRunStatus.EXTRACTING,
+            session=session,
         )
         if not changed:
             raise ValueError("run is not in planned state")
         self.metrics.increment("rebuild_runs_started")
-        return await self._require(run_id)
+        return await self._require(run_id, session=session)
 
     async def pause(self, run_id: str, *, actor_user_id: str) -> MemoryRebuildRun:
         self._authorize(actor_user_id)
@@ -196,9 +305,17 @@ class MemoryRebuildService:
             raise RuntimeError("another memory rebuild run is executing")
         return await self._require(run_id)
 
-    async def cancel(self, run_id: str, *, actor_user_id: str) -> MemoryRebuildRun:
-        self._authorize(actor_user_id)
-        run = await self._require(run_id)
+    async def cancel(
+        self,
+        run_id: str,
+        *,
+        actor_user_id: str,
+        authorize: bool = True,
+        session: AsyncSession | None = None,
+    ) -> MemoryRebuildRun:
+        if authorize:
+            self._authorize(actor_user_id)
+        run = await self._require(run_id, session=session)
         if run.status in {
             MemoryRebuildRunStatus.COMPLETED,
             MemoryRebuildRunStatus.CANCELLED,
@@ -208,6 +325,7 @@ class MemoryRebuildService:
             run_id,
             expected={run.status},
             status=MemoryRebuildRunStatus.CANCELLED,
+            session=session,
         )
         if not changed:
             raise RuntimeError("memory rebuild state changed concurrently")
@@ -215,7 +333,7 @@ class MemoryRebuildService:
         for task in tuple(self._in_flight_tasks.get(run_id, ())):
             task.cancel()
         self.metrics.increment("rebuild_runs_cancelled")
-        return await self._require(run_id)
+        return await self._require(run_id, session=session)
 
     async def review(
         self,
@@ -691,8 +809,10 @@ class MemoryRebuildService:
             return replace(event, mentioned_user_ids=(), reply_sender_user_id=None)
         return await self.ledger.hydrate_rebuild_subjects(event)
 
-    async def _require(self, run_id: str) -> MemoryRebuildRun:
-        run = await self.repository.get_run(run_id)
+    async def _require(
+        self, run_id: str, *, session: AsyncSession | None = None
+    ) -> MemoryRebuildRun:
+        run = await self.repository.get_run(run_id, session=session)
         if run is None:
             raise ValueError("memory rebuild run not found")
         return run

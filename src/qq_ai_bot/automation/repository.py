@@ -9,6 +9,7 @@ from typing import Any, cast
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.automation.authority import DelegatedAuthority
 from qq_ai_bot.automation.models import (
@@ -18,15 +19,26 @@ from qq_ai_bot.automation.models import (
     AutomationStatus,
     RunStatus,
 )
-from qq_ai_bot.automation.validator import ValidatedAutomation
+from qq_ai_bot.automation.validator import ValidatedAutomation, collect_send_targets
+from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
+from qq_ai_bot.identity.shadows import (
+    active_person_id_for,
+    active_space_id_for,
+    fill_person_space_shadows,
+    fill_presence_shadow,
+    person_id_for,
+    presence_id_for,
+    space_id_for,
+)
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     AutomationModel,
     AutomationRunModel,
     AutomationStepRunModel,
     AutomationVersionModel,
-    PersonModel,
 )
+from qq_ai_bot.persistence.repository_helpers import _ensure_person
+from qq_ai_bot.persistence.unit_of_work import optional_session
 
 
 class AutomationRepository:
@@ -43,23 +55,24 @@ class AutomationRepository:
         max_runs: int | None,
         misfire_grace_seconds: int,
         now: datetime,
+        session: AsyncSession | None = None,
     ) -> AutomationRecord:
         script_json = validated.script.model_dump_json(exclude_none=True)
         schedule_json = validated.script.schedule.model_dump_json(exclude_none=True)
         authority_json = authority.model_dump_json()
         timestamp = _aware_utc(now)
-        async with self._database.sessions() as session, session.begin():
-            person = await session.get(PersonModel, authority.creator_user_id)
-            if person is None:
-                person = PersonModel(
-                    user_id=authority.creator_user_id,
-                    nickname="",
-                    enabled=True,
-                    is_bot=False,
-                    first_seen_at=timestamp,
-                    last_seen_at=timestamp,
+        async with optional_session(self._database, session, write=True) as active:
+            if await identity_runtime_is_complete_v2(active):
+                creator = await active_person_id_for(active, authority.creator_user_id)
+                if creator is None:
+                    raise ValueError("创建者没有对应的永久主体")
+            else:
+                await _ensure_person(
+                    active,
+                    authority.creator_user_id,
+                    now=timestamp,
+                    canonical_role="human",
                 )
-                session.add(person)
             row = AutomationModel(
                 creator_user_id=authority.creator_user_id,
                 bot_user_id=authority.bot_user_id,
@@ -85,9 +98,41 @@ class AutomationRepository:
                 created_at=timestamp,
                 updated_at=timestamp,
             )
-            session.add(row)
-            await session.flush()
-            session.add(
+            active.add(row)
+            await active.flush()
+            if await identity_runtime_is_complete_v2(active):
+                creator_person = await active_person_id_for(active, authority.creator_user_id)
+                if creator_person is None:
+                    raise ValueError("创建者没有对应的永久主体")
+            else:
+                creator_person = await person_id_for(active, authority.creator_user_id)
+            target_person, target_space = await _bind_canonical_send_targets(
+                active,
+                validated,
+                authority,
+                now=timestamp,
+            )
+            presence = await presence_id_for(active, authority.bot_user_id)
+            row.canonical_creator_person_id = creator_person
+            row.canonical_target_person_id = target_person
+            row.canonical_target_space_id = target_space
+            row.canonical_presence_id = presence
+            await fill_person_space_shadows(
+                active,
+                row,
+                person_attr="canonical_creator_person_id",
+                space_attr=None,
+                user_id=authority.creator_user_id,
+                group_id=None,
+            )
+            await fill_presence_shadow(
+                active,
+                row,
+                attr="canonical_presence_id",
+                bot_user_id=authority.bot_user_id,
+            )
+            await active.flush()
+            active.add(
                 AutomationVersionModel(
                     automation_id=row.id,
                     version=1,
@@ -97,12 +142,14 @@ class AutomationRepository:
                     created_at=timestamp,
                 )
             )
-            await session.flush()
+            await active.flush()
             return _automation_record(row)
 
-    async def get(self, automation_id: int) -> AutomationRecord | None:
-        async with self._database.sessions() as session:
-            row = await session.get(AutomationModel, automation_id)
+    async def get(
+        self, automation_id: int, *, session: AsyncSession | None = None
+    ) -> AutomationRecord | None:
+        async with optional_session(self._database, session, write=False) as active:
+            row = await active.get(AutomationModel, automation_id)
         return _automation_record(row) if row is not None else None
 
     async def get_by_creation_key(
@@ -212,6 +259,7 @@ class AutomationRepository:
         creator_user_id: str,
         status: AutomationStatus,
         now: datetime,
+        session: AsyncSession | None = None,
     ) -> bool:
         values: dict[str, Any] = {
             "status": status.value,
@@ -221,8 +269,8 @@ class AutomationRepository:
         }
         if status in {AutomationStatus.CANCELLED, AutomationStatus.COMPLETED}:
             values["next_run_at"] = None
-        async with self._database.sessions() as session, session.begin():
-            result = await session.execute(
+        async with optional_session(self._database, session, write=True) as active:
+            result = await active.execute(
                 update(AutomationModel)
                 .where(
                     AutomationModel.id == automation_id,
@@ -239,9 +287,10 @@ class AutomationRepository:
         creator_user_id: str,
         next_run_at: datetime,
         now: datetime,
+        session: AsyncSession | None = None,
     ) -> bool:
-        async with self._database.sessions() as session, session.begin():
-            result = await session.execute(
+        async with optional_session(self._database, session, write=True) as active:
+            result = await active.execute(
                 update(AutomationModel)
                 .where(
                     AutomationModel.id == automation_id,
@@ -267,10 +316,11 @@ class AutomationRepository:
         *,
         creator_user_id: str,
         now: datetime,
+        session: AsyncSession | None = None,
     ) -> bool:
         timestamp = _aware_utc(now)
-        async with self._database.sessions() as session, session.begin():
-            result = await session.execute(
+        async with optional_session(self._database, session, write=True) as active:
+            result = await active.execute(
                 update(AutomationModel)
                 .where(
                     AutomationModel.id == automation_id,
@@ -297,10 +347,11 @@ class AutomationRepository:
         validated: ValidatedAutomation,
         authority: DelegatedAuthority,
         now: datetime,
+        session: AsyncSession | None = None,
     ) -> AutomationRecord | None:
         timestamp = _aware_utc(now)
-        async with self._database.sessions() as session, session.begin():
-            row = await session.scalar(
+        async with optional_session(self._database, session, write=True) as active:
+            row = await active.scalar(
                 select(AutomationModel).where(
                     AutomationModel.id == automation_id,
                     AutomationModel.creator_user_id == creator_user_id,
@@ -312,7 +363,7 @@ class AutomationRepository:
             }:
                 return None
             latest_version = int(
-                await session.scalar(
+                await active.scalar(
                     select(func.max(AutomationVersionModel.version)).where(
                         AutomationVersionModel.automation_id == automation_id
                     )
@@ -333,7 +384,15 @@ class AutomationRepository:
             row.claimed_by = None
             row.claimed_until = None
             row.updated_at = timestamp
-            session.add(
+            target_person, target_space = await _bind_canonical_send_targets(
+                active,
+                validated,
+                authority,
+                now=timestamp,
+            )
+            row.canonical_target_person_id = target_person
+            row.canonical_target_space_id = target_space
+            active.add(
                 AutomationVersionModel(
                     automation_id=automation_id,
                     version=latest_version + 1,
@@ -343,7 +402,7 @@ class AutomationRepository:
                     created_at=timestamp,
                 )
             )
-            await session.flush()
+            await active.flush()
             return _automation_record(row)
 
     async def claim_due(
@@ -597,6 +656,70 @@ class AutomationRepository:
         return int(cast(CursorResult[Any], result).rowcount or 0)
 
 
+async def _bind_canonical_send_targets(
+    session: AsyncSession,
+    validated: ValidatedAutomation,
+    authority: DelegatedAuthority,
+    *,
+    now: datetime,
+) -> tuple[str | None, str | None]:
+    collected = collect_send_targets(
+        validated.script,
+        creator_user_id=authority.creator_user_id,
+        current_group_id=authority.current_group_id,
+    )
+    v2 = await identity_runtime_is_complete_v2(session)
+    if collected.kind is None:
+        return await _fallback_canonical_send_targets(session, authority, v2=v2)
+    if collected.kind == "person":
+        owners: set[str] = set()
+        for raw in collected.raw_ids:
+            if v2:
+                found = await active_person_id_for(session, raw)
+            else:
+                await _ensure_person(session, raw, now=now, canonical_role="human")
+                found = await person_id_for(session, raw)
+            if found is None:
+                raise ValueError("发送目标没有对应的永久主体")
+            owners.add(found)
+        if len(owners) != 1:
+            raise ValueError("一条自动化只能绑定一个永久发送目标")
+        return owners.pop(), None
+    owners = set()
+    for raw in collected.raw_ids:
+        found = await active_space_id_for(session, raw) if v2 else await space_id_for(session, raw)
+        if found is None:
+            raise ValueError("发送目标没有对应的永久空间")
+        owners.add(found)
+    if len(owners) != 1:
+        raise ValueError("一条自动化只能绑定一个永久发送目标")
+    return None, owners.pop()
+
+
+async def _fallback_canonical_send_targets(
+    session: AsyncSession,
+    authority: DelegatedAuthority,
+    *,
+    v2: bool,
+) -> tuple[str | None, str | None]:
+    if v2:
+        if authority.current_group_id:
+            target_space = await active_space_id_for(session, authority.current_group_id)
+            if target_space is None:
+                raise ValueError("发送目标没有对应的永久空间")
+            return None, target_space
+        target_person = await active_person_id_for(session, authority.creator_user_id)
+        if target_person is None:
+            raise ValueError("发送目标没有对应的永久主体")
+        return target_person, None
+    target_person = await person_id_for(
+        session,
+        None if authority.current_group_id else authority.creator_user_id,
+    )
+    target_space = await space_id_for(session, authority.current_group_id)
+    return target_person, target_space
+
+
 def _automation_record(row: AutomationModel) -> AutomationRecord:
     return AutomationRecord(
         id=row.id,
@@ -618,6 +741,10 @@ def _automation_record(row: AutomationModel) -> AutomationRecord:
         misfire_grace_seconds=row.misfire_grace_seconds,
         created_at=_aware_utc(row.created_at),
         updated_at=_aware_utc(row.updated_at),
+        canonical_creator_person_id=row.canonical_creator_person_id,
+        canonical_target_person_id=row.canonical_target_person_id,
+        canonical_target_space_id=row.canonical_target_space_id,
+        canonical_presence_id=row.canonical_presence_id,
     )
 
 

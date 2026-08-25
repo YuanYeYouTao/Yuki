@@ -82,10 +82,27 @@ def test_fresh_and_upgrade_matrix_have_equivalent_head_schema(tmp_path: Path) ->
     assert "conversation_scopes" in expected_names
     assert "conversation_rollups" in expected_names
     assert "conversation_rollup_jobs" in expected_names
+    assert "persons" in expected_names
+    assert "identity_bindings" in expected_names
+    assert "spaces" in expected_names
+    assert "space_bindings" in expected_names
+    assert "presences" in expected_names
+    assert "identity_runtime_state" in expected_names
+    assert "identity_backfill_runs" in expected_names
+    assert "identity_conflicts" in expected_names
+    assert "identity_cutover_manifests" in expected_names
+    assert "identity_cutover_runs" in expected_names
+    assert "canonical_conversations" in expected_names
+    assert "conversation_legacy_aliases" in expected_names
+    assert "person_active_routes" in expected_names
+    assert "space_binding_ingest_routes" in expected_names
+    assert "space_active_routes" in expected_names
+    assert "control_command_receipts" in expected_names
+    assert "canonical_event_receipts" in expected_names
     assert "conversation_history_states" not in expected_names
     assert "planner_runs" not in expected_names
     with sqlite3.connect(fresh) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0042",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0048",)
 
     for label, revision in MATRIX.items():
         database = tmp_path / f"{label}.db"
@@ -96,11 +113,11 @@ def test_fresh_and_upgrade_matrix_have_equivalent_head_schema(tmp_path: Path) ->
         assert names == expected_names, label
         with sqlite3.connect(database) as connection:
             assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-                "0042",
+                "0048",
             )
             assert connection.execute("SELECT COUNT(*) FROM memory_rebuild_runs").fetchone() == (0,)
 
 
 def test_conversation_scope_rollup_is_the_current_production_migration() -> None:
     versions = sorted((ROOT / "migrations/versions").glob("*.py"))
-    assert versions[-1].name == "0042_replace_conversation_runtime.py"
+    assert versions[-1].name == "0048_identity_cutover.py"

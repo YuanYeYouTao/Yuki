@@ -15,6 +15,7 @@ from qq_ai_bot.conversation.rollup.repository import (
     ConversationScopeRepository,
 )
 from qq_ai_bot.emoji.repository import EmojiRepository
+from qq_ai_bot.identity.write_settings import configure_identity_write_settings
 from qq_ai_bot.memory.activation import MemoryActivationRepository, MemoryIntentRanker
 from qq_ai_bot.memory.audit import MemoryAuditService
 from qq_ai_bot.memory.context import MemoryContextService
@@ -98,6 +99,7 @@ class PersistenceModule:
 
     def build(self) -> PersistenceBundle:
         settings = self._settings
+        configure_identity_write_settings(settings)
         database = self._database or Database(settings.database_url)
         self._lifecycle.register("database", close=database.close)
         runtime_config = self._runtime_config or RuntimeConfigService(

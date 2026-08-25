@@ -24,6 +24,7 @@ _BLOCKED_HOSTS = frozenset(
         "docker",
         "bot",
         "napcat",
+        "snowluma",
         "host.docker.internal",
         "gateway.docker.internal",
     }
@@ -33,7 +34,7 @@ HostResolver = Callable[[str, int], Awaitable[Sequence[str]] | Sequence[str]]
 
 
 class OneBotMediaGateway(Protocol):
-    """Small gateway surface needed to resolve a NapCat file identifier."""
+    """Small gateway surface needed to resolve a OneBot file identifier."""
 
     async def call_api(self, action: str, params: dict[str, Any]) -> Any:
         """Call one OneBot action."""

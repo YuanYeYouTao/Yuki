@@ -1,4 +1,4 @@
-"""Administrative CLI for migrations, NapCat config, and local Plugin API 2.0."""
+"""Administrative CLI for migrations, QQ Provider config, and Plugin API 2.0."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import json
 import os
 from dataclasses import asdict
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 from uuid import uuid4
 
 from alembic import command
@@ -19,6 +19,8 @@ from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.config import Settings
 from qq_ai_bot.deployment_setup import add_setup_parser, run_setup_command
 from qq_ai_bot.domain.messages import ChatMessage, ChatTool
+from qq_ai_bot.gateway.compatibility import provider_doctor_payload
+from qq_ai_bot.gateway.providers import NAPCAT_PROVIDER_ID, SNOWLUMA_PROVIDER_ID
 from qq_ai_bot.memory.embedding.qwen import QwenDashScopeEmbeddingProvider
 from qq_ai_bot.memory.quality.audit import MemoryProductionQualityAudit
 from qq_ai_bot.memory.quality.baseline import (
@@ -114,6 +116,64 @@ def _render_napcat_config(settings: Settings, output: Path) -> None:
     temporary.replace(output)
 
 
+def _render_snowluma_config(settings: Settings, output: Path) -> None:
+    """Merge Yuki's reverse WS client without replacing SnowLuma-owned settings."""
+
+    target_url = os.getenv(
+        "SNOWLUMA_REVERSE_WS_URL",
+        "ws://bot:8080/onebot/v11/snowluma/ws",
+    )
+    if output.is_file():
+        try:
+            payload = json.loads(output.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError("existing SnowLuma config is invalid") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("existing SnowLuma config root must be an object")
+    else:
+        payload = {}
+    networks = payload.setdefault("networks", {})
+    if not isinstance(networks, dict):
+        raise ValueError("existing SnowLuma networks config must be an object")
+    clients = networks.setdefault("wsClients", [])
+    if not isinstance(clients, list):
+        raise ValueError("existing SnowLuma wsClients config must be an array")
+    managed = {
+        "name": "yuki",
+        "enabled": True,
+        "url": target_url,
+        "role": "Universal",
+        "accessToken": settings.onebot_access_token,
+        "messageFormat": "array",
+        "reportSelfMessage": False,
+        "reconnectIntervalMs": 30000,
+    }
+    merged: list[object] = []
+    replaced = False
+    for item in clients:
+        if isinstance(item, dict) and item.get("name") == "yuki":
+            if not replaced:
+                merged.append(managed)
+                replaced = True
+            continue
+        merged.append(item)
+    if not replaced:
+        merged.append(managed)
+    networks["wsClients"] = merged
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(f".{output.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        if os.name != "nt":
+            temporary.chmod(0o600)
+        temporary.replace(output)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _add_plugin_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     plugin = subparsers.add_parser("plugin", help="管理本地可信 Plugin API 2.0 插件")
     commands = plugin.add_subparsers(dest="plugin_command", required=True)
@@ -198,6 +258,97 @@ def _add_diagnostics_parsers(
     search.add_argument("query")
     search.add_argument("--limit", type=int, default=8)
     runtime_commands.add_parser("memory-session")
+
+
+def _add_identity_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    identity = subparsers.add_parser("identity", help="Canonical identity 只读预检与幂等回填")
+    commands = identity.add_subparsers(dest="identity_command", required=True)
+    backfill = commands.add_parser("backfill", help="按冻结分类规则回填 canonical identity")
+    mode = backfill.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--dry-run", action="store_true", help="只读分类，不写数据库")
+    mode.add_argument("--apply", action="store_true", help="在 BEGIN IMMEDIATE 内幂等回填")
+    backfill.add_argument("--format", choices=("json", "text"), default="json")
+    backfill.add_argument("--database-url")
+
+
+def _identity_command(settings: Settings, args: argparse.Namespace) -> int:
+    from qq_ai_bot.identity.backfill_repository import sqlite_path_from_url
+    from qq_ai_bot.identity.backfill_service import IdentityBackfillService
+    from qq_ai_bot.identity.backfill_types import BackfillSettingsInput, failed_report
+    from qq_ai_bot.identity.errors import IdentityBackfillError
+    from qq_ai_bot.identity.reporting import render_report
+
+    if args.identity_command != "backfill":
+        return 1
+    mode: Literal["apply", "dry_run"] = "apply" if args.apply else "dry_run"
+    try:
+        url = str(args.database_url or settings.database_url)
+        service = IdentityBackfillService(
+            sqlite_path_from_url(url),
+            BackfillSettingsInput(
+                superusers=settings.superusers,
+                enabled_groups=settings.enabled_groups,
+                ignored_bot_users=settings.ignored_bot_users,
+            ),
+        )
+        report = service.apply() if args.apply else service.dry_run()
+    except IdentityBackfillError as exc:
+        report = failed_report(mode, exc.category)
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception:
+        report = failed_report(mode, "operational_error")
+    print(render_report(report, str(args.format)))
+    return IdentityBackfillService.exit_code(report)
+
+
+def _add_identity_cutover_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    cutover = subparsers.add_parser("identity-cutover", help="停机 identity cutover plan/apply")
+    mode = cutover.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--plan", action="store_true", help="校验并生成不可变 source manifest")
+    mode.add_argument("--apply", metavar="MANIFEST", help="按 manifest 指纹原子翻转 v2")
+    cutover.add_argument("--git-revision", required=True)
+    cutover.add_argument("--expected-revision")
+    cutover.add_argument("--downtime-token", required=True)
+    cutover.add_argument("--snapshot-db", required=True)
+    cutover.add_argument("--snapshot-wal", required=True)
+    cutover.add_argument("--snapshot-shm", required=True)
+    cutover.add_argument("--format", choices=("json", "text"), default="json")
+    cutover.add_argument("--database-url")
+
+
+def _identity_cutover_command(settings: Settings, args: argparse.Namespace) -> int:
+    from qq_ai_bot.identity.backfill_repository import sqlite_path_from_url
+    from qq_ai_bot.identity.cutover_reporting import render_cutover_report
+    from qq_ai_bot.identity.cutover_service import IdentityCutoverService
+    from qq_ai_bot.identity.cutover_types import CutoverSettingsInput, failed_cutover_report
+    from qq_ai_bot.identity.errors import IdentityCutoverError
+
+    mode: Literal["plan", "apply"] = "apply" if args.apply else "plan"
+    try:
+        url = str(args.database_url or settings.database_url)
+        service = IdentityCutoverService(
+            sqlite_path_from_url(url),
+            CutoverSettingsInput(
+                expected_git_revision=str(args.expected_revision or args.git_revision),
+                git_revision=str(args.git_revision),
+                downtime_token=str(args.downtime_token),
+                snapshot_db=str(args.snapshot_db),
+                snapshot_wal=str(args.snapshot_wal),
+                snapshot_shm=str(args.snapshot_shm),
+            ),
+        )
+        report = service.apply(str(args.apply)) if args.apply else service.plan()
+    except IdentityCutoverError as exc:
+        report = failed_cutover_report(mode, exc.category)
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception:
+        report = failed_cutover_report(mode, "operational_error")
+    print(render_cutover_report(report, str(args.format)))
+    return IdentityCutoverService.exit_code(report)
 
 
 def _add_memory_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -996,19 +1147,42 @@ def main() -> None:
     subparsers.add_parser("init-db", help="运行 Alembic 数据库迁移")
     render = subparsers.add_parser("render-napcat-config", help="生成 NapCat OneBot 配置")
     render.add_argument("--output", type=Path, required=True)
+    render_snowluma = subparsers.add_parser(
+        "render-snowluma-config",
+        help="合并 SnowLuma OneBot 配置",
+    )
+    render_snowluma.add_argument("--output", type=Path, required=True)
+    gateway = subparsers.add_parser("gateway", help="检查 QQ Gateway Provider 契约")
+    gateway_commands = gateway.add_subparsers(dest="gateway_command", required=True)
+    gateway_doctor = gateway_commands.add_parser(
+        "doctor",
+        help="输出只读、无敏感信息的 OneBot 核心契约",
+    )
+    gateway_doctor.add_argument(
+        "--provider",
+        choices=(NAPCAT_PROVIDER_ID, SNOWLUMA_PROVIDER_ID),
+        required=True,
+    )
     add_setup_parser(subparsers)
     _add_plugin_parser(subparsers)
     _add_speech_parser(subparsers)
     _add_diagnostics_parsers(subparsers)
     _add_memory_parser(subparsers)
+    _add_identity_parser(subparsers)
+    _add_identity_cutover_parser(subparsers)
     args = parser.parse_args()
     if args.command == "setup":
         raise SystemExit(run_setup_command(args))
+    if args.command == "gateway":
+        print(json.dumps(provider_doctor_payload(str(args.provider)), ensure_ascii=False, indent=2))
+        return
     settings = Settings()
     if args.command == "init-db":
         _init_database(settings)
     elif args.command == "render-napcat-config":
         _render_napcat_config(settings, args.output)
+    elif args.command == "render-snowluma-config":
+        _render_snowluma_config(settings, args.output)
     elif args.command == "plugin":
         raise SystemExit(asyncio.run(_plugin_command(settings, args)))
     elif args.command == "speech":
@@ -1043,6 +1217,10 @@ def main() -> None:
         raise SystemExit(asyncio.run(_runtime_diagnostics(settings, args)))
     elif args.command == "memory":
         raise SystemExit(asyncio.run(_memory_command(settings, args)))
+    elif args.command == "identity":
+        raise SystemExit(_identity_command(settings, args))
+    elif args.command == "identity-cutover":
+        raise SystemExit(_identity_cutover_command(settings, args))
 
 
 if __name__ == "__main__":
