@@ -11,6 +11,7 @@ from sqlalchemy import select
 from tests.support.gateway import napcat_registry
 
 from qq_ai_bot.conversation.canonical_db_models import (
+    CanonicalConversationModel,
     PersonActiveRouteModel,
     SpaceActiveRouteModel,
     SpaceBindingIngestRouteModel,
@@ -19,7 +20,7 @@ from qq_ai_bot.identity.db_models import IdentityRuntimeStateModel
 from qq_ai_bot.identity.dual_write import (
     ensure_canonical_presence_preconfig as ensure_v2_presence,
 )
-from qq_ai_bot.identity.routing import PresenceRouter
+from qq_ai_bot.identity.routing import PresenceRouter, RouteMonitor, RouteSendError
 from qq_ai_bot.identity.write_settings import (
     IdentityWriteSettings,
     configure_identity_write_settings,
@@ -104,38 +105,139 @@ async def test_takeover_zero_one_many_and_route_pause(database: Database) -> Non
 
 
 @pytest.mark.asyncio
-async def test_reconnect_does_not_change_route_or_conversation_generation(
+async def test_transient_disconnect_preserves_routes_until_same_presence_reconnects(
     database: Database,
 ) -> None:
+    from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
+    from qq_ai_bot.identity.db_models import SpaceBindingModel
+    from qq_ai_bot.identity.dual_write import ensure_canonical_space_preconfig
     from qq_ai_bot.identity.ingress import _ensure_person_id
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     await _flip_v2(database)
     registry = napcat_registry(gateway_instance_id="gw-gen")
     router = PresenceRouter(database, registry, membership_probe=_true)
+    monitor = RouteMonitor(router)
     bot = _Bot("8000")
     async with database.sessions() as session, session.begin():
         presence = await ensure_v2_presence(session, "8000")
         person_id = await _ensure_person_id(session, "1001")
-    first = registry.connect(bot)
-    registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
-    await router.cas_takeover_person(person_id)
+        space_id = await ensure_canonical_space_preconfig(session, "2001")
+        binding = await session.scalar(
+            select(SpaceBindingModel).where(SpaceBindingModel.space_id == space_id)
+        )
+        assert binding is not None
+        binding_id = binding.id
+        private_conversation = await ensure_canonical_conversation(
+            session,
+            kind="private",
+            primary_scope_key="bot:8000:private:1001",
+            person_id=person_id,
+        )
+        space_conversation = await ensure_canonical_conversation(
+            session,
+            kind="space",
+            primary_scope_key="bot:8000:group:2001",
+            space_id=space_id,
+        )
+    first = registry.connect(bot, presence_id=presence)
+    assert await router.cas_takeover_person(person_id) == "taken"
+    assert await router.cas_takeover_space(space_id) == "taken"
+    assert (
+        await router.evaluate_ingest(
+            space_binding_id=binding_id,
+            event_presence_id=presence,
+        )
+        == "ok"
+    )
     async with database.sessions() as session:
-        route = await session.get(PersonActiveRouteModel, person_id)
-        assert route is not None
-        route_generation = int(route.route_generation)
-    second = registry.connect(bot)
+        person_route = await session.get(PersonActiveRouteModel, person_id)
+        space_route = await session.get(SpaceActiveRouteModel, space_id)
+        ingest_route = await session.get(SpaceBindingIngestRouteModel, binding_id)
+        assert person_route is not None
+        assert space_route is not None
+        assert ingest_route is not None
+        route_state = (
+            person_route.identity_binding_id,
+            person_route.presence_id,
+            int(person_route.route_generation),
+            int(person_route.revision),
+            space_route.space_binding_id,
+            space_route.presence_id,
+            int(space_route.route_generation),
+            int(space_route.revision),
+            ingest_route.ingest_presence_id,
+            int(ingest_route.route_generation),
+            int(ingest_route.revision),
+        )
+        conversations = (
+            await session.get(CanonicalConversationModel, private_conversation.conversation_id),
+            await session.get(CanonicalConversationModel, space_conversation.conversation_id),
+        )
+        assert conversations[0] is not None
+        assert conversations[1] is not None
+        conversation_generations = tuple(int(row.generation) for row in conversations)
+
+    registry.disconnect(bot)
+    await monitor.on_connection_change()
+    with pytest.raises(RouteSendError) as person_error:
+        await router.resolve_send_for_person(person_id)
+    assert person_error.value.category == "disconnected"
+    with pytest.raises(RouteSendError) as space_error:
+        await router.resolve_send_for_space(space_id)
+    assert space_error.value.category == "disconnected"
+    assert (
+        await router.evaluate_ingest(
+            space_binding_id=binding_id,
+            event_presence_id=presence,
+        )
+        == "not_ingest"
+    )
+
+    reconnected = _Bot("8000")
+    second = registry.connect(reconnected, presence_id=presence)
     assert second.generation == first.generation + 1
+    await monitor.on_connection_change()
+    assert (await router.resolve_send_for_person(person_id)).presence_id == presence
+    assert (await router.resolve_send_for_space(space_id)).presence_id == presence
+    assert (
+        await router.evaluate_ingest(
+            space_binding_id=binding_id,
+            event_presence_id=presence,
+        )
+        == "ok"
+    )
+
     async with database.sessions() as session:
-        route = await session.get(PersonActiveRouteModel, person_id)
-        assert route is not None
-        assert int(route.route_generation) == route_generation
-    again = await router.cas_takeover_person(person_id)
-    assert again == "unchanged"
-    async with database.sessions() as session:
-        route = await session.get(PersonActiveRouteModel, person_id)
-        assert route is not None
-        assert int(route.route_generation) == route_generation
+        person_route = await session.get(PersonActiveRouteModel, person_id)
+        space_route = await session.get(SpaceActiveRouteModel, space_id)
+        ingest_route = await session.get(SpaceBindingIngestRouteModel, binding_id)
+        assert person_route is not None
+        assert space_route is not None
+        assert ingest_route is not None
+        assert person_route.paused is False
+        assert space_route.paused is False
+        assert ingest_route.paused is False
+        assert (
+            person_route.identity_binding_id,
+            person_route.presence_id,
+            int(person_route.route_generation),
+            int(person_route.revision),
+            space_route.space_binding_id,
+            space_route.presence_id,
+            int(space_route.route_generation),
+            int(space_route.revision),
+            ingest_route.ingest_presence_id,
+            int(ingest_route.route_generation),
+            int(ingest_route.revision),
+        ) == route_state
+        conversations = (
+            await session.get(CanonicalConversationModel, private_conversation.conversation_id),
+            await session.get(CanonicalConversationModel, space_conversation.conversation_id),
+        )
+        assert conversations[0] is not None
+        assert conversations[1] is not None
+        assert tuple(int(row.generation) for row in conversations) == conversation_generations
 
 
 @pytest.mark.asyncio

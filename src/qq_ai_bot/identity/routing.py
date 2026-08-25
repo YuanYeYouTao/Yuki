@@ -616,14 +616,19 @@ class PresenceRouter:
                     return "conflict"
             elif not _person_matches(route, observed):
                 return "conflict"
-            if len(unique) != 1:
+            if not unique:
+                # A gateway may reconnect a moment after its WebSocket closes.
+                # Keep the last deterministic route pinned while it is offline;
+                # send resolution still fails closed through the Registry.
+                return "none"
+            if len(unique) > 1:
                 if route.paused:
-                    return "paused" if unique else "none"
+                    return "paused"
                 route.paused = True
                 route.route_generation += 1
                 route.revision += 1
                 route.updated_at = now
-                return "paused" if not unique else "ambiguous"
+                return "ambiguous"
             winner = unique[0]
             if (
                 route.identity_binding_id == winner.binding_id
@@ -714,14 +719,18 @@ class PresenceRouter:
                     return "conflict"
             elif not _space_matches(route, observed):
                 return "conflict"
-            if len(unique) != 1:
+            if not unique:
+                # Zero live candidates means temporary unavailability, not an
+                # operator pause. Preserve the route for the reconnecting Presence.
+                return "none"
+            if len(unique) > 1:
                 if route.paused:
-                    return "paused" if unique else "none"
+                    return "paused"
                 route.paused = True
                 route.route_generation += 1
                 route.revision += 1
                 route.updated_at = now
-                return "paused" if not unique else "ambiguous"
+                return "ambiguous"
             winner = unique[0]
             if (
                 route.space_binding_id == winner.binding_id
@@ -787,12 +796,16 @@ class PresenceRouter:
                 return "ok"
             if current.paused:
                 return "paused"
-            if len(unique) != 1:
+            if not unique:
+                # Do not turn a transient provider disconnect into a durable
+                # ingest pause. The connection fence remains closed until reconnect.
+                return "not_ingest"
+            if len(unique) > 1:
                 current.paused = True
                 current.route_generation += 1
                 current.revision += 1
                 current.updated_at = now
-                return "paused" if unique else "not_ingest"
+                return "paused"
             winner = unique[0]
             if current.ingest_presence_id == winner.presence_id:
                 return "ok"
