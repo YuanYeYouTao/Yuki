@@ -143,8 +143,14 @@ def test_production_and_development_compose_are_separated() -> None:
     assert "motricseven7/snowluma:latest" in production
     assert "seccomp=unconfined" in production
     assert "SYS_PTRACE" in production
-    assert '"127.0.0.1:${SNOWLUMA_NOVNC_PORT:-6081}:6081"' in production
-    assert '"127.0.0.1:${SNOWLUMA_WEBUI_HOST_PORT:-5099}:5099"' in production
+    assert (
+        '"${SNOWLUMA_NOVNC_BIND_ADDRESS:-127.0.0.1}:'
+        '${SNOWLUMA_NOVNC_PORT:-6081}:6081"' in production
+    )
+    assert (
+        '"${SNOWLUMA_WEBUI_BIND_ADDRESS:-127.0.0.1}:'
+        '${SNOWLUMA_WEBUI_HOST_PORT:-5099}:5099"' in production
+    )
     assert "3000:3000" not in production
     assert "3001:3001" not in production
     assert "image: yuki-qqbot:dev" in development
