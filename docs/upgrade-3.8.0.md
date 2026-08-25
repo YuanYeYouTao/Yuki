@@ -73,8 +73,9 @@ docker compose run --rm --no-deps --entrypoint qq-ai-bot-cli bot \
 - `status=succeeded`
 - 当前 Yuki QQ 被分类为 `yuki_presence`，不能成为 Person
 - ignored bot 不成为 Person
+- 所有历史 `chat_events` 都获得 `person|yuki|external_bot|system` 作者三元组
 - `conflicts=0`
-- 第二次 apply 为零业务 diff
+- 第二次 apply 为零业务 diff，且 `event_authors=0`
 
 有冲突、未知 Yuki Presence 或路由歧义时停止，不要伪造 legacy people/groups/scope 行。
 

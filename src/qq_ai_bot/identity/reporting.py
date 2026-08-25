@@ -38,6 +38,7 @@ def report_to_dict(report: BackfillReport) -> dict[str, Any]:
             "memory_reflection_run_owners": report.counts.memory_reflection_run_owners,
             "memory_dream_cluster_owners": report.counts.memory_dream_cluster_owners,
             "memory_facts_verified": report.counts.memory_facts_verified,
+            "event_authors": report.counts.event_authors,
         },
         "classifications": {
             "person": report.counts.person_class,

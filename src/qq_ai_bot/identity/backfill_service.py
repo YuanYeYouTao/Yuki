@@ -22,6 +22,7 @@ from qq_ai_bot.identity.backfill_types import (
     BackfillSettingsInput,
     BackfillStatus,
     ConflictReport,
+    MemoryOwnerAssignment,
     MemoryOwnerCounts,
     failed_report,
 )
@@ -261,6 +262,21 @@ class IdentityBackfillService:
             planned_presence_bindings=planned_presence_bindings,
             non_person_accounts=non_person_accounts,
         )
+        all_conflicts = tuple(
+            (*plan.conflicts, *memory_conflicts, *automation_conflicts, *plugin_conflicts)
+        )
+        event_authors: tuple[MemoryOwnerAssignment, ...] = ()
+        event_author_material: tuple[tuple[object, ...], ...] = ()
+        if not all_conflicts:
+            external_bot_accounts = frozenset(
+                item.external_id for item in plan.accounts if item.classification == "external_bot"
+            )
+            event_authors, event_author_material = self._repository.load_event_author_owners(
+                connection,
+                person_bindings=planned_person_bindings,
+                presence_bindings=planned_presence_bindings,
+                external_bot_accounts=external_bot_accounts,
+            )
         fingerprint = merge_source_fingerprint(
             merge_source_fingerprint(
                 merge_source_fingerprint(plan.source_fingerprint, memory_material),
@@ -268,12 +284,11 @@ class IdentityBackfillService:
             ),
             plugin_material,
         )
+        fingerprint = merge_source_fingerprint(fingerprint, event_author_material)
         return BackfillPlan(
             accounts=plan.accounts,
             spaces=plan.spaces,
-            conflicts=tuple(
-                (*plan.conflicts, *memory_conflicts, *automation_conflicts, *plugin_conflicts)
-            ),
+            conflicts=all_conflicts,
             shadows=tuple((*plan.shadows, *plugin_targets)),
             skipped_external_bots=plan.skipped_external_bots,
             source_fingerprint=fingerprint,
@@ -291,6 +306,7 @@ class IdentityBackfillService:
             ),
             automation_targets=automation_targets,
             plugin_targets=plugin_targets,
+            event_authors=event_authors,
         )
 
     def _report(
@@ -335,6 +351,7 @@ class IdentityBackfillService:
                 memory_facts_verified=plan.memory_owner_counts.facts_verified,
                 automation_targets=plan.memory_owner_counts.automation_targets,
                 plugin_targets=plan.memory_owner_counts.plugin_targets,
+                event_authors=len(plan.event_authors),
             ),
             conflicts=tuple(
                 ConflictReport(

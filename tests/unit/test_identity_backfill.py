@@ -34,6 +34,7 @@ from qq_ai_bot.identity.backfill_service import (
 )
 from qq_ai_bot.identity.backfill_types import AccountEvidence, BackfillSettingsInput
 from qq_ai_bot.identity.classifier import classify_account
+from qq_ai_bot.identity.cutover_repository import IdentityCutoverRepository
 from qq_ai_bot.identity.inventory import (
     ACCOUNT_SOURCE_INVENTORY,
     DEFERRED_SHADOWS,
@@ -519,6 +520,88 @@ def test_second_apply_is_business_noop(tmp_path: Path) -> None:
         )
         assert repo.count_rows(connection, "identity_backfill_runs") == runs_before + 1
         assert repo.count_rows(connection, "identity_conflicts") == 0
+
+
+def test_0042_upgrade_backfills_historical_event_authors_for_cutover(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "historical-authors-test.db"
+    _upgrade(path, monkeypatch, "0042")
+    with _open(path) as connection:
+        _insert_people(connection, "8000", nickname="Yuki", is_bot=1)
+        _insert_people(connection, "1001", nickname="Ada")
+        _insert_people(connection, "7777", nickname="OtherBot", is_bot=1)
+        _insert_group(connection, "2001")
+        _insert_event(connection, bot="8000", sender="1001", group="2001", message_id="human")
+        _insert_event(connection, bot="8000", sender="8000", group="2001", message_id="yuki")
+        _insert_event(
+            connection, bot="8000", sender="7777", group="2001", message_id="external-bot"
+        )
+        _insert_event(connection, bot="8000", sender="1001", group="2001", message_id="system")
+        connection.execute(
+            "UPDATE chat_events SET direction = 'external', event_kind = 'external_event', "
+            "source_plugin_id = 'plugin', external_source = 'source', "
+            "external_event_key = 'event-key', external_event_type = 'notice', "
+            "external_payload_json = '{}', external_target_id = '2001', "
+            "origin = 'plugin_background' "
+            "WHERE platform_message_id = 'system'"
+        )
+        connection.commit()
+    _upgrade(path, monkeypatch, "head")
+
+    settings = _settings(ignored_bots=("7777",))
+    first = _service(path, settings).apply()
+    assert first.status == "succeeded"
+    assert first.business_diff == 1
+    assert first.counts.event_authors == 4
+    with _open(path) as connection:
+        person_id = connection.execute(
+            "SELECT person_id FROM identity_bindings WHERE external_account_id = '1001'"
+        ).fetchone()[0]
+        presence_id = connection.execute(
+            "SELECT id FROM presences WHERE external_account_id = '8000'"
+        ).fetchone()[0]
+        rows = {
+            str(row[0]): tuple(row[1:])
+            for row in connection.execute(
+                "SELECT platform_message_id, author_kind, author_person_id, "
+                "author_presence_id FROM chat_events ORDER BY platform_message_id"
+            )
+        }
+        assert rows == {
+            "external-bot": ("external_bot", None, None),
+            "human": ("person", person_id, None),
+            "system": ("system", None, None),
+            "yuki": ("yuki", None, presence_id),
+        }
+        IdentityCutoverRepository(path).require_shadows_complete(connection)
+
+    second = _service(path, settings).apply()
+    assert second.status == "succeeded"
+    assert second.business_diff == 0
+    assert second.counts.event_authors == 0
+
+
+def test_event_author_backfill_refuses_existing_owner_mismatch(tmp_path: Path) -> None:
+    path = tmp_path / "event-author-mismatch-test.db"
+    _create_schema(path)
+    with _open(path) as connection:
+        _insert_people(connection, "8000", nickname="Yuki", is_bot=1)
+        _insert_people(connection, "1001", nickname="Ada")
+        _insert_event(connection, bot="8000", sender="1001", peer="1001", message_id="human")
+        connection.commit()
+    settings = _settings()
+    assert _service(path, settings).apply().status == "succeeded"
+    with _open(path) as connection:
+        connection.execute(
+            "UPDATE chat_events SET sender_user_id = '8000' WHERE platform_message_id = 'human'"
+        )
+        connection.commit()
+
+    report = _service(path, settings).dry_run()
+    assert report.status == "failed"
+    assert report.error_category == "canonical_owner_mismatch"
 
 
 def test_same_account_yuki_and_human_conflicts(tmp_path: Path) -> None:

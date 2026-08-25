@@ -61,6 +61,14 @@ def erase_canonical_identity_backfill(database_url: str) -> None:
 
 
 def _erase(connection: sqlite3.Connection) -> None:
+    if _table_exists(connection, "chat_events") and all(
+        _column_exists(connection, "chat_events", column)
+        for column in ("author_kind", "author_person_id", "author_presence_id")
+    ):
+        connection.execute(
+            "UPDATE chat_events SET author_kind = NULL, "
+            "author_person_id = NULL, author_presence_id = NULL"
+        )
     for spec in SHADOW_FILL_SPECS:
         if not _table_exists(connection, spec.table):
             continue

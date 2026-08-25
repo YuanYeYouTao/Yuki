@@ -2,6 +2,10 @@
 
 ## Unreleased — 3.8.0
 
+- 修复 3.7.1 → 3.8.0 真实数据库升级时历史 `chat_events` 作者 shadow 未回填、导致
+  identity cutover 永久停在 `shadows_incomplete` 的问题；回填现在原子写入完整作者三元组并保持
+  二次 apply 零差异。
+
 ### Permanent Yuki / Identity V2
 
 - 一个数据库成为永久 Yuki 主体；Person、IdentityBinding、Space、SpaceBinding、Presence 与

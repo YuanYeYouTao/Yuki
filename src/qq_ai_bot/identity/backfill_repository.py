@@ -20,6 +20,7 @@ from qq_ai_bot.identity.backfill_types import (
     CanonicalPersonRow,
     CanonicalSpaceRow,
     IdentityBindingRow,
+    MemoryOwnerAssignment,
     MutableAccountEvidence,
     MutableSpaceEvidence,
     PresenceRow,
@@ -656,6 +657,85 @@ class IdentityBackfillRepository:
         )
         return tuple(assignments)
 
+    def load_event_author_owners(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        person_bindings: dict[str, str],
+        presence_bindings: dict[str, str],
+        external_bot_accounts: frozenset[str],
+    ) -> tuple[tuple[MemoryOwnerAssignment, ...], tuple[tuple[object, ...], ...]]:
+        """Plan complete author triples for historical ledger rows.
+
+        The three columns are written together so the canonical author shape
+        triggers never observe a partial owner. Existing partial or mismatched
+        triples fail closed instead of being repaired by guessing.
+        """
+
+        required = (
+            "id",
+            "sender_user_id",
+            "direction",
+            "event_kind",
+            "author_kind",
+            "author_person_id",
+            "author_presence_id",
+        )
+        if not _table_exists(connection, "chat_events") or any(
+            not _column_exists(connection, "chat_events", column) for column in required
+        ):
+            return (), ()
+
+        assignments: list[MemoryOwnerAssignment] = []
+        material: list[tuple[object, ...]] = []
+        rows = connection.execute(
+            "SELECT id, sender_user_id, direction, event_kind, author_kind, "
+            "author_person_id, author_presence_id FROM chat_events ORDER BY id"
+        )
+        for row in rows:
+            event_id = int(row["id"])
+            sender = normalize_external_id(row["sender_user_id"])
+            direction = str(row["direction"] or "")
+            event_kind = str(row["event_kind"] or "")
+            person_id: str | None = None
+            presence_id: str | None = None
+            if event_kind == "external_event" or direction == "external":
+                author_kind = "system"
+            elif sender is not None and sender in presence_bindings:
+                author_kind = "yuki"
+                presence_id = presence_bindings[sender]
+            elif sender is not None and sender in external_bot_accounts:
+                author_kind = "external_bot"
+            elif sender is not None and sender in person_bindings:
+                author_kind = "person"
+                person_id = person_bindings[sender]
+            else:
+                raise IdentityBackfillPreconditionError("unclassified")
+
+            current = (
+                None if row["author_kind"] is None else str(row["author_kind"]),
+                None if row["author_person_id"] is None else str(row["author_person_id"]),
+                None if row["author_presence_id"] is None else str(row["author_presence_id"]),
+            )
+            desired = (author_kind, person_id, presence_id)
+            material.append((event_id, *desired, *current))
+            if current == desired:
+                continue
+            if current != (None, None, None):
+                raise IdentityBackfillPreconditionError("canonical_owner_mismatch")
+            assignments.append(
+                MemoryOwnerAssignment(
+                    table="chat_events",
+                    row_id=event_id,
+                    values=(
+                        ("author_kind", author_kind),
+                        ("author_person_id", person_id),
+                        ("author_presence_id", presence_id),
+                    ),
+                )
+            )
+        return tuple(assignments), tuple(material)
+
     @staticmethod
     def _attach_shadow_owners(
         accounts: dict[str, MutableAccountEvidence],
@@ -722,6 +802,16 @@ class IdentityBackfillRepository:
                 continue
             pk_sql = ", ".join(spec.pk)
             sql = f'SELECT {pk_sql}, "{spec.column}" FROM "{spec.table}" ORDER BY {pk_sql}'
+            chunks.append(sql)
+            chunks.extend(str(tuple(row)) for row in connection.execute(sql))
+        if _table_exists(connection, "chat_events") and all(
+            _column_exists(connection, "chat_events", column)
+            for column in ("author_kind", "author_person_id", "author_presence_id")
+        ):
+            sql = (
+                "SELECT id, author_kind, author_person_id, author_presence_id "
+                "FROM chat_events ORDER BY id"
+            )
             chunks.append(sql)
             chunks.extend(str(tuple(row)) for row in connection.execute(sql))
         chunks.extend(c21_signature_chunks(connection))
@@ -859,7 +949,7 @@ class IdentityBackfillRepository:
             params = [shadow.value, *[value for _key, value in shadow.row_key]]
             connection.execute(sql, params)
         self._trip("after_shadow_writes")
-        for owner in (*plan.memory_owners, *plan.automation_targets):
+        for owner in (*plan.memory_owners, *plan.automation_targets, *plan.event_authors):
             assignments = ", ".join(f'"{column}" = ?' for column, _value in owner.values)
             unchanged = " AND ".join(f'"{column}" IS NULL' for column, _value in owner.values)
             sql = f'UPDATE "{owner.table}" SET {assignments} WHERE id = ? AND {unchanged}'

@@ -223,6 +223,7 @@ class BackfillPlan:
     memory_owner_counts: MemoryOwnerCounts = MemoryOwnerCounts()
     automation_targets: tuple[MemoryOwnerAssignment, ...] = ()
     plugin_targets: tuple[ShadowAssignment, ...] = ()
+    event_authors: tuple[MemoryOwnerAssignment, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,6 +249,7 @@ class BackfillCounts:
     memory_facts_verified: int = 0
     automation_targets: int = 0
     plugin_targets: int = 0
+    event_authors: int = 0
 
 
 @dataclass(frozen=True, slots=True)
