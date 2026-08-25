@@ -214,6 +214,7 @@ def test_first_run_generates_safe_all_disabled_configuration(tmp_path: Path) -> 
             "n",
             "n",
             "n",
+            "",  # Keep the default NapCat gateway.
             "y",
         ],
         secrets=["test-main-key"],
@@ -224,6 +225,7 @@ def test_first_run_generates_safe_all_disabled_configuration(tmp_path: Path) -> 
     assert environment["YUKI_VERSION"] == "3.7.1"
     assert len(environment["ONEBOT_ACCESS_TOKEN"]) >= 43
     assert len(environment["NAPCAT_WEBUI_TOKEN"]) >= 43
+    assert len(environment["SNOWLUMA_VNC_PASSWORD"]) >= 43
     assert environment["ONEBOT_ACCESS_TOKEN"] != environment["NAPCAT_WEBUI_TOKEN"]
     assert environment["WEB_MODE"] == "disabled"
     assert environment["MEMORY_EMBEDDING_ENABLED"] == "false"
@@ -232,13 +234,18 @@ def test_first_run_generates_safe_all_disabled_configuration(tmp_path: Path) -> 
     assert environment["PLUGIN_SYSTEM_ENABLED"] == "false"
     assert environment["AUTOMATION_ENABLED"] == "false"
     assert environment["SPEECH_ENABLED"] == "false"
-    assert environment["COMPOSE_PROFILES"] == ""
+    assert environment["COMPOSE_PROFILES"] == "napcat"
     assert "[profiles.flash]" not in paths.model_profiles.read_text(encoding="utf-8")
     assert set(
         tomllib.loads(paths.model_profiles.read_text(encoding="utf-8"))["routes"].values()
     ) == {"main"}
     assert json.loads(paths.mcp.read_text(encoding="utf-8")) == {"mcpServers": {}}
     assert not paths.pending.exists()
+    assert json.loads(paths.gateway_action.read_text(encoding="utf-8")) == {
+        "schema_version": 1,
+        "previous": [],
+        "target": ["napcat"],
+    }
     assert "test-main-key" not in output.getvalue()
     assert "\033[" not in output.getvalue()
 
@@ -254,12 +261,13 @@ def test_cancelled_first_run_writes_nothing(tmp_path: Path) -> None:
             "n",
             "n",
             "",
-            "n",
-            "n",
-            "n",
-            "n",
-            "n",
-            "n",
+            "n",  # Vision.
+            "n",  # MCP.
+            "n",  # Plugin.
+            "n",  # Automation.
+            "n",  # Speech.
+            "",  # Keep the default NapCat gateway.
+            "n",  # Cancel at review.
         ],
         secrets=["test-main-key"],
     )
@@ -296,6 +304,7 @@ def test_page_back_revisits_previous_page_and_discards_failed_page_draft(
             "n",
             "n",
             "n",
+            "",  # Keep the default NapCat gateway.
             "y",
         ],
         secrets=["test-main-key", "embedding-key"],
@@ -327,8 +336,9 @@ def test_back_from_review_returns_to_last_logical_page(tmp_path: Path) -> None:
             "n",
             "n",
             "n",
+            "",  # Gateway page.
             ":back",
-            "n",
+            "",  # Revisit Gateway after returning from review.
             "y",
         ],
         secrets=["test-main-key"],
@@ -354,6 +364,7 @@ def test_rerun_with_no_selected_sections_is_a_noop(tmp_path: Path) -> None:
             "n",
             "n",
             "n",
+            "",  # Keep the default NapCat gateway.
             "y",
         ],
         secrets=["test-main-key"],
@@ -365,6 +376,43 @@ def test_rerun_with_no_selected_sections_is_a_noop(tmp_path: Path) -> None:
     assert _configure(paths, rerun) == 2
     assert {path: path.read_bytes() for path in before} == before
     assert "默认不修改任何区块" in output.getvalue()
+
+
+def test_rerun_switches_gateway_with_retryable_action(tmp_path: Path) -> None:
+    paths = _copy_deployment_templates(tmp_path)
+    first, _output = _scripted_ui(
+        [
+            "12345678",
+            "",
+            "https://models.example.invalid/v1",
+            "test-main-model",
+            "n",
+            "n",
+            "",
+            "n",
+            "n",
+            "n",
+            "n",
+            "n",
+            "",
+            "y",
+        ],
+        secrets=["test-main-key"],
+    )
+    assert _configure(paths, first) == 0
+    paths.gateway_action.unlink()
+
+    rerun, output = _scripted_ui(["gateway", "snowluma", "y"])
+    assert _configure(paths, rerun) == 0
+
+    environment = EnvironmentDocument.load(paths).values()
+    assert environment["COMPOSE_PROFILES"] == "snowluma"
+    assert json.loads(paths.gateway_action.read_text(encoding="utf-8")) == {
+        "schema_version": 1,
+        "previous": ["napcat"],
+        "target": ["snowluma"],
+    }
+    assert "手动确认协议并扫码登录" in output.getvalue()
 
 
 def test_return_to_section_selector_discards_the_entire_uncommitted_session(
@@ -385,6 +433,7 @@ def test_return_to_section_selector_discards_the_entire_uncommitted_session(
             "n",
             "n",
             "n",
+            "",  # Keep the default NapCat gateway.
             "y",
         ],
         secrets=["test-main-key"],
@@ -422,6 +471,7 @@ def test_selective_rerun_preserves_unselected_files_and_unknown_env(tmp_path: Pa
             "n",
             "n",
             "n",
+            "",  # Keep the default NapCat gateway.
             "y",
         ],
         secrets=["test-main-key"],

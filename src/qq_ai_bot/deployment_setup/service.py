@@ -12,7 +12,7 @@ import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, get_origin
 from urllib.parse import urlsplit
 
@@ -38,6 +38,8 @@ _ENV_LINE = re.compile(r"^(?P<prefix>\s*(?:export\s+)?)(?P<key>[A-Za-z_][A-Za-z0
 _SAFE_ENV_VALUE = re.compile(r"^[A-Za-z0-9_./:@+,-]*$")
 _ENV_REFERENCE = re.compile(r"\$\{([A-Z][A-Z0-9_]{0,63})\}")
 _SECRET_HEADER_TOKENS = ("authorization", "cookie", "token", "api-key", "api_key", "secret")
+GATEWAY_PROVIDER_IDS = ("napcat", "snowluma")
+_GATEWAY_PROFILE_SET = frozenset(GATEWAY_PROVIDER_IDS)
 _FLASH_TASKS = frozenset(
     {
         ModelTask.MEMORY_EXTRACTION,
@@ -93,6 +95,10 @@ class SetupPaths:
     @property
     def speech_action(self) -> Path:
         return self.root / "data/setup/speech-action"
+
+    @property
+    def gateway_action(self) -> Path:
+        return self.root / "data/setup/gateway-action.json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -385,6 +391,7 @@ def validate_configuration(paths: SetupPaths, configuration: SetupConfiguration)
     environment["MODEL_PROFILES_FILE"] = str(paths.model_profiles.resolve())
     environment["MCP_CONFIG_PATH"] = str(paths.mcp.resolve())
     environment["YUKI_VERSION"] = __version__
+    _validate_gateway_configuration(environment)
     _validate_credentials_and_endpoints(
         environment,
         flash_enabled="[profiles.flash]" in configuration.model_profiles,
@@ -477,10 +484,25 @@ def commit_configuration(
     )
     old_speech = _truthy(old_environment.get("SPEECH_ENABLED", "false"))
     new_speech = _truthy(configuration.environment.get("SPEECH_ENABLED", "false"))
+    old_gateways = selected_gateway_providers(old_environment) if existing_deployment else ()
+    new_gateways = selected_gateway_providers(configuration.environment)
     if existing_deployment and configuration_changed:
         targets[paths.restart_required] = b"configuration-changed\n"
     if old_speech != new_speech:
         targets[paths.speech_action] = b"start\n" if new_speech else b"stop\n"
+    if old_gateways != new_gateways:
+        targets[paths.gateway_action] = (
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "previous": list(old_gateways),
+                    "target": list(new_gateways),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n"
+        ).encode("utf-8")
     for path in targets:
         previous.setdefault(path, path.read_bytes() if path.is_file() else None)
     backup = _create_backup(
@@ -488,7 +510,8 @@ def commit_configuration(
         tuple(
             path
             for path, value in previous.items()
-            if value is not None and path not in {paths.restart_required, paths.speech_action}
+            if value is not None
+            and path not in {paths.restart_required, paths.speech_action, paths.gateway_action}
         ),
     )
     try:
@@ -511,6 +534,81 @@ def commit_configuration(
 
 def _truthy(value: str) -> bool:
     return value.strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def selected_gateway_providers(environment: Mapping[str, str]) -> tuple[str, ...]:
+    """Return explicit gateway profiles, treating a profile-less old deployment as NapCat."""
+
+    profiles = _compose_profile_tokens(environment.get("COMPOSE_PROFILES", ""))
+    selected = tuple(item for item in GATEWAY_PROVIDER_IDS if item in profiles)
+    return selected or ("napcat",)
+
+
+def compose_profiles_with_features(
+    environment: Mapping[str, str],
+    *,
+    gateways: Iterable[str],
+    speech_enabled: bool,
+) -> str:
+    """Replace managed profiles while retaining deployment-local extension profiles."""
+
+    selected = frozenset(str(item).strip().casefold() for item in gateways)
+    if not selected or not selected <= _GATEWAY_PROFILE_SET:
+        raise SetupValidationError("至少选择一个有效的 QQ Gateway Provider")
+    existing = _compose_profile_tokens(environment.get("COMPOSE_PROFILES", ""))
+    unmanaged = existing.difference(_GATEWAY_PROFILE_SET | {"speech"})
+    ordered = [item for item in GATEWAY_PROVIDER_IDS if item in selected]
+    if speech_enabled:
+        ordered.append("speech")
+    ordered.extend(sorted(unmanaged))
+    return ",".join(ordered)
+
+
+def _compose_profile_tokens(value: str) -> frozenset[str]:
+    return frozenset(item.strip().casefold() for item in value.split(",") if item.strip())
+
+
+def _validate_gateway_configuration(environment: Mapping[str, str]) -> None:
+    providers = selected_gateway_providers(environment)
+    if "snowluma" not in providers:
+        return
+    for name in ("SNOWLUMA_IMAGE", "SNOWLUMA_VNC_PASSWORD"):
+        value = environment.get(name, "").strip()
+        if not value or value.casefold().startswith("replace-with-"):
+            raise SetupValidationError(f"SnowLuma 模式必须配置 {name}")
+    password = environment["SNOWLUMA_VNC_PASSWORD"].strip()
+    if len(password) < 8:
+        raise SetupValidationError("SNOWLUMA_VNC_PASSWORD 至少需要 8 个字符")
+    for name in ("SNOWLUMA_UID", "SNOWLUMA_GID"):
+        value = environment.get(name, "1000").strip()
+        if not value.isdigit() or not 0 <= int(value) <= 2_147_483_647:
+            raise SetupValidationError(f"{name} 必须是有效的非负整数")
+    ports: dict[str, int] = {}
+    for name, default in (
+        ("SNOWLUMA_NOVNC_PORT", "6081"),
+        ("SNOWLUMA_WEBUI_HOST_PORT", "5099"),
+    ):
+        value = environment.get(name, default).strip()
+        if not value.isdigit() or not 1 <= int(value) <= 65535:
+            raise SetupValidationError(f"{name} 必须是 1 到 65535 之间的端口")
+        ports[name] = int(value)
+    occupied = set(ports.values())
+    if len(occupied) != len(ports) or ("napcat" in providers and 6099 in occupied):
+        raise SetupValidationError("QQ Gateway Provider 的宿主端口不能重复")
+    homes = tuple(
+        item for item in re.split(r"[\s,]+", environment.get("SNOWLUMA_EXTRA_QQ_HOMES", "")) if item
+    )
+    if len(set(homes)) != len(homes):
+        raise SetupValidationError("SNOWLUMA_EXTRA_QQ_HOMES 不能包含重复目录")
+    for home in homes:
+        path = PurePosixPath(home)
+        if (
+            not path.is_absolute()
+            or path.parts[:3] != ("/", "app", "qq-accounts")
+            or len(path.parts) < 4
+            or ".." in path.parts
+        ):
+            raise SetupValidationError("SnowLuma 额外 QQ HOME 必须位于 /app/qq-accounts 下")
 
 
 async def apply_pending_plugins(paths: SetupPaths, settings: Settings) -> int:

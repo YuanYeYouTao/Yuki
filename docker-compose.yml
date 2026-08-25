@@ -16,6 +16,10 @@ services:
       DATABASE_URL: sqlite+aiosqlite:////app/data/qq_ai_bot.db
       NAPCAT_CONFIG_OUTPUT: /app/napcat-config/onebot11.json
       NAPCAT_REVERSE_WS_URL: ws://bot:8080/onebot/v11/ws
+      SNOWLUMA_CONFIG_OUTPUT: /app/snowluma-data/config/onebot.json
+      SNOWLUMA_REVERSE_WS_URL: ws://bot:8080/onebot/v11/snowluma/ws
+      SNOWLUMA_UID: ${SNOWLUMA_UID:-1000}
+      SNOWLUMA_GID: ${SNOWLUMA_GID:-1000}
       ONEBOT_ACCESS_TOKEN: ${ONEBOT_ACCESS_TOKEN:-replace-with-a-long-random-token}
     expose:
       - "8080"
@@ -24,6 +28,7 @@ services:
       - ./data/speech:/data/speech
       - speech-runtime:/run/yuki-speech
       - ./napcat-config:/app/napcat-config
+      - ./snowluma-data:/app/snowluma-data
       - ./config:/app/config:ro
       - ./plugins:/app/plugins:ro
       - ./.mcp.json:/app/.mcp.json:ro
@@ -81,6 +86,7 @@ services:
     stop_grace_period: 30s
 
   napcat:
+    profiles: ["napcat"]
     image: ${NAPCAT_IMAGE:-mlikiowa/napcat-docker:latest}
     restart: unless-stopped
     init: true
@@ -99,6 +105,43 @@ services:
       - ./napcat-data:/app/.config/QQ
       - ./napcat-config:/app/napcat/config
       - ./napcat-plugins:/app/napcat/plugins
+    networks:
+      - qq-ai-bot-network
+    stop_grace_period: 30s
+
+  snowluma:
+    profiles: ["snowluma"]
+    image: ${SNOWLUMA_IMAGE:-motricseven7/snowluma:latest}
+    platform: linux/amd64
+    restart: unless-stopped
+    init: true
+    depends_on:
+      bot:
+        condition: service_healthy
+    shm_size: ${SNOWLUMA_SHM_SIZE:-1gb}
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp=unconfined
+    environment:
+      VNC_PASSWD: ${SNOWLUMA_VNC_PASSWORD:-replace-with-a-long-random-vnc-password}
+      SNOWLUMA_UID: ${SNOWLUMA_UID:-1000}
+      SNOWLUMA_GID: ${SNOWLUMA_GID:-1000}
+      SNOWLUMA_WEBUI_HOST: 0.0.0.0
+      SNOWLUMA_WEBUI_PORT: 5099
+      SNOWLUMA_LOG_LEVEL: ${SNOWLUMA_LOG_LEVEL:-info}
+      SNOWLUMA_SCREEN: ${SNOWLUMA_SCREEN:-1920x1080x24}
+      SNOWLUMA_HOOK_AUTOLOAD: ${SNOWLUMA_HOOK_AUTOLOAD:-1}
+      SNOWLUMA_EXTRA_QQ_HOMES: ${SNOWLUMA_EXTRA_QQ_HOMES:-}
+      SNOWLUMA_QQ_FLAGS: ${SNOWLUMA_QQ_FLAGS:---disable-gpu --disable-software-rasterizer --disable-gpu-compositing}
+    ports:
+      - "127.0.0.1:${SNOWLUMA_NOVNC_PORT:-6081}:6081"
+      - "127.0.0.1:${SNOWLUMA_WEBUI_HOST_PORT:-5099}:5099"
+    volumes:
+      - ./snowluma-data:/app/data
+      - ./snowluma-qq-config:/app/.config
+      - ./snowluma-qq-data:/app/.local/share
+      - ./snowluma-extra-accounts:/app/qq-accounts
     networks:
       - qq-ai-bot-network
     stop_grace_period: 30s

@@ -103,6 +103,10 @@ def test_bundle_contains_only_deployment_files_and_expected_assets(tmp_path: Pat
     assert f"{prefix}config/persona.md" in names
     assert f"{prefix}data/speech/japanese_frontend/lexicon.toml" in names
     assert f"{prefix}napcat-data/" in names
+    assert f"{prefix}snowluma-data/" in names
+    assert f"{prefix}snowluma-qq-config/" in names
+    assert f"{prefix}snowluma-qq-data/" in names
+    assert f"{prefix}snowluma-extra-accounts/" in names
     assert f"{prefix}install.sh" in names
     assert f"{prefix}install.ps1" in names
     assert shell_mode & 0o111
@@ -130,9 +134,18 @@ def test_production_and_development_compose_are_separated() -> None:
     assert "build:" not in production
     assert "ghcr.io/yuanyeyoutao/yuki-qqbot:${YUKI_VERSION:?missing}" in production
     assert "ghcr.io/yuanyeyoutao/yuki-genie-tts-worker:${YUKI_VERSION:?missing}" in production
-    assert production.count("platform: linux/amd64") == 2
+    assert production.count("platform: linux/amd64") == 3
     assert production.count("pull_policy: missing") == 2
     assert "./.mcp.json:/app/.mcp.json:ro" in production
+    assert 'profiles: ["napcat"]' in production
+    assert 'profiles: ["snowluma"]' in production
+    assert "motricseven7/snowluma:latest" in production
+    assert "seccomp=unconfined" in production
+    assert "SYS_PTRACE" in production
+    assert '"127.0.0.1:${SNOWLUMA_NOVNC_PORT:-6081}:6081"' in production
+    assert '"127.0.0.1:${SNOWLUMA_WEBUI_HOST_PORT:-5099}:5099"' in production
+    assert "3000:3000" not in production
+    assert "3001:3001" not in production
     assert "image: yuki-qqbot:dev" in development
     assert "image: yuki-genie-tts-worker:dev" in development
     assert development.count("pull_policy: build") == 2
@@ -403,6 +416,7 @@ def test_installers_are_fixed_orchestrators_without_a_docker_socket_mount() -> N
         assert "setup verify" in installer
         assert "restart-required" in installer
         assert "speech-action" in installer
+        assert "gateway-action.json" in installer
         assert "Yuki-$VERSION-Upgrade.md" in installer or "Yuki-$Version-Upgrade.md" in installer
         assert "Updated release-managed deployment files" in installer
         assert "upgrade-3.6" in installer
@@ -420,9 +434,15 @@ def test_installers_are_fixed_orchestrators_without_a_docker_socket_mount() -> N
     assert powershell.index("upgrade-3.6") < powershell.index("migrate-3-6")
     assert powershell.index("migrate-3-6") < powershell.index("docker compose config")
     assert "wait_for_service genie-tts-worker" in shell
+    assert shell.index('stop "$service"') < shell.index("docker compose up -d")
+    assert shell.index("docker compose up -d") < shell.index('rm -f "$gateway_action"')
     assert shell.index('download "$base/$archive"') < shell.index('if [ "$existing" = false ]')
     assert "icacls" in powershell
     assert 'Wait-ForService "genie-tts-worker"' in powershell
+    assert powershell.index("stop $Service") < powershell.index("docker compose up -d")
+    assert powershell.index("docker compose up -d") < powershell.index(
+        "Remove-Item -LiteralPath $GatewayActionPath"
+    )
     assert powershell.index('Invoke-WebRequest -Uri "$Base/$ArchiveName"') < powershell.index(
         "if (-not $Existing)"
     )

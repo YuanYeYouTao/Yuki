@@ -1,4 +1,4 @@
-"""Administrative CLI for migrations, NapCat config, and local Plugin API 2.0."""
+"""Administrative CLI for migrations, QQ Provider config, and Plugin API 2.0."""
 
 from __future__ import annotations
 
@@ -112,6 +112,64 @@ def _render_napcat_config(settings: Settings, output: Path) -> None:
     temporary = output.with_suffix(f"{output.suffix}.tmp")
     temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(output)
+
+
+def _render_snowluma_config(settings: Settings, output: Path) -> None:
+    """Merge Yuki's reverse WS client without replacing SnowLuma-owned settings."""
+
+    target_url = os.getenv(
+        "SNOWLUMA_REVERSE_WS_URL",
+        "ws://bot:8080/onebot/v11/snowluma/ws",
+    )
+    if output.is_file():
+        try:
+            payload = json.loads(output.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError("existing SnowLuma config is invalid") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("existing SnowLuma config root must be an object")
+    else:
+        payload = {}
+    networks = payload.setdefault("networks", {})
+    if not isinstance(networks, dict):
+        raise ValueError("existing SnowLuma networks config must be an object")
+    clients = networks.setdefault("wsClients", [])
+    if not isinstance(clients, list):
+        raise ValueError("existing SnowLuma wsClients config must be an array")
+    managed = {
+        "name": "yuki",
+        "enabled": True,
+        "url": target_url,
+        "role": "Universal",
+        "accessToken": settings.onebot_access_token,
+        "messageFormat": "array",
+        "reportSelfMessage": False,
+        "reconnectIntervalMs": 30000,
+    }
+    merged: list[object] = []
+    replaced = False
+    for item in clients:
+        if isinstance(item, dict) and item.get("name") == "yuki":
+            if not replaced:
+                merged.append(managed)
+                replaced = True
+            continue
+        merged.append(item)
+    if not replaced:
+        merged.append(managed)
+    networks["wsClients"] = merged
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(f".{output.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        if os.name != "nt":
+            temporary.chmod(0o600)
+        temporary.replace(output)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _add_plugin_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -1087,6 +1145,11 @@ def main() -> None:
     subparsers.add_parser("init-db", help="运行 Alembic 数据库迁移")
     render = subparsers.add_parser("render-napcat-config", help="生成 NapCat OneBot 配置")
     render.add_argument("--output", type=Path, required=True)
+    render_snowluma = subparsers.add_parser(
+        "render-snowluma-config",
+        help="合并 SnowLuma OneBot 配置",
+    )
+    render_snowluma.add_argument("--output", type=Path, required=True)
     add_setup_parser(subparsers)
     _add_plugin_parser(subparsers)
     _add_speech_parser(subparsers)
@@ -1102,6 +1165,8 @@ def main() -> None:
         _init_database(settings)
     elif args.command == "render-napcat-config":
         _render_napcat_config(settings, args.output)
+    elif args.command == "render-snowluma-config":
+        _render_snowluma_config(settings, args.output)
     elif args.command == "plugin":
         raise SystemExit(asyncio.run(_plugin_command(settings, args)))
     elif args.command == "speech":

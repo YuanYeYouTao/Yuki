@@ -38,6 +38,10 @@ _EMPTY_DIRECTORIES = (
     "napcat-data",
     "napcat-config",
     "napcat-plugins",
+    "snowluma-data",
+    "snowluma-qq-config",
+    "snowluma-qq-data",
+    "snowluma-extra-accounts",
 )
 _FORBIDDEN_NAMES = frozenset(
     {
