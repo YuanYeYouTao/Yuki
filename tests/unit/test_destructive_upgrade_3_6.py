@@ -186,7 +186,7 @@ def test_constructed_3_5_3_deployment_upgrades_to_0042_without_losing_memory(
     _migrate(db, "0041")
     _migrate(db, "head")
     with sqlite3.connect(db) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0042",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0043",)
         tables = {
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -197,6 +197,8 @@ def test_constructed_3_5_3_deployment_upgrades_to_0042_without_losing_memory(
         assert "conversation_scopes" in tables
         assert "conversation_rollups" in tables
         assert "conversation_rollup_jobs" in tables
+        assert "persons" in tables
+        assert "identity_runtime_state" in tables
         assert "conversation_history_states" not in tables
         assert connection.execute("SELECT content FROM memory_facts").fetchone() == (_SECRET_FACT,)
         assert connection.execute("SELECT COUNT(*) FROM memory_facts").fetchone() == (1,)

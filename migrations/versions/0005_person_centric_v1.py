@@ -124,6 +124,14 @@ def upgrade() -> None:
             "conversation_scopes",
             "conversation_rollups",
             "conversation_rollup_jobs",
+            "persons",
+            "identity_bindings",
+            "spaces",
+            "space_bindings",
+            "presences",
+            "identity_runtime_state",
+            "identity_backfill_runs",
+            "identity_conflicts",
         }
     ]
     Base.metadata.create_all(bind=bind, tables=v1_tables, checkfirst=True)

@@ -418,7 +418,7 @@ def test_alembic_head_rebuilds_v1_rows_then_adds_web_and_relationship_tables(
         chat_event_columns = {
             row[1] for row in connection.execute("PRAGMA table_info(chat_events)").fetchall()
         }
-    assert revision == ("0042",)
+    assert revision == ("0043",)
     assert "visual_summary" in chat_event_columns
     assert "conversations" not in tables
     assert {
@@ -441,6 +441,14 @@ def test_alembic_head_rebuilds_v1_rows_then_adds_web_and_relationship_tables(
         "automation_versions",
         "automation_runs",
         "automation_step_runs",
+        "persons",
+        "identity_bindings",
+        "spaces",
+        "space_bindings",
+        "presences",
+        "identity_runtime_state",
+        "identity_backfill_runs",
+        "identity_conflicts",
     } <= tables
     assert {"origin", "automation_id", "automation_run_id"} <= chat_event_columns
 
@@ -533,4 +541,4 @@ def test_0007_non_destructively_backfills_existing_people(
             """
         ).fetchone() == (50, 50)
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
-    assert revision == ("0042",)
+    assert revision == ("0043",)

@@ -78,7 +78,7 @@ def test_0042_failpoints_restore_schema_data_and_revision(
 
     monkeypatch.setenv("YUKI_MIGRATION_0042_FAILPOINT", failpoint)
     with pytest.raises(RuntimeError, match="0042 injected failure"):
-        command.upgrade(config, "head")
+        command.upgrade(config, "0042")
     monkeypatch.delenv("YUKI_MIGRATION_0042_FAILPOINT")
 
     with sqlite3.connect(path) as connection:
@@ -107,10 +107,20 @@ def test_0042_fresh_upgrade_head_uses_fk_enforced_cutover(
     command.upgrade(config, "head")
 
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0042",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0043",)
         tables = _tables(connection)
         assert _NEW_TABLES <= tables
         assert not (_OLD_ROLLUP_TABLES & tables)
+        assert {
+            "persons",
+            "identity_bindings",
+            "spaces",
+            "space_bindings",
+            "presences",
+            "identity_runtime_state",
+            "identity_backfill_runs",
+            "identity_conflicts",
+        } <= tables
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
@@ -123,7 +133,7 @@ def test_0042_backfills_cutover_boundary_without_rewriting_ledger(
     command.upgrade(config, "0041")
     expected_event = _seed_valid_private_event(path)
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "0042")
 
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0042",)
@@ -186,7 +196,7 @@ def test_0042_rejects_invalid_foreign_keys_without_partial_cutover(
         connection.commit()
 
     with pytest.raises(RuntimeError, match="foreign_key_check failed"):
-        command.upgrade(config, "head")
+        command.upgrade(config, "0042")
 
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0041",)
@@ -203,7 +213,7 @@ def test_0042_downgrade_requires_snapshot_restore(
     path = tmp_path / "irreversible.db"
     config = _config(path, monkeypatch)
     command.upgrade(config, "0041")
-    command.upgrade(config, "head")
+    command.upgrade(config, "0042")
 
     with pytest.raises(RuntimeError, match=r"restore the pre-3\.7\.0 database snapshot"):
         command.downgrade(config, "0041")
