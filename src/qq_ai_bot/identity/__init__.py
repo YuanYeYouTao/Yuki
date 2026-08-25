@@ -1,5 +1,6 @@
-"""Canonical identity persistence owned by the identity domain.
+"""Canonical identity persistence and C7 audited backfill preflight.
 
-Runtime readers, repositories, and control-plane services are later commits.
-This package currently registers schema metadata only.
+Schema modules remain persistence metadata. Backfill lives in classifier,
+repository, and service modules. Control-plane and dual-write are later
+commits.
 """
