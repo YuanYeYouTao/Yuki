@@ -1,0 +1,161 @@
+"""Application query services. Default-deny over DecisionContext."""
+
+from __future__ import annotations
+
+from qq_ai_bot.control_plane.decision import decide
+from qq_ai_bot.control_plane.paging import Page, PageRequest
+from qq_ai_bot.control_plane.principal import ControlPrincipal
+from qq_ai_bot.control_plane.problems import Problem, ProblemCode
+from qq_ai_bot.control_plane.query_port import ControlQueryPort
+from qq_ai_bot.control_plane.query_types import (
+    AuditEventView,
+    BackfillConflictView,
+    BackfillOperationView,
+    ControlQueryError,
+    ConversationView,
+    IdentityBindingView,
+    ManagementHealthView,
+    PersonActiveRouteView,
+    PersonView,
+    PresenceView,
+    SpaceActiveRouteView,
+    SpaceBindingIngestRouteView,
+    SpaceBindingView,
+    SpaceView,
+    SystemSnapshot,
+    YukiSummaryView,
+)
+from qq_ai_bot.domain.control import DecisionContext
+
+
+def _require_context(context: object) -> DecisionContext[ControlPrincipal, object, object]:
+    if type(context) is not DecisionContext:
+        raise TypeError("context must be DecisionContext")
+    if type(context.principal) is not ControlPrincipal:
+        raise TypeError("principal must be ControlPrincipal")
+    return context
+
+
+def _require_capability(
+    context: DecisionContext[ControlPrincipal, object, object],
+    capability: str,
+) -> None:
+    decision = decide(context, capability)
+    if decision.allowed:
+        return
+    problem = (
+        decision.problem if decision.problem is not None else Problem(ProblemCode.CAPABILITY_DENIED)
+    )
+    raise ControlQueryError(problem)
+
+
+def _reveal_external(context: DecisionContext[ControlPrincipal, object, object]) -> bool:
+    return context.principal.allows("identity.binding.read_external")
+
+
+class ControlQueryService:
+    """Authorize then project. Does not invent principals or actors."""
+
+    def __init__(self, port: ControlQueryPort) -> None:
+        if port is None:
+            raise TypeError("port is required")
+        self._port = port
+
+    async def read_system(self, context: object) -> SystemSnapshot:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.system.read")
+        return await self._port.read_system()
+
+    async def read_yuki(self, context: object) -> YukiSummaryView:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.system.read")
+        return await self._port.read_yuki()
+
+    async def read_health(self, context: object) -> ManagementHealthView:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.health.read")
+        return await self._port.read_health()
+
+    async def list_persons(self, context: object, request: PageRequest) -> Page[PersonView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, "identity.person.read")
+        return await self._port.list_persons(request)
+
+    async def list_identity_bindings(
+        self, context: object, request: PageRequest
+    ) -> Page[IdentityBindingView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, "identity.binding.read")
+        return await self._port.list_identity_bindings(
+            request, reveal_external=_reveal_external(authorized)
+        )
+
+    async def list_spaces(self, context: object, request: PageRequest) -> Page[SpaceView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, "identity.space.read")
+        return await self._port.list_spaces(request, reveal_external=_reveal_external(authorized))
+
+    async def list_space_bindings(
+        self, context: object, request: PageRequest
+    ) -> Page[SpaceBindingView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, "identity.space.read")
+        return await self._port.list_space_bindings(
+            request, reveal_external=_reveal_external(authorized)
+        )
+
+    async def list_presences(self, context: object, request: PageRequest) -> Page[PresenceView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, "identity.presence.read")
+        return await self._port.list_presences(
+            request, reveal_external=_reveal_external(authorized)
+        )
+
+    async def list_conversations(
+        self, context: object, request: PageRequest
+    ) -> Page[ConversationView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, "conversation.metadata.read")
+        return await self._port.list_conversations(request)
+
+    async def list_person_active_routes(
+        self, context: object, request: PageRequest
+    ) -> Page[PersonActiveRouteView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, "route.read")
+        return await self._port.list_person_active_routes(request)
+
+    async def list_space_binding_ingest_routes(
+        self, context: object, request: PageRequest
+    ) -> Page[SpaceBindingIngestRouteView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, "route.read")
+        return await self._port.list_space_binding_ingest_routes(request)
+
+    async def list_space_active_routes(
+        self, context: object, request: PageRequest
+    ) -> Page[SpaceActiveRouteView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, "route.read")
+        return await self._port.list_space_active_routes(request)
+
+    async def list_audit_events(
+        self, context: object, request: PageRequest
+    ) -> Page[AuditEventView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.audit.read")
+        return await self._port.list_audit_events(request)
+
+    async def list_backfill_operations(
+        self, context: object, request: PageRequest
+    ) -> Page[BackfillOperationView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.operation.read")
+        return await self._port.list_backfill_operations(request)
+
+    async def list_backfill_conflicts(
+        self, context: object, request: PageRequest
+    ) -> Page[BackfillConflictView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.operation.read")
+        return await self._port.list_backfill_conflicts(request)

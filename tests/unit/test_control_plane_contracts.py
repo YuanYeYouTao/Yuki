@@ -512,8 +512,12 @@ def test_dangerous_capabilities_are_absent_and_web_search_is_legal() -> None:
         "config:llm.model",
     )
     families = {item.family.value for item in CONTROL_CAPABILITY_DESCRIPTORS}
-    assert families == {"identity", "route", "control"}
+    assert families == {"identity", "route", "control", "conversation"}
     assert "identity.binding.read_external" in CONTROL_CAPABILITY_IDS
+    assert "conversation.metadata.read" in CONTROL_CAPABILITY_IDS
+    assert "conversation.content.read" not in CONTROL_CAPABILITY_IDS
+    assert is_protocol_capability("conversation.metadata.read")
+    assert is_protocol_capability("conversation.content.read") is False
     assert len(CONTROL_CAPABILITY_IDS) == len(CONTROL_CAPABILITY_DESCRIPTORS)
 
 
@@ -831,6 +835,14 @@ def test_public_descriptor_constructor_rejects_dangerous_and_inconsistent() -> N
     )
     assert reconnect.id == "control.mcp.server.reconnect"
     assert is_protocol_capability(reconnect.id) is False
+    content = ControlCapabilityDescriptor(
+        id="conversation.content.read",
+        family=CapabilityFamily.CONVERSATION,
+        sensitivity=CapabilitySensitivity.CONTENT_READ,
+        mutating=False,
+    )
+    assert content.id == "conversation.content.read"
+    assert is_protocol_capability(content.id) is False
     with pytest.raises(ValueError, match="forbidden"):
         ControlCapabilityDescriptor(
             id="mcp.github.create_issue",

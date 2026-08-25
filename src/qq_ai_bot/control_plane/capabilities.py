@@ -48,6 +48,7 @@ class CapabilityFamily(StrEnum):
     IDENTITY = "identity"
     ROUTE = "route"
     CONTROL = "control"
+    CONVERSATION = "conversation"
 
 
 @final
@@ -360,6 +361,12 @@ CONTROL_CAPABILITY_DESCRIPTORS: Final[tuple[ControlCapabilityDescriptor, ...]] =
     _descriptor(
         "identity.membership.read",
         CapabilityFamily.IDENTITY,
+        CapabilitySensitivity.METADATA_READ,
+        mutating=False,
+    ),
+    _descriptor(
+        "conversation.metadata.read",
+        CapabilityFamily.CONVERSATION,
         CapabilitySensitivity.METADATA_READ,
         mutating=False,
     ),
