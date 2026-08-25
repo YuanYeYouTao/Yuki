@@ -404,6 +404,65 @@ def test_history_renderer_uses_configured_bot_name_for_missing_event_identity() 
     assert rendered == "[Mika|QQ:9999]\n#8>我在这里"
 
 
+def test_history_renderer_reprojects_ordered_mentions_from_safe_segments() -> None:
+    event = EventRecord(
+        id=9,
+        bot_user_id="9999",
+        platform_message_id="mention-message",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="1001",
+        sender_group_card="远野",
+        direction="inbound",
+        content="旧的丢失提及正文",
+        visual_summary="",
+        segments=(
+            {"type": "at", "data": {"qq": "8001"}},
+            {"type": "text", "data": {"text": "和"}},
+            {"type": "at", "data": {"qq": "1002"}},
+            {"type": "at", "data": {"qq": "1002"}},
+            {"type": "at", "data": {"qq": "all"}},
+        ),
+        occurred_at=datetime.now(UTC),
+        group_id="2001",
+        mentioned_user_ids=("1002",),
+    )
+
+    rendered = ChatEventPromptRenderer(
+        (event,),
+        yuki_account_ids=frozenset({"9999", "8001"}),
+    ).render_reference_event(event)
+
+    assert rendered.endswith(">[提及Yuki]和[提及成员1][提及成员1][提及全体成员]")
+    assert "8001" not in rendered
+
+
+def test_history_renderer_falls_back_without_logging_content_or_ids(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    event = EventRecord(
+        id=919191,
+        bot_user_id="9999",
+        platform_message_id="private-message-id",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="1001",
+        direction="inbound",
+        content="可信回退正文",
+        visual_summary="",
+        segments=({"type": "at", "data": "private-segment-content"},),
+        occurred_at=datetime.now(UTC),
+        group_id="2001",
+    )
+
+    with caplog.at_level("WARNING", logger="qq_ai_bot.event_prompt"):
+        rendered = ChatEventPromptRenderer((event,)).render_reference_event(event)
+
+    assert rendered.endswith(">可信回退正文")
+    assert "historical_segment_projection_fallback category=segment_data_invalid" in caplog.text
+    assert "919191" not in caplog.text
+    assert "private-message-id" not in caplog.text
+    assert "private-segment-content" not in caplog.text
+
+
 def test_main_agent_history_groups_adjacent_messages_from_the_same_identity() -> None:
     now = datetime.now(UTC)
     events = (

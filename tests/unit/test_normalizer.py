@@ -10,7 +10,7 @@ from nonebot.adapters.onebot.v11 import (
 )
 from nonebot.adapters.onebot.v11.event import Reply, Sender
 
-from qq_ai_bot.adapters.onebot.normalizer import normalize_event
+from qq_ai_bot.adapters.onebot.normalizer import normalize_event, reproject_inbound_mentions
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import AttachmentKind
 
@@ -60,7 +60,7 @@ def test_private_text_and_group_mention_normalize() -> None:
     assert private.scope_type is ScopeType.PRIVATE and private.text == "hello"
     assert private.sender.nickname == "tester" and not private.sender.group_card
     assert group.scope_type is ScopeType.GROUP and group.mentions_bot
-    assert group.text == "question" and group.group_id == "2001"
+    assert group.text == "[提及Yuki] question" and group.group_id == "2001"
     assert group.sender.nickname == "tester" and group.sender.group_card == "card"
 
 
@@ -73,14 +73,72 @@ def test_group_mention_uses_original_message_after_nonebot_strips_at() -> None:
     normalized = normalize_event(event)
 
     assert normalized.mentions_bot
-    assert normalized.text == "question"
+    assert normalized.text == "[提及Yuki] question"
 
 
 def test_group_message_with_only_bot_mention_keeps_empty_text_trigger() -> None:
     normalized = normalize_event(group_event(Message([MessageSegment.at(9999)])))
 
     assert normalized.mentions_bot
-    assert normalized.text == ""
+    assert normalized.text == "[提及Yuki]"
+
+
+def test_original_message_is_the_only_authoritative_segment_source() -> None:
+    original = Message(
+        [
+            MessageSegment.text("原始"),
+            MessageSegment.at(12345678),
+            MessageSegment.text("内容"),
+        ]
+    )
+    event = group_event(Message("被适配器改写的内容"))
+    event.original_message = original
+
+    normalized = normalize_event(event)
+
+    assert normalized.text == "原始[提及成员1]内容"
+    assert normalized.mentioned_user_ids == ("12345678",)
+    assert "被适配器改写" not in normalized.text
+
+
+def test_mentions_keep_order_and_reuse_member_indices_across_yuki_presences() -> None:
+    normalized = normalize_event(
+        group_event(
+            Message(
+                [
+                    MessageSegment.at(8001),
+                    MessageSegment.text("和"),
+                    MessageSegment.at(12345678),
+                    MessageSegment.at("all"),
+                    MessageSegment.at(12345678),
+                    MessageSegment.at(87654321),
+                    MessageSegment.at(9999),
+                ]
+            )
+        ),
+        yuki_account_ids=frozenset({"8001"}),
+    )
+
+    assert normalized.mentions_bot
+    assert normalized.mentioned_user_ids == ("12345678", "87654321")
+    assert normalized.text == (
+        "[提及Yuki]和[提及成员1][提及全体成员][提及成员1][提及成员2][提及Yuki]"
+    )
+
+
+def test_canonical_reprojection_reclassifies_another_presence() -> None:
+    normalized = normalize_event(
+        group_event(Message([MessageSegment.at(8001), MessageSegment.text("回来啦")]))
+    )
+    assert normalized.text == "[提及成员1]回来啦"
+    assert normalized.mentioned_user_ids == ("8001",)
+
+    projected = reproject_inbound_mentions(normalized, frozenset({"9999", "8001"}))
+
+    assert projected.text == "[提及Yuki]回来啦"
+    assert projected.mentions_bot
+    assert projected.mentioned_user_ids == ()
+    assert projected.yuki_account_ids == frozenset({"9999", "8001"})
 
 
 def test_other_member_mentions_use_opaque_placeholders() -> None:
@@ -132,6 +190,28 @@ def test_reply_text_and_face_placeholder_are_supported() -> None:
     normalized = normalize_event(event)
     assert normalized.reply_text == "quoted"
     assert "[QQ表情：微笑]" in normalized.text
+
+
+def test_reply_text_uses_the_same_yuki_and_member_projection() -> None:
+    event = group_event(Message("继续"))
+    event.reply = Reply(
+        time=1,
+        message_type="group",
+        message_id=8,
+        real_id=8,
+        sender=Sender(user_id=1002),
+        message=Message(
+            [
+                MessageSegment.at(8001),
+                MessageSegment.text("与"),
+                MessageSegment.at(12345678),
+            ]
+        ),
+    )
+
+    normalized = normalize_event(event, yuki_account_ids=frozenset({"8001"}))
+
+    assert normalized.reply_text == "[提及Yuki]与[提及成员1]"
 
 
 def test_unsupported_attachment_is_metadata_only() -> None:

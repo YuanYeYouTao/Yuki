@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.adapters.onebot.normalizer import reproject_inbound_mentions
 from qq_ai_bot.conversation.hydrate import HydratedConversation, ensure_canonical_conversation
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.identity import AuthorKind
@@ -60,15 +61,13 @@ def overlay_yuki_signals(
     message: InboundMessage,
     yuki_account_ids: frozenset[str],
 ) -> InboundMessage:
-    """Rewrite mention/self using every same-platform Yuki Presence. v1 normalizer unchanged."""
+    """Rewrite mention text and self using every same-platform Yuki Presence."""
 
-    mentions = message.mentions_bot or any(
-        item in yuki_account_ids for item in message.mentioned_user_ids
-    )
-    is_self = message.sender.user_id in yuki_account_ids
-    if mentions == message.mentions_bot and is_self == message.is_self_message:
-        return message
-    return replace(message, mentions_bot=mentions, is_self_message=is_self)
+    projected = reproject_inbound_mentions(message, yuki_account_ids)
+    is_self = projected.sender.user_id in yuki_account_ids
+    if is_self == projected.is_self_message:
+        return projected
+    return replace(projected, is_self_message=is_self)
 
 
 def _drop(reason: str, message: InboundMessage) -> IngressPreAdmit:

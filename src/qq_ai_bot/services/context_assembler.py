@@ -1171,6 +1171,7 @@ class ContextAssembler:
             recent,
             bot_display_name=self._settings.bot_display_name,
             timezone=self._settings.default_timezone,
+            yuki_account_ids=inbound.yuki_account_ids,
         )
         if current_event is not None:
             history_rows = tuple(row for row in recent if row.id != current_event.id)
@@ -1378,6 +1379,7 @@ class ContextAssembler:
             (*recent, *((current_event,) if current_event is not None else ())),
             bot_display_name=bot_display_name,
             timezone=timezone,
+            yuki_account_ids=inbound.yuki_account_ids,
         )
         current_row = current_event or next(
             (row for row in reversed(recent) if row.platform_message_id == inbound.message_id),

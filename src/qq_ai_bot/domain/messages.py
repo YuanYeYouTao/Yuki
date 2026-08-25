@@ -144,6 +144,7 @@ class InboundMessage:
     space_id: str | None = None
     conversation_id: str | None = None
     presence_id: str | None = None
+    yuki_account_ids: frozenset[str] = frozenset()
 
     def replies_to_yuki(self, *, yuki_account_ids: frozenset[str] = frozenset()) -> bool:
         """Reply-to-Yuki: canonical verdict wins; None allows Presence-id fallback."""
