@@ -34,6 +34,13 @@ from qq_ai_bot.memory.models import (
     MemoryFactQuery,
     MemoryResolutionPlan,
 )
+from qq_ai_bot.memory.partition import (
+    MemoryFactCanonicalOwners,
+    MemoryPartitionResolutionError,
+    canonical_fact_owner_complete,
+    resolve_active_person_id,
+    resolve_fact_canonical_owners,
+)
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.validation import ValidatedMemoryClaim, normalize_memory_text
 
@@ -87,6 +94,86 @@ class MemoryFactService:
     @property
     def repository(self) -> MemoryFactRepository:
         return self._repository
+
+    async def resolve_person_id(
+        self,
+        user_id: str,
+        *,
+        session: AsyncSession | None = None,
+    ) -> str | None:
+        """Resolve one external account to its active canonical Person, fail closed."""
+
+        if session is None:
+            async with self._repository.transaction() as owned:
+                return await self.resolve_person_id(user_id, session=owned)
+        try:
+            return await resolve_active_person_id(session, user_id)
+        except MemoryPartitionResolutionError:
+            return None
+
+    async def person_owns_fact(
+        self,
+        fact: MemoryFact,
+        *,
+        actor_user_id: str,
+        session: AsyncSession | None = None,
+    ) -> bool:
+        """Check Person ownership by Binding, never by the provenance QQ column."""
+
+        if session is None:
+            async with self._repository.transaction() as owned:
+                return await self.person_owns_fact(
+                    fact,
+                    actor_user_id=actor_user_id,
+                    session=owned,
+                )
+        if fact.scope_type not in {MemoryScopeType.PERSON, MemoryScopeType.PERSON_GROUP}:
+            return False
+        actor_person_id = await self.resolve_person_id(actor_user_id, session=session)
+        return bool(
+            actor_person_id
+            and fact.canonical_subject_person_id
+            and actor_person_id == fact.canonical_subject_person_id
+        )
+
+    @staticmethod
+    def persisted_target_owners(fact: MemoryFact) -> MemoryFactCanonicalOwners:
+        """Return the authoritative canonical owner tuple for a persisted fact."""
+
+        if not canonical_fact_owner_complete(fact):
+            raise MemoryPartitionResolutionError("incomplete_fact_owner")
+        return MemoryFactCanonicalOwners(
+            subject_person_id=fact.canonical_subject_person_id,
+            subject_space_id=fact.canonical_subject_space_id,
+            visibility_person_id=fact.canonical_visibility_person_id,
+            visibility_space_id=fact.canonical_visibility_space_id,
+        )
+
+    @staticmethod
+    async def requested_target_owners(
+        target: object,
+        *,
+        session: AsyncSession,
+    ) -> MemoryFactCanonicalOwners:
+        """Resolve an external target description to its canonical owners."""
+
+        return await resolve_fact_canonical_owners(session, target)
+
+    @staticmethod
+    def target_signature(
+        *,
+        scope_type: MemoryScopeType,
+        visibility_type: object | None,
+        owners: MemoryFactCanonicalOwners,
+    ) -> tuple[object, ...]:
+        return (
+            scope_type,
+            owners.subject_person_id,
+            owners.subject_space_id,
+            visibility_type,
+            owners.visibility_person_id,
+            owners.visibility_space_id,
+        )
 
     async def list_evidence_lineage(
         self,
@@ -234,7 +321,7 @@ class MemoryFactService:
             if result is not None and result.status is MemoryStatus.ACTIVE and plan.create_new_fact:
                 await self.schedule_embedding(result.id)
             return result
-        self._validate_plan(claim, candidates, plan)
+        await self._validate_plan(claim, candidates, plan, session=session)
         evidence = claim.evidence
         existing_id = plan.existing_fact_id
         if plan.action is MemoryResolutionAction.NOOP:
@@ -429,31 +516,28 @@ class MemoryFactService:
             )
         )
 
-    @staticmethod
-    def _validate_plan(
+    async def _validate_plan(
+        self,
         claim: ValidatedMemoryClaim,
         candidates: tuple[MemoryCandidate, ...],
         plan: MemoryResolutionPlan,
+        *,
+        session: AsyncSession,
     ) -> None:
         by_id = {candidate.fact.id: candidate.fact for candidate in candidates}
         if plan.existing_fact_id is not None and plan.existing_fact_id not in by_id:
             raise ValueError("memory resolution plan references an unbounded candidate")
-        target = (
-            claim.fact.scope_type,
-            claim.fact.subject_user_id,
-            claim.fact.group_id,
-            claim.fact.visibility_type,
-            claim.fact.visibility_user_id,
-            claim.fact.visibility_group_id,
+        claim_owners = await self.requested_target_owners(claim.fact, session=session)
+        target = self.target_signature(
+            scope_type=claim.fact.scope_type,
+            visibility_type=claim.fact.visibility_type,
+            owners=claim_owners,
         )
         if any(
-            (
-                row.scope_type,
-                row.subject_user_id,
-                row.group_id,
-                row.visibility_type,
-                row.visibility_user_id,
-                row.visibility_group_id,
+            self.target_signature(
+                scope_type=row.scope_type,
+                visibility_type=row.visibility_type,
+                owners=self.persisted_target_owners(row),
             )
             != target
             for row in by_id.values()
@@ -589,13 +673,17 @@ class MemoryFactService:
             current is None
             or current.status is not MemoryStatus.ACTIVE
             or current.scope_type is not MemoryScopeType.PERSON
-            or current.subject_user_id != user_id
+            or not await self.person_owns_fact(
+                current,
+                actor_user_id=user_id,
+                session=session,
+            )
         ):
             return None
         return await self.remember(
             MemoryFactCreate(
                 scope_type=current.scope_type,
-                subject_user_id=user_id,
+                subject_user_id=current.subject_user_id,
                 kind=current.kind,
                 memory_key=current.memory_key,
                 category=current.category,
@@ -623,7 +711,12 @@ class MemoryFactService:
         fact = await self._repository.get_fact(fact_id, session=session)
         if (
             fact is None
-            or fact.subject_user_id != user_id
+            or fact.scope_type is not MemoryScopeType.PERSON
+            or not await self.person_owns_fact(
+                fact,
+                actor_user_id=user_id,
+                session=session,
+            )
             or fact.status is MemoryStatus.INVALIDATED
         ):
             return False
@@ -683,7 +776,12 @@ class MemoryFactService:
                     session=session,
                 )
                 if (
-                    current.subject_user_id == evidence.source_speaker_user_id
+                    current.canonical_subject_person_id is not None
+                    and await self.person_owns_fact(
+                        current,
+                        actor_user_id=evidence.source_speaker_user_id,
+                        session=session,
+                    )
                     and current.conflict_state is MemoryConflictState.CONTESTED
                 ):
                     await self._resolve_by_subject_confirmation(
@@ -830,21 +928,15 @@ class MemoryFactService:
         collision = await self._repository.find_active(replacement, session=session)
         if collision is not None and collision.id != current.id:
             raise ValueError("memory replacement target already has an active fact for this key")
-        old_target = (
-            current.scope_type,
-            current.subject_user_id,
-            current.group_id,
-            current.visibility_type,
-            current.visibility_user_id,
-            current.visibility_group_id,
+        old_target = self.target_signature(
+            scope_type=current.scope_type,
+            visibility_type=current.visibility_type,
+            owners=self.persisted_target_owners(current),
         )
-        new_target = (
-            replacement.scope_type,
-            replacement.subject_user_id,
-            replacement.group_id,
-            replacement.visibility_type,
-            replacement.visibility_user_id,
-            replacement.visibility_group_id,
+        new_target = self.target_signature(
+            scope_type=replacement.scope_type,
+            visibility_type=replacement.visibility_type,
+            owners=await self.requested_target_owners(replacement, session=session),
         )
         if old_target != new_target and limit is not None:
             query = MemoryFactQuery(
@@ -1272,21 +1364,15 @@ class MemoryFactService:
             return None
         if source.status not in {MemoryStatus.ACTIVE, MemoryStatus.CONTESTED}:
             raise ValueError("memory merge source must be active or contested")
-        source_target = (
-            source.scope_type,
-            source.subject_user_id,
-            source.group_id,
-            source.visibility_type,
-            source.visibility_user_id,
-            source.visibility_group_id,
+        source_target = self.target_signature(
+            scope_type=source.scope_type,
+            visibility_type=source.visibility_type,
+            owners=self.persisted_target_owners(source),
         )
-        target_target = (
-            target.scope_type,
-            target.subject_user_id,
-            target.group_id,
-            target.visibility_type,
-            target.visibility_user_id,
-            target.visibility_group_id,
+        target_target = self.target_signature(
+            scope_type=target.scope_type,
+            visibility_type=target.visibility_type,
+            owners=self.persisted_target_owners(target),
         )
         if source_target != target_target:
             raise ValueError("memory merge cannot cross identity targets")
@@ -1364,12 +1450,11 @@ class MemoryFactService:
             }:
                 raise ValueError("preferred memory fact is not resolvable")
             target = (
-                preferred.scope_type,
-                preferred.subject_user_id,
-                preferred.group_id,
-                preferred.visibility_type,
-                preferred.visibility_user_id,
-                preferred.visibility_group_id,
+                *self.target_signature(
+                    scope_type=preferred.scope_type,
+                    visibility_type=preferred.visibility_type,
+                    owners=self.persisted_target_owners(preferred),
+                ),
                 preferred.kind,
                 preferred.memory_key,
             )
@@ -1381,12 +1466,11 @@ class MemoryFactService:
                 if fact.status not in {MemoryStatus.ACTIVE, MemoryStatus.CONTESTED}:
                     raise ValueError("conflict alternative is not active or contested")
                 if (
-                    fact.scope_type,
-                    fact.subject_user_id,
-                    fact.group_id,
-                    fact.visibility_type,
-                    fact.visibility_user_id,
-                    fact.visibility_group_id,
+                    *self.target_signature(
+                        scope_type=fact.scope_type,
+                        visibility_type=fact.visibility_type,
+                        owners=self.persisted_target_owners(fact),
+                    ),
                     fact.kind,
                     fact.memory_key,
                 ) != target:

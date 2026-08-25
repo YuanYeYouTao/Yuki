@@ -1,8 +1,8 @@
 """Transport-neutral admin targets. Persistence-free and I/O-free.
 
-These name an already-resolved v1 storage key plus an optional canonical
-Person/Space. Callers must not invent a PersonId or SpaceId here; missing
-bindings stay None.
+These carry a resolved canonical Person/Space plus the current persistence
+key required by the pre-0049 schema. Callers must not invent canonical IDs;
+missing bindings stay unresolved and fail closed.
 """
 
 from __future__ import annotations

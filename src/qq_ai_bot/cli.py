@@ -8,7 +8,7 @@ import json
 import os
 from dataclasses import asdict
 from pathlib import Path
-from typing import Literal, cast
+from typing import cast
 from uuid import uuid4
 
 from alembic import command
@@ -258,97 +258,6 @@ def _add_diagnostics_parsers(
     search.add_argument("query")
     search.add_argument("--limit", type=int, default=8)
     runtime_commands.add_parser("memory-session")
-
-
-def _add_identity_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    identity = subparsers.add_parser("identity", help="Canonical identity 只读预检与幂等回填")
-    commands = identity.add_subparsers(dest="identity_command", required=True)
-    backfill = commands.add_parser("backfill", help="按冻结分类规则回填 canonical identity")
-    mode = backfill.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--dry-run", action="store_true", help="只读分类，不写数据库")
-    mode.add_argument("--apply", action="store_true", help="在 BEGIN IMMEDIATE 内幂等回填")
-    backfill.add_argument("--format", choices=("json", "text"), default="json")
-    backfill.add_argument("--database-url")
-
-
-def _identity_command(settings: Settings, args: argparse.Namespace) -> int:
-    from qq_ai_bot.identity.backfill_repository import sqlite_path_from_url
-    from qq_ai_bot.identity.backfill_service import IdentityBackfillService
-    from qq_ai_bot.identity.backfill_types import BackfillSettingsInput, failed_report
-    from qq_ai_bot.identity.errors import IdentityBackfillError
-    from qq_ai_bot.identity.reporting import render_report
-
-    if args.identity_command != "backfill":
-        return 1
-    mode: Literal["apply", "dry_run"] = "apply" if args.apply else "dry_run"
-    try:
-        url = str(args.database_url or settings.database_url)
-        service = IdentityBackfillService(
-            sqlite_path_from_url(url),
-            BackfillSettingsInput(
-                superusers=settings.superusers,
-                enabled_groups=settings.enabled_groups,
-                ignored_bot_users=settings.ignored_bot_users,
-            ),
-        )
-        report = service.apply() if args.apply else service.dry_run()
-    except IdentityBackfillError as exc:
-        report = failed_report(mode, exc.category)
-    except (KeyboardInterrupt, SystemExit):
-        raise
-    except Exception:
-        report = failed_report(mode, "operational_error")
-    print(render_report(report, str(args.format)))
-    return IdentityBackfillService.exit_code(report)
-
-
-def _add_identity_cutover_parser(
-    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
-) -> None:
-    cutover = subparsers.add_parser("identity-cutover", help="停机 identity cutover plan/apply")
-    mode = cutover.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--plan", action="store_true", help="校验并生成不可变 source manifest")
-    mode.add_argument("--apply", metavar="MANIFEST", help="按 manifest 指纹原子翻转 v2")
-    cutover.add_argument("--git-revision", required=True)
-    cutover.add_argument("--expected-revision")
-    cutover.add_argument("--downtime-token", required=True)
-    cutover.add_argument("--snapshot-db", required=True)
-    cutover.add_argument("--snapshot-wal", required=True)
-    cutover.add_argument("--snapshot-shm", required=True)
-    cutover.add_argument("--format", choices=("json", "text"), default="json")
-    cutover.add_argument("--database-url")
-
-
-def _identity_cutover_command(settings: Settings, args: argparse.Namespace) -> int:
-    from qq_ai_bot.identity.backfill_repository import sqlite_path_from_url
-    from qq_ai_bot.identity.cutover_reporting import render_cutover_report
-    from qq_ai_bot.identity.cutover_service import IdentityCutoverService
-    from qq_ai_bot.identity.cutover_types import CutoverSettingsInput, failed_cutover_report
-    from qq_ai_bot.identity.errors import IdentityCutoverError
-
-    mode: Literal["plan", "apply"] = "apply" if args.apply else "plan"
-    try:
-        url = str(args.database_url or settings.database_url)
-        service = IdentityCutoverService(
-            sqlite_path_from_url(url),
-            CutoverSettingsInput(
-                expected_git_revision=str(args.expected_revision or args.git_revision),
-                git_revision=str(args.git_revision),
-                downtime_token=str(args.downtime_token),
-                snapshot_db=str(args.snapshot_db),
-                snapshot_wal=str(args.snapshot_wal),
-                snapshot_shm=str(args.snapshot_shm),
-            ),
-        )
-        report = service.apply(str(args.apply)) if args.apply else service.plan()
-    except IdentityCutoverError as exc:
-        report = failed_cutover_report(mode, exc.category)
-    except (KeyboardInterrupt, SystemExit):
-        raise
-    except Exception:
-        report = failed_cutover_report(mode, "operational_error")
-    print(render_cutover_report(report, str(args.format)))
-    return IdentityCutoverService.exit_code(report)
 
 
 def _add_memory_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -1168,8 +1077,6 @@ def main() -> None:
     _add_speech_parser(subparsers)
     _add_diagnostics_parsers(subparsers)
     _add_memory_parser(subparsers)
-    _add_identity_parser(subparsers)
-    _add_identity_cutover_parser(subparsers)
     args = parser.parse_args()
     if args.command == "setup":
         raise SystemExit(run_setup_command(args))
@@ -1217,10 +1124,6 @@ def main() -> None:
         raise SystemExit(asyncio.run(_runtime_diagnostics(settings, args)))
     elif args.command == "memory":
         raise SystemExit(asyncio.run(_memory_command(settings, args)))
-    elif args.command == "identity":
-        raise SystemExit(_identity_command(settings, args))
-    elif args.command == "identity-cutover":
-        raise SystemExit(_identity_cutover_command(settings, args))
 
 
 if __name__ == "__main__":

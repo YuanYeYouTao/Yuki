@@ -43,10 +43,6 @@ class AuthorityContext(StrictModel):
     allowed_capabilities: frozenset[str] = Field(default_factory=frozenset)
 
 
-def permission_for(settings: Settings, user_id: str) -> PermissionLevel:
-    return PermissionLevel.SUPERUSER if user_id in settings.superusers else PermissionLevel.USER
-
-
 def permission_for_accounts(settings: Settings, account_ids: Iterable[str]) -> PermissionLevel:
     """Current role from live account ids. Empty input is a regular user."""
 
@@ -60,19 +56,11 @@ def effective_delegated_capabilities(
     *,
     settings: Settings,
     registry: AutomationCapabilityRegistry,
-    current_permission: PermissionLevel | None = None,
+    current_permission: PermissionLevel,
 ) -> frozenset[str]:
-    """Intersect the immutable grant with current registry and creator permission.
+    """Intersect the immutable grant with the Person's current live permission."""
 
-    v1 omits ``current_permission`` and keeps the raw snapshot QQ baseline.
-    complete-v2 must pass the Person principal's live PermissionLevel.
-    """
-
-    resolved = (
-        current_permission
-        if current_permission is not None
-        else permission_for(settings, authority.creator_user_id)
-    )
+    resolved = current_permission
     if authority.permission_level is PermissionLevel.SUPERUSER and (
         resolved is not PermissionLevel.SUPERUSER
     ):

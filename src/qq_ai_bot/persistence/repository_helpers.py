@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import or_
-from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -19,18 +18,16 @@ from qq_ai_bot.domain.relationships import (
     relationship_weight,
     stage_for_score,
 )
-from qq_ai_bot.identity.dual_write import (
+from qq_ai_bot.identity.canonical_projections import resolve_canonical_relationship
+from qq_ai_bot.identity.canonical_repository import (
     AccountRole,
-    require_v1_runtime,
-    sync_account,
-    sync_space,
+    ensure_person,
+    ensure_presence,
+    ensure_space,
 )
-from qq_ai_bot.identity.errors import IdentityDualWriteError
-from qq_ai_bot.identity.shadows import fill_person_space_shadows
+from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
-    GroupModel,
-    PersonModel,
     PersonRelationshipModel,
     RelationshipEventModel,
 )
@@ -49,7 +46,7 @@ def suppression_is_canonical_live(status: str | None) -> bool:
 
 
 def keeper_event_clause() -> ColumnElement[bool]:
-    """SQLAlchemy live-event filter shared by complete-v2 history, rollup, and Memory."""
+    """SQLAlchemy live-event filter shared by canonical history, rollup, and Memory."""
 
     return or_(
         ChatEventModel.suppression_status.is_(None),
@@ -74,39 +71,16 @@ async def _ensure_person(
     is_bot: bool = False,
     now: datetime | None = None,
     canonical_role: AccountRole | None = None,
-) -> PersonModel:
+) -> str | None:
+    """Ensure a canonical account owner without creating a legacy carrier."""
+
     timestamp = now or datetime.now(UTC)
-    await require_v1_runtime(session)
-    person = await session.get(PersonModel, user_id)
-    if person is None:
-        await session.execute(
-            insert(PersonModel)
-            .values(
-                user_id=user_id,
-                nickname=nickname,
-                enabled=True,
-                is_bot=is_bot,
-                first_seen_at=timestamp,
-                last_seen_at=timestamp,
-            )
-            .on_conflict_do_nothing(index_elements=["user_id"])
-        )
-        person = await session.get(PersonModel, user_id)
-        if person is None:
-            raise IdentityDualWriteError("unclassified")
-    if nickname:
-        person.nickname = nickname
-    person.is_bot = person.is_bot or is_bot
-    person.last_seen_at = timestamp
-    await sync_account(
-        session,
-        user_id,
-        role=canonical_role,
-        is_bot=person.is_bot,
-        display_name=person.nickname,
-        now=timestamp,
-    )
-    return person
+    role = canonical_role or ("external_bot" if is_bot else "human")
+    if role == "yuki_self":
+        return await ensure_presence(session, user_id, now=timestamp)
+    if role == "external_bot":
+        return None
+    return await ensure_person(session, user_id, display_name=nickname, now=timestamp)
 
 
 async def _ensure_relationship(
@@ -118,31 +92,16 @@ async def _ensure_relationship(
     now: datetime | None = None,
 ) -> PersonRelationshipModel:
     timestamp = now or datetime.now(UTC)
-    row = await session.get(PersonRelationshipModel, user_id)
-    if row is None:
-        await session.execute(
-            insert(PersonRelationshipModel)
-            .values(
-                user_id=user_id,
-                affection_score=initial_affection,
-                trust_score=initial_trust,
-                created_at=timestamp,
-                updated_at=timestamp,
-                last_automatic_change_at=None,
-            )
-            .on_conflict_do_nothing(index_elements=["user_id"])
-        )
-        row = await session.get(PersonRelationshipModel, user_id)
-        if row is None:
-            raise IdentityDualWriteError("unclassified")
-    await fill_person_space_shadows(
+    row = await resolve_canonical_relationship(
         session,
-        row,
-        person_attr="canonical_person_id",
-        space_attr=None,
-        user_id=user_id,
-        group_id=None,
+        user_id,
+        create=True,
+        initial_affection=initial_affection,
+        initial_trust=initial_trust,
+        now=timestamp,
     )
+    if row is None:
+        raise CanonicalIdentityError("unclassified")
     return row
 
 
@@ -153,44 +112,14 @@ async def _ensure_group(
     name: str = "",
     enabled: bool | None = None,
     now: datetime | None = None,
-) -> GroupModel:
-    timestamp = now or datetime.now(UTC)
-    await require_v1_runtime(session)
-    group = await session.get(GroupModel, group_id)
-    if group is None:
-        await session.execute(
-            insert(GroupModel)
-            .values(
-                group_id=group_id,
-                name=name,
-                enabled=bool(enabled),
-                require_mention=True,
-                autonomous_enabled=True,
-                first_seen_at=timestamp,
-                last_seen_at=timestamp,
-                updated_at=timestamp,
-            )
-            .on_conflict_do_nothing(index_elements=["group_id"])
-        )
-        group = await session.get(GroupModel, group_id)
-        if group is None:
-            raise IdentityDualWriteError("unclassified")
-    if name:
-        group.name = name
-    if enabled is not None:
-        group.enabled = enabled
-    group.last_seen_at = timestamp
-    group.updated_at = timestamp
-    await sync_space(
+) -> str:
+    return await ensure_space(
         session,
         group_id,
-        name=group.name,
-        enabled=group.enabled,
-        autonomous_enabled=group.autonomous_enabled,
-        require_mention=group.require_mention,
-        now=timestamp,
+        name=name,
+        enabled=True if enabled is None else enabled,
+        now=now or datetime.now(UTC),
     )
-    return group
 
 
 def _row_value(row: ChatEventModel | Mapping[str, Any], name: str) -> Any:

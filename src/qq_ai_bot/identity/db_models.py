@@ -1,6 +1,6 @@
 """SQLAlchemy models for the canonical identity foundation tables.
 
-These models register schema only. They do not implement backfill, routing,
+These models register schema only. They do not implement routing,
 or control-plane behavior.
 """
 

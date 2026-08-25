@@ -12,7 +12,7 @@ from typing import Any, Protocol
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.gateway.registry import GatewayConnectionRegistry, RegistryClosed
-from qq_ai_bot.identity.inventory import IDENTITY_PLATFORM
+from qq_ai_bot.identity.canonical_repository import IDENTITY_PLATFORM
 from qq_ai_bot.identity.routing import PresenceRouter, ResolvedSend, RouteSendError
 from qq_ai_bot.persistence.repositories import AgentActionRepository, EventLedgerRepository
 

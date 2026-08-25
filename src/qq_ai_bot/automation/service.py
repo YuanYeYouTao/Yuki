@@ -12,7 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.admin.audit import AdminAuditService
 from qq_ai_bot.admin.models import ControlAuditRef
-from qq_ai_bot.automation.authority import DelegatedAuthority, PermissionLevel, permission_for
+from qq_ai_bot.automation.authority import (
+    DelegatedAuthority,
+    PermissionLevel,
+    permission_for_accounts,
+)
 from qq_ai_bot.automation.compiler import AutomationCompiler, ExecutionPlan, TaskSpec
 from qq_ai_bot.automation.models import (
     AutomationRecord,
@@ -88,7 +92,7 @@ class AutomationService:
             task = TaskSpec.model_validate(task_payload)
         except ValidationError as exc:
             raise ValueError(f"任务规格格式错误：{exc.errors()[0]['msg']}") from exc
-        provenance = self._creation_provenance(inbound)
+        _creator_person_id, _permission, provenance = await self._creator_context(inbound)
         plan = self._compiler.compile(
             task,
             provenance,
@@ -111,18 +115,24 @@ class AutomationService:
     ) -> tuple[AutomationRecord, ExecutionPlan]:
         """Create a follow-up task under the original creator's trusted authority."""
 
-        inbound = self._delegated_inbound("create", task_payload, context=context)
+        creator_person_id, creator_account_id = await self._delegated_creator(context)
+        inbound = self._delegated_inbound(
+            "create",
+            task_payload,
+            context=context,
+            creator_user_id=creator_account_id,
+        )
         try:
             task = TaskSpec.model_validate(task_payload)
         except ValidationError as exc:
             raise ValueError(f"任务规格格式错误：{exc.errors()[0]['msg']}") from exc
         plan = self._compiler.compile(
             task,
-            self._creation_provenance(inbound),
+            (await self._creator_context(inbound))[2],
             default_timezone=context.timezone,
         )
         existing = await self._repository.get_by_creation_key(
-            context.creator_user_id,
+            creator_person_id,
             inbound.message_id,
         )
         if existing is not None:
@@ -142,10 +152,12 @@ class AutomationService:
         *,
         context: CapabilityExecutionContext,
     ) -> tuple[AutomationRecord, ExecutionPlan]:
+        _creator_person_id, creator_account_id = await self._delegated_creator(context)
         inbound = self._delegated_inbound(
             "update",
             {"automation_id": automation_id, "task": task_payload},
             context=context,
+            creator_user_id=creator_account_id,
         )
         return await self.update_task(
             automation_id,
@@ -160,8 +172,12 @@ class AutomationService:
         *,
         context: CapabilityExecutionContext,
     ) -> bool:
+        _creator_person_id, creator_account_id = await self._delegated_creator(context)
         inbound = self._delegated_inbound(
-            "cancel", {"automation_id": automation_id}, context=context
+            "cancel",
+            {"automation_id": automation_id},
+            context=context,
+            creator_user_id=creator_account_id,
         )
         return await self.cancel(
             automation_id,
@@ -175,8 +191,12 @@ class AutomationService:
         *,
         context: CapabilityExecutionContext,
     ) -> bool:
+        _creator_person_id, creator_account_id = await self._delegated_creator(context)
         inbound = self._delegated_inbound(
-            "run_now", {"automation_id": automation_id}, context=context
+            "run_now",
+            {"automation_id": automation_id},
+            context=context,
+            creator_user_id=creator_account_id,
         )
         return await self.run_now(
             automation_id,
@@ -200,7 +220,7 @@ class AutomationService:
             raise ValueError(f"任务规格格式错误：{exc.errors()[0]['msg']}") from exc
         plan = self._compiler.compile(
             task,
-            self._creation_provenance(inbound),
+            (await self._creator_context(inbound))[2],
             default_timezone=await self._time.timezone_for(inbound.sender.user_id),
         )
         row = await self.update(
@@ -276,15 +296,14 @@ class AutomationService:
         except ValidationError as exc:
             raise ValueError(f"自动化脚本格式错误：{exc.errors()[0]['msg']}") from exc
         now = self._time.clock.now()
-        permission = permission_for(self._settings, inbound.sender.user_id)
-        provenance = self._creation_provenance(inbound)
+        creator_person_id, permission, provenance = await self._creator_context(inbound)
         validated = self._validator.validate(script, provenance, now_utc=now)
         maximum = (
             self._settings.automation_max_active_per_superuser
             if permission.value == "superuser"
             else self._settings.automation_max_active_per_user
         )
-        if await self._repository.active_count(inbound.sender.user_id) >= maximum:
+        if await self._repository.active_count(creator_person_id) >= maximum:
             raise ValueError(f"当前用户最多同时启用 {maximum} 个自动化任务")
         authority = DelegatedAuthority(
             creator_user_id=inbound.sender.user_id,
@@ -303,6 +322,7 @@ class AutomationService:
         row = await self._repository.create(
             validated,
             authority,
+            creator_person_id=creator_person_id,
             max_runs=max_runs,
             misfire_grace_seconds=self._settings.automation_default_misfire_grace_seconds,
             now=now,
@@ -325,24 +345,16 @@ class AutomationService:
         inbound: InboundMessage,
         conversation_key: str,
     ) -> AutomationRecord:
-        existing = await self.require_owned(automation_id, inbound.sender.user_id)
+        creator_person_id, permission, provenance = await self._creator_context(inbound)
+        existing = await self._require_owned_person(automation_id, creator_person_id)
         try:
             script = AutomationScript.model_validate(script_payload)
         except ValidationError as exc:
             raise ValueError(f"自动化脚本格式错误：{exc.errors()[0]['msg']}") from exc
         now = self._time.clock.now()
-        permission = permission_for(self._settings, inbound.sender.user_id)
         validated = self._validator.validate(
             script,
-            CreationProvenance(
-                creator_user_id=inbound.sender.user_id,
-                bot_user_id=inbound.bot_user_id,
-                message_id=inbound.message_id,
-                original_text=inbound.text,
-                current_group_id=inbound.group_id,
-                mentioned_user_ids=inbound.mentioned_user_ids,
-                permission=permission,
-            ),
+            provenance,
             now_utc=now,
         )
         authority = DelegatedAuthority(
@@ -361,7 +373,7 @@ class AutomationService:
         )
         row = await self._repository.update_script(
             automation_id,
-            creator_user_id=inbound.sender.user_id,
+            creator_person_id=creator_person_id,
             validated=validated,
             authority=authority,
             now=now,
@@ -382,34 +394,36 @@ class AutomationService:
         """Return all tasks for backwards-compatible internal callers."""
 
         self._require_enabled()
-        return await self._repository.list_for_creator(creator_user_id)
+        creator_person_id = await self._resolve_creator_person(creator_user_id)
+        return await self._repository.list_for_creator(creator_person_id)
 
     async def list_current(self, creator_user_id: str) -> tuple[AutomationRecord, ...]:
         """Return only active and paused tasks in current display order."""
 
         self._require_enabled()
-        return await self._repository.list_current_for_creator(creator_user_id)
+        creator_person_id = await self._resolve_creator_person(creator_user_id)
+        return await self._repository.list_current_for_creator(creator_person_id)
 
     async def list_completed(self, creator_user_id: str) -> tuple[AutomationRecord, ...]:
         """Return terminal tasks in a separate newest-first history queue."""
 
         self._require_enabled()
-        return await self._repository.list_terminal_for_creator(creator_user_id)
+        creator_person_id = await self._resolve_creator_person(creator_user_id)
+        return await self._repository.list_terminal_for_creator(creator_person_id)
 
     async def require_owned(self, automation_id: int, creator_user_id: str) -> AutomationRecord:
         self._require_enabled()
-        row = await self._repository.get(automation_id)
-        if row is None or row.creator_user_id != creator_user_id:
-            raise ValueError("没有找到属于当前用户的自动化任务")
-        return row
+        creator_person_id = await self._resolve_creator_person(creator_user_id)
+        return await self._require_owned_person(automation_id, creator_person_id)
 
     async def pause(
         self, automation_id: int, *, inbound: InboundMessage, conversation_key: str
     ) -> bool:
-        await self.require_owned(automation_id, inbound.sender.user_id)
+        creator_person_id = await self._resolve_creator_person(inbound.sender.user_id)
+        await self._require_owned_person(automation_id, creator_person_id)
         changed = await self._repository.set_status(
             automation_id,
-            creator_user_id=inbound.sender.user_id,
+            creator_person_id=creator_person_id,
             status=AutomationStatus.PAUSED,
             now=self._time.clock.now(),
         )
@@ -425,12 +439,13 @@ class AutomationService:
     async def resume(
         self, automation_id: int, *, inbound: InboundMessage, conversation_key: str
     ) -> bool:
-        row = await self.require_owned(automation_id, inbound.sender.user_id)
+        creator_person_id = await self._resolve_creator_person(inbound.sender.user_id)
+        row = await self._require_owned_person(automation_id, creator_person_id)
         now = self._time.clock.now()
         next_run = initial_run_at(row.script.schedule, now, row.timezone)
         changed = await self._repository.resume(
             automation_id,
-            creator_user_id=inbound.sender.user_id,
+            creator_person_id=creator_person_id,
             next_run_at=next_run,
             now=now,
         )
@@ -446,10 +461,11 @@ class AutomationService:
     async def cancel(
         self, automation_id: int, *, inbound: InboundMessage, conversation_key: str
     ) -> bool:
-        await self.require_owned(automation_id, inbound.sender.user_id)
+        creator_person_id = await self._resolve_creator_person(inbound.sender.user_id)
+        await self._require_owned_person(automation_id, creator_person_id)
         changed = await self._repository.set_status(
             automation_id,
-            creator_user_id=inbound.sender.user_id,
+            creator_person_id=creator_person_id,
             status=AutomationStatus.CANCELLED,
             now=self._time.clock.now(),
         )
@@ -465,10 +481,11 @@ class AutomationService:
     async def run_now(
         self, automation_id: int, *, inbound: InboundMessage, conversation_key: str
     ) -> bool:
-        await self.require_owned(automation_id, inbound.sender.user_id)
+        creator_person_id = await self._resolve_creator_person(inbound.sender.user_id)
+        await self._require_owned_person(automation_id, creator_person_id)
         changed = await self._repository.schedule_now(
             automation_id,
-            creator_user_id=inbound.sender.user_id,
+            creator_person_id=creator_person_id,
             now=self._time.clock.now(),
         )
         await self._audit_event(
@@ -512,22 +529,37 @@ class AutomationService:
         except ValidationError as exc:
             raise ValueError(f"自动化脚本格式错误：{exc.errors()[0]['msg']}") from exc
         now = self._time.clock.now()
+        actor_accounts = await self._repository.active_creator_accounts(
+            actor_user_id,
+            session=session,
+        )
+        if not actor_accounts:
+            raise PermissionError("控制面主体没有活动 QQ 绑定")
+        actor_account_id = actor_accounts[0]
+        permission = permission_for_accounts(self._settings, actor_accounts)
         provenance = CreationProvenance(
-            creator_user_id=actor_user_id,
-            bot_user_id=actor_user_id,
+            creator_user_id=actor_account_id,
+            bot_user_id=actor_account_id,
             message_id=trigger_message_id,
             original_text="",
             current_group_id=None,
             mentioned_user_ids=(),
-            permission=PermissionLevel.SUPERUSER,
+            permission=permission,
         )
         validated = self._validator.validate(script, provenance, now_utc=now)
+        maximum = (
+            self._settings.automation_max_active_per_superuser
+            if permission is PermissionLevel.SUPERUSER
+            else self._settings.automation_max_active_per_user
+        )
+        if await self._repository.active_count(actor_user_id) >= maximum:
+            raise ValueError(f"当前用户最多同时启用 {maximum} 个自动化任务")
         authority = DelegatedAuthority(
-            creator_user_id=actor_user_id,
-            bot_user_id=actor_user_id,
+            creator_user_id=actor_account_id,
+            bot_user_id=actor_account_id,
             created_from_message_id=trigger_message_id,
             created_at=now.isoformat(),
-            permission_level=PermissionLevel.SUPERUSER,
+            permission_level=permission,
             granted_capabilities=validated.required_capabilities,
             capability_schema_versions={
                 name: self._registry.require(name).schema_version
@@ -539,6 +571,7 @@ class AutomationService:
         return await self._repository.create(
             validated,
             authority,
+            creator_person_id=actor_user_id,
             max_runs=max_runs,
             misfire_grace_seconds=self._settings.automation_default_misfire_grace_seconds,
             now=now,
@@ -558,27 +591,44 @@ class AutomationService:
         existing = await self._repository.get(automation_id, session=session)
         if existing is None:
             raise LookupError("automation not found")
+        owner_person_id = existing.canonical_creator_person_id
+        if owner_person_id is None:
+            raise PermissionError("automation has no canonical creator")
+        actor_accounts = await self._repository.active_creator_accounts(
+            actor_user_id,
+            session=session,
+        )
+        if not actor_accounts:
+            raise PermissionError("控制面主体没有活动 QQ 绑定")
+        owner_accounts = await self._repository.active_creator_accounts(
+            owner_person_id,
+            session=session,
+        )
+        if not owner_accounts:
+            raise PermissionError("自动化创建者没有活动 QQ 绑定")
+        owner_account_id = owner_accounts[0]
+        owner_permission = permission_for_accounts(self._settings, owner_accounts)
         try:
             script = AutomationScript.model_validate(script_payload)
         except ValidationError as exc:
             raise ValueError(f"自动化脚本格式错误：{exc.errors()[0]['msg']}") from exc
         now = self._time.clock.now()
         provenance = CreationProvenance(
-            creator_user_id=existing.creator_user_id,
+            creator_user_id=owner_account_id,
             bot_user_id=existing.bot_user_id,
             message_id=trigger_message_id,
             original_text="",
             current_group_id=None,
             mentioned_user_ids=(),
-            permission=PermissionLevel.SUPERUSER,
+            permission=owner_permission,
         )
         validated = self._validator.validate(script, provenance, now_utc=now)
         authority = DelegatedAuthority(
-            creator_user_id=existing.creator_user_id,
+            creator_user_id=owner_account_id,
             bot_user_id=existing.bot_user_id,
             created_from_message_id=existing.created_from_message_id,
             created_at=now.isoformat(),
-            permission_level=PermissionLevel.SUPERUSER,
+            permission_level=owner_permission,
             granted_capabilities=validated.required_capabilities,
             capability_schema_versions={
                 name: self._registry.require(name).schema_version
@@ -589,7 +639,7 @@ class AutomationService:
         )
         row = await self._repository.update_script(
             automation_id,
-            creator_user_id=existing.creator_user_id,
+            creator_person_id=owner_person_id,
             validated=validated,
             authority=authority,
             now=now,
@@ -610,11 +660,14 @@ class AutomationService:
         existing = await self._repository.get(automation_id, session=session)
         if existing is None:
             raise LookupError("automation not found")
+        owner_person_id = existing.canonical_creator_person_id
+        if owner_person_id is None:
+            raise PermissionError("automation has no canonical creator")
         now = self._time.clock.now()
         if action == "pause":
             await self._repository.set_status(
                 automation_id,
-                creator_user_id=existing.creator_user_id,
+                creator_person_id=owner_person_id,
                 status=AutomationStatus.PAUSED,
                 now=now,
                 session=session,
@@ -622,7 +675,7 @@ class AutomationService:
         elif action == "cancel":
             await self._repository.set_status(
                 automation_id,
-                creator_user_id=existing.creator_user_id,
+                creator_person_id=owner_person_id,
                 status=AutomationStatus.CANCELLED,
                 now=now,
                 session=session,
@@ -631,7 +684,7 @@ class AutomationService:
             next_run = initial_run_at(existing.script.schedule, now, existing.timezone)
             await self._repository.resume(
                 automation_id,
-                creator_user_id=existing.creator_user_id,
+                creator_person_id=owner_person_id,
                 next_run_at=next_run,
                 now=now,
                 session=session,
@@ -639,7 +692,7 @@ class AutomationService:
         elif action == "run_now":
             await self._repository.schedule_now(
                 automation_id,
-                creator_user_id=existing.creator_user_id,
+                creator_person_id=owner_person_id,
                 now=now,
                 session=session,
             )
@@ -650,11 +703,69 @@ class AutomationService:
             raise LookupError("automation not found")
         return current
 
+    async def _resolve_creator_person(
+        self,
+        external_account_id: str,
+        *,
+        session: AsyncSession | None = None,
+    ) -> str:
+        person_id = await self._repository.resolve_active_creator_person(
+            external_account_id,
+            session=session,
+        )
+        if person_id is None:
+            raise PermissionError("当前 QQ 账号没有活动的永久主体绑定")
+        return person_id
+
+    async def _creator_context(
+        self,
+        inbound: InboundMessage,
+    ) -> tuple[str, PermissionLevel, CreationProvenance]:
+        creator_person_id = await self._resolve_creator_person(inbound.sender.user_id)
+        accounts = await self._repository.active_creator_accounts(creator_person_id)
+        if not accounts:
+            raise PermissionError("当前永久主体没有活动 QQ 绑定")
+        permission = permission_for_accounts(self._settings, accounts)
+        return (
+            creator_person_id,
+            permission,
+            self._creation_provenance(inbound, permission=permission),
+        )
+
+    async def _require_owned_person(
+        self,
+        automation_id: int,
+        creator_person_id: str,
+    ) -> AutomationRecord:
+        row = await self._repository.get(automation_id)
+        if row is None or row.canonical_creator_person_id != creator_person_id:
+            raise ValueError("没有找到属于当前用户的自动化任务")
+        return row
+
+    async def _delegated_creator(
+        self,
+        context: CapabilityExecutionContext,
+    ) -> tuple[str, str]:
+        parent = await self._repository.get(context.automation_id)
+        if parent is None or parent.canonical_creator_person_id is None:
+            raise PermissionError("自动化没有可验证的永久创建者")
+        account_id = await self._repository.preferred_active_creator_account(
+            parent.canonical_creator_person_id
+        )
+        if account_id is None:
+            raise PermissionError("自动化创建者没有活动 QQ 绑定")
+        return parent.canonical_creator_person_id, account_id
+
     def _require_enabled(self) -> None:
         if not self._settings.automation_enabled:
             raise ValueError("自动化功能当前未启用")
 
-    def _creation_provenance(self, inbound: InboundMessage) -> CreationProvenance:
+    def _creation_provenance(
+        self,
+        inbound: InboundMessage,
+        *,
+        permission: PermissionLevel,
+    ) -> CreationProvenance:
         return CreationProvenance(
             creator_user_id=inbound.sender.user_id,
             bot_user_id=inbound.bot_user_id,
@@ -662,7 +773,7 @@ class AutomationService:
             original_text=inbound.text,
             current_group_id=inbound.group_id,
             mentioned_user_ids=inbound.mentioned_user_ids,
-            permission=permission_for(self._settings, inbound.sender.user_id),
+            permission=permission,
         )
 
     @staticmethod
@@ -671,6 +782,7 @@ class AutomationService:
         payload: object,
         *,
         context: CapabilityExecutionContext,
+        creator_user_id: str,
     ) -> InboundMessage:
         """Project scheduled authority into a non-user synthetic service envelope."""
 
@@ -684,7 +796,7 @@ class AutomationService:
             message_id=message_id,
             event_type="scheduled_automation",
             scope_type=(ScopeType.GROUP if context.current_group_id else ScopeType.PRIVATE),
-            sender=SenderIdentity(user_id=context.creator_user_id),
+            sender=SenderIdentity(user_id=creator_user_id),
             text=serialized[:12000],
             bot_user_id=context.bot_user_id,
             group_id=context.current_group_id,

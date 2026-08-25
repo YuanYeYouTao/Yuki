@@ -1231,9 +1231,15 @@ class _MemoryFacade:
         assert invocation is not None
         if scope_type != "person":
             return _unavailable("group memory writes need a reviewed group-memory service")
-        target = self._host._require_user_scope(invocation, subject_id)
-        if target != invocation.actor_user_id and not self._host._is_real_superuser(invocation):
-            raise PluginPermissionError("plugins may only write the current person's memory")
+        target = _validated_qq(subject_id)
+        memories = _require_service(self._host._services.memories, "memory")
+        if self._host._is_real_superuser(invocation):
+            target = self._host._require_user_scope(invocation, target)
+        else:
+            actor_person_id = await memories.resolve_person_id(invocation.actor_user_id)
+            target_person_id = await memories.resolve_person_id(target)
+            if actor_person_id is None or actor_person_id != target_person_id:
+                raise PluginPermissionError("plugins may only write the current person's memory")
         normalized = _bounded_text(content, maximum=4_000, field_name="content")
         _validate_memory_metadata(invocation, source_type, confidence, source_event_ids)
         evidence = (
@@ -1286,7 +1292,10 @@ class _MemoryFacade:
         memories = _require_service(self._host._services.memories, "memory")
         current = await memories.get_fact(numeric_id)
         visible = None
-        if current is not None and current.subject_user_id == invocation.actor_user_id:
+        if current is not None and await memories.person_owns_fact(
+            current,
+            actor_user_id=invocation.actor_user_id,
+        ):
             expected = _bounded_text(content, maximum=4_000, field_name="content")
             service = _require_service(self._host._services.memory_admin, "memory mutation")
             corrected = await service.correct_fact(
@@ -1328,7 +1337,10 @@ class _MemoryFacade:
         numeric_id = _person_memory_id(memory_id)
         memories = _require_service(self._host._services.memories, "memory")
         current = await memories.get_fact(numeric_id)
-        if current is None or current.subject_user_id != invocation.actor_user_id:
+        if current is None or not await memories.person_owns_fact(
+            current,
+            actor_user_id=invocation.actor_user_id,
+        ):
             changed = False
         else:
             service = _require_service(self._host._services.memory_admin, "memory mutation")
@@ -3148,7 +3160,7 @@ async def _visible_person_projection_fact(
         (
             row
             for row in await memories.list_person(user_id)
-            if row.id == fact_id and row.subject_user_id == user_id and row.content == expected
+            if row.id == fact_id and row.content == expected
         ),
         None,
     )

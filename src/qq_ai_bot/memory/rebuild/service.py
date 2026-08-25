@@ -670,10 +670,7 @@ class MemoryRebuildService:
                 self.metrics.increment("rebuild_events_skipped_processed")
                 processed += 1
                 continue
-            if not self.eligibility.is_eligible(
-                event,
-                sender_is_bot=await self.ledger.sender_is_bot(event.sender_user_id),
-            ):
+            if not self.eligibility.is_eligible(event):
                 await self.repository.finish_proposal(
                     proposal.id,
                     status=MemoryRebuildCommitStatus.SKIPPED,

@@ -6,16 +6,12 @@ from datetime import UTC, datetime
 from typing import Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.identity.canonical_projections import resolve_canonical_time_setting
 from qq_ai_bot.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel, PresenceModel
-from qq_ai_bot.identity.errors import IdentityDualWriteError
-from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
-from qq_ai_bot.identity.shadows import fill_person_space_shadows
+from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import PersonTimeSettingModel
 from qq_ai_bot.time.models import TimeContext
 
 _CANONICAL_KIND_MISMATCH = "canonical_kind_mismatch"
@@ -69,57 +65,30 @@ class TimeContextService:
 
     async def timezone_for(self, user_id: str) -> str:
         async with self._database.sessions() as session:
-            if await identity_runtime_is_complete_v2(session):
+            try:
+                row = await resolve_canonical_time_setting(session, user_id)
+            except CanonicalIdentityError:
                 try:
-                    row = await resolve_canonical_time_setting(session, user_id)
-                except IdentityDualWriteError:
-                    try:
-                        fallback = await _timezone_for_canonical_uuid(
-                            session, user_id, default_timezone=self._default_timezone
-                        )
-                    except IdentityDualWriteError as mapped:
-                        raise mapped from None
-                    if fallback is None:
-                        raise
-                    return fallback
-            else:
-                row = await session.get(PersonTimeSettingModel, user_id)
+                    fallback = await _timezone_for_canonical_uuid(
+                        session, user_id, default_timezone=self._default_timezone
+                    )
+                except CanonicalIdentityError as mapped:
+                    raise mapped from None
+                if fallback is None:
+                    raise
+                return fallback
         return row.timezone if row is not None else self._default_timezone
 
     async def set_timezone(self, user_id: str, timezone: str) -> str:
         normalized = validate_timezone(timezone)
         now = self._utc_now()
         async with self._database.sessions() as session, session.begin():
-            if await identity_runtime_is_complete_v2(session):
-                await resolve_canonical_time_setting(
-                    session,
-                    user_id,
-                    timezone=normalized,
-                    now=now,
-                )
-                return normalized
-            statement = insert(PersonTimeSettingModel).values(
-                user_id=user_id,
+            await resolve_canonical_time_setting(
+                session,
+                user_id,
                 timezone=normalized,
-                created_at=now,
-                updated_at=now,
+                now=now,
             )
-            await session.execute(
-                statement.on_conflict_do_update(
-                    index_elements=[PersonTimeSettingModel.user_id],
-                    set_={"timezone": normalized, "updated_at": now},
-                )
-            )
-            row = await session.get(PersonTimeSettingModel, user_id)
-            if row is not None:
-                await fill_person_space_shadows(
-                    session,
-                    row,
-                    person_attr="canonical_person_id",
-                    space_attr=None,
-                    user_id=user_id,
-                    group_id=None,
-                )
         return normalized
 
     async def current(self, user_id: str) -> TimeContext:
@@ -150,12 +119,12 @@ async def _timezone_for_canonical_uuid(
     """
 
     if await session.get(PresenceModel, user_id) is not None:
-        raise IdentityDualWriteError(_CANONICAL_KIND_MISMATCH)
+        raise CanonicalIdentityError(_CANONICAL_KIND_MISMATCH)
     if await session.get(CanonicalSpaceModel, user_id) is not None:
-        raise IdentityDualWriteError(_CANONICAL_KIND_MISMATCH)
+        raise CanonicalIdentityError(_CANONICAL_KIND_MISMATCH)
     person = await session.get(CanonicalPersonModel, user_id)
     if person is None:
         return None
     if not person.enabled:
-        raise IdentityDualWriteError(_CANONICAL_OWNER_DISABLED)
+        raise CanonicalIdentityError(_CANONICAL_OWNER_DISABLED)
     return default_timezone

@@ -1,4 +1,4 @@
-"""Gated v2 canonical ingress resolver. Dormant unless runtime is complete v2."""
+"""Canonical ingress resolver for the 3.8 message pipeline."""
 
 from __future__ import annotations
 
@@ -14,21 +14,16 @@ from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.gateway.registry import GatewayConnectionRegistry, RegistryClosed
+from qq_ai_bot.identity.canonical_repository import (
+    create_person_binding,
+    external_id,
+    find_identity_binding,
+    find_presence,
+    find_space_binding,
+)
 from qq_ai_bot.identity.db_models import PresenceModel
-from qq_ai_bot.identity.dual_write import (
-    _binding_for,
-    _create_person_binding,
-    _external_id,
-    _presence_for,
-    _space_binding_for,
-)
-from qq_ai_bot.identity.errors import IdentityDualWriteError
+from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.identity.routing import PresenceRouter
-from qq_ai_bot.identity.runtime import (
-    IdentityRuntimeSnapshot,
-    load_identity_runtime,
-    require_complete_v2_runtime,
-)
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
 
@@ -93,7 +88,7 @@ def _drop(reason: str, message: InboundMessage) -> IngressPreAdmit:
 
 
 class CanonicalIngressResolver:
-    """Registered for every process; enabled only when identity epoch is complete v2."""
+    """Resolve every admitted OneBot event through canonical identity."""
 
     def __init__(
         self,
@@ -108,26 +103,17 @@ class CanonicalIngressResolver:
     async def pre_admit(
         self, bot: object | None, message: InboundMessage
     ) -> IngressPreAdmit | None:
-        """Return None on v1 so the golden matcher path stays untouched."""
+        """Resolve one inbound event inside the canonical transaction."""
 
-        async with self._database.sessions() as session:
-            runtime = await load_identity_runtime(session)
-            if not runtime.complete_v2:
-                return None
         async with self._database.sessions() as session, session.begin():
-            runtime = await load_identity_runtime(session)
-            if not runtime.complete_v2:
-                return None
-            return await self._admit(session, runtime, bot, message)
+            return await self._admit(session, bot, message)
 
     async def _admit(
         self,
         session: AsyncSession,
-        runtime: IdentityRuntimeSnapshot,
         bot: object | None,
         message: InboundMessage,
     ) -> IngressPreAdmit:
-        del runtime
         if bot is None:
             return _drop("no_ingress_connection", message)
         try:
@@ -135,10 +121,10 @@ class CanonicalIngressResolver:
         except RegistryClosed as exc:
             return _drop(exc.category, message)
         if connection.snapshot.presence_id is None:
-            presence = await _presence_for(
-                session, _external_id(connection.snapshot.external_account_id)
+            presence = await find_presence(
+                session, external_id(connection.snapshot.external_account_id)
             )
-            if presence is None:
+            if presence is None or not presence.enabled:
                 return _drop("no_presence", message)
             self._registry.bind_presence(
                 platform=connection.snapshot.platform,
@@ -148,9 +134,17 @@ class CanonicalIngressResolver:
             presence_id = presence.id
         else:
             presence_id = connection.snapshot.presence_id
+            presence = await session.get(PresenceModel, presence_id)
+            if (
+                presence is None
+                or not presence.enabled
+                or presence.platform != connection.snapshot.platform
+                or presence.external_account_id != connection.snapshot.external_account_id
+            ):
+                return _drop("no_presence", message)
         handle_account = connection.snapshot.external_account_id
         handle_provider = connection.snapshot.provider
-        message_account = _external_id(message.bot_user_id) if message.bot_user_id else ""
+        message_account = external_id(message.bot_user_id) if message.bot_user_id else ""
         if message_account and message_account != handle_account:
             return _drop("bot_handle_mismatch", message)
         overlay = replace(message, bot_user_id=handle_account)
@@ -168,8 +162,8 @@ class CanonicalIngressResolver:
         if overlay.scope_type is ScopeType.GROUP:
             if overlay.group_id is None:
                 return _drop("missing_group_id", overlay)
-            binding = await _space_binding_for(session, _external_id(overlay.group_id))
-            if binding is None:
+            binding = await find_space_binding(session, external_id(overlay.group_id))
+            if binding is None or binding.status != "active":
                 return _drop("no_space_binding", overlay)
             space_binding_id = binding.id
             space_id = binding.space_id
@@ -309,10 +303,10 @@ async def _author_for(
     yuki_ids: frozenset[str],
     ingress_presence_id: str,
 ) -> tuple[str, str | None, str | None]:
-    from qq_ai_bot.identity.event_author import project_complete_v2_event_author
+    from qq_ai_bot.identity.event_author import project_event_author
 
     del yuki_ids, ingress_presence_id
-    author = await project_complete_v2_event_author(
+    author = await project_event_author(
         session,
         sender_user_id=message.sender.user_id,
         sender_is_bot=message.sender.is_bot,
@@ -321,14 +315,15 @@ async def _author_for(
 
 
 async def _ensure_person_id(session: AsyncSession, user_id: str, *, display_name: str = "") -> str:
-    await require_complete_v2_runtime(session)
-    external_id = _external_id(user_id)
-    binding = await _binding_for(session, external_id)
+    account_id = external_id(user_id)
+    binding = await find_identity_binding(session, account_id)
     if binding is not None:
+        if binding.status != "active":
+            raise CanonicalIdentityError("canonical_owner_disabled")
         return binding.person_id
-    created = await _create_person_binding(
+    created = await create_person_binding(
         session,
-        external_id=external_id,
+        external_account_id=account_id,
         display_name=display_name,
         now=message_now(),
     )
@@ -347,10 +342,9 @@ async def _hydrate_for_message(
     space_id: str | None,
     ingress_bot_user_id: str,
 ) -> HydratedConversation:
-    await require_complete_v2_runtime(session)
     if message.scope_type is ScopeType.PRIVATE:
         if person_id is None:
-            raise IdentityDualWriteError("unclassified")
+            raise CanonicalIdentityError("unclassified")
         scope = ConversationScope.private(ingress_bot_user_id, message.sender.user_id)
         return await ensure_canonical_conversation(
             session,
@@ -359,7 +353,7 @@ async def _hydrate_for_message(
             person_id=person_id,
         )
     if space_id is None or message.group_id is None:
-        raise IdentityDualWriteError("unclassified")
+        raise CanonicalIdentityError("unclassified")
     scope = ConversationScope.group(ingress_bot_user_id, message.group_id)
     return await ensure_canonical_conversation(
         session,
@@ -370,10 +364,9 @@ async def _hydrate_for_message(
 
 
 async def require_existing_presence(session: AsyncSession, bot_user_id: str) -> str:
-    await require_complete_v2_runtime(session)
-    presence = await _presence_for(session, _external_id(bot_user_id))
+    presence = await find_presence(session, external_id(bot_user_id))
     if presence is None:
-        raise IdentityDualWriteError("no_presence")
+        raise CanonicalIdentityError("no_presence")
     return presence.id
 
 
@@ -384,15 +377,13 @@ async def ensure_v2_presence(session: AsyncSession, bot_user_id: str) -> str:
 
 
 async def ensure_v2_space(session: AsyncSession, group_id: str) -> str:
-    await require_complete_v2_runtime(session)
     return await sync_space_v2(session, group_id)
 
 
 async def sync_space_v2(session: AsyncSession, group_id: str) -> str:
     """Require an existing SpaceBinding. Unknown groups fail closed."""
 
-    await require_complete_v2_runtime(session)
-    binding = await _space_binding_for(session, _external_id(group_id))
+    binding = await find_space_binding(session, external_id(group_id))
     if binding is None:
-        raise IdentityDualWriteError("no_space_binding")
+        raise CanonicalIdentityError("no_space_binding")
     return binding.space_id

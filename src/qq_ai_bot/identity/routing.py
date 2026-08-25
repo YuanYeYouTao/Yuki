@@ -22,13 +22,12 @@ from qq_ai_bot.gateway.registry import (
     RegistryClosed,
     require_capability,
 )
+from qq_ai_bot.identity.canonical_repository import IDENTITY_PLATFORM
 from qq_ai_bot.identity.db_models import (
     IdentityBindingModel,
     PresenceModel,
     SpaceBindingModel,
 )
-from qq_ai_bot.identity.inventory import IDENTITY_PLATFORM
-from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
 from qq_ai_bot.persistence.database import Database
 
 MembershipProbe = Callable[[object, str, str], Awaitable[bool]]
@@ -126,8 +125,7 @@ class PresenceRouter:
         self._cas_hold: Callable[[], Awaitable[None]] | None = None
 
     async def uses_canonical_send(self) -> bool:
-        async with self._database.sessions() as session:
-            return await identity_runtime_is_complete_v2(session)
+        return True
 
     async def person_owns_external(
         self,
@@ -170,7 +168,7 @@ class PresenceRouter:
         *,
         capability: str = "send_private",
     ) -> ResolvedSend:
-        """v1 provenance path: exact account through Registry, never get_bots()."""
+        """Resolve one exact ingress account through Registry, never get_bots()."""
 
         resolution = self._registry.resolve_account(IDENTITY_PLATFORM, bot_user_id)
         require_capability(resolution, capability)
@@ -192,32 +190,29 @@ class PresenceRouter:
         target_type: str,
         target_id: str,
     ) -> ResolvedSend:
-        """v2 Person/Space route at send time; v1 stays exact-account Registry."""
+        """Resolve a canonical Person/Space route at send time."""
 
-        capability = "send_group" if target_type == "group" else "send_private"
+        del bot_user_id
         async with self._database.sessions() as session:
-            v2 = await identity_runtime_is_complete_v2(session)
             person_id = None
             space_id = None
-            if v2 and target_type == "private":
+            if target_type == "private":
                 from qq_ai_bot.identity.shadows import person_id_for
 
                 person_id = await person_id_for(session, target_id)
-            elif v2 and target_type == "group":
+            elif target_type == "group":
                 from qq_ai_bot.identity.shadows import space_id_for
 
                 space_id = await space_id_for(session, target_id)
-            elif v2:
+            else:
                 raise RouteSendError("none")
-        if v2:
-            if target_type == "private":
-                if person_id is None:
-                    raise RouteSendError("none")
-                return await self.resolve_send_for_person(person_id)
-            if space_id is None:
+        if target_type == "private":
+            if person_id is None:
                 raise RouteSendError("none")
-            return await self.resolve_send_for_space(space_id)
-        return await self.resolve_send_for_account(bot_user_id, capability=capability)
+            return await self.resolve_send_for_person(person_id)
+        if space_id is None:
+            raise RouteSendError("none")
+        return await self.resolve_send_for_space(space_id)
 
     async def resolve_send_for_person(self, person_id: str) -> ResolvedSend:
         async with self._database.sessions() as session:
@@ -901,4 +896,5 @@ class RouteMonitor:
 
 
 async def send_uses_canonical_route(session: AsyncSession) -> bool:
-    return await identity_runtime_is_complete_v2(session)
+    del session
+    return True

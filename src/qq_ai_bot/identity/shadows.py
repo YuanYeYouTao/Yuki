@@ -1,4 +1,4 @@
-"""Fill existing canonical shadow columns. No new schema."""
+"""Resolve and stamp canonical ownership columns."""
 
 from __future__ import annotations
 
@@ -6,23 +6,22 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from qq_ai_bot.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel
-from qq_ai_bot.identity.dual_write import (
-    _binding_for,
-    _presence_for,
-    _shadow_conflict,
-    _space_binding_for,
+from qq_ai_bot.identity.canonical_repository import (
+    assert_same_shadow,
+    find_identity_binding,
+    find_presence,
+    find_space_binding,
+    optional_external_id,
 )
-from qq_ai_bot.identity.errors import IdentityDualWriteError
-from qq_ai_bot.identity.runtime import require_identity_runtime
-from qq_ai_bot.identity.sanitize import normalize_external_id
-from qq_ai_bot.persistence.models import ChatEventModel, GroupModel, PersonModel
+from qq_ai_bot.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel
+from qq_ai_bot.identity.errors import CanonicalIdentityError
+from qq_ai_bot.persistence.models import ChatEventModel
 
 
 def _external(raw: str | None) -> str | None:
     if raw is None or not str(raw).strip():
         return None
-    return normalize_external_id(str(raw))
+    return optional_external_id(raw)
 
 
 async def person_id_for(session: AsyncSession, user_id: str | None) -> str | None:
@@ -31,10 +30,7 @@ async def person_id_for(session: AsyncSession, user_id: str | None) -> str | Non
     external = _external(user_id)
     if external is None:
         return None
-    people = await session.get(PersonModel, external)
-    if people is not None and people.canonical_person_id:
-        return people.canonical_person_id
-    binding = await _binding_for(session, external)
+    binding = await find_identity_binding(session, external)
     return None if binding is None else binding.person_id
 
 
@@ -44,10 +40,7 @@ async def space_id_for(session: AsyncSession, group_id: str | None) -> str | Non
     external = _external(group_id)
     if external is None:
         return None
-    group = await session.get(GroupModel, external)
-    if group is not None and group.canonical_space_id:
-        return group.canonical_space_id
-    binding = await _space_binding_for(session, external)
+    binding = await find_space_binding(session, external)
     return None if binding is None else binding.space_id
 
 
@@ -59,7 +52,7 @@ async def active_person_id_for(session: AsyncSession, user_id: str | None) -> st
     external = _external(user_id)
     if external is None:
         return None
-    binding = await _binding_for(session, external)
+    binding = await find_identity_binding(session, external)
     if binding is None or binding.status != "active":
         return None
     person = await session.get(CanonicalPersonModel, binding.person_id)
@@ -76,7 +69,7 @@ async def active_space_id_for(session: AsyncSession, group_id: str | None) -> st
     external = _external(group_id)
     if external is None:
         return None
-    binding = await _space_binding_for(session, external)
+    binding = await find_space_binding(session, external)
     if binding is None or binding.status != "active":
         return None
     space = await session.get(CanonicalSpaceModel, binding.space_id)
@@ -91,7 +84,7 @@ async def presence_id_for(session: AsyncSession, bot_user_id: str | None) -> str
     external = _external(bot_user_id)
     if external is None:
         return None
-    presence = await _presence_for(session, external)
+    presence = await find_presence(session, external)
     return None if presence is None else presence.id
 
 
@@ -99,7 +92,7 @@ async def assign_shadow(
     current: str | None,
     proven: str | None,
 ) -> str | None:
-    _shadow_conflict(current, proven)
+    assert_same_shadow(current, proven)
     if proven is None:
         return current
     return current if current is not None else proven
@@ -114,7 +107,6 @@ async def fill_person_space_shadows(
     user_id: str | None,
     group_id: str | None,
 ) -> None:
-    await require_identity_runtime(session, allowed=frozenset({"v1", "v2"}))
     if person_attr is not None and hasattr(row, person_attr):
         proven = await person_id_for(session, user_id)
         current = getattr(row, person_attr)
@@ -126,7 +118,6 @@ async def fill_person_space_shadows(
 
 
 async def fill_memory_fact_shadows(session: AsyncSession, row: Any) -> None:
-    await require_identity_runtime(session, allowed=frozenset({"v1", "v2"}))
     scope_type = str(getattr(row, "scope_type", "") or "")
     subject_user_id = getattr(row, "subject_user_id", None)
     group_id = getattr(row, "group_id", None)
@@ -166,7 +157,6 @@ async def fill_relationship_event_shadows(
 ) -> None:
     """Fill relationship_events.canonical_person_id after the legacy insert."""
 
-    await require_identity_runtime(session, allowed=frozenset({"v1", "v2"}))
     current = getattr(row, "canonical_person_id", None)
     row.canonical_person_id = await assign_shadow(current, person_id)
 
@@ -181,7 +171,6 @@ async def fill_turn_observation_shadows(
 ) -> None:
     """Fill runtime_turn_observations canonical owners after the legacy insert."""
 
-    await require_identity_runtime(session, allowed=frozenset({"v1", "v2"}))
     row.canonical_conversation_id = await assign_shadow(
         getattr(row, "canonical_conversation_id", None), conversation_id
     )
@@ -198,9 +187,8 @@ async def fill_presence_shadow(
     attr: str,
     bot_user_id: str | None,
 ) -> None:
-    await require_identity_runtime(session, allowed=frozenset({"v1", "v2"}))
     if not hasattr(row, attr):
-        raise IdentityDualWriteError("unclassified")
+        raise CanonicalIdentityError("unclassified")
     proven = await presence_id_for(session, bot_user_id)
     current = getattr(row, attr)
     setattr(row, attr, await assign_shadow(current, proven))

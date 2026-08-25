@@ -41,8 +41,9 @@ class ControlQueryError(Exception):
 
 @final
 class IdentityResolution(StrEnum):
+    """Canonical projection state; unresolved means canonical data is unusable."""
+
     CANONICAL = "canonical"
-    LEGACY = "legacy"
     UNRESOLVED = "unresolved"
 
 
@@ -86,7 +87,6 @@ class QueryResourceKind(StrEnum):
     SPACE_ROUTE = "space_route"
     AUDIT = "audit"
     OPERATION = "operation"
-    CONFLICT = "conflict"
     CONFIG = "config"
     MEMORY_FACT = "memory_fact"
     MEMORY_JOB = "memory_job"
@@ -108,7 +108,6 @@ class ConfigOwnerKind(StrEnum):
 @final
 class QueryCursorPhase(StrEnum):
     CANONICAL = "c"
-    UNRESOLVED = "u"
     TIME_ID = "t"
 
 
@@ -300,29 +299,19 @@ class ExternalIdView:
 @final
 @dataclass(frozen=True, slots=True)
 class CountSnapshot:
-    canonical: int
-    legacy: int
+    count: int
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "canonical", _require_int(self.canonical, "canonical"))
-        object.__setattr__(self, "legacy", _require_int(self.legacy, "legacy"))
+        object.__setattr__(self, "count", _require_int(self.count, "count"))
 
 
 @final
 @dataclass(frozen=True, slots=True)
 class QueueSummary:
-    backfill_pending: int
-    backfill_running: int
     memory_jobs_pending: int
     memory_jobs_processing: int
 
     def __post_init__(self) -> None:
-        object.__setattr__(
-            self, "backfill_pending", _require_int(self.backfill_pending, "backfill_pending")
-        )
-        object.__setattr__(
-            self, "backfill_running", _require_int(self.backfill_running, "backfill_running")
-        )
         object.__setattr__(
             self,
             "memory_jobs_pending",
@@ -794,42 +783,6 @@ class AuditEventView:
 
 @final
 @dataclass(frozen=True, slots=True)
-class BackfillOperationView:
-    operation: OperationRef
-    mode: str
-    conflict_count: int
-
-    def __post_init__(self) -> None:
-        if type(self.operation) is not OperationRef:
-            raise TypeError("operation must be OperationRef")
-        require_opaque_token(self.mode, name="mode", max_length=16)
-        object.__setattr__(
-            self, "conflict_count", _require_int(self.conflict_count, "conflict_count")
-        )
-
-
-@final
-@dataclass(frozen=True, slots=True)
-class BackfillConflictView:
-    conflict_id: int
-    subject_kind: str
-    conflict_kind: str
-    status: str
-    error_category: str | None
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self, "conflict_id", _require_int(self.conflict_id, "conflict_id", minimum=1)
-        )
-        require_opaque_token(self.subject_kind, name="subject_kind", max_length=16)
-        require_opaque_token(self.conflict_kind, name="conflict_kind", max_length=32)
-        require_opaque_token(self.status, name="status", max_length=16)
-        if self.error_category is not None:
-            require_opaque_token(self.error_category, name="error_category", max_length=64)
-
-
-@final
-@dataclass(frozen=True, slots=True)
 class ConfigSpecView:
     key: str
     category: str
@@ -900,7 +853,6 @@ class ConfigOverrideView:
     configured: bool
     version: int
     value: str | int | float | bool | None
-    legacy_owner: ExternalIdView | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -913,8 +865,6 @@ class ConfigOverrideView:
         object.__setattr__(self, "version", _require_int(self.version, "version", minimum=1))
         if self.apply_mode == "secret" and self.value is not None:
             raise ValueError("secret config cannot carry a value")
-        if self.legacy_owner is not None and type(self.legacy_owner) is not ExternalIdView:
-            raise TypeError("legacy_owner must be ExternalIdView or None")
         _validate_config_owner(
             owner_kind=self.owner_kind,
             person_id=self.person_id,
@@ -1005,7 +955,7 @@ class AutomationView:
     script_hash: str
     target_kind: str
     target_id: str
-    route_state: str  # legacy | missing | paused | configured (not live health)
+    route_state: str  # missing | paused | configured (not live health)
 
     def __post_init__(self) -> None:
         object.__setattr__(

@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from qq_ai_bot.identity.c24_conversation import (
+from qq_ai_bot.conversation.correlation import (
     resolve_conversation_id_for_event,
     stamp_conversation_correlation,
 )

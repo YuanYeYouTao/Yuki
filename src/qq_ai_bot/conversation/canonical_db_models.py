@@ -1,6 +1,6 @@
 """SQLAlchemy models for canonical conversations, routes, and command receipts.
 
-These models register schema only. They do not implement routing, backfill,
+These models register schema only. They do not implement routing,
 or control-plane behavior.
 """
 

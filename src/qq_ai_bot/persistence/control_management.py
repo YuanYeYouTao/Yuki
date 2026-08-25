@@ -137,7 +137,7 @@ def _op_ref(
         operation_id=operation_id,
         status=status,
         progress=progress,
-        state_epoch=StateEpoch.V1,
+        state_epoch=StateEpoch.V2,
         error_category=error_category,
         created_at=created_at,
         updated_at=updated_at,

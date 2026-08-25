@@ -1,9 +1,4 @@
-"""Optional v1 expand write of 0047 Memory owner columns.
-
-v1 read, claim, partition, and unique keys stay conversation_key / hash / bot.
-Missing or ambiguous Binding/SpaceBinding leaves owner NULL. This module never
-creates people, groups, or memberships, and never swallows IntegrityError.
-"""
+"""Canonical owner resolution for Memory and background resources."""
 
 from __future__ import annotations
 
@@ -15,14 +10,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.identity.dual_write import _binding_for, _space_binding_for
-from qq_ai_bot.identity.sanitize import normalize_external_id
+from qq_ai_bot.identity.canonical_repository import (
+    find_identity_binding,
+    find_space_binding,
+    optional_external_id,
+)
 from qq_ai_bot.memory.partition import canonical_fact_owner_complete
 from qq_ai_bot.persistence.models import (
-    GroupModel,
     MemorySelfReflectionRunModel,
     MemorySelfReflectionStateModel,
-    PersonModel,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,19 +36,19 @@ OwnerPair = tuple[str | None, str | None]
 DreamShape = tuple[str | None, str | None, str | None, str | None]
 
 
-def reset_v1_owner_unresolved_log_for_tests() -> None:
+def reset_owner_unresolved_log_for_tests() -> None:
     _last_unresolved_log.clear()
 
 
-def log_v1_owner_unresolved(reason: str) -> None:
-    """Content-free, rate-limited diagnostic. reason is a stable category."""
+def log_owner_unresolved(reason: str) -> None:
+    """Emit only a stable category and rate limit repeated topology gaps."""
 
     now = time.monotonic()
     last = _last_unresolved_log.get(reason, 0.0)
     if now - last < _UNRESOLVED_LOG_INTERVAL_SECONDS:
         return
     _last_unresolved_log[reason] = now
-    logger.info("c21_v1_owner_unresolved reason=%s", reason)
+    logger.info("canonical_owner_unresolved reason=%s", reason)
 
 
 def _xor_pair(person_id: str | None, space_id: str | None) -> OwnerPair | None:
@@ -77,42 +73,39 @@ def _event_private_peer(event: Any) -> str | None:
     return None
 
 
-async def _unique_person_id(session: AsyncSession, external_id: str | None) -> OwnerPair | None:
-    external = normalize_external_id(external_id) if external_id else None
+async def _unique_person_id(
+    session: AsyncSession,
+    external_id: str | None,
+) -> OwnerPair | None:
+    external = optional_external_id(external_id)
     if external is None:
-        log_v1_owner_unresolved(MISSING_BINDING)
+        log_owner_unresolved(MISSING_BINDING)
         return None
-    binding = await _binding_for(session, external)
-    if binding is None:
-        log_v1_owner_unresolved(MISSING_BINDING)
-        return None
-    people = await session.get(PersonModel, external)
-    shadow = people.canonical_person_id if people is not None else None
-    if shadow and shadow != binding.person_id:
-        log_v1_owner_unresolved(AMBIGUOUS_OWNER)
+    binding = await find_identity_binding(session, external)
+    if binding is None or binding.status != "active":
+        log_owner_unresolved(MISSING_BINDING)
         return None
     return binding.person_id, None
 
 
-async def _unique_space_id(session: AsyncSession, external_id: str | None) -> OwnerPair | None:
-    external = normalize_external_id(external_id) if external_id else None
+async def _unique_space_id(
+    session: AsyncSession,
+    external_id: str | None,
+) -> OwnerPair | None:
+    external = optional_external_id(external_id)
     if external is None:
-        log_v1_owner_unresolved(MISSING_BINDING)
+        log_owner_unresolved(MISSING_BINDING)
         return None
-    binding = await _space_binding_for(session, external)
-    if binding is None:
-        log_v1_owner_unresolved(MISSING_BINDING)
-        return None
-    group = await session.get(GroupModel, external)
-    shadow = group.canonical_space_id if group is not None else None
-    if shadow and shadow != binding.space_id:
-        log_v1_owner_unresolved(AMBIGUOUS_OWNER)
+    binding = await find_space_binding(session, external)
+    if binding is None or binding.status != "active":
+        log_owner_unresolved(MISSING_BINDING)
         return None
     return None, binding.space_id
 
 
 async def _conversation_owner(
-    session: AsyncSession, conversation_id: str | None
+    session: AsyncSession,
+    conversation_id: str | None,
 ) -> OwnerPair | None:
     if not conversation_id:
         return None
@@ -133,22 +126,19 @@ async def optional_xor_owner_for_scope(
     group_id: str | None,
     private_peer_user_id: str | None,
 ) -> OwnerPair:
-    """Resolve one Binding/SpaceBinding. Never creates rows. Never picks a winner."""
+    """Resolve exactly one canonical Person or Space without creating rows."""
 
-    if scope_type == "group":
-        resolved = await _unique_space_id(session, group_id)
-    else:
-        resolved = await _unique_person_id(session, private_peer_user_id)
-    if resolved is None:
-        return None, None
-    return resolved
+    resolved = (
+        await _unique_space_id(session, group_id)
+        if scope_type == "group"
+        else await _unique_person_id(session, private_peer_user_id)
+    )
+    return (None, None) if resolved is None else resolved
 
 
 async def optional_xor_owner_for_event(session: AsyncSession, event: Any | None) -> OwnerPair:
-    """Optional Person XOR Space owner from existing Binding/SpaceBinding."""
-
     if event is None:
-        log_v1_owner_unresolved(MISSING_BINDING)
+        log_owner_unresolved(MISSING_BINDING)
         return None, None
     group_id = _event_group_id(event)
     scope_type = "group" if group_id else str(getattr(event, "scope_type", "") or "private")
@@ -159,12 +149,13 @@ async def optional_xor_owner_for_event(session: AsyncSession, event: Any | None)
         private_peer_user_id=_event_private_peer(event),
     )
     if binding_owner == (None, None):
-        return None, None
+        return binding_owner
     conversation_owner = await _conversation_owner(
-        session, getattr(event, "canonical_conversation_id", None)
+        session,
+        getattr(event, "canonical_conversation_id", None),
     )
     if conversation_owner is not None and conversation_owner != binding_owner:
-        log_v1_owner_unresolved(AMBIGUOUS_OWNER)
+        log_owner_unresolved(AMBIGUOUS_OWNER)
         return None, None
     return binding_owner
 
@@ -241,9 +232,12 @@ async def optional_reflection_state_owners(
     if person_id is None and space_id is None:
         return None, None
     if await reflection_state_owner_taken(
-        session, person_id, space_id, exclude_state_id=exclude_state_id
+        session,
+        person_id,
+        space_id,
+        exclude_state_id=exclude_state_id,
     ):
-        log_v1_owner_unresolved(REFLECTION_OWNER_UNIQUE)
+        log_owner_unresolved(REFLECTION_OWNER_UNIQUE)
         return None, None
     return person_id, space_id
 
@@ -257,21 +251,19 @@ async def optional_reflection_run_owners(
     if person_id is None and space_id is None:
         return None, None
     if await reflection_run_owner_taken(session, person_id, space_id, scheduled_slot):
-        log_v1_owner_unresolved(REFLECTION_OWNER_UNIQUE)
+        log_owner_unresolved(REFLECTION_OWNER_UNIQUE)
         return None, None
     return person_id, space_id
 
 
 def optional_dream_owner_from_facts(facts: tuple[Any, ...]) -> DreamShape | None:
-    """Fill only when every source fact has a complete, identical canonical shape."""
-
     if not facts:
-        log_v1_owner_unresolved(INCOMPLETE_DREAM_SHAPE)
+        log_owner_unresolved(INCOMPLETE_DREAM_SHAPE)
         return None
     shapes: set[DreamShape] = set()
     for fact in facts:
         if not canonical_fact_owner_complete(fact):
-            log_v1_owner_unresolved(INCOMPLETE_DREAM_SHAPE)
+            log_owner_unresolved(INCOMPLETE_DREAM_SHAPE)
             return None
         shapes.add(
             (
@@ -282,6 +274,17 @@ def optional_dream_owner_from_facts(facts: tuple[Any, ...]) -> DreamShape | None
             )
         )
     if len(shapes) != 1:
-        log_v1_owner_unresolved(MIXED_DREAM_SOURCE)
+        log_owner_unresolved(MIXED_DREAM_SOURCE)
         return None
     return next(iter(shapes))
+
+
+__all__ = [
+    "optional_dream_owner_from_facts",
+    "optional_reflection_run_owners",
+    "optional_reflection_state_owners",
+    "optional_xor_owner_for_event",
+    "optional_xor_owner_for_scope",
+    "reflection_run_owner_taken",
+    "reflection_state_owner_taken",
+]

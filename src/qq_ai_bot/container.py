@@ -38,9 +38,9 @@ from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.gateway.providers import builtin_provider_catalog
 from qq_ai_bot.gateway.registry import GatewayConnectionRegistry, configure_process_registry
 from qq_ai_bot.identity.bootstrap import bootstrap_settings_identity
+from qq_ai_bot.identity.canonical_repository import IDENTITY_PLATFORM
 from qq_ai_bot.identity.canonical_uow import CanonicalIngressUnitOfWork
 from qq_ai_bot.identity.ingress import CanonicalIngressResolver
-from qq_ai_bot.identity.inventory import IDENTITY_PLATFORM
 from qq_ai_bot.identity.routing import PresenceRouter, RouteMonitor
 from qq_ai_bot.mcp.admin import MCPCommandHandler
 from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime

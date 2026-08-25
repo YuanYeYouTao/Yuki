@@ -12,7 +12,7 @@ from pathlib import Path
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from qq_ai_bot.identity.c24_conversation import (
+from qq_ai_bot.conversation.correlation import (
     load_unique_live_chat_event,
     require_live_conversation,
     stamp_conversation_correlation,
@@ -190,9 +190,9 @@ class MCPRepository:
         self,
         canonical_conversation_id: str | None,
     ) -> None:
-        """Fail-closed live Conversation check. v1/None is a no-op.
+        """Fail closed when a supplied canonical Conversation is not live.
 
-        Uses the same complete-v2 kind/existence helpers as
+        Uses the same canonical kind/existence helpers as
         ``stamp_conversation_correlation`` (``require_live_conversation``).
         The short read-only session is closed before the caller may connect.
         A provided id that is the wrong kind, a Presence/Person/Space id, or a
@@ -260,7 +260,7 @@ class MCPRepository:
                 person_id = partition.person_id
                 space_id = partition.space_id
                 if person_id is None and space_id is None:
-                    from qq_ai_bot.identity.owner_dual_write import optional_xor_owner_for_event
+                    from qq_ai_bot.identity.ownership import optional_xor_owner_for_event
 
                     person_id, space_id = await optional_xor_owner_for_event(session, event)
                 redacted = _redact_reflection_result(result_excerpt.strip())

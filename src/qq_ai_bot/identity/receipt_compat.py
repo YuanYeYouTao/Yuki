@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalEventReceiptModel
 from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.identity.errors import IdentityDualWriteError
+from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.persistence.models import ChatEventModel
 
 _KEEPER_STATUS = "keeper"
@@ -86,11 +86,11 @@ def require_claimed_event(
     """Fail closed when a receipt exists without its keeper, or the pair is forged."""
 
     if receipt is None or event is None:
-        raise IdentityDualWriteError("receipt_conflict")
+        raise CanonicalIdentityError("receipt_conflict")
     if event.canonical_event_id != receipt.canonical_event_id:
-        raise IdentityDualWriteError("receipt_conflict")
+        raise CanonicalIdentityError("receipt_conflict")
     if event.suppression_status != _KEEPER_STATUS:
-        raise IdentityDualWriteError("receipt_conflict")
+        raise CanonicalIdentityError("receipt_conflict")
     return event
 
 
@@ -116,7 +116,7 @@ def require_compatible_v2_live(
     receipt_event_type = (external_event_type or "message")[:64]
     incoming_segments = json.dumps(segments, ensure_ascii=False, separators=(",", ":"))
     if existing.canonical_conversation_id != conversation_id:
-        raise IdentityDualWriteError("receipt_conflict")
+        raise CanonicalIdentityError("receipt_conflict")
     if receipt is not None:
         if (
             receipt.ingress_presence_id != presence_id
@@ -124,31 +124,31 @@ def require_compatible_v2_live(
             or receipt.platform_message_id != platform_message_id[:128]
             or receipt.canonical_event_id != existing.canonical_event_id
         ):
-            raise IdentityDualWriteError("receipt_conflict")
+            raise CanonicalIdentityError("receipt_conflict")
     elif (
         existing.ingress_presence_id not in {None, presence_id}
         or existing.bot_user_id != scope.bot_user_id
     ):
-        raise IdentityDualWriteError("receipt_conflict")
+        raise CanonicalIdentityError("receipt_conflict")
     if existing.event_kind != event_kind or existing.direction != direction:
-        raise IdentityDualWriteError("receipt_conflict")
+        raise CanonicalIdentityError("receipt_conflict")
     if (
         existing.author_kind != author_kind
         or existing.author_person_id != author_person_id
         or existing.author_presence_id != author_presence_id
         or existing.sender_user_id != sender_user_id
     ):
-        raise IdentityDualWriteError("receipt_conflict")
+        raise CanonicalIdentityError("receipt_conflict")
     if normalize_live_text(existing.content) != normalize_live_text(content):
-        raise IdentityDualWriteError("receipt_conflict")
+        raise CanonicalIdentityError("receipt_conflict")
     if normalize_live_json(existing.segments_json) != normalize_live_json(incoming_segments):
-        raise IdentityDualWriteError("receipt_conflict")
+        raise CanonicalIdentityError("receipt_conflict")
     if occurred_at_token(existing.occurred_at) != occurred_at_token(timestamp):
-        raise IdentityDualWriteError("receipt_conflict")
+        raise CanonicalIdentityError("receipt_conflict")
     if (
         existing.scope_type != scope.scope_type.value
         or existing.group_id != scope.group_id
         or existing.private_peer_user_id != scope.private_peer_user_id
         or existing.platform_message_id != platform_message_id
     ):
-        raise IdentityDualWriteError("receipt_conflict")
+        raise CanonicalIdentityError("receipt_conflict")

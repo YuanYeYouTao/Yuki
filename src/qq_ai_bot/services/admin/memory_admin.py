@@ -196,7 +196,7 @@ class MemoryAdminService:
         *,
         evidence: MemoryEvidenceCreate | None = None,
     ) -> MemoryFact:
-        self._require_authorized_person_target(actor, target)
+        await self._require_authorized_person_target(actor, target)
         normalized = " ".join(content.split()).strip()
         if not normalized:
             raise ValueError("记忆内容不能为空")
@@ -574,12 +574,12 @@ class MemoryAdminService:
 
     async def show_fact(self, actor: AdminActor, fact_id: int) -> MemoryFact | None:
         fact = await self._fact_audit.get_fact(fact_id)
-        self._require_fact_access(actor, fact)
+        await self._require_fact_access(actor, fact)
         return fact
 
     async def explain_fact(self, actor: AdminActor, fact_id: int) -> dict[str, object] | None:
         fact = await self._fact_audit.get_fact(fact_id)
-        self._require_fact_access(actor, fact)
+        await self._require_fact_access(actor, fact)
         if fact is None:
             return None
         explanation = await self._fact_audit.explain(fact_id)
@@ -605,7 +605,7 @@ class MemoryAdminService:
         fact_id: int,
     ) -> tuple[MemoryFactStateEvent, ...]:
         fact = await self._fact_audit.get_fact(fact_id)
-        self._require_fact_access(actor, fact)
+        await self._require_fact_access(actor, fact)
         return await self._fact_audit.get_state_history(fact_id) if fact is not None else ()
 
     async def list_conflicts(
@@ -625,7 +625,7 @@ class MemoryAdminService:
         content: str,
     ) -> MemoryFact | None:
         fact = await self._fact_audit.get_fact(fact_id)
-        self._require_authorized_fact_mutation(actor, fact)
+        await self._require_authorized_fact_mutation(actor, fact)
         expected = normalize_memory_text(content, maximum=4000)
         if not expected:
             raise ValueError("memory correction cannot be empty")
@@ -668,7 +668,6 @@ class MemoryAdminService:
         return await self._visible_person_correction(
             result,
             expected_content=expected,
-            subject_user_id=fact.subject_user_id if fact is not None else None,
         )
 
     async def invalidate_fact(
@@ -678,7 +677,7 @@ class MemoryAdminService:
         reason: str | None = None,
     ) -> bool:
         fact = await self._fact_audit.get_fact(fact_id)
-        self._require_authorized_fact_mutation(actor, fact)
+        await self._require_authorized_fact_mutation(actor, fact)
         privileged = _authorized_is_superuser(actor)
         selected = (
             MemoryInvalidationReason.ADMINISTRATOR_INVALIDATED
@@ -709,7 +708,7 @@ class MemoryAdminService:
 
     async def restore_fact(self, actor: AdminActor, fact_id: int) -> MemoryFact | None:
         fact = await self._fact_audit.get_fact(fact_id)
-        self._require_fact_mutation(actor, fact)
+        await self._require_fact_mutation(actor, fact)
         if (
             fact is not None
             and not actor.is_superuser
@@ -976,14 +975,12 @@ class MemoryAdminService:
         fact: MemoryFact | None,
         *,
         expected_content: str,
-        subject_user_id: str | None,
     ) -> MemoryFact | None:
         if (
             fact is None
             or fact.content != expected_content
             or fact.scope_type is not MemoryScopeType.PERSON
             or fact.subject_user_id is None
-            or (subject_user_id is not None and fact.subject_user_id != subject_user_id)
         ):
             return None
         projection = await self._memories.list_person(
@@ -1004,44 +1001,53 @@ class MemoryAdminService:
             raise ValueError(f"记忆变更未提交：{mutation.reason_code}")
         return row
 
-    def _require_authorized_person_target(
+    async def _require_authorized_person_target(
         self,
         actor: AdminActor | MemoryPreferenceTrigger,
         target: str,
     ) -> None:
-        if isinstance(actor, MemoryPreferenceTrigger):
-            if target == actor.user_id or actor.actor_is_superuser:
-                return
-            raise PermissionError("只有当前真实超级管理员可以执行该操作")
-        require_self_or_superuser(actor, target, self._settings)
+        if _mutation_is_superuser(actor, self._settings):
+            return
+        actor_person_id = await self._memories.resolve_person_id(actor.user_id)
+        target_person_id = await self._memories.resolve_person_id(target)
+        if actor_person_id is not None and actor_person_id == target_person_id:
+            return
+        raise PermissionError("只有当前真实超级管理员可以执行该操作")
 
-    def _require_authorized_fact_mutation(
+    async def _require_authorized_fact_mutation(
         self,
         actor: AdminActor | MemoryPreferenceTrigger,
         fact: MemoryFact | None,
     ) -> None:
-        if isinstance(actor, MemoryPreferenceTrigger):
-            if fact is None:
-                return
-            if actor.actor_is_superuser:
-                return
-            if fact.subject_user_id != actor.user_id:
-                raise PermissionError("只能查看与本人有关的人物记忆")
-            if fact.scope_type is MemoryScopeType.GROUP:
-                raise PermissionError("普通用户不能修改群共同事实")
+        if fact is None:
             return
-        self._require_fact_mutation(actor, fact)
+        if _mutation_is_superuser(actor, self._settings):
+            return
+        if not await self._memories.person_owns_fact(
+            fact,
+            actor_user_id=actor.user_id,
+        ):
+            raise PermissionError("只能查看与本人有关的人物记忆")
+        if fact.scope_type is MemoryScopeType.GROUP:
+            raise PermissionError("普通用户不能修改群共同事实")
 
-    def _require_fact_access(self, actor: AdminActor, fact: MemoryFact | None) -> None:
+    async def _require_fact_access(self, actor: AdminActor, fact: MemoryFact | None) -> None:
         if fact is None:
             return
         if actor.is_superuser and actor.user_id in self._settings.superusers:
             return
-        if fact.subject_user_id != actor.user_id:
+        if not await self._memories.person_owns_fact(
+            fact,
+            actor_user_id=actor.user_id,
+        ):
             raise PermissionError("只能查看与本人有关的人物记忆")
 
-    def _require_fact_mutation(self, actor: AdminActor, fact: MemoryFact | None) -> None:
-        self._require_fact_access(actor, fact)
+    async def _require_fact_mutation(
+        self,
+        actor: AdminActor,
+        fact: MemoryFact | None,
+    ) -> None:
+        await self._require_fact_access(actor, fact)
         if fact is not None and fact.scope_type is MemoryScopeType.GROUP and not actor.is_superuser:
             raise PermissionError("普通用户不能修改群共同事实")
 

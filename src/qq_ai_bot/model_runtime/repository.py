@@ -8,7 +8,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 
-from qq_ai_bot.identity.c24_conversation import stamp_conversation_correlation
+from qq_ai_bot.conversation.correlation import stamp_conversation_correlation
 from qq_ai_bot.model_runtime.db_models import ModelInvocationModel
 from qq_ai_bot.model_runtime.models import ModelInvocationRecord, ModelStats, ModelTask
 from qq_ai_bot.persistence.database import Database

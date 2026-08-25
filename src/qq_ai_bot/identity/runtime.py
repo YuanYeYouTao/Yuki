@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.identity.db_models import IdentityRuntimeStateModel
-from qq_ai_bot.identity.errors import IdentityDualWriteError
+from qq_ai_bot.identity.errors import CanonicalIdentityError
 
 COMPLETE_V2_REQUIRED: Final[frozenset[str]] = frozenset(
     {"state", "cutover_id", "source_fingerprint", "completed_at"}
@@ -44,11 +44,11 @@ async def load_identity_runtime(session: AsyncSession) -> IdentityRuntimeSnapsho
         )
     )
     if len(rows) != 1 or int(rows[0].id) != 1:
-        raise IdentityDualWriteError("identity_runtime_state")
+        raise CanonicalIdentityError("identity_runtime_state")
     row = rows[0]
     state = str(row.state)
     if state not in {"v1", "v2"}:
-        raise IdentityDualWriteError("identity_runtime_state")
+        raise CanonicalIdentityError("identity_runtime_state")
     return IdentityRuntimeSnapshot(
         state=state,
         complete_v2=is_complete_v2_row(row),
@@ -62,7 +62,7 @@ async def load_identity_runtime(session: AsyncSession) -> IdentityRuntimeSnapsho
 async def require_complete_v2_runtime(session: AsyncSession) -> IdentityRuntimeSnapshot:
     snapshot = await load_identity_runtime(session)
     if not snapshot.complete_v2:
-        raise IdentityDualWriteError("identity_runtime_state")
+        raise CanonicalIdentityError("identity_runtime_state")
     return snapshot
 
 
@@ -73,14 +73,14 @@ async def require_identity_runtime(
 ) -> IdentityRuntimeSnapshot:
     snapshot = await load_identity_runtime(session)
     if snapshot.state not in allowed:
-        raise IdentityDualWriteError("identity_runtime_state")
+        raise CanonicalIdentityError("identity_runtime_state")
     if snapshot.state == "v2" and not snapshot.complete_v2:
-        raise IdentityDualWriteError("identity_runtime_state")
+        raise CanonicalIdentityError("identity_runtime_state")
     return snapshot
 
 
 async def identity_runtime_is_complete_v2(session: AsyncSession) -> bool:
     try:
         return (await load_identity_runtime(session)).complete_v2
-    except IdentityDualWriteError:
+    except CanonicalIdentityError:
         return False

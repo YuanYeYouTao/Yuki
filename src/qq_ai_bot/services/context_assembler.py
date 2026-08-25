@@ -18,7 +18,7 @@ from qq_ai_bot.conversation.scope import (
     runtime_conversation_key,
     turn_matches_hydrated_scope,
 )
-from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
+from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import (
     ChatMessage,
     InboundMessage,
@@ -1105,30 +1105,17 @@ class ContextAssembler:
         authorization_user_id: str,
         conversation_id: str | None,
     ) -> ConversationScope:
-        """Hydrate v2 external turns from the worker snapshot transport.
+        """Hydrate an external turn only from its canonical worker snapshot."""
 
-        complete-v2 background turns pass ``conversation_id``. Their current
-        Presence must already be on the snapshot; this never infers a bot from
-        the persisted event. v1 keeps the event provenance identity.
-        """
-
-        if conversation_id:
-            transport_key = turn.transport_scope_key
-            if not transport_key:
-                raise ConversationCoverageError(
-                    "complete-v2 external turn requires snapshot transport identity"
-                )
-            try:
-                return ConversationScope.parse(transport_key)
-            except ValueError as exc:
-                raise ConversationCoverageError(
-                    "complete-v2 external turn snapshot transport is invalid"
-                ) from exc
-        if event.scope_type is ScopeType.GROUP and event.group_id is not None:
-            return ConversationScope.group(event.bot_user_id, event.group_id)
-        return ConversationScope.private(
-            event.bot_user_id, event.private_peer_user_id or authorization_user_id
-        )
+        if not conversation_id:
+            raise ConversationCoverageError("external turn requires canonical conversation")
+        transport_key = turn.transport_scope_key
+        if not transport_key:
+            raise ConversationCoverageError("external turn requires snapshot transport identity")
+        try:
+            return ConversationScope.parse(transport_key)
+        except ValueError as exc:
+            raise ConversationCoverageError("external turn snapshot transport is invalid") from exc
 
     async def _load_history_snapshot(
         self,

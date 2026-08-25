@@ -15,8 +15,6 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
-from qq_ai_bot.identity.shadows import fill_person_space_shadows
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.unit_of_work import optional_session
 from qq_ai_bot.plugin_host.db_models import (
@@ -301,85 +299,52 @@ class PluginConfigRepository:
         scope_id = _validated_scope(scope_type, scope_id)
         key = _storage_key(key, label="config key")
         async with self._database.sessions() as session:
-            if await identity_runtime_is_complete_v2(session):
-                from qq_ai_bot.plugin_host.ownership import (
-                    find_config_lineage,
-                    require_v2_config_readable,
-                    resolve_config_owners,
-                )
-
-                person_id, space_id = await resolve_config_owners(
-                    session,
-                    scope_type=scope_type,
-                    scope_id=scope_id,
-                    complete_v2=True,
-                )
-                row = await find_config_lineage(
-                    session,
-                    plugin_id=plugin_id,
-                    scope_type=scope_type,
-                    key=key,
-                    person_id=person_id,
-                    space_id=space_id,
-                )
-                if row is None:
-                    return None
-                await require_v2_config_readable(session, row)
-                return _config_record(row)
-            row = await session.scalar(
-                select(PluginConfigValueModel).where(
-                    PluginConfigValueModel.plugin_id == plugin_id,
-                    PluginConfigValueModel.scope_type == scope_type,
-                    PluginConfigValueModel.scope_id == scope_id,
-                    PluginConfigValueModel.key == key,
-                )
+            from qq_ai_bot.plugin_host.ownership import (
+                find_config_lineage,
+                require_config_readable,
+                resolve_config_owners,
             )
-            return _config_record(row) if row is not None else None
+
+            person_id, space_id = await resolve_config_owners(
+                session, scope_type=scope_type, scope_id=scope_id
+            )
+            row = await find_config_lineage(
+                session,
+                plugin_id=plugin_id,
+                scope_type=scope_type,
+                key=key,
+                person_id=person_id,
+                space_id=space_id,
+            )
+            if row is None:
+                return None
+            await require_config_readable(session, row)
+            return _config_record(row)
 
     async def list_scope(
         self, *, plugin_id: str, scope_type: str, scope_id: str
     ) -> tuple[PluginConfigValueRecord, ...]:
         scope_id = _validated_scope(scope_type, scope_id)
         async with self._database.sessions() as session:
-            if await identity_runtime_is_complete_v2(session):
-                from qq_ai_bot.plugin_host.ownership import (
-                    require_v2_config_readable,
-                    resolve_config_owners,
-                )
+            from qq_ai_bot.plugin_host.ownership import (
+                require_config_readable,
+                resolve_config_owners,
+            )
 
-                person_id, space_id = await resolve_config_owners(
-                    session,
-                    scope_type=scope_type,
-                    scope_id=scope_id,
-                    complete_v2=True,
-                )
-                statement = select(PluginConfigValueModel).where(
-                    PluginConfigValueModel.plugin_id == plugin_id,
-                    PluginConfigValueModel.scope_type == scope_type,
-                )
-                if scope_type == "user":
-                    statement = statement.where(
-                        PluginConfigValueModel.canonical_person_id == person_id
-                    )
-                elif scope_type == "group":
-                    statement = statement.where(
-                        PluginConfigValueModel.canonical_space_id == space_id
-                    )
-                rows = (await session.scalars(statement.order_by(PluginConfigValueModel.key))).all()
-                for row in rows:
-                    await require_v2_config_readable(session, row)
-                return tuple(_config_record(row) for row in rows)
-            rows = (
-                await session.scalars(
-                    select(PluginConfigValueModel)
-                    .where(
-                        PluginConfigValueModel.plugin_id == plugin_id,
-                        PluginConfigValueModel.scope_type == scope_type,
-                        PluginConfigValueModel.scope_id == scope_id,
-                    )
-                    .order_by(PluginConfigValueModel.key)
-                )
-            ).all()
+            person_id, space_id = await resolve_config_owners(
+                session, scope_type=scope_type, scope_id=scope_id
+            )
+            statement = select(PluginConfigValueModel).where(
+                PluginConfigValueModel.plugin_id == plugin_id,
+                PluginConfigValueModel.scope_type == scope_type,
+            )
+            if scope_type == "user":
+                statement = statement.where(PluginConfigValueModel.canonical_person_id == person_id)
+            elif scope_type == "group":
+                statement = statement.where(PluginConfigValueModel.canonical_space_id == space_id)
+            rows = (await session.scalars(statement.order_by(PluginConfigValueModel.key))).all()
+            for row in rows:
+                await require_config_readable(session, row)
             return tuple(_config_record(row) for row in rows)
 
     async def compare_and_set(
@@ -402,73 +367,18 @@ class PluginConfigRepository:
         timestamp = _aware_utc(now or datetime.now(UTC))
         value_json = _json(value)
         async with self._database.sessions() as session, session.begin():
-            if await identity_runtime_is_complete_v2(session):
-                return await self._compare_and_set_v2(
-                    session,
-                    plugin_id=plugin_id,
-                    scope_type=scope_type,
-                    scope_id=scope_id,
-                    key=key,
-                    expected_version=expected_version,
-                    value_json=value_json,
-                    timestamp=timestamp,
-                )
-            if expected_version == 0:
-                result = await session.execute(
-                    insert(PluginConfigValueModel)
-                    .values(
-                        plugin_id=plugin_id,
-                        scope_type=scope_type,
-                        scope_id=scope_id,
-                        key=key[:128],
-                        value_json=value_json,
-                        version=1,
-                        updated_at=timestamp,
-                    )
-                    .on_conflict_do_nothing(
-                        index_elements=["plugin_id", "scope_type", "scope_id", "key"]
-                    )
-                )
-                if not cast(CursorResult[Any], result).rowcount:
-                    raise PluginVersionConflictError("plugin config version changed")
-            else:
-                result = await session.execute(
-                    update(PluginConfigValueModel)
-                    .where(
-                        PluginConfigValueModel.plugin_id == plugin_id,
-                        PluginConfigValueModel.scope_type == scope_type,
-                        PluginConfigValueModel.scope_id == scope_id,
-                        PluginConfigValueModel.key == key,
-                        PluginConfigValueModel.version == expected_version,
-                    )
-                    .values(
-                        value_json=value_json,
-                        version=expected_version + 1,
-                        updated_at=timestamp,
-                    )
-                )
-                if not cast(CursorResult[Any], result).rowcount:
-                    raise PluginVersionConflictError("plugin config version changed")
-            row = await session.scalar(
-                select(PluginConfigValueModel).where(
-                    PluginConfigValueModel.plugin_id == plugin_id,
-                    PluginConfigValueModel.scope_type == scope_type,
-                    PluginConfigValueModel.scope_id == scope_id,
-                    PluginConfigValueModel.key == key,
-                )
-            )
-            assert row is not None
-            await fill_person_space_shadows(
+            return await self._compare_and_set_canonical(
                 session,
-                row,
-                person_attr="canonical_person_id",
-                space_attr="canonical_space_id",
-                user_id=scope_id if scope_type == "user" else None,
-                group_id=scope_id if scope_type == "group" else None,
+                plugin_id=plugin_id,
+                scope_type=scope_type,
+                scope_id=scope_id,
+                key=key,
+                expected_version=expected_version,
+                value_json=value_json,
+                timestamp=timestamp,
             )
-            return _config_record(row)
 
-    async def _compare_and_set_v2(
+    async def _compare_and_set_canonical(
         self,
         session: AsyncSession,
         *,
@@ -484,7 +394,7 @@ class PluginConfigRepository:
             STATE_MISMATCH,
             PluginOwnershipError,
             find_config_lineage,
-            require_v2_config_readable,
+            require_config_readable,
             resolve_config_owners,
             stamp_config_owners,
         )
@@ -493,7 +403,6 @@ class PluginConfigRepository:
             session,
             scope_type=scope_type,
             scope_id=scope_id,
-            complete_v2=True,
         )
         row = await find_config_lineage(
             session,
@@ -520,11 +429,11 @@ class PluginConfigRepository:
                 await session.flush()
             except IntegrityError as exc:
                 raise PluginOwnershipError(STATE_MISMATCH) from exc
-            await stamp_config_owners(session, row, complete_v2=True)
+            await stamp_config_owners(session, row)
             return _config_record(row)
         if expected_version == 0 or row.version != expected_version:
             raise PluginVersionConflictError("plugin config version changed")
-        await require_v2_config_readable(session, row)
+        await require_config_readable(session, row)
         row.value_json = value_json
         row.version = expected_version + 1
         row.updated_at = timestamp
@@ -542,49 +451,32 @@ class PluginConfigRepository:
         scope_id = _validated_scope(scope_type, scope_id)
         key = _storage_key(key, label="config key")
         async with self._database.sessions() as session, session.begin():
-            if await identity_runtime_is_complete_v2(session):
-                from qq_ai_bot.plugin_host.ownership import (
-                    find_config_lineage,
-                    require_v2_config_readable,
-                    resolve_config_owners,
-                )
-
-                person_id, space_id = await resolve_config_owners(
-                    session,
-                    scope_type=scope_type,
-                    scope_id=scope_id,
-                    complete_v2=True,
-                )
-                row = await find_config_lineage(
-                    session,
-                    plugin_id=plugin_id,
-                    scope_type=scope_type,
-                    key=key,
-                    person_id=person_id,
-                    space_id=space_id,
-                )
-                if row is None:
-                    if expected_version is not None:
-                        raise PluginVersionConflictError("plugin config version changed")
-                    return False
-                await require_v2_config_readable(session, row)
-                if expected_version is not None and row.version != expected_version:
-                    raise PluginVersionConflictError("plugin config version changed")
-                await session.delete(row)
-                return True
-            statement = delete(PluginConfigValueModel).where(
-                PluginConfigValueModel.plugin_id == plugin_id,
-                PluginConfigValueModel.scope_type == scope_type,
-                PluginConfigValueModel.scope_id == scope_id,
-                PluginConfigValueModel.key == key,
+            from qq_ai_bot.plugin_host.ownership import (
+                find_config_lineage,
+                require_config_readable,
+                resolve_config_owners,
             )
-            if expected_version is not None:
-                statement = statement.where(PluginConfigValueModel.version == expected_version)
-            result = await session.execute(statement)
-            deleted = bool(cast(CursorResult[Any], result).rowcount)
-        if expected_version is not None and not deleted:
-            raise PluginVersionConflictError("plugin config version changed")
-        return deleted
+
+            person_id, space_id = await resolve_config_owners(
+                session, scope_type=scope_type, scope_id=scope_id
+            )
+            row = await find_config_lineage(
+                session,
+                plugin_id=plugin_id,
+                scope_type=scope_type,
+                key=key,
+                person_id=person_id,
+                space_id=space_id,
+            )
+            if row is None:
+                if expected_version is not None:
+                    raise PluginVersionConflictError("plugin config version changed")
+                return False
+            await require_config_readable(session, row)
+            if expected_version is not None and row.version != expected_version:
+                raise PluginVersionConflictError("plugin config version changed")
+            await session.delete(row)
+            return True
 
 
 class PluginStateRepository:
@@ -618,10 +510,9 @@ class PluginStateRepository:
             )
             if row is None:
                 return None
-            if await identity_runtime_is_complete_v2(session):
-                from qq_ai_bot.plugin_host.ownership import require_v2_state_readable
+            from qq_ai_bot.plugin_host.ownership import require_state_readable
 
-                await require_v2_state_readable(session, row)
+            await require_state_readable(session, row)
             return _state_record(row)
 
     async def list_namespace(
@@ -632,7 +523,7 @@ class PluginStateRepository:
         limit: int = 100,
         now: datetime | None = None,
     ) -> tuple[PluginStateRecord, ...]:
-        """List one namespace. complete-v2 fail-closes the whole query on a bad row."""
+        """List one namespace, failing closed when any canonical owner is invalid."""
 
         namespace = _storage_key(namespace, label="state namespace")
         timestamp = _aware_utc(now or datetime.now(UTC))
@@ -652,11 +543,10 @@ class PluginStateRepository:
                     .limit(max(1, min(limit, 1_000)))
                 )
             ).all()
-            if await identity_runtime_is_complete_v2(session):
-                from qq_ai_bot.plugin_host.ownership import require_v2_state_readable
+            from qq_ai_bot.plugin_host.ownership import require_state_readable
 
-                for row in rows:
-                    await require_v2_state_readable(session, row)
+            for row in rows:
+                await require_state_readable(session, row)
             return tuple(_state_record(row) for row in rows)
 
     async def storage_usage_bytes(
@@ -760,11 +650,7 @@ class PluginStateRepository:
             assert row is not None
             from qq_ai_bot.plugin_host.ownership import stamp_state_owner
 
-            await stamp_state_owner(
-                session,
-                row,
-                complete_v2=await identity_runtime_is_complete_v2(session),
-            )
+            await stamp_state_owner(session, row)
             return _state_record(row)
 
     async def delete(

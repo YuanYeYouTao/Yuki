@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 PROFILE_SCHEMA_VERSION = 3
 RETIRED_MODEL_ROUTES = frozenset({"planner", "tool_selection"})
-MIGRATE_3_6_COMMAND = "qq-ai-bot-cli setup migrate-3-6 --deployment-root <deployment-root>"
+CURRENT_CONFIGURATION_HINT = "regenerate model_profiles.toml with qq-ai-bot-cli setup"
 
 
 class ModelRuntimeConfigurationError(ValueError):
@@ -142,7 +142,8 @@ def load_model_profile_catalog(
         version = raw.get("schema_version", 1)
         if version != PROFILE_SCHEMA_VERSION:
             raise ModelRuntimeConfigurationError(
-                f"model profile schema v{version} is no longer accepted; run: {MIGRATE_3_6_COMMAND}"
+                f"model profile schema v{version} is no longer accepted; "
+                f"{CURRENT_CONFIGURATION_HINT}"
             )
         document = _ProfileDocument.model_validate(raw)
         profiles = {
@@ -159,7 +160,7 @@ def load_model_profile_catalog(
         if retired:
             names = ", ".join(sorted(retired))
             raise ModelRuntimeConfigurationError(
-                f"retired model routes remain ({names}); run: {MIGRATE_3_6_COMMAND}"
+                f"retired model routes remain ({names}); {CURRENT_CONFIGURATION_HINT}"
             )
         if (
             ModelTask.MEMORY_SELF_REFLECTION.value not in raw_routes

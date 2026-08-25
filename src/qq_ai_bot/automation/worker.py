@@ -214,12 +214,7 @@ class AutomationWorker:
         )
 
     async def _uses_canonical_send(self, automation: Any) -> bool:
-        if not (
+        return bool(
             getattr(automation, "canonical_target_person_id", None)
             or getattr(automation, "canonical_target_space_id", None)
-        ):
-            return False
-        from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
-
-        async with self._repository._database.sessions() as session:
-            return await identity_runtime_is_complete_v2(session)
+        )

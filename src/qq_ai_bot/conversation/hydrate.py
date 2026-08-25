@@ -19,11 +19,9 @@ from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationRollupModel,
     ConversationLegacyAliasModel,
 )
-from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
 from qq_ai_bot.conversation.rollup.models import ConversationScopeState
 from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.identity.errors import IdentityDualWriteError
-from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
+from qq_ai_bot.identity.errors import CanonicalIdentityError
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,7 +70,7 @@ async def require_primary_alias_for_conversation(
         )
     )
     if len(keys) != 1:
-        raise IdentityDualWriteError("state_mismatch")
+        raise CanonicalIdentityError("state_mismatch")
     return str(keys[0])
 
 
@@ -85,7 +83,7 @@ async def conversation_for_owner(
 ) -> CanonicalConversationModel | None:
     if kind == "private":
         if not person_id:
-            raise IdentityDualWriteError("unclassified")
+            raise CanonicalIdentityError("unclassified")
         return cast(
             CanonicalConversationModel | None,
             await session.scalar(
@@ -96,7 +94,7 @@ async def conversation_for_owner(
             ),
         )
     if not space_id:
-        raise IdentityDualWriteError("unclassified")
+        raise CanonicalIdentityError("unclassified")
     return cast(
         CanonicalConversationModel | None,
         await session.scalar(
@@ -119,7 +117,7 @@ async def ensure_canonical_conversation(
     """Create or reuse one Conversation. Primary alias is immutable after first write."""
 
     if kind not in {"private", "space"}:
-        raise IdentityDualWriteError("unclassified")
+        raise CanonicalIdentityError("unclassified")
     existing = await conversation_for_owner(
         session, kind=kind, person_id=person_id, space_id=space_id
     )
@@ -165,11 +163,9 @@ async def ensure_canonical_conversation(
                 session, kind=kind, person_id=person_id, space_id=space_id
             )
             if raced is None:
-                raise IdentityDualWriteError("canonical_kind_mismatch") from exc
+                raise CanonicalIdentityError("canonical_kind_mismatch") from exc
             existing = raced
         else:
-            if not await identity_runtime_is_complete_v2(session):
-                await _attach_scope_shadow(session, primary_scope_key, conversation_id)
             return HydratedConversation(
                 conversation_id=conversation_id,
                 kind=kind,
@@ -181,7 +177,7 @@ async def ensure_canonical_conversation(
     assert existing is not None
     primary = await primary_alias_for_conversation(session, existing.id)
     if primary is None:
-        raise IdentityDualWriteError("canonical_kind_mismatch")
+        raise CanonicalIdentityError("canonical_kind_mismatch")
     if primary_scope_key != primary:
         await ensure_legacy_alias(
             session,
@@ -189,9 +185,6 @@ async def ensure_canonical_conversation(
             scope_key=primary_scope_key,
             primary=False,
         )
-    if not await identity_runtime_is_complete_v2(session):
-        await _attach_scope_shadow(session, primary_scope_key, existing.id)
-        await _attach_scope_shadow(session, primary, existing.id)
     return HydratedConversation(
         conversation_id=existing.id,
         kind=existing.kind,
@@ -216,10 +209,10 @@ async def ensure_legacy_alias(
     )
     if existing is not None:
         if existing.conversation_id != conversation_id:
-            raise IdentityDualWriteError("canonical_owner_mismatch")
+            raise CanonicalIdentityError("canonical_owner_mismatch")
         return
     if primary:
-        raise IdentityDualWriteError("canonical_kind_mismatch")
+        raise CanonicalIdentityError("canonical_kind_mismatch")
     now = _utcnow()
     session.add(
         ConversationLegacyAliasModel(
@@ -240,7 +233,7 @@ async def ensure_legacy_alias(
             )
         )
         if raced is None or raced.conversation_id != conversation_id:
-            raise IdentityDualWriteError("canonical_owner_mismatch") from None
+            raise CanonicalIdentityError("canonical_owner_mismatch") from None
 
 
 async def bump_canonical_generation(
@@ -253,7 +246,7 @@ async def bump_canonical_generation(
 
     row = await session.get(CanonicalConversationModel, conversation_id)
     if row is None:
-        raise IdentityDualWriteError("unclassified")
+        raise CanonicalIdentityError("unclassified")
     now = _utcnow()
     if row.last_generation_change_event_id == event_id:
         return int(row.generation)
@@ -287,28 +280,6 @@ async def delete_canonical_rollup_projections(session: AsyncSession, conversatio
     await session.execute(
         delete(CanonicalConversationRollupEmergencyOverlayModel).where(
             CanonicalConversationRollupEmergencyOverlayModel.conversation_id == conversation_id
-        )
-    )
-
-
-async def delete_legacy_rollup_projections(session: AsyncSession, scope_id: int) -> None:
-    """Delete legacy semantic, job, and emergency overlay in one session."""
-
-    from qq_ai_bot.conversation.rollup.db_models import (
-        ConversationRollupEmergencyOverlayModel,
-        ConversationRollupJobModel,
-        ConversationRollupModel,
-    )
-
-    await session.execute(
-        delete(ConversationRollupModel).where(ConversationRollupModel.scope_id == scope_id)
-    )
-    await session.execute(
-        delete(ConversationRollupJobModel).where(ConversationRollupJobModel.scope_id == scope_id)
-    )
-    await session.execute(
-        delete(ConversationRollupEmergencyOverlayModel).where(
-            ConversationRollupEmergencyOverlayModel.scope_id == scope_id
         )
     )
 
@@ -373,23 +344,5 @@ async def hydrate_scope_state_from_canonical(
 
     primary = await primary_alias_for_conversation(session, conversation.id)
     if not primary:
-        raise IdentityDualWriteError("unclassified")
+        raise CanonicalIdentityError("unclassified")
     return scope_state_from_canonical(scope, conversation, runtime_scope_key=primary)
-
-
-async def _attach_scope_shadow(
-    session: AsyncSession,
-    scope_key: str,
-    conversation_id: str,
-) -> None:
-    scope = await session.scalar(
-        select(ConversationScopeModel).where(ConversationScopeModel.scope_key == scope_key)
-    )
-    if scope is None:
-        return
-    current = scope.canonical_conversation_id
-    if current is None:
-        scope.canonical_conversation_id = conversation_id
-        return
-    if current != conversation_id:
-        raise IdentityDualWriteError("canonical_owner_mismatch")

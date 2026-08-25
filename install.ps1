@@ -132,7 +132,7 @@ try {
             Pop-Location
         }
         $Stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ')
-        $Snap = Join-Path $InstallDir ".yuki\backups\upgrade-3.6\$Stamp"
+        $Snap = Join-Path $InstallDir ".yuki\backups\pre-upgrade\$Stamp"
         [System.IO.Directory]::CreateDirectory((Join-Path $Snap "data")) | Out-Null
         [System.IO.Directory]::CreateDirectory((Join-Path $Snap "config")) | Out-Null
         $SnapshotPairs = @(
@@ -188,14 +188,6 @@ if db.is_file():
             --volume "${Snap}:/snapshot" `
             $Image -c $VerifySnapshot
         if ($LASTEXITCODE -ne 0) { Fail "Upgrade snapshot checksum or database verification failed." }
-        $BaselineOutput = "/deploy/.yuki/backups/upgrade-3.6/$Stamp/baseline-v1.json"
-        & docker run --rm `
-            --entrypoint qq-ai-bot-cli `
-            --volume "${InstallDir}:/deploy" `
-            --workdir /deploy `
-            $Image setup migrate-3-6 --deployment-root /deploy --no-color `
-            --baseline-output $BaselineOutput
-        if ($LASTEXITCODE -ne 0) { Fail "setup migrate-3-6 failed." }
     }
 
     & docker run --rm -it `

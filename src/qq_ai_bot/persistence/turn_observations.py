@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel
-from qq_ai_bot.identity.shadows import fill_turn_observation_shadows
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import RuntimeTurnObservationModel
 from qq_ai_bot.runtime.observability import RuntimeTurnObservation
@@ -78,15 +77,11 @@ class RuntimeTurnObservationRepository:
                 total_latency_ms=max(0, observation.total_latency_ms),
                 created_at=observation.created_at,
                 expires_at=observation.expires_at,
+                canonical_conversation_id=conversation_id,
+                canonical_person_id=person_id,
+                canonical_space_id=space_id,
             )
             session.add(row)
-            await fill_turn_observation_shadows(
-                session,
-                row,
-                conversation_id=conversation_id,
-                person_id=person_id,
-                space_id=space_id,
-            )
 
     async def cleanup_expired(self, *, now: datetime | None = None, limit: int = 500) -> int:
         """Delete one bounded batch of expired rows; call repeatedly to drain."""

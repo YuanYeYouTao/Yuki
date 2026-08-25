@@ -16,27 +16,24 @@ from qq_ai_bot.domain.relationships import (
     RelationshipSnapshot,
 )
 from qq_ai_bot.identity.canonical_projections import (
+    bindings_for_person,
     canonical_relationship_owner_keys,
     load_canonical_relationship_events,
     owner_keys_for_person,
+    representative_external_account_id,
     require_person_binding,
     resolve_canonical_relationship,
     resolve_person_author_id_for_event,
 )
-from qq_ai_bot.identity.errors import IdentityDualWriteError
-from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
-from qq_ai_bot.identity.shadows import fill_relationship_event_shadows
+from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
-    PersonModel,
     PersonRelationshipModel,
     RelationshipEventModel,
     RelationshipJobModel,
 )
 from qq_ai_bot.persistence.repository_helpers import (
-    _ensure_person,
-    _ensure_relationship,
     _event_record,
     _relationship_event_record,
     _relationship_snapshot,
@@ -84,32 +81,19 @@ class RelationshipRepository:
         initial_affection: int | None = None,
         initial_trust: int | None = None,
     ) -> PersonRelationshipModel:
-        if await identity_runtime_is_complete_v2(session):
-            row = await resolve_canonical_relationship(
-                session,
-                user_id,
-                create=True,
-                initial_affection=(
-                    self._initial_affection if initial_affection is None else initial_affection
-                ),
-                initial_trust=self._initial_trust if initial_trust is None else initial_trust,
-                now=now,
-            )
-            if row is None:
-                raise IdentityDualWriteError("unclassified")
-            return row
-        person = await session.get(PersonModel, user_id)
-        if person is None:
-            await _ensure_person(session, user_id, now=now)
-        return await _ensure_relationship(
+        row = await resolve_canonical_relationship(
             session,
             user_id,
+            create=True,
             initial_affection=(
                 self._initial_affection if initial_affection is None else initial_affection
             ),
             initial_trust=(self._initial_trust if initial_trust is None else initial_trust),
             now=now,
         )
+        if row is None:
+            raise CanonicalIdentityError("unclassified")
+        return row
 
     async def get_or_create(
         self,
@@ -120,17 +104,7 @@ class RelationshipRepository:
         session: AsyncSession | None = None,
     ) -> RelationshipSnapshot:
         if session is None:
-            async with self._database.sessions() as probe:
-                complete_v2 = await identity_runtime_is_complete_v2(probe)
-            if complete_v2:
-                async with self._database.immediate_session() as writer:
-                    return await self.get_or_create(
-                        user_id,
-                        initial_affection=initial_affection,
-                        initial_trust=initial_trust,
-                        session=writer,
-                    )
-            async with self._database.sessions() as owned_session, owned_session.begin():
+            async with self._database.immediate_session() as owned_session:
                 return await self.get_or_create(
                     user_id,
                     initial_affection=initial_affection,
@@ -150,21 +124,16 @@ class RelationshipRepository:
 
     async def get(self, user_id: str) -> RelationshipSnapshot | None:
         async with self._database.sessions() as session:
-            if await identity_runtime_is_complete_v2(session):
-                row = await resolve_canonical_relationship(
-                    session,
-                    user_id,
-                    create=False,
-                    initial_affection=self._initial_affection,
-                    initial_trust=self._initial_trust,
-                )
-                if row is None:
-                    return None
-                return self._projected_snapshot(row, user_id)
-            row = await session.get(PersonRelationshipModel, user_id)
+            row = await resolve_canonical_relationship(
+                session,
+                user_id,
+                create=False,
+                initial_affection=self._initial_affection,
+                initial_trust=self._initial_trust,
+            )
             if row is None:
                 return None
-            return _relationship_snapshot(row, trust_cap_offset=self._trust_cap_offset)
+            return self._projected_snapshot(row, user_id)
 
     async def get_many(
         self,
@@ -176,33 +145,18 @@ class RelationshipRepository:
         if not unique_ids:
             return {}
         async with self._database.sessions() as session:
-            if await identity_runtime_is_complete_v2(session):
-                loaded: dict[str, RelationshipSnapshot] = {}
-                for item in unique_ids:
-                    row = await resolve_canonical_relationship(
-                        session,
-                        item,
-                        create=False,
-                        initial_affection=self._initial_affection,
-                        initial_trust=self._initial_trust,
-                    )
-                    if row is not None:
-                        loaded[item] = self._projected_snapshot(row, item)
-                return loaded
-            rows = (
-                await session.scalars(
-                    select(PersonRelationshipModel).where(
-                        PersonRelationshipModel.user_id.in_(unique_ids)
-                    )
+            loaded: dict[str, RelationshipSnapshot] = {}
+            for item in unique_ids:
+                row = await resolve_canonical_relationship(
+                    session,
+                    item,
+                    create=False,
+                    initial_affection=self._initial_affection,
+                    initial_trust=self._initial_trust,
                 )
-            ).all()
-        return {
-            row.user_id: _relationship_snapshot(
-                row,
-                trust_cap_offset=self._trust_cap_offset,
-            )
-            for row in rows
-        }
+                if row is not None:
+                    loaded[item] = self._projected_snapshot(row, item)
+            return loaded
 
     async def history(
         self,
@@ -211,25 +165,8 @@ class RelationshipRepository:
         limit: int = 10,
     ) -> tuple[RelationshipEventRecord, ...]:
         async with self._database.sessions() as session:
-            if await identity_runtime_is_complete_v2(session):
-                rows = await load_canonical_relationship_events(session, user_id, limit=limit)
-                return tuple(
-                    replace(_relationship_event_record(row), user_id=user_id) for row in rows
-                )
-            rows = tuple(
-                (
-                    await session.scalars(
-                        select(RelationshipEventModel)
-                        .where(RelationshipEventModel.user_id == user_id)
-                        .order_by(
-                            RelationshipEventModel.created_at.desc(),
-                            RelationshipEventModel.id.desc(),
-                        )
-                        .limit(max(1, min(limit, 100)))
-                    )
-                ).all()
-            )
-            return tuple(_relationship_event_record(row) for row in rows)
+            rows = await load_canonical_relationship_events(session, user_id, limit=limit)
+            return tuple(replace(_relationship_event_record(row), user_id=user_id) for row in rows)
 
     async def apply_automatic(
         self,
@@ -250,7 +187,6 @@ class RelationshipRepository:
         now = datetime.now(UTC)
         try:
             async with self._database.sessions() as session, session.begin():
-                complete_v2 = await identity_runtime_is_complete_v2(session)
                 existing = await session.scalar(
                     select(RelationshipEventModel.id).where(
                         RelationshipEventModel.change_type == "automatic",
@@ -263,29 +199,23 @@ class RelationshipRepository:
                 source = await session.get(ChatEventModel, source_event_id)
                 if source is None or source.direction != "inbound":
                     raise ValueError("relationship source event does not belong to the user")
-                if complete_v2:
-                    source_person = await resolve_person_author_id_for_event(session, source)
-                    job_person = row.canonical_person_id
-                    if job_person is None:
-                        job_person, _ = await canonical_relationship_owner_keys(session, user_id)
-                    if source_person is None or source_person != job_person:
-                        raise ValueError("relationship source event does not belong to the user")
-                elif source.sender_user_id != user_id:
+                source_person = await resolve_person_author_id_for_event(session, source)
+                job_person = row.canonical_person_id
+                if job_person is None:
+                    raise CanonicalIdentityError("unclassified")
+                if source_person is None or source_person != job_person:
                     raise ValueError("relationship source event does not belong to the user")
 
                 effective_evaluation = evaluation
                 if daily_positive_cap or daily_negative_cap:
                     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-                    if complete_v2:
-                        person_id, owner_keys = await canonical_relationship_owner_keys(
-                            session, user_id
-                        )
-                        daily_filter = or_(
-                            RelationshipEventModel.canonical_person_id == person_id,
-                            RelationshipEventModel.user_id.in_(owner_keys),
-                        )
-                    else:
-                        daily_filter = RelationshipEventModel.user_id == user_id
+                    person_id, owner_keys = await canonical_relationship_owner_keys(
+                        session, user_id
+                    )
+                    daily_filter = or_(
+                        RelationshipEventModel.canonical_person_id == person_id,
+                        RelationshipEventModel.user_id.in_(owner_keys),
+                    )
                     daily_events = (
                         await session.scalars(
                             select(RelationshipEventModel).where(
@@ -333,7 +263,7 @@ class RelationshipRepository:
                 if affection_delta or trust_delta:
                     row.last_automatic_change_at = now
                 event = RelationshipEventModel(
-                    user_id=row.user_id if complete_v2 else user_id,
+                    user_id=row.user_id,
                     source_event_id=source_event_id,
                     actor_user_id=None,
                     change_type="automatic",
@@ -346,12 +276,9 @@ class RelationshipRepository:
                     reason_code=effective_evaluation.reason_code[:64],
                     confidence=effective_evaluation.confidence,
                     created_at=now,
+                    canonical_person_id=job_person,
                 )
                 session.add(event)
-                if complete_v2:
-                    await fill_relationship_event_shadows(
-                        session, event, person_id=row.canonical_person_id
-                    )
                 await session.flush()
                 return (self._projected_snapshot(row, user_id), True)
         except IntegrityError:
@@ -464,20 +391,7 @@ class RelationshipRepository:
         session: AsyncSession | None = None,
     ) -> RelationshipSnapshot:
         if session is None:
-            async with self._database.sessions() as probe:
-                complete_v2 = await identity_runtime_is_complete_v2(probe)
-            if complete_v2:
-                async with self._database.immediate_session() as writer:
-                    return await self._apply_manual(
-                        user_id=user_id,
-                        actor_user_id=actor_user_id,
-                        reason_code=reason_code,
-                        affection_score=affection_score,
-                        affection_delta=affection_delta,
-                        trust_score=trust_score,
-                        session=writer,
-                    )
-            async with self._database.sessions() as owned_session, owned_session.begin():
+            async with self._database.immediate_session() as owned_session:
                 return await self._apply_manual(
                     user_id=user_id,
                     actor_user_id=actor_user_id,
@@ -488,8 +402,9 @@ class RelationshipRepository:
                     session=owned_session,
                 )
         now = datetime.now(UTC)
-        complete_v2 = await identity_runtime_is_complete_v2(session)
         row = await self._ensure_row(session, user_id, now=now)
+        if row.canonical_person_id is None:
+            raise CanonicalIdentityError("unclassified")
         affection_before = row.affection_score
         trust_before = row.trust_score
         row.affection_score = (
@@ -502,7 +417,7 @@ class RelationshipRepository:
         actual_trust_delta = row.trust_score - trust_before
         row.updated_at = now
         event = RelationshipEventModel(
-            user_id=row.user_id if complete_v2 else user_id,
+            user_id=row.user_id,
             source_event_id=None,
             actor_user_id=actor_user_id,
             change_type="manual",
@@ -515,16 +430,17 @@ class RelationshipRepository:
             reason_code=reason_code,
             confidence=None,
             created_at=now,
+            canonical_person_id=row.canonical_person_id,
         )
         session.add(event)
-        if complete_v2:
-            await fill_relationship_event_shadows(session, event, person_id=row.canonical_person_id)
         await session.flush()
         return self._projected_snapshot(row, user_id)
 
 
 class RelationshipJobRepository:
     """Restart-safe relationship queue with bounded retries and five-event context."""
+
+    _BINDING_RETRY_DELAY = timedelta(minutes=1)
 
     def __init__(self, database: Database, *, max_attempts: int = 3) -> None:
         self._database = database
@@ -539,9 +455,18 @@ class RelationshipJobRepository:
     ) -> None:
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
+            trigger = await session.get(ChatEventModel, trigger_event_id)
+            if trigger is None:
+                raise CanonicalIdentityError("unclassified")
+            person_id = await resolve_person_author_id_for_event(session, trigger)
+            if person_id is None:
+                return
+            caller = await require_person_binding(session, user_id)
+            if caller.person_id != person_id:
+                raise CanonicalIdentityError("canonical_owner_mismatch")
             values: dict[str, object] = {
                 "trigger_event_id": trigger_event_id,
-                "user_id": user_id,
+                "user_id": person_id,
                 "conversation_key": conversation_key,
                 "status": "pending",
                 "attempts": 0,
@@ -549,18 +474,8 @@ class RelationshipJobRepository:
                 "error_category": None,
                 "created_at": now,
                 "updated_at": now,
+                "canonical_person_id": person_id,
             }
-            if await identity_runtime_is_complete_v2(session):
-                trigger = await session.get(ChatEventModel, trigger_event_id)
-                if trigger is None:
-                    raise IdentityDualWriteError("unclassified")
-                person_id = await resolve_person_author_id_for_event(session, trigger)
-                if person_id is None:
-                    return
-                caller = await require_person_binding(session, user_id)
-                if caller.person_id != person_id:
-                    raise IdentityDualWriteError("canonical_owner_mismatch")
-                values["canonical_person_id"] = person_id
             statement = insert(RelationshipJobModel).values(**values)
             await session.execute(
                 statement.on_conflict_do_nothing(
@@ -610,41 +525,41 @@ class RelationshipJobRepository:
                 recent_query = select(ChatEventModel).where(
                     ChatEventModel.id <= trigger.id,
                 )
-                if await identity_runtime_is_complete_v2(session):
-                    person_id = row.canonical_person_id
-                    if person_id is None:
-                        try:
-                            person_id, owner_keys = await canonical_relationship_owner_keys(
-                                session, row.user_id
-                            )
-                        except IdentityDualWriteError:
-                            await session.delete(row)
-                            continue
-                    else:
-                        owner_keys = await owner_keys_for_person(session, person_id)
-                    if trigger.scope_type == ScopeType.PRIVATE.value:
-                        recent_query = recent_query.where(
-                            or_(
-                                ChatEventModel.private_peer_user_id.in_(owner_keys),
-                                ChatEventModel.author_person_id == person_id,
-                            )
-                        )
-                    else:
-                        recent_query = recent_query.where(
-                            ChatEventModel.group_id == trigger.group_id,
-                            or_(
-                                ChatEventModel.sender_user_id.in_(owner_keys),
-                                ChatEventModel.author_person_id == person_id,
-                            ),
-                        )
-                elif trigger.scope_type == ScopeType.PRIVATE.value:
+                person_id = row.canonical_person_id
+                if person_id is None:
+                    await session.delete(row)
+                    continue
+                owner_keys = await owner_keys_for_person(session, person_id)
+                bindings = await bindings_for_person(session, person_id)
+                try:
+                    projected_user_id = representative_external_account_id(bindings)
+                except CanonicalIdentityError:
+                    # A job is owned by the canonical Person, not by whichever
+                    # external Binding happens to be active when it is claimed.
+                    # Provider/account switches therefore make delivery
+                    # temporarily unavailable rather than invalidating work.
+                    # Do not consume the bounded evaluator retry budget here:
+                    # postpone the claim so a later active Binding can project
+                    # the Person back to the transport-facing identifier.
+                    row.status = "pending"
+                    row.next_attempt_at = now + self._BINDING_RETRY_DELAY
+                    row.updated_at = now
+                    row.error_category = "binding_unavailable"
+                    continue
+                if trigger.scope_type == ScopeType.PRIVATE.value:
                     recent_query = recent_query.where(
-                        ChatEventModel.private_peer_user_id == row.user_id,
+                        or_(
+                            ChatEventModel.private_peer_user_id.in_(owner_keys),
+                            ChatEventModel.author_person_id == person_id,
+                        )
                     )
                 else:
                     recent_query = recent_query.where(
                         ChatEventModel.group_id == trigger.group_id,
-                        ChatEventModel.sender_user_id == row.user_id,
+                        or_(
+                            ChatEventModel.sender_user_id.in_(owner_keys),
+                            ChatEventModel.author_person_id == person_id,
+                        ),
                     )
                 recent_rows = list(
                     (
@@ -660,7 +575,7 @@ class RelationshipJobRepository:
                     RelationshipJobRecord(
                         job_id=row.id,
                         attempts=row.attempts,
-                        user_id=row.user_id,
+                        user_id=projected_user_id,
                         conversation_key=row.conversation_key,
                         trigger_event=_event_record(trigger),
                         recent_events=tuple(_event_record(event) for event in recent_rows),

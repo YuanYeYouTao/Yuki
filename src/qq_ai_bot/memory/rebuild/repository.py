@@ -901,7 +901,7 @@ class MemoryRebuildRepository:
                     item.updated_at = now
                     continue
                 event = await session.get(ChatEventModel, item.event_id)
-                from qq_ai_bot.identity.owner_dual_write import optional_xor_owner_for_event
+                from qq_ai_bot.identity.ownership import optional_xor_owner_for_event
 
                 person_id, space_id = await optional_xor_owner_for_event(session, event)
                 statement = insert(MemoryJobModel).values(

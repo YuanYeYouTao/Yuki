@@ -133,8 +133,8 @@ if [ "$existing" = true ]; then
         [ "$still_running" = "false" ] || fail "old Bot container is still writing the database"
     fi
     stamp=$(date -u +%Y%m%dT%H%M%SZ)
-    snap="$INSTALL_DIR/.yuki/backups/upgrade-3.6/$stamp"
-    mkdir -p "$snap/data" "$snap/config" || fail "unable to create the 3.6.0 upgrade snapshot directory"
+    snap="$INSTALL_DIR/.yuki/backups/pre-upgrade/$stamp"
+    mkdir -p "$snap/data" "$snap/config" || fail "unable to create the upgrade snapshot directory"
     copy_upgrade_file() {
         source=$1
         target=$2
@@ -180,14 +180,6 @@ if db.is_file():
         --volume "$snap:/snapshot" \
         "$image" -c "$verify_snapshot" \
         || fail "upgrade snapshot checksum or database verification failed"
-    docker run --rm \
-        --user "$(id -u):$(id -g)" \
-        --entrypoint qq-ai-bot-cli \
-        --volume "$INSTALL_DIR:/deploy" \
-        --workdir /deploy \
-        "$image" setup migrate-3-6 --deployment-root /deploy --no-color \
-        --baseline-output "/deploy/.yuki/backups/upgrade-3.6/$stamp/baseline-v1.json" \
-        || fail "setup migrate-3-6 failed"
 fi
 
 [ -t 0 ] && [ -t 1 ] || fail "guided setup requires an interactive terminal"

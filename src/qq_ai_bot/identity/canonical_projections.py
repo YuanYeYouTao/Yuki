@@ -10,17 +10,19 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.domain.identity import AuthorKind
+from qq_ai_bot.identity.canonical_repository import (
+    IDENTITY_PLATFORM,
+    AccountRole,
+    external_id,
+)
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
     IdentityBindingModel,
     SpaceBindingModel,
 )
-from qq_ai_bot.identity.dual_write import AccountRole, _external_id
-from qq_ai_bot.identity.errors import IdentityDualWriteError
-from qq_ai_bot.identity.event_author import complete_v2_account_is_person
-from qq_ai_bot.identity.inventory import IDENTITY_PLATFORM
-from qq_ai_bot.identity.runtime import require_complete_v2_runtime
+from qq_ai_bot.identity.errors import CanonicalIdentityError
+from qq_ai_bot.identity.event_author import canonical_account_is_person
 from qq_ai_bot.identity.shadows import fill_person_space_shadows
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
@@ -64,7 +66,7 @@ def canonical_person_storage_key(person_id: str) -> str:
 
 
 def canonical_relationship_storage_key(person_id: str) -> str:
-    """Deterministic person_relationships.user_id when no cutover row exists."""
+    """Deterministic carrier key for the pre-0049 relationship schema."""
 
     return canonical_person_storage_key(person_id)
 
@@ -75,8 +77,7 @@ async def require_person_binding(
     *,
     allow_disabled: bool = False,
 ) -> IdentityBindingModel:
-    await require_complete_v2_runtime(session)
-    external = _external_id(user_id)
+    external = external_id(user_id)
     rows = list(
         await session.scalars(
             select(IdentityBindingModel).where(
@@ -87,18 +88,17 @@ async def require_person_binding(
     )
     active = [row for row in rows if row.status == "active"]
     if len(active) != 1:
-        raise IdentityDualWriteError("unclassified")
+        raise CanonicalIdentityError("unclassified")
     person = await session.get(CanonicalPersonModel, active[0].person_id)
     if person is None:
-        raise IdentityDualWriteError("unclassified")
+        raise CanonicalIdentityError("unclassified")
     if not person.enabled and not allow_disabled:
-        raise IdentityDualWriteError("canonical_owner_disabled")
+        raise CanonicalIdentityError("canonical_owner_disabled")
     return active[0]
 
 
 async def require_space_binding(session: AsyncSession, group_id: str) -> SpaceBindingModel:
-    await require_complete_v2_runtime(session)
-    external = _external_id(group_id)
+    external = external_id(group_id)
     rows = list(
         await session.scalars(
             select(SpaceBindingModel).where(
@@ -109,10 +109,10 @@ async def require_space_binding(session: AsyncSession, group_id: str) -> SpaceBi
     )
     active = [row for row in rows if row.status == "active"]
     if len(active) != 1:
-        raise IdentityDualWriteError("no_space_binding")
+        raise CanonicalIdentityError("no_space_binding")
     space = await session.get(CanonicalSpaceModel, active[0].space_id)
     if space is None:
-        raise IdentityDualWriteError("unclassified")
+        raise CanonicalIdentityError("unclassified")
     return active[0]
 
 
@@ -140,7 +140,7 @@ def representative_external_account_id(
 
     active = _active_bindings(bindings)
     if not active:
-        raise IdentityDualWriteError("unclassified")
+        raise CanonicalIdentityError("unclassified")
     return min(item.external_account_id for item in active)
 
 
@@ -168,32 +168,31 @@ async def resolve_person_author_id_for_event(
     Missing or conflicting Person authorship fail closed.
     """
 
-    await require_complete_v2_runtime(session)
     kind = event.author_kind
     if kind in _NON_PERSON_AUTHORS:
         return None
     if kind != AuthorKind.PERSON.value:
-        raise IdentityDualWriteError("unclassified")
+        raise CanonicalIdentityError("unclassified")
     if event.author_person_id:
         person = await session.get(CanonicalPersonModel, event.author_person_id)
         if person is None:
-            raise IdentityDualWriteError("unclassified")
+            raise CanonicalIdentityError("unclassified")
         sender = event.sender_user_id
         if sender:
             rows = list(
                 await session.scalars(
                     select(IdentityBindingModel).where(
                         IdentityBindingModel.platform == IDENTITY_PLATFORM,
-                        IdentityBindingModel.external_account_id == _external_id(sender),
+                        IdentityBindingModel.external_account_id == external_id(sender),
                     )
                 )
             )
             if rows:
                 active = [row for row in rows if row.status == "active"]
                 if len(active) != 1:
-                    raise IdentityDualWriteError("unclassified")
+                    raise CanonicalIdentityError("unclassified")
                 if active[0].person_id != event.author_person_id:
-                    raise IdentityDualWriteError("canonical_owner_mismatch")
+                    raise CanonicalIdentityError("canonical_owner_mismatch")
         return event.author_person_id
     binding = await require_person_binding(session, event.sender_user_id)
     return binding.person_id
@@ -228,10 +227,10 @@ def _reject_inconsistent_relationship_rows(
     if not rows:
         return None
     if len(rows) > 1:
-        raise IdentityDualWriteError("canonical_owner_mismatch")
+        raise CanonicalIdentityError("canonical_owner_mismatch")
     row = rows[0]
     if row.canonical_person_id not in {None, person_id}:
-        raise IdentityDualWriteError("canonical_owner_mismatch")
+        raise CanonicalIdentityError("canonical_owner_mismatch")
     return row
 
 
@@ -244,7 +243,7 @@ async def resolve_canonical_relationship(
     initial_trust: int,
     now: datetime | None = None,
 ) -> PersonRelationshipModel | None:
-    if not await complete_v2_account_is_person(session, user_id):
+    if not await canonical_account_is_person(session, user_id):
         return None
     binding = await require_person_binding(session, user_id)
     person_id = binding.person_id
@@ -267,11 +266,11 @@ async def resolve_canonical_relationship(
             existing,
             person_attr="canonical_person_id",
             space_attr=None,
-            user_id=_external_id(user_id),
+            user_id=external_id(user_id),
             group_id=None,
         )
         if existing.canonical_person_id not in {None, person_id}:
-            raise IdentityDualWriteError("canonical_owner_mismatch")
+            raise CanonicalIdentityError("canonical_owner_mismatch")
         existing.canonical_person_id = person_id
         return existing
     if not create:
@@ -293,19 +292,19 @@ async def resolve_canonical_relationship(
     )
     created = await session.get(PersonRelationshipModel, storage_key)
     if created is None:
-        raise IdentityDualWriteError("unclassified")
+        raise CanonicalIdentityError("unclassified")
     await fill_person_space_shadows(
         session,
         created,
         person_attr="canonical_person_id",
         space_attr=None,
-        user_id=_external_id(user_id),
+        user_id=external_id(user_id),
         group_id=None,
     )
     again = await _relationship_rows_for_person(session, person_id=person_id, owner_keys=owner_keys)
     chosen = _reject_inconsistent_relationship_rows(again, person_id=person_id)
     if chosen is None:
-        raise IdentityDualWriteError("unclassified")
+        raise CanonicalIdentityError("unclassified")
     return chosen
 
 
@@ -338,10 +337,10 @@ def _reject_inconsistent_time_settings(
     if not rows:
         return None
     if len(rows) > 1:
-        raise IdentityDualWriteError("canonical_owner_mismatch")
+        raise CanonicalIdentityError("canonical_owner_mismatch")
     row = rows[0]
     if row.canonical_person_id not in {None, person_id}:
-        raise IdentityDualWriteError("canonical_owner_mismatch")
+        raise CanonicalIdentityError("canonical_owner_mismatch")
     return row
 
 
@@ -359,7 +358,7 @@ async def resolve_canonical_time_setting(
         await _time_setting_rows_for_person(session, person_id=person_id, owner_keys=owner_keys),
         person_id=person_id,
     )
-    caller = _external_id(user_id)
+    caller = external_id(user_id)
     if existing is not None:
         if timezone is not None:
             existing.timezone = timezone
@@ -373,7 +372,7 @@ async def resolve_canonical_time_setting(
             group_id=None,
         )
         if existing.canonical_person_id not in {None, person_id}:
-            raise IdentityDualWriteError("canonical_owner_mismatch")
+            raise CanonicalIdentityError("canonical_owner_mismatch")
         existing.canonical_person_id = person_id
         return existing
     if timezone is None:
@@ -392,7 +391,7 @@ async def resolve_canonical_time_setting(
     )
     created = await session.get(PersonTimeSettingModel, storage_key)
     if created is None:
-        raise IdentityDualWriteError("unclassified")
+        raise CanonicalIdentityError("unclassified")
     await fill_person_space_shadows(
         session,
         created,
@@ -406,7 +405,7 @@ async def resolve_canonical_time_setting(
         person_id=person_id,
     )
     if chosen is None:
-        raise IdentityDualWriteError("unclassified")
+        raise CanonicalIdentityError("unclassified")
     chosen.canonical_person_id = person_id
     return chosen
 
@@ -442,10 +441,10 @@ def _reject_inconsistent_speech_preferences(
     if not rows:
         return None
     if len(rows) > 1:
-        raise IdentityDualWriteError("canonical_owner_mismatch")
+        raise CanonicalIdentityError("canonical_owner_mismatch")
     row = rows[0]
     if row.canonical_person_id not in {None, person_id}:
-        raise IdentityDualWriteError("canonical_owner_mismatch")
+        raise CanonicalIdentityError("canonical_owner_mismatch")
     return row
 
 
@@ -467,12 +466,12 @@ async def resolve_canonical_speech_preference(
         ),
         person_id=person_id,
     )
-    caller = _external_id(user_id)
+    caller = external_id(user_id)
     timestamp = now or _utcnow()
     if existing is not None:
         if create:
             if mode is None:
-                raise IdentityDualWriteError("unclassified")
+                raise CanonicalIdentityError("unclassified")
             existing.mode = mode
             existing.source_message_id = source_message_id[:128]
             existing.updated_at = timestamp
@@ -485,13 +484,13 @@ async def resolve_canonical_speech_preference(
             group_id=None,
         )
         if existing.canonical_person_id not in {None, person_id}:
-            raise IdentityDualWriteError("canonical_owner_mismatch")
+            raise CanonicalIdentityError("canonical_owner_mismatch")
         existing.canonical_person_id = person_id
         return existing
     if not create:
         return None
     if mode is None:
-        raise IdentityDualWriteError("unclassified")
+        raise CanonicalIdentityError("unclassified")
     storage_key = canonical_person_storage_key(person_id)
     row = PersonSpeechPreferenceModel(
         user_id=storage_key,
@@ -517,7 +516,7 @@ async def resolve_canonical_speech_preference(
         person_id=person_id,
     )
     if chosen is None:
-        raise IdentityDualWriteError("unclassified")
+        raise CanonicalIdentityError("unclassified")
     chosen.canonical_person_id = person_id
     return chosen
 
@@ -560,13 +559,13 @@ def _reject_inconsistent_user_config_rows(
     scope_ids: set[str] = set()
     for row in rows:
         if row.scope_type != "user":
-            raise IdentityDualWriteError("canonical_owner_mismatch")
+            raise CanonicalIdentityError("canonical_owner_mismatch")
         if row.canonical_person_id not in {None, person_id}:
-            raise IdentityDualWriteError("canonical_owner_mismatch")
+            raise CanonicalIdentityError("canonical_owner_mismatch")
         keys.append(row.config_key)
         scope_ids.add(row.scope_id)
     if len(keys) != len(set(keys)) or len(scope_ids) > 1:
-        raise IdentityDualWriteError("canonical_owner_mismatch")
+        raise CanonicalIdentityError("canonical_owner_mismatch")
     return rows
 
 
@@ -574,14 +573,13 @@ async def resolve_canonical_user_config_scope(
     session: AsyncSession,
     scope_id: str,
 ) -> CanonicalUserConfigScope:
-    await require_complete_v2_runtime(session)
     person = await session.get(CanonicalPersonModel, scope_id)
     if person is None:
         binding = await require_person_binding(session, scope_id)
         person_id = binding.person_id
     else:
         if not person.enabled:
-            raise IdentityDualWriteError("canonical_owner_disabled")
+            raise CanonicalIdentityError("canonical_owner_disabled")
         person_id = person.id
     owner_keys = await owner_keys_for_person(session, person_id)
     rows = _reject_inconsistent_user_config_rows(
@@ -637,12 +635,12 @@ def _reject_inconsistent_memberships(
     if not rows:
         return None
     if len(rows) > 1:
-        raise IdentityDualWriteError("canonical_owner_mismatch")
+        raise CanonicalIdentityError("canonical_owner_mismatch")
     row = rows[0]
     if row.canonical_person_id not in {None, person_id}:
-        raise IdentityDualWriteError("canonical_owner_mismatch")
+        raise CanonicalIdentityError("canonical_owner_mismatch")
     if row.canonical_space_id not in {None, space_id}:
-        raise IdentityDualWriteError("canonical_owner_mismatch")
+        raise CanonicalIdentityError("canonical_owner_mismatch")
     return row
 
 
@@ -694,7 +692,7 @@ async def observe_canonical_person(
     if role != "human":
         return
     binding = await require_person_binding(session, user_id)
-    caller = _external_id(user_id)
+    caller = external_id(user_id)
     if nickname_known and nickname:
         binding.display_name = nickname[:128]
         binding.updated_at = now
@@ -724,8 +722,8 @@ async def observe_canonical_person(
     space_binding = await require_space_binding(session, group_id)
     space = await session.get(CanonicalSpaceModel, space_binding.space_id)
     if space is None:
-        raise IdentityDualWriteError("unclassified")
-    group_external = _external_id(group_id)
+        raise CanonicalIdentityError("unclassified")
+    group_external = external_id(group_id)
     if group_name:
         space.name = group_name[:128]
         space.updated_at = now
@@ -776,7 +774,7 @@ async def observe_canonical_person(
             again, person_id=binding.person_id, space_id=space_binding.space_id
         )
         if membership is None:
-            raise IdentityDualWriteError("unclassified")
+            raise CanonicalIdentityError("unclassified")
     if group_card_known:
         membership.group_card = group_card
     membership.last_seen_at = now
@@ -842,7 +840,7 @@ async def _upsert_alias(
         )
     )
     if row is None:
-        raise IdentityDualWriteError("unclassified")
+        raise CanonicalIdentityError("unclassified")
     await fill_person_space_shadows(
         session,
         row,
@@ -859,7 +857,7 @@ async def load_canonical_profile(
     user_id: str,
     group_id: str | None,
 ) -> tuple[str, str] | None:
-    if not await complete_v2_account_is_person(session, user_id):
+    if not await canonical_account_is_person(session, user_id):
         return None
     binding = await require_person_binding(session, user_id)
     card = ""
@@ -877,7 +875,7 @@ async def load_canonical_profile(
             person_id=binding.person_id,
             space_id=space_binding.space_id,
             owner_keys=owner_keys,
-            group_id=_external_id(group_id),
+            group_id=external_id(group_id),
         )
         membership = _reject_inconsistent_memberships(
             memberships, person_id=binding.person_id, space_id=space_binding.space_id
@@ -890,7 +888,7 @@ async def load_canonical_profile(
 async def load_canonical_aliases(
     session: AsyncSession, user_id: str, *, limit: int
 ) -> tuple[str, ...]:
-    if not await complete_v2_account_is_person(session, user_id):
+    if not await canonical_account_is_person(session, user_id):
         return ()
     binding = await require_person_binding(session, user_id)
     values = (
@@ -905,7 +903,7 @@ async def load_canonical_aliases(
 
 
 async def load_canonical_membership_count(session: AsyncSession, user_id: str) -> int:
-    if not await complete_v2_account_is_person(session, user_id):
+    if not await canonical_account_is_person(session, user_id):
         return 0
     binding = await require_person_binding(session, user_id)
     owner_keys = (
@@ -927,7 +925,7 @@ async def load_canonical_membership_count(session: AsyncSession, user_id: str) -
     )
     owners = {row.canonical_person_id for row in rows}
     if any(owner not in {None, binding.person_id} for owner in owners):
-        raise IdentityDualWriteError("canonical_owner_mismatch")
+        raise CanonicalIdentityError("canonical_owner_mismatch")
     spaces = {(row.canonical_space_id, row.group_id) for row in rows}
     return len(spaces)
 
@@ -938,10 +936,10 @@ async def load_canonical_members_in_group(
     group_id: str,
 ) -> frozenset[str]:
     space_binding = await require_space_binding(session, group_id)
-    group_external = _external_id(group_id)
+    group_external = external_id(group_id)
     matched: set[str] = set()
     for item in user_ids:
-        if not await complete_v2_account_is_person(session, item):
+        if not await canonical_account_is_person(session, item):
             continue
         binding = await require_person_binding(session, item)
         owner_keys = (
@@ -1002,7 +1000,7 @@ async def observe_canonical_space(
     binding = await require_space_binding(session, group_id)
     space = await session.get(CanonicalSpaceModel, binding.space_id)
     if space is None:
-        raise IdentityDualWriteError("unclassified")
+        raise CanonicalIdentityError("unclassified")
     if name:
         space.name = name[:128]
         space.updated_at = now
@@ -1011,7 +1009,7 @@ async def observe_canonical_space(
         binding.updated_at = now
         binding.revision = int(binding.revision) + 1
     return GroupSetting(
-        group_id=_external_id(group_id),
+        group_id=external_id(group_id),
         enabled=bool(space.enabled),
         require_mention=bool(space.require_mention),
         autonomous_enabled=bool(space.autonomous_enabled),
@@ -1020,8 +1018,7 @@ async def observe_canonical_space(
 
 
 async def load_canonical_group(session: AsyncSession, group_id: str) -> GroupSetting | None:
-    await require_complete_v2_runtime(session)
-    external = _external_id(group_id)
+    external = external_id(group_id)
     rows = list(
         await session.scalars(
             select(SpaceBindingModel).where(
@@ -1034,10 +1031,10 @@ async def load_canonical_group(session: AsyncSession, group_id: str) -> GroupSet
         return None
     active = [row for row in rows if row.status == "active"]
     if len(active) != 1:
-        raise IdentityDualWriteError("no_space_binding")
+        raise CanonicalIdentityError("no_space_binding")
     space = await session.get(CanonicalSpaceModel, active[0].space_id)
     if space is None:
-        raise IdentityDualWriteError("unclassified")
+        raise CanonicalIdentityError("unclassified")
     return GroupSetting(
         group_id=external,
         enabled=bool(space.enabled),
@@ -1058,7 +1055,7 @@ async def set_canonical_space_flags(
     binding = await require_space_binding(session, group_id)
     space = await session.get(CanonicalSpaceModel, binding.space_id)
     if space is None:
-        raise IdentityDualWriteError("unclassified")
+        raise CanonicalIdentityError("unclassified")
     if enabled is not None:
         space.enabled = enabled
     if autonomous_enabled is not None:
@@ -1066,7 +1063,7 @@ async def set_canonical_space_flags(
     space.updated_at = now
     space.revision = int(space.revision) + 1
     return GroupSetting(
-        group_id=_external_id(group_id),
+        group_id=external_id(group_id),
         enabled=bool(space.enabled),
         require_mention=bool(space.require_mention),
         autonomous_enabled=bool(space.autonomous_enabled),
@@ -1084,18 +1081,17 @@ async def set_canonical_person_enabled(
     binding = await require_person_binding(session, user_id, allow_disabled=True)
     person = await session.get(CanonicalPersonModel, binding.person_id)
     if person is None:
-        raise IdentityDualWriteError("unclassified")
+        raise CanonicalIdentityError("unclassified")
     person.enabled = enabled
     person.updated_at = now
     person.revision = int(person.revision) + 1
-    return PrivateUserSetting(user_id=_external_id(user_id), enabled=enabled)
+    return PrivateUserSetting(user_id=external_id(user_id), enabled=enabled)
 
 
 async def load_canonical_person_enabled(
     session: AsyncSession, user_id: str
 ) -> PrivateUserSetting | None:
-    await require_complete_v2_runtime(session)
-    external = _external_id(user_id)
+    external = external_id(user_id)
     rows = list(
         await session.scalars(
             select(IdentityBindingModel).where(
@@ -1108,7 +1104,7 @@ async def load_canonical_person_enabled(
         return None
     active = [row for row in rows if row.status == "active"]
     if len(active) != 1:
-        raise IdentityDualWriteError("unclassified")
+        raise CanonicalIdentityError("unclassified")
     person = await session.get(CanonicalPersonModel, active[0].person_id)
     if person is None:
         return None
@@ -1124,7 +1120,7 @@ async def _assert_projection_owner(
         await session.scalars(
             select(IdentityBindingModel).where(
                 IdentityBindingModel.platform == IDENTITY_PLATFORM,
-                IdentityBindingModel.external_account_id == _external_id(storage_or_external),
+                IdentityBindingModel.external_account_id == external_id(storage_or_external),
             )
         )
     )
@@ -1132,9 +1128,9 @@ async def _assert_projection_owner(
         return
     active = [row for row in rows if row.status == "active"]
     if len(active) != 1:
-        raise IdentityDualWriteError("unclassified")
+        raise CanonicalIdentityError("unclassified")
     if active[0].person_id != person_id:
-        raise IdentityDualWriteError("canonical_owner_mismatch")
+        raise CanonicalIdentityError("canonical_owner_mismatch")
 
 
 async def _live_person_ids(session: AsyncSession, person_ids: set[str]) -> set[str]:
@@ -1153,7 +1149,7 @@ async def _live_person_ids(session: AsyncSession, person_ids: set[str]) -> set[s
 async def _project_person_external(session: AsyncSession, person_id: str) -> str | None:
     person = await session.get(CanonicalPersonModel, person_id)
     if person is None:
-        raise IdentityDualWriteError("unclassified")
+        raise CanonicalIdentityError("unclassified")
     if not person.enabled:
         return None
     bindings = await bindings_for_person(session, person_id)
@@ -1228,21 +1224,21 @@ async def _memberships_in_space(
                 await session.scalars(
                     select(IdentityBindingModel).where(
                         IdentityBindingModel.platform == IDENTITY_PLATFORM,
-                        IdentityBindingModel.external_account_id == _external_id(row.user_id),
+                        IdentityBindingModel.external_account_id == external_id(row.user_id),
                     )
                 )
             )
             active = [item for item in binding_rows if item.status == "active"]
             if len(active) != 1:
-                raise IdentityDualWriteError("unclassified")
+                raise CanonicalIdentityError("unclassified")
             person_id = active[0].person_id
         else:
             await _assert_projection_owner(session, row.user_id, person_id)
             if row.canonical_space_id not in {None, space_id}:
-                raise IdentityDualWriteError("canonical_owner_mismatch")
+                raise CanonicalIdentityError("canonical_owner_mismatch")
         existing = by_person.get(person_id)
         if existing is not None and existing is not row:
-            raise IdentityDualWriteError("canonical_owner_mismatch")
+            raise CanonicalIdentityError("canonical_owner_mismatch")
         by_person[person_id] = row
     return by_person
 
@@ -1250,7 +1246,6 @@ async def _memberships_in_space(
 async def load_canonical_people_by_exact_name(session: AsyncSession, name: str) -> tuple[str, ...]:
     """Exact nickname/display/alias search. One representative QQ id per Person."""
 
-    await require_complete_v2_runtime(session)
     normalized = name.strip()
     if not normalized:
         return ()
@@ -1269,7 +1264,7 @@ async def load_canonical_group_member_name_projections(
     """Project each Person in a Space to one representative member identity."""
 
     space_binding = await require_space_binding(session, group_id)
-    group_external = _external_id(group_id)
+    group_external = external_id(group_id)
     members = await _memberships_in_space(
         session, space_id=space_binding.space_id, group_id=group_external
     )
@@ -1306,7 +1301,6 @@ async def load_canonical_group_members_by_exact_name(
 ) -> tuple[str, ...]:
     """Exact card/nickname/in-scope alias inside one Space. One id per Person."""
 
-    await require_complete_v2_runtime(session)
     normalized = name.strip()
     if not normalized:
         return ()

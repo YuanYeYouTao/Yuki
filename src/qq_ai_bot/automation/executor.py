@@ -16,7 +16,6 @@ from qq_ai_bot.automation.authority import (
     DelegatedAuthority,
     PermissionLevel,
     effective_delegated_capabilities,
-    permission_for,
     permission_for_accounts,
 )
 from qq_ai_bot.automation.context import AutomationBindError, bind_automation_conversation
@@ -51,7 +50,6 @@ from qq_ai_bot.identity.db_models import (
     IdentityBindingModel,
 )
 from qq_ai_bot.identity.routing import PresenceRouter, RouteSendError
-from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
 from qq_ai_bot.time.service import TimeContextService
 
 _SEND_CAPABILITIES = frozenset(
@@ -81,7 +79,6 @@ def _canonical_identity(
 @dataclass(frozen=True, slots=True)
 class _ExecutionSnapshot:
     record: AutomationRecord
-    complete_v2: bool
     allowed: frozenset[str]
     actor_is_superuser: bool
 
@@ -142,10 +139,9 @@ class AutomationExecutor:
         authority = DelegatedAuthority.model_validate(automation.authority_snapshot)
         if current_group_id is None:
             current_group_id = authority.current_group_id
-        if snapshot.complete_v2:
-            blocked_send = await self._revalidate_v2_send(automation)
-            if blocked_send is not None:
-                return blocked_send
+        blocked_send = await self._revalidate_canonical_send(automation)
+        if blocked_send is not None:
+            return blocked_send
         local = self._time.at(run.actual_started_at, automation.timezone)
         authority_context = AuthorityContext(
             origin=TurnOrigin.SCHEDULED_AUTOMATION,
@@ -337,32 +333,6 @@ class AutomationExecutor:
         self, claimed: AutomationRecord
     ) -> _ExecutionSnapshot | ExecutionResult:
         async with self._repository._database.sessions() as session:
-            if not await identity_runtime_is_complete_v2(session):
-                if claimed.status is not AutomationStatus.ACTIVE:
-                    return ExecutionResult(
-                        status=RunStatus.BLOCKED,
-                        error_category="automation_inactive",
-                        summary={"reason": "automation is not active"},
-                    )
-                authority = DelegatedAuthority.model_validate(claimed.authority_snapshot)
-                allowed = effective_delegated_capabilities(
-                    authority,
-                    settings=self._settings,
-                    registry=self._registry,
-                )
-                if not set(claimed.required_capabilities).issubset(allowed):
-                    return ExecutionResult(
-                        status=RunStatus.BLOCKED,
-                        error_category="delegated_authority_revoked",
-                        summary={"reason": "required capability is no longer delegated"},
-                    )
-                permission = permission_for(self._settings, claimed.creator_user_id)
-                return _ExecutionSnapshot(
-                    record=claimed,
-                    complete_v2=False,
-                    allowed=allowed,
-                    actor_is_superuser=permission is PermissionLevel.SUPERUSER,
-                )
             current = await self._repository.get(claimed.id, session=session)
             if current is None:
                 return ExecutionResult(
@@ -382,10 +352,10 @@ class AutomationExecutor:
                     error_category="automation_inactive",
                     summary={"reason": "automation is not active"},
                 )
-            blocked = await self._validate_v2_identity(session, current)
+            blocked = await self._validate_canonical_identity(session, current)
             if blocked is not None:
                 return blocked
-            loaded = await self._v2_creator_principal(session, current)
+            loaded = await self._canonical_creator_principal(session, current)
             if isinstance(loaded, ExecutionResult):
                 return loaded
             principal, current_permission = loaded
@@ -410,12 +380,11 @@ class AutomationExecutor:
                 )
             return _ExecutionSnapshot(
                 record=current,
-                complete_v2=True,
                 allowed=allowed,
                 actor_is_superuser=current_permission is PermissionLevel.SUPERUSER,
             )
 
-    async def _validate_v2_identity(
+    async def _validate_canonical_identity(
         self, session: Any, automation: AutomationRecord
     ) -> ExecutionResult | None:
         person_id = automation.canonical_target_person_id
@@ -430,7 +399,7 @@ class AutomationExecutor:
             return ExecutionResult(
                 status=RunStatus.BLOCKED,
                 error_category="target_missing",
-                summary={"reason": "complete-v2 automation has no canonical target"},
+                summary={"reason": "automation has no canonical target"},
             )
         if person_id:
             person = await session.get(CanonicalPersonModel, person_id)
@@ -458,7 +427,7 @@ class AutomationExecutor:
             )
         return None
 
-    async def _v2_creator_principal(
+    async def _canonical_creator_principal(
         self, session: Any, automation: AutomationRecord
     ) -> tuple[ControlPrincipal, PermissionLevel] | ExecutionResult:
         creator_id = automation.canonical_creator_person_id
@@ -466,7 +435,7 @@ class AutomationExecutor:
             return ExecutionResult(
                 status=RunStatus.BLOCKED,
                 error_category="target_missing",
-                summary={"reason": "complete-v2 automation has no canonical creator"},
+                summary={"reason": "automation has no canonical creator"},
             )
         person = await session.get(CanonicalPersonModel, creator_id)
         if person is None or not person.enabled:
@@ -504,7 +473,9 @@ class AutomationExecutor:
         )
         return principal, current_permission
 
-    async def _revalidate_v2_send(self, automation: AutomationRecord) -> ExecutionResult | None:
+    async def _revalidate_canonical_send(
+        self, automation: AutomationRecord
+    ) -> ExecutionResult | None:
         needs_send = bool(_SEND_CAPABILITIES.intersection(automation.required_capabilities))
         if not needs_send:
             return None
@@ -512,7 +483,7 @@ class AutomationExecutor:
             return ExecutionResult(
                 status=RunStatus.BLOCKED,
                 error_category="operation_unavailable",
-                summary={"reason": "complete-v2 send requires PresenceRouter"},
+                summary={"reason": "canonical send requires PresenceRouter"},
             )
         person_id = automation.canonical_target_person_id
         space_id = automation.canonical_target_space_id

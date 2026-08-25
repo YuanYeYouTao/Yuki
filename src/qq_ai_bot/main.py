@@ -65,8 +65,8 @@ def bootstrap(settings: Settings | None = None) -> None:
     async def _on_bot_connect(bot: Bot) -> None:
         from sqlalchemy import select
 
+        from qq_ai_bot.identity.canonical_repository import IDENTITY_PLATFORM
         from qq_ai_bot.identity.db_models import PresenceModel
-        from qq_ai_bot.identity.inventory import IDENTITY_PLATFORM
 
         container = get_container()
         presence_id = None

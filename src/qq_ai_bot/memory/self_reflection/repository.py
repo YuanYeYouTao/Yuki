@@ -13,7 +13,6 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
 from qq_ai_bot.memory.partition import (
     MemoryPartitionResolutionError,
     format_canonical_memory_partition,
@@ -35,18 +34,6 @@ from qq_ai_bot.persistence.models import (
 )
 from qq_ai_bot.persistence.repository_helpers import _event_record, keeper_event_clause
 from qq_ai_bot.persistence.repository_records import event_author_is_yuki
-
-
-def conversation_key_hash(
-    scope_type: ScopeType,
-    *,
-    group_id: str | None,
-    private_peer_user_id: str | None,
-) -> str:
-    key = (
-        f"group:{group_id}" if scope_type is ScopeType.GROUP else f"private:{private_peer_user_id}"
-    )
-    return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
 class SelfReflectionRepository:
@@ -144,10 +131,8 @@ class SelfReflectionRepository:
 
     @staticmethod
     def _run_conflict_target(
-        row: MemorySelfReflectionStateModel, *, complete_v2: bool
+        row: MemorySelfReflectionStateModel,
     ) -> tuple[list[str], ColumnElement[bool] | None]:
-        if not complete_v2:
-            return (["conversation_key_hash", "bot_user_id", "scheduled_slot"], None)
         require_xor_memory_owner(row.canonical_person_id, row.canonical_space_id)
         if row.canonical_person_id:
             return (
@@ -169,13 +154,7 @@ class SelfReflectionRepository:
         self,
         query: Any,
         row: MemorySelfReflectionStateModel,
-        *,
-        complete_v2: bool,
     ) -> Any:
-        if not complete_v2:
-            if row.scope_type == ScopeType.GROUP.value:
-                return query.where(ChatEventModel.group_id == row.group_id)
-            return query.where(ChatEventModel.private_peer_user_id == row.private_peer_user_id)
         return query.join(
             CanonicalConversationModel,
             ChatEventModel.canonical_conversation_id == CanonicalConversationModel.id,
@@ -232,9 +211,8 @@ class SelfReflectionRepository:
             ).all()
             from qq_ai_bot.identity.memory_guard import refuse_legacy_live_event
 
-            complete_v2 = await identity_runtime_is_complete_v2(session)
-            live_ids: set[int] | None = None
-            if complete_v2 and rows:
+            live_ids: set[int] = set()
+            if rows:
                 live_ids = set(
                     await session.scalars(
                         select(ChatEventModel.id).where(
@@ -244,7 +222,7 @@ class SelfReflectionRepository:
                     )
                 )
             for row in rows:
-                if live_ids is not None and row.id not in live_ids:
+                if row.id not in live_ids:
                     continue
                 if await refuse_legacy_live_event(session, row):
                     continue
@@ -256,56 +234,27 @@ class SelfReflectionRepository:
                     )
                     if not peer:
                         continue
-                person_id: str | None = None
-                space_id: str | None = None
-                if complete_v2:
-                    conversation = await session.get(
-                        CanonicalConversationModel, row.canonical_conversation_id
+                conversation = await session.get(
+                    CanonicalConversationModel, row.canonical_conversation_id
+                )
+                if conversation is None:
+                    continue
+                owners = self._owner_ids_from_live_conversation(
+                    conversation, event_scope_type=row.scope_type
+                )
+                if owners is None:
+                    continue
+                person_id, space_id = require_xor_memory_owner(*owners)
+                key_hash = hashlib.sha256(
+                    format_canonical_memory_partition(
+                        person_id=person_id, space_id=space_id
+                    ).encode("utf-8")
+                ).hexdigest()
+                state = await session.scalar(
+                    select(MemorySelfReflectionStateModel).where(
+                        self._owner_state_filter(person_id, space_id)
                     )
-                    if conversation is None:
-                        continue
-                    owners = self._owner_ids_from_live_conversation(
-                        conversation, event_scope_type=row.scope_type
-                    )
-                    if owners is None:
-                        continue
-                    person_id, space_id = require_xor_memory_owner(*owners)
-                    key_hash = hashlib.sha256(
-                        format_canonical_memory_partition(
-                            person_id=person_id, space_id=space_id
-                        ).encode("utf-8")
-                    ).hexdigest()
-                    state = await session.scalar(
-                        select(MemorySelfReflectionStateModel).where(
-                            self._owner_state_filter(person_id, space_id)
-                        )
-                    )
-                else:
-                    key_hash = conversation_key_hash(
-                        scope_type,
-                        group_id=row.group_id,
-                        private_peer_user_id=peer,
-                    )
-                    state = await session.scalar(
-                        select(MemorySelfReflectionStateModel).where(
-                            MemorySelfReflectionStateModel.conversation_key_hash == key_hash,
-                            MemorySelfReflectionStateModel.bot_user_id == row.bot_user_id,
-                        )
-                    )
-                    from qq_ai_bot.identity.owner_dual_write import (
-                        optional_reflection_state_owners,
-                    )
-
-                    if state is None or (
-                        state.canonical_person_id is None and state.canonical_space_id is None
-                    ):
-                        person_id, space_id = await optional_reflection_state_owners(
-                            session,
-                            scope_type=row.scope_type,
-                            group_id=row.group_id,
-                            private_peer_user_id=peer,
-                            exclude_state_id=None if state is None else state.id,
-                        )
+                )
                 content = row.content.strip()
                 if state is None:
                     state = MemorySelfReflectionStateModel(
@@ -327,11 +276,6 @@ class SelfReflectionRepository:
                         updated_at=now,
                     )
                     session.add(state)
-                elif not complete_v2 and (
-                    state.canonical_person_id is None and state.canonical_space_id is None
-                ):
-                    state.canonical_person_id = person_id
-                    state.canonical_space_id = space_id
                 if content:
                     state.pending_events += 1
                     state.pending_characters += len(content)
@@ -339,11 +283,7 @@ class SelfReflectionRepository:
                 state.latest_event_id = row.id
                 state.has_yuki_reply = state.has_yuki_reply or (
                     row.direction == "outbound"
-                    and event_author_is_yuki(
-                        author_kind=row.author_kind,
-                        sender_user_id=row.sender_user_id,
-                        bot_user_id=row.bot_user_id,
-                    )
+                    and event_author_is_yuki(author_kind=row.author_kind)
                 )
                 state.high_value_signal = False
                 state.updated_at = now
@@ -385,12 +325,10 @@ class SelfReflectionRepository:
             if available <= 0:
                 return ()
             waited_before = now - timedelta(seconds=max_wait_seconds)
-            complete_v2 = await identity_runtime_is_complete_v2(session)
             state_query = select(MemorySelfReflectionStateModel).where(
-                MemorySelfReflectionStateModel.pending_events > 0
+                MemorySelfReflectionStateModel.pending_events > 0,
+                self._xor_owner_state_clause(),
             )
-            if complete_v2:
-                state_query = state_query.where(self._xor_owner_state_clause())
             if excluded_conversation_keys:
                 state_query = state_query.where(
                     MemorySelfReflectionStateModel.conversation_key_hash.not_in(
@@ -414,13 +352,8 @@ class SelfReflectionRepository:
             ).all()
             claimed: list[SelfReflectionBatch] = []
             for row in states:
-                receipt_filter = (
-                    self._owner_receipt_filter(row.canonical_person_id, row.canonical_space_id)
-                    if complete_v2
-                    else and_(
-                        MemoryToolReceiptModel.conversation_key_hash == row.conversation_key_hash,
-                        MemoryToolReceiptModel.bot_user_id == row.bot_user_id,
-                    )
+                receipt_filter = self._owner_receipt_filter(
+                    row.canonical_person_id, row.canonical_space_id
                 )
                 has_tool = bool(
                     await session.scalar(
@@ -440,10 +373,7 @@ class SelfReflectionRepository:
                         ChatEventModel.event_kind == "message",
                     ),
                     row,
-                    complete_v2=complete_v2,
                 )
-                if not complete_v2:
-                    event_query = event_query.where(ChatEventModel.bot_user_id == row.bot_user_id)
                 candidate_rows = list(
                     (
                         await session.scalars(
@@ -487,12 +417,7 @@ class SelfReflectionRepository:
                         ChatEventModel.event_kind == "message",
                     ),
                     row,
-                    complete_v2=complete_v2,
                 )
-                if not complete_v2:
-                    context_query = context_query.where(
-                        ChatEventModel.bot_user_id == row.bot_user_id
-                    )
                 context_rows = list(
                     (
                         await session.scalars(
@@ -514,17 +439,6 @@ class SelfReflectionRepository:
                 )
                 run_person_id = row.canonical_person_id
                 run_space_id = row.canonical_space_id
-                if not complete_v2:
-                    from qq_ai_bot.identity.owner_dual_write import (
-                        optional_reflection_run_owners,
-                    )
-
-                    run_person_id, run_space_id = await optional_reflection_run_owners(
-                        session,
-                        row.canonical_person_id,
-                        row.canonical_space_id,
-                        scheduled_slot,
-                    )
                 run_values = {
                     "conversation_key_hash": row.conversation_key_hash,
                     "bot_user_id": row.bot_user_id,
@@ -539,7 +453,7 @@ class SelfReflectionRepository:
                     "committed_count": 0,
                     "started_at": now,
                 }
-                conflict, conflict_where = self._run_conflict_target(row, complete_v2=complete_v2)
+                conflict, conflict_where = self._run_conflict_target(row)
                 insert_stmt = insert(MemorySelfReflectionRunModel).values(**run_values)
                 if conflict_where is not None:
                     insert_stmt = insert_stmt.on_conflict_do_nothing(
@@ -612,12 +526,10 @@ class SelfReflectionRepository:
         """Return content-free pending and execution statistics."""
 
         async with self._database.sessions() as session:
-            complete_v2 = await identity_runtime_is_complete_v2(session)
             pending_query = select(func.count(MemorySelfReflectionStateModel.id)).where(
-                MemorySelfReflectionStateModel.pending_events > 0
+                MemorySelfReflectionStateModel.pending_events > 0,
+                self._xor_owner_state_clause(),
             )
-            if complete_v2:
-                pending_query = pending_query.where(self._xor_owner_state_clause())
             pending = int(await session.scalar(pending_query) or 0)
             daily_calls = int(
                 await session.scalar(
@@ -646,21 +558,13 @@ class SelfReflectionRepository:
         limit: int = 8,
     ) -> tuple[StoredToolReceipt, ...]:
         async with self._database.sessions() as session:
-            complete_v2 = await identity_runtime_is_complete_v2(session)
             state_row = await session.get(MemorySelfReflectionStateModel, batch.state.id)
-            if complete_v2:
-                if state_row is None:
-                    raise MemoryPartitionResolutionError("missing_owner")
-                receipt_filter = self._owner_receipt_filter(
-                    state_row.canonical_person_id,
-                    state_row.canonical_space_id,
-                )
-            else:
-                receipt_filter = and_(
-                    MemoryToolReceiptModel.conversation_key_hash
-                    == batch.state.conversation_key_hash,
-                    MemoryToolReceiptModel.bot_user_id == batch.state.bot_user_id,
-                )
+            if state_row is None:
+                raise MemoryPartitionResolutionError("missing_owner")
+            receipt_filter = self._owner_receipt_filter(
+                state_row.canonical_person_id,
+                state_row.canonical_space_id,
+            )
             rows = (
                 await session.scalars(
                     select(MemoryToolReceiptModel)
@@ -708,7 +612,6 @@ class SelfReflectionRepository:
             if state is None:
                 raise RuntimeError("self-reflection state disappeared during completion")
             processed_last_event_id = batch.events[-1].id
-            complete_v2 = await identity_runtime_is_complete_v2(session)
             remaining_query = self._apply_event_scope(
                 select(ChatEventModel).where(
                     ChatEventModel.id > processed_last_event_id,
@@ -716,23 +619,13 @@ class SelfReflectionRepository:
                     ChatEventModel.event_kind == "message",
                 ),
                 state,
-                complete_v2=complete_v2,
             )
-            if not complete_v2:
-                remaining_query = remaining_query.where(
-                    ChatEventModel.bot_user_id == state.bot_user_id
-                )
             remaining = list(
                 (await session.scalars(remaining_query.order_by(ChatEventModel.id.asc()))).all()
             )
             nonempty = [item for item in remaining if item.content.strip()]
-            receipt_filter = (
-                self._owner_receipt_filter(state.canonical_person_id, state.canonical_space_id)
-                if complete_v2
-                else and_(
-                    MemoryToolReceiptModel.conversation_key_hash == state.conversation_key_hash,
-                    MemoryToolReceiptModel.bot_user_id == state.bot_user_id,
-                )
+            receipt_filter = self._owner_receipt_filter(
+                state.canonical_person_id, state.canonical_space_id
             )
             has_tool = bool(
                 await session.scalar(
@@ -749,12 +642,7 @@ class SelfReflectionRepository:
             state.pending_characters = sum(len(item.content) for item in nonempty)
             state.pending_since = nonempty[0].occurred_at if nonempty else None
             state.has_yuki_reply = any(
-                item.direction == "outbound"
-                and event_author_is_yuki(
-                    author_kind=item.author_kind,
-                    sender_user_id=item.sender_user_id,
-                    bot_user_id=item.bot_user_id,
-                )
+                item.direction == "outbound" and event_author_is_yuki(author_kind=item.author_kind)
                 for item in remaining
             )
             state.has_tool_result = has_tool

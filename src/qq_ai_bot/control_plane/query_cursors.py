@@ -17,23 +17,18 @@ from qq_ai_bot.control_plane.query_types import (
 from qq_ai_bot.control_plane.tokens import require_aware_datetime, require_opaque_token
 
 _SEPARATOR = "|"
-TWO_PHASE_RESOURCE_KINDS: Final[frozenset[QueryResourceKind]] = frozenset(
+CANONICAL_RESOURCE_KINDS: Final[frozenset[QueryResourceKind]] = frozenset(
     {
         QueryResourceKind.PERSON,
         QueryResourceKind.BINDING,
         QueryResourceKind.SPACE,
         QueryResourceKind.SPACE_BINDING,
-        QueryResourceKind.CONVERSATION,
-    }
-)
-CANONICAL_RESOURCE_KINDS: Final[frozenset[QueryResourceKind]] = frozenset(
-    {
         QueryResourceKind.PRESENCE,
+        QueryResourceKind.CONVERSATION,
         QueryResourceKind.PERSON_ROUTE,
         QueryResourceKind.INGEST_ROUTE,
         QueryResourceKind.SPACE_ROUTE,
         QueryResourceKind.OPERATION,
-        QueryResourceKind.CONFLICT,
         QueryResourceKind.CONFIG,
         QueryResourceKind.MEMORY_FACT,
         QueryResourceKind.MEMORY_JOB,
@@ -45,9 +40,7 @@ CANONICAL_RESOURCE_KINDS: Final[frozenset[QueryResourceKind]] = frozenset(
     }
 )
 TIME_ID_RESOURCE_KINDS: Final[frozenset[QueryResourceKind]] = frozenset({QueryResourceKind.AUDIT})
-if TWO_PHASE_RESOURCE_KINDS | CANONICAL_RESOURCE_KINDS | TIME_ID_RESOURCE_KINDS != frozenset(
-    QueryResourceKind
-):
+if CANONICAL_RESOURCE_KINDS | TIME_ID_RESOURCE_KINDS != frozenset(QueryResourceKind):
     raise ValueError("cursor phase table must cover every QueryResourceKind")
 
 
@@ -62,11 +55,7 @@ def allowed_cursor_phases(
         raise TypeError("epoch must be StateEpoch")
     if kind in TIME_ID_RESOURCE_KINDS:
         return frozenset({QueryCursorPhase.TIME_ID})
-    if kind in CANONICAL_RESOURCE_KINDS:
-        return frozenset({QueryCursorPhase.CANONICAL})
-    if epoch is StateEpoch.V2:
-        return frozenset({QueryCursorPhase.CANONICAL})
-    return frozenset({QueryCursorPhase.CANONICAL, QueryCursorPhase.UNRESOLVED})
+    return frozenset({QueryCursorPhase.CANONICAL})
 
 
 def encode_query_cursor(
@@ -197,12 +186,9 @@ def decode_resource_cursor(
     elif expected_kind is QueryResourceKind.OPERATION:
         decode_operation_cursor_key(key)
     elif expected_kind in {
-        QueryResourceKind.CONFLICT,
         QueryResourceKind.MEMORY_FACT,
         QueryResourceKind.MEMORY_JOB,
         QueryResourceKind.AUTOMATION,
     }:
         decode_integer_cursor_key(key, minimum=1)
-    elif expected_kind in TWO_PHASE_RESOURCE_KINDS and phase is QueryCursorPhase.UNRESOLVED:
-        decode_integer_cursor_key(key, minimum=0)
     return phase, key

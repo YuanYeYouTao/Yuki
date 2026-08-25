@@ -8,7 +8,7 @@ from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.memory.enums import MemoryScopeType, SelfMemoryVisibility
 from qq_ai_bot.memory.extraction import AvailableSubject, MemoryClaim
 from qq_ai_bot.persistence.people_repository import PeopleRepository
-from qq_ai_bot.persistence.repository_records import EventRecord, legacy_v1_reference_blocklist
+from qq_ai_bot.persistence.repository_records import EventRecord
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,12 +81,7 @@ class SubjectResolver:
             resolved.append(
                 ("group:group", ResolvedSubject(MemoryScopeType.GROUP, None, event.group_id))
             )
-            seen = set(
-                legacy_v1_reference_blocklist(
-                    sender_user_id=event.sender_user_id,
-                    bot_user_id=event.bot_user_id,
-                )
-            )
+            seen = {"", event.sender_user_id}
             mention_number = 0
             for user_id in event.mentioned_user_ids:
                 if user_id in seen:

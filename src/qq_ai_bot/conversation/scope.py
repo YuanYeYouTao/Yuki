@@ -12,8 +12,8 @@ from qq_ai_bot.domain.messages import InboundMessage
 class ConversationTurnSnapshot:
     """Database and in-process versions captured when a turn is admitted.
 
-    ``scope_key`` is the runtime conversation identity (v2 primary legacy
-    alias, v1 ``identity.key``). ``transport_scope_key`` is the current
+    ``scope_key`` is the canonical conversation's fixed primary alias.
+    ``transport_scope_key`` is the current
     ingress alias when it differs; ledger ``bot_user_id`` stays on transport.
     """
 
@@ -60,7 +60,7 @@ def runtime_conversation_key(
 
 
 def plugin_conversation_key(message: InboundMessage, identity: ConversationScope) -> str:
-    """SDK conversation_key: v2 primary alias, otherwise the current identity."""
+    """SDK conversation_key: the canonical conversation's fixed primary alias."""
 
     return runtime_conversation_key(identity=identity, inbound=message)
 

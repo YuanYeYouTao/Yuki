@@ -13,7 +13,7 @@ from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.capabilities.results import ToolExecutionResult
-from qq_ai_bot.identity.errors import IdentityDualWriteError
+from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.mcp.config import LoadedMCPConfig, load_mcp_config, redacted_server_config
 from qq_ai_bot.mcp.connection import MCPConnection, MCPConnectionFactory, SDKMCPConnection
 from qq_ai_bot.mcp.errors import classify_mcp_exception
@@ -276,7 +276,7 @@ class MCPManager:
         Finalization precedence after the remote attempt (deterministic):
         1. ``CancelledError`` from connect/call is re-raised; record and lazy
            disconnect are skipped.
-        2. ``IdentityDualWriteError`` from ``record_invocation`` is always
+        2. ``CanonicalIdentityError`` from ``record_invocation`` is always
            primary and is never swallowed, even after a successful remote
            result.
         3. Any other ``record_invocation`` exception is swallowed once a
@@ -284,7 +284,7 @@ class MCPManager:
            side effect is not turned into an automatic retry surface.
         4. Lazy disconnect always runs after record (success or failure),
            except on ``CancelledError``. A disconnect exception never
-           suppresses ``IdentityDualWriteError``; otherwise it is swallowed
+           suppresses ``CanonicalIdentityError``; otherwise it is swallowed
            when a result will be returned.
         """
 
@@ -342,7 +342,7 @@ class MCPManager:
                     self._last_call_at = datetime.now(UTC)
                     if result.ok:
                         self._last_error_category = None
-                identity_error: IdentityDualWriteError | None = None
+                identity_error: CanonicalIdentityError | None = None
                 if not cancelled:
                     try:
                         if record_invocation:
@@ -362,7 +362,7 @@ class MCPManager:
                                 canonical_conversation_id=canonical_conversation_id,
                                 ingress_presence_id=ingress_presence_id,
                             )
-                    except IdentityDualWriteError as exc:
+                    except CanonicalIdentityError as exc:
                         identity_error = exc
                     except Exception as exc:
                         logger.warning(

@@ -23,8 +23,6 @@ class ProblemCode(StrEnum):
     ROUTE_AMBIGUOUS = "route_ambiguous"
     ROUTE_PAUSED = "route_paused"
     POPULATED_MERGE_FORBIDDEN = "populated_merge_forbidden"
-    LEGACY_IDENTITY_FORBIDDEN = "legacy_identity_forbidden"
-    PENDING_CUTOVER = "pending_cutover"
     STATE_MISMATCH = "state_mismatch"
     PRECONDITION_FAILED = "precondition_failed"
     SECRET_NOT_READABLE = "secret_not_readable"

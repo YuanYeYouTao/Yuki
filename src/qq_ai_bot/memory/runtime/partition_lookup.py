@@ -1,8 +1,7 @@
 """Explicit Memory partition lookup port.
 
-``conversation_key`` is an identity-epoch + binding value, not a retrieval
-concern. Production opens one session and calls
-``resolve_memory_partition_from_scope`` so v1/v2 gates stay in one place.
+``conversation_key`` is a canonical binding value, not a retrieval concern.
+Production opens one session and calls ``resolve_memory_partition_from_scope``.
 """
 
 from __future__ import annotations

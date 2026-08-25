@@ -10,51 +10,17 @@ from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.domain.messages import sanitize_display_name
 
-_NON_PERSON_AUTHOR_KINDS = frozenset(
-    {
-        AuthorKind.YUKI.value,
-        AuthorKind.EXTERNAL_BOT.value,
-        AuthorKind.SYSTEM.value,
-    }
-)
+
+def event_author_is_yuki(*, author_kind: str | None) -> bool:
+    """Return whether the canonical author classification is Yuki."""
+
+    return author_kind == AuthorKind.YUKI.value
 
 
-def event_author_is_yuki(
-    *,
-    author_kind: str | None,
-    sender_user_id: str,
-    bot_user_id: str,
-) -> bool:
-    """Yuki author: canonical kind wins; legacy null falls back to sender==bot."""
+def event_author_is_human(*, author_kind: str | None) -> bool:
+    """Return whether the canonical author classification is a Person."""
 
-    if author_kind == AuthorKind.YUKI.value:
-        return True
-    if author_kind is None:
-        return sender_user_id == bot_user_id
-    return False
-
-
-def event_author_is_human(
-    *,
-    author_kind: str | None,
-    sender_user_id: str,
-    bot_user_id: str,
-) -> bool:
-    """Human author: person wins; non-person kinds are never human; legacy uses sender."""
-
-    if author_kind == AuthorKind.PERSON.value:
-        return True
-    if author_kind in _NON_PERSON_AUTHOR_KINDS:
-        return False
-    if author_kind is None:
-        return sender_user_id != bot_user_id
-    return False
-
-
-def legacy_v1_reference_blocklist(*, sender_user_id: str, bot_user_id: str) -> frozenset[str]:
-    """v1 / author_kind-is-None mention block: current speaker and current handle."""
-
-    return frozenset({"", sender_user_id, bot_user_id})
+    return author_kind == AuthorKind.PERSON.value
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,18 +92,10 @@ class EventRecord:
         )
 
     def author_is_yuki(self) -> bool:
-        return event_author_is_yuki(
-            author_kind=self.author_kind,
-            sender_user_id=self.sender_user_id,
-            bot_user_id=self.bot_user_id,
-        )
+        return event_author_is_yuki(author_kind=self.author_kind)
 
     def author_is_human(self) -> bool:
-        return event_author_is_human(
-            author_kind=self.author_kind,
-            sender_user_id=self.sender_user_id,
-            bot_user_id=self.bot_user_id,
-        )
+        return event_author_is_human(author_kind=self.author_kind)
 
     @property
     def sender_display_name(self) -> str:
@@ -150,8 +108,6 @@ class EventRecord:
         if nickname:
             return nickname
         if self.author_kind == AuthorKind.YUKI.value:
-            return "Yuki"
-        if self.author_kind is None and self.sender_user_id == self.bot_user_id:
             return "Yuki"
         if self.author_kind == AuthorKind.EXTERNAL_BOT.value:
             return "external bot"
