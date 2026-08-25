@@ -30,12 +30,6 @@ _FORBIDDEN_TABLES = {
     "yukis",
     "yuki_self",
     "yukiself",
-    "canonical_conversations",
-    "conversation_legacy_aliases",
-    "person_active_routes",
-    "space_binding_ingest_routes",
-    "space_active_routes",
-    "control_command_receipts",
     "gateway_connections",
     "identity_cutover_manifests",
     "identity_cutover_runs",
@@ -222,7 +216,7 @@ def test_fresh_upgrade_head_creates_canonical_identity_foundation(
     path = tmp_path / "fresh-head.db"
     _upgrade(path, monkeypatch, "head")
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0043",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0044",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         tables = _tables(connection)
         assert set(CANONICAL_IDENTITY_TABLES) <= tables
@@ -248,7 +242,7 @@ def test_upgrade_from_real_0042_schema_to_head(
     before = _schema_dump(path)
     _upgrade(path, monkeypatch, "head")
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0043",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0044",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert set(CANONICAL_IDENTITY_TABLES) <= _tables(connection)
         assert connection.execute("SELECT state FROM identity_runtime_state").fetchall() == [
@@ -300,10 +294,10 @@ def test_orm_metadata_matches_0043_identity_schema(
     assert _runtime_state_rows(migrated) == [(1, "v1", None, None, None, 1)]
 
 
-def test_alembic_heads_is_exactly_0043() -> None:
+def test_alembic_heads_is_exactly_0044() -> None:
     config = Config("alembic.ini")
     heads = ScriptDirectory.from_config(config).get_heads()
-    assert heads == ["0043"]
+    assert heads == ["0044"]
 
 
 def test_fk_cutover_split_is_not_hardcoded_to_current_head() -> None:

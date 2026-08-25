@@ -90,10 +90,16 @@ def test_fresh_and_upgrade_matrix_have_equivalent_head_schema(tmp_path: Path) ->
     assert "identity_runtime_state" in expected_names
     assert "identity_backfill_runs" in expected_names
     assert "identity_conflicts" in expected_names
+    assert "canonical_conversations" in expected_names
+    assert "conversation_legacy_aliases" in expected_names
+    assert "person_active_routes" in expected_names
+    assert "space_binding_ingest_routes" in expected_names
+    assert "space_active_routes" in expected_names
+    assert "control_command_receipts" in expected_names
     assert "conversation_history_states" not in expected_names
     assert "planner_runs" not in expected_names
     with sqlite3.connect(fresh) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0043",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0044",)
 
     for label, revision in MATRIX.items():
         database = tmp_path / f"{label}.db"
@@ -104,11 +110,11 @@ def test_fresh_and_upgrade_matrix_have_equivalent_head_schema(tmp_path: Path) ->
         assert names == expected_names, label
         with sqlite3.connect(database) as connection:
             assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-                "0043",
+                "0044",
             )
             assert connection.execute("SELECT COUNT(*) FROM memory_rebuild_runs").fetchone() == (0,)
 
 
 def test_conversation_scope_rollup_is_the_current_production_migration() -> None:
     versions = sorted((ROOT / "migrations/versions").glob("*.py"))
-    assert versions[-1].name == "0043_canonical_identity_foundation.py"
+    assert versions[-1].name == "0044_canonical_conversations_and_routes.py"

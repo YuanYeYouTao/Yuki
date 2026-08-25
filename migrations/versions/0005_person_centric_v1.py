@@ -45,7 +45,7 @@ def upgrade() -> None:
     # migration deterministic so a fresh install does not create future tables early.
     v1_tables = [
         table
-        for table in Base.metadata.sorted_tables
+        for table in Base.metadata.tables.values()
         if table.name
         not in {
             "web_search_runs",
@@ -132,6 +132,12 @@ def upgrade() -> None:
             "identity_runtime_state",
             "identity_backfill_runs",
             "identity_conflicts",
+            "canonical_conversations",
+            "conversation_legacy_aliases",
+            "person_active_routes",
+            "space_binding_ingest_routes",
+            "space_active_routes",
+            "control_command_receipts",
         }
     ]
     Base.metadata.create_all(bind=bind, tables=v1_tables, checkfirst=True)

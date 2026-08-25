@@ -107,7 +107,7 @@ def test_0042_fresh_upgrade_head_uses_fk_enforced_cutover(
     command.upgrade(config, "head")
 
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0043",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0044",)
         tables = _tables(connection)
         assert _NEW_TABLES <= tables
         assert not (_OLD_ROLLUP_TABLES & tables)
@@ -120,6 +120,12 @@ def test_0042_fresh_upgrade_head_uses_fk_enforced_cutover(
             "identity_runtime_state",
             "identity_backfill_runs",
             "identity_conflicts",
+            "canonical_conversations",
+            "conversation_legacy_aliases",
+            "person_active_routes",
+            "space_binding_ingest_routes",
+            "space_active_routes",
+            "control_command_receipts",
         } <= tables
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 

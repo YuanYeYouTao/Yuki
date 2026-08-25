@@ -29,7 +29,7 @@ from qq_ai_bot.memory.quality.report import write_reports
 from qq_ai_bot.memory.quality.runner import MemoryQualityRunner
 from qq_ai_bot.persistence.database import Database
 
-_ALEMBIC_HEAD = "0043"
+_ALEMBIC_HEAD = "0044"
 _EXPECTED_RELEASE_VERSION = "3.7.1"
 
 
@@ -213,6 +213,7 @@ class MemoryReleaseCheck:
             "0041_conversation_history_rollup.py",
             "0042_replace_conversation_runtime.py",
             "0043_canonical_identity_foundation.py",
+            "0044_canonical_conversations_and_routes.py",
         }
         missing = sorted(required - versions)
         return self._item(
