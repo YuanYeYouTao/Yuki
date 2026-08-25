@@ -327,6 +327,159 @@ def _context(event: EventRecord) -> MemoryMutationContext:
 
 
 @pytest.mark.asyncio
+async def test_non_self_visibility_hints_are_ignored_after_target_resolution(
+    database: Database,
+) -> None:
+    service, facts, ledger, _processor = _service(database)
+    cases = (
+        (
+            MemoryScopeType.PERSON,
+            None,
+            "current_speaker",
+            SelfMemoryVisibilityMode.CURRENT_SCOPE,
+            "1001",
+            None,
+        ),
+        (
+            MemoryScopeType.GROUP,
+            "3001",
+            "current_group",
+            SelfMemoryVisibilityMode.GLOBAL,
+            None,
+            "3001",
+        ),
+        (
+            MemoryScopeType.PERSON_GROUP,
+            "3001",
+            "current_speaker",
+            SelfMemoryVisibilityMode.CURRENT_SCOPE,
+            "1001",
+            "3001",
+        ),
+    )
+
+    for index, (scope_type, group_id, subject_ref, visibility, user_id, fact_group_id) in enumerate(
+        cases,
+        start=1,
+    ):
+        content = f"非 SELF visibility 测试事实 {index}"
+        event = await _event(
+            ledger,
+            message_id=f"non-self-visibility-{index}",
+            sender_user_id="1001",
+            content=content,
+            group_id=group_id,
+        )
+        result = await service.mutate(
+            MemoryMutationRequest(
+                operation=MemoryMutationOperation.CREATE,
+                target=MemoryMutationTarget(
+                    subject_ref=subject_ref,
+                    scope_type=scope_type,
+                ),
+                visibility=visibility,
+                new_content=content,
+                memory_key=f"visibility:non_self:{index}",
+                category="test",
+            ),
+            _context(event),
+        )
+
+        assert result.ok and result.new_fact_id is not None
+        fact = await facts.get_fact(result.new_fact_id)
+        assert fact is not None
+        assert (fact.scope_type, fact.subject_user_id, fact.group_id) == (
+            scope_type,
+            user_id,
+            fact_group_id,
+        )
+        assert fact.visibility_type is None
+        assert fact.visibility_user_id is None
+        assert fact.visibility_group_id is None
+
+    assert facts.metrics.count("memory_mutation_non_self_visibility_ignored_count") == 3
+
+
+@pytest.mark.asyncio
+async def test_non_self_fact_id_mutations_ignore_visibility_hint(database: Database) -> None:
+    service, facts, ledger, _processor = _service(database)
+    original_event = await _event(
+        ledger,
+        message_id="non-self-visibility-original",
+        sender_user_id="1001",
+        content="我原来住在北京",
+    )
+    original = await service.mutate(
+        MemoryMutationRequest(
+            operation=MemoryMutationOperation.CREATE,
+            target=MemoryMutationTarget(
+                subject_ref="current_speaker",
+                scope_type=MemoryScopeType.PERSON,
+            ),
+            new_content="原来住在北京",
+            memory_key="location:visibility_regression",
+            category="location",
+        ),
+        _context(original_event),
+    )
+    assert original.new_fact_id is not None
+
+    correction_event = await _event(
+        ledger,
+        message_id="non-self-visibility-correct",
+        sender_user_id="1001",
+        content="纠正一下，我现在住在上海",
+    )
+    corrected = await service.mutate(
+        MemoryMutationRequest(
+            operation=MemoryMutationOperation.CORRECT,
+            fact_id=original.new_fact_id,
+            visibility=SelfMemoryVisibilityMode.CURRENT_SCOPE,
+            new_content="现在住在上海",
+        ),
+        _context(correction_event),
+    )
+    assert corrected.ok and corrected.new_fact_id is not None
+
+    metadata_event = await _event(
+        ledger,
+        message_id="non-self-visibility-metadata",
+        sender_user_id="1001",
+        content="把这条归类为个人资料，重要度四级",
+    )
+    updated = await service.mutate(
+        MemoryMutationRequest(
+            operation=MemoryMutationOperation.UPDATE_METADATA,
+            fact_id=corrected.new_fact_id,
+            visibility=SelfMemoryVisibilityMode.GLOBAL,
+            category="profile",
+            importance=4,
+        ),
+        _context(metadata_event),
+    )
+
+    assert updated.ok and updated.new_fact_id is not None
+    fact = await facts.get_fact(updated.new_fact_id)
+    assert fact is not None
+    assert fact.content == "现在住在上海"
+    assert fact.category == "profile"
+    assert fact.importance == 4
+    assert fact.visibility_type is None
+    assert facts.metrics.count("memory_mutation_non_self_visibility_ignored_count") == 2
+
+
+def test_memory_mutation_request_rejects_unknown_visibility() -> None:
+    with pytest.raises(ValueError):
+        MemoryMutationRequest.model_validate(
+            {
+                "operation": "invalidate",
+                "fact_id": 1,
+                "visibility": "private",
+            }
+        )
+
+
+@pytest.mark.asyncio
 async def test_mutation_selector_executes_only_unique_exact_target_match(
     database: Database,
 ) -> None:
@@ -1377,6 +1530,10 @@ async def test_user_message_turn_can_create_self_memory_from_current_event(
     )
 
     definition = next(tool for tool in tools.definitions(runtime) if tool.name == "memory_change")
+    assert "其他目标误填 current_scope 或 global 会被后端忽略" in definition.description[:240]
+    visibility_schema = definition.parameters["properties"]["visibility"]  # type: ignore[index]
+    assert visibility_schema["enum"] == ["current_scope", "global"]  # type: ignore[index]
+    assert "其他目标误填合法值会被后端忽略" in visibility_schema["description"]  # type: ignore[index]
     category_schema = definition.parameters["properties"]["category"]  # type: ignore[index]
     assert "self_episode" in category_schema["description"]  # type: ignore[index]
     rejected = json.loads(

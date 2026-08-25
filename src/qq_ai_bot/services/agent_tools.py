@@ -479,7 +479,9 @@ class AgentToolService:
                 ChatTool(
                     name="memory_change",
                     description=(
-                        f"{bot_name} 唯一的长期记忆变更工具。只能根据当前用户这条真实入站消息"
+                        f"{bot_name} 唯一的长期记忆变更工具。visibility 只对 "
+                        "target.scope_type=self 生效；其他目标误填 current_scope 或 global "
+                        "会被后端忽略。只能根据当前用户这条真实入站消息"
                         "创建、纠正、撤销、恢复、争议、合并、改归属或更新记忆元数据；"
                         f"不能把 {bot_name} 自己的输出当证据，也不能传 QQ 号、群号或事件 ID。"
                         "target.subject_ref 可使用 current_speaker、current_group、"
@@ -487,7 +489,7 @@ class AgentToolService:
                         "replied_message_author；正文中的当前群姓名使用 named_member 并填写"
                         f" subject_name；{bot_name} 自我记忆使用 self + self。"
                         f"自我记忆仅在功能开启且 {bot_name} 根据当前真实用户消息形成自己的"
-                        "判断时变更，visibility"
+                        "判断时变更，SELF 的 visibility"
                         "只能用 current_scope 或 global；global 只适合抽象偏好、反思和原则，"
                         "SELF 的 category 必须精确使用 self_fact、self_preference、self_episode、"
                         "self_reflection 或 self_principle；self_episode 必须与 kind=episode 配对，"
@@ -595,6 +597,11 @@ class AgentToolService:
                             "visibility": {
                                 "type": "string",
                                 "enum": ["current_scope", "global"],
+                                "description": (
+                                    "仅 target.scope_type=self 时生效；其他目标误填合法值会被"
+                                    "后端忽略。current_scope 表示当前私聊或群，global 仅适合"
+                                    "抽象偏好、反思和原则。"
+                                ),
                             },
                             "request_basis": {
                                 "type": "string",

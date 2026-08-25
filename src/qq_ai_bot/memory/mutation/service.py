@@ -1371,6 +1371,7 @@ class MemoryMutationService:
             target = resolved_target
             if request.target.scope_type is not target.scope_type:
                 raise MemoryMutationRejected("target_scope_mismatch")
+        request = self._normalize_visibility_hint(request, target)
         target = self._resolve_visibility(request, target, event, fact=fact)
         self._authorize(request.operation, target, context)
         if request.operation is MemoryMutationOperation.REASSIGN and request.selector is not None:
@@ -1922,8 +1923,6 @@ class MemoryMutationService:
         fact: MemoryFact | None,
     ) -> ResolvedSubject:
         if target.scope_type is not MemoryScopeType.SELF:
-            if request.visibility is not None:
-                raise MemoryMutationRejected("visibility_only_valid_for_self_memory")
             return target
         if not self._settings.self_memory_enabled:
             raise MemoryMutationRejected("self_memory_disabled")
@@ -1972,6 +1971,18 @@ class MemoryMutationService:
             None,
             event.group_id,
         )
+
+    def _normalize_visibility_hint(
+        self,
+        request: MemoryMutationRequest,
+        target: ResolvedSubject,
+    ) -> MemoryMutationRequest:
+        """Discard a SELF-only hint once the authoritative target is non-SELF."""
+
+        if target.scope_type is MemoryScopeType.SELF or request.visibility is None:
+            return request
+        self._facts.metrics.increment("memory_mutation_non_self_visibility_ignored_count")
+        return request.model_copy(update={"visibility": None})
 
     @staticmethod
     def _validate_self_request(
