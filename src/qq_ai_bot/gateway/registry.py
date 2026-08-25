@@ -246,6 +246,8 @@ class GatewayConnectionRegistry:
                     connection_id=None,
                     gateway_instance_id=self.gateway_instance_id,
                     live_count=0,
+                    provider=None,
+                    capabilities=frozenset(),
                 )
             try:
                 chosen_id = self._choose_id(ids, pin_key=presence_id.strip())
@@ -257,6 +259,8 @@ class GatewayConnectionRegistry:
                         connection_id=None,
                         gateway_instance_id=self.gateway_instance_id,
                         live_count=live_count,
+                        provider=None,
+                        capabilities=frozenset(),
                     )
                 return PresenceConnectionSnapshot(
                     health=ConnectionHealth.DISCONNECTED,
@@ -264,6 +268,8 @@ class GatewayConnectionRegistry:
                     connection_id=None,
                     gateway_instance_id=self.gateway_instance_id,
                     live_count=live_count,
+                    provider=None,
+                    capabilities=frozenset(),
                 )
             chosen = self._by_id[chosen_id]
             return PresenceConnectionSnapshot(
@@ -272,6 +278,8 @@ class GatewayConnectionRegistry:
                 connection_id=chosen.connection_id,
                 gateway_instance_id=chosen.gateway_instance_id,
                 live_count=live_count,
+                provider=chosen.provider,
+                capabilities=chosen.capabilities,
             )
 
     def has_any_active(self) -> bool:

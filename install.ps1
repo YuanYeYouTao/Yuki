@@ -94,7 +94,7 @@ try {
     } else {
         $Stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ')
         $ManagedBackup = Join-Path $InstallDir ".yuki\backups\installer-$Stamp"
-        foreach ($Relative in @('docker-compose.yml', '.env.example', 'install.sh', 'install.ps1', "Yuki-$Version-Upgrade.md")) {
+        foreach ($Relative in @('docker-compose.yml', '.env.example', 'install.sh', 'install.ps1', 'SnowLuma.md', "Yuki-$Version-Upgrade.md")) {
             $SourceFile = Join-Path $Source $Relative
             if (-not (Test-Path -LiteralPath $SourceFile -PathType Leaf)) {
                 Fail "Release bundle is missing $Relative."

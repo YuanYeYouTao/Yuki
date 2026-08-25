@@ -582,6 +582,9 @@ class PresenceView:
     ingest_eligible: bool
     revision: int
     connection_state: PresenceConnectionState
+    connection_provider: str | None
+    connection_generation: int | None
+    connection_capabilities: tuple[str, ...]
     connection_problem: Problem
 
     def __post_init__(self) -> None:
@@ -595,6 +598,26 @@ class PresenceView:
         object.__setattr__(self, "revision", _require_int(self.revision, "revision", minimum=1))
         if type(self.connection_state) is not PresenceConnectionState:
             raise TypeError("connection_state must be PresenceConnectionState")
+        if self.connection_provider is not None:
+            require_opaque_token(
+                self.connection_provider,
+                name="connection_provider",
+                max_length=32,
+            )
+        if self.connection_generation is not None:
+            object.__setattr__(
+                self,
+                "connection_generation",
+                _require_int(self.connection_generation, "connection_generation", minimum=1),
+            )
+        if type(self.connection_capabilities) is not tuple:
+            raise TypeError("connection_capabilities must be a tuple")
+        normalized_capabilities = tuple(
+            require_opaque_token(item, name="connection_capability", max_length=64)
+            for item in self.connection_capabilities
+        )
+        if normalized_capabilities != tuple(sorted(set(normalized_capabilities))):
+            raise ValueError("connection_capabilities must be sorted and unique")
         if type(self.connection_problem) is not Problem:
             raise TypeError("connection_problem must be Problem")
 

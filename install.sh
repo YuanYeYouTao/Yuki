@@ -108,7 +108,7 @@ if [ "$existing" = false ]; then
 else
     stamp=$(date -u +%Y%m%dT%H%M%SZ)
     managed_backup="$INSTALL_DIR/.yuki/backups/installer-$stamp"
-    for relative in docker-compose.yml .env.example install.sh install.ps1 "Yuki-$VERSION-Upgrade.md"; do
+    for relative in docker-compose.yml .env.example install.sh install.ps1 SnowLuma.md "Yuki-$VERSION-Upgrade.md"; do
         [ -f "$source/$relative" ] || fail "release bundle is missing $relative"
         if [ -f "$INSTALL_DIR/$relative" ]; then
             mkdir -p "$managed_backup/$(dirname "$relative")"

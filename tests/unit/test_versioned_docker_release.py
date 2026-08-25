@@ -107,6 +107,7 @@ def test_bundle_contains_only_deployment_files_and_expected_assets(tmp_path: Pat
     assert f"{prefix}snowluma-qq-config/" in names
     assert f"{prefix}snowluma-qq-data/" in names
     assert f"{prefix}snowluma-extra-accounts/" in names
+    assert f"{prefix}SnowLuma.md" in names
     assert f"{prefix}install.sh" in names
     assert f"{prefix}install.ps1" in names
     assert shell_mode & 0o111
@@ -417,6 +418,7 @@ def test_installers_are_fixed_orchestrators_without_a_docker_socket_mount() -> N
         assert "restart-required" in installer
         assert "speech-action" in installer
         assert "gateway-action.json" in installer
+        assert "SnowLuma.md" in installer
         assert "Yuki-$VERSION-Upgrade.md" in installer or "Yuki-$Version-Upgrade.md" in installer
         assert "Updated release-managed deployment files" in installer
         assert "upgrade-3.6" in installer

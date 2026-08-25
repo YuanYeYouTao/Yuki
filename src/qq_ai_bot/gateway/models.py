@@ -40,3 +40,5 @@ class PresenceConnectionSnapshot:
     connection_id: str | None
     gateway_instance_id: str | None
     live_count: int
+    provider: str | None
+    capabilities: frozenset[str]

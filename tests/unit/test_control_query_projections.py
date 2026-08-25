@@ -64,6 +64,9 @@ from qq_ai_bot.conversation.canonical_db_models import (
 )
 from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
 from qq_ai_bot.domain.identity import PersonId, PrincipalId, RequestId, SpaceId
+from qq_ai_bot.gateway.providers import builtin_provider_catalog
+from qq_ai_bot.gateway.providers.snowluma import SNOWLUMA_CAPABILITIES
+from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
 from qq_ai_bot.health import HealthPayload
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
@@ -156,8 +159,14 @@ def _context(
     )
 
 
-def _service(database: Database) -> ControlQueryService:
-    return ControlQueryService(ControlQueryAdapter(database))
+def _service(
+    database: Database,
+    *,
+    connection_registry: object | None = None,
+) -> ControlQueryService:
+    return ControlQueryService(
+        ControlQueryAdapter(database, connection_registry=connection_registry)
+    )
 
 
 def _uuid() -> str:
@@ -758,7 +767,41 @@ async def test_routes_and_presence_unavailable_without_get_bots(database: Databa
     assert ingest_routes.items[0].reference_state is RouteReferenceState.CONSISTENT
     assert space_routes.items[0].reference_state is RouteReferenceState.CONSISTENT
     assert presences.items[0].connection_state is PresenceConnectionState.UNAVAILABLE
+    assert presences.items[0].connection_provider is None
+    assert presences.items[0].connection_generation is None
+    assert presences.items[0].connection_capabilities == ()
     assert presences.items[0].connection_problem.code is ProblemCode.OPERATION_UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_presence_projection_reports_actual_provider_and_connection_generation(
+    database: Database,
+) -> None:
+    presence_id = await _add_presence(database, external_account_id="8000")
+    registry = GatewayConnectionRegistry(
+        providers=builtin_provider_catalog(),
+        gateway_instance_id="gw-control",
+    )
+    bot = SimpleNamespace(self_id="8000")
+    registry.connect(bot, provider_id="snowluma", presence_id=presence_id)
+    service = _service(database, connection_registry=registry)
+    context = _context(_principal("identity.presence.read"))
+
+    connected = await service.list_presences(context, PageRequest(limit=10))
+
+    view = connected.items[0]
+    assert view.connection_state is PresenceConnectionState.CONNECTED
+    assert view.connection_provider == "snowluma"
+    assert view.connection_generation == 1
+    assert view.connection_capabilities == tuple(sorted(SNOWLUMA_CAPABILITIES))
+    assert view.external.visibility is ExternalIdVisibility.MASKED
+
+    registry.disconnect(bot)
+    disconnected = await service.list_presences(context, PageRequest(limit=10))
+    assert disconnected.items[0].connection_state is PresenceConnectionState.DISCONNECTED
+    assert disconnected.items[0].connection_provider is None
+    assert disconnected.items[0].connection_generation == 1
+    assert disconnected.items[0].connection_capabilities == ()
 
 
 def test_route_reference_classifier_does_not_invent_a_match() -> None:

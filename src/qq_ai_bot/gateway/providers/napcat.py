@@ -12,7 +12,14 @@ from qq_ai_bot.gateway.provider import (
 NAPCAT_PROVIDER_ID: Final[str] = "napcat"
 NAPCAT_PLATFORM: Final[str] = "qq"
 NAPCAT_CAPABILITIES: Final[frozenset[str]] = frozenset(
-    {"send_private", "send_group", "group_member_probe"}
+    {
+        "send_private",
+        "send_group",
+        "group_member_probe",
+        "profile_lookup",
+        "message_history",
+        "media_fetch",
+    }
 )
 
 

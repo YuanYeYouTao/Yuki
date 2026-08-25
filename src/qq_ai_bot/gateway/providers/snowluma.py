@@ -9,7 +9,14 @@ from qq_ai_bot.gateway.provider import GatewayConnectionProfile
 SNOWLUMA_PROVIDER_ID: Final[str] = "snowluma"
 SNOWLUMA_PLATFORM: Final[str] = "qq"
 SNOWLUMA_CAPABILITIES: Final[frozenset[str]] = frozenset(
-    {"send_private", "send_group", "group_member_probe"}
+    {
+        "send_private",
+        "send_group",
+        "group_member_probe",
+        "profile_lookup",
+        "message_history",
+        "media_fetch",
+    }
 )
 
 

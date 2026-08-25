@@ -19,6 +19,8 @@ from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.config import Settings
 from qq_ai_bot.deployment_setup import add_setup_parser, run_setup_command
 from qq_ai_bot.domain.messages import ChatMessage, ChatTool
+from qq_ai_bot.gateway.compatibility import provider_doctor_payload
+from qq_ai_bot.gateway.providers import NAPCAT_PROVIDER_ID, SNOWLUMA_PROVIDER_ID
 from qq_ai_bot.memory.embedding.qwen import QwenDashScopeEmbeddingProvider
 from qq_ai_bot.memory.quality.audit import MemoryProductionQualityAudit
 from qq_ai_bot.memory.quality.baseline import (
@@ -1150,6 +1152,17 @@ def main() -> None:
         help="合并 SnowLuma OneBot 配置",
     )
     render_snowluma.add_argument("--output", type=Path, required=True)
+    gateway = subparsers.add_parser("gateway", help="检查 QQ Gateway Provider 契约")
+    gateway_commands = gateway.add_subparsers(dest="gateway_command", required=True)
+    gateway_doctor = gateway_commands.add_parser(
+        "doctor",
+        help="输出只读、无敏感信息的 OneBot 核心契约",
+    )
+    gateway_doctor.add_argument(
+        "--provider",
+        choices=(NAPCAT_PROVIDER_ID, SNOWLUMA_PROVIDER_ID),
+        required=True,
+    )
     add_setup_parser(subparsers)
     _add_plugin_parser(subparsers)
     _add_speech_parser(subparsers)
@@ -1160,6 +1173,9 @@ def main() -> None:
     args = parser.parse_args()
     if args.command == "setup":
         raise SystemExit(run_setup_command(args))
+    if args.command == "gateway":
+        print(json.dumps(provider_doctor_payload(str(args.provider)), ensure_ascii=False, indent=2))
+        return
     settings = Settings()
     if args.command == "init-db":
         _init_database(settings)

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
+from qq_ai_bot import cli as administrative_cli
+from qq_ai_bot.gateway.compatibility import CORE_ONEBOT_ACTIONS, provider_doctor_payload
 from qq_ai_bot.gateway.provider import GatewayConnectionProfile, GatewayProviderCatalog
 from qq_ai_bot.gateway.providers import builtin_provider_catalog
 from qq_ai_bot.gateway.providers.napcat import (
@@ -182,3 +185,47 @@ def test_provider_neutral_registry_does_not_import_or_default_napcat() -> None:
     )
     assert "napcat" not in registry_source.casefold()
     assert "napcat" not in models_source.casefold()
+
+
+def test_builtin_provider_doctor_freezes_the_core_onebot_contract() -> None:
+    expected = {
+        "send_private_msg",
+        "send_group_msg",
+        "get_group_info",
+        "get_group_member_info",
+        "get_stranger_info",
+        "get_image",
+        "get_group_msg_history",
+        "get_friend_msg_history",
+    }
+    assert {item.action for item in CORE_ONEBOT_ACTIONS} == expected
+    required_capabilities = {item.provider_capability for item in CORE_ONEBOT_ACTIONS}
+    assert required_capabilities <= NAPCAT_CAPABILITIES
+    assert required_capabilities <= SNOWLUMA_CAPABILITIES
+    napcat = provider_doctor_payload("napcat")
+    snowluma = provider_doctor_payload("snowluma")
+    assert {item["action"] for item in napcat["core_actions"]} == expected
+    assert napcat["core_actions"] == snowluma["core_actions"]
+    assert snowluma["reverse_ws_paths"] == ["/onebot/v11/snowluma/ws"]
+    assert snowluma["live_probe"] == "not_run"
+    assert snowluma["provider_private_actions"] == "not_guaranteed"
+    serialized = json.dumps(snowluma).casefold()
+    assert all(secret not in serialized for secret in ("access_token", "cookie", "qq_number"))
+
+
+def test_gateway_doctor_does_not_require_runtime_settings(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def _settings_forbidden() -> None:
+        raise AssertionError("gateway doctor must not load application settings")
+
+    monkeypatch.setattr(administrative_cli, "Settings", _settings_forbidden)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["qq-ai-bot-cli", "gateway", "doctor", "--provider", "snowluma"],
+    )
+
+    administrative_cli.main()
+
+    assert json.loads(capsys.readouterr().out)["provider_id"] == "snowluma"

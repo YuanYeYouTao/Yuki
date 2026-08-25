@@ -33,7 +33,7 @@
 
 ---
 
-Yuki 不是把大模型简单接到 QQ 上的问答机器人。它以 NapCatQQ 和 NoneBot2 为通信入口，使用
+Yuki 不是把大模型简单接到 QQ 上的问答机器人。它以 NapCat 或 SnowLuma 和 NoneBot2 为通信入口，使用
 Conversation / Memory / Capability Runtime、受控 Agent 工具循环、身份隔离的 Memory V2、持久化自动化和插件系统，
 让一个可自托管的 QQ 角色能够长期对话、记住人与共同经历，并安全地执行外部操作。
 
@@ -46,9 +46,9 @@ Conversation / Memory / Capability Runtime、受控 Agent 工具循环、身份�
 阅读器中查看。
 
 ```text
-+---------+    OneBot     +---------+    event     +----------+
-| QQ User | ------------> | NapCat  | -----------> | NoneBot  |
-+---------+               +---------+              +-----+----+
++---------+    OneBot     +------------+    event     +----------+
+| QQ User | ------------> | QQ Gateway | -----------> | NoneBot  |
++---------+               +------------+              +-----+----+
                                                        |
                                                        v
                     +------------+    +----------------+----------------+
@@ -85,7 +85,7 @@ Conversation / Memory / Capability Runtime、受控 Agent 工具循环、身份�
 - 管理命令和静态插件绑定可走确定性入口；普通聊天在本地 Runtime 准备后只进入 Main Agent。
 - Conversation Runtime 负责准入、自主群评分与 History Rollup，不能直接发送消息、修改数据或授予身份权限。
 - 主 Agent 只能看到本轮被授权的工具；数据库、OneBot、插件和外部服务都由后端执行。
-- 只有 NapCat 返回真实发送回执后，系统才把回复视为已投递，并启动相应后台工作。
+- 只有当前 QQ Gateway Provider 返回真实发送回执后，系统才把回复视为已投递，并启动相应后台工作。
 
 ## 核心能力
 
@@ -426,7 +426,7 @@ MCP Client 支持 stdio 和 Streamable HTTP，包含动态发现、元数据缓�
 ### 环境要求
 
 - Docker Engine / Docker Desktop 与 Docker Compose
-- 一个可登录 NapCatQQ 的 QQ 账号
+- 一个可通过 NapCat 或 SnowLuma 登录的 QQ 账号
 - 一个 OpenAI-compatible 模型接口；后台结构化任务可另配低延迟 Flash 模型
 - 只有本地开发才需要 Python 3.12、[uv](https://docs.astral.sh/uv/) 和完整源码
 
@@ -475,11 +475,13 @@ docker compose pull
 docker compose up -d
         |
         v
-health / plugin approval / NapCat hint
+health / plugin approval / Gateway hint
 ```
 
-凭据不会在安装期间发起在线验证或计费请求。启动后打开 `http://127.0.0.1:6099` 登录
-NapCat；WebUI Token 保存在部署目录的 `.env`，安装器不会直接打印它。
+凭据不会在安装期间发起在线验证或计费请求。NapCat 使用 `http://127.0.0.1:6099`；SnowLuma
+使用 `http://127.0.0.1:6081` 扫码登录、`http://127.0.0.1:5099` 管理。SnowLuma 的协议和隐私
+确认必须由操作者在本地界面完成，安装器不会代为接受。完整步骤见
+[SnowLuma Provider 部署与切换](docs/deployment/snowluma.md)。
 
 ### 3. 重开向导与升级
 
@@ -558,17 +560,19 @@ docker compose logs --tail 200 bot
 docker compose exec bot qq-ai-bot-cli model profiles
 docker compose exec bot qq-ai-bot-cli model routes
 docker compose exec bot qq-ai-bot-cli model stats
+docker compose exec bot qq-ai-bot-cli gateway doctor --provider snowluma
 docker compose exec bot qq-ai-bot-cli memory audit \
   --database-url sqlite+aiosqlite:////app/data/qq_ai_bot.db
 ```
 
 健康检查位于 Bot 容器内的 `http://127.0.0.1:8080/healthz`；Compose 通过该端点决定何时启动
-NapCat。
+已选择的 QQ Gateway Provider。
 
 ## 数据、安全与升级
 
 Yuki 使用 SQLite 保存事件、身份、关系、记忆、自动化、插件状态和运行配置。默认数据库为
-`data/qq_ai_bot.db`，NapCat 登录数据位于 `napcat-data/`。
+`data/qq_ai_bot.db`；NapCat 登录数据位于 `napcat-data/`，SnowLuma 登录和配置位于
+`snowluma-*` 持久目录。
 
 - 不要提交 `.env`、数据库、QQ 登录数据、语音模型或第三方密钥。
 - `LOG_MESSAGE_CONTENT=false` 时常规日志不记录消息正文；质量报告和记忆指标采用无正文设计。

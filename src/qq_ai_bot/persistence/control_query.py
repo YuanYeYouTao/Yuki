@@ -695,6 +695,9 @@ def _backfill_progress(status: str, processed: int, skipped: int, conflicts: int
 
 class _PresenceConnectionFields(TypedDict):
     connection_state: PresenceConnectionState
+    connection_provider: str | None
+    connection_generation: int | None
+    connection_capabilities: tuple[str, ...]
     connection_problem: Problem
 
 
@@ -704,12 +707,18 @@ def _presence_connection_fields(
     if registry is None:
         return {
             "connection_state": PresenceConnectionState.UNAVAILABLE,
+            "connection_provider": None,
+            "connection_generation": None,
+            "connection_capabilities": (),
             "connection_problem": Problem(ProblemCode.OPERATION_UNAVAILABLE),
         }
     snapshot = getattr(registry, "snapshot_presence", None)
     if not callable(snapshot):
         return {
             "connection_state": PresenceConnectionState.UNAVAILABLE,
+            "connection_provider": None,
+            "connection_generation": None,
+            "connection_capabilities": (),
             "connection_problem": Problem(ProblemCode.OPERATION_UNAVAILABLE),
         }
     view = snapshot(
@@ -719,20 +728,32 @@ def _presence_connection_fields(
     )
     health = str(getattr(view, "health", "disconnected"))
     if health == "connected":
+        generation = int(getattr(view, "generation", 0) or 0)
         return {
             "connection_state": PresenceConnectionState.CONNECTED,
+            "connection_provider": str(getattr(view, "provider", "")) or None,
+            "connection_generation": generation or None,
+            "connection_capabilities": tuple(
+                sorted(str(item) for item in getattr(view, "capabilities", ()))
+            ),
             "connection_problem": Problem(
                 ProblemCode.OPERATION_UNAVAILABLE,
-                {"live": True, "generation": int(getattr(view, "generation", 0) or 0)},
+                {"live": True},
             ),
         }
     if health == "ambiguous":
         return {
             "connection_state": PresenceConnectionState.AMBIGUOUS,
+            "connection_provider": None,
+            "connection_generation": None,
+            "connection_capabilities": (),
             "connection_problem": Problem(ProblemCode.BINDING_AMBIGUOUS),
         }
     return {
         "connection_state": PresenceConnectionState.DISCONNECTED,
+        "connection_provider": None,
+        "connection_generation": getattr(view, "generation", None),
+        "connection_capabilities": (),
         "connection_problem": Problem(ProblemCode.NOT_FOUND),
     }
 
