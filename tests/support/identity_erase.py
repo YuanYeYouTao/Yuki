@@ -11,12 +11,12 @@ import sqlite3
 from pathlib import Path
 
 from qq_ai_bot.identity.backfill_repository import (
-    _SHADOW_SPECS,
     _column_exists,
     _table_exists,
     connect_sqlite,
     sqlite_path_from_url,
 )
+from qq_ai_bot.identity.inventory import SHADOW_FILL_SPECS
 
 _PRODUCTION_NAMES = frozenset({"qq_ai_bot.db", "yuki.db"})
 
@@ -61,7 +61,7 @@ def erase_canonical_identity_backfill(database_url: str) -> None:
 
 
 def _erase(connection: sqlite3.Connection) -> None:
-    for spec in _SHADOW_SPECS:
+    for spec in SHADOW_FILL_SPECS:
         if not _table_exists(connection, spec.table):
             continue
         if not _column_exists(connection, spec.table, spec.column):

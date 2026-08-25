@@ -20,7 +20,6 @@ from qq_ai_bot.automation.models import (
     RunStatus,
 )
 from qq_ai_bot.automation.validator import ValidatedAutomation, collect_send_targets
-from qq_ai_bot.identity.dual_write import ensure_runtime_people_row
 from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
 from qq_ai_bot.identity.shadows import (
     active_person_id_for,
@@ -67,11 +66,6 @@ class AutomationRepository:
                 creator = await active_person_id_for(active, authority.creator_user_id)
                 if creator is None:
                     raise ValueError("创建者没有对应的永久主体")
-                await ensure_runtime_people_row(
-                    active,
-                    authority.creator_user_id,
-                    now=timestamp,
-                )
             else:
                 await _ensure_person(
                     active,

@@ -13,7 +13,11 @@ from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
 from qq_ai_bot.conversation.rollup.models import ConversationRollupState
 from qq_ai_bot.conversation.rollup.repository import ConversationRollupRepository
 from qq_ai_bot.conversation.rollup.service import ConversationRollupService
-from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
+from qq_ai_bot.conversation.scope import (
+    ConversationTurnSnapshot,
+    runtime_conversation_key,
+    turn_matches_hydrated_scope,
+)
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import (
     ChatMessage,
@@ -335,7 +339,11 @@ class ContextAssembler:
         if persist_memory_exposure:
             await self._memory_context.mark_injected(retrieval, selected_fact_ids)
             recall_turn = await self._memory_context.record_recall(
-                conversation_key=identity.key,
+                conversation_key=runtime_conversation_key(
+                    identity=identity,
+                    inbound=inbound,
+                    turn=turn,
+                ),
                 trigger_message_id=inbound.message_id,
                 origin=turn_origin,
                 intent=memory_intent,
@@ -441,6 +449,10 @@ class ContextAssembler:
         authorization_user_id: str,
         runtime: RuntimeConfigSnapshot,
         agent_intent: str,
+        person_id: str | None = None,
+        space_id: str | None = None,
+        presence_id: str | None = None,
+        conversation_id: str | None = None,
     ) -> AssembledContext:
         """Assemble a main-conversation turn without inventing a human speaker."""
 
@@ -453,13 +465,17 @@ class ContextAssembler:
             bot_user_id=event.bot_user_id,
             group_id=event.group_id,
             received_at=event.occurred_at,
+            legacy_conversation_key=turn.scope_key,
+            person_id=person_id,
+            space_id=space_id,
+            conversation_id=conversation_id or event.canonical_conversation_id,
+            presence_id=presence_id or event.ingress_presence_id,
         )
-        history_identity = (
-            ConversationScope.group(event.bot_user_id, event.group_id)
-            if event.scope_type is ScopeType.GROUP and event.group_id is not None
-            else ConversationScope.private(
-                event.bot_user_id, event.private_peer_user_id or authorization_user_id
-            )
+        history_identity = self._external_history_identity(
+            event,
+            turn,
+            authorization_user_id=authorization_user_id,
+            conversation_id=conversation_id,
         )
         await self._ensure_lightweight_backlog(
             history_identity,
@@ -653,30 +669,20 @@ class ContextAssembler:
         if group_id is None:
             return subjects
 
-        mentioned: list[str] = []
-        for user_id in inbound.mentioned_user_ids:
-            if not user_id or user_id in {inbound.sender.user_id, inbound.bot_user_id}:
-                continue
-            if user_id not in mentioned:
-                mentioned.append(user_id)
-            if len(mentioned) >= 5:
-                break
         reply_user_id = inbound.reply_sender_user_id
-        candidates = tuple(
-            dict.fromkeys(
-                (
-                    *mentioned,
-                    *(
-                        (reply_user_id,)
-                        if reply_user_id
-                        and reply_user_id not in {inbound.sender.user_id, inbound.bot_user_id}
-                        else ()
-                    ),
-                )
-            )
+        targets = await self._people.person_reference_ids(
+            (
+                *inbound.mentioned_user_ids,
+                *((reply_user_id,) if reply_user_id else ()),
+            ),
+            speaker_user_id=inbound.sender.user_id,
+            bot_user_id=inbound.bot_user_id,
         )
-        members = await self._people.members_in_group(candidates, group_id)
-        profiles = await self._people.get_many(tuple(members), group_id=group_id)
+        mentioned = tuple(
+            user_id for user_id in targets if user_id in set(inbound.mentioned_user_ids)
+        )
+        members = await self._people.members_in_group(targets, group_id) if targets else frozenset()
+        profiles = await self._people.get_many(tuple(members), group_id=group_id) if members else {}
 
         for index, user_id in enumerate(mentioned, start=1):
             if user_id not in members:
@@ -688,8 +694,30 @@ class ContextAssembler:
                     "display_name": person.display_name if person else "被提及群成员",
                 }
             )
-        if reply_user_id in members:
-            person = profiles.get(reply_user_id)
+        reply_targets = (
+            await self._people.person_reference_ids(
+                (reply_user_id,),
+                speaker_user_id=inbound.sender.user_id,
+                bot_user_id=inbound.bot_user_id,
+            )
+            if reply_user_id
+            else ()
+        )
+        reply_rep = next((user_id for user_id in reply_targets if user_id in members), None)
+        if reply_rep is None and reply_targets:
+            for candidate in targets:
+                if candidate not in members:
+                    continue
+                collapsed = await self._people.person_reference_ids(
+                    (reply_user_id or "", candidate),
+                    speaker_user_id="",
+                    bot_user_id=inbound.bot_user_id,
+                )
+                if len(collapsed) == 1:
+                    reply_rep = candidate
+                    break
+        if reply_rep is not None:
+            person = profiles.get(reply_rep)
             subjects.append(
                 {
                     "subject_ref": "replied_message_author",
@@ -1069,6 +1097,39 @@ class ContextAssembler:
             0, character_budget - view.current_characters
         )
 
+    @staticmethod
+    def _external_history_identity(
+        event: EventRecord,
+        turn: ConversationTurnSnapshot,
+        *,
+        authorization_user_id: str,
+        conversation_id: str | None,
+    ) -> ConversationScope:
+        """Hydrate v2 external turns from the worker snapshot transport.
+
+        complete-v2 background turns pass ``conversation_id``. Their current
+        Presence must already be on the snapshot; this never infers a bot from
+        the persisted event. v1 keeps the event provenance identity.
+        """
+
+        if conversation_id:
+            transport_key = turn.transport_scope_key
+            if not transport_key:
+                raise ConversationCoverageError(
+                    "complete-v2 external turn requires snapshot transport identity"
+                )
+            try:
+                return ConversationScope.parse(transport_key)
+            except ValueError as exc:
+                raise ConversationCoverageError(
+                    "complete-v2 external turn snapshot transport is invalid"
+                ) from exc
+        if event.scope_type is ScopeType.GROUP and event.group_id is not None:
+            return ConversationScope.group(event.bot_user_id, event.group_id)
+        return ConversationScope.private(
+            event.bot_user_id, event.private_peer_user_id or authorization_user_id
+        )
+
     async def _load_history_snapshot(
         self,
         scope: ConversationScope,
@@ -1081,10 +1142,12 @@ class ContextAssembler:
             before_event_id=before_event_id,
         )
         rollup = loaded.rollup
-        if (
-            loaded.scope.id != turn.scope_id
-            or loaded.scope.scope.key != turn.scope_key
-            or loaded.scope.generation != turn.generation
+        if not turn_matches_hydrated_scope(
+            turn,
+            scope_id=loaded.scope.id,
+            generation=loaded.scope.generation,
+            transport_key=scope.key,
+            runtime_key=loaded.scope.runtime_scope_key,
         ):
             raise ConversationCoverageError("prompt snapshot generation changed")
         return _HistoryPromptWindow(
@@ -1270,10 +1333,12 @@ class ContextAssembler:
             state, _rollup, _job = await self._rollups.status(scope)
             if state is None:
                 raise ConversationCoverageError("conversation scope does not exist")
-            if (
-                state.id != turn.scope_id
-                or state.generation != turn.generation
-                or state.scope.key != turn.scope_key
+            if not turn_matches_hydrated_scope(
+                turn,
+                scope_id=state.id,
+                generation=state.generation,
+                transport_key=scope.key,
+                runtime_key=state.runtime_scope_key,
             ):
                 raise ConversationCoverageError("turn generation changed before prompt snapshot")
             event_cap = event_target if compact_to_stop else event_admit

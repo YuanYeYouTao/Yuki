@@ -1815,3 +1815,378 @@ async def test_failed_action_audit_does_not_store_free_text(database: Database) 
         [{"before": row.before, "after": row.after} for row in rows],
         ensure_ascii=False,
     )
+
+
+_V2_NOW = datetime(2026, 8, 25, tzinfo=UTC)
+_V2_CUTOVER = "550e8400-e29b-41d4-a716-4466554400ac"
+
+
+async def _flip_complete_v2(database: Database) -> None:
+    from qq_ai_bot.identity.db_models import IdentityRuntimeStateModel
+
+    async with database.sessions() as session, session.begin():
+        row = await session.get(IdentityRuntimeStateModel, 1)
+        assert row is not None
+        row.state = "v2"
+        row.cutover_id = _V2_CUTOVER
+        row.source_fingerprint = "cutover-fingerprint"
+        row.completed_at = _V2_NOW
+
+
+async def _two_bindings_one_person(database: Database, first: str = "1001", second: str = "1002"):
+    from uuid import uuid4
+
+    from qq_ai_bot.identity.db_models import IdentityBindingModel
+    from qq_ai_bot.identity.dual_write import _create_person_binding
+    from qq_ai_bot.identity.inventory import IDENTITY_PLATFORM
+
+    async with database.sessions() as session, session.begin():
+        created = await _create_person_binding(
+            session, external_id=first, display_name="", now=_V2_NOW
+        )
+        session.add(
+            IdentityBindingModel(
+                id=str(uuid4()),
+                person_id=created.person_id,
+                platform=IDENTITY_PLATFORM,
+                external_account_id=second,
+                display_name="",
+                status="active",
+                revision=1,
+                created_at=_V2_NOW,
+                updated_at=_V2_NOW,
+            )
+        )
+        return created.person_id
+
+
+@pytest.mark.asyncio
+async def test_v2_user_config_is_shared_across_bindings_without_people(
+    database: Database,
+) -> None:
+    from sqlalchemy import func, select
+
+    from qq_ai_bot.identity.canonical_projections import canonical_person_storage_key
+    from qq_ai_bot.persistence.models import PersonModel, RuntimeConfigOverrideModel
+    from qq_ai_bot.services.admin.config_admin import ConfigAdminService
+
+    await _flip_complete_v2(database)
+    person_id = await _two_bindings_one_person(database)
+    service = RuntimeConfigService(settings=make_settings(database.url), database=database)
+    admin = ConfigAdminService(service)
+    written = await service.set_override(
+        "context.local_event_limit",
+        77,
+        scope_type="user",
+        scope_id="1001",
+        actor_user_id="9000",
+        trigger_message_id="set-a",
+    )
+    assert written.success
+    assert written.scope_id == canonical_person_storage_key(person_id)
+    assert (await service.get_effective("context.local_event_limit", user_id="1002")).value == 77
+    assert (await service.snapshot(user_id="1002")).context.local_event_limit == 77
+
+    updated = await service.set_override(
+        "context.local_event_limit",
+        88,
+        scope_type="user",
+        scope_id="1002",
+        actor_user_id="9000",
+        trigger_message_id="set-b",
+    )
+    assert updated.success
+    assert updated.version == 2
+    assert (await service.get_effective("context.local_event_limit", user_id="1001")).value == 88
+
+    history = await admin.history(key="context.local_event_limit", actor_user_id="9000")
+    assert len(history) == 2
+    assert all("1001" not in json.dumps(row.after, ensure_ascii=False) for row in history)
+
+    rolled = await service.rollback(
+        updated.change_id,
+        actor_user_id="9000",
+        trigger_message_id="rollback-b",
+    )
+    assert rolled.success
+    assert (await service.get_effective("context.local_event_limit", user_id="1002")).value == 77
+
+    deleted = await admin.unset(
+        actor("9000"),
+        key="context.local_event_limit",
+        scope_type="user",
+        scope_id="1001",
+    )
+    assert deleted.success
+    fallback = await service.get_effective("context.local_event_limit")
+    assert (
+        await service.get_effective("context.local_event_limit", user_id="1002")
+    ).value == fallback.value
+
+    async with database.sessions() as session:
+        rows = list(await session.scalars(select(RuntimeConfigOverrideModel)))
+        people = int(await session.scalar(select(func.count()).select_from(PersonModel)) or 0)
+    assert people == 0
+    assert [row for row in rows if row.scope_type == "user"] == []
+
+
+@pytest.mark.asyncio
+async def test_v2_conflicting_user_config_rows_fail_closed(database: Database) -> None:
+    from sqlalchemy import select
+
+    from qq_ai_bot.identity.errors import IdentityDualWriteError
+    from qq_ai_bot.persistence.models import RuntimeConfigOverrideModel
+
+    await _flip_complete_v2(database)
+    person_id = await _two_bindings_one_person(database)
+    now = _V2_NOW
+    async with database.sessions() as session, session.begin():
+        for owner, value in (("1001", "61"), ("1002", "62")):
+            session.add(
+                RuntimeConfigOverrideModel(
+                    config_key="context.local_event_limit",
+                    scope_type="user",
+                    scope_id=owner,
+                    value_json=value,
+                    value_type="integer",
+                    apply_mode="hot",
+                    version=1,
+                    created_at=now,
+                    updated_at=now,
+                    updated_by="9000",
+                    canonical_person_id=person_id,
+                )
+            )
+    service = RuntimeConfigService(settings=make_settings(database.url), database=database)
+    with pytest.raises(IdentityDualWriteError) as exc:
+        await service.get_effective("context.local_event_limit", user_id="1002")
+    assert exc.value.category == "canonical_owner_mismatch"
+    assert "1002" not in str(exc.value)
+    async with database.sessions() as session:
+        assert len(list(await session.scalars(select(RuntimeConfigOverrideModel)))) == 2
+
+
+@pytest.mark.asyncio
+async def test_v2_missing_binding_fail_closed_for_user_config(database: Database) -> None:
+    from qq_ai_bot.identity.errors import IdentityDualWriteError
+
+    await _flip_complete_v2(database)
+    service = RuntimeConfigService(settings=make_settings(database.url), database=database)
+    with pytest.raises(IdentityDualWriteError) as exc:
+        await service.set_override(
+            "context.local_event_limit",
+            70,
+            scope_type="user",
+            scope_id="1001",
+            actor_user_id="9000",
+            trigger_message_id="missing",
+        )
+    assert exc.value.category == "missing_canonical_owner"
+    assert "1001" not in str(exc.value)
+
+
+def _admin_profile(user_id: str = "9000"):
+    from qq_ai_bot.domain.profiles import UserProfileSnapshot
+
+    return UserProfileSnapshot(user_id=user_id, scope_type=ScopeType.PRIVATE)
+
+
+async def _bind_superuser(database: Database) -> None:
+    from qq_ai_bot.identity.dual_write import _create_person_binding
+
+    async with database.sessions() as session, session.begin():
+        await _create_person_binding(session, external_id="9000", display_name="", now=_V2_NOW)
+
+
+@pytest.mark.asyncio
+async def test_v2_private_command_reenables_disabled_person_via_admin_service(
+    database: Database,
+) -> None:
+    from qq_ai_bot.admin.control_resolution import ControlAccess, audit_ref_from_actor
+    from qq_ai_bot.domain.conversations import ConversationScope
+    from qq_ai_bot.identity.errors import IdentityDualWriteError
+    from qq_ai_bot.persistence.repositories import PrivateUserSettingsRepository
+    from qq_ai_bot.services.policies import CommandName
+
+    await _flip_complete_v2(database)
+    await _two_bindings_one_person(database, first="10011", second="10012")
+    await _bind_superuser(database)
+    settings = make_settings(database.url)
+    harness = build_harness(database, settings)
+    relationships = RelationshipRepository(database)
+    existing = await relationships.get_or_create("10011")
+    assert existing.affection_score == 50
+    assert existing.trust_score == 50
+
+    identity = ConversationScope.private("7777", "9000")
+    profile = _admin_profile()
+    off = await harness.processor._commands.execute(
+        CommandName.PRIVATE,
+        inbound("/ai private 10011 off", user_id="9000", message_id="priv-off"),
+        identity,
+        profile,
+        "10011 off",
+        0.0,
+    )
+    assert off.text == "已关闭指定 QQ 用户的私聊权限。"
+    disabled = await harness.private_users.get("10011")
+    assert disabled is not None and disabled.enabled is False
+
+    runtime = RuntimeConfigService(settings=settings, database=database)
+    with pytest.raises(IdentityDualWriteError) as snap:
+        await runtime.snapshot(user_id="10011")
+    assert snap.value.category == "canonical_owner_disabled"
+    assert "10011" not in str(snap.value)
+    with pytest.raises(IdentityDualWriteError) as effective:
+        await runtime.get_effective("relationship.initial_affection", user_id="10011")
+    assert effective.value.category == "canonical_owner_disabled"
+
+    on = await harness.processor._commands.execute(
+        CommandName.PRIVATE,
+        inbound("/ai private 10011 on", user_id="9000", message_id="priv-on"),
+        identity,
+        profile,
+        "10011 on",
+        0.0,
+    )
+    assert on.text == "已开启指定 QQ 用户的私聊权限。"
+    restored = await harness.private_users.get("10011")
+    assert restored is not None and restored.enabled is True
+    after = await relationships.get("10011")
+    assert after is not None
+    assert after.affection_score == existing.affection_score
+    assert after.trust_score == existing.trust_score
+    assert (await runtime.snapshot(user_id="10011")).relationship.initial_affection == 50
+
+    history = await AdminAuditService(database).history(capability="private_access")
+    assert [row.operation for row in history[:2]] == ["enable", "disable"]
+    assert all(row.success and row.target_id == "10011" for row in history[:2])
+
+    access = ControlAccess(database, superuser_ids=settings.superusers)
+    principal = await access.principal_for_qq("9000")
+    missing = access.context(principal, await access.person_target("19999"))
+    service = PrivateAccessAdminService(
+        private_users=PrivateUserSettingsRepository(database),
+        audit=AdminAuditService(database),
+        runtime_config=runtime,
+    )
+    with pytest.raises(IdentityDualWriteError) as missing_exc:
+        await service.enable_user(missing, audit=audit_ref_from_actor(actor(message_id="miss")))
+    assert missing_exc.value.category == "missing_canonical_owner"
+    assert "19999" not in str(missing_exc.value)
+
+
+@pytest.mark.asyncio
+async def test_v2_private_enable_keeps_audit_transaction_and_rejects_other_errors(
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qq_ai_bot.admin.control_resolution import ControlAccess, audit_ref_from_actor
+    from qq_ai_bot.identity.dual_write import ensure_canonical_presence_preconfig
+    from qq_ai_bot.identity.errors import IdentityDualWriteError
+    from qq_ai_bot.persistence.repositories import PrivateUserSettingsRepository
+
+    await _flip_complete_v2(database)
+    await _two_bindings_one_person(database, first="10011", second="10012")
+    await _bind_superuser(database)
+    async with database.sessions() as session, session.begin():
+        await ensure_canonical_presence_preconfig(session, "18888")
+    settings = make_settings(database.url)
+    audit = AdminAuditService(database)
+    runtime = RuntimeConfigService(settings=settings, database=database)
+    service = PrivateAccessAdminService(
+        private_users=PrivateUserSettingsRepository(database),
+        audit=audit,
+        runtime_config=runtime,
+    )
+    access = ControlAccess(database, superuser_ids=settings.superusers)
+    principal = await access.principal_for_qq("9000")
+    target = access.context(principal, await access.person_target("10011"))
+    disabled = await service.disable_user(target, audit=audit_ref_from_actor(actor()))
+    assert disabled.enabled is False
+
+    async def fail_audit_insert(**_kwargs: object) -> object:
+        raise RuntimeError("simulated audit insert failure")
+
+    monkeypatch.setattr(audit, "record", fail_audit_insert)
+    with pytest.raises(RuntimeError, match="simulated audit insert failure"):
+        await service.enable_user(
+            target,
+            audit=audit_ref_from_actor(actor(message_id="rollback-enable")),
+        )
+    still = await PrivateUserSettingsRepository(database).get("10011")
+    assert still is not None and still.enabled is False
+
+    presence_target = access.context(principal, await access.person_target("18888"))
+    with pytest.raises(IdentityDualWriteError) as kind:
+        await service.enable_user(
+            presence_target,
+            audit=audit_ref_from_actor(actor(message_id="kind")),
+        )
+    assert kind.value.category == "canonical_kind_mismatch"
+    assert "18888" not in str(kind.value)
+
+
+@pytest.mark.asyncio
+async def test_v1_private_command_can_disable_then_enable(database: Database) -> None:
+    from qq_ai_bot.domain.conversations import ConversationScope
+    from qq_ai_bot.persistence.repositories import UserProfileRepository
+    from qq_ai_bot.services.policies import CommandName
+
+    settings = make_settings(database.url)
+    harness = build_harness(database, settings)
+    profiles = UserProfileRepository(database)
+    await profiles.observe(user_id="9000", nickname="")
+    await profiles.observe(user_id="10011", nickname="")
+    identity = ConversationScope.private("7777", "9000")
+    profile = _admin_profile()
+    off = await harness.processor._commands.execute(
+        CommandName.PRIVATE,
+        inbound("/ai private 10011 off", user_id="9000", message_id="v1-off"),
+        identity,
+        profile,
+        "10011 off",
+        0.0,
+    )
+    assert off.text == "已关闭指定 QQ 用户的私聊权限。"
+    assert (await harness.private_users.get("10011")).enabled is False  # type: ignore[union-attr]
+    on = await harness.processor._commands.execute(
+        CommandName.PRIVATE,
+        inbound("/ai private 10011 on", user_id="9000", message_id="v1-on"),
+        identity,
+        profile,
+        "10011 on",
+        0.0,
+    )
+    assert on.text == "已开启指定 QQ 用户的私聊权限。"
+    assert (await harness.private_users.get("10011")).enabled is True  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_v2_disabled_person_uuid_config_scope_is_canonical_owner_disabled(
+    database: Database,
+) -> None:
+    from qq_ai_bot.identity.canonical_projections import resolve_canonical_user_config_scope
+    from qq_ai_bot.identity.db_models import CanonicalPersonModel
+    from qq_ai_bot.identity.errors import IdentityDualWriteError
+
+    await _flip_complete_v2(database)
+    person_id = await _two_bindings_one_person(database)
+    async with database.sessions() as session, session.begin():
+        person = await session.get(CanonicalPersonModel, person_id)
+        assert person is not None
+        person.enabled = False
+    async with database.sessions() as session:
+        with pytest.raises(IdentityDualWriteError) as uuid_exc:
+            await resolve_canonical_user_config_scope(session, person_id)
+        assert uuid_exc.value.category == "canonical_owner_disabled"
+        assert person_id not in str(uuid_exc.value)
+        assert "1001" not in str(uuid_exc.value)
+        with pytest.raises(IdentityDualWriteError) as qq_exc:
+            await resolve_canonical_user_config_scope(session, "1001")
+        assert qq_exc.value.category == "canonical_owner_disabled"
+        assert "1001" not in str(qq_exc.value)
+    runtime = RuntimeConfigService(settings=make_settings(database.url), database=database)
+    with pytest.raises(IdentityDualWriteError) as snap:
+        await runtime.snapshot(user_id=person_id)
+    assert snap.value.category == "canonical_owner_disabled"

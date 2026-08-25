@@ -109,6 +109,8 @@ class PluginAgentToolBackend:
             text="",
             bot_user_id=runtime.bot_user_id,
             group_id=runtime.current_group_id,
+            conversation_id=runtime.canonical_conversation_id,
+            presence_id=_authoritative_presence_id(runtime),
         )
         return ToolRuntime(
             inbound=inbound,
@@ -117,7 +119,8 @@ class PluginAgentToolBackend:
             allow_admin_actions=False,
             allow_automation=False,
             conversation_key=runtime.conversation_key,
-            trigger_message_id=inbound.message_id,
+            # Unique provenance only. event_type=plugin_agent is the identity boundary.
+            trigger_message_id="plugin-agent",
             actor_user_id=runtime.actor_user_id,
             actor_is_superuser=runtime.actor_is_superuser,
             current_group_id=runtime.current_group_id,
@@ -176,6 +179,19 @@ class PluginAgentToolBackend:
                 arguments["user_id"] = runtime.actor_user_id
             return json.dumps(arguments, ensure_ascii=False), None
         return arguments_json, None
+
+
+def _authoritative_presence_id(runtime: AgentRuntime) -> str | None:
+    """Copy Presence only when AgentRuntime already carries a Host-stamped value."""
+
+    fields = getattr(type(runtime), "__dataclass_fields__", {})
+    for name in ("ingress_presence_id", "presence_id"):
+        if name not in fields:
+            continue
+        value = getattr(runtime, name)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
 
 
 def _text(value: Any) -> str:

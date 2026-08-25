@@ -2,21 +2,28 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import cast
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
+    CanonicalConversationRollupEmergencyOverlayModel,
+    CanonicalConversationRollupJobModel,
+    CanonicalConversationRollupModel,
     ConversationLegacyAliasModel,
 )
 from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
+from qq_ai_bot.conversation.rollup.models import ConversationScopeState
+from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.identity.errors import IdentityDualWriteError
+from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +55,25 @@ async def primary_alias_for_conversation(
         )
     )
     return None if row is None else row.scope_key
+
+
+async def require_primary_alias_for_conversation(
+    session: AsyncSession,
+    conversation_id: str,
+) -> str:
+    """Return the single frozen primary alias. Zero or many is state_mismatch."""
+
+    keys = list(
+        await session.scalars(
+            select(ConversationLegacyAliasModel.scope_key).where(
+                ConversationLegacyAliasModel.conversation_id == conversation_id,
+                ConversationLegacyAliasModel.is_primary == 1,
+            )
+        )
+    )
+    if len(keys) != 1:
+        raise IdentityDualWriteError("state_mismatch")
+    return str(keys[0])
 
 
 async def conversation_for_owner(
@@ -142,7 +168,8 @@ async def ensure_canonical_conversation(
                 raise IdentityDualWriteError("canonical_kind_mismatch") from exc
             existing = raced
         else:
-            await _attach_scope_shadow(session, primary_scope_key, conversation_id)
+            if not await identity_runtime_is_complete_v2(session):
+                await _attach_scope_shadow(session, primary_scope_key, conversation_id)
             return HydratedConversation(
                 conversation_id=conversation_id,
                 kind=kind,
@@ -162,8 +189,9 @@ async def ensure_canonical_conversation(
             scope_key=primary_scope_key,
             primary=False,
         )
-    await _attach_scope_shadow(session, primary_scope_key, existing.id)
-    await _attach_scope_shadow(session, primary, existing.id)
+    if not await identity_runtime_is_complete_v2(session):
+        await _attach_scope_shadow(session, primary_scope_key, existing.id)
+        await _attach_scope_shadow(session, primary, existing.id)
     return HydratedConversation(
         conversation_id=existing.id,
         kind=existing.kind,
@@ -238,8 +266,51 @@ async def bump_canonical_generation(
     row.uncovered_character_count = 0
     row.revision += 1
     row.updated_at = now
+    await delete_canonical_rollup_projections(session, conversation_id)
     await session.flush()
     return int(row.generation)
+
+
+async def delete_canonical_rollup_projections(session: AsyncSession, conversation_id: str) -> None:
+    """Delete canonical semantic, job, and emergency overlay in one session."""
+
+    await session.execute(
+        delete(CanonicalConversationRollupModel).where(
+            CanonicalConversationRollupModel.conversation_id == conversation_id
+        )
+    )
+    await session.execute(
+        delete(CanonicalConversationRollupJobModel).where(
+            CanonicalConversationRollupJobModel.conversation_id == conversation_id
+        )
+    )
+    await session.execute(
+        delete(CanonicalConversationRollupEmergencyOverlayModel).where(
+            CanonicalConversationRollupEmergencyOverlayModel.conversation_id == conversation_id
+        )
+    )
+
+
+async def delete_legacy_rollup_projections(session: AsyncSession, scope_id: int) -> None:
+    """Delete legacy semantic, job, and emergency overlay in one session."""
+
+    from qq_ai_bot.conversation.rollup.db_models import (
+        ConversationRollupEmergencyOverlayModel,
+        ConversationRollupJobModel,
+        ConversationRollupModel,
+    )
+
+    await session.execute(
+        delete(ConversationRollupModel).where(ConversationRollupModel.scope_id == scope_id)
+    )
+    await session.execute(
+        delete(ConversationRollupJobModel).where(ConversationRollupJobModel.scope_id == scope_id)
+    )
+    await session.execute(
+        delete(ConversationRollupEmergencyOverlayModel).where(
+            ConversationRollupEmergencyOverlayModel.scope_id == scope_id
+        )
+    )
 
 
 async def touch_canonical_watermarks(
@@ -256,6 +327,54 @@ async def touch_canonical_watermarks(
     row.uncovered_event_count += 1
     row.uncovered_character_count += max(0, characters)
     row.updated_at = _utcnow()
+
+
+def synthetic_scope_id(conversation_id: str) -> int:
+    """Positive stand-in for ConversationScopeState.id. Not a conversation_scopes row."""
+
+    digest = hashlib.sha256(f"canonical-scope:{conversation_id}".encode()).digest()
+    value = int.from_bytes(digest[:8], "big") % ((1 << 31) - 1)
+    return value or 1
+
+
+def scope_state_from_canonical(
+    scope: ConversationScope,
+    conversation: CanonicalConversationModel,
+    *,
+    runtime_scope_key: str | None = None,
+) -> ConversationScopeState:
+    """Synthesize the legacy scope view from canonical watermarks. Does not write.
+
+    ``scope`` is the transport ConversationScope (current Presence).
+    ``runtime_scope_key`` is the frozen primary legacy alias when known.
+    """
+
+    return ConversationScopeState(
+        id=synthetic_scope_id(conversation.id),
+        scope=scope,
+        generation=int(conversation.generation),
+        starts_after_event_id=int(conversation.starts_after_event_id),
+        last_event_id=int(conversation.last_event_id),
+        last_generation_change_event_id=int(conversation.last_generation_change_event_id),
+        uncovered_event_count=int(conversation.uncovered_event_count),
+        uncovered_character_count=int(conversation.uncovered_character_count),
+        created_at=conversation.created_at,
+        updated_at=conversation.updated_at,
+        runtime_scope_key=runtime_scope_key,
+    )
+
+
+async def hydrate_scope_state_from_canonical(
+    session: AsyncSession,
+    scope: ConversationScope,
+    conversation: CanonicalConversationModel,
+) -> ConversationScopeState:
+    """Unique v2 projection: transport scope plus frozen primary runtime key."""
+
+    primary = await primary_alias_for_conversation(session, conversation.id)
+    if not primary:
+        raise IdentityDualWriteError("unclassified")
+    return scope_state_from_canonical(scope, conversation, runtime_scope_key=primary)
 
 
 async def _attach_scope_shadow(

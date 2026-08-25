@@ -16,7 +16,9 @@ from qq_ai_bot.conversation.canonical_db_models import (
 )
 from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
 from qq_ai_bot.identity.db_models import IdentityRuntimeStateModel
-from qq_ai_bot.identity.ingress import ensure_v2_presence
+from qq_ai_bot.identity.dual_write import (
+    ensure_canonical_presence_preconfig as ensure_v2_presence,
+)
 from qq_ai_bot.identity.routing import PresenceRouter
 from qq_ai_bot.identity.write_settings import (
     IdentityWriteSettings,
@@ -138,7 +140,7 @@ async def test_reconnect_does_not_change_route_or_conversation_generation(
 
 @pytest.mark.asyncio
 async def test_space_takeover_zero_one_many_and_membership_probe(database: Database) -> None:
-    from qq_ai_bot.identity.ingress import ensure_v2_space
+    from qq_ai_bot.identity.dual_write import ensure_canonical_space_preconfig as ensure_v2_space
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     await _flip_v2(database)
@@ -204,7 +206,12 @@ async def test_space_takeover_zero_one_many_and_membership_probe(database: Datab
 @pytest.mark.asyncio
 async def test_authoritative_ingest_survives_second_presence(database: Database) -> None:
     from qq_ai_bot.identity.db_models import SpaceBindingModel
-    from qq_ai_bot.identity.ingress import ensure_v2_presence, ensure_v2_space
+    from qq_ai_bot.identity.dual_write import (
+        ensure_canonical_presence_preconfig as ensure_v2_presence,
+    )
+    from qq_ai_bot.identity.dual_write import (
+        ensure_v2_space,
+    )
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     await _flip_v2(database)
@@ -258,7 +265,10 @@ async def test_authoritative_ingest_survives_second_presence(database: Database)
 async def test_reconcile_paused_is_idempotent_and_keeps_explicit_pause(
     database: Database,
 ) -> None:
-    from qq_ai_bot.identity.ingress import _ensure_person_id, ensure_v2_presence
+    from qq_ai_bot.identity.dual_write import (
+        ensure_canonical_presence_preconfig as ensure_v2_presence,
+    )
+    from qq_ai_bot.identity.ingress import _ensure_person_id
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     await _flip_v2(database)
@@ -323,7 +333,13 @@ async def test_ingest_eligible_does_not_block_person_or_space_send(
     database: Database,
 ) -> None:
     from qq_ai_bot.identity.db_models import PresenceModel
-    from qq_ai_bot.identity.ingress import _ensure_person_id, ensure_v2_presence, ensure_v2_space
+    from qq_ai_bot.identity.dual_write import (
+        ensure_canonical_presence_preconfig as ensure_v2_presence,
+    )
+    from qq_ai_bot.identity.dual_write import (
+        ensure_canonical_space_preconfig as ensure_v2_space,
+    )
+    from qq_ai_bot.identity.ingress import _ensure_person_id
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     await _flip_v2(database)
@@ -424,7 +440,7 @@ async def test_person_takeover_cas_does_not_overwrite_concurrent_write(
 async def test_space_takeover_cas_does_not_overwrite_concurrent_write(
     database: Database,
 ) -> None:
-    from qq_ai_bot.identity.ingress import ensure_v2_space
+    from qq_ai_bot.identity.dual_write import ensure_canonical_space_preconfig as ensure_v2_space
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     await _flip_v2(database)
@@ -479,7 +495,7 @@ async def test_ingest_provision_cas_does_not_overwrite_concurrent_write(
     database: Database,
 ) -> None:
     from qq_ai_bot.identity.db_models import SpaceBindingModel
-    from qq_ai_bot.identity.ingress import ensure_v2_space
+    from qq_ai_bot.identity.dual_write import ensure_canonical_space_preconfig as ensure_v2_space
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     await _flip_v2(database)

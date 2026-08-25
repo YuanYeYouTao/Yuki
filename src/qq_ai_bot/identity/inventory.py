@@ -8,6 +8,7 @@ provider, connection, or plugin id.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Final, Literal
 
 IDENTITY_PLATFORM: Final[str] = "qq"
@@ -43,6 +44,8 @@ WEAK_PERSON_SOURCES: Final[frozenset[str]] = frozenset(
     }
 )
 HUMAN_PLUGIN_MESSAGE_ROLES: Final[frozenset[str]] = frozenset({"user"})
+EVENT_AUTHOR_KINDS: Final[frozenset[str]] = frozenset({"person", "yuki", "external_bot", "system"})
+ShadowCompleteness = Literal["verified_from_source", "shape_only_optional"]
 
 AccountClass = Literal["person", "yuki_presence", "external_bot"]
 SpaceClass = Literal["space"]
@@ -55,6 +58,13 @@ ConflictCategory = Literal[
     "canonical_owner_mismatch",
     "populated_merge_forbidden",
     "unclassified",
+    "missing_owner",
+    "ambiguous_owner",
+    "canonical_duplicate",
+    "mixed_dream_source",
+    "state_run_ambiguous",
+    "reflection_owner_unique",
+    "incomplete_dream_shape",
 ]
 
 
@@ -466,6 +476,355 @@ FILLABLE_SHADOWS: tuple[tuple[str, str, str], ...] = (
     ("emoji_usage_events.canonical_space_id", "space", "group has Space"),
 )
 
+
+@dataclass(frozen=True, slots=True)
+class ShadowFillSpec:
+    """Public fill/completeness spec shared by backfill and cutover.
+
+    Persistence-free: names columns and row predicates only. Callers execute
+    SQL. ``verified_from_source`` requires a persisted external id and equality
+    against Person/Space/Presence. ``shape_only_optional`` has no source to
+    verify; cutover only checks parent existence and person/space shape.
+    """
+
+    table: str
+    column: str
+    kind: Literal["person", "space", "presence"]
+    pk: tuple[str, ...]
+    source_column: str | None
+    extra_where: str = "1=1"
+    role_column: str | None = None
+    completeness: ShadowCompleteness = "verified_from_source"
+    pair_column: str | None = None
+    scope_column: str | None = None
+    required_scope: str | None = None
+
+    @property
+    def dotted(self) -> str:
+        return f"{self.table}.{self.column}"
+
+
+SHADOW_FILL_SPECS: tuple[ShadowFillSpec, ...] = (
+    ShadowFillSpec("people", "canonical_person_id", "person", ("user_id",), "user_id"),
+    ShadowFillSpec("groups", "canonical_space_id", "space", ("group_id",), "group_id"),
+    ShadowFillSpec("person_aliases", "canonical_person_id", "person", ("id",), "user_id"),
+    ShadowFillSpec(
+        "person_aliases",
+        "canonical_space_id",
+        "space",
+        ("id",),
+        "group_scope",
+        "group_scope != ''",
+    ),
+    ShadowFillSpec(
+        "memberships",
+        "canonical_person_id",
+        "person",
+        ("user_id", "group_id"),
+        "user_id",
+    ),
+    ShadowFillSpec(
+        "memberships",
+        "canonical_space_id",
+        "space",
+        ("user_id", "group_id"),
+        "group_id",
+    ),
+    ShadowFillSpec(
+        "person_relationships",
+        "canonical_person_id",
+        "person",
+        ("user_id",),
+        "user_id",
+    ),
+    ShadowFillSpec("relationship_events", "canonical_person_id", "person", ("id",), "user_id"),
+    ShadowFillSpec("relationship_jobs", "canonical_person_id", "person", ("id",), "user_id"),
+    ShadowFillSpec(
+        "person_time_settings", "canonical_person_id", "person", ("user_id",), "user_id"
+    ),
+    ShadowFillSpec(
+        "person_speech_preferences",
+        "canonical_person_id",
+        "person",
+        ("user_id",),
+        "user_id",
+    ),
+    ShadowFillSpec(
+        "memory_facts",
+        "canonical_subject_person_id",
+        "person",
+        ("id",),
+        "subject_user_id",
+        "scope_type IN ('person', 'person_group')",
+    ),
+    ShadowFillSpec(
+        "memory_facts",
+        "canonical_subject_space_id",
+        "space",
+        ("id",),
+        "group_id",
+        "scope_type IN ('group', 'person_group')",
+    ),
+    ShadowFillSpec(
+        "memory_facts",
+        "canonical_visibility_person_id",
+        "person",
+        ("id",),
+        "visibility_user_id",
+        "scope_type = 'self' AND visibility_type = 'private'",
+    ),
+    ShadowFillSpec(
+        "memory_facts",
+        "canonical_visibility_space_id",
+        "space",
+        ("id",),
+        "visibility_group_id",
+        "scope_type = 'self' AND visibility_type = 'group'",
+    ),
+    ShadowFillSpec(
+        "automations",
+        "canonical_creator_person_id",
+        "person",
+        ("id",),
+        "creator_user_id",
+    ),
+    ShadowFillSpec("automations", "canonical_presence_id", "presence", ("id",), "bot_user_id"),
+    ShadowFillSpec(
+        "automations",
+        "canonical_target_person_id",
+        "person",
+        ("id",),
+        None,
+        completeness="shape_only_optional",
+        pair_column="canonical_target_space_id",
+    ),
+    ShadowFillSpec(
+        "automations",
+        "canonical_target_space_id",
+        "space",
+        ("id",),
+        None,
+        completeness="shape_only_optional",
+        pair_column="canonical_target_person_id",
+    ),
+    ShadowFillSpec(
+        "runtime_turn_observations",
+        "canonical_person_id",
+        "person",
+        ("id",),
+        None,
+        completeness="shape_only_optional",
+        pair_column="canonical_space_id",
+        scope_column="scope_type",
+        required_scope="private",
+    ),
+    ShadowFillSpec(
+        "runtime_turn_observations",
+        "canonical_space_id",
+        "space",
+        ("id",),
+        None,
+        completeness="shape_only_optional",
+        pair_column="canonical_person_id",
+        scope_column="scope_type",
+        required_scope="group",
+    ),
+    ShadowFillSpec(
+        "plugin_config_values",
+        "canonical_person_id",
+        "person",
+        ("id",),
+        "scope_id",
+        "scope_type = 'user'",
+    ),
+    ShadowFillSpec(
+        "plugin_config_values",
+        "canonical_space_id",
+        "space",
+        ("id",),
+        "scope_id",
+        "scope_type = 'group'",
+    ),
+    ShadowFillSpec("plugin_state", "canonical_person_id", "person", ("id",), "subject_user_id"),
+    ShadowFillSpec(
+        "plugin_agent_sessions",
+        "canonical_owner_person_id",
+        "person",
+        ("session_id",),
+        "owner_user_id",
+    ),
+    ShadowFillSpec(
+        "plugin_agent_sessions",
+        "canonical_space_id",
+        "space",
+        ("session_id",),
+        "scope_id",
+        "scope_type = 'group'",
+    ),
+    ShadowFillSpec(
+        "plugin_agent_messages",
+        "canonical_sender_person_id",
+        "person",
+        ("id",),
+        "sender_user_id",
+        role_column="role",
+    ),
+    ShadowFillSpec(
+        "plugin_background_target_grants",
+        "canonical_target_person_id",
+        "person",
+        ("id",),
+        "target_id",
+        "target_type = 'private'",
+    ),
+    ShadowFillSpec(
+        "plugin_background_target_grants",
+        "canonical_target_space_id",
+        "space",
+        ("id",),
+        "target_id",
+        "target_type = 'group'",
+    ),
+    ShadowFillSpec(
+        "plugin_background_target_grants",
+        "canonical_created_by_person_id",
+        "person",
+        ("id",),
+        "created_by_user_id",
+    ),
+    ShadowFillSpec(
+        "plugin_background_target_grants",
+        "canonical_presence_id",
+        "presence",
+        ("id",),
+        "bot_user_id",
+    ),
+    ShadowFillSpec(
+        "plugin_notification_outbox",
+        "canonical_target_person_id",
+        "person",
+        ("id",),
+        "target_id",
+        "target_type = 'private'",
+    ),
+    ShadowFillSpec(
+        "plugin_notification_outbox",
+        "canonical_target_space_id",
+        "space",
+        ("id",),
+        "target_id",
+        "target_type = 'group'",
+    ),
+    ShadowFillSpec(
+        "plugin_notification_outbox",
+        "canonical_presence_id",
+        "presence",
+        ("id",),
+        "bot_user_id",
+    ),
+    ShadowFillSpec(
+        "plugin_background_turn_jobs",
+        "canonical_target_person_id",
+        "person",
+        ("id",),
+        "target_id",
+        "target_type = 'private'",
+    ),
+    ShadowFillSpec(
+        "plugin_background_turn_jobs",
+        "canonical_target_space_id",
+        "space",
+        ("id",),
+        "target_id",
+        "target_type = 'group'",
+    ),
+    ShadowFillSpec(
+        "plugin_background_turn_jobs",
+        "canonical_presence_id",
+        "presence",
+        ("id",),
+        "bot_user_id",
+    ),
+    ShadowFillSpec(
+        "runtime_config_overrides",
+        "canonical_person_id",
+        "person",
+        ("id",),
+        "scope_id",
+        "scope_type = 'user'",
+    ),
+    ShadowFillSpec(
+        "runtime_config_overrides",
+        "canonical_space_id",
+        "space",
+        ("id",),
+        "scope_id",
+        "scope_type = 'group'",
+    ),
+    ShadowFillSpec(
+        "emoji_assets",
+        "canonical_first_seen_person_id",
+        "person",
+        ("id",),
+        "first_seen_user_id",
+    ),
+    ShadowFillSpec(
+        "emoji_assets",
+        "canonical_first_seen_space_id",
+        "space",
+        ("id",),
+        "first_seen_group_id",
+    ),
+    ShadowFillSpec(
+        "emoji_scope_states",
+        "canonical_space_id",
+        "space",
+        ("id",),
+        "scope_id",
+        "scope_type = 'group'",
+    ),
+    ShadowFillSpec(
+        "emoji_usage_events",
+        "canonical_actor_person_id",
+        "person",
+        ("id",),
+        "actor_user_id",
+    ),
+    ShadowFillSpec("emoji_usage_events", "canonical_space_id", "space", ("id",), "group_id"),
+)
+
+
+def shadow_inventory_drift() -> tuple[frozenset[str], frozenset[str]]:
+    """Return (fillable-without-spec, spec-without-fillable) dotted names."""
+
+    fillable = frozenset(item[0] for item in FILLABLE_SHADOWS)
+    specs = frozenset(spec.dotted for spec in SHADOW_FILL_SPECS)
+    return fillable - specs, specs - fillable
+
+
+def shadow_spec_policy_errors() -> tuple[str, ...]:
+    """Return dishonest completeness/source pairings."""
+
+    errors: list[str] = []
+    for spec in SHADOW_FILL_SPECS:
+        if spec.completeness == "verified_from_source" and spec.source_column is None:
+            errors.append(f"{spec.dotted}: verified_from_source requires source_column")
+        if spec.completeness == "shape_only_optional" and spec.source_column is not None:
+            errors.append(f"{spec.dotted}: shape_only_optional must not claim a source")
+        if spec.completeness not in {"verified_from_source", "shape_only_optional"}:
+            errors.append(f"{spec.dotted}: unknown completeness {spec.completeness}")
+    return tuple(errors)
+
+
+SHAPE_ONLY_OPTIONAL_SHADOWS: Final[frozenset[str]] = frozenset(
+    spec.dotted for spec in SHADOW_FILL_SPECS if spec.completeness == "shape_only_optional"
+)
+
+
+# Unfinished C4/C6/C7/C25/C26 canonical shadow columns only. Completed C21
+# Memory owner projections are not deferred shadows: remaining job/evidence
+# work without a canonical column is CUTOVER_BASELINE_PENDING; leftover
+# bot/hash/conversation_key columns are LEGACY_PROVENANCE_RETAINED.
 DEFERRED_SHADOWS: tuple[tuple[str, str], ...] = (
     (
         "chat_events.canonical_event_id/canonical_conversation_id/"
@@ -474,15 +833,8 @@ DEFERRED_SHADOWS: tuple[tuple[str, str], ...] = (
     ),
     (
         "conversation_scopes.canonical_conversation_id",
-        "C4 conversation correlation; C26 cutover",
-    ),
-    (
-        "plugin_notification_outbox.canonical_conversation_id",
-        "C6 conversation correlation; C26 cutover",
-    ),
-    (
-        "plugin_background_turn_jobs.canonical_conversation_id",
-        "C6 conversation correlation; C26 cutover",
+        "C4 conversation correlation; C26 cutover retires leftover "
+        "conversation_scopes after aliases/canonical rollups",
     ),
     (
         "speech_generations/tool_invocations/web_search_runs/"
@@ -501,35 +853,56 @@ DEFERRED_SHADOWS: tuple[tuple[str, str], ...] = (
         "identity_runtime_state v2 / source_fingerprint",
         "C7 stays v1; cutover later writes the epoch",
     ),
+)
+
+# Remaining cutover/C26 actions that are not owner-shadow fills. Absence of
+# canonical_event_id is not a deferred C21 owner column.
+CUTOVER_BASELINE_PENDING: tuple[tuple[str, str], ...] = (
     (
         "memory_jobs",
         "no canonical_event_id column; C21 live enqueue/claim gated by "
-        "chat_events.canonical_event_id; C26 cutover baseline attaches remaining historical jobs",
+        "chat_events.canonical_event_id plus the conversation starts_after "
+        "watermark; C26 retires only that conversation's covered pending/failed jobs",
     ),
     (
         "memory_evidence",
-        "no canonical columns; C21 live attach gated via chat_events.canonical_event_id "
-        "and memory_facts.canonical_*; C26 backfill evidence ownership",
-    ),
-    (
-        "memory_tool_receipts",
-        "no canonical columns; C21 live write/load gated by trigger "
-        "chat_events.canonical_event_id; C26 rekeys receipts off bot_user_id",
+        "no owner columns; C7 backfill proves owner alignment via planned∪current "
+        "Binding overlay plus legacy event scope/private peer/group. Missing "
+        "canonical Conversation/Event is not a C7 conflict and must not create "
+        "carriers. C26 planned alignability plus post-map "
+        "require_c21_readable_evidence establish the v2-readable chain; "
+        "this is not completed runtime evidence at C7",
     ),
     (
         "memory_reflection_jobs",
         "no canonical columns; C21 discover/enqueue gated via memory_facts.canonical_* "
         "plus evidence event chain; C26 cutover baseline",
     ),
+)
+
+# Provenance that stays after C21 owner columns are filled. Not owner shadows.
+LEGACY_PROVENANCE_RETAINED: tuple[tuple[str, str], ...] = (
     (
-        "memory_self_reflection_states/memory_self_reflection_runs",
-        "still keyed by conversation_key_hash+bot_user_id; C21 scan refuses "
-        "NULL canonical_event_id events; C26 rekeys cursor off Presence",
+        "memory_jobs.conversation_key",
+        "legacy conversation key remains provenance after C21 owner columns",
     ),
     (
-        "memory_dream_runs/memory_dream_clusters/memory_dream_operations",
-        "no canonical columns; C21 candidate load skips legacy-NULL evidence "
-        "and keeps SELF unsplit by Presence; C26 cutover baseline",
+        "memory_tool_receipts.bot_user_id/conversation_key_hash",
+        "presence and conversation-key hash remain provenance after C21 owner columns",
+    ),
+    (
+        "memory_self_reflection_states/memory_self_reflection_runs."
+        "conversation_key_hash/bot_user_id",
+        "hash+bot remain provenance after C21 owner columns",
+    ),
+    (
+        "memory_dream_runs/memory_dream_operations",
+        "global ledgers, not partition owners; C21 owners live on clusters",
+    ),
+    (
+        "memory_evidence.source_speaker_user_id",
+        "speaker QQ remains provenance; v2 ownership is the fact canonical "
+        "subject/visibility plus the live event conversation/author chain",
     ),
 )
 
@@ -746,4 +1119,69 @@ REQUIRED_C7_SCHEMA: dict[str, tuple[str, ...]] = {
     ),
     "memory_self_reflection_states": ("bot_user_id",),
     "memory_self_reflection_runs": ("bot_user_id",),
+}
+
+REQUIRED_C27_SCHEMA: dict[str, tuple[str, ...]] = {
+    **REQUIRED_C7_SCHEMA,
+    "identity_cutover_manifests": ("fingerprint", "payload_json", "created_at"),
+    "identity_cutover_runs": (
+        "mode",
+        "status",
+        "git_revision",
+        "downtime_token",
+        "snapshot_db",
+        "snapshot_wal",
+        "snapshot_shm",
+        "source_fingerprint",
+        "error_category",
+        "created_at",
+        "finished_at",
+    ),
+    "canonical_conversations": (
+        "id",
+        "kind",
+        "person_id",
+        "space_id",
+        "covered_through_event_id",
+        "last_event_id",
+    ),
+    "conversation_legacy_aliases": ("id", "conversation_id", "scope_key", "is_primary"),
+    "canonical_event_receipts": (
+        "ingress_presence_id",
+        "event_type",
+        "platform_message_id",
+        "canonical_event_id",
+    ),
+    "canonical_conversation_rollups": (
+        "conversation_id",
+        "generation",
+        "covered_through_event_id",
+        "summary_text",
+        "summary_kind",
+        "source_fingerprint",
+    ),
+    "canonical_conversation_rollup_jobs": (
+        "conversation_id",
+        "generation",
+        "signal_revision",
+        "status",
+    ),
+    "conversation_rollup_emergency_overlays": (
+        "scope_id",
+        "generation",
+        "covered_through_event_id",
+        "summary_text",
+        "source_fingerprint",
+        "base_semantic_revision",
+        "revision",
+    ),
+    "canonical_conversation_rollup_emergency_overlays": (
+        "conversation_id",
+        "generation",
+        "covered_through_event_id",
+        "summary_text",
+        "source_fingerprint",
+        "base_semantic_revision",
+        "revision",
+    ),
 }

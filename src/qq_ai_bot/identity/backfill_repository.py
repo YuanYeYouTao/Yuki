@@ -10,7 +10,6 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Callable
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -28,11 +27,15 @@ from qq_ai_bot.identity.backfill_types import (
     SpaceBindingRow,
     SpaceEvidence,
 )
+from qq_ai_bot.identity.c22_automation import c22_signature_chunks
+from qq_ai_bot.identity.c23_plugin import c23_signature_chunks
+from qq_ai_bot.identity.canonical_memory_owners import c21_signature_chunks
 from qq_ai_bot.identity.errors import IdentityBackfillPreconditionError
 from qq_ai_bot.identity.inventory import (
     HUMAN_PLUGIN_MESSAGE_ROLES,
     IDENTITY_PLATFORM,
     REQUIRED_C7_SCHEMA,
+    SHADOW_FILL_SPECS,
     YUKI_SELF_COLUMNS,
 )
 from qq_ai_bot.identity.sanitize import (
@@ -109,208 +112,6 @@ def _space(store: dict[str, MutableSpaceEvidence], raw: object) -> MutableSpaceE
 
 def _add_source(target: MutableAccountEvidence | MutableSpaceEvidence, source: str) -> None:
     target.sources.add(source)
-
-
-@dataclass(frozen=True, slots=True)
-class _ShadowSpec:
-    table: str
-    pk: tuple[str, ...]
-    column: str
-    source_column: str
-    extra_where: str = "1=1"
-    role_column: str | None = None
-
-
-_SHADOW_SPECS: tuple[_ShadowSpec, ...] = (
-    _ShadowSpec("people", ("user_id",), "canonical_person_id", "user_id"),
-    _ShadowSpec("groups", ("group_id",), "canonical_space_id", "group_id"),
-    _ShadowSpec("person_aliases", ("id",), "canonical_person_id", "user_id"),
-    _ShadowSpec(
-        "person_aliases",
-        ("id",),
-        "canonical_space_id",
-        "group_scope",
-        "group_scope != ''",
-    ),
-    _ShadowSpec("memberships", ("user_id", "group_id"), "canonical_person_id", "user_id"),
-    _ShadowSpec("memberships", ("user_id", "group_id"), "canonical_space_id", "group_id"),
-    _ShadowSpec("person_relationships", ("user_id",), "canonical_person_id", "user_id"),
-    _ShadowSpec("relationship_events", ("id",), "canonical_person_id", "user_id"),
-    _ShadowSpec("relationship_jobs", ("id",), "canonical_person_id", "user_id"),
-    _ShadowSpec("person_time_settings", ("user_id",), "canonical_person_id", "user_id"),
-    _ShadowSpec("person_speech_preferences", ("user_id",), "canonical_person_id", "user_id"),
-    _ShadowSpec(
-        "memory_facts",
-        ("id",),
-        "canonical_subject_person_id",
-        "subject_user_id",
-        "scope_type IN ('person', 'person_group')",
-    ),
-    _ShadowSpec(
-        "memory_facts",
-        ("id",),
-        "canonical_subject_space_id",
-        "group_id",
-        "scope_type IN ('group', 'person_group')",
-    ),
-    _ShadowSpec(
-        "memory_facts",
-        ("id",),
-        "canonical_visibility_person_id",
-        "visibility_user_id",
-        "scope_type = 'self' AND visibility_type = 'private'",
-    ),
-    _ShadowSpec(
-        "memory_facts",
-        ("id",),
-        "canonical_visibility_space_id",
-        "visibility_group_id",
-        "scope_type = 'self' AND visibility_type = 'group'",
-    ),
-    _ShadowSpec("automations", ("id",), "canonical_creator_person_id", "creator_user_id"),
-    _ShadowSpec("automations", ("id",), "canonical_presence_id", "bot_user_id"),
-    _ShadowSpec(
-        "plugin_config_values",
-        ("id",),
-        "canonical_person_id",
-        "scope_id",
-        "scope_type = 'user'",
-    ),
-    _ShadowSpec(
-        "plugin_config_values",
-        ("id",),
-        "canonical_space_id",
-        "scope_id",
-        "scope_type = 'group'",
-    ),
-    _ShadowSpec("plugin_state", ("id",), "canonical_person_id", "subject_user_id"),
-    _ShadowSpec(
-        "plugin_agent_sessions",
-        ("session_id",),
-        "canonical_owner_person_id",
-        "owner_user_id",
-    ),
-    _ShadowSpec(
-        "plugin_agent_sessions",
-        ("session_id",),
-        "canonical_space_id",
-        "scope_id",
-        "scope_type = 'group'",
-    ),
-    _ShadowSpec(
-        "plugin_agent_messages",
-        ("id",),
-        "canonical_sender_person_id",
-        "sender_user_id",
-        role_column="role",
-    ),
-    _ShadowSpec(
-        "plugin_background_target_grants",
-        ("id",),
-        "canonical_target_person_id",
-        "target_id",
-        "target_type = 'private'",
-    ),
-    _ShadowSpec(
-        "plugin_background_target_grants",
-        ("id",),
-        "canonical_target_space_id",
-        "target_id",
-        "target_type = 'group'",
-    ),
-    _ShadowSpec(
-        "plugin_background_target_grants",
-        ("id",),
-        "canonical_created_by_person_id",
-        "created_by_user_id",
-    ),
-    _ShadowSpec(
-        "plugin_background_target_grants",
-        ("id",),
-        "canonical_presence_id",
-        "bot_user_id",
-    ),
-    _ShadowSpec(
-        "plugin_notification_outbox",
-        ("id",),
-        "canonical_target_person_id",
-        "target_id",
-        "target_type = 'private'",
-    ),
-    _ShadowSpec(
-        "plugin_notification_outbox",
-        ("id",),
-        "canonical_target_space_id",
-        "target_id",
-        "target_type = 'group'",
-    ),
-    _ShadowSpec(
-        "plugin_notification_outbox",
-        ("id",),
-        "canonical_presence_id",
-        "bot_user_id",
-    ),
-    _ShadowSpec(
-        "plugin_background_turn_jobs",
-        ("id",),
-        "canonical_target_person_id",
-        "target_id",
-        "target_type = 'private'",
-    ),
-    _ShadowSpec(
-        "plugin_background_turn_jobs",
-        ("id",),
-        "canonical_target_space_id",
-        "target_id",
-        "target_type = 'group'",
-    ),
-    _ShadowSpec(
-        "plugin_background_turn_jobs",
-        ("id",),
-        "canonical_presence_id",
-        "bot_user_id",
-    ),
-    _ShadowSpec(
-        "runtime_config_overrides",
-        ("id",),
-        "canonical_person_id",
-        "scope_id",
-        "scope_type = 'user'",
-    ),
-    _ShadowSpec(
-        "runtime_config_overrides",
-        ("id",),
-        "canonical_space_id",
-        "scope_id",
-        "scope_type = 'group'",
-    ),
-    _ShadowSpec(
-        "emoji_assets",
-        ("id",),
-        "canonical_first_seen_person_id",
-        "first_seen_user_id",
-    ),
-    _ShadowSpec(
-        "emoji_assets",
-        ("id",),
-        "canonical_first_seen_space_id",
-        "first_seen_group_id",
-    ),
-    _ShadowSpec(
-        "emoji_scope_states",
-        ("id",),
-        "canonical_space_id",
-        "scope_id",
-        "scope_type = 'group'",
-    ),
-    _ShadowSpec(
-        "emoji_usage_events",
-        ("id",),
-        "canonical_actor_person_id",
-        "actor_user_id",
-    ),
-    _ShadowSpec("emoji_usage_events", ("id",), "canonical_space_id", "group_id"),
-)
 
 
 class IdentityBackfillRepository:
@@ -817,7 +618,9 @@ class IdentityBackfillRepository:
 
     def _load_shadows(self, connection: sqlite3.Connection) -> tuple[ShadowAssignment, ...]:
         assignments: list[ShadowAssignment] = []
-        for spec in _SHADOW_SPECS:
+        for spec in SHADOW_FILL_SPECS:
+            if spec.completeness == "shape_only_optional" or spec.source_column is None:
+                continue
             if not _table_exists(connection, spec.table):
                 continue
             if not _column_exists(connection, spec.table, spec.column):
@@ -912,7 +715,7 @@ class IdentityBackfillRepository:
                 continue
             chunks.append(sql)
             chunks.extend(str(tuple(row)) for row in connection.execute(sql))
-        for spec in _SHADOW_SPECS:
+        for spec in SHADOW_FILL_SPECS:
             if not _table_exists(connection, spec.table) or not _column_exists(
                 connection, spec.table, spec.column
             ):
@@ -921,6 +724,9 @@ class IdentityBackfillRepository:
             sql = f'SELECT {pk_sql}, "{spec.column}" FROM "{spec.table}" ORDER BY {pk_sql}'
             chunks.append(sql)
             chunks.extend(str(tuple(row)) for row in connection.execute(sql))
+        chunks.extend(c21_signature_chunks(connection))
+        chunks.extend(c22_signature_chunks(connection))
+        chunks.extend(c23_signature_chunks(connection))
         return hashlib.sha256("\n".join(chunks).encode()).hexdigest()
 
     def natural_key_projection(self, connection: sqlite3.Connection) -> dict[str, object]:
@@ -973,6 +779,12 @@ class IdentityBackfillRepository:
         }
 
     def apply_plan(self, connection: sqlite3.Connection, plan: BackfillPlan, now: str) -> None:
+        from qq_ai_bot.identity.canonical_memory_schema import memory_fact_canonical_conflict_kind
+
+        if _table_exists(connection, "memory_facts") and memory_fact_canonical_conflict_kind(
+            connection
+        ):
+            raise IdentityBackfillPreconditionError("canonical_memory_fact_conflict")
         for account in plan.accounts:
             if account.create_person and account.person_id is not None:
                 connection.execute(
@@ -1047,6 +859,14 @@ class IdentityBackfillRepository:
             params = [shadow.value, *[value for _key, value in shadow.row_key]]
             connection.execute(sql, params)
         self._trip("after_shadow_writes")
+        for owner in (*plan.memory_owners, *plan.automation_targets):
+            assignments = ", ".join(f'"{column}" = ?' for column, _value in owner.values)
+            unchanged = " AND ".join(f'"{column}" IS NULL' for column, _value in owner.values)
+            sql = f'UPDATE "{owner.table}" SET {assignments} WHERE id = ? AND {unchanged}'
+            params = [value for _column, value in owner.values]
+            params.append(owner.row_id)
+            connection.execute(sql, params)
+        self._trip("after_c21_owner_writes")
 
     def record_succeeded_run(
         self,

@@ -82,6 +82,7 @@ class ModelExecutor(Protocol):
         request: ChatRequest,
         *,
         priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
+        canonical_conversation_id: str | None = None,
     ) -> ChatResponse: ...
 
     def model_name(self, task: ModelTask) -> str: ...
@@ -106,8 +107,9 @@ class LegacyTaskModelExecutor:
         request: ChatRequest,
         *,
         priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
+        canonical_conversation_id: str | None = None,
     ) -> ChatResponse:
-        del task, priority
+        del task, priority, canonical_conversation_id
         normalized = replace(
             request,
             request_shape_hash=request_shape_hash(
@@ -193,6 +195,7 @@ class TaskModelExecutor:
         request: ChatRequest,
         *,
         priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
+        canonical_conversation_id: str | None = None,
     ) -> ChatResponse:
         required: set[ModelCapability] = set()
         if request.tools and not request.structured_output:
@@ -296,6 +299,7 @@ class TaskModelExecutor:
                     cached_prompt_tokens=None,
                     latency_seconds=time.perf_counter() - started,
                     error_category=type(exc).__name__,
+                    canonical_conversation_id=canonical_conversation_id,
                 )
             raise
         if response.continuation is not None:
@@ -333,6 +337,7 @@ class TaskModelExecutor:
                 cached_prompt_tokens=response.cached_prompt_tokens,
                 latency_seconds=response.latency_seconds,
                 error_category=None,
+                canonical_conversation_id=canonical_conversation_id,
             )
         return response
 

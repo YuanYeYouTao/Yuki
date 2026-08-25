@@ -200,6 +200,12 @@ def _object_schema(
     }
 
 
+def _legacy_onebot_history_row_uses_current_handle(sender_id: str, bot_user_id: str) -> bool:
+    """v1/transport: OneBot history row is the current handle, not author_kind."""
+
+    return sender_id == bot_user_id
+
+
 class AgentToolService:
     """Define and execute tools without granting authority through prompt text."""
 
@@ -1256,7 +1262,11 @@ class AgentToolService:
             platform_message_id=message_id,
             scope_type=inbound.scope_type,
             sender_user_id=sender_id,
-            direction=("outbound" if sender_id == inbound.bot_user_id else "inbound"),
+            direction=(
+                "outbound"
+                if _legacy_onebot_history_row_uses_current_handle(sender_id, inbound.bot_user_id)
+                else "inbound"
+            ),
             content=content,
             segments=segments,
             group_id=inbound.group_id,
@@ -1267,7 +1277,9 @@ class AgentToolService:
             occurred_at=occurred_at,
             sender_nickname=(sender_nickname if isinstance(sender_nickname, str) else ""),
             sender_group_card=(sender_group_card if isinstance(sender_group_card, str) else ""),
-            sender_is_bot=sender_id == inbound.bot_user_id,
+            sender_is_bot=_legacy_onebot_history_row_uses_current_handle(
+                sender_id, inbound.bot_user_id
+            ),
         )
         return created
 
@@ -1625,7 +1637,7 @@ class AgentToolService:
             subject_ref = arguments.get("subject_ref")
             if not isinstance(subject_ref, str) or not subject_ref:
                 return _ToolFailure("invalid_subject_ref", "subject_ref 必须是非空字符串")
-            resolved = self._user_id_for_subject_ref(subject_ref, runtime)
+            resolved = await self._user_id_for_subject_ref(subject_ref, runtime)
             if isinstance(resolved, _ToolFailure):
                 return resolved
             user_id = resolved
@@ -1649,7 +1661,7 @@ class AgentToolService:
             if not isinstance(candidate, str) or not candidate.strip().isdigit():
                 return _ToolFailure("invalid_user_id", "user_id 必须是数字 QQ 号字符串")
             user_id = candidate.strip()
-        if user_id == runtime.inbound.bot_user_id:
+        if not await self._is_person_tool_target(user_id, runtime.inbound):
             return _ToolFailure(
                 "person_not_found",
                 f"{self._settings.bot_display_name} 自己不使用人物好感度记录",
@@ -1680,7 +1692,7 @@ class AgentToolService:
             subject_ref = arguments.get("subject_ref")
             if not isinstance(subject_ref, str) or not subject_ref:
                 return _ToolFailure("invalid_subject_ref", "subject_ref 必须是非空字符串")
-            resolved = self._user_id_for_subject_ref(subject_ref, runtime)
+            resolved = await self._user_id_for_subject_ref(subject_ref, runtime)
             if isinstance(resolved, _ToolFailure):
                 return resolved
             return await self._person_memory_selection_for_user(
@@ -1728,7 +1740,7 @@ class AgentToolService:
             resolved_by="user_id",
         )
 
-    def _user_id_for_subject_ref(
+    async def _user_id_for_subject_ref(
         self,
         subject_ref: str,
         runtime: ToolRuntime,
@@ -1738,14 +1750,23 @@ class AgentToolService:
             return inbound.sender.user_id
         if subject_ref == "replied_message_author":
             candidate = inbound.reply_sender_user_id
-            if not candidate or candidate == inbound.bot_user_id:
+            targets = (
+                await self._people.person_reference_ids(
+                    (candidate,),
+                    speaker_user_id=inbound.sender.user_id,
+                    bot_user_id=inbound.bot_user_id,
+                )
+                if candidate
+                else ()
+            )
+            if not targets:
                 return _ToolFailure(
                     "subject_not_found",
                     "本轮没有可查询的回复消息作者",
                 )
-            return candidate
+            return targets[0]
 
-        mentioned = self._mentioned_people(runtime)
+        mentioned = await self._mentioned_people(runtime)
         if subject_ref == "mentioned_user":
             if not mentioned:
                 return _ToolFailure("subject_not_found", "本轮没有明确 @ 其他群成员")
@@ -1763,16 +1784,21 @@ class AgentToolService:
             return _ToolFailure("subject_not_found", "该提及引用在本轮不存在")
         return mentioned[index]
 
-    @staticmethod
-    def _mentioned_people(runtime: ToolRuntime) -> tuple[str, ...]:
+    async def _mentioned_people(self, runtime: ToolRuntime) -> tuple[str, ...]:
         inbound = runtime.inbound
-        mentioned: list[str] = []
-        for user_id in (*inbound.mentioned_user_ids, *runtime.mentioned_user_ids):
-            if not user_id or user_id in {inbound.sender.user_id, inbound.bot_user_id}:
-                continue
-            if user_id not in mentioned:
-                mentioned.append(user_id)
-        return tuple(mentioned[:5])
+        return await self._people.person_reference_ids(
+            (*inbound.mentioned_user_ids, *runtime.mentioned_user_ids),
+            speaker_user_id=inbound.sender.user_id,
+            bot_user_id=inbound.bot_user_id,
+        )
+
+    async def _is_person_tool_target(self, user_id: str, inbound: InboundMessage) -> bool:
+        targets = await self._people.person_reference_ids(
+            (user_id,),
+            speaker_user_id="",
+            bot_user_id=inbound.bot_user_id,
+        )
+        return user_id in targets
 
     async def _person_memory_selection_for_user(
         self,
@@ -1783,7 +1809,7 @@ class AgentToolService:
         subject_ref: str | None = None,
     ) -> _PersonMemorySelection | _ToolFailure:
         inbound = runtime.inbound
-        if user_id == inbound.bot_user_id:
+        if not await self._is_person_tool_target(user_id, inbound):
             return _ToolFailure(
                 "permission_denied",
                 f"不能读取 {self._settings.bot_display_name} 身份的个人记忆",
@@ -2015,7 +2041,7 @@ class AgentToolService:
         if isinstance(fact_id, bool) or not isinstance(fact_id, int) or fact_id <= 0:
             raise ValueError("fact_id 必须是正整数")
         fact = await self._memories.get_fact(fact_id)
-        if fact is None or not self._can_read_fact(fact, runtime):
+        if fact is None or not await self._can_read_fact(fact, runtime):
             return self._result(error="memory_not_found", detail="没有找到可查看的事实")
         return self._result(data={"memory": self._memory_json(fact, retrieval_reason="fact_id")})
 
@@ -2027,7 +2053,7 @@ class AgentToolService:
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
             raise ValueError("limit 必须是 1～20 的整数")
         fact = await self._memories.get_fact(fact_id)
-        if fact is None or fact.subject_user_id != runtime.inbound.sender.user_id:
+        if fact is None or not await self._can_read_own_person_fact(fact, runtime):
             return self._result(error="memory_not_found", detail="没有找到可查看的本人事实")
         rows = await self._memories.list_evidence(fact_id, limit=limit)
         return self._result(
@@ -2197,7 +2223,93 @@ class AgentToolService:
             )
         return self._result(data=payload)
 
-    def _can_read_fact(self, fact: Any, runtime: ToolRuntime) -> bool:
+    async def _can_read_own_person_fact(self, fact: Any, runtime: ToolRuntime) -> bool:
+        from qq_ai_bot.memory.partition import canonical_fact_owner_complete
+
+        owners = await self._runtime_canonical_owners(runtime)
+        if owners is None:
+            return bool(fact.subject_user_id == runtime.inbound.sender.user_id)
+        person_id = owners[0]
+        if person_id is None or not canonical_fact_owner_complete(fact):
+            return False
+        return bool(fact.canonical_subject_person_id == person_id)
+
+    async def _runtime_canonical_owners(
+        self, runtime: ToolRuntime
+    ) -> tuple[str | None, str | None] | None:
+        from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
+        from qq_ai_bot.memory.partition import (
+            MemoryPartitionResolutionError,
+            resolve_active_person_id,
+            resolve_active_space_id,
+        )
+
+        async with self._memories.repository.database.sessions() as session:
+            if not await identity_runtime_is_complete_v2(session):
+                return None
+            try:
+                person_id = await resolve_active_person_id(session, runtime.inbound.sender.user_id)
+            except MemoryPartitionResolutionError:
+                person_id = None
+            space_id = None
+            if runtime.inbound.group_id:
+                try:
+                    space_id = await resolve_active_space_id(session, runtime.inbound.group_id)
+                except MemoryPartitionResolutionError:
+                    space_id = None
+        return person_id, space_id
+
+    async def _can_read_fact(self, fact: Any, runtime: ToolRuntime) -> bool:
+        owners = await self._runtime_canonical_owners(runtime)
+        if owners is not None:
+            return self._can_read_fact_complete_v2(fact, runtime, *owners)
+        return self._can_read_fact_legacy(fact, runtime)
+
+    def _can_read_fact_complete_v2(
+        self,
+        fact: Any,
+        runtime: ToolRuntime,
+        person_id: str | None,
+        space_id: str | None,
+    ) -> bool:
+        from qq_ai_bot.memory.partition import canonical_fact_owner_complete
+
+        if not canonical_fact_owner_complete(fact):
+            return False
+        if fact.scope_type is MemoryScopeType.SELF and self._settings.self_memory_enabled:
+            if fact.visibility_type is SelfMemoryVisibility.GLOBAL:
+                return True
+            if (
+                fact.visibility_type is SelfMemoryVisibility.PRIVATE
+                and fact.canonical_visibility_person_id == person_id
+                and runtime.inbound.scope_type is ScopeType.PRIVATE
+            ):
+                return True
+            if (
+                fact.visibility_type is SelfMemoryVisibility.GROUP
+                and fact.canonical_visibility_space_id == space_id
+            ):
+                return True
+        if person_id and fact.canonical_subject_person_id == person_id:
+            return True
+        if (
+            fact.scope_type is MemoryScopeType.GROUP
+            and space_id is not None
+            and fact.canonical_subject_space_id == space_id
+        ):
+            return True
+        if (
+            fact.scope_type is MemoryScopeType.PERSON_GROUP
+            and space_id is not None
+            and fact.canonical_subject_space_id == space_id
+            and fact.canonical_subject_person_id == person_id
+        ):
+            return True
+        return bool(
+            runtime.actor_is_superuser and runtime.actor_user_id in self._settings.superusers
+        )
+
+    def _can_read_fact_legacy(self, fact: Any, runtime: ToolRuntime) -> bool:
         if fact.scope_type is MemoryScopeType.SELF and self._settings.self_memory_enabled:
             if fact.visibility_type is SelfMemoryVisibility.GLOBAL:
                 return True
@@ -2421,6 +2533,7 @@ class AgentToolService:
                 error="invalid_date_range",
                 detail="start_date 不能晚于 end_date",
             )
+        await sources.preflight_conversation_correlation(runtime.inbound.conversation_id)
         response = await provider.search(
             WebSearchRequest(
                 query=query,
@@ -2461,6 +2574,7 @@ class AgentToolService:
                 error="url_not_authorized",
                 detail="只能读取用户明确发送或本轮搜索实际返回的网页",
             )
+        await sources.preflight_conversation_correlation(runtime.inbound.conversation_id)
         source = await provider.extract(normalized, question)
         response = WebSearchResponse(
             query=question,
@@ -2517,6 +2631,10 @@ class AgentToolService:
             provider="tavily",
             response=response,
             max_runs=self._runtime().web.source_max_runs_per_conversation,
+            canonical_conversation_id=runtime.inbound.conversation_id,
+            bot_user_id=runtime.inbound.bot_user_id or None,
+            ingress_presence_id=runtime.inbound.presence_id,
+            infer_trigger_event=runtime.inbound.event_type != "plugin_agent",
         )
 
     @staticmethod
@@ -2660,7 +2778,7 @@ class AgentToolService:
     def _event_json(self, row: Any) -> dict[str, Any]:
         display_name = row.sender_display_name
         if (
-            row.sender_user_id == row.bot_user_id
+            row.author_is_yuki()
             and not row.sender_group_card.strip()
             and not row.sender_nickname.strip()
         ):

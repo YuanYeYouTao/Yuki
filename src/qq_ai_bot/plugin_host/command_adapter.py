@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.models import TurnOrigin
+from qq_ai_bot.conversation.scope import plugin_conversation_key
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.plugin_host.direct_command_router import (
@@ -188,7 +189,7 @@ class PluginCommandAdapter:
             allow_generic_onebot=False,
             allow_admin_actions=False,
             allow_automation=False,
-            conversation_key=identity.key,
+            conversation_key=plugin_conversation_key(message, identity),
             trigger_message_id=message.message_id,
             actor_user_id=message.sender.user_id,
             actor_is_superuser=message.sender.user_id in self._superusers,

@@ -255,18 +255,22 @@ class OneBotProactiveGateway:
 
     async def _resolve_route(self, *, action: str) -> ResolvedSend | None:
         group_action = "group" in action
-        if self._router is not None and self._target_person_id:
-            if group_action:
-                raise ProactiveGatewayError("capability")
-            try:
-                return await self._router.resolve_send_for_person(self._target_person_id)
-            except RouteSendError as exc:
-                raise ProactiveGatewayError(exc.category) from exc
-        if self._router is not None and self._target_space_id:
+        if self._target_person_id and self._target_space_id:
+            raise ProactiveGatewayError("state_mismatch")
+        if self._target_person_id or self._target_space_id:
+            if self._router is None:
+                raise ProactiveGatewayError("none")
+            if self._target_person_id:
+                if group_action:
+                    raise ProactiveGatewayError("capability")
+                try:
+                    return await self._router.resolve_send_for_person(self._target_person_id)
+                except RouteSendError as exc:
+                    raise ProactiveGatewayError(exc.category) from exc
             if not group_action:
                 raise ProactiveGatewayError("capability")
             try:
-                return await self._router.resolve_send_for_space(self._target_space_id)
+                return await self._router.resolve_send_for_space(self._target_space_id or "")
             except RouteSendError as exc:
                 raise ProactiveGatewayError(exc.category) from exc
         if self._router is not None and await self._router.uses_canonical_send():
@@ -465,13 +469,23 @@ class OneBotProactiveGateway:
     async def _require_person_owner(self, external_id: str) -> None:
         if self._router is None or not self._target_person_id:
             raise ProactiveGatewayError("target_mismatch")
-        if not await self._router.person_owns_external(self._target_person_id, external_id):
+        allow_unknown = await self._router.uses_canonical_send()
+        if not await self._router.person_owns_external(
+            self._target_person_id,
+            external_id,
+            allow_unknown=allow_unknown,
+        ):
             raise ProactiveGatewayError("target_mismatch")
 
     async def _require_space_owner(self, external_id: str) -> None:
         if self._router is None or not self._target_space_id:
             raise ProactiveGatewayError("target_mismatch")
-        if not await self._router.space_owns_external(self._target_space_id, external_id):
+        allow_unknown = await self._router.uses_canonical_send()
+        if not await self._router.space_owns_external(
+            self._target_space_id,
+            external_id,
+            allow_unknown=allow_unknown,
+        ):
             raise ProactiveGatewayError("target_mismatch")
 
 

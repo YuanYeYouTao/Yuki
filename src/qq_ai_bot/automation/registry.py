@@ -176,6 +176,7 @@ class CapabilityExecutionContext:
     gateway: object | None = None
     canonical_target_person_id: str | None = None
     canonical_target_space_id: str | None = None
+    canonical_conversation_id: str | None = None
 
 
 CapabilityHandler = Callable[

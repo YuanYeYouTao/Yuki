@@ -119,8 +119,8 @@ class AutomationModule:
                 actions=self._agent_actions,
                 registry=self._connection_registry,
                 router=self._presence_router,
-                target_person_id=getattr(context, "canonical_target_person_id", None),
-                target_space_id=getattr(context, "canonical_target_space_id", None),
+                target_person_id=context.canonical_target_person_id,
+                target_space_id=context.canonical_target_space_id,
             )
 
         handlers = AutomationCapabilityHandlers(
@@ -170,6 +170,7 @@ class AutomationModule:
             repository=repository,
             time_service=self._time_service,
             gateway_factory=gateway_factory,
+            router=self._presence_router,
         )
         worker = AutomationWorker(
             settings=self._settings,

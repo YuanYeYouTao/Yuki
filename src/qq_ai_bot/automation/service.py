@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.admin.audit import AdminAuditService
-from qq_ai_bot.admin.models import AdminActor
+from qq_ai_bot.admin.models import ControlAuditRef
 from qq_ai_bot.automation.authority import DelegatedAuthority, PermissionLevel, permission_for
 from qq_ai_bot.automation.compiler import AutomationCompiler, ExecutionPlan, TaskSpec
 from qq_ai_bot.automation.models import (
@@ -224,7 +224,7 @@ class AutomationService:
             return
         try:
             await self._audit.record(
-                actor=self._actor(inbound, conversation_key),
+                actor=self._audit_ref(inbound, conversation_key),
                 capability="automation",
                 operation="create_task",
                 target_type="automation_draft",
@@ -691,15 +691,11 @@ class AutomationService:
             received_at=context.actual_started_at,
         )
 
-    def _actor(self, inbound: InboundMessage, conversation_key: str) -> AdminActor:
-        return AdminActor(
+    def _audit_ref(self, inbound: InboundMessage, conversation_key: str) -> ControlAuditRef:
+        return ControlAuditRef(
             user_id=inbound.sender.user_id,
-            is_superuser=inbound.sender.user_id in self._settings.superusers,
             trigger_message_id=inbound.message_id,
             conversation_key=conversation_key,
-            current_group_id=inbound.group_id,
-            mentioned_user_ids=inbound.mentioned_user_ids,
-            current_message_text=inbound.text,
             bot_user_id=inbound.bot_user_id,
         )
 
@@ -733,7 +729,7 @@ class AutomationService:
         if self._audit is None:
             return
         await self._audit.record(
-            actor=self._actor(inbound, conversation_key),
+            actor=self._audit_ref(inbound, conversation_key),
             capability="automation",
             operation=operation,
             target_type="automation",

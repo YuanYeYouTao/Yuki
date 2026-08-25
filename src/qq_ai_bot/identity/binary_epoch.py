@@ -6,7 +6,7 @@ from typing import Final
 
 from qq_ai_bot.identity.errors import IdentityDualWriteError
 
-IDENTITY_BINARY_EPOCH: Final[str] = "v1"
+IDENTITY_BINARY_EPOCH: Final[str] = "v2"
 
 
 def refuse_identity_binary_epoch(runtime_state: str) -> None:

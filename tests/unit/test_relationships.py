@@ -770,3 +770,505 @@ async def test_relationship_context_contains_only_current_speaker_relationship(
     assert '"stage":"friendly"' in context
     assert '"stage":"distant"' not in context
     assert "好感度" not in sender.messages[0].text
+
+
+@pytest.mark.asyncio
+async def test_v2_relationship_get_or_create_uses_person_not_second_qq(
+    database: Database,
+) -> None:
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from sqlalchemy import select
+
+    from qq_ai_bot.identity.db_models import IdentityBindingModel, IdentityRuntimeStateModel
+    from qq_ai_bot.identity.dual_write import _create_person_binding
+    from qq_ai_bot.identity.inventory import IDENTITY_PLATFORM
+    from qq_ai_bot.persistence.models import PersonRelationshipModel
+
+    now = datetime(2026, 8, 24, tzinfo=UTC)
+    async with database.sessions() as session, session.begin():
+        row = await session.get(IdentityRuntimeStateModel, 1)
+        assert row is not None
+        row.state = "v2"
+        row.cutover_id = "550e8400-e29b-41d4-a716-446655440099"
+        row.source_fingerprint = "cutover-fingerprint"
+        row.completed_at = now
+        created = await _create_person_binding(
+            session, external_id="1001", display_name="远野", now=now
+        )
+        session.add(
+            IdentityBindingModel(
+                id=str(uuid4()),
+                person_id=created.person_id,
+                platform=IDENTITY_PLATFORM,
+                external_account_id="1002",
+                display_name="",
+                status="active",
+                revision=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    relationships = RelationshipRepository(database)
+    first = await relationships.get_or_create("1001")
+    second = await relationships.get_or_create("1002")
+    assert first.user_id == "1001"
+    assert second.user_id == "1002"
+    assert second.affection_score == first.affection_score
+    assert second.trust_score == first.trust_score
+    async with database.sessions() as session:
+        rows = list(await session.scalars(select(PersonRelationshipModel)))
+    assert len(rows) == 1
+    assert rows[0].canonical_person_id is not None
+    assert rows[0].user_id == rows[0].canonical_person_id
+
+
+@pytest.mark.asyncio
+async def test_v2_relationship_reuses_cutover_row_and_projects_caller(
+    database: Database,
+) -> None:
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from sqlalchemy import select
+
+    from qq_ai_bot.identity.db_models import IdentityBindingModel, IdentityRuntimeStateModel
+    from qq_ai_bot.identity.dual_write import _create_person_binding
+    from qq_ai_bot.identity.inventory import IDENTITY_PLATFORM
+    from qq_ai_bot.persistence.models import PersonModel, PersonRelationshipModel
+
+    now = datetime(2026, 8, 24, tzinfo=UTC)
+    async with database.sessions() as session, session.begin():
+        row = await session.get(IdentityRuntimeStateModel, 1)
+        assert row is not None
+        row.state = "v2"
+        row.cutover_id = "550e8400-e29b-41d4-a716-446655440099"
+        row.source_fingerprint = "cutover-fingerprint"
+        row.completed_at = now
+        created = await _create_person_binding(
+            session, external_id="1001", display_name="远野", now=now
+        )
+        session.add(
+            IdentityBindingModel(
+                id=str(uuid4()),
+                person_id=created.person_id,
+                platform=IDENTITY_PLATFORM,
+                external_account_id="1002",
+                display_name="",
+                status="active",
+                revision=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.add(
+            PersonRelationshipModel(
+                user_id="1001",
+                affection_score=77,
+                trust_score=61,
+                created_at=now,
+                updated_at=now,
+                canonical_person_id=created.person_id,
+            )
+        )
+    relationships = RelationshipRepository(database)
+    first = await relationships.get("1001")
+    second = await relationships.get("1002")
+    assert first is not None and second is not None
+    assert first.user_id == "1001"
+    assert second.user_id == "1002"
+    assert first.affection_score == 77
+    assert second.affection_score == 77
+    created = await relationships.get_or_create("1002")
+    assert created.user_id == "1002"
+    assert created.affection_score == 77
+    async with database.sessions() as session:
+        rows = list(await session.scalars(select(PersonRelationshipModel)))
+        people = list(await session.scalars(select(PersonModel)))
+    assert len(rows) == 1
+    assert rows[0].user_id == "1001"
+    assert not people
+
+
+@pytest.mark.asyncio
+async def test_v2_relationship_history_and_manual_are_person_scoped(
+    database: Database,
+) -> None:
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from qq_ai_bot.identity.db_models import IdentityBindingModel, IdentityRuntimeStateModel
+    from qq_ai_bot.identity.dual_write import _create_person_binding
+    from qq_ai_bot.identity.inventory import IDENTITY_PLATFORM
+
+    now = datetime(2026, 8, 24, tzinfo=UTC)
+    async with database.sessions() as session, session.begin():
+        row = await session.get(IdentityRuntimeStateModel, 1)
+        assert row is not None
+        row.state = "v2"
+        row.cutover_id = "550e8400-e29b-41d4-a716-446655440099"
+        row.source_fingerprint = "cutover-fingerprint"
+        row.completed_at = now
+        created = await _create_person_binding(
+            session, external_id="1001", display_name="", now=now
+        )
+        session.add(
+            IdentityBindingModel(
+                id=str(uuid4()),
+                person_id=created.person_id,
+                platform=IDENTITY_PLATFORM,
+                external_account_id="1002",
+                display_name="",
+                status="active",
+                revision=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    relationships = RelationshipRepository(database)
+    await relationships.set_affection(user_id="1001", actor_user_id="9000", score=80)
+    first_history = await relationships.history("1001")
+    second_history = await relationships.history("1002")
+    assert first_history
+    assert [item.affection_after for item in first_history] == [
+        item.affection_after for item in second_history
+    ]
+    assert {item.user_id for item in first_history} == {"1001"}
+    assert {item.user_id for item in second_history} == {"1002"}
+    many = await relationships.get_many(("1001", "1002"))
+    assert set(many) == {"1001", "1002"}
+    assert many["1001"].affection_score == many["1002"].affection_score == 80
+    assert many["1001"].user_id == "1001"
+    assert many["1002"].user_id == "1002"
+
+
+@pytest.mark.asyncio
+async def test_v2_relationship_concurrent_get_or_create_is_idempotent(
+    database: Database,
+) -> None:
+    import asyncio
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from sqlalchemy import select
+
+    from qq_ai_bot.identity.db_models import IdentityBindingModel, IdentityRuntimeStateModel
+    from qq_ai_bot.identity.dual_write import _create_person_binding
+    from qq_ai_bot.identity.inventory import IDENTITY_PLATFORM
+    from qq_ai_bot.persistence.models import PersonRelationshipModel
+
+    now = datetime(2026, 8, 24, tzinfo=UTC)
+    async with database.sessions() as session, session.begin():
+        row = await session.get(IdentityRuntimeStateModel, 1)
+        assert row is not None
+        row.state = "v2"
+        row.cutover_id = "550e8400-e29b-41d4-a716-446655440099"
+        row.source_fingerprint = "cutover-fingerprint"
+        row.completed_at = now
+        created = await _create_person_binding(
+            session, external_id="1001", display_name="", now=now
+        )
+        session.add(
+            IdentityBindingModel(
+                id=str(uuid4()),
+                person_id=created.person_id,
+                platform=IDENTITY_PLATFORM,
+                external_account_id="1002",
+                display_name="",
+                status="active",
+                revision=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    relationships = RelationshipRepository(database)
+    first, second = await asyncio.gather(
+        relationships.get_or_create("1001"),
+        relationships.get_or_create("1002"),
+    )
+    assert first.affection_score == second.affection_score
+    assert first.user_id == "1001"
+    assert second.user_id == "1002"
+    again = await relationships.get_or_create("1002")
+    assert again.affection_score == first.affection_score
+    async with database.sessions() as session:
+        rows = list(await session.scalars(select(PersonRelationshipModel)))
+    assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_v2_relationship_inconsistent_owners_fail_closed(
+    database: Database,
+) -> None:
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from qq_ai_bot.identity.db_models import IdentityBindingModel, IdentityRuntimeStateModel
+    from qq_ai_bot.identity.dual_write import _create_person_binding
+    from qq_ai_bot.identity.errors import IdentityDualWriteError
+    from qq_ai_bot.identity.inventory import IDENTITY_PLATFORM
+    from qq_ai_bot.persistence.models import PersonRelationshipModel
+
+    now = datetime(2026, 8, 24, tzinfo=UTC)
+    async with database.sessions() as session, session.begin():
+        row = await session.get(IdentityRuntimeStateModel, 1)
+        assert row is not None
+        row.state = "v2"
+        row.cutover_id = "550e8400-e29b-41d4-a716-446655440099"
+        row.source_fingerprint = "cutover-fingerprint"
+        row.completed_at = now
+        created = await _create_person_binding(
+            session, external_id="1001", display_name="", now=now
+        )
+        session.add(
+            IdentityBindingModel(
+                id=str(uuid4()),
+                person_id=created.person_id,
+                platform=IDENTITY_PLATFORM,
+                external_account_id="1003",
+                display_name="",
+                status="active",
+                revision=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.add(
+            PersonRelationshipModel(
+                user_id="1001",
+                affection_score=50,
+                trust_score=50,
+                created_at=now,
+                updated_at=now,
+                canonical_person_id=created.person_id,
+            )
+        )
+        session.add(
+            PersonRelationshipModel(
+                user_id="1003",
+                affection_score=10,
+                trust_score=10,
+                created_at=now,
+                updated_at=now,
+                canonical_person_id=created.person_id,
+            )
+        )
+    with pytest.raises(IdentityDualWriteError) as exc:
+        await RelationshipRepository(database).get("1003")
+    assert exc.value.category == "canonical_owner_mismatch"
+    assert "1003" not in str(exc.value)
+    assert "1001" not in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_v2_relationship_job_and_apply_use_person_ownership(
+    database: Database,
+) -> None:
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from qq_ai_bot.identity.db_models import IdentityBindingModel, IdentityRuntimeStateModel
+    from qq_ai_bot.identity.dual_write import (
+        _create_person_binding,
+        ensure_canonical_presence_preconfig,
+    )
+    from qq_ai_bot.identity.inventory import IDENTITY_PLATFORM
+    from qq_ai_bot.persistence.models import PersonRelationshipModel
+
+    now = datetime(2026, 8, 24, tzinfo=UTC)
+    async with database.sessions() as session, session.begin():
+        row = await session.get(IdentityRuntimeStateModel, 1)
+        assert row is not None
+        row.state = "v2"
+        row.cutover_id = "550e8400-e29b-41d4-a716-446655440099"
+        row.source_fingerprint = "cutover-fingerprint"
+        row.completed_at = now
+        await ensure_canonical_presence_preconfig(session, "8000")
+        created = await _create_person_binding(
+            session, external_id="1001", display_name="", now=now
+        )
+        session.add(
+            IdentityBindingModel(
+                id=str(uuid4()),
+                person_id=created.person_id,
+                platform=IDENTITY_PLATFORM,
+                external_account_id="1002",
+                display_name="",
+                status="active",
+                revision=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        person_id = created.person_id
+    relationships = RelationshipRepository(database)
+    first = await relationships.get_or_create("1001")
+    event_a = await append_user_event(database, message_id="from-a", user_id="1001")
+    event_b = await append_user_event(database, message_id="from-b", user_id="1002")
+    jobs = RelationshipJobRepository(database)
+    await jobs.enqueue(
+        trigger_event_id=event_b,
+        user_id="1002",
+        conversation_key="private:1002",
+    )
+    await jobs.enqueue(
+        trigger_event_id=event_b,
+        user_id="1002",
+        conversation_key="private:1002",
+    )
+    async with database.sessions() as session:
+        rows = list(await session.scalars(select(RelationshipJobModel)))
+    assert len(rows) == 1
+    assert rows[0].canonical_person_id == person_id
+    claimed = await jobs.claim(limit=10)
+    assert len(claimed) == 1
+    claimed_ids = {event.id for event in claimed[0].recent_events}
+    assert event_a in claimed_ids
+    assert event_b in claimed_ids
+    snapshot, created = await relationships.apply_automatic(
+        user_id="1001",
+        source_event_id=event_b,
+        evaluation=RelationshipEvaluation(1, 1, "care", 0.9),
+    )
+    assert created is True
+    assert snapshot.affection_score == first.affection_score + 1
+    via_b = await relationships.get("1002")
+    assert via_b is not None
+    assert via_b.affection_score == snapshot.affection_score
+    async with database.sessions() as session:
+        rel_rows = list(await session.scalars(select(PersonRelationshipModel)))
+    assert len(rel_rows) == 1
+    assert rel_rows[0].canonical_person_id == person_id
+
+
+@pytest.mark.asyncio
+async def test_v2_disabled_person_relationship_is_canonical_owner_disabled(
+    database: Database,
+) -> None:
+    from datetime import UTC, datetime
+
+    from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityRuntimeStateModel
+    from qq_ai_bot.identity.dual_write import _create_person_binding
+    from qq_ai_bot.identity.errors import IdentityDualWriteError
+    from qq_ai_bot.identity.event_author import project_complete_v2_event_author
+
+    now = datetime(2026, 8, 24, tzinfo=UTC)
+    async with database.sessions() as session, session.begin():
+        row = await session.get(IdentityRuntimeStateModel, 1)
+        assert row is not None
+        row.state = "v2"
+        row.cutover_id = "550e8400-e29b-41d4-a716-446655440099"
+        row.source_fingerprint = "cutover-fingerprint"
+        row.completed_at = now
+        created = await _create_person_binding(
+            session, external_id="1001", display_name="", now=now
+        )
+        person_id = created.person_id
+    relationships = RelationshipRepository(database)
+    existing = await relationships.get_or_create("1001")
+    assert existing.affection_score == 50
+    async with database.sessions() as session, session.begin():
+        person = await session.get(CanonicalPersonModel, person_id)
+        assert person is not None
+        person.enabled = False
+    async with database.sessions() as session:
+        with pytest.raises(IdentityDualWriteError) as author:
+            await project_complete_v2_event_author(session, sender_user_id="1001")
+        assert author.value.category == "canonical_owner_disabled"
+        assert "1001" not in str(author.value)
+        assert person_id not in str(author.value)
+    with pytest.raises(IdentityDualWriteError) as read:
+        await relationships.get("1001")
+    assert read.value.category == "canonical_owner_disabled"
+    assert "1001" not in str(read.value)
+    with pytest.raises(IdentityDualWriteError) as write:
+        await relationships.get_or_create("1001")
+    assert write.value.category == "canonical_owner_disabled"
+    assert await relationships.get("1999") is None
+    async with database.sessions() as session, session.begin():
+        from qq_ai_bot.identity.db_models import IdentityBindingModel
+        from qq_ai_bot.identity.inventory import IDENTITY_PLATFORM
+
+        binding = await session.scalar(
+            select(IdentityBindingModel).where(
+                IdentityBindingModel.platform == IDENTITY_PLATFORM,
+                IdentityBindingModel.external_account_id == "1001",
+            )
+        )
+        assert binding is not None
+        binding.status = "disabled"
+    assert await relationships.get("1001") is None
+
+
+@pytest.mark.asyncio
+async def test_v2_yuki_and_external_bot_cannot_enqueue_or_apply_relationship(
+    database: Database,
+) -> None:
+    from datetime import UTC, datetime
+
+    from qq_ai_bot.identity.db_models import IdentityRuntimeStateModel
+    from qq_ai_bot.identity.dual_write import (
+        _create_person_binding,
+        ensure_canonical_presence_preconfig,
+    )
+
+    now = datetime(2026, 8, 24, tzinfo=UTC)
+    async with database.sessions() as session, session.begin():
+        row = await session.get(IdentityRuntimeStateModel, 1)
+        assert row is not None
+        row.state = "v2"
+        row.cutover_id = "550e8400-e29b-41d4-a716-446655440099"
+        row.source_fingerprint = "cutover-fingerprint"
+        row.completed_at = now
+        await ensure_canonical_presence_preconfig(session, "8000")
+        await _create_person_binding(session, external_id="1001", display_name="", now=now)
+    ledger = EventLedgerRepository(database)
+    yuki_row, _ = await ledger.append(
+        bot_user_id="8000",
+        platform_message_id="yuki-author",
+        scope_type=ScopeType.PRIVATE,
+        sender_user_id="8000",
+        direction="inbound",
+        content="yuki",
+        private_peer_user_id="1001",
+        sender_is_bot=True,
+    )
+    bot_row, _ = await ledger.append(
+        bot_user_id="8000",
+        platform_message_id="external-bot-author",
+        scope_type=ScopeType.PRIVATE,
+        sender_user_id="9001",
+        direction="inbound",
+        content="bot",
+        private_peer_user_id="1001",
+        sender_is_bot=True,
+    )
+    jobs = RelationshipJobRepository(database)
+    await jobs.enqueue(
+        trigger_event_id=yuki_row.id,
+        user_id="8000",
+        conversation_key="private:1001",
+    )
+    await jobs.enqueue(
+        trigger_event_id=bot_row.id,
+        user_id="9001",
+        conversation_key="private:1001",
+    )
+    async with database.sessions() as session:
+        job_count = await session.scalar(select(func.count()).select_from(RelationshipJobModel))
+    assert int(job_count or 0) == 0
+    relationships = RelationshipRepository(database)
+    await relationships.get_or_create("1001")
+    with pytest.raises(ValueError, match="does not belong"):
+        await relationships.apply_automatic(
+            user_id="1001",
+            source_event_id=yuki_row.id,
+            evaluation=RelationshipEvaluation(1, 1, "care", 0.9),
+        )
+    with pytest.raises(ValueError, match="does not belong"):
+        await relationships.apply_automatic(
+            user_id="1001",
+            source_event_id=bot_row.id,
+            evaluation=RelationshipEvaluation(1, 1, "care", 0.9),
+        )

@@ -228,7 +228,7 @@ def test_release_smoke_reads_alembic_version_inside_container(
                         '"plugin_system_enabled":true,"plugin_running_count":0}'
                     )
                 if "SELECT version_num FROM alembic_version" in arguments[-1]:
-                    return "0047"
+                    return "0048"
             if arguments[:5] == ("exec", "-T", "bot", "qq-ai-bot-cli", "plugin"):
                 return ""
             if arguments[:5] == ("exec", "-T", "bot", "qq-ai-bot-cli", "setup"):
@@ -272,7 +272,7 @@ def test_release_smoke_writes_pending_inside_container_when_host_cannot(
                         '{"status":"ok","version":"3.7.1","database":"ok",'
                         '"plugin_system_enabled":true,"plugin_running_count":0}'
                     )
-                return "0047"
+                return "0048"
             if arguments[:5] == ("exec", "-T", "bot", "qq-ai-bot-cli", "plugin"):
                 return ""
             if arguments[:5] == ("exec", "-T", "bot", "qq-ai-bot-cli", "setup"):
@@ -316,7 +316,7 @@ def test_release_smoke_applies_builtin_plugin_pending(
             if arguments[:4] == ("exec", "-T", "bot", "python"):
                 if "urllib.request" in arguments[-1]:
                     return next(health_payloads)
-                return "0047"
+                return "0048"
             if arguments[:3] == ("up", "-d", "--no-deps"):
                 return ""
             if arguments[3:5] == ("qq-ai-bot-cli", "plugin"):

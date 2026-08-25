@@ -12,11 +12,15 @@ from pathlib import Path
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.identity.c24_conversation import (
+    load_unique_live_chat_event,
+    require_live_conversation,
+    stamp_conversation_correlation,
+)
 from qq_ai_bot.mcp.models import MCPServerConfig, MCPToolMetadata
 from qq_ai_bot.mcp.redaction import redact_sensitive_data, redact_sensitive_text
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
-    ChatEventModel,
     MCPServerStateModel,
     MCPToolCacheModel,
     MemoryToolReceiptModel,
@@ -182,6 +186,26 @@ class MCPRepository:
             )
             await session.commit()
 
+    async def preflight_conversation_correlation(
+        self,
+        canonical_conversation_id: str | None,
+    ) -> None:
+        """Fail-closed live Conversation check. v1/None is a no-op.
+
+        Uses the same complete-v2 kind/existence helpers as
+        ``stamp_conversation_correlation`` (``require_live_conversation``).
+        The short read-only session is closed before the caller may connect.
+        A provided id that is the wrong kind, a Presence/Person/Space id, or a
+        missing/stale Conversation fails closed here.
+        """
+
+        from qq_ai_bot.persistence.unit_of_work import optional_session
+
+        if canonical_conversation_id is None or not str(canonical_conversation_id).strip():
+            return
+        async with optional_session(self._database, None, write=False) as session:
+            await require_live_conversation(session, canonical_conversation_id)
+
     async def record_invocation(
         self,
         *,
@@ -196,6 +220,8 @@ class MCPRepository:
         trigger_message_id: str = "",
         bot_user_id: str = "",
         result_excerpt: str = "",
+        canonical_conversation_id: str | None = None,
+        ingress_presence_id: str | None = None,
     ) -> None:
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
@@ -212,24 +238,31 @@ class MCPRepository:
                 created_at=now,
             )
             session.add(invocation)
-            event = None
-            if trigger_message_id and bot_user_id:
-                event = await session.scalar(
-                    select(ChatEventModel).where(
-                        ChatEventModel.bot_user_id == bot_user_id,
-                        ChatEventModel.platform_message_id == trigger_message_id,
-                    )
+            await stamp_conversation_correlation(session, invocation, canonical_conversation_id)
+            event = await load_unique_live_chat_event(
+                session,
+                platform_message_id=trigger_message_id,
+                bot_user_id=bot_user_id,
+                ingress_presence_id=ingress_presence_id,
+                require_bot_or_presence=True,
+            )
+            if event is not None:
+                await stamp_conversation_correlation(
+                    session, invocation, event.canonical_conversation_id
                 )
-            if event is not None and invocation.canonical_conversation_id is None:
-                invocation.canonical_conversation_id = event.canonical_conversation_id
             from qq_ai_bot.identity.memory_guard import refuse_legacy_live_event
 
             if event is not None and not await refuse_legacy_live_event(session, event):
-                conversation_key = (
-                    f"group:{event.group_id}"
-                    if event.group_id
-                    else f"private:{event.private_peer_user_id or event.sender_user_id}"
-                )
+                from qq_ai_bot.memory.partition import resolve_memory_partition_for_event
+
+                partition = await resolve_memory_partition_for_event(session, event)
+                conversation_key = partition.value
+                person_id = partition.person_id
+                space_id = partition.space_id
+                if person_id is None and space_id is None:
+                    from qq_ai_bot.identity.owner_dual_write import optional_xor_owner_for_event
+
+                    person_id, space_id = await optional_xor_owner_for_event(session, event)
                 redacted = _redact_reflection_result(result_excerpt.strip())
                 session.add(
                     MemoryToolReceiptModel(
@@ -238,6 +271,8 @@ class MCPRepository:
                         ).hexdigest(),
                         trigger_event_id=event.id,
                         bot_user_id=event.bot_user_id,
+                        canonical_person_id=person_id,
+                        canonical_space_id=space_id,
                         provider_id=provider_id[:128],
                         tool_name=tool_name[:255],
                         success=success,

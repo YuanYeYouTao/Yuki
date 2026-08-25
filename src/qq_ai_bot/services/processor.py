@@ -29,8 +29,9 @@ from qq_ai_bot.conversation.rollup.repository import (
     ConversationRollupRepository,
     ConversationScopeRepository,
 )
-from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
+from qq_ai_bot.conversation.scope import ConversationTurnSnapshot, runtime_conversation_key
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
+from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.domain.messages import InboundMessage, OutboundMessage, OutboundSendReceipt
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.emoji.collector import EmojiCollector
@@ -114,6 +115,26 @@ from yuki_plugin_sdk.events import EventName
 from yuki_plugin_sdk.models import AdmissionSignal as SdkAdmissionSignal
 
 logger = logging.getLogger(__name__)
+
+_UNRESOLVED_ADMISSION = object()
+
+
+def _observation_canonical_refs(
+    message: InboundMessage,
+    admitted: IngressPreAdmit | None,
+) -> tuple[str | None, str | None, str | None]:
+    """Project hydrate IDs onto observation shadows without legacy lookups.
+
+    Group rows store Space, not the speaker Person. Yuki / external_bot /
+    system authors never receive ``canonical_person_id``.
+    """
+
+    conversation_id = message.conversation_id
+    if message.scope_type is ScopeType.GROUP:
+        return conversation_id, None, message.space_id
+    author_kind = admitted.author_kind if admitted is not None else None
+    person_id = message.person_id if author_kind == AuthorKind.PERSON.value else None
+    return conversation_id, person_id, None
 
 
 class AdmissionSignalProvider(Protocol):
@@ -437,26 +458,59 @@ class MessageProcessor:
         )
         result: ProcessResult | None = None
         error_category: str | None = None
+        working = message
+        admitted: IngressPreAdmit | None = None
         with bind_runtime_turn(correlation):
             try:
-                result = await self._handle_admitted(message, sender, profile_resolver)
+                if self._canonical_ingress is not None:
+                    admitted = await self._canonical_ingress.pre_admit(
+                        getattr(sender, "bot", None),
+                        message,
+                    )
+                    if admitted is not None and admitted.dropped:
+                        await self._rate_limiter.check(
+                            user_id=message.sender.user_id,
+                            group_id=message.group_id,
+                            category="ingress_drop",
+                        )
+                        logger.info("canonical_ingress_dropped reason=%s", admitted.reason)
+                        result = ProcessResult(False, reason=admitted.reason)
+                        return result
+                    if admitted is not None:
+                        working = admitted.message
+                result = await self._handle_admitted(
+                    working,
+                    sender,
+                    profile_resolver,
+                    admitted=admitted,
+                )
                 return result
             except BaseException as exc:
                 error_category = type(exc).__name__
                 raise
             finally:
                 if correlation.touched or error_category is not None:
+                    conversation_id, person_id, space_id = _observation_canonical_refs(
+                        working,
+                        admitted,
+                    )
                     observation = build_turn_observation(
                         correlation,
-                        scope_type=message.scope_type.value,
-                        conversation_key=self._turn_coordinator.key_for(message),
+                        scope_type=working.scope_type.value,
+                        conversation_key=runtime_conversation_key(
+                            identity=working.scope(),
+                            inbound=working,
+                        ),
                         admission_outcome=result.reason if result is not None else None,
                         handled=result.handled if result is not None else False,
                         sent_messages=result.sent_messages if result is not None else 0,
                         error_category=error_category,
                         total_latency_ms=int((time.perf_counter() - started) * 1000),
-                        subject_user_id=message.sender.user_id,
-                        group_id=message.group_id,
+                        subject_user_id=working.sender.user_id,
+                        group_id=working.group_id,
+                        canonical_conversation_id=conversation_id,
+                        canonical_person_id=person_id,
+                        canonical_space_id=space_id,
                     )
                     await record_observation_safely(self._turn_observations, observation)
 
@@ -465,26 +519,29 @@ class MessageProcessor:
         message: InboundMessage,
         sender: OutboundSender,
         profile_resolver: UserProfileResolver | None = None,
+        admitted: IngressPreAdmit | None | object = _UNRESOLVED_ADMISSION,
     ) -> ProcessResult:
         """Process one message without deriving authority from model-visible data."""
 
         started = time.perf_counter()
-        admitted: IngressPreAdmit | None = None
-        if self._canonical_ingress is not None:
-            admitted = await self._canonical_ingress.pre_admit(
-                getattr(sender, "bot", None),
-                message,
-            )
-            if admitted is not None and admitted.dropped:
-                await self._rate_limiter.check(
-                    user_id=message.sender.user_id,
-                    group_id=message.group_id,
-                    category="ingress_drop",
+        if admitted is _UNRESOLVED_ADMISSION:
+            admitted = None
+            if self._canonical_ingress is not None:
+                admitted = await self._canonical_ingress.pre_admit(
+                    getattr(sender, "bot", None),
+                    message,
                 )
-                logger.info("canonical_ingress_dropped reason=%s", admitted.reason)
-                return ProcessResult(False, reason=admitted.reason)
-            if admitted is not None:
-                message = admitted.message
+                if admitted is not None and admitted.dropped:
+                    await self._rate_limiter.check(
+                        user_id=message.sender.user_id,
+                        group_id=message.group_id,
+                        category="ingress_drop",
+                    )
+                    logger.info("canonical_ingress_dropped reason=%s", admitted.reason)
+                    return ProcessResult(False, reason=admitted.reason)
+                if admitted is not None:
+                    message = admitted.message
+        admitted = cast(IngressPreAdmit | None, admitted)
         yuki_account_ids = admitted.yuki_account_ids if admitted is not None else frozenset()
         await publish_notification(
             self._event_publisher,
@@ -541,10 +598,10 @@ class MessageProcessor:
             return ProcessResult(False, reason=decision.reason)
 
         identity = message.scope()
-        coordinator_key = (
-            admitted.primary_alias
-            if admitted is not None and admitted.primary_alias
-            else identity.key
+        coordinator_key = runtime_conversation_key(
+            identity=identity,
+            inbound=message,
+            primary_alias=admitted.primary_alias if admitted is not None else None,
         )
         event_key = build_event_key(message, identity.key)
         repairing_dedup_gap = False
@@ -691,6 +748,7 @@ class MessageProcessor:
             generation=scope_state.generation,
             trigger_event_id=record.id,
             coordinator_version=turn_token.version,
+            transport_scope_key=(identity.key if identity.key != coordinator_key else None),
         )
         # Deterministic native and direct-plugin commands execute their own reviewed
         # mutation path. Feeding command syntax to the extraction Worker would create
@@ -821,7 +879,7 @@ class MessageProcessor:
             message=message,
             question=visual_question,
             source_event_id=record.id,
-            conversation_key=identity.key,
+            conversation_key=coordinator_key,
             event_key=event_key,
             sender=sender,
             runtime=runtime_snapshot,
@@ -868,7 +926,7 @@ class MessageProcessor:
             content_free_turn_payload(
                 origin=TurnOrigin.USER_MESSAGE.value,
                 scope_type=message.scope_type.value,
-                conversation_key=identity.key,
+                conversation_key=coordinator_key,
                 reason=decision.reason,
             ),
         )
@@ -951,7 +1009,7 @@ class MessageProcessor:
                     await self._relationship_worker.enqueue(
                         trigger_event_id=record.id,
                         user_id=message.sender.user_id,
-                        conversation_key=identity.key,
+                        conversation_key=coordinator_key,
                     )
                 except (SQLAlchemyError, OSError, RuntimeError, ValueError) as exc:
                     logger.warning(
@@ -966,6 +1024,7 @@ class MessageProcessor:
                 handler="chat",
                 started=started,
                 success=True,
+                conversation_key=coordinator_key,
             )
             result = ProcessResult(True, sent_count, "chat")
         await publish_notification(
@@ -974,7 +1033,7 @@ class MessageProcessor:
             content_free_turn_payload(
                 origin=TurnOrigin.USER_MESSAGE.value,
                 scope_type=message.scope_type.value,
-                conversation_key=identity.key,
+                conversation_key=coordinator_key,
                 outcome=result.reason,
                 handled=result.handled,
                 sent_messages=result.sent_messages,
@@ -1287,6 +1346,11 @@ class MessageProcessor:
             handler=handler,
             started=started,
             success=sent,
+            conversation_key=runtime_conversation_key(
+                identity=identity,
+                inbound=message,
+                turn=turn_snapshot,
+            ),
         )
         return ProcessResult(True, int(sent), handler)
 
@@ -1405,6 +1469,7 @@ class MessageProcessor:
         ) and await self._conversation_scopes.generation_matches(
             snapshot.scope_id,
             snapshot.generation,
+            scope_key=snapshot.scope_key,
         )
 
     async def _publish_turn_rejected(self, message: InboundMessage, reason: str) -> None:
@@ -1414,7 +1479,10 @@ class MessageProcessor:
             content_free_turn_payload(
                 origin=TurnOrigin.USER_MESSAGE.value,
                 scope_type=message.scope_type.value,
-                conversation_key=self._turn_coordinator.key_for(message),
+                conversation_key=runtime_conversation_key(
+                    identity=message.scope(),
+                    inbound=message,
+                ),
                 reason=reason,
             ),
         )
@@ -1428,12 +1496,14 @@ class MessageProcessor:
         handler: str,
         started: float,
         success: bool,
+        conversation_key: str | None = None,
     ) -> None:
+        owner_key = conversation_key or identity.key
         logger.info(
             "message_handled",
             extra={
                 "event_key": event_key,
-                "conversation_hash": hashlib.sha256(identity.key.encode()).hexdigest()[:16],
+                "conversation_hash": hashlib.sha256(owner_key.encode()).hexdigest()[:16],
                 "message_type": message.scope_type.value,
                 "handler": handler,
                 "total_latency_seconds": round(time.perf_counter() - started, 4),

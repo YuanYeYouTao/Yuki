@@ -130,9 +130,7 @@ class PluginStateModel(Base):
     key: Mapped[str] = mapped_column(String(128), nullable=False)
     value_json: Mapped[str] = mapped_column(Text, nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    subject_user_id: Mapped[str | None] = mapped_column(
-        ForeignKey("people.user_id", ondelete="CASCADE"), nullable=True
-    )
+    subject_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     canonical_person_id: Mapped[str | None] = mapped_column(
@@ -215,9 +213,7 @@ class PluginAgentSessionModel(Base):
     plugin_id: Mapped[str] = mapped_column(
         ForeignKey("plugin_installations.plugin_id", ondelete="CASCADE"), nullable=False
     )
-    owner_user_id: Mapped[str | None] = mapped_column(
-        ForeignKey("people.user_id", ondelete="CASCADE"), nullable=True
-    )
+    owner_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     scope_type: Mapped[str] = mapped_column(String(16), nullable=False)
     scope_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     name: Mapped[str] = mapped_column(String(128), nullable=False, default="")
@@ -269,9 +265,7 @@ class PluginAgentMessageModel(Base):
     )
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     role: Mapped[str] = mapped_column(String(16), nullable=False)
-    sender_user_id: Mapped[str | None] = mapped_column(
-        ForeignKey("people.user_id", ondelete="CASCADE"), nullable=True
-    )
+    sender_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -318,9 +312,7 @@ class PluginBackgroundTargetGrantModel(Base):
     target_id: Mapped[str] = mapped_column(String(64), nullable=False)
     bot_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    created_by_user_id: Mapped[str] = mapped_column(
-        ForeignKey("people.user_id", ondelete="RESTRICT"), nullable=False
-    )
+    created_by_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     canonical_target_person_id: Mapped[str | None] = mapped_column(

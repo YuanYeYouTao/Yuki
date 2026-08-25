@@ -136,12 +136,27 @@ class InboundMessage:
     reply_segments: tuple[dict[str, object], ...] = ()
     reply_to_message_id: str | None = None
     reply_sender_user_id: str | None = None
+    canonical_reply_to_yuki: bool | None = None
+    canonical_reply_author_kind: str | None = None
     received_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     legacy_conversation_key: str | None = None
     person_id: str | None = None
     space_id: str | None = None
     conversation_id: str | None = None
     presence_id: str | None = None
+
+    def replies_to_yuki(self, *, yuki_account_ids: frozenset[str] = frozenset()) -> bool:
+        """Reply-to-Yuki: canonical verdict wins; None allows Presence-id fallback."""
+
+        if self.canonical_reply_to_yuki is True:
+            return True
+        if self.canonical_reply_to_yuki is False:
+            return False
+        if not self.reply_sender_user_id:
+            return False
+        if self.reply_sender_user_id == self.bot_user_id:
+            return True
+        return self.reply_sender_user_id in yuki_account_ids
 
     def scope(self, *, bot_user_id: str | None = None) -> ConversationScope:
         """Build the bot-aware conversation scope for this message."""

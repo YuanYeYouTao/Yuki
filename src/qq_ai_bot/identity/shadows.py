@@ -158,6 +158,39 @@ async def conversation_id_for_event(session: AsyncSession, event_id: int | None)
     return event.canonical_conversation_id
 
 
+async def fill_relationship_event_shadows(
+    session: AsyncSession,
+    row: Any,
+    *,
+    person_id: str | None,
+) -> None:
+    """Fill relationship_events.canonical_person_id after the legacy insert."""
+
+    await require_identity_runtime(session, allowed=frozenset({"v1", "v2"}))
+    current = getattr(row, "canonical_person_id", None)
+    row.canonical_person_id = await assign_shadow(current, person_id)
+
+
+async def fill_turn_observation_shadows(
+    session: AsyncSession,
+    row: Any,
+    *,
+    conversation_id: str | None,
+    person_id: str | None,
+    space_id: str | None,
+) -> None:
+    """Fill runtime_turn_observations canonical owners after the legacy insert."""
+
+    await require_identity_runtime(session, allowed=frozenset({"v1", "v2"}))
+    row.canonical_conversation_id = await assign_shadow(
+        getattr(row, "canonical_conversation_id", None), conversation_id
+    )
+    row.canonical_person_id = await assign_shadow(
+        getattr(row, "canonical_person_id", None), person_id
+    )
+    row.canonical_space_id = await assign_shadow(getattr(row, "canonical_space_id", None), space_id)
+
+
 async def fill_presence_shadow(
     session: AsyncSession,
     row: Any,

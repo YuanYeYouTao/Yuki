@@ -192,6 +192,25 @@ class ShadowAssignment:
 
 
 @dataclass(frozen=True, slots=True)
+class MemoryOwnerAssignment:
+    table: str
+    row_id: int
+    values: tuple[tuple[str, str | None], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryOwnerCounts:
+    jobs: int = 0
+    receipts: int = 0
+    reflection_states: int = 0
+    reflection_runs: int = 0
+    dream_clusters: int = 0
+    facts_verified: int = 0
+    automation_targets: int = 0
+    plugin_targets: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class BackfillPlan:
     accounts: tuple[AccountDecision, ...]
     spaces: tuple[SpaceDecision, ...]
@@ -200,6 +219,10 @@ class BackfillPlan:
     skipped_external_bots: int
     source_fingerprint: str
     processed_subjects: int
+    memory_owners: tuple[MemoryOwnerAssignment, ...] = ()
+    memory_owner_counts: MemoryOwnerCounts = MemoryOwnerCounts()
+    automation_targets: tuple[MemoryOwnerAssignment, ...] = ()
+    plugin_targets: tuple[ShadowAssignment, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,6 +240,14 @@ class BackfillCounts:
     yuki_presence_class: int
     external_bot_class: int
     space_class: int
+    memory_job_owners: int = 0
+    memory_receipt_owners: int = 0
+    memory_reflection_state_owners: int = 0
+    memory_reflection_run_owners: int = 0
+    memory_dream_cluster_owners: int = 0
+    memory_facts_verified: int = 0
+    automation_targets: int = 0
+    plugin_targets: int = 0
 
 
 @dataclass(frozen=True, slots=True)

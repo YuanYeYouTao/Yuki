@@ -41,6 +41,15 @@ from qq_ai_bot.admin.models import (
     WebRuntimeConfig,
 )
 from qq_ai_bot.config import Settings, _csv_tuple
+from qq_ai_bot.identity.c24_scopes import (
+    resolve_c24_group_config_scope,
+    resolve_c24_user_config_scope,
+    resolve_live_person_id,
+    resolve_live_space_id,
+    stamp_v2_person_space,
+)
+from qq_ai_bot.identity.errors import IdentityDualWriteError
+from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
 from qq_ai_bot.identity.shadows import fill_person_space_shadows
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import RuntimeConfigOverrideModel
@@ -62,6 +71,8 @@ class RuntimeConfigOverrideRecord:
     created_at: datetime
     updated_at: datetime
     updated_by: str
+    canonical_person_id: str | None = None
+    canonical_space_id: str | None = None
 
 
 def _record(row: RuntimeConfigOverrideModel) -> RuntimeConfigOverrideRecord:
@@ -81,6 +92,8 @@ def _record(row: RuntimeConfigOverrideModel) -> RuntimeConfigOverrideRecord:
         created_at=row.created_at,
         updated_at=row.updated_at,
         updated_by=row.updated_by,
+        canonical_person_id=row.canonical_person_id,
+        canonical_space_id=row.canonical_space_id,
     )
 
 
@@ -113,19 +126,41 @@ class RuntimeConfigRepository:
         conditions: list[Any] = [
             RuntimeConfigOverrideModel.scope_type == ConfigScopeType.GLOBAL.value
         ]
-        if group_id:
-            conditions.append(
-                (RuntimeConfigOverrideModel.scope_type == ConfigScopeType.GROUP.value)
-                & (RuntimeConfigOverrideModel.scope_id == group_id)
-            )
-        if user_id:
-            conditions.append(
-                (RuntimeConfigOverrideModel.scope_type == ConfigScopeType.USER.value)
-                & (RuntimeConfigOverrideModel.scope_id == user_id)
-            )
         async with optional_session(self._database, session, write=False) as active:
+            if await identity_runtime_is_complete_v2(active):
+                if user_id:
+                    person_id = await resolve_live_person_id(active, user_id)
+                    conditions.append(
+                        (RuntimeConfigOverrideModel.scope_type == ConfigScopeType.USER.value)
+                        & (RuntimeConfigOverrideModel.canonical_person_id == person_id)
+                    )
+                if group_id:
+                    space_id = await resolve_live_space_id(active, group_id)
+                    conditions.append(
+                        (RuntimeConfigOverrideModel.scope_type == ConfigScopeType.GROUP.value)
+                        & (RuntimeConfigOverrideModel.canonical_space_id == space_id)
+                    )
+            else:
+                if group_id:
+                    conditions.append(
+                        (RuntimeConfigOverrideModel.scope_type == ConfigScopeType.GROUP.value)
+                        & (RuntimeConfigOverrideModel.scope_id == group_id)
+                    )
+                if user_id:
+                    conditions.append(
+                        (RuntimeConfigOverrideModel.scope_type == ConfigScopeType.USER.value)
+                        & (RuntimeConfigOverrideModel.scope_id == user_id)
+                    )
             rows = (
-                await active.scalars(select(RuntimeConfigOverrideModel).where(or_(*conditions)))
+                await active.scalars(
+                    select(RuntimeConfigOverrideModel)
+                    .where(or_(*conditions))
+                    .order_by(
+                        RuntimeConfigOverrideModel.config_key,
+                        RuntimeConfigOverrideModel.scope_type,
+                        RuntimeConfigOverrideModel.id,
+                    )
+                )
             ).all()
             return tuple(_record(row) for row in rows)
 
@@ -138,6 +173,46 @@ class RuntimeConfigRepository:
         session: AsyncSession | None = None,
     ) -> RuntimeConfigOverrideRecord | None:
         async with optional_session(self._database, session, write=False) as active:
+            if await identity_runtime_is_complete_v2(active):
+                if scope_type is ConfigScopeType.USER:
+                    person_id = (await resolve_c24_user_config_scope(active, scope_id)).person_id
+                    matches = list(
+                        await active.scalars(
+                            select(RuntimeConfigOverrideModel).where(
+                                RuntimeConfigOverrideModel.config_key == key,
+                                RuntimeConfigOverrideModel.scope_type == scope_type.value,
+                                RuntimeConfigOverrideModel.canonical_person_id == person_id,
+                            )
+                        )
+                    )
+                elif scope_type is ConfigScopeType.GROUP:
+                    space_id = (await resolve_c24_group_config_scope(active, scope_id)).space_id
+                    matches = list(
+                        await active.scalars(
+                            select(RuntimeConfigOverrideModel).where(
+                                RuntimeConfigOverrideModel.config_key == key,
+                                RuntimeConfigOverrideModel.scope_type == scope_type.value,
+                                RuntimeConfigOverrideModel.canonical_space_id == space_id,
+                            )
+                        )
+                    )
+                else:
+                    matches = list(
+                        await active.scalars(
+                            select(RuntimeConfigOverrideModel).where(
+                                RuntimeConfigOverrideModel.config_key == key,
+                                RuntimeConfigOverrideModel.scope_type == scope_type.value,
+                                RuntimeConfigOverrideModel.canonical_person_id.is_(None),
+                                RuntimeConfigOverrideModel.canonical_space_id.is_(None),
+                            )
+                        )
+                    )
+                    if len(matches) > 1:
+                        raise IdentityDualWriteError("canonical_owner_mismatch")
+                    return _record(matches[0]) if matches else None
+                if len(matches) > 1:
+                    raise IdentityDualWriteError("canonical_owner_mismatch")
+                return _record(matches[0]) if matches else None
             row = await active.scalar(
                 select(RuntimeConfigOverrideModel).where(
                     RuntimeConfigOverrideModel.config_key == key,
@@ -159,6 +234,9 @@ class RuntimeConfigRepository:
         started: float,
         initial_version: int = 1,
         operation: str = "set_override",
+        shadow_user_id: str | None = None,
+        person_id: str | None = None,
+        space_id: str | None = None,
         session: AsyncSession | None = None,
     ) -> tuple[RuntimeConfigOverrideRecord, AdminOperationEvent]:
         now = datetime.now(UTC)
@@ -203,15 +281,62 @@ class RuntimeConfigRepository:
             )
             if row is None:
                 raise RuntimeError("runtime override was not persisted")
-            await fill_person_space_shadows(
-                active,
-                row,
-                person_attr="canonical_person_id",
-                space_attr="canonical_space_id",
-                user_id=scope_id if scope_type is ConfigScopeType.USER else None,
-                group_id=scope_id if scope_type is ConfigScopeType.GROUP else None,
+            if await identity_runtime_is_complete_v2(active):
+                if scope_type is ConfigScopeType.USER:
+                    if not person_id:
+                        raise IdentityDualWriteError("missing_canonical_owner")
+                    if row.canonical_space_id is not None:
+                        raise IdentityDualWriteError("canonical_owner_mismatch")
+                    await stamp_v2_person_space(
+                        row,
+                        person_attr="canonical_person_id",
+                        space_attr="canonical_space_id",
+                        person_id=person_id,
+                        space_id=None,
+                    )
+                elif scope_type is ConfigScopeType.GROUP:
+                    if not space_id:
+                        raise IdentityDualWriteError("missing_canonical_owner")
+                    if row.canonical_person_id is not None:
+                        raise IdentityDualWriteError("canonical_owner_mismatch")
+                    await stamp_v2_person_space(
+                        row,
+                        person_attr="canonical_person_id",
+                        space_attr="canonical_space_id",
+                        person_id=None,
+                        space_id=space_id,
+                    )
+                elif row.canonical_person_id or row.canonical_space_id:
+                    raise IdentityDualWriteError("canonical_owner_mismatch")
+            else:
+                await fill_person_space_shadows(
+                    active,
+                    row,
+                    person_attr="canonical_person_id",
+                    space_attr="canonical_space_id",
+                    user_id=(
+                        shadow_user_id
+                        if shadow_user_id is not None
+                        else (scope_id if scope_type is ConfigScopeType.USER else None)
+                    ),
+                    group_id=scope_id if scope_type is ConfigScopeType.GROUP else None,
+                )
+                if person_id is not None:
+                    await stamp_v2_person_space(
+                        row,
+                        person_attr="canonical_person_id",
+                        space_attr=None,
+                        person_id=person_id,
+                        space_id=None,
+                    )
+            after_state = _override_state(
+                _record(row),
+                public_scope_id=_public_owner_scope_id(
+                    person_id=person_id,
+                    space_id=space_id,
+                    storage_scope_id=scope_id,
+                ),
             )
-            after_state = _override_state(_record(row))
             audit = await add_audit_event(
                 active,
                 actor=actor,
@@ -237,8 +362,10 @@ class RuntimeConfigRepository:
         before: RuntimeConfigOverrideRecord,
         started: float,
         operation: str = "delete_override",
+        public_scope_id: str | None = None,
         session: AsyncSession | None = None,
     ) -> AdminOperationEvent:
+        exposed_scope_id = scope_id if public_scope_id is None else public_scope_id
         async with optional_session(self._database, session, write=True) as active:
             await active.execute(
                 delete(RuntimeConfigOverrideModel).where(
@@ -254,13 +381,24 @@ class RuntimeConfigRepository:
                 operation=operation,
                 target_type=f"config.{scope_type.value}",
                 target_id=spec.key,
-                before=_override_state(before),
-                after=_missing_override_state(spec.key, scope_type, scope_id),
+                before=_override_state(before, public_scope_id=public_scope_id),
+                after=_missing_override_state(spec.key, scope_type, exposed_scope_id),
                 success=True,
                 error_category=None,
                 duration_seconds=time.perf_counter() - started,
             )
             return event_from_model(audit)
+
+
+def _public_owner_scope_id(
+    *,
+    person_id: str | None,
+    space_id: str | None,
+    storage_scope_id: str,
+) -> str:
+    """Public owner id. complete-v2 uses Person/Space; storage UNIQUE may stay raw."""
+
+    return person_id or space_id or storage_scope_id
 
 
 def _missing_override_state(
@@ -278,11 +416,15 @@ def _missing_override_state(
     }
 
 
-def _override_state(record: RuntimeConfigOverrideRecord) -> dict[str, object]:
+def _override_state(
+    record: RuntimeConfigOverrideRecord,
+    *,
+    public_scope_id: str | None = None,
+) -> dict[str, object]:
     return {
         "key": record.config_key,
         "scope_type": record.scope_type.value,
-        "scope_id": record.scope_id,
+        "scope_id": record.scope_id if public_scope_id is None else public_scope_id,
         "override_exists": True,
         "value": record.value,
         "version": record.version,
@@ -306,6 +448,7 @@ class RuntimeConfigService:
         audit: AdminAuditService | None = None,
     ) -> None:
         self._settings = settings
+        self._database = database
         self.registry = registry or ConfigRegistry()
         self._repository = repository or RuntimeConfigRepository(database)
         self._audit = audit or AdminAuditService(database)
@@ -403,7 +546,20 @@ class RuntimeConfigService:
             group_id=group_id,
             session=session,
         )
-        return self._resolve(spec, records, user_id=user_id, group_id=group_id)
+        canonical_match, person_id, space_id = await self._owner_match(
+            user_id=user_id,
+            group_id=group_id,
+            session=session,
+        )
+        return self._resolve(
+            spec,
+            records,
+            user_id=user_id,
+            group_id=group_id,
+            canonical_match=canonical_match,
+            person_id=person_id,
+            space_id=space_id,
+        )
 
     async def set_override(
         self,
@@ -462,6 +618,16 @@ class RuntimeConfigService:
 
         async with self._mutation_lock:
             try:
+                storage_scope_id, person_id, space_id = await self._bind_write_scope(
+                    scope,
+                    normalized_scope_id,
+                    session=session,
+                )
+                public_scope_id = _public_owner_scope_id(
+                    person_id=person_id,
+                    space_id=space_id,
+                    storage_scope_id=storage_scope_id,
+                )
                 before_effective = await self.get_effective(
                     spec.key,
                     user_id=normalized_scope_id if scope is ConfigScopeType.USER else None,
@@ -471,7 +637,7 @@ class RuntimeConfigService:
                 before_override = await self._repository.get(
                     key=spec.key,
                     scope_type=scope,
-                    scope_id=normalized_scope_id,
+                    scope_id=storage_scope_id,
                     session=session,
                 )
                 actual_version = 0 if before_override is None else before_override.version
@@ -480,7 +646,7 @@ class RuntimeConfigService:
                         success=False,
                         key=spec.key,
                         scope_type=scope,
-                        scope_id=normalized_scope_id,
+                        scope_id=public_scope_id,
                         apply_mode=spec.apply_mode,
                         error_category="version_conflict",
                         detail="expected_version does not match the current override",
@@ -489,7 +655,7 @@ class RuntimeConfigService:
                     key=spec.key,
                     value=converted,
                     scope_type=scope,
-                    scope_id=normalized_scope_id,
+                    scope_id=storage_scope_id,
                     delete_override=False,
                     session=session,
                 )
@@ -497,14 +663,17 @@ class RuntimeConfigService:
                     spec=spec,
                     value=converted,
                     scope_type=scope,
-                    scope_id=normalized_scope_id,
+                    scope_id=storage_scope_id,
                     actor=actor,
                     before_state=(
-                        _override_state(before_override)
+                        _override_state(before_override, public_scope_id=public_scope_id)
                         if before_override is not None
-                        else _missing_override_state(spec.key, scope, normalized_scope_id)
+                        else _missing_override_state(spec.key, scope, public_scope_id)
                     ),
                     started=started,
+                    shadow_user_id=(normalized_scope_id if scope is ConfigScopeType.USER else None),
+                    person_id=person_id,
+                    space_id=space_id,
                     session=session,
                 )
                 pending_restart = (
@@ -515,7 +684,7 @@ class RuntimeConfigService:
                     success=True,
                     key=spec.key,
                     scope_type=scope,
-                    scope_id=normalized_scope_id,
+                    scope_id=public_scope_id,
                     before=before_effective.value,
                     after=converted,
                     apply_mode=spec.apply_mode,
@@ -602,10 +771,20 @@ class RuntimeConfigService:
                 detail=str(exc),
             )
         async with self._mutation_lock:
+            storage_scope_id, bound_person_id, bound_space_id = await self._bind_write_scope(
+                scope,
+                normalized_scope_id,
+                session=session,
+            )
+            public_scope_id = _public_owner_scope_id(
+                person_id=bound_person_id,
+                space_id=bound_space_id,
+                storage_scope_id=storage_scope_id,
+            )
             before = await self._repository.get(
                 key=spec.key,
                 scope_type=scope,
-                scope_id=normalized_scope_id,
+                scope_id=storage_scope_id,
                 session=session,
             )
             if before is None:
@@ -624,7 +803,7 @@ class RuntimeConfigService:
                     False,
                     spec.key,
                     scope,
-                    normalized_scope_id,
+                    public_scope_id,
                     apply_mode=spec.apply_mode,
                     error_category="not_found",
                     detail="当前作用域没有数据库覆盖值",
@@ -634,7 +813,7 @@ class RuntimeConfigService:
                     False,
                     spec.key,
                     scope,
-                    normalized_scope_id,
+                    public_scope_id,
                     apply_mode=spec.apply_mode,
                     error_category="version_conflict",
                     detail="expected_version does not match the current override",
@@ -644,20 +823,26 @@ class RuntimeConfigService:
                     key=spec.key,
                     value=None,
                     scope_type=scope,
-                    scope_id=normalized_scope_id,
+                    scope_id=before.scope_id,
                     delete_override=True,
                     session=session,
                 )
                 audit = await self._repository.delete_with_audit(
                     spec=spec,
                     scope_type=scope,
-                    scope_id=normalized_scope_id,
+                    scope_id=before.scope_id,
                     actor=actor,
                     before=before,
                     started=started,
+                    public_scope_id=public_scope_id,
                     session=session,
                 )
                 remaining = await self._repository.list_relevant(
+                    user_id=normalized_scope_id if scope is ConfigScopeType.USER else None,
+                    group_id=normalized_scope_id if scope is ConfigScopeType.GROUP else None,
+                    session=session,
+                )
+                canonical_match, person_id, space_id = await self._owner_match(
                     user_id=normalized_scope_id if scope is ConfigScopeType.USER else None,
                     group_id=normalized_scope_id if scope is ConfigScopeType.GROUP else None,
                     session=session,
@@ -668,6 +853,9 @@ class RuntimeConfigService:
                     user_id=normalized_scope_id if scope is ConfigScopeType.USER else None,
                     group_id=normalized_scope_id if scope is ConfigScopeType.GROUP else None,
                     honor_restart_activation=False,
+                    canonical_match=canonical_match,
+                    person_id=person_id,
+                    space_id=space_id,
                 )
                 active_effective = await self.get_effective(
                     spec.key,
@@ -683,7 +871,7 @@ class RuntimeConfigService:
                     True,
                     spec.key,
                     scope,
-                    normalized_scope_id,
+                    public_scope_id,
                     before=before.value,
                     after=after_effective.value,
                     apply_mode=spec.apply_mode,
@@ -702,7 +890,7 @@ class RuntimeConfigService:
                     operation="delete_override",
                     target_type=f"config.{scope.value}",
                     target_id=spec.key,
-                    before=_override_state(before),
+                    before=_override_state(before, public_scope_id=public_scope_id),
                     success=False,
                     error_category=category,
                     duration_seconds=time.perf_counter() - started,
@@ -712,7 +900,7 @@ class RuntimeConfigService:
                     False,
                     spec.key,
                     scope,
-                    normalized_scope_id,
+                    public_scope_id,
                     apply_mode=spec.apply_mode,
                     error_category=category,
                     detail=str(exc),
@@ -830,10 +1018,20 @@ class RuntimeConfigService:
             )
 
         async with self._mutation_lock:
+            storage_scope_id, person_id, space_id = await self._bind_write_scope(
+                scope,
+                scope_id,
+                session=session,
+            )
+            public_scope_id = _public_owner_scope_id(
+                person_id=person_id,
+                space_id=space_id,
+                storage_scope_id=storage_scope_id,
+            )
             current = await self._repository.get(
                 key=spec.key,
                 scope_type=scope,
-                scope_id=scope_id,
+                scope_id=storage_scope_id,
                 session=session,
             )
             actual_version = 0 if current is None else current.version
@@ -842,7 +1040,7 @@ class RuntimeConfigService:
                     False,
                     spec.key,
                     scope,
-                    scope_id,
+                    public_scope_id,
                     apply_mode=spec.apply_mode,
                     error_category="version_conflict",
                     detail="expected_version does not match the current override",
@@ -854,7 +1052,11 @@ class RuntimeConfigService:
                     operation="rollback",
                     target_type=f"config.{scope.value}",
                     target_id=spec.key,
-                    before=_override_state(current) if current else None,
+                    before=(
+                        _override_state(current, public_scope_id=public_scope_id)
+                        if current
+                        else None
+                    ),
                     after={"change_id": change_id},
                     success=False,
                     error_category="rollback_conflict",
@@ -865,7 +1067,7 @@ class RuntimeConfigService:
                     False,
                     spec.key,
                     scope,
-                    scope_id,
+                    public_scope_id,
                     apply_mode=spec.apply_mode,
                     error_category="rollback_conflict",
                     detail="该作用域之后已有其他修改，拒绝覆盖较新的值",
@@ -880,7 +1082,7 @@ class RuntimeConfigService:
                         key=spec.key,
                         value=converted,
                         scope_type=scope,
-                        scope_id=scope_id,
+                        scope_id=storage_scope_id,
                         delete_override=False,
                         session=session,
                     )
@@ -894,16 +1096,18 @@ class RuntimeConfigService:
                         spec=spec,
                         value=converted,
                         scope_type=scope,
-                        scope_id=scope_id,
+                        scope_id=storage_scope_id,
                         actor=actor,
                         before_state=(
-                            _override_state(current)
+                            _override_state(current, public_scope_id=public_scope_id)
                             if current
-                            else _missing_override_state(spec.key, scope, scope_id)
+                            else _missing_override_state(spec.key, scope, public_scope_id)
                         ),
                         started=started,
                         initial_version=initial,
                         operation=f"rollback:{change_id}",
+                        person_id=person_id,
+                        space_id=space_id,
                         session=session,
                     )
                     active_effective = await self.get_effective(
@@ -920,7 +1124,7 @@ class RuntimeConfigService:
                         True,
                         spec.key,
                         scope,
-                        scope_id,
+                        public_scope_id,
                         before=current.value if current else None,
                         after=converted,
                         apply_mode=spec.apply_mode,
@@ -939,7 +1143,11 @@ class RuntimeConfigService:
                         operation="rollback",
                         target_type=f"config.{scope.value}",
                         target_id=spec.key,
-                        before=_override_state(current) if current else None,
+                        before=(
+                            _override_state(current, public_scope_id=public_scope_id)
+                            if current
+                            else None
+                        ),
                         after={"change_id": change_id},
                         success=False,
                         error_category="validation_error",
@@ -950,7 +1158,7 @@ class RuntimeConfigService:
                         False,
                         spec.key,
                         scope,
-                        scope_id,
+                        public_scope_id,
                         apply_mode=spec.apply_mode,
                         error_category="validation_error",
                         detail=str(exc),
@@ -973,7 +1181,7 @@ class RuntimeConfigService:
                     False,
                     spec.key,
                     scope,
-                    scope_id,
+                    public_scope_id,
                     apply_mode=spec.apply_mode,
                     error_category="rollback_conflict",
                     detail="当前覆盖已经不存在",
@@ -983,7 +1191,7 @@ class RuntimeConfigService:
                     key=spec.key,
                     value=None,
                     scope_type=scope,
-                    scope_id=scope_id,
+                    scope_id=storage_scope_id,
                     delete_override=True,
                     session=session,
                 )
@@ -994,7 +1202,7 @@ class RuntimeConfigService:
                     operation="rollback",
                     target_type=f"config.{scope.value}",
                     target_id=spec.key,
-                    before=_override_state(current),
+                    before=_override_state(current, public_scope_id=public_scope_id),
                     after={"change_id": change_id},
                     success=False,
                     error_category="validation_error",
@@ -1005,7 +1213,7 @@ class RuntimeConfigService:
                     False,
                     spec.key,
                     scope,
-                    scope_id,
+                    public_scope_id,
                     apply_mode=spec.apply_mode,
                     error_category="validation_error",
                     detail=str(exc),
@@ -1013,14 +1221,20 @@ class RuntimeConfigService:
             audit = await self._repository.delete_with_audit(
                 spec=spec,
                 scope_type=scope,
-                scope_id=scope_id,
+                scope_id=storage_scope_id,
                 actor=actor,
                 before=current,
                 started=started,
                 operation=f"rollback:{change_id}",
+                public_scope_id=public_scope_id,
                 session=session,
             )
             remaining = await self._repository.list_relevant(
+                user_id=scope_id if scope is ConfigScopeType.USER else None,
+                group_id=scope_id if scope is ConfigScopeType.GROUP else None,
+                session=session,
+            )
+            canonical_match, person_id, space_id = await self._owner_match(
                 user_id=scope_id if scope is ConfigScopeType.USER else None,
                 group_id=scope_id if scope is ConfigScopeType.GROUP else None,
                 session=session,
@@ -1031,6 +1245,9 @@ class RuntimeConfigService:
                 user_id=scope_id if scope is ConfigScopeType.USER else None,
                 group_id=scope_id if scope is ConfigScopeType.GROUP else None,
                 honor_restart_activation=False,
+                canonical_match=canonical_match,
+                person_id=person_id,
+                space_id=space_id,
             )
             active_effective = await self.get_effective(
                 spec.key,
@@ -1046,7 +1263,7 @@ class RuntimeConfigService:
                 True,
                 spec.key,
                 scope,
-                scope_id,
+                public_scope_id,
                 before=current.value,
                 after=effective.value,
                 apply_mode=spec.apply_mode,
@@ -1091,6 +1308,10 @@ class RuntimeConfigService:
             user_id=user_id,
             group_id=group_id,
         )
+        canonical_match, person_id, space_id = await self._owner_match(
+            user_id=user_id,
+            group_id=group_id,
+        )
 
         def value(key: str) -> ConfigValue:
             spec = self.registry.get(key)
@@ -1099,6 +1320,9 @@ class RuntimeConfigService:
                 records,
                 user_id=user_id,
                 group_id=group_id,
+                canonical_match=canonical_match,
+                person_id=person_id,
+                space_id=space_id,
             ).value
 
         delay_min = float(cast(float | int, value("reply.delay_min_seconds")))
@@ -1477,15 +1701,19 @@ class RuntimeConfigService:
         user_id: str | None,
         group_id: str | None,
         honor_restart_activation: bool = True,
+        canonical_match: bool = False,
+        person_id: str | None = None,
+        space_id: str | None = None,
     ) -> EffectiveConfigValue:
         selected_records = records
         if honor_restart_activation and spec.apply_mode is ConfigApplyMode.RESTART_REQUIRED:
             selected_records = tuple(self._active_restart.values())
-        by_scope = {
-            (row.config_key, row.scope_type, row.scope_id): row
+        valid_rows = [
+            row
             for row in selected_records
             if row.config_key == spec.key and self._valid_stored_record(row)
-        }
+        ]
+        by_scope = {(row.config_key, row.scope_type, row.scope_id): row for row in valid_rows}
         candidates = (
             (
                 ConfigScopeType.USER,
@@ -1503,7 +1731,21 @@ class RuntimeConfigService:
         for scope, scope_id in candidates:
             if scope_id is None or scope not in spec.allowed_scopes:
                 continue
-            row = by_scope.get((spec.key, scope, scope_id))
+            if canonical_match:
+                row = self._canonical_row(
+                    valid_rows,
+                    scope=scope,
+                    person_id=person_id,
+                    space_id=space_id,
+                )
+                exposed_scope_id = ""
+                if row is not None and scope is ConfigScopeType.USER:
+                    exposed_scope_id = row.canonical_person_id or ""
+                elif row is not None and scope is ConfigScopeType.GROUP:
+                    exposed_scope_id = row.canonical_space_id or ""
+            else:
+                row = by_scope.get((spec.key, scope, scope_id))
+                exposed_scope_id = row.scope_id if row is not None else ""
             if row is not None:
                 # Pending is computed process-wide by pending_restart_count; an activated
                 # row itself is never pending for the value returned here.
@@ -1512,7 +1754,7 @@ class RuntimeConfigService:
                     value=row.value,
                     source=f"runtime:{scope.value}",
                     scope_type=scope,
-                    scope_id=scope_id,
+                    scope_id=exposed_scope_id,
                     apply_mode=spec.apply_mode,
                     pending_restart=False,
                 )
@@ -1544,6 +1786,70 @@ class RuntimeConfigService:
             return self.registry.convert(spec, row.value) == row.value
         except ValueError:
             return False
+
+    @staticmethod
+    def _canonical_row(
+        rows: list[RuntimeConfigOverrideRecord],
+        *,
+        scope: ConfigScopeType,
+        person_id: str | None,
+        space_id: str | None,
+    ) -> RuntimeConfigOverrideRecord | None:
+        if scope is ConfigScopeType.USER:
+            matched = [
+                row
+                for row in rows
+                if row.scope_type is ConfigScopeType.USER and row.canonical_person_id == person_id
+            ]
+        elif scope is ConfigScopeType.GROUP:
+            matched = [
+                row
+                for row in rows
+                if row.scope_type is ConfigScopeType.GROUP and row.canonical_space_id == space_id
+            ]
+        else:
+            matched = [
+                row
+                for row in rows
+                if row.scope_type is ConfigScopeType.GLOBAL
+                and row.canonical_person_id is None
+                and row.canonical_space_id is None
+            ]
+        if len(matched) > 1:
+            raise IdentityDualWriteError("canonical_owner_mismatch")
+        return matched[0] if matched else None
+
+    async def _owner_match(
+        self,
+        *,
+        user_id: str | None,
+        group_id: str | None,
+        session: AsyncSession | None = None,
+    ) -> tuple[bool, str | None, str | None]:
+        async with optional_session(self._database, session, write=False) as active:
+            if not await identity_runtime_is_complete_v2(active):
+                return False, None, None
+            person_id = await resolve_live_person_id(active, user_id) if user_id else None
+            space_id = await resolve_live_space_id(active, group_id) if group_id else None
+            return True, person_id, space_id
+
+    async def _bind_write_scope(
+        self,
+        scope: ConfigScopeType,
+        scope_id: str,
+        *,
+        session: AsyncSession | None = None,
+    ) -> tuple[str, str | None, str | None]:
+        if scope is ConfigScopeType.GLOBAL:
+            return "", None, None
+        async with optional_session(self._database, session, write=False) as active:
+            if not await identity_runtime_is_complete_v2(active):
+                return scope_id, None, None
+            if scope is ConfigScopeType.USER:
+                resolved = await resolve_c24_user_config_scope(active, scope_id)
+                return resolved.storage_scope_id, resolved.person_id, None
+            resolved_group = await resolve_c24_group_config_scope(active, scope_id)
+            return resolved_group.storage_scope_id, None, resolved_group.space_id
 
     def _validate_write(
         self,

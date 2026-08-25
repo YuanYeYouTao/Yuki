@@ -41,8 +41,24 @@ from qq_ai_bot.identity.canonical_extension_schema import (
     C6_TRIGGER_NAMES,
     C6_TRIGGER_SQL,
 )
+from qq_ai_bot.identity.canonical_memory_schema import (
+    C21_FACT_UNIQUE_INDEX_NAMES,
+    C21_FACT_UNIQUE_INDEX_SQL,
+    C21_MEMORY_FACT_CONFLICT_SQL,
+    C21_OWNER_TABLES,
+    C21_OWNERSHIP_COLUMNS,
+    C21_OWNERSHIP_FOREIGN_KEYS,
+    C21_OWNERSHIP_INDEXES,
+    C21_REFLECTION_UNIQUE_INDEX_NAMES,
+    C21_REFLECTION_UNIQUE_INDEX_SQL,
+    C21_TRIGGER_NAMES,
+    C21_TRIGGER_SQL,
+)
 from qq_ai_bot.identity.canonical_ownership_schema import C5_TRIGGER_NAMES, C5_TRIGGER_SQL
-from qq_ai_bot.identity.db_models import _install_c6_triggers_after_metadata_create
+from qq_ai_bot.identity.db_models import (
+    _install_c6_triggers_after_metadata_create,
+    _install_c21_triggers_after_metadata_create,
+)
 from qq_ai_bot.persistence.metadata import Base
 
 _MIGRATION_PATH = Path("migrations/versions/0047_canonical_extension_shadows.py")
@@ -506,7 +522,7 @@ def test_fresh_upgrade_head_creates_only_inventory_columns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = tmp_path / "fresh-head.db"
-    _upgrade(path, monkeypatch, "head")
+    _upgrade(path, monkeypatch, "0047")
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0047",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -552,7 +568,7 @@ def test_empty_fresh_and_0046_to_0047_schemas_are_equivalent(
 ) -> None:
     fresh = tmp_path / "fresh.db"
     upgraded = tmp_path / "from-0046.db"
-    _upgrade(fresh, monkeypatch, "head")
+    _upgrade(fresh, monkeypatch, "0047")
     _upgrade(upgraded, monkeypatch, "0046")
     before = _schema_dump(upgraded)
     _upgrade(upgraded, monkeypatch, "0047")
@@ -561,6 +577,7 @@ def test_empty_fresh_and_0046_to_0047_schemas_are_equivalent(
     preserved = {
         "alembic_version",
         *C6_OWNERSHIP_TABLES,
+        *C21_OWNER_TABLES,
         "trg_person_aliases_ownership_shadow_update",
         "trg_memory_facts_ownership_shadow_update",
     }
@@ -582,6 +599,9 @@ def test_metadata_create_all_installs_c6_triggers_without_private_helper(
     tmp_path: Path,
 ) -> None:
     assert event.contains(Base.metadata, "after_create", _install_c6_triggers_after_metadata_create)
+    assert event.contains(
+        Base.metadata, "after_create", _install_c21_triggers_after_metadata_create
+    )
     path = tmp_path / "full-create-all.db"
     engine = create_engine(f"sqlite:///{path.as_posix()}")
     event.listen(engine, "connect", _enable_sqlite_fk)
@@ -589,7 +609,9 @@ def test_metadata_create_all_installs_c6_triggers_without_private_helper(
     names = _sqlite_trigger_names(path)
     assert set(C6_TRIGGER_NAMES) <= names
     assert set(C5_TRIGGER_NAMES) <= names
+    assert set(C21_TRIGGER_NAMES) <= names
     assert len(set(C6_TRIGGER_NAMES) & names) == len(C6_TRIGGER_NAMES)
+    assert len(set(C21_TRIGGER_NAMES) & names) == len(C21_TRIGGER_NAMES)
     Base.metadata.create_all(engine)
     assert _sqlite_trigger_names(path) == names
     engine.dispose()
@@ -631,7 +653,7 @@ def test_c6_metadata_hook_skips_non_sqlite_dialect() -> None:
 def test_alembic_heads_is_exactly_0047() -> None:
     config = Config("alembic.ini")
     heads = ScriptDirectory.from_config(config).get_heads()
-    assert heads == ["0047"]
+    assert heads == ["0048"]
 
 
 def test_0047_is_self_contained_alembic() -> None:
@@ -660,6 +682,12 @@ def test_0047_is_self_contained_alembic() -> None:
     assert loaded._C6_TRIGGER_NAMES == C6_TRIGGER_NAMES
     assert loaded._EXTENSION_INDEXES == C6_OWNERSHIP_INDEXES
     assert loaded._C6_SHAPE_DISCRIMINATORS == C6_SHAPE_DISCRIMINATORS
+    assert loaded._C21_TRIGGER_SQL == C21_TRIGGER_SQL
+    assert loaded._C21_TRIGGER_NAMES == C21_TRIGGER_NAMES
+    assert loaded._C21_INDEXES == C21_OWNERSHIP_INDEXES
+    assert loaded._C21_FACT_UNIQUE_INDEX_SQL == C21_FACT_UNIQUE_INDEX_SQL
+    assert loaded._C21_REFLECTION_UNIQUE_INDEX_SQL == C21_REFLECTION_UNIQUE_INDEX_SQL
+    assert loaded._C21_MEMORY_FACT_CONFLICT_SQL == C21_MEMORY_FACT_CONFLICT_SQL
     assert loaded._C5_HARDENED_UPDATE_SQL == (
         next(
             item for item in C5_TRIGGER_SQL if "trg_person_aliases_ownership_shadow_update" in item
@@ -704,7 +732,7 @@ def test_populated_downgrade_0047_to_0046_preserves_legacy_rows(
     expected = tmp_path / "expected-0046.db"
     path = tmp_path / "populated-downgrade.db"
     _upgrade(expected, monkeypatch, "0046")
-    _upgrade(path, monkeypatch, "head")
+    _upgrade(path, monkeypatch, "0047")
     with _connect(path) as connection:
         ids = _seed_identity(connection, _NOW)
         _seed_people_and_groups(connection)
@@ -1488,4 +1516,142 @@ def test_create_all_restores_missing_non_marker_triggers(tmp_path: Path) -> None
     names = _sqlite_trigger_names(path)
     assert set(C6_TRIGGER_NAMES) <= names
     assert set(C5_TRIGGER_NAMES) <= names
+    assert set(C21_TRIGGER_NAMES) <= names
     engine.dispose()
+
+
+def _normalized_c21_schema(path: Path) -> dict[str, Any]:
+    full = _normalized_schema(path)
+    tables = [name for name in full["tables"] if name in C21_OWNER_TABLES]
+    fact_indexes = set(C21_FACT_UNIQUE_INDEX_NAMES)
+    reflection_indexes = set(C21_REFLECTION_UNIQUE_INDEX_NAMES)
+    wanted_indexes = set(C21_OWNERSHIP_INDEXES) | fact_indexes | reflection_indexes
+    return {
+        "tables": tables,
+        "columns": {
+            name: [
+                column
+                for column in full["columns"][name]
+                if column[0] in C21_OWNERSHIP_COLUMNS[name]
+            ]
+            for name in tables
+        },
+        "indexes": {
+            name: [item for item in full["indexes"][name] if item[0] in wanted_indexes]
+            for name in (*tables, "memory_facts")
+            if name in full["indexes"]
+        },
+        "foreign_keys": {
+            name: [
+                item
+                for item in full["foreign_keys"][name]
+                if item[1] in C21_OWNERSHIP_COLUMNS[name]
+            ]
+            for name in tables
+        },
+        "triggers": {
+            name: sql for name, sql in full["triggers"].items() if name in C21_TRIGGER_NAMES
+        },
+    }
+
+
+def test_fresh_upgrade_0047_creates_c21_memory_owners(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "fresh-c21.db"
+    _upgrade(path, monkeypatch, "0047")
+    expected_fks = {
+        (table, parent, column, parent_column, "RESTRICT", "RESTRICT", "NONE")
+        for table, column, parent, parent_column in C21_OWNERSHIP_FOREIGN_KEYS
+    }
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0047",)
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        for table, columns in C21_OWNERSHIP_COLUMNS.items():
+            present = set(_column_names(connection, table))
+            assert set(columns) <= present
+            info = {str(row[1]): row for row in connection.execute(f'PRAGMA table_info("{table}")')}
+            for column in columns:
+                assert info[column][3] == 0
+                assert info[column][4] is None
+        indexes = set().union(*(_index_names(connection, table) for table in C21_OWNER_TABLES))
+        indexes.update(_index_names(connection, "memory_facts"))
+        assert set(C21_OWNERSHIP_INDEXES) <= indexes
+        assert set(C21_FACT_UNIQUE_INDEX_NAMES) <= indexes
+        assert set(C21_REFLECTION_UNIQUE_INDEX_NAMES) <= indexes
+        assert set(_index_names(connection, "memory_facts")) >= {
+            "uq_memory_facts_active_person_key",
+            "uq_memory_facts_active_person_group_key",
+            "uq_memory_facts_active_group_key",
+            "uq_memory_facts_active_self_key",
+            *C21_FACT_UNIQUE_INDEX_NAMES,
+        }
+        shadow_fks = [
+            (table, row[2], row[3], row[4], row[5], row[6], row[7])
+            for table in C21_OWNER_TABLES
+            for row in connection.execute(f'PRAGMA foreign_key_list("{table}")')
+            if str(row[3]) in C21_OWNERSHIP_COLUMNS[table]
+        ]
+        assert set(shadow_fks) == expected_fks
+        trigger_names = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND name NOT LIKE 'sqlite_%'"
+            )
+        }
+        assert set(C21_TRIGGER_NAMES) <= trigger_names
+
+
+def test_orm_metadata_matches_0047_c21_schema(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    migrated = tmp_path / "migrated-c21.db"
+    orm = tmp_path / "orm-c21.db"
+    _upgrade(migrated, monkeypatch, "head")
+    _create_orm_c6_schema(orm)
+    assert _normalized_c21_schema(migrated) == _normalized_c21_schema(orm)
+
+
+def test_0047_blocks_canonical_memory_fact_duplicates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "c21-conflict.db"
+    _upgrade(path, monkeypatch, "0046")
+    with _connect(path) as connection:
+        ids = _seed_identity(connection, _NOW)
+        _seed_people_and_groups(connection)
+        for subject in ("peer-1", "peer-2"):
+            _insert_memory_fact(
+                connection,
+                now=_NOW,
+                scope_type="person",
+                memory_key="dup-person",
+                subject_user_id=subject,
+                canonical_subject_person_id=ids["person_a"],
+            )
+        connection.commit()
+    with pytest.raises(Exception, match="canonical memory fact conflict"):
+        _upgrade(path, monkeypatch, "0047")
+
+
+def test_0005_excludes_c21_memory_owner_tables_and_tokens() -> None:
+    source = Path("migrations/versions/0005_person_centric_v1.py").read_text(encoding="utf-8")
+    for table in (*C21_OWNER_TABLES, "memory_facts"):
+        assert f'"{table}"' in source
+    for token in (
+        "uq_memory_facts_active_canonical_person_key",
+        "trg_memory_jobs_memory_owner_insert",
+        "memory_owner_insert",
+        "_C21_",
+    ):
+        assert token not in source
+
+
+def test_c6_inventory_still_excludes_memory_owners() -> None:
+    excluded = " ".join(reason for _name, reason in C6_EXCLUDED_EXTENSION)
+    assert "C21" in excluded
+    assert "memory_jobs" not in C6_OWNERSHIP_COLUMNS
+    assert "memory_tool_receipts" not in C6_OWNERSHIP_COLUMNS

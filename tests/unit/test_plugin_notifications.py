@@ -216,8 +216,10 @@ async def test_outbox_delivers_persisted_person_after_legacy_remap(
 
     from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
     from qq_ai_bot.identity.db_models import IdentityBindingModel
+    from qq_ai_bot.identity.dual_write import (
+        ensure_canonical_presence_preconfig as ensure_v2_presence,
+    )
     from qq_ai_bot.identity.dual_write import sync_account
-    from qq_ai_bot.identity.ingress import ensure_v2_presence
     from qq_ai_bot.identity.routing import PresenceRouter
     from qq_ai_bot.identity.shadows import person_id_for
     from qq_ai_bot.identity.write_settings import (
@@ -345,8 +347,10 @@ async def test_outbox_delivers_persisted_space_after_legacy_remap(
 
     from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
     from qq_ai_bot.identity.db_models import SpaceBindingModel
+    from qq_ai_bot.identity.dual_write import (
+        ensure_canonical_presence_preconfig as ensure_v2_presence,
+    )
     from qq_ai_bot.identity.dual_write import sync_space
-    from qq_ai_bot.identity.ingress import ensure_v2_presence
     from qq_ai_bot.identity.routing import PresenceRouter
     from qq_ai_bot.identity.shadows import space_id_for
     from qq_ai_bot.identity.write_settings import (
@@ -464,13 +468,7 @@ async def test_outbox_delivers_persisted_space_after_legacy_remap(
 @pytest.mark.asyncio
 async def test_v2_outbox_without_canonical_shadows_fails_closed(
     database: Database,
-    tmp_path: Path,
 ) -> None:
-    from qq_ai_bot.plugin_host.notification_delivery import (
-        NotificationDeliveryReceipt,
-        PluginNotificationOutboxWorker,
-    )
-
     await _running_plugin(database)
     await PeopleRepository(database).observe(user_id="9000", nickname="Admin")
     await GroupSettingsRepository(database).set_enabled("2001", True)
@@ -500,39 +498,8 @@ async def test_v2_outbox_without_canonical_shadows_fails_closed(
         row.canonical_target_person_id = None
         row.canonical_target_space_id = None
     await _flip_v2(database)
-
-    class _Capture:
-        def __init__(self) -> None:
-            self.calls: list[dict[str, object]] = []
-
-        async def send_text(self, **kwargs: object) -> NotificationDeliveryReceipt:
-            self.calls.append(dict(kwargs))
-            return NotificationDeliveryReceipt(
-                message_id="nope",
-                sender_account_id="9999",
-                external_target_id="2001",
-                route_kind="account",
-            )
-
-    transport = _Capture()
-
-    class _Ledger:
-        async def get_event(self, _event_id: int) -> None:
-            return None
-
-        async def append(self, **_kwargs: object) -> None:
-            raise AssertionError("must not record a failed-closed send")
-
-    worker = PluginNotificationOutboxWorker(
-        repository=notifications,
-        artifacts=PluginMediaArtifactStore(database, root=tmp_path / "artifacts"),
-        ledger=_Ledger(),  # type: ignore[arg-type]
-        transport=transport,  # type: ignore[arg-type]
-    )
     item = await notifications.claim_outbox()
-    assert item is not None
-    await worker._deliver(item)
-    assert transport.calls == []
+    assert item is None
     async with database.sessions() as session:
         row = await session.scalar(select(PluginNotificationOutboxModel))
     assert row is not None
@@ -544,8 +511,13 @@ async def test_v2_outbox_without_canonical_shadows_fails_closed(
 async def test_v2_grant_and_publish_use_active_bindings_without_people(
     database: Database,
 ) -> None:
-    from qq_ai_bot.identity.dual_write import ensure_canonical_person_preconfig
+    from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
+    from qq_ai_bot.identity.dual_write import (
+        ensure_canonical_person_preconfig,
+        ensure_canonical_presence_preconfig,
+    )
     from qq_ai_bot.identity.shadows import active_person_id_for
+    from qq_ai_bot.persistence.models import GroupModel, PersonModel
 
     await _running_plugin(database)
     await _flip_v2(database)
@@ -553,6 +525,7 @@ async def test_v2_grant_and_publish_use_active_bindings_without_people(
     async with database.sessions() as session, session.begin():
         creator = await ensure_canonical_person_preconfig(session, "9000", now=now)
         target = await ensure_canonical_person_preconfig(session, "1001", now=now)
+        await ensure_canonical_presence_preconfig(session, "8001", now=now)
     notifications = PluginNotificationRepository(database)
     grant_target = NotificationTarget(target_type="private", target_id="1001")
     with pytest.raises(PluginPermissionError, match="unknown"):
@@ -605,6 +578,15 @@ async def test_v2_grant_and_publish_use_active_bindings_without_people(
     assert event is not None
     assert event.author_kind == "system"
     assert event.author_person_id is None
+    async with database.sessions() as session:
+        people = int(await session.scalar(select(func.count()).select_from(PersonModel)) or 0)
+        groups = int(await session.scalar(select(func.count()).select_from(GroupModel)) or 0)
+        scopes = int(
+            await session.scalar(select(func.count()).select_from(ConversationScopeModel)) or 0
+        )
+    assert people == 0
+    assert groups == 0
+    assert scopes == 0
 
 
 @pytest.mark.asyncio
@@ -614,6 +596,7 @@ async def test_v2_grant_unknown_disabled_and_missing_creator_fail_closed(
     from qq_ai_bot.identity.db_models import IdentityBindingModel
     from qq_ai_bot.identity.dual_write import (
         ensure_canonical_person_preconfig,
+        ensure_canonical_presence_preconfig,
         ensure_canonical_space_preconfig,
     )
     from qq_ai_bot.persistence.models import GroupModel, PersonModel
@@ -625,6 +608,7 @@ async def test_v2_grant_unknown_disabled_and_missing_creator_fail_closed(
         await ensure_canonical_person_preconfig(session, "9000", now=now)
         await ensure_canonical_person_preconfig(session, "1001", now=now)
         await ensure_canonical_space_preconfig(session, "2001", now=now)
+        await ensure_canonical_presence_preconfig(session, "8001", now=now)
         binding = await session.scalar(
             select(IdentityBindingModel).where(IdentityBindingModel.external_account_id == "1001")
         )
@@ -653,7 +637,13 @@ async def test_v2_grant_unknown_disabled_and_missing_creator_fail_closed(
             created_by_user_id="9000",
         )
     async with database.sessions() as session:
+        from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
+
         people = int(await session.scalar(select(func.count()).select_from(PersonModel)) or 0)
         groups = int(await session.scalar(select(func.count()).select_from(GroupModel)) or 0)
+        scopes = int(
+            await session.scalar(select(func.count()).select_from(ConversationScopeModel)) or 0
+        )
     assert people == 0
     assert groups == 0
+    assert scopes == 0

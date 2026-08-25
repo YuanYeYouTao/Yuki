@@ -514,6 +514,86 @@ async def test_target_resolver_uses_only_real_current_event_references(
     assert referenced == ["1002", "1003"]
     assert all(target.group_id == "2001" for target in targets if target.group_id)
 
+
+@pytest.mark.asyncio
+async def test_complete_v2_target_resolver_skips_presence_and_external(
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from uuid import uuid4
+
+    from qq_ai_bot.identity.db_models import IdentityBindingModel, IdentityRuntimeStateModel
+    from qq_ai_bot.identity.dual_write import _create_person_binding, ensure_v2_space
+    from qq_ai_bot.identity.dual_write import (
+        ensure_canonical_presence_preconfig as ensure_v2_presence,
+    )
+    from qq_ai_bot.identity.inventory import IDENTITY_PLATFORM
+
+    now = datetime(2026, 8, 24, tzinfo=UTC)
+    people = PeopleRepository(database)
+    seen: list[str] = []
+    real_members = PeopleRepository.members_in_group
+
+    async def members(
+        self: PeopleRepository,
+        user_ids: tuple[str, ...],
+        group_id: str,
+    ) -> frozenset[str]:
+        seen.extend(user_ids)
+        return await real_members(self, user_ids, group_id)
+
+    monkeypatch.setattr(PeopleRepository, "members_in_group", members)
+    async with database.sessions() as session, session.begin():
+        runtime = await session.get(IdentityRuntimeStateModel, 1)
+        assert runtime is not None
+        runtime.state = "v2"
+        runtime.cutover_id = "550e8400-e29b-41d4-a716-446655440099"
+        runtime.source_fingerprint = "cutover-fingerprint"
+        runtime.completed_at = now
+        await ensure_v2_presence(session, "8000")
+        await ensure_v2_presence(session, "8001")
+        await ensure_v2_space(session, "2001")
+        created = await _create_person_binding(
+            session, external_id="1001", display_name="当前", now=now
+        )
+        session.add(
+            IdentityBindingModel(
+                id=str(uuid4()),
+                person_id=created.person_id,
+                platform=IDENTITY_PLATFORM,
+                external_account_id="1002",
+                display_name="乙",
+                status="active",
+                revision=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        await _create_person_binding(session, external_id="1003", display_name="被回复", now=now)
+    await people.observe(user_id="1002", nickname="乙", group_id="2001")
+    await people.observe(user_id="1003", nickname="被回复", group_id="2001")
+    inbound = InboundMessage(
+        message_id="v2-targets",
+        event_type="message:group:normal",
+        scope_type=ScopeType.GROUP,
+        sender=SenderIdentity(user_id="1001", nickname="当前"),
+        text="问他们",
+        group_id="2001",
+        bot_user_id="8000",
+        mentioned_user_ids=("8001", "7777", "1002"),
+        reply_sender_user_id="1003",
+    )
+    targets = await MemoryTargetResolver(people).resolve(inbound, max_referenced=5)
+    referenced = [
+        target.subject_user_id
+        for target in targets
+        if target.role is MemoryTargetRole.REFERENCED_PERSON_GROUP
+    ]
+    assert referenced == ["1002", "1003"]
+    assert "8001" not in seen
+    assert "7777" not in seen
+    assert "8000" not in seen
+
     private = replace(inbound, scope_type=ScopeType.PRIVATE, group_id=None)
     private_targets = await MemoryTargetResolver(people).resolve(private, max_referenced=5)
     assert [target.role for target in private_targets] == [MemoryTargetRole.CURRENT_PERSON]

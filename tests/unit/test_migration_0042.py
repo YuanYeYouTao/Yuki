@@ -107,7 +107,7 @@ def test_0042_fresh_upgrade_head_uses_fk_enforced_cutover(
     command.upgrade(config, "head")
 
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0047",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0048",)
         tables = _tables(connection)
         assert _NEW_TABLES <= tables
         assert not (_OLD_ROLLUP_TABLES & tables)
@@ -127,6 +127,8 @@ def test_0042_fresh_upgrade_head_uses_fk_enforced_cutover(
             "space_active_routes",
             "control_command_receipts",
             "canonical_event_receipts",
+            "identity_cutover_manifests",
+            "identity_cutover_runs",
         } <= tables
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 

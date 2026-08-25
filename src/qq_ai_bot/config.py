@@ -357,7 +357,7 @@ class Settings(BaseSettings):
     conversation_rollup_batch_max_events: int = Field(default=256, ge=1)
     conversation_rollup_batch_max_characters: int = Field(default=32_768, ge=1)
     conversation_rollup_worker_max_batches_per_claim: int = Field(default=5, ge=1)
-    conversation_rollup_summary_max_characters: int = Field(default=1200, ge=1)
+    conversation_rollup_summary_max_characters: int = Field(default=2400, ge=1)
     conversation_rollup_retry_max_seconds: int = Field(default=960, ge=1)
     conversation_rollup_lease_heartbeat_seconds: float = Field(default=60.0, gt=0)
     conversation_rollup_llm_origins: str = "user_message"

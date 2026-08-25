@@ -186,7 +186,7 @@ def test_constructed_3_5_3_deployment_upgrades_to_0042_without_losing_memory(
     _migrate(db, "0041")
     _migrate(db, "head")
     with sqlite3.connect(db) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0047",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0048",)
         tables = {
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")

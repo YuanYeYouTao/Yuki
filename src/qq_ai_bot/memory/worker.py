@@ -144,16 +144,16 @@ class MemoryWorker:
         *,
         content_characters: int = 0,
     ) -> bool:
-        created = await self._jobs.enqueue(event_id, conversation_key)
+        created, batch_key = await self._jobs.enqueue_resolved(event_id, conversation_key)
         if created:
-            count, characters = self._queued_by_conversation.get(conversation_key, (0, 0))
+            count, characters = self._queued_by_conversation.get(batch_key, (0, 0))
             pending = (count + 1, characters + max(0, content_characters))
-            self._queued_by_conversation[conversation_key] = pending
+            self._queued_by_conversation[batch_key] = pending
             if (
                 pending[0] >= self._settings.memory_batch_trigger_count
                 or pending[1] >= self._settings.memory_batch_max_characters
             ):
-                self._queued_by_conversation.pop(conversation_key, None)
+                self._queued_by_conversation.pop(batch_key, None)
                 self._wake.set()
         return created
 

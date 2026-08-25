@@ -129,18 +129,34 @@ class PresenceRouter:
         async with self._database.sessions() as session:
             return await identity_runtime_is_complete_v2(session)
 
-    async def person_owns_external(self, person_id: str, external_id: str) -> bool:
+    async def person_owns_external(
+        self,
+        person_id: str,
+        external_id: str,
+        *,
+        allow_unknown: bool = False,
+    ) -> bool:
         async with self._database.sessions() as session:
             from qq_ai_bot.identity.shadows import person_id_for
 
             found = await person_id_for(session, external_id)
+        if found is None:
+            return allow_unknown
         return found == person_id
 
-    async def space_owns_external(self, space_id: str, external_id: str) -> bool:
+    async def space_owns_external(
+        self,
+        space_id: str,
+        external_id: str,
+        *,
+        allow_unknown: bool = False,
+    ) -> bool:
         async with self._database.sessions() as session:
             from qq_ai_bot.identity.shadows import space_id_for
 
             found = await space_id_for(session, external_id)
+        if found is None:
+            return allow_unknown
         return found == space_id
 
     async def _await_cas_hold(self) -> None:
@@ -218,6 +234,8 @@ class PresenceRouter:
             presence = await session.get(PresenceModel, route.presence_id)
             if binding is None or presence is None:
                 raise RouteSendError("none")
+            if binding.person_id != person_id or binding.platform != presence.platform:
+                raise RouteSendError("none")
             if not presence.enabled:
                 raise RouteSendError("paused")
             try:
@@ -250,6 +268,8 @@ class PresenceRouter:
             binding = await session.get(SpaceBindingModel, route.space_binding_id)
             presence = await session.get(PresenceModel, route.presence_id)
             if binding is None or presence is None:
+                raise RouteSendError("none")
+            if binding.space_id != space_id or binding.platform != presence.platform:
                 raise RouteSendError("none")
             if not presence.enabled:
                 raise RouteSendError("paused")

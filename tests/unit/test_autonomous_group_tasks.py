@@ -10,7 +10,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from qq_ai_bot.admin.models import ConversationRuntimeConfig
 from qq_ai_bot.conversation.participation import AdmissionFeatures
-from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.services.autonomous_groups import AutonomousGroupService, _GroupState
@@ -210,3 +210,49 @@ async def test_stale_admission_result_cannot_start_agent_or_tools() -> None:
 
     assert chat.respond.await_count == 0
     await service.close()
+
+
+@pytest.mark.asyncio
+async def test_observe_takeover_merges_into_primary_runtime_state() -> None:
+    service = _service()
+    profile = UserProfileSnapshot(
+        user_id="1001",
+        scope_type=ScopeType.GROUP,
+        group_id="2001",
+    )
+    sender = object()
+    primary = "bot:8000:group:2001"
+    first = InboundMessage(
+        message_id="auto-1",
+        event_type="message:group:normal",
+        scope_type=ScopeType.GROUP,
+        sender=SenderIdentity(user_id="1001", group_card="远野"),
+        text="before",
+        bot_user_id="8000",
+        group_id="2001",
+        legacy_conversation_key=primary,
+    )
+    second = InboundMessage(
+        message_id="auto-2",
+        event_type="message:group:normal",
+        scope_type=ScopeType.GROUP,
+        sender=SenderIdentity(user_id="1001", group_card="远野"),
+        text="after",
+        bot_user_id="8001",
+        group_id="2001",
+        legacy_conversation_key=primary,
+    )
+    try:
+        service.observe(first, profile, sender)
+        assert list(service._states) == [primary]
+        first_revision = service._states[primary].revision
+        service.observe(second, profile, sender)
+        assert list(service._states) == [primary]
+        assert service._states[primary].revision == first_revision + 1
+        assert ConversationScope.group("8001", "2001").key not in service._states
+        assert [item.message_id for item in service._states[primary].messages] == [
+            "auto-1",
+            "auto-2",
+        ]
+    finally:
+        await service.close()

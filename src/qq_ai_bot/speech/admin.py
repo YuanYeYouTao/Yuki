@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import AdminActor, RuntimeConfigSnapshot
+from qq_ai_bot.conversation.scope import runtime_conversation_key
 from qq_ai_bot.domain.messages import AttachmentKind, InboundMessage, OutboundMedia, OutboundMessage
 from qq_ai_bot.speech.genie_client import GenieWorkerClient
 from qq_ai_bot.speech.profiles import VoiceProfileService
@@ -300,7 +301,10 @@ class SpeechAdminService:
                 style_hint=style,
                 text=text,
                 split_sentence=runtime.speech.split_sentence,
-                conversation_key=message.scope().key,
+                conversation_key=runtime_conversation_key(
+                    identity=message.scope(),
+                    inbound=message,
+                ),
                 trigger_event_id=None,
                 turn_token=None,
             ),

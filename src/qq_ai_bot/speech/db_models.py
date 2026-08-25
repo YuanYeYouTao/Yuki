@@ -144,9 +144,7 @@ class PersonSpeechPreferenceModel(Base):
         Index("ix_person_speech_preferences_canonical_person_id", "canonical_person_id"),
     )
 
-    user_id: Mapped[str] = mapped_column(
-        ForeignKey("people.user_id", ondelete="CASCADE"), primary_key=True
-    )
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     mode: Mapped[str] = mapped_column(String(32), nullable=False)
     source_message_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

@@ -13,9 +13,11 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.identity.dual_write import fill_membership_shadows
 from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
-from qq_ai_bot.identity.shadows import fill_memory_fact_shadows
+from qq_ai_bot.identity.shadows import active_person_id_for, fill_memory_fact_shadows
 from qq_ai_bot.memory.eligibility import MemoryEventEligibilityPolicy
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
@@ -41,6 +43,13 @@ from qq_ai_bot.memory.models import (
     MemoryFactStateEvent,
     MemoryJob,
 )
+from qq_ai_bot.memory.partition import (
+    MemoryPartitionResolutionError,
+    resolve_active_person_id,
+    resolve_active_space_id,
+    resolve_fact_canonical_owners,
+    resolve_memory_partition_for_event,
+)
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
@@ -51,15 +60,134 @@ from qq_ai_bot.persistence.models import (
     MemoryFactRelationModel,
     MemoryFactStateEventModel,
     MemoryJobModel,
+    MemoryToolReceiptModel,
     PersonModel,
 )
 from qq_ai_bot.persistence.repository_helpers import (
     _ensure_group,
     _ensure_person,
     _event_record,
+    keeper_event_clause,
 )
 
 logger = logging.getLogger(__name__)
+
+_EVIDENCE_SCAN_BATCH = 64
+
+
+def _sql_fact_conversation_aligns() -> Any:
+    fact = MemoryFactModel
+    conv = CanonicalConversationModel
+    conv_xor = or_(
+        and_(conv.person_id.is_not(None), conv.space_id.is_(None)),
+        and_(conv.person_id.is_(None), conv.space_id.is_not(None)),
+    )
+    person_ok = and_(
+        fact.scope_type == MemoryScopeType.PERSON.value,
+        fact.canonical_subject_person_id.is_not(None),
+        fact.canonical_subject_space_id.is_(None),
+        fact.canonical_visibility_person_id.is_(None),
+        fact.canonical_visibility_space_id.is_(None),
+        or_(
+            conv.person_id == fact.canonical_subject_person_id,
+            conv.space_id.is_not(None),
+        ),
+    )
+    group_ok = and_(
+        fact.scope_type == MemoryScopeType.GROUP.value,
+        fact.canonical_subject_space_id.is_not(None),
+        fact.canonical_subject_person_id.is_(None),
+        fact.canonical_visibility_person_id.is_(None),
+        fact.canonical_visibility_space_id.is_(None),
+        conv.space_id == fact.canonical_subject_space_id,
+    )
+    person_group_ok = and_(
+        fact.scope_type == MemoryScopeType.PERSON_GROUP.value,
+        fact.canonical_subject_person_id.is_not(None),
+        fact.canonical_subject_space_id.is_not(None),
+        fact.canonical_visibility_person_id.is_(None),
+        fact.canonical_visibility_space_id.is_(None),
+        conv.space_id == fact.canonical_subject_space_id,
+        or_(
+            conv.person_id.is_(None),
+            conv.person_id == fact.canonical_subject_person_id,
+        ),
+    )
+    self_global = and_(
+        fact.scope_type == MemoryScopeType.SELF.value,
+        or_(fact.visibility_type.is_(None), fact.visibility_type == "global"),
+        fact.canonical_subject_person_id.is_(None),
+        fact.canonical_subject_space_id.is_(None),
+        fact.canonical_visibility_person_id.is_(None),
+        fact.canonical_visibility_space_id.is_(None),
+    )
+    self_private = and_(
+        fact.scope_type == MemoryScopeType.SELF.value,
+        fact.visibility_type == "private",
+        fact.canonical_visibility_person_id.is_not(None),
+        fact.canonical_subject_person_id.is_(None),
+        fact.canonical_subject_space_id.is_(None),
+        fact.canonical_visibility_space_id.is_(None),
+        conv.person_id == fact.canonical_visibility_person_id,
+    )
+    self_group = and_(
+        fact.scope_type == MemoryScopeType.SELF.value,
+        fact.visibility_type == "group",
+        fact.canonical_visibility_space_id.is_not(None),
+        fact.canonical_subject_person_id.is_(None),
+        fact.canonical_subject_space_id.is_(None),
+        fact.canonical_visibility_person_id.is_(None),
+        conv.space_id == fact.canonical_visibility_space_id,
+    )
+    return and_(
+        conv_xor,
+        or_(person_ok, group_ok, person_group_ok, self_global, self_private, self_group),
+    )
+
+
+def readable_evidence_count_expression() -> Any:
+    """Correlated count of complete-v2 readable evidence. Not a full-table scan."""
+
+    live = and_(
+        ChatEventModel.canonical_event_id.is_not(None),
+        ChatEventModel.canonical_conversation_id.is_not(None),
+        ChatEventModel.author_kind.is_not(None),
+        keeper_event_clause(),
+        _sql_fact_conversation_aligns(),
+    )
+    event_count = (
+        select(func.count())
+        .select_from(MemoryEvidenceModel)
+        .join(ChatEventModel, ChatEventModel.id == MemoryEvidenceModel.event_id)
+        .join(
+            CanonicalConversationModel,
+            CanonicalConversationModel.id == ChatEventModel.canonical_conversation_id,
+        )
+        .where(MemoryEvidenceModel.fact_id == MemoryFactModel.id, live)
+        .correlate(MemoryFactModel)
+        .scalar_subquery()
+    )
+    receipt_count = (
+        select(func.count())
+        .select_from(MemoryEvidenceModel)
+        .join(
+            MemoryToolReceiptModel,
+            MemoryToolReceiptModel.id == MemoryEvidenceModel.tool_receipt_id,
+        )
+        .join(ChatEventModel, ChatEventModel.id == MemoryToolReceiptModel.trigger_event_id)
+        .join(
+            CanonicalConversationModel,
+            CanonicalConversationModel.id == ChatEventModel.canonical_conversation_id,
+        )
+        .where(
+            MemoryEvidenceModel.fact_id == MemoryFactModel.id,
+            MemoryEvidenceModel.event_id.is_(None),
+            live,
+        )
+        .correlate(MemoryFactModel)
+        .scalar_subquery()
+    )
+    return event_count + receipt_count
 
 
 def _initial_activation(fact: MemoryFactCreate) -> float:
@@ -81,6 +209,34 @@ class MemoryFactRepository:
     @property
     def database(self) -> Database:
         return self._database
+
+    async def _execute_facts_with_count(
+        self,
+        session: AsyncSession,
+        conditions: list[Any],
+        *,
+        order_by: tuple[Any, ...],
+        limit: int | None = None,
+    ) -> list[Any]:
+        if await identity_runtime_is_complete_v2(session):
+            statement = select(MemoryFactModel, readable_evidence_count_expression()).where(
+                *conditions
+            )
+        else:
+            statement = (
+                select(MemoryFactModel, func.count(MemoryEvidenceModel.id))
+                .outerjoin(
+                    MemoryEvidenceModel,
+                    MemoryEvidenceModel.fact_id == MemoryFactModel.id,
+                )
+                .where(*conditions)
+                .group_by(MemoryFactModel.id)
+            )
+        if order_by:
+            statement = statement.order_by(*order_by)
+        if limit is not None:
+            statement = statement.limit(limit)
+        return list((await session.execute(statement)).all())
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[AsyncSession]:
@@ -133,15 +289,7 @@ class MemoryFactRepository:
             conditions.append(MemoryFactModel.review_state != "quarantined")
         if after_id is not None:
             conditions.append(MemoryFactModel.id > after_id)
-        if query.subject_user_id is None:
-            conditions.append(MemoryFactModel.subject_user_id.is_(None))
-        else:
-            conditions.append(MemoryFactModel.subject_user_id == query.subject_user_id)
-        if query.group_id is None:
-            conditions.append(MemoryFactModel.group_id.is_(None))
-        else:
-            conditions.append(MemoryFactModel.group_id == query.group_id)
-        conditions.extend(self._exact_visibility_conditions(query))
+        conditions.extend(await self._query_identity_conditions(session, query))
         if query.kind is not None:
             conditions.append(MemoryFactModel.kind == query.kind.value)
         if query.status is MemoryStatus.ACTIVE:
@@ -158,15 +306,9 @@ class MemoryFactRepository:
             order = (MemoryFactModel.id.desc(),)
         else:
             order = (MemoryFactModel.importance.desc(), MemoryFactModel.updated_at.desc())
-        statement = (
-            select(MemoryFactModel, func.count(MemoryEvidenceModel.id))
-            .outerjoin(MemoryEvidenceModel, MemoryEvidenceModel.fact_id == MemoryFactModel.id)
-            .where(*conditions)
-            .group_by(MemoryFactModel.id)
-            .order_by(*order)
-            .limit(max(1, limit))
+        rows = await self._execute_facts_with_count(
+            session, conditions, order_by=order, limit=max(1, limit)
         )
-        rows = (await session.execute(statement)).all()
         return tuple(self._project_fact(row, int(evidence_count)) for row, evidence_count in rows)
 
     async def list_person_facts_projected_to_group(
@@ -192,30 +334,60 @@ class MemoryFactRepository:
                     limit=limit,
                     session=owned,
                 )
-        qualifying_evidence = (
-            select(MemoryEvidenceModel.id)
-            .join(ChatEventModel, ChatEventModel.id == MemoryEvidenceModel.event_id)
-            .where(
-                MemoryEvidenceModel.fact_id == MemoryFactModel.id,
-                MemoryEvidenceModel.source_speaker_user_id == user_id,
-                MemoryEvidenceModel.authority.in_(
-                    (MemoryAuthority.SELF_REPORT.value, MemoryAuthority.EXPLICIT.value)
-                ),
-                ChatEventModel.scope_type == "group",
-                ChatEventModel.group_id == group_id,
-                ChatEventModel.sender_user_id == user_id,
-                ChatEventModel.direction == "inbound",
+        if await identity_runtime_is_complete_v2(session):
+            try:
+                person_id = await resolve_active_person_id(session, user_id)
+                space_id = await resolve_active_space_id(session, group_id)
+            except MemoryPartitionResolutionError:
+                return ()
+            qualifying_evidence = (
+                select(MemoryEvidenceModel.id)
+                .join(ChatEventModel, ChatEventModel.id == MemoryEvidenceModel.event_id)
+                .join(
+                    CanonicalConversationModel,
+                    CanonicalConversationModel.id == ChatEventModel.canonical_conversation_id,
+                )
+                .where(
+                    MemoryEvidenceModel.fact_id == MemoryFactModel.id,
+                    MemoryEvidenceModel.authority.in_(
+                        (MemoryAuthority.SELF_REPORT.value, MemoryAuthority.EXPLICIT.value)
+                    ),
+                    ChatEventModel.direction == "inbound",
+                    ChatEventModel.author_person_id == person_id,
+                    ChatEventModel.author_kind.is_not(None),
+                    ChatEventModel.canonical_event_id.is_not(None),
+                    CanonicalConversationModel.space_id == space_id,
+                    keeper_event_clause(),
+                )
+                .correlate(MemoryFactModel)
+                .exists()
             )
-            .correlate(MemoryFactModel)
-            .exists()
-        )
-        statement = (
-            select(MemoryFactModel, func.count(MemoryEvidenceModel.id))
-            .outerjoin(MemoryEvidenceModel, MemoryEvidenceModel.fact_id == MemoryFactModel.id)
-            .where(
+        else:
+            qualifying_evidence = (
+                select(MemoryEvidenceModel.id)
+                .join(ChatEventModel, ChatEventModel.id == MemoryEvidenceModel.event_id)
+                .where(
+                    MemoryEvidenceModel.fact_id == MemoryFactModel.id,
+                    MemoryEvidenceModel.source_speaker_user_id == user_id,
+                    MemoryEvidenceModel.authority.in_(
+                        (MemoryAuthority.SELF_REPORT.value, MemoryAuthority.EXPLICIT.value)
+                    ),
+                    ChatEventModel.scope_type == "group",
+                    ChatEventModel.group_id == group_id,
+                    ChatEventModel.sender_user_id == user_id,
+                    ChatEventModel.direction == "inbound",
+                )
+                .correlate(MemoryFactModel)
+                .exists()
+            )
+        rows = await self._execute_facts_with_count(
+            session,
+            [
                 MemoryFactModel.scope_type == MemoryScopeType.PERSON.value,
-                MemoryFactModel.subject_user_id == user_id,
-                MemoryFactModel.group_id.is_(None),
+                *(await self._person_subject_conditions(session, user_id)),
+                MemoryFactModel.group_id.is_(None)
+                if not await identity_runtime_is_complete_v2(session)
+                else MemoryFactModel.canonical_subject_space_id.is_(None),
                 MemoryFactModel.status == MemoryStatus.ACTIVE.value,
                 MemoryFactModel.review_state != "quarantined",
                 or_(
@@ -223,17 +395,15 @@ class MemoryFactRepository:
                     MemoryFactModel.valid_until > datetime.now(UTC),
                 ),
                 qualifying_evidence,
-            )
-            .group_by(MemoryFactModel.id)
-            .order_by(
+            ],
+            order_by=(
                 MemoryFactModel.importance.desc(),
                 MemoryFactModel.confidence.desc(),
                 MemoryFactModel.updated_at.desc(),
                 MemoryFactModel.id.asc(),
-            )
-            .limit(max(1, limit))
+            ),
+            limit=max(1, limit),
         )
-        rows = (await session.execute(statement)).all()
         return tuple(self._project_fact(row, int(count)) for row, count in rows)
 
     async def get_fact(
@@ -245,17 +415,13 @@ class MemoryFactRepository:
         if session is None:
             async with self._database.sessions() as owned:
                 return await self.get_fact(fact_id, session=owned)
-        result = (
-            await session.execute(
-                select(MemoryFactModel, func.count(MemoryEvidenceModel.id))
-                .outerjoin(
-                    MemoryEvidenceModel,
-                    MemoryEvidenceModel.fact_id == MemoryFactModel.id,
-                )
-                .where(MemoryFactModel.id == fact_id)
-                .group_by(MemoryFactModel.id)
-            )
-        ).first()
+        rows = await self._execute_facts_with_count(
+            session,
+            [MemoryFactModel.id == fact_id],
+            order_by=(),
+            limit=1,
+        )
+        result = rows[0] if rows else None
         return self._project_fact(result[0], int(result[1])) if result else None
 
     async def get_active_for_target(
@@ -273,22 +439,20 @@ class MemoryFactRepository:
         if session is None:
             async with self._database.sessions() as owned:
                 return await self.get_active_for_target(target, unique_ids, session=owned)
-        statement = (
-            select(MemoryFactModel, func.count(MemoryEvidenceModel.id))
-            .outerjoin(MemoryEvidenceModel, MemoryEvidenceModel.fact_id == MemoryFactModel.id)
-            .where(
+        rows = await self._execute_facts_with_count(
+            session,
+            [
                 MemoryFactModel.id.in_(unique_ids),
-                *self._target_conditions(target),
+                *(await self._async_target_conditions(session, target)),
                 MemoryFactModel.status == MemoryStatus.ACTIVE.value,
                 MemoryFactModel.review_state != "quarantined",
                 or_(
                     MemoryFactModel.valid_until.is_(None),
                     MemoryFactModel.valid_until > datetime.now(UTC),
                 ),
-            )
-            .group_by(MemoryFactModel.id)
+            ],
+            order_by=(),
         )
-        rows = (await session.execute(statement)).all()
         projected = {
             row.id: self._project_fact(row, int(evidence_count)) for row, evidence_count in rows
         }
@@ -312,41 +476,35 @@ class MemoryFactRepository:
                     limit=limit,
                     session=owned,
                 )
-        rows = (
-            await session.execute(
-                select(MemoryFactModel, func.count(MemoryEvidenceModel.id))
-                .outerjoin(MemoryEvidenceModel, MemoryEvidenceModel.fact_id == MemoryFactModel.id)
-                .where(
-                    MemoryFactModel.scope_type == fact.scope_type.value,
-                    MemoryFactModel.subject_user_id == fact.subject_user_id,
-                    MemoryFactModel.group_id == fact.group_id,
-                    *self._exact_visibility_conditions(fact),
-                    MemoryFactModel.status.in_(
-                        (
-                            MemoryStatus.ACTIVE.value,
-                            MemoryStatus.CONTESTED.value,
-                        )
+        rows = await self._execute_facts_with_count(
+            session,
+            [
+                MemoryFactModel.scope_type == fact.scope_type.value,
+                *(await self._query_identity_conditions(session, fact)),
+                MemoryFactModel.status.in_(
+                    (
+                        MemoryStatus.ACTIVE.value,
+                        MemoryStatus.CONTESTED.value,
+                    )
+                ),
+                MemoryFactModel.review_state != "quarantined",
+                or_(
+                    MemoryFactModel.memory_key == fact.memory_key,
+                    MemoryFactModel.normalized_content == normalized_content,
+                    and_(
+                        MemoryFactModel.category == fact.category,
+                        MemoryFactModel.kind == fact.kind.value,
                     ),
-                    MemoryFactModel.review_state != "quarantined",
-                    or_(
-                        MemoryFactModel.memory_key == fact.memory_key,
-                        MemoryFactModel.normalized_content == normalized_content,
-                        and_(
-                            MemoryFactModel.category == fact.category,
-                            MemoryFactModel.kind == fact.kind.value,
-                        ),
-                    ),
-                )
-                .group_by(MemoryFactModel.id)
-                .order_by(
-                    (MemoryFactModel.memory_key == fact.memory_key).desc(),
-                    (MemoryFactModel.normalized_content == normalized_content).desc(),
-                    MemoryFactModel.updated_at.desc(),
-                    MemoryFactModel.id.asc(),
-                )
-                .limit(max(1, limit))
-            )
-        ).all()
+                ),
+            ],
+            order_by=(
+                (MemoryFactModel.memory_key == fact.memory_key).desc(),
+                (MemoryFactModel.normalized_content == normalized_content).desc(),
+                MemoryFactModel.updated_at.desc(),
+                MemoryFactModel.id.asc(),
+            ),
+            limit=max(1, limit),
+        )
         return tuple(self._project_fact(row, int(count)) for row, count in rows)
 
     async def list_mutation_locator_candidates(
@@ -400,17 +558,7 @@ class MemoryFactRepository:
         exact_match = and_(*exact_parts)
         conditions: list[Any] = [
             MemoryFactModel.scope_type == target.scope_type.value,
-            (
-                MemoryFactModel.subject_user_id.is_(None)
-                if target.subject_user_id is None
-                else MemoryFactModel.subject_user_id == target.subject_user_id
-            ),
-            (
-                MemoryFactModel.group_id.is_(None)
-                if target.group_id is None
-                else MemoryFactModel.group_id == target.group_id
-            ),
-            *self._exact_visibility_conditions(target),
+            *(await self._query_identity_conditions(session, target)),
             MemoryFactModel.status.in_(tuple(status.value for status in statuses)),
             MemoryFactModel.review_state != MemoryReviewState.QUARANTINED.value,
             or_(
@@ -421,30 +569,26 @@ class MemoryFactRepository:
         ]
         if category is not None:
             conditions.append(MemoryFactModel.category == category)
-        rows = (
-            await session.execute(
-                select(MemoryFactModel, func.count(MemoryEvidenceModel.id))
-                .outerjoin(MemoryEvidenceModel, MemoryEvidenceModel.fact_id == MemoryFactModel.id)
-                .where(*conditions)
-                .group_by(MemoryFactModel.id)
-                .order_by(
-                    exact_match.desc(),
-                    (
-                        MemoryFactModel.memory_key == memory_key
-                        if memory_key is not None
-                        else exact_match
-                    ).desc(),
-                    (
-                        MemoryFactModel.normalized_content == normalized_content
-                        if normalized_content is not None
-                        else exact_match
-                    ).desc(),
-                    MemoryFactModel.updated_at.desc(),
-                    MemoryFactModel.id.asc(),
-                )
-                .limit(max(1, min(limit, 4)))
-            )
-        ).all()
+        rows = await self._execute_facts_with_count(
+            session,
+            conditions,
+            order_by=(
+                exact_match.desc(),
+                (
+                    MemoryFactModel.memory_key == memory_key
+                    if memory_key is not None
+                    else exact_match
+                ).desc(),
+                (
+                    MemoryFactModel.normalized_content == normalized_content
+                    if normalized_content is not None
+                    else exact_match
+                ).desc(),
+                MemoryFactModel.updated_at.desc(),
+                MemoryFactModel.id.asc(),
+            ),
+            limit=max(1, min(limit, 4)),
+        )
         return tuple(self._project_fact(row, int(count)) for row, count in rows)
 
     async def list_overview(
@@ -454,32 +598,25 @@ class MemoryFactRepository:
         limit: int,
     ) -> tuple[MemoryFact, ...]:
         async with self._database.sessions() as session:
-            rows = (
-                await session.execute(
-                    select(MemoryFactModel, func.count(MemoryEvidenceModel.id))
-                    .outerjoin(
-                        MemoryEvidenceModel,
-                        MemoryEvidenceModel.fact_id == MemoryFactModel.id,
-                    )
-                    .where(
-                        *self._target_conditions(target),
-                        MemoryFactModel.status == MemoryStatus.ACTIVE.value,
-                        MemoryFactModel.review_state != "quarantined",
-                        or_(
-                            MemoryFactModel.valid_until.is_(None),
-                            MemoryFactModel.valid_until > datetime.now(UTC),
-                        ),
-                    )
-                    .group_by(MemoryFactModel.id)
-                    .order_by(
-                        MemoryFactModel.importance.desc(),
-                        MemoryFactModel.confidence.desc(),
-                        MemoryFactModel.updated_at.desc(),
-                        MemoryFactModel.id.asc(),
-                    )
-                    .limit(max(1, limit))
-                )
-            ).all()
+            rows = await self._execute_facts_with_count(
+                session,
+                [
+                    *(await self._async_target_conditions(session, target)),
+                    MemoryFactModel.status == MemoryStatus.ACTIVE.value,
+                    MemoryFactModel.review_state != "quarantined",
+                    or_(
+                        MemoryFactModel.valid_until.is_(None),
+                        MemoryFactModel.valid_until > datetime.now(UTC),
+                    ),
+                ],
+                order_by=(
+                    MemoryFactModel.importance.desc(),
+                    MemoryFactModel.confidence.desc(),
+                    MemoryFactModel.updated_at.desc(),
+                    MemoryFactModel.id.asc(),
+                ),
+                limit=max(1, limit),
+            )
         return tuple(self._project_fact(row, int(count)) for row, count in rows)
 
     async def list_explicit_preferences(
@@ -491,34 +628,27 @@ class MemoryFactRepository:
         if limit <= 0:
             return ()
         async with self._database.sessions() as session:
-            rows = (
-                await session.execute(
-                    select(MemoryFactModel, func.count(MemoryEvidenceModel.id))
-                    .outerjoin(
-                        MemoryEvidenceModel,
-                        MemoryEvidenceModel.fact_id == MemoryFactModel.id,
-                    )
-                    .where(
-                        *self._target_conditions(target),
-                        MemoryFactModel.kind == "preference",
-                        MemoryFactModel.source_type == "explicit",
-                        MemoryFactModel.status == MemoryStatus.ACTIVE.value,
-                        MemoryFactModel.review_state != "quarantined",
-                        or_(
-                            MemoryFactModel.valid_until.is_(None),
-                            MemoryFactModel.valid_until > datetime.now(UTC),
-                        ),
-                    )
-                    .group_by(MemoryFactModel.id)
-                    .order_by(
-                        MemoryFactModel.importance.desc(),
-                        MemoryFactModel.confidence.desc(),
-                        MemoryFactModel.updated_at.desc(),
-                        MemoryFactModel.id.asc(),
-                    )
-                    .limit(limit)
-                )
-            ).all()
+            rows = await self._execute_facts_with_count(
+                session,
+                [
+                    *(await self._async_target_conditions(session, target)),
+                    MemoryFactModel.kind == "preference",
+                    MemoryFactModel.source_type == "explicit",
+                    MemoryFactModel.status == MemoryStatus.ACTIVE.value,
+                    MemoryFactModel.review_state != "quarantined",
+                    or_(
+                        MemoryFactModel.valid_until.is_(None),
+                        MemoryFactModel.valid_until > datetime.now(UTC),
+                    ),
+                ],
+                order_by=(
+                    MemoryFactModel.importance.desc(),
+                    MemoryFactModel.confidence.desc(),
+                    MemoryFactModel.updated_at.desc(),
+                    MemoryFactModel.id.asc(),
+                ),
+                limit=limit,
+            )
         return tuple(self._project_fact(row, int(count)) for row, count in rows)
 
     async def mark_injected(self, fact_ids: tuple[int, ...]) -> int:
@@ -545,11 +675,9 @@ class MemoryFactRepository:
     ) -> MemoryFactModel | None:
         conditions = [
             MemoryFactModel.scope_type == fact.scope_type.value,
-            MemoryFactModel.subject_user_id == fact.subject_user_id,
-            MemoryFactModel.group_id == fact.group_id,
             MemoryFactModel.memory_key == fact.memory_key,
             MemoryFactModel.status == MemoryStatus.ACTIVE.value,
-            *self._exact_visibility_conditions(fact),
+            *(await self._query_identity_conditions(session, fact)),
         ]
         if fact.scope_type is not MemoryScopeType.SELF:
             conditions.append(MemoryFactModel.kind == fact.kind.value)
@@ -568,28 +696,20 @@ class MemoryFactRepository:
         session: AsyncSession,
     ) -> MemoryFactModel:
         now = recorded_at or datetime.now(UTC)
-        from qq_ai_bot.identity.dual_write import (
-            ensure_runtime_group_row,
-            ensure_runtime_people_row,
-        )
-
         v2 = await identity_runtime_is_complete_v2(session)
-        if fact.subject_user_id:
-            if v2:
-                await ensure_runtime_people_row(session, fact.subject_user_id, now=now)
-            else:
-                await _ensure_person(session, fact.subject_user_id, now=now)
-        if fact.group_id:
-            if v2:
-                await ensure_runtime_group_row(session, fact.group_id, now=now)
-            else:
-                await _ensure_group(session, fact.group_id, now=now)
+        owners = None
+        if v2:
+            owners = await resolve_fact_canonical_owners(session, fact)
+        if fact.subject_user_id and not v2:
+            await _ensure_person(session, fact.subject_user_id, now=now)
+        if fact.group_id and not v2:
+            await _ensure_group(session, fact.group_id, now=now)
         if fact.subject_user_id and fact.group_id:
             membership = await session.get(
                 MembershipModel,
                 {"user_id": fact.subject_user_id, "group_id": fact.group_id},
             )
-            if membership is None:
+            if membership is None and not v2:
                 await session.execute(
                     insert(MembershipModel)
                     .values(
@@ -601,7 +721,8 @@ class MemoryFactRepository:
                     )
                     .on_conflict_do_nothing(index_elements=["user_id", "group_id"])
                 )
-            await fill_membership_shadows(session, fact.subject_user_id, fact.group_id)
+            if membership is not None or not v2:
+                await fill_membership_shadows(session, fact.subject_user_id, fact.group_id)
         row = MemoryFactModel(
             scope_type=fact.scope_type.value,
             subject_user_id=fact.subject_user_id,
@@ -633,10 +754,19 @@ class MemoryFactRepository:
             validation_version=fact.validation_version,
             last_audited_at=fact.last_audited_at,
             review_state=fact.review_state.value,
+            canonical_subject_person_id=(owners.subject_person_id if owners is not None else None),
+            canonical_subject_space_id=(owners.subject_space_id if owners is not None else None),
+            canonical_visibility_person_id=(
+                owners.visibility_person_id if owners is not None else None
+            ),
+            canonical_visibility_space_id=(
+                owners.visibility_space_id if owners is not None else None
+            ),
         )
         session.add(row)
         await session.flush()
-        await fill_memory_fact_shadows(session, row)
+        if not v2:
+            await fill_memory_fact_shadows(session, row)
         session.add(
             MemoryActivationStateModel(
                 fact_id=row.id,
@@ -667,7 +797,7 @@ class MemoryFactRepository:
         if row is None:
             return False
         now = datetime.now(UTC)
-        if actor_user_id:
+        if actor_user_id and not await identity_runtime_is_complete_v2(session):
             await _ensure_person(session, actor_user_id, now=now)
         before_status = row.status
         before_conflict = row.conflict_state
@@ -704,7 +834,7 @@ class MemoryFactRepository:
         session: AsyncSession,
     ) -> None:
         now = datetime.now(UTC)
-        if actor_user_id:
+        if actor_user_id and not await identity_runtime_is_complete_v2(session):
             await _ensure_person(session, actor_user_id, now=now)
         session.add(
             MemoryFactStateEventModel(
@@ -851,6 +981,27 @@ class MemoryFactRepository:
             )
             if scope_type != MemoryScopeType.SELF.value:
                 raise ValueError("agent reflection evidence is only valid for self memory")
+        if await identity_runtime_is_complete_v2(session):
+            from qq_ai_bot.identity.memory_guard import v2_evidence_event_chain_readable
+
+            fact_row = await session.get(MemoryFactModel, fact_id)
+            if fact_row is None:
+                return False
+            if evidence.event_id is not None:
+                event = await session.get(ChatEventModel, evidence.event_id)
+                if event is None or not await v2_evidence_event_chain_readable(
+                    session, fact_row, event
+                ):
+                    return False
+            else:
+                receipt = await session.get(MemoryToolReceiptModel, evidence.tool_receipt_id)
+                if receipt is None or receipt.trigger_event_id is None:
+                    return False
+                trigger = await session.get(ChatEventModel, receipt.trigger_event_id)
+                if trigger is None or not await v2_evidence_event_chain_readable(
+                    session, fact_row, trigger
+                ):
+                    return False
         statement = insert(MemoryEvidenceModel).values(
             fact_id=fact_id,
             event_id=evidence.event_id,
@@ -882,14 +1033,61 @@ class MemoryFactRepository:
         if session is None:
             async with self._database.sessions() as owned:
                 return await self.list_evidence(fact_id, limit=limit, session=owned)
-        rows = (
-            await session.scalars(
-                select(MemoryEvidenceModel)
-                .where(MemoryEvidenceModel.fact_id == fact_id)
-                .order_by(MemoryEvidenceModel.created_at.desc())
-                .limit(max(1, limit))
-            )
-        ).all()
+        bound = max(1, limit)
+        complete_v2 = await identity_runtime_is_complete_v2(session)
+        if not complete_v2:
+            rows = (
+                await session.scalars(
+                    select(MemoryEvidenceModel)
+                    .where(MemoryEvidenceModel.fact_id == fact_id)
+                    .order_by(MemoryEvidenceModel.created_at.desc())
+                    .limit(bound)
+                )
+            ).all()
+        else:
+            from qq_ai_bot.identity.memory_guard import v2_evidence_row_readable
+
+            fact_row = await session.get(MemoryFactModel, fact_id)
+            if fact_row is None:
+                return ()
+            readable: list[MemoryEvidenceModel] = []
+            last_created_at: datetime | None = None
+            last_id: int | None = None
+            while len(readable) < bound:
+                conditions = [MemoryEvidenceModel.fact_id == fact_id]
+                if last_created_at is not None and last_id is not None:
+                    conditions.append(
+                        or_(
+                            MemoryEvidenceModel.created_at < last_created_at,
+                            and_(
+                                MemoryEvidenceModel.created_at == last_created_at,
+                                MemoryEvidenceModel.id < last_id,
+                            ),
+                        )
+                    )
+                batch = (
+                    await session.scalars(
+                        select(MemoryEvidenceModel)
+                        .where(*conditions)
+                        .order_by(
+                            MemoryEvidenceModel.created_at.desc(),
+                            MemoryEvidenceModel.id.desc(),
+                        )
+                        .limit(_EVIDENCE_SCAN_BATCH)
+                    )
+                ).all()
+                if not batch:
+                    break
+                for row in batch:
+                    last_created_at = row.created_at
+                    last_id = int(row.id)
+                    if await v2_evidence_row_readable(session, fact_row, row):
+                        readable.append(row)
+                        if len(readable) >= bound:
+                            break
+                if len(batch) < _EVIDENCE_SCAN_BATCH:
+                    break
+            rows = readable
         return tuple(
             MemoryEvidence(
                 id=row.id,
@@ -990,19 +1188,12 @@ class MemoryFactRepository:
         if group_id is not None:
             conditions.append(MemoryFactModel.group_id == group_id)
         async with self._database.sessions() as session:
-            rows = (
-                await session.execute(
-                    select(MemoryFactModel, func.count(MemoryEvidenceModel.id))
-                    .outerjoin(
-                        MemoryEvidenceModel,
-                        MemoryEvidenceModel.fact_id == MemoryFactModel.id,
-                    )
-                    .where(*conditions)
-                    .group_by(MemoryFactModel.id)
-                    .order_by(MemoryFactModel.updated_at.desc(), MemoryFactModel.id)
-                    .limit(max(1, limit))
-                )
-            ).all()
+            rows = await self._execute_facts_with_count(
+                session,
+                conditions,
+                order_by=(MemoryFactModel.updated_at.desc(), MemoryFactModel.id),
+                limit=max(1, limit),
+            )
         return tuple(self._project_fact(row, int(count)) for row, count in rows)
 
     async def list_lifecycle_candidates(
@@ -1060,19 +1251,12 @@ class MemoryFactRepository:
                     limit=limit,
                     session=owned,
                 )
-        rows = (
-            await session.execute(
-                select(MemoryFactModel, func.count(MemoryEvidenceModel.id))
-                .outerjoin(
-                    MemoryEvidenceModel,
-                    MemoryEvidenceModel.fact_id == MemoryFactModel.id,
-                )
-                .where(*conditions)
-                .group_by(MemoryFactModel.id)
-                .order_by(MemoryFactModel.valid_until.asc(), MemoryFactModel.id)
-                .limit(max(1, limit))
-            )
-        ).all()
+        rows = await self._execute_facts_with_count(
+            session,
+            conditions,
+            order_by=(MemoryFactModel.valid_until.asc(), MemoryFactModel.id),
+            limit=max(1, limit),
+        )
         return tuple(self._project_fact(row, int(count)) for row, count in rows)
 
     async def count_active(
@@ -1098,17 +1282,8 @@ class MemoryFactRepository:
             MemoryFactModel.scope_type == query.scope_type.value,
             MemoryFactModel.status == MemoryStatus.ACTIVE.value,
             MemoryFactModel.source_type != "explicit",
+            *(await self._query_identity_conditions(session, query)),
         ]
-        conditions.append(
-            MemoryFactModel.subject_user_id.is_(None)
-            if query.subject_user_id is None
-            else MemoryFactModel.subject_user_id == query.subject_user_id
-        )
-        conditions.append(
-            MemoryFactModel.group_id.is_(None)
-            if query.group_id is None
-            else MemoryFactModel.group_id == query.group_id
-        )
         row = await session.scalar(
             select(MemoryFactModel)
             .where(*conditions)
@@ -1192,7 +1367,145 @@ class MemoryFactRepository:
             validation_version=row.validation_version,
             last_audited_at=row.last_audited_at,
             review_state=row.review_state,
+            canonical_subject_person_id=row.canonical_subject_person_id,
+            canonical_subject_space_id=row.canonical_subject_space_id,
+            canonical_visibility_person_id=row.canonical_visibility_person_id,
+            canonical_visibility_space_id=row.canonical_visibility_space_id,
         )
+
+    @staticmethod
+    def _unmatched_identity() -> tuple[Any, ...]:
+        return (MemoryFactModel.id == -1,)
+
+    async def _person_subject_conditions(
+        self,
+        session: AsyncSession,
+        user_id: str,
+    ) -> tuple[Any, ...]:
+        if not await identity_runtime_is_complete_v2(session):
+            return (MemoryFactModel.subject_user_id == user_id,)
+        try:
+            person_id = await resolve_active_person_id(session, user_id)
+        except MemoryPartitionResolutionError:
+            return self._unmatched_identity()
+        return (MemoryFactModel.canonical_subject_person_id == person_id,)
+
+    async def _query_identity_conditions(
+        self,
+        session: AsyncSession,
+        query: MemoryFactCreate | MemoryFactQuery | MemoryEntityTarget,
+    ) -> tuple[Any, ...]:
+        if not await identity_runtime_is_complete_v2(session):
+            conditions: list[Any] = [
+                (
+                    MemoryFactModel.subject_user_id.is_(None)
+                    if query.subject_user_id is None
+                    else MemoryFactModel.subject_user_id == query.subject_user_id
+                ),
+                (
+                    MemoryFactModel.group_id.is_(None)
+                    if query.group_id is None
+                    else MemoryFactModel.group_id == query.group_id
+                ),
+            ]
+            conditions.extend(self._exact_visibility_conditions(query))
+            return tuple(conditions)
+        try:
+            owners = await resolve_fact_canonical_owners(session, query)
+        except MemoryPartitionResolutionError:
+            return self._unmatched_identity()
+        conditions = [
+            (
+                MemoryFactModel.canonical_subject_person_id == owners.subject_person_id
+                if owners.subject_person_id is not None
+                else MemoryFactModel.canonical_subject_person_id.is_(None)
+            ),
+            (
+                MemoryFactModel.canonical_subject_space_id == owners.subject_space_id
+                if owners.subject_space_id is not None
+                else MemoryFactModel.canonical_subject_space_id.is_(None)
+            ),
+        ]
+        visibility_type = getattr(query, "visibility_type", None)
+        visibility_value = visibility_type.value if visibility_type is not None else None
+        if str(getattr(query.scope_type, "value", query.scope_type)) == "self":
+            conditions.append(
+                MemoryFactModel.visibility_type.is_(None)
+                if visibility_value is None
+                else MemoryFactModel.visibility_type == visibility_value
+            )
+            conditions.append(
+                MemoryFactModel.canonical_visibility_person_id == owners.visibility_person_id
+                if owners.visibility_person_id is not None
+                else MemoryFactModel.canonical_visibility_person_id.is_(None)
+            )
+            conditions.append(
+                MemoryFactModel.canonical_visibility_space_id == owners.visibility_space_id
+                if owners.visibility_space_id is not None
+                else MemoryFactModel.canonical_visibility_space_id.is_(None)
+            )
+        else:
+            conditions.extend(self._exact_visibility_conditions(query))
+        return tuple(conditions)
+
+    async def _async_target_conditions(
+        self,
+        session: AsyncSession,
+        target: MemoryEntityTarget,
+    ) -> tuple[Any, ...]:
+        if not await identity_runtime_is_complete_v2(session):
+            return self._target_conditions(target)
+        try:
+            owners = await resolve_fact_canonical_owners(session, target)
+        except MemoryPartitionResolutionError:
+            return self._unmatched_identity()
+        conditions: list[Any] = [
+            MemoryFactModel.scope_type == target.scope_type.value,
+            (
+                MemoryFactModel.canonical_subject_person_id == owners.subject_person_id
+                if owners.subject_person_id is not None
+                else MemoryFactModel.canonical_subject_person_id.is_(None)
+            ),
+            (
+                MemoryFactModel.canonical_subject_space_id == owners.subject_space_id
+                if owners.subject_space_id is not None
+                else MemoryFactModel.canonical_subject_space_id.is_(None)
+            ),
+        ]
+        if target.scope_type is MemoryScopeType.SELF:
+            current_visibility = and_(
+                MemoryFactModel.visibility_type
+                == (target.visibility_type.value if target.visibility_type else ""),
+                (
+                    MemoryFactModel.canonical_visibility_person_id == owners.visibility_person_id
+                    if owners.visibility_person_id is not None
+                    else MemoryFactModel.canonical_visibility_person_id.is_(None)
+                ),
+                (
+                    MemoryFactModel.canonical_visibility_space_id == owners.visibility_space_id
+                    if owners.visibility_space_id is not None
+                    else MemoryFactModel.canonical_visibility_space_id.is_(None)
+                ),
+            )
+            conditions.append(
+                or_(
+                    and_(
+                        MemoryFactModel.visibility_type == "global",
+                        MemoryFactModel.canonical_visibility_person_id.is_(None),
+                        MemoryFactModel.canonical_visibility_space_id.is_(None),
+                    ),
+                    current_visibility,
+                )
+            )
+        else:
+            conditions.extend(
+                (
+                    MemoryFactModel.visibility_type.is_(None),
+                    MemoryFactModel.canonical_visibility_person_id.is_(None),
+                    MemoryFactModel.canonical_visibility_space_id.is_(None),
+                )
+            )
+        return tuple(conditions)
 
     @staticmethod
     def _target_conditions(target: MemoryEntityTarget) -> tuple[Any, ...]:
@@ -1237,7 +1550,7 @@ class MemoryFactRepository:
 
     @staticmethod
     def _exact_visibility_conditions(
-        target: MemoryFactCreate | MemoryFactQuery,
+        target: MemoryFactCreate | MemoryFactQuery | MemoryEntityTarget,
     ) -> tuple[Any, ...]:
         return (
             (
@@ -1271,6 +1584,14 @@ class MemoryJobRepository:
         self._eligibility = eligibility or MemoryEventEligibilityPolicy()
 
     async def enqueue(self, event_id: int, conversation_key: str) -> bool:
+        created, _partition = await self.enqueue_resolved(event_id, conversation_key)
+        return created
+
+    async def enqueue_resolved(
+        self,
+        event_id: int,
+        conversation_key: str,
+    ) -> tuple[bool, str]:
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
             event = await session.get(ChatEventModel, event_id)
@@ -1279,14 +1600,15 @@ class MemoryJobRepository:
                     "memory_job_enqueue_skipped event_id=%d reason=event_not_found",
                     event_id,
                 )
-                return False
+                return False, conversation_key[:255]
+            complete_v2 = await identity_runtime_is_complete_v2(session)
             sender = await session.get(PersonModel, event.sender_user_id)
-            if sender is None:
+            if not complete_v2 and sender is None:
                 logger.warning(
                     "memory_job_enqueue_skipped event_id=%d reason=sender_not_found",
                     event_id,
                 )
-                return False
+                return False, conversation_key[:255]
             from qq_ai_bot.identity.memory_guard import refuse_legacy_live_event
 
             if await refuse_legacy_live_event(session, event):
@@ -1294,10 +1616,26 @@ class MemoryJobRepository:
                     "memory_job_enqueue_skipped event_id=%d reason=legacy_event_replay",
                     event_id,
                 )
-                return False
+                return False, conversation_key[:255]
+            if complete_v2 and (
+                event.author_kind == AuthorKind.PERSON.value or event.author_person_id
+            ):
+                if not event.author_person_id:
+                    logger.info(
+                        "memory_job_enqueue_skipped event_id=%d reason=author_person_missing",
+                        event_id,
+                    )
+                    return False, conversation_key[:255]
+                owner = await active_person_id_for(session, event.sender_user_id)
+                if owner != event.author_person_id:
+                    logger.info(
+                        "memory_job_enqueue_skipped event_id=%d reason=author_owner_mismatch",
+                        event_id,
+                    )
+                    return False, conversation_key[:255]
             rejection_reason = self._eligibility.rejection_reason(
                 _event_record(event),
-                sender_is_bot=sender.is_bot,
+                sender_is_bot=False if complete_v2 else bool(sender is not None and sender.is_bot),
             )
             if rejection_reason is not None:
                 logger.info(
@@ -1305,10 +1643,27 @@ class MemoryJobRepository:
                     event_id,
                     rejection_reason,
                 )
-                return False
+                return False, conversation_key[:255]
+            person_id: str | None = None
+            space_id: str | None = None
+            stored_key = conversation_key[:255]
+            if complete_v2:
+                partition = await resolve_memory_partition_for_event(session, event)
+                if bool(partition.person_id) == bool(partition.space_id):
+                    raise MemoryPartitionResolutionError("owner_shape")
+                person_id = partition.person_id
+                space_id = partition.space_id
+                stored_key = partition.value[:255]
+            else:
+                from qq_ai_bot.identity.owner_dual_write import optional_xor_owner_for_event
+
+                person_id, space_id = await optional_xor_owner_for_event(session, event)
+                stored_key = conversation_key[:255]
             statement = insert(MemoryJobModel).values(
                 event_id=event_id,
-                conversation_key=conversation_key[:255],
+                conversation_key=stored_key,
+                canonical_person_id=person_id,
+                canonical_space_id=space_id,
                 status=MemoryJobStatus.PENDING.value,
                 attempts=0,
                 next_attempt_at=now,
@@ -1328,7 +1683,7 @@ class MemoryJobRepository:
                     "memory_job_enqueue_skipped event_id=%d reason=already_enqueued",
                     event_id,
                 )
-            return created
+            return created, stored_key
 
     async def pending_count(self) -> int:
         async with self._database.sessions() as session:
@@ -1366,6 +1721,7 @@ class MemoryJobRepository:
             jobs: list[MemoryJob] = []
             from qq_ai_bot.identity.memory_guard import refuse_legacy_live_event
 
+            complete_v2 = await identity_runtime_is_complete_v2(session)
             for row in rows:
                 event = await session.get(ChatEventModel, row.event_id)
                 if event is None:
@@ -1379,6 +1735,12 @@ class MemoryJobRepository:
                     row.error_category = "legacy_event_replay"
                     row.updated_at = now
                     continue
+                if complete_v2 and row.processing_source == MemoryProcessingSource.LIVE.value:
+                    if bool(row.canonical_person_id) == bool(row.canonical_space_id):
+                        row.status = MemoryJobStatus.FAILED.value
+                        row.error_category = "missing_canonical_owner"
+                        row.updated_at = now
+                        continue
                 row.status = MemoryJobStatus.PROCESSING.value
                 row.updated_at = now
                 jobs.append(
@@ -1429,38 +1791,98 @@ class MemoryJobRepository:
         character_count = func.coalesce(func.sum(func.length(ChatEventModel.content)), 0)
         oldest_job = func.min(MemoryJobModel.created_at)
         first_job_id = func.min(MemoryJobModel.id)
+        xor_owner = or_(
+            and_(
+                MemoryJobModel.canonical_person_id.is_not(None),
+                MemoryJobModel.canonical_space_id.is_(None),
+            ),
+            and_(
+                MemoryJobModel.canonical_person_id.is_(None),
+                MemoryJobModel.canonical_space_id.is_not(None),
+            ),
+        )
         async with self._database.sessions() as session, session.begin():
-            ready = (
-                await session.execute(
-                    select(
-                        MemoryJobModel.conversation_key,
-                        first_job_id.label("first_job_id"),
-                    )
-                    .join(ChatEventModel, ChatEventModel.id == MemoryJobModel.event_id)
-                    .where(eligible)
-                    .group_by(MemoryJobModel.conversation_key)
-                    .having(
-                        or_(
-                            job_count >= max(1, trigger_count),
-                            character_count >= max(1, max_characters),
-                            oldest_job <= oldest_ready,
+            complete_v2 = await identity_runtime_is_complete_v2(session)
+            if complete_v2:
+                owner_ready = (
+                    await session.execute(
+                        select(
+                            MemoryJobModel.canonical_person_id,
+                            MemoryJobModel.canonical_space_id,
+                            first_job_id.label("first_job_id"),
                         )
+                        .join(ChatEventModel, ChatEventModel.id == MemoryJobModel.event_id)
+                        .where(eligible, xor_owner)
+                        .group_by(
+                            MemoryJobModel.canonical_person_id,
+                            MemoryJobModel.canonical_space_id,
+                        )
+                        .having(
+                            or_(
+                                job_count >= max(1, trigger_count),
+                                character_count >= max(1, max_characters),
+                                oldest_job <= oldest_ready,
+                            )
+                        )
+                        .order_by(first_job_id)
+                        .limit(1)
                     )
-                    .order_by(first_job_id)
-                    .limit(1)
+                ).first()
+                if owner_ready is None:
+                    return ()
+                person_id = owner_ready[0]
+                space_id = owner_ready[1]
+                owner_filter = (
+                    and_(
+                        MemoryJobModel.canonical_person_id == person_id,
+                        MemoryJobModel.canonical_space_id.is_(None),
+                    )
+                    if person_id is not None
+                    else and_(
+                        MemoryJobModel.canonical_space_id == space_id,
+                        MemoryJobModel.canonical_person_id.is_(None),
+                    )
                 )
-            ).first()
-            if ready is None:
-                return ()
-            conversation_key = str(ready[0])
-            rows = (
-                await session.scalars(
-                    select(MemoryJobModel)
-                    .where(eligible, MemoryJobModel.conversation_key == conversation_key)
-                    .order_by(MemoryJobModel.id)
-                    .limit(max(1, limit))
-                )
-            ).all()
+                rows = (
+                    await session.scalars(
+                        select(MemoryJobModel)
+                        .where(eligible, owner_filter)
+                        .order_by(MemoryJobModel.id)
+                        .limit(max(1, limit))
+                    )
+                ).all()
+            else:
+                key_ready = (
+                    await session.execute(
+                        select(
+                            MemoryJobModel.conversation_key,
+                            first_job_id.label("first_job_id"),
+                        )
+                        .join(ChatEventModel, ChatEventModel.id == MemoryJobModel.event_id)
+                        .where(eligible)
+                        .group_by(MemoryJobModel.conversation_key)
+                        .having(
+                            or_(
+                                job_count >= max(1, trigger_count),
+                                character_count >= max(1, max_characters),
+                                oldest_job <= oldest_ready,
+                            )
+                        )
+                        .order_by(first_job_id)
+                        .limit(1)
+                    )
+                ).first()
+                if key_ready is None:
+                    return ()
+                conversation_key = str(key_ready[0])
+                rows = (
+                    await session.scalars(
+                        select(MemoryJobModel)
+                        .where(eligible, MemoryJobModel.conversation_key == conversation_key)
+                        .order_by(MemoryJobModel.id)
+                        .limit(max(1, limit))
+                    )
+                ).all()
             jobs: list[MemoryJob] = []
             characters = 0
             from qq_ai_bot.identity.memory_guard import refuse_legacy_live_event
@@ -1478,6 +1900,12 @@ class MemoryJobRepository:
                     row.error_category = "legacy_event_replay"
                     row.updated_at = claimed_at
                     continue
+                if complete_v2 and row.processing_source == MemoryProcessingSource.LIVE.value:
+                    if bool(row.canonical_person_id) == bool(row.canonical_space_id):
+                        row.status = MemoryJobStatus.FAILED.value
+                        row.error_category = "missing_canonical_owner"
+                        row.updated_at = claimed_at
+                        continue
                 event_characters = len(event.content)
                 if jobs and characters + event_characters > max(1, max_characters):
                     break

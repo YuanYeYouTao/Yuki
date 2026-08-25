@@ -42,8 +42,6 @@ _FORBIDDEN_TABLES = {
     "yuki_self",
     "yukiself",
     "gateway_connections",
-    "identity_cutover_manifests",
-    "identity_cutover_runs",
     "presence_active_routes",
     "delivery_routes",
 }
@@ -320,7 +318,7 @@ def test_fresh_upgrade_head_creates_canonical_conversations(
     path = tmp_path / "fresh-head.db"
     _upgrade(path, monkeypatch, "head")
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0047",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0048",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         tables = _tables(connection)
         assert set(CANONICAL_CONVERSATION_TABLES) <= tables
@@ -375,7 +373,7 @@ def test_downgrade_0044_removes_only_conversation_tables(
     expected = tmp_path / "expected-0043.db"
     path = tmp_path / "downgrade.db"
     _upgrade(expected, monkeypatch, "0043")
-    _upgrade(path, monkeypatch, "head")
+    _upgrade(path, monkeypatch, "0044")
     _downgrade(path, monkeypatch, "0043")
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0043",)
@@ -391,7 +389,7 @@ def test_populated_downgrade_0044_to_0043_with_foreign_keys_on(
     expected = tmp_path / "expected-0043.db"
     path = tmp_path / "populated-downgrade.db"
     _upgrade(expected, monkeypatch, "0043")
-    _upgrade(path, monkeypatch, "head")
+    _upgrade(path, monkeypatch, "0044")
     now = "2026-08-24T00:00:00+00:00"
     with _connect(path) as connection:
         ids = _seed_identity(connection, now)
@@ -461,7 +459,7 @@ def test_orm_metadata_matches_0044_conversation_schema(
 def test_alembic_heads_is_exactly_0044() -> None:
     config = Config("alembic.ini")
     heads = ScriptDirectory.from_config(config).get_heads()
-    assert heads == ["0047"]
+    assert heads == ["0048"]
 
 
 def test_0044_is_self_contained_alembic() -> None:

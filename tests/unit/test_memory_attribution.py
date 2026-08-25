@@ -31,6 +31,7 @@ from qq_ai_bot.memory.attribution import (
 from qq_ai_bot.memory.enums import MemoryAccessMode, MemoryContextMode, MemoryRecallPurpose
 from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.models import MemoryQueryIntent
+from qq_ai_bot.memory.partition import format_legacy_memory_partition
 from qq_ai_bot.memory.receipt import MemoryRecallTurn
 from qq_ai_bot.memory.runtime.turn_session import TurnMemorySession, empty_retrieval
 from qq_ai_bot.model_runtime.models import (
@@ -273,6 +274,18 @@ async def test_session_attribution_requires_an_eligible_delivered_turn(database:
     )
     exposure = _exposure(1, source=MemoryExposureSource.AUTOMATIC)
 
+    class _FormatLookup:
+        async def resolve_from_scope(
+            self,
+            *,
+            group_id: str | None,
+            private_peer_user_id: str | None,
+        ) -> str:
+            return format_legacy_memory_partition(
+                group_id=group_id,
+                private_peer_user_id=private_peer_user_id,
+            )
+
     class _Context:
         async def retrieve_for_turn(self, **_kwargs: object) -> object:
             return empty_retrieval()
@@ -293,6 +306,7 @@ async def test_session_attribution_requires_an_eligible_delivered_turn(database:
             identity=ConversationScope.private("bot-9", "1001"),
             runtime=config,
             memory_context=_Context(),  # type: ignore[arg-type]
+            partition_lookup=_FormatLookup(),
             origin=origin,
             user_question="question",
             authority=TurnAuthority(
@@ -321,6 +335,11 @@ async def test_session_attribution_requires_an_eligible_delivered_turn(database:
         )
     )
     assert len(queue.jobs) == 1
+    job = queue.jobs[0]
+    assert job.user_id == "1001"
+    assert job.group_id is None
+    assert job.user_question == "question"
+    assert job.exposures == (exposure,)
 
     cancelled = open_session()
     await confirm(cancelled)

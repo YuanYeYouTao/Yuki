@@ -1153,8 +1153,10 @@ class MemoryMutationService:
         operation = self._claim_requested_operation(claim.operation)
         if (
             event.direction != "inbound"
-            or event.sender_user_id == event.bot_user_id
-            or await self._ledger.sender_is_bot(event.sender_user_id)
+            or not event.author_is_human()
+            or (
+                event.author_kind is None and await self._ledger.sender_is_bot(event.sender_user_id)
+            )
             or not self._validated_claim_matches_event(claim, event)
         ):
             return self._rejected(operation, "untrusted_trigger_event")
@@ -1326,8 +1328,8 @@ class MemoryMutationService:
             and context.decision_actor_id == "yuki_self_reflection"
             and event.direction in {"inbound", "outbound"}
             and (
-                (event.direction == "inbound" and event.sender_user_id != event.bot_user_id)
-                or (event.direction == "outbound" and event.sender_user_id == event.bot_user_id)
+                (event.direction == "inbound" and event.author_is_human())
+                or (event.direction == "outbound" and event.author_is_yuki())
             )
         )
         if (
@@ -1337,8 +1339,11 @@ class MemoryMutationService:
             or (
                 not trusted_self_reflection
                 and (
-                    event.sender_user_id == event.bot_user_id
-                    or await self._ledger.sender_is_bot(event.sender_user_id)
+                    not event.author_is_human()
+                    or (
+                        event.author_kind is None
+                        and await self._ledger.sender_is_bot(event.sender_user_id)
+                    )
                 )
             )
         ):

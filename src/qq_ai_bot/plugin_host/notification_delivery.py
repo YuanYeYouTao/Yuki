@@ -11,6 +11,7 @@ from typing import Protocol
 
 from qq_ai_bot.automation.gateway import ProactiveGatewayError
 from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.gateway.registry import GatewayConnectionRegistry, RegistryClosed
 from qq_ai_bot.identity.inventory import IDENTITY_PLATFORM
 from qq_ai_bot.identity.routing import PresenceRouter, ResolvedSend, RouteSendError
@@ -19,7 +20,9 @@ from qq_ai_bot.plugin_host.media_artifacts import PluginMediaArtifactStore
 from qq_ai_bot.plugin_host.notification_repository import (
     OutboxRecord,
     PluginNotificationRepository,
+    queued_work_error_category,
 )
+from qq_ai_bot.plugin_host.ownership import PluginOwnershipError
 from yuki_plugin_sdk.errors import PluginPermissionError
 
 logger = logging.getLogger(__name__)
@@ -168,7 +171,11 @@ class OneBotNotificationTransport:
         canonical_target_person_id: str | None,
         canonical_target_space_id: str | None,
     ) -> ResolvedSend:
-        if self._router is not None:
+        has_person = bool(canonical_target_person_id)
+        has_space = bool(canonical_target_space_id)
+        if has_person or has_space or self._router is not None:
+            if self._router is None:
+                raise ProactiveGatewayError("none")
             try:
                 resolved = await self._resolve_via_router(
                     bot_user_id=bot_user_id,
@@ -184,6 +191,17 @@ class OneBotNotificationTransport:
             if resolved.kind == "space" and target_type != "group":
                 raise ProactiveGatewayError("capability")
             return resolved
+        return await self._resolve_legacy_v1_account(
+            bot_user_id=bot_user_id,
+            target_id=target_id,
+        )
+
+    async def _resolve_legacy_v1_account(
+        self,
+        *,
+        bot_user_id: str,
+        target_id: str,
+    ) -> ResolvedSend:
         if self._registry is None:
             raise ProactiveGatewayError("bot_unavailable")
         try:
@@ -219,6 +237,24 @@ class OneBotNotificationTransport:
             return await self._router.resolve_send_for_person(canonical_target_person_id or "")
         if has_space:
             return await self._router.resolve_send_for_space(canonical_target_space_id or "")
+        return await self._resolve_v1_send_for_target(
+            bot_user_id=bot_user_id,
+            target_type=target_type,
+            target_id=target_id,
+        )
+
+    async def _resolve_v1_send_for_target(
+        self,
+        *,
+        bot_user_id: str,
+        target_type: str,
+        target_id: str,
+    ) -> ResolvedSend:
+        """v1 exact-account fallback. complete-v2 never reaches this helper."""
+
+        assert self._router is not None
+        if await self._router.uses_canonical_send():
+            raise RouteSendError("none")
         return await self._router.resolve_send_for_target(
             bot_user_id=bot_user_id,
             target_type=target_type,
@@ -271,7 +307,30 @@ class PluginNotificationOutboxWorker:
             await self._deliver(item)
 
     async def _deliver(self, item: OutboxRecord) -> None:
-        if (
+        complete_v2 = await self._repository.runtime_is_complete_v2()
+        if complete_v2:
+            try:
+                await self._repository.require_v2_outbox_ready(item)
+            except PluginOwnershipError as exc:
+                await self._repository.finish_outbox(
+                    item.id,
+                    status="failed",
+                    error_category=queued_work_error_category(exc, item),
+                )
+                return
+            if (
+                await self._repository.granted_canonical_creator(
+                    plugin_id=item.plugin_id,
+                    person_id=item.canonical_target_person_id,
+                    space_id=item.canonical_target_space_id,
+                )
+                is None
+            ):
+                await self._repository.finish_outbox(
+                    item.id, status="cancelled", error_category="target_grant_revoked"
+                )
+                return
+        elif (
             await self._repository.grant_creator(
                 plugin_id=item.plugin_id,
                 target_type=item.target_type,
@@ -362,6 +421,8 @@ class PluginNotificationOutboxWorker:
         )
 
     async def _canonical_delivery_target(self, item: OutboxRecord) -> tuple[str | None, str | None]:
+        if not await self._repository.runtime_is_complete_v2():
+            return None, None
         person_id = item.canonical_target_person_id
         space_id = item.canonical_target_space_id
         has_person = bool(person_id)
@@ -370,9 +431,7 @@ class PluginNotificationOutboxWorker:
             raise PluginPermanentDeliveryError("canonical_target_ambiguous")
         if has_person or has_space:
             return person_id, space_id
-        if await self._repository.runtime_is_complete_v2():
-            raise PluginPermanentDeliveryError("canonical_target_missing")
-        return None, None
+        raise PluginPermanentDeliveryError("canonical_target_missing")
 
     async def _record_outbound(
         self, item: OutboxRecord, receipt: NotificationDeliveryReceipt
@@ -394,9 +453,22 @@ class PluginNotificationOutboxWorker:
             )
         else:
             segments = ({"type": "text", "data": {"text": content}},)
-        sender = receipt.sender_account_id or item.bot_user_id
-        target = receipt.external_target_id or item.target_id
-        await self._ledger.append(
+        complete_v2 = await self._repository.runtime_is_complete_v2()
+        if complete_v2:
+            sender = receipt.sender_account_id
+            target = receipt.external_target_id
+            if not sender or not target or not receipt.presence_id:
+                raise PluginPermanentDeliveryError("none")
+            before = None
+            if item.canonical_conversation_id:
+                before = await self._repository.conversation_watermark(
+                    item.canonical_conversation_id
+                )
+        else:
+            sender = receipt.sender_account_id or item.bot_user_id
+            target = receipt.external_target_id or item.target_id
+            before = None
+        appended = await self._ledger.append(
             bot_user_id=sender,
             platform_message_id=receipt.message_id,
             scope_type=scope,
@@ -409,6 +481,28 @@ class PluginNotificationOutboxWorker:
             sender_is_bot=True,
             origin="plugin_background",
         )
+        if not complete_v2:
+            return
+        event = appended[0] if isinstance(appended, tuple) else None
+        if event is None:
+            return
+        if event.author_kind != AuthorKind.YUKI.value:
+            raise PluginPermanentDeliveryError("canonical_owner_mismatch")
+        if event.author_presence_id != receipt.presence_id:
+            raise PluginPermanentDeliveryError("canonical_owner_mismatch")
+        if event.ingress_presence_id != receipt.presence_id:
+            raise PluginPermanentDeliveryError("canonical_owner_mismatch")
+        if (
+            item.canonical_conversation_id
+            and event.canonical_conversation_id != item.canonical_conversation_id
+        ):
+            raise PluginPermanentDeliveryError("canonical_owner_mismatch")
+        if before is not None:
+            after = await self._repository.conversation_watermark(
+                item.canonical_conversation_id or ""
+            )
+            if after != before:
+                raise PluginPermanentDeliveryError("canonical_owner_mismatch")
 
 
 class PluginPermanentDeliveryError(RuntimeError):

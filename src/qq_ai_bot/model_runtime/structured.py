@@ -60,6 +60,7 @@ class StructuredTaskRunner:
         validation_retries: int = 0,
         validation_repair_hint: str = "",
         priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
+        canonical_conversation_id: str | None = None,
     ) -> OutputT:
         result, _response = await self.run_with_response(
             task=task,
@@ -74,6 +75,7 @@ class StructuredTaskRunner:
             validation_retries=validation_retries,
             validation_repair_hint=validation_repair_hint,
             priority=priority,
+            canonical_conversation_id=canonical_conversation_id,
         )
         return result
 
@@ -92,6 +94,7 @@ class StructuredTaskRunner:
         validation_retries: int = 0,
         validation_repair_hint: str = "",
         priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
+        canonical_conversation_id: str | None = None,
     ) -> tuple[OutputT, ChatResponse]:
         """Return validated data together with provider-safe usage metadata."""
 
@@ -162,9 +165,23 @@ class StructuredTaskRunner:
                 structured_output=True,
             )
             if priority is ModelExecutionPriority.FOREGROUND:
-                response = await self._models.execute(task, request)
-            else:
+                if canonical_conversation_id is None:
+                    response = await self._models.execute(task, request)
+                else:
+                    response = await self._models.execute(
+                        task,
+                        request,
+                        canonical_conversation_id=canonical_conversation_id,
+                    )
+            elif canonical_conversation_id is None:
                 response = await self._models.execute(task, request, priority=priority)
+            else:
+                response = await self._models.execute(
+                    task,
+                    request,
+                    priority=priority,
+                    canonical_conversation_id=canonical_conversation_id,
+                )
             try:
                 decoded = _decode_response(
                     response,

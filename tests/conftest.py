@@ -23,6 +23,7 @@ from qq_ai_bot.domain.messages import OutboundMessage, OutboundSendReceipt
 from qq_ai_bot.llm.base import LLMProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.memory.repository import MemoryFactRepository
+from qq_ai_bot.memory.runtime.partition_lookup import DatabaseMemoryPartitionLookup
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.model_runtime.executor import require_model_executor
 from qq_ai_bot.persistence.database import Database
@@ -254,6 +255,7 @@ def build_harness(
         source_renderer=SourceRenderer(),
         runtime_config=runtime_config,
         time_service=time_service,
+        memory_partition_lookup=DatabaseMemoryPartitionLookup(database),
         rollup_repository=conversation_rollups,
         rollup_service=rollup_service,
         conversation_scopes=conversation_scopes,

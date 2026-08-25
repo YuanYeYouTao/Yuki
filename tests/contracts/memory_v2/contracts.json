@@ -106,7 +106,7 @@
   "schema_version": "1",
   "schemas": {
     "EmbeddingProviderProfile": "01d9ddd287565ae59d747a226abc5d68b909680f06ce3bf23588d7fb169e9d31",
-    "MemoryContextBlock": "114a0318cd4527e4cd30d4328e86ba991358adbe3f8cdd60fab991d5206486cc",
+    "MemoryContextBlock": "9e6f6854c9637d75ed3fe768b5b0ae6c8394269ff7e2baef9cfd536c0aec46ad",
     "MemoryEvidenceCreate": "9ccc599265d1e44de286f6eef25b2003bef09fcd9a16e1ab7b4bd02d7b56f1ae",
     "MemoryFactCreate": "533cb26d7856cb10bc11a186ad492c168562f1d7dc52fe4a6e7808d01b299ff5",
     "MemoryQualityCase": "236c58b72d7fa07663f460b370700b635df213cee071315de30208a9056414de",
@@ -117,7 +117,7 @@
   },
   "versions": {
     "embedding_profile_schema": 1,
-    "memory_context_schema": 5,
+    "memory_context_schema": 6,
     "memory_evidence_schema": 4,
     "memory_fact_schema": 3,
     "memory_query_schema": 6,

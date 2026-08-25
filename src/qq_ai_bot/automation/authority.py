@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -46,17 +47,34 @@ def permission_for(settings: Settings, user_id: str) -> PermissionLevel:
     return PermissionLevel.SUPERUSER if user_id in settings.superusers else PermissionLevel.USER
 
 
+def permission_for_accounts(settings: Settings, account_ids: Iterable[str]) -> PermissionLevel:
+    """Current role from live account ids. Empty input is a regular user."""
+
+    if any(item in settings.superusers for item in account_ids):
+        return PermissionLevel.SUPERUSER
+    return PermissionLevel.USER
+
+
 def effective_delegated_capabilities(
     authority: DelegatedAuthority,
     *,
     settings: Settings,
     registry: AutomationCapabilityRegistry,
+    current_permission: PermissionLevel | None = None,
 ) -> frozenset[str]:
-    """Intersect the immutable grant with current registry and creator permission."""
+    """Intersect the immutable grant with current registry and creator permission.
 
-    current_permission = permission_for(settings, authority.creator_user_id)
+    v1 omits ``current_permission`` and keeps the raw snapshot QQ baseline.
+    complete-v2 must pass the Person principal's live PermissionLevel.
+    """
+
+    resolved = (
+        current_permission
+        if current_permission is not None
+        else permission_for(settings, authority.creator_user_id)
+    )
     if authority.permission_level is PermissionLevel.SUPERUSER and (
-        current_permission is not PermissionLevel.SUPERUSER
+        resolved is not PermissionLevel.SUPERUSER
     ):
         return frozenset()
     allowed: set[str] = set()
@@ -74,7 +92,7 @@ def effective_delegated_capabilities(
                 "manifest_hash": definition.provider_manifest_hash or "",
             }:
                 continue
-        if not definition.permits(current_permission):
+        if not definition.permits(resolved):
             continue
         if TurnOrigin.SCHEDULED_AUTOMATION not in definition.allowed_origins:
             continue

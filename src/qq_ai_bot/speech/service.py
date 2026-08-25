@@ -113,6 +113,7 @@ class GenieTTSProvider(TTSProvider):
             character_count=len(spoken_text),
             cache_key=key,
             expires_at=None,
+            canonical_conversation_id=request.canonical_conversation_id,
         )
         cached = await self._cache.find(key)
         if cached is not None:
@@ -268,6 +269,7 @@ class SpeechService:
             trigger_event_id=request.trigger_event_id,
             turn_token=request.turn_token,
             language_hint=request.language_hint,
+            canonical_conversation_id=request.canonical_conversation_id,
         )
         await publish_notification(
             self._event_publisher,

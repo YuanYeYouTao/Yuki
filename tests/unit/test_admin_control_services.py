@@ -112,11 +112,26 @@ def test_core_admin_services_have_no_transport_actor_auth() -> None:
 
 
 def test_plugin_and_automation_do_not_self_report_superuser() -> None:
-    facade = (SRC_ROOT / "qq_ai_bot" / "plugin_host" / "facades.py").read_text(encoding="utf-8")
-    automation = (SRC_ROOT / "qq_ai_bot" / "automation" / "handlers.py").read_text(encoding="utf-8")
-    assert "is_superuser=True" not in facade
-    assert "is_superuser=True" not in automation
-    assert "AdminActor(" in automation
+    files = (
+        "src/qq_ai_bot/plugin_host/facades.py",
+        "src/qq_ai_bot/automation/handlers.py",
+        "src/qq_ai_bot/automation/service.py",
+        "src/qq_ai_bot/mcp/admin.py",
+    )
+    repo = SRC_ROOT.parent
+    for rel in files:
+        source = (repo / rel).read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=rel)
+        assert "is_superuser=True" not in source, rel
+        assert "actor_is_superuser=True" not in source, rel
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            constructed = (isinstance(func, ast.Name) and func.id == "AdminActor") or (
+                isinstance(func, ast.Attribute) and func.attr == "AdminActor"
+            )
+            assert not constructed, rel
     assert "is_superuser=True" not in (
         SRC_ROOT / "qq_ai_bot" / "services" / "admin" / "relationship_admin.py"
     ).read_text(encoding="utf-8")

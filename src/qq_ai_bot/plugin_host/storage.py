@@ -16,7 +16,11 @@ from yuki_plugin_sdk.permissions import PluginPermission
 
 
 class BoundStorageFacade:
-    """Expose only the caller plugin's own namespace."""
+    """Expose only the caller plugin's own namespace.
+
+    Writes are plugin-global: they do not stamp subject_user_id or isolate
+    storage by Person. Person-owned rows are a repository-path contract.
+    """
 
     def __init__(
         self,

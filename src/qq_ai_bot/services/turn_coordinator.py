@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from typing import Literal
 
 from qq_ai_bot.automation.models import TurnOrigin
+from qq_ai_bot.conversation.scope import runtime_conversation_key
 from qq_ai_bot.domain.messages import InboundMessage
 
 TurnStage = Literal["admission", "generation", "reply"]
@@ -71,9 +72,9 @@ class ConversationTurnCoordinator:
 
     @staticmethod
     def key_for(message: InboundMessage) -> str:
-        """Use the exact bot-aware conversation scope as cancellation domain."""
+        """Runtime conversation identity: v2 primary alias, otherwise transport key."""
 
-        return message.scope().key
+        return runtime_conversation_key(identity=message.scope(), inbound=message)
 
     async def notify_message(
         self,

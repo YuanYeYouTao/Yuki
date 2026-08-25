@@ -32,12 +32,16 @@ from qq_ai_bot.control_plane.query_types import (
     AutomationView,
     BackfillConflictView,
     BackfillOperationView,
+    ConfigOverrideView,
+    ConfigOwnerKind,
     ConfigSpecView,
     ControlQueryError,
     ConversationView,
     CountSnapshot,
     EffectiveConfigView,
     EmojiAssetView,
+    EmojiSpaceEnablementView,
+    ExternalIdView,
     IdentityBindingView,
     IdentityResolution,
     ManagementHealthView,
@@ -85,7 +89,7 @@ from qq_ai_bot.domain.identity import (
     SpaceBindingId,
     SpaceId,
 )
-from qq_ai_bot.emoji.db_models import EmojiAssetModel, EmojiJobModel
+from qq_ai_bot.emoji.db_models import EmojiAssetModel, EmojiJobModel, EmojiScopeStateModel
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
@@ -97,6 +101,7 @@ from qq_ai_bot.identity.db_models import (
     SpaceBindingModel,
 )
 from qq_ai_bot.identity.inventory import IDENTITY_PLATFORM
+from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
 from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.memory.audit import MemoryAuditService
 from qq_ai_bot.memory.dream.db_models import MemoryDreamRunModel
@@ -200,6 +205,41 @@ def _dream_query_status(value: str) -> OperationStatus:
         "rolled_back": OperationStatus.CANCELLED,
     }
     return mapping.get(value, OperationStatus.RUNNING)
+
+
+def _automation_target_kind(row: AutomationModel) -> str:
+    if row.canonical_target_person_id:
+        return "person"
+    if row.canonical_target_space_id:
+        return "space"
+    return "none"
+
+
+def _automation_target_id(row: AutomationModel) -> str:
+    if row.canonical_target_person_id:
+        return str(row.canonical_target_person_id)
+    if row.canonical_target_space_id:
+        return str(row.canonical_target_space_id)
+    return "none"
+
+
+def _automation_route_state(
+    row: AutomationModel,
+    *,
+    epoch: StateEpoch,
+    person_route: PersonActiveRouteModel | None,
+    space_route: SpaceActiveRouteModel | None,
+) -> str:
+    if epoch is not StateEpoch.V2 or (
+        not row.canonical_target_person_id and not row.canonical_target_space_id
+    ):
+        return "legacy"
+    route = person_route if row.canonical_target_person_id else space_route
+    if route is None:
+        return "missing"
+    if route.paused:
+        return "paused"
+    return "configured"
 
 
 def _automation_query_status(value: str) -> OperationStatus:
@@ -321,6 +361,218 @@ def _safe_config_value(value_json: str) -> str | int | float | bool | None:
     if type(decoded) is bool or type(decoded) is int or type(decoded) is float:
         return decoded
     return None
+
+
+_CONFIG_OVERRIDE_CURSOR_PREFIX = "ovr:"
+
+
+def _try_person_id(value: object) -> PersonId | None:
+    if type(value) is not str or not value:
+        return None
+    try:
+        return PersonId.parse(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _try_space_id(value: object) -> SpaceId | None:
+    if type(value) is not str or not value:
+        return None
+    try:
+        return SpaceId.parse(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _config_legacy_owner(scope_id: object, *, reveal_external: bool) -> ExternalIdView | None:
+    if type(scope_id) is not str or not scope_id:
+        return None
+    return mask_external_id(scope_id, reveal=reveal_external)
+
+
+def _unavailable_config_owner() -> tuple[
+    ConfigOwnerKind, PersonId | None, SpaceId | None, IdentityResolution, ExternalIdView | None
+]:
+    return (
+        ConfigOwnerKind.UNAVAILABLE,
+        None,
+        None,
+        IdentityResolution.UNRESOLVED,
+        None,
+    )
+
+
+def _config_owner_projection(
+    row: RuntimeConfigOverrideModel,
+    *,
+    complete_v2: bool,
+    reveal_external: bool,
+) -> tuple[
+    ConfigOwnerKind, PersonId | None, SpaceId | None, IdentityResolution, ExternalIdView | None
+]:
+    scope = str(row.scope_type)
+    person = _try_person_id(row.canonical_person_id)
+    space = _try_space_id(row.canonical_space_id)
+    if person is not None and space is not None:
+        return _unavailable_config_owner()
+    if scope == "global":
+        if person is not None or space is not None:
+            return _unavailable_config_owner()
+        return (
+            ConfigOwnerKind.GLOBAL,
+            None,
+            None,
+            IdentityResolution.CANONICAL,
+            None,
+        )
+    if scope == "user":
+        if space is not None:
+            return _unavailable_config_owner()
+        if person is not None:
+            return (
+                ConfigOwnerKind.PERSON,
+                person,
+                None,
+                IdentityResolution.CANONICAL,
+                None,
+            )
+        if complete_v2:
+            return _unavailable_config_owner()
+        return (
+            ConfigOwnerKind.PERSON,
+            None,
+            None,
+            IdentityResolution.LEGACY,
+            _config_legacy_owner(row.scope_id, reveal_external=reveal_external),
+        )
+    if scope == "group":
+        if person is not None:
+            return _unavailable_config_owner()
+        if space is not None:
+            return (
+                ConfigOwnerKind.SPACE,
+                None,
+                space,
+                IdentityResolution.CANONICAL,
+                None,
+            )
+        if complete_v2:
+            return _unavailable_config_owner()
+        return (
+            ConfigOwnerKind.SPACE,
+            None,
+            None,
+            IdentityResolution.LEGACY,
+            _config_legacy_owner(row.scope_id, reveal_external=reveal_external),
+        )
+    return _unavailable_config_owner()
+
+
+def _config_override_is_secret(spec: object | None) -> bool:
+    if spec is None:
+        return True
+    apply_mode = getattr(getattr(spec, "apply_mode", None), "value", "")
+    return apply_mode == "secret" or bool(getattr(spec, "sensitive", False))
+
+
+def _project_config_override(
+    row: RuntimeConfigOverrideModel,
+    *,
+    spec: object | None,
+    complete_v2: bool,
+    reveal_external: bool,
+) -> ConfigOverrideView:
+    owner_kind, person_id, space_id, resolution, legacy_owner = _config_owner_projection(
+        row, complete_v2=complete_v2, reveal_external=reveal_external
+    )
+    secret = _config_override_is_secret(spec)
+    spec_mode = getattr(getattr(spec, "apply_mode", None), "value", "")
+    apply_mode = "secret" if secret else str(spec_mode or row.apply_mode)
+    return ConfigOverrideView(
+        override_id=int(row.id),
+        key=str(row.config_key),
+        scope_type=str(row.scope_type),
+        owner_kind=owner_kind,
+        person_id=person_id,
+        space_id=space_id,
+        resolution=resolution,
+        apply_mode=apply_mode,
+        configured=True,
+        version=int(row.version),
+        value=None if secret else _safe_config_value(row.value_json),
+        legacy_owner=legacy_owner,
+    )
+
+
+def _decode_config_override_cursor(key: str | None) -> int:
+    if key is None:
+        return 0
+    prefix = _CONFIG_OVERRIDE_CURSOR_PREFIX
+    if not key.startswith(prefix):
+        raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
+    return decode_integer_cursor_key(key[len(prefix) :], minimum=1)
+
+
+def _project_emoji_space_enablement(
+    row: EmojiScopeStateModel,
+    *,
+    complete_v2: bool,
+) -> EmojiSpaceEnablementView | None:
+    if str(row.scope_type) == "global":
+        return None
+    space = _try_space_id(row.canonical_space_id)
+    if space is not None:
+        return EmojiSpaceEnablementView(
+            space_id=space,
+            resolution=IdentityResolution.CANONICAL,
+            enabled=bool(row.enabled),
+        )
+    return EmojiSpaceEnablementView(
+        space_id=None,
+        resolution=IdentityResolution.UNRESOLVED if complete_v2 else IdentityResolution.LEGACY,
+        enabled=bool(row.enabled),
+    )
+
+
+def _project_emoji_asset(
+    row: EmojiAssetModel,
+    *,
+    scope_rows: Sequence[EmojiScopeStateModel],
+    complete_v2: bool,
+    reveal_first_seen_person: bool,
+    reveal_first_seen_space: bool,
+) -> EmojiAssetView:
+    global_enabled: bool | None = None
+    enablements: list[EmojiSpaceEnablementView] = []
+    for scope in scope_rows:
+        if str(scope.scope_type) == "global":
+            global_enabled = bool(scope.enabled)
+            continue
+        projected = _project_emoji_space_enablement(scope, complete_v2=complete_v2)
+        if projected is not None:
+            enablements.append(projected)
+    enablements.sort(
+        key=lambda item: (
+            0 if item.resolution is IdentityResolution.CANONICAL else 1,
+            str(item.space_id) if item.space_id is not None else "",
+            item.enabled,
+        )
+    )
+    first_seen_person = (
+        _try_person_id(row.canonical_first_seen_person_id) if reveal_first_seen_person else None
+    )
+    first_seen_space = (
+        _try_space_id(row.canonical_first_seen_space_id) if reveal_first_seen_space else None
+    )
+    return EmojiAssetView(
+        asset_id=str(row.id),
+        status=str(row.status),
+        enabled=bool(row.pinned) or str(row.status) == "adopted",
+        global_enabled=global_enabled,
+        space_enablements=tuple(enablements),
+        first_seen_person_id=first_seen_person,
+        first_seen_space_id=first_seen_space,
+    )
 
 
 def _memory_job_view(row: MemoryJobModel) -> MemoryJobView:
@@ -1726,6 +1978,10 @@ class ControlQueryAdapter:
                     and override is not None,
                     version=None if override is None else override[1],
                     value=None if secret or override is None else _safe_config_value(override[2]),
+                    owner_kind=ConfigOwnerKind.GLOBAL,
+                    person_id=None,
+                    space_id=None,
+                    owner_resolution=None if override is None else IdentityResolution.CANONICAL,
                 )
             )
         return self._page(
@@ -1735,6 +1991,47 @@ class ControlQueryAdapter:
             next_key=window[-1].key if more else None,
             snapshot_at=snapshot_at,
         )
+
+    async def list_config_overrides(
+        self,
+        request: PageRequest,
+        *,
+        reveal_external: bool,
+    ) -> Page[ConfigOverrideView]:
+        snapshot_at = _now()
+        specs = {item.key: item for item in ConfigRegistry().list()}
+        async with self._reader() as session:
+            epoch, _revision = await self._runtime(session)
+            complete_v2 = await identity_runtime_is_complete_v2(session)
+            _phase, key = self._cursor_state(request, QueryResourceKind.CONFIG, epoch=epoch)
+            after = _decode_config_override_cursor(key)
+            stmt = select(RuntimeConfigOverrideModel)
+            if after:
+                stmt = stmt.where(RuntimeConfigOverrideModel.id > after)
+            stmt = stmt.order_by(RuntimeConfigOverrideModel.id.asc()).limit(request.limit + 1)
+            rows = list(await session.scalars(stmt))
+            more = len(rows) == request.limit + 1
+            if more:
+                rows = rows[:-1]
+            items = [
+                _project_config_override(
+                    row,
+                    spec=specs.get(str(row.config_key)),
+                    complete_v2=complete_v2,
+                    reveal_external=reveal_external,
+                )
+                for row in rows
+            ]
+            next_key = None
+            if more and rows:
+                next_key = f"{_CONFIG_OVERRIDE_CURSOR_PREFIX}{rows[-1].id}"
+            return self._page(
+                items,
+                kind=QueryResourceKind.CONFIG,
+                phase=QueryCursorPhase.CANONICAL,
+                next_key=next_key,
+                snapshot_at=snapshot_at,
+            )
 
     async def list_memory_facts(
         self,
@@ -1883,6 +2180,42 @@ class ControlQueryAdapter:
             more = len(rows) == request.limit + 1
             if more:
                 rows = rows[:-1]
+            person_ids = [
+                str(row.canonical_target_person_id)
+                for row in rows
+                if row.canonical_target_person_id
+            ]
+            space_ids = [
+                str(row.canonical_target_space_id) for row in rows if row.canonical_target_space_id
+            ]
+            person_routes = {
+                item.person_id: item
+                for item in (
+                    list(
+                        await session.scalars(
+                            select(PersonActiveRouteModel).where(
+                                PersonActiveRouteModel.person_id.in_(tuple(person_ids))
+                            )
+                        )
+                    )
+                    if person_ids
+                    else []
+                )
+            }
+            space_routes = {
+                item.space_id: item
+                for item in (
+                    list(
+                        await session.scalars(
+                            select(SpaceActiveRouteModel).where(
+                                SpaceActiveRouteModel.space_id.in_(tuple(space_ids))
+                            )
+                        )
+                    )
+                    if space_ids
+                    else []
+                )
+            }
             items = [
                 AutomationView(
                     automation_id=int(row.id),
@@ -1890,6 +2223,14 @@ class ControlQueryAdapter:
                     status=str(row.status),
                     run_count=int(row.run_count),
                     script_hash=str(row.script_hash),
+                    target_kind=_automation_target_kind(row),
+                    target_id=_automation_target_id(row),
+                    route_state=_automation_route_state(
+                        row,
+                        epoch=epoch,
+                        person_route=person_routes.get(str(row.canonical_target_person_id or "")),
+                        space_route=space_routes.get(str(row.canonical_target_space_id or "")),
+                    ),
                 )
                 for row in rows
             ]
@@ -1986,10 +2327,17 @@ class ControlQueryAdapter:
             snapshot_at=snapshot_at,
         )
 
-    async def list_emoji_assets(self, request: PageRequest) -> Page[EmojiAssetView]:
+    async def list_emoji_assets(
+        self,
+        request: PageRequest,
+        *,
+        reveal_first_seen_person: bool,
+        reveal_first_seen_space: bool,
+    ) -> Page[EmojiAssetView]:
         snapshot_at = _now()
         async with self._reader() as session:
             epoch, _revision = await self._runtime(session)
+            complete_v2 = await identity_runtime_is_complete_v2(session)
             _phase, key = self._cursor_state(request, QueryResourceKind.EMOJI, epoch=epoch)
             stmt = select(EmojiAssetModel)
             if key is not None:
@@ -1999,11 +2347,27 @@ class ControlQueryAdapter:
             more = len(rows) == request.limit + 1
             if more:
                 rows = rows[:-1]
+            scope_rows = (
+                list(
+                    await session.scalars(
+                        select(EmojiScopeStateModel).where(
+                            EmojiScopeStateModel.emoji_id.in_(tuple(row.id for row in rows))
+                        )
+                    )
+                )
+                if rows
+                else []
+            )
+            scopes_by_asset: dict[str, list[EmojiScopeStateModel]] = {}
+            for scope in scope_rows:
+                scopes_by_asset.setdefault(str(scope.emoji_id), []).append(scope)
             items = [
-                EmojiAssetView(
-                    asset_id=str(row.id),
-                    status=str(row.status),
-                    enabled=bool(row.pinned) or str(row.status) == "adopted",
+                _project_emoji_asset(
+                    row,
+                    scope_rows=scopes_by_asset.get(str(row.id), []),
+                    complete_v2=complete_v2,
+                    reveal_first_seen_person=reveal_first_seen_person,
+                    reveal_first_seen_space=reveal_first_seen_space,
                 )
                 for row in rows
             ]

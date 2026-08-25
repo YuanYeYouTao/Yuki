@@ -334,9 +334,10 @@ async def test_v2_session_create_and_append_use_active_binding_without_people(
 ) -> None:
     from datetime import UTC, datetime
 
+    from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
     from qq_ai_bot.identity.db_models import IdentityRuntimeStateModel
     from qq_ai_bot.identity.dual_write import ensure_canonical_person_preconfig
-    from qq_ai_bot.persistence.models import PersonModel
+    from qq_ai_bot.persistence.models import GroupModel, PersonModel
     from qq_ai_bot.plugin_host.db_models import PluginAgentSessionModel
 
     await _install(database, "com.example.v2-session")
@@ -391,8 +392,14 @@ async def test_v2_session_create_and_append_use_active_binding_without_people(
             await session.scalar(select(func.count()).select_from(IdentityBindingModel)) or 0
         )
         people = int(await session.scalar(select(func.count()).select_from(PersonModel)) or 0)
+        groups = int(await session.scalar(select(func.count()).select_from(GroupModel)) or 0)
+        scopes = int(
+            await session.scalar(select(func.count()).select_from(ConversationScopeModel)) or 0
+        )
     assert stored is not None
     assert stored.canonical_owner_person_id == owner
     assert persons == 1
     assert bindings == 1
-    assert people == 1
+    assert people == 0
+    assert groups == 0
+    assert scopes == 0

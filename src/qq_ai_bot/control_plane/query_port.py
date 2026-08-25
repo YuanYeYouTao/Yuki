@@ -10,6 +10,7 @@ from qq_ai_bot.control_plane.query_types import (
     AutomationView,
     BackfillConflictView,
     BackfillOperationView,
+    ConfigOverrideView,
     ConfigSpecView,
     ConversationView,
     EffectiveConfigView,
@@ -100,6 +101,13 @@ class ControlQueryPort(Protocol):
 
     async def list_effective_configs(self, request: PageRequest) -> Page[EffectiveConfigView]: ...
 
+    async def list_config_overrides(
+        self,
+        request: PageRequest,
+        *,
+        reveal_external: bool,
+    ) -> Page[ConfigOverrideView]: ...
+
     async def list_memory_facts(
         self,
         request: PageRequest,
@@ -124,6 +132,12 @@ class ControlQueryPort(Protocol):
 
     async def list_mcp_servers(self, request: PageRequest) -> Page[McpServerView]: ...
 
-    async def list_emoji_assets(self, request: PageRequest) -> Page[EmojiAssetView]: ...
+    async def list_emoji_assets(
+        self,
+        request: PageRequest,
+        *,
+        reveal_first_seen_person: bool,
+        reveal_first_seen_space: bool,
+    ) -> Page[EmojiAssetView]: ...
 
     async def list_speech_profiles(self, request: PageRequest) -> Page[SpeechProfileView]: ...

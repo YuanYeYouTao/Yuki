@@ -18,7 +18,7 @@
 - 新建 `docs/architecture/Yuki-永久主体、多Presence与WebUI控制面任务书.md`，内容以本计划为准。
 - 本轮实现身份地基、多 Presence、canonical Conversation、确定性路由，以及未来 WebUI 可直接复用的 transport-neutral 控制面服务层。
 - 本轮不实现 HTTP 管理 API、不开放新端口、不做前端。
-- 不推送、不部署、不涨产品版本；全部先形成可审查的本地小 Commit。
+- 不推送、不部署、不涨产品版本。C0–C24 按 Commit 合同推进；剩余已合并工作按三枚本地 Bundle/Commit 验收，最终纠偏只 amend Bundle 3 / HEAD，不另开第四枚 Commit。
 
 ---
 
@@ -423,11 +423,11 @@ Capability 分层：
 旧 Scope 合并：
 
 - 不取 min/max `starts_after_event_id`。
-- 读取每个旧 Scope 的有效 rollup 和 raw suffix。
+- 读取每个旧 Scope 的有效 semantic rollup 和 raw suffix。
 - 仅在同 Space、同 sender Binding、同 platform message ID、同 event type、同规范化正文/segments、同平台时间完全一致时 suppress。
 - 同 platform message ID 但内容冲突时阻断。
 - 不同 message ID 视为独立事件。
-- 生成一条 migration rollup。
+- 生成一条 migration rollup：有界、确定性、按 Scope 公平分配证据，禁止尾部截断；digest 覆盖实际落库表示。
 - 新 Conversation 从 cutover watermark 开始空 raw suffix。
 - 原始账本行全部保留。
 - 旧事件绝不重新进入 Memory worker。
@@ -442,7 +442,7 @@ Capability 分层：
 - 最后翻转 `identity_runtime_state=v2`。
 - 任何失败整事务回滚。
 - v2 二进制遇到 v1 状态拒绝启动；v1 二进制遇到 v2 状态拒绝启动。
-- 数据回滚只能恢复 cutover 前 DB/WAL/SHM 快照，不能用 git revert 或 Alembic downgrade。
+- apply / cutover 完成后的数据回滚只能恢复 cutover 前同一时间点 DB/WAL/SHM 快照；禁止 Alembic downgrade 与 git revert。apply 前的 0048 schema reverse 见 Bundle 3。
 
 ---
 
@@ -742,49 +742,88 @@ Alembic `0047`：
 验收：所有 scope inventory 有明确所有者；不存在未分类 QQ/group key。
 回滚：普通 revert。
 
-### C25 — `feat(migration): plan identity cutover`
+### C25–C27 合并为 Bundle 3 — `feat(migration): cut over permanent-yuki identity safely`
 
-Alembic `0048` 与只读工具：
+最终 cutover/release 一枚 Commit，parent 必须是已验收 Bundle 2。apply / cutover 之后禁止再用 Alembic downgrade 或 git revert 当数据回滚。
 
-- 建 cutover run/manifest 表。
-- 实现 `--plan`。
-- revision、停机、快照、drain、冲突、重复、rollup、route、pending preconfiguration 检查。
-- 生成 source manifest，不翻 state，不改业务真源。
+Alembic `0048`：
 
-验收：指纹稳定；任一 conflict/lease/pending 错误都会阻断。
-回滚：downgrade 0048 + revert 工具。
+- 建 `identity_cutover_manifests` / `identity_cutover_runs`。
+- SQLite table-rebuild 去掉业务表对 `people` / `groups` 的 carrier FK；`conversation_scopes.id` 子表保留。旧 unique 改为 `WHERE canonical_event_id IS NULL`。
+- apply 前：仅当 `identity_runtime_state=v1` 且不存在成功 apply 记录时，允许 Alembic `0048` downgrade。它必须忠实还原当时完整的 0047 schema：全部 people/groups carrier FK、精确 ON DELETE / ON UPDATE、索引、触发器与 FTS（含 `uq_chat_events_bot_platform_message` 的 0047 全表 UNIQUE）。DDL 前校验无重复 `(bot_user_id, platform_message_id)`、无缺失 parent / 孤儿行，失败关闭。这是 schema reverse，不是 cutover 后的数据回滚。
+- apply / cutover 后：数据回滚只恢复 `--plan` 记录的同一时间点 DB/WAL/SHM 快照。禁止 Alembic downgrade，禁止 git revert。
+- 0005 继续排除 cutover 表，并内联恢复历史 people/groups FK。
 
-### C26 — `feat(migration): apply identity cutover atomically`
+`identity-cutover --plan`：
 
-- 实现 `--apply`。
-- `BEGIN IMMEDIATE` 复核指纹。
-- 写 canonical conversations、aliases、routes、baselines。
-- pending canonical 配置正式生效。
-- 原子 flip v2。
-- v1/v2 二进制互拒。
-- 增加各阶段 failpoint。
+- 校验目标 git revision、停机 token、DB/WAL/SHM 快照文件。
+- 排空 memory/reflection/rollup pending 与 processing，以及 automation/plugin outbox/dream/rebuild/emoji/relationship/embedding 的 processing lease。
+- 校验 canonical shadow、open `identity_conflicts`、未知 identity、route ambiguity、`problem_code=pending_cutover`。
+- 多 Presence 重复：仅完全相同 Space、sender Binding、platform message ID、event type、规范正文/segments、平台时间才 suppress；同 message ID 内容冲突阻断；不同 message ID 不合并。
+- 读取各 legacy Scope 有效 semantic rollup 与 raw suffix，按有界、确定性、按 Scope 公平分配的证据生成 migration rollup 与 cutover watermark；禁止尾部截断；digest 覆盖实际落库表示。原 ledger 保留，旧事件不重新 enqueue Memory。
+- 生成不可变、可重算 source fingerprint；plan 不翻 `identity_runtime_state`，不改 legacy 真源。重复 plan 稳定。
 
-验收：任一 failpoint 后数据库签名恢复；Memory job 数不增加；旧二进制拒绝 v2。
-回滚：只恢复 DB/WAL/SHM 快照。
+`identity-cutover --apply <manifest>`：
 
-### C27 — `test(release): enforce v2 identity contract`
+- 单个 `BEGIN IMMEDIATE` 复核 fingerprint。
+- 写 canonical conversations/aliases/routes/event mapping/worker baselines。
+- 已存在的 canonical 预配置在 flip 后正式生效；未解决的 `pending_cutover` 回执必须在 plan 阶段阻断。
+- 最后翻转 singleton `identity_runtime_state=v2`。
+- 任一 failpoint 整事务回滚，数据库签名与 apply 前一致。
+- `IDENTITY_BINARY_EPOCH`（不是产品版本号）：v2 binary 遇 v1 拒绝启动；v1 binary 遇 v2 拒绝启动。仅挂生产 `main.startup`。
 
-- v2 legacy storage 只读守卫。
-- Fresh、生产等价 0042、历史 0032 fixture 三套矩阵。
-- rollback 演练。
-- 最终 AST 门：
-  - core 无 AdminActor
-  - 无 `get_bots()` 选连
-  - 无 Yuki 表
-  - 无 GatewayConnection 表
-  - 无 `presence_active_routes`
-  - 无第四 Capability Registry
-  - 无管理 HTTP route
-  - 无 bot QQ 所有权判断
-- 更新正式任务书、升级文档和 release checks。
+Complete-v2 运行时：
 
-验收：全套 CI、schema diff、快照回滚、生产等价 cutover 演练通过。
-回滚：测试/文档可 revert，但已 cutover 数据不能靠此 Commit 回滚。
+- 禁止创建/更新 `people`、`groups`、`conversation_scopes`。`ensure_runtime_people_row` / `ensure_runtime_group_row` fail closed。
+- automation / plugin / QQ ingress / canonical append 成功且上述三表行数不增。
+- 新人只建 Person + active IdentityBinding；第三方 bot 不建 Person。
+- 未知群不得自动建 SpaceBinding；未知 Yuki Presence 不得自动注册。
+- plugin 外部事件与 outbox 走 canonical Conversation/Event，不得 `get_or_create` legacy scope。
+- 旧 / 未知 external ID 只做 provenance；若该 ID 指向另一个已知 Person/Space，发送 fail closed（`target_mismatch`）。
+- `forgetme` / `delete_person` 不再依赖 people CASCADE；应用层删除 memberships、aliases、relationship/speech/time 子行与可归属 `chat_events`。
+
+Issue #51 Rollup 安全合同（当前运行时；出处 https://github.com/YuanYeYouTao/Yuki-QQbot/issues/51）：
+
+- 默认 `summary_max_characters` 从 1200 提到 2400 只是预算余量，不是语义修复。
+- 模型失败、origin 排除或前台溢出时，写入独立、有界的 EMERGENCY overlay；永不推进 semantic checkpoint coverage。
+- Prompt 可以使用有效 overlay；后台 semantic worker 必须从 semantic checkpoint + 永久账本重建，不得以 overlay 正文当唯一来源。部分追上只推进 overlay 的 base revision；最终追上在同一事务原子删除 overlay。
+- generation 不匹配、reset、forget、delete 必须清除过期 overlay。status 分离 semantic / overlay / effective coverage，永不暴露 summary 正文。
+- migration rollup 使用有界、确定性、按 Scope 公平分配的证据，禁止尾部截断；digest 覆盖实际落库表示。
+
+apply / cutover 完成后的数据回滚：**只允许**恢复 `--plan` 记录的同一时间点 DB/WAL/SHM 快照。禁止 Alembic downgrade、禁止 git revert、禁止用产品版本回退当数据回滚。apply 前的 0048 downgrade 只做 schema reverse，见上方 Alembic `0048` 合同。
+
+验收命令（必须全绿，进程环境 `LLM_THINKING_ENABLED=true`、`LLM_REASONING_EFFORT=high`）：
+
+- 本地 ruff：`uv run ruff format --check . --exclude tmp --exclude .cursor` 与 `uv run ruff check . --exclude tmp --exclude .cursor`。CI 干净 checkout 没有用户 `tmp/` / `.cursor/`，可用 `uv run ruff format --check .` 与 `uv run ruff check .`。本地 exclude 只为保留这些用户文件、避免扫进门禁。禁止只扫 `src tests`：会漏掉 `migrations/`、`scripts/`、`examples/`。
+- `mypy src`
+- 全套 pytest
+- Alembic 空库 head = `0048`
+- `0042`→head 与 fresh schema 等价
+- 历史 0032 门：`tests/unit/test_memory_migration_matrix.py` 的 `MATRIX['memory-dream']='0032'` 路径（0032→0041→head），不是独立 golden `.db`
+- `PRAGMA foreign_key_check`
+- identity cutover plan / apply / failpoint / snapshot rollback
+- `git diff --check` 与 secret / 禁项扫描
+- `web_search` / `mcp.web_search` 仍为合法固定 MCP 工具；公共 `/healthz` 形状不变
+
+回滚：未 apply 且 `identity_runtime_state=v1`、无成功 apply 时，允许按上方合同执行 0048 schema downgrade，仓库可用普通 revert。**已 apply 的生产数据只能恢复快照**，禁止 Alembic downgrade 与 git revert。
+
+### 三 Bundle 实际边界
+
+| Bundle | Hash | Subject | 边界 |
+| --- | --- | --- | --- |
+| 1 | `94c0696003c0086e85d2831e3189104694a77fef` | `feat(control): complete transport-neutral management plane` | 原 C12–C15。控制面吃真实 principal；无管理 HTTP；`web_search` / `mcp.web_search` 合法。 |
+| 2 | `ea25bc028cc9fae26281d46835e9e8938804b965` | `feat(identity): activate canonical multi-presence runtime` | 原 C16–C24。多 Presence 运行时。当时仍用 `ensure_runtime_*` 与 `conversation_scopes` 顶 SQLite FK，由 Bundle 3 拆除。 |
+| 3 | `本 Commit（见 Git 历史）` | `feat(migration): cut over permanent-yuki identity safely` | 原 C25–C27。0048 + plan/apply + 去掉 legacy carrier FK + v2 只读合同 + Issue #51 rollup 安全合同。parent 为最终 Bundle 2 `ea25bc028cc9fae26281d46835e9e8938804b965`。 |
+
+剩余已合并工作按上述三枚本地 Bundle/Commit 验收。最终纠偏只 amend Bundle 3 / HEAD，不另开第四枚 Commit，不推送、不部署、不涨产品版本。不夹带 `.cursor/`、`tmp/` 或无关的用户 `docs/architecture/Yuki-3.7.0-群聊统一会话与Rollup重构任务书.md`。
+
+恢复步骤：
+
+1. 停 Bot，确认没有第二实例连接 SQLite。
+2. 保存故障现场副本。
+3. 只恢复 plan 记录的 DB/WAL/SHM 三件套（校验 `db_sha256` / size）。
+4. 需要回到 v1 运行时，必须使用 v1 binary 对着已恢复的 v1 快照；v2 binary 会拒绝 v1 状态。
+5. 已 cutover / apply 后不要 `alembic downgrade`，不要 `git revert` 已 cutover 的数据目录。
 
 ---
 
@@ -811,18 +850,18 @@ Alembic `0048` 与只读工具：
 5. 验收失败时，在同一个 Grok session 中要求修正并 amend；指挥官不亲自编码。
 6. 当前 Commit 未通过，禁止开始下一 Commit。
 7. Grok 长时间运行时耐心等待；CLI 会话失活才中止并使用 `--continue` 提交报告。
-8. 不并行修改共享工作树，不 squash 已验收 Commit，不夹带 `.cursor/`、`tmp/` 或用户无关修改。
-9. C27 后再做一次全库 Grok 红队审计；未通过不允许 push、deploy 或发布。
+8. 不并行修改共享工作树，不 squash 已验收 Commit，不夹带 `.cursor/`、`tmp/` 或用户无关修改（含无关的用户 3.7.0 任务书）。
+9. C27 后再做一次全库 Grok 红队审计；未通过不允许 push、deploy 或发布。剩余已合并工作按三枚本地 Bundle 验收，最终纠偏 amend Bundle 3 / HEAD，不另开第四枚 Commit。
 
 通用测试门：
 
-- `ruff format --check`
-- `ruff check`
+- 本地 ruff：`uv run ruff format --check . --exclude tmp --exclude .cursor` 与 `uv run ruff check . --exclude tmp --exclude .cursor`。CI 干净 checkout 可用 `uv run ruff format --check .` 与 `uv run ruff check .`；本地 exclude 保留用户 `tmp/` / `.cursor/`。禁止只扫 `src tests`，以免漏掉 `migrations/`、`scripts/`、`examples/`。
 - `mypy src`
 - 目标 pytest
 - schema/runtime Commit 跑完整 pytest
 - Alembic 空库升级
 - 0042 等价升级
+- 历史 0032 门：`tests/unit/test_memory_migration_matrix.py` 的 `MATRIX['memory-dream']='0032'` 路径（0032→0041→head），不是独立 golden `.db`
 - foreign key check
 - `git diff --check`
 - 现有 memory quality/release validation
@@ -832,7 +871,7 @@ Alembic `0048` 与只读工具：
 
 ## 8. 明确假设与非目标
 
-- 当前只生成本地 Commit，不推送云端、不部署。
+- 当前只生成本地 Commit，不推送云端、不部署、不涨产品版本。剩余已合并工作按三枚本地 Bundle 验收，最终纠偏 amend Bundle 3 / HEAD，不另开第四枚 Commit。
 - 本轮不实现 WebUI、HTTP 管理 API、登录、Cookie、CSRF 或前端。
 - 未来 WebUI 必须只依赖 ControlPlaneBundle；禁止直接读 ORM。
 - 本轮不自动合并两个已有数据的 Person 或 Space。

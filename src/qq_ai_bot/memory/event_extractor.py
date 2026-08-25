@@ -199,9 +199,7 @@ class MemoryEventExtractor:
             conversation_context=tuple(
                 BatchConversationContextEvent(
                     speaker_role=(
-                        "bot"
-                        if row.direction == "outbound" or row.sender_user_id == row.bot_user_id
-                        else "member"
+                        "bot" if row.direction == "outbound" or row.author_is_yuki() else "member"
                     ),
                     sender_label=self._sender_label(row)[:128],
                     content=row.content[:1000],
@@ -254,7 +252,7 @@ class MemoryEventExtractor:
 
     def _sender_label(self, event: EventRecord) -> str:
         if (
-            event.sender_user_id == event.bot_user_id
+            event.author_is_yuki()
             and not event.sender_group_card.strip()
             and not event.sender_nickname.strip()
         ):
@@ -268,7 +266,7 @@ class MemoryEventExtractor:
 
     @staticmethod
     def _speaker_role(primary: EventRecord, row: EventRecord) -> str:
-        if row.direction == "outbound" or row.sender_user_id == primary.bot_user_id:
+        if row.direction == "outbound" or row.author_is_yuki():
             return "bot"
         if row.sender_user_id == primary.sender_user_id:
             return "current_speaker"

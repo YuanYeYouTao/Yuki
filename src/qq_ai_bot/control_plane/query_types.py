@@ -98,6 +98,14 @@ class QueryResourceKind(StrEnum):
 
 
 @final
+class ConfigOwnerKind(StrEnum):
+    GLOBAL = "global"
+    PERSON = "person"
+    SPACE = "space"
+    UNAVAILABLE = "unavailable"
+
+
+@final
 class QueryCursorPhase(StrEnum):
     CANONICAL = "c"
     UNRESOLVED = "u"
@@ -194,6 +202,56 @@ def _require_int(value: object, name: str, *, minimum: int = 0) -> int:
     if value < minimum:
         raise ValueError(f"{name} is out of range")
     return value
+
+
+def _validate_config_owner(
+    *,
+    owner_kind: ConfigOwnerKind | None,
+    person_id: PersonId | None,
+    space_id: SpaceId | None,
+    resolution: IdentityResolution | None,
+    required: bool = False,
+) -> None:
+    if owner_kind is None:
+        if required:
+            raise TypeError("owner_kind must be ConfigOwnerKind")
+        if person_id is not None or space_id is not None or resolution is not None:
+            raise ValueError("owner fields require owner_kind")
+        return
+    if type(owner_kind) is not ConfigOwnerKind:
+        raise TypeError("owner_kind must be ConfigOwnerKind")
+    if person_id is not None and type(person_id) is not PersonId:
+        raise TypeError("person_id must be PersonId or None")
+    if space_id is not None and type(space_id) is not SpaceId:
+        raise TypeError("space_id must be SpaceId or None")
+    if resolution is not None and type(resolution) is not IdentityResolution:
+        raise TypeError("resolution must be IdentityResolution or None")
+    if owner_kind is ConfigOwnerKind.GLOBAL:
+        if person_id is not None or space_id is not None:
+            raise ValueError("global config owner cannot carry person or space")
+        return
+    if owner_kind is ConfigOwnerKind.UNAVAILABLE:
+        if person_id is not None or space_id is not None:
+            raise ValueError("unavailable config owner cannot carry canonical ids")
+        if resolution is IdentityResolution.CANONICAL:
+            raise ValueError("unavailable config owner cannot be canonical")
+        return
+    if resolution is None:
+        raise ValueError("person or space config owner requires resolution")
+    if owner_kind is ConfigOwnerKind.PERSON:
+        if space_id is not None:
+            raise ValueError("person config owner cannot carry space")
+        if resolution is IdentityResolution.CANONICAL and person_id is None:
+            raise ValueError("canonical person owner requires person_id")
+        if resolution is not IdentityResolution.CANONICAL and person_id is not None:
+            raise ValueError("non-canonical person owner cannot carry person_id")
+        return
+    if person_id is not None:
+        raise ValueError("space config owner cannot carry person")
+    if resolution is IdentityResolution.CANONICAL and space_id is None:
+        raise ValueError("canonical space owner requires space_id")
+    if resolution is not IdentityResolution.CANONICAL and space_id is not None:
+        raise ValueError("non-canonical space owner cannot carry space_id")
 
 
 @final
@@ -781,6 +839,10 @@ class EffectiveConfigView:
     pending_restart: bool
     version: int | None
     value: str | int | float | bool | None
+    owner_kind: ConfigOwnerKind | None = None
+    person_id: PersonId | None = None
+    space_id: SpaceId | None = None
+    owner_resolution: IdentityResolution | None = None
 
     def __post_init__(self) -> None:
         require_opaque_token(self.key, name="key", max_length=128)
@@ -793,6 +855,50 @@ class EffectiveConfigView:
             object.__setattr__(self, "version", _require_int(self.version, "version", minimum=1))
         if self.apply_mode == "secret" and self.value is not None:
             raise ValueError("secret config cannot carry a value")
+        _validate_config_owner(
+            owner_kind=self.owner_kind,
+            person_id=self.person_id,
+            space_id=self.space_id,
+            resolution=self.owner_resolution,
+        )
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class ConfigOverrideView:
+    override_id: int
+    key: str
+    scope_type: str
+    owner_kind: ConfigOwnerKind
+    person_id: PersonId | None
+    space_id: SpaceId | None
+    resolution: IdentityResolution
+    apply_mode: str
+    configured: bool
+    version: int
+    value: str | int | float | bool | None
+    legacy_owner: ExternalIdView | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "override_id", _require_int(self.override_id, "override_id", minimum=1)
+        )
+        require_opaque_token(self.key, name="key", max_length=128)
+        require_opaque_token(self.scope_type, name="scope_type", max_length=16)
+        require_opaque_token(self.apply_mode, name="apply_mode", max_length=32)
+        _require_bool(self.configured, "configured")
+        object.__setattr__(self, "version", _require_int(self.version, "version", minimum=1))
+        if self.apply_mode == "secret" and self.value is not None:
+            raise ValueError("secret config cannot carry a value")
+        if self.legacy_owner is not None and type(self.legacy_owner) is not ExternalIdView:
+            raise TypeError("legacy_owner must be ExternalIdView or None")
+        _validate_config_owner(
+            owner_kind=self.owner_kind,
+            person_id=self.person_id,
+            space_id=self.space_id,
+            resolution=self.resolution,
+            required=True,
+        )
 
 
 @final
@@ -874,6 +980,9 @@ class AutomationView:
     status: str
     run_count: int
     script_hash: str
+    target_kind: str
+    target_id: str
+    route_state: str  # legacy | missing | paused | configured (not live health)
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -884,6 +993,9 @@ class AutomationView:
         require_opaque_token(self.status, name="status", max_length=16)
         object.__setattr__(self, "run_count", _require_int(self.run_count, "run_count"))
         require_opaque_token(self.script_hash, name="script_hash", max_length=64)
+        require_opaque_token(self.target_kind, name="target_kind", max_length=16)
+        require_opaque_token(self.target_id, name="target_id", max_length=64)
+        require_opaque_token(self.route_state, name="route_state", max_length=16)
 
 
 @final
@@ -921,15 +1033,53 @@ class McpServerView:
 
 @final
 @dataclass(frozen=True, slots=True)
+class EmojiSpaceEnablementView:
+    space_id: SpaceId | None
+    resolution: IdentityResolution
+    enabled: bool
+
+    def __post_init__(self) -> None:
+        if self.space_id is not None and type(self.space_id) is not SpaceId:
+            raise TypeError("space_id must be SpaceId or None")
+        if type(self.resolution) is not IdentityResolution:
+            raise TypeError("resolution must be IdentityResolution")
+        _require_bool(self.enabled, "enabled")
+        if self.resolution is IdentityResolution.CANONICAL and self.space_id is None:
+            raise ValueError("canonical space enablement requires space_id")
+        if self.resolution is not IdentityResolution.CANONICAL and self.space_id is not None:
+            raise ValueError("non-canonical space enablement cannot carry space_id")
+
+
+@final
+@dataclass(frozen=True, slots=True)
 class EmojiAssetView:
     asset_id: str
     status: str
     enabled: bool
+    global_enabled: bool | None = None
+    space_enablements: tuple[EmojiSpaceEnablementView, ...] = ()
+    first_seen_person_id: PersonId | None = None
+    first_seen_space_id: SpaceId | None = None
 
     def __post_init__(self) -> None:
         require_opaque_token(self.asset_id, name="asset_id", max_length=128)
         require_opaque_token(self.status, name="status", max_length=32)
         _require_bool(self.enabled, "enabled")
+        if self.global_enabled is not None:
+            _require_bool(self.global_enabled, "global_enabled")
+        if isinstance(self.space_enablements, (str, bytes)):
+            raise TypeError("space_enablements must be a sequence")
+        enablements = tuple(self.space_enablements)
+        for item in enablements:
+            if type(item) is not EmojiSpaceEnablementView:
+                raise TypeError("space_enablements must contain EmojiSpaceEnablementView")
+        object.__setattr__(self, "space_enablements", enablements)
+        if self.first_seen_person_id is not None and (
+            type(self.first_seen_person_id) is not PersonId
+        ):
+            raise TypeError("first_seen_person_id must be PersonId or None")
+        if self.first_seen_space_id is not None and type(self.first_seen_space_id) is not SpaceId:
+            raise TypeError("first_seen_space_id must be SpaceId or None")
 
 
 @final

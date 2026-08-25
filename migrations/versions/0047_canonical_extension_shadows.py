@@ -15,8 +15,11 @@ mutually exclusive scope/target shape rules, including legacy
 discriminators on UPDATE; they do not require v1 rows to populate
 shadows. This revision also replaces two 0046 C5 update triggers so
 group_scope / scope_type / visibility_type cannot bypass those guards.
-Downgrade restores the 0046 C5 trigger text. SQLite 3.35+ is required
-for DROP COLUMN on downgrade.
+C21 Memory owner columns, XOR/fact-shaped triggers, and canonical
+active partial unique indexes are added after C6. They are not C6
+inventory. Downgrade drops C21 first, then C6, then restores the
+0046 C5 trigger text. SQLite 3.35+ is required for DROP COLUMN on
+downgrade.
 """
 
 from __future__ import annotations
@@ -258,6 +261,223 @@ _C6_TRIGGER_NAMES: tuple[str, ...] = tuple(
     for table in dict.fromkeys(item[0] for item in _EXTENSION_COLUMNS)
     for action in ("insert", "update")
 )
+_C21_XOR_TABLES: tuple[str, ...] = (
+    "memory_jobs",
+    "memory_tool_receipts",
+    "memory_self_reflection_states",
+    "memory_self_reflection_runs",
+)
+_C21_XOR_COLUMNS: tuple[tuple[str, str, str], ...] = tuple(
+    (table, column, parent)
+    for table in _C21_XOR_TABLES
+    for column, parent in (
+        ("canonical_person_id", "persons"),
+        ("canonical_space_id", "spaces"),
+    )
+)
+_C21_DREAM_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("memory_dream_clusters", "canonical_subject_person_id", "persons"),
+    ("memory_dream_clusters", "canonical_subject_space_id", "spaces"),
+    ("memory_dream_clusters", "canonical_visibility_person_id", "persons"),
+    ("memory_dream_clusters", "canonical_visibility_space_id", "spaces"),
+)
+_C21_COLUMNS: tuple[tuple[str, str, str], ...] = (*_C21_XOR_COLUMNS, *_C21_DREAM_COLUMNS)
+_C21_INDEXES: tuple[str, ...] = tuple(
+    f"ix_{table}_{column}" for table, column, _parent in _C21_COLUMNS
+)
+_C21_FACT_UNIQUE_INDEX_SQL: tuple[tuple[str, str], ...] = (
+    (
+        "uq_memory_facts_active_canonical_person_key",
+        "CREATE UNIQUE INDEX uq_memory_facts_active_canonical_person_key "
+        "ON memory_facts (canonical_subject_person_id, kind, memory_key) "
+        "WHERE status = 'active' AND scope_type = 'person' "
+        "AND canonical_subject_person_id IS NOT NULL "
+        "AND canonical_subject_space_id IS NULL",
+    ),
+    (
+        "uq_memory_facts_active_canonical_person_group_key",
+        "CREATE UNIQUE INDEX uq_memory_facts_active_canonical_person_group_key "
+        "ON memory_facts (canonical_subject_person_id, canonical_subject_space_id, "
+        "kind, memory_key) "
+        "WHERE status = 'active' AND scope_type = 'person_group' "
+        "AND canonical_subject_person_id IS NOT NULL "
+        "AND canonical_subject_space_id IS NOT NULL",
+    ),
+    (
+        "uq_memory_facts_active_canonical_group_key",
+        "CREATE UNIQUE INDEX uq_memory_facts_active_canonical_group_key "
+        "ON memory_facts (canonical_subject_space_id, kind, memory_key) "
+        "WHERE status = 'active' AND scope_type = 'group' "
+        "AND canonical_subject_space_id IS NOT NULL "
+        "AND canonical_subject_person_id IS NULL",
+    ),
+    (
+        "uq_memory_facts_active_canonical_self_key",
+        "CREATE UNIQUE INDEX uq_memory_facts_active_canonical_self_key "
+        "ON memory_facts ("
+        "memory_key, visibility_type, "
+        "COALESCE(canonical_visibility_person_id, ''), "
+        "COALESCE(canonical_visibility_space_id, '')"
+        ") WHERE status = 'active' AND scope_type = 'self'",
+    ),
+)
+_C21_REFLECTION_UNIQUE_INDEX_SQL: tuple[tuple[str, str], ...] = (
+    (
+        "uq_memory_self_reflection_states_canonical_person",
+        "CREATE UNIQUE INDEX uq_memory_self_reflection_states_canonical_person "
+        "ON memory_self_reflection_states (canonical_person_id) "
+        "WHERE canonical_person_id IS NOT NULL AND canonical_space_id IS NULL",
+    ),
+    (
+        "uq_memory_self_reflection_states_canonical_space",
+        "CREATE UNIQUE INDEX uq_memory_self_reflection_states_canonical_space "
+        "ON memory_self_reflection_states (canonical_space_id) "
+        "WHERE canonical_space_id IS NOT NULL AND canonical_person_id IS NULL",
+    ),
+    (
+        "uq_memory_self_reflection_runs_canonical_person_slot",
+        "CREATE UNIQUE INDEX uq_memory_self_reflection_runs_canonical_person_slot "
+        "ON memory_self_reflection_runs (canonical_person_id, scheduled_slot) "
+        "WHERE canonical_person_id IS NOT NULL AND canonical_space_id IS NULL",
+    ),
+    (
+        "uq_memory_self_reflection_runs_canonical_space_slot",
+        "CREATE UNIQUE INDEX uq_memory_self_reflection_runs_canonical_space_slot "
+        "ON memory_self_reflection_runs (canonical_space_id, scheduled_slot) "
+        "WHERE canonical_space_id IS NOT NULL AND canonical_person_id IS NULL",
+    ),
+)
+_C21_MEMORY_FACT_CONFLICT_SQL: tuple[tuple[str, str], ...] = (
+    (
+        "canonical_person_fact",
+        "SELECT 1 FROM memory_facts "
+        "WHERE status = 'active' AND scope_type = 'person' "
+        "AND canonical_subject_person_id IS NOT NULL "
+        "GROUP BY canonical_subject_person_id, kind, memory_key "
+        "HAVING COUNT(*) > 1 LIMIT 1",
+    ),
+    (
+        "canonical_person_group_fact",
+        "SELECT 1 FROM memory_facts "
+        "WHERE status = 'active' AND scope_type = 'person_group' "
+        "AND canonical_subject_person_id IS NOT NULL "
+        "AND canonical_subject_space_id IS NOT NULL "
+        "GROUP BY canonical_subject_person_id, canonical_subject_space_id, kind, memory_key "
+        "HAVING COUNT(*) > 1 LIMIT 1",
+    ),
+    (
+        "canonical_group_fact",
+        "SELECT 1 FROM memory_facts "
+        "WHERE status = 'active' AND scope_type = 'group' "
+        "AND canonical_subject_space_id IS NOT NULL "
+        "GROUP BY canonical_subject_space_id, kind, memory_key "
+        "HAVING COUNT(*) > 1 LIMIT 1",
+    ),
+    (
+        "canonical_self_fact",
+        "SELECT 1 FROM memory_facts "
+        "WHERE status = 'active' AND scope_type = 'self' "
+        "GROUP BY memory_key, visibility_type, "
+        "COALESCE(canonical_visibility_person_id, ''), "
+        "COALESCE(canonical_visibility_space_id, '') "
+        "HAVING COUNT(*) > 1 LIMIT 1",
+    ),
+)
+
+
+def _xor_owner_valid_sql() -> str:
+    return (
+        f"{_uuid4_columns_valid_sql(('canonical_person_id', 'canonical_space_id'))} AND "
+        f"{_not_both_sql('canonical_person_id', 'canonical_space_id')}"
+    )
+
+
+def _dream_cluster_owner_valid_sql() -> str:
+    return (
+        f"{
+            _uuid4_columns_valid_sql(
+                (
+                    'canonical_subject_person_id',
+                    'canonical_subject_space_id',
+                    'canonical_visibility_person_id',
+                    'canonical_visibility_space_id',
+                )
+            )
+        } AND "
+        f"{_not_both_sql('canonical_visibility_person_id', 'canonical_visibility_space_id')} AND "
+        "NOT ("
+        "(NEW.canonical_subject_person_id IS NOT NULL OR "
+        "NEW.canonical_subject_space_id IS NOT NULL) AND "
+        "(NEW.canonical_visibility_person_id IS NOT NULL OR "
+        "NEW.canonical_visibility_space_id IS NOT NULL)"
+        ")"
+    )
+
+
+def _c21_trigger_pair(
+    table: str,
+    columns: tuple[str, ...],
+    valid_sql: str,
+    message: str,
+) -> tuple[str, str]:
+    column_list = ", ".join(columns)
+    insert_sql = f"""
+CREATE TRIGGER trg_{table}_memory_owner_insert
+BEFORE INSERT ON {table}
+BEGIN
+    SELECT RAISE(ABORT, '{message}')
+    WHERE NOT ({valid_sql});
+END
+""".strip()
+    update_sql = f"""
+CREATE TRIGGER trg_{table}_memory_owner_update
+BEFORE UPDATE OF {column_list} ON {table}
+BEGIN
+    SELECT RAISE(ABORT, '{message}')
+    WHERE NOT ({valid_sql});
+END
+""".strip()
+    return insert_sql, update_sql
+
+
+def _c21_trigger_sql() -> tuple[str, ...]:
+    statements: list[str] = []
+    xor_columns = ("canonical_person_id", "canonical_space_id")
+    for table in _C21_XOR_TABLES:
+        statements.extend(
+            _c21_trigger_pair(
+                table,
+                xor_columns,
+                _xor_owner_valid_sql(),
+                f"invalid {table} memory owner",
+            )
+        )
+    dream_columns = (
+        "canonical_subject_person_id",
+        "canonical_subject_space_id",
+        "canonical_visibility_person_id",
+        "canonical_visibility_space_id",
+    )
+    statements.extend(
+        _c21_trigger_pair(
+            "memory_dream_clusters",
+            dream_columns,
+            _dream_cluster_owner_valid_sql(),
+            "invalid memory_dream_clusters memory owner",
+        )
+    )
+    return tuple(statements)
+
+
+_C21_TRIGGER_SQL: tuple[str, ...] = _c21_trigger_sql()
+_C21_TRIGGER_NAMES: tuple[str, ...] = tuple(
+    f"trg_{table}_memory_owner_{action}"
+    for table in (
+        *_C21_XOR_TABLES,
+        "memory_dream_clusters",
+    )
+    for action in ("insert", "update")
+)
 
 
 def _alias_shadow_valid_sql() -> str:
@@ -372,8 +592,15 @@ def _require_sqlite_column_alter() -> None:
         raise RuntimeError("0047 requires PRAGMA foreign_keys=ON")
 
 
+def _require_no_memory_fact_canonical_conflicts() -> None:
+    connection = op.get_bind()
+    for kind, sql in _C21_MEMORY_FACT_CONFLICT_SQL:
+        if connection.exec_driver_sql(sql).first() is not None:
+            raise RuntimeError(f"0047 blocked: canonical memory fact conflict ({kind})")
+
+
 def upgrade() -> None:
-    """Add nullable extension shadows, non-unique indexes, and shape triggers."""
+    """Add nullable extension shadows, C21 Memory owners, and shape triggers."""
 
     _require_sqlite_column_alter()
     for name in _C5_REPLACED_UPDATE_NAMES:
@@ -390,12 +617,34 @@ def upgrade() -> None:
         op.execute(sa.text(f"CREATE INDEX ix_{table}_{column} ON {table} ({column})"))
     for statement in _C6_TRIGGER_SQL:
         op.execute(statement)
+    _require_no_memory_fact_canonical_conflicts()
+    for table, column, parent in _C21_COLUMNS:
+        op.execute(
+            sa.text(
+                f"ALTER TABLE {table} ADD COLUMN {column} VARCHAR(36) "
+                f"REFERENCES {parent}(id) {_FK_RESTRICT}"
+            )
+        )
+        op.execute(sa.text(f"CREATE INDEX ix_{table}_{column} ON {table} ({column})"))
+    for _name, statement in (*_C21_FACT_UNIQUE_INDEX_SQL, *_C21_REFLECTION_UNIQUE_INDEX_SQL):
+        op.execute(sa.text(statement))
+    for statement in _C21_TRIGGER_SQL:
+        op.execute(statement)
 
 
 def downgrade() -> None:
-    """Remove only C6 shadows, leaving 0046 rows and C5 ownership shadows intact."""
+    """Remove C21 Memory owners then C6 shadows, leaving 0046 C5 shadows intact."""
 
     _require_sqlite_column_alter()
+    for name in _C21_TRIGGER_NAMES:
+        op.execute(f"DROP TRIGGER IF EXISTS {name}")
+    for name, _statement in reversed(
+        (*_C21_FACT_UNIQUE_INDEX_SQL, *_C21_REFLECTION_UNIQUE_INDEX_SQL)
+    ):
+        op.execute(sa.text(f"DROP INDEX IF EXISTS {name}"))
+    for table, column, _parent in reversed(_C21_COLUMNS):
+        op.execute(sa.text(f"DROP INDEX IF EXISTS ix_{table}_{column}"))
+        op.execute(sa.text(f"ALTER TABLE {table} DROP COLUMN {column}"))
     for name in _C6_TRIGGER_NAMES:
         op.execute(f"DROP TRIGGER IF EXISTS {name}")
     for table, column, _parent in reversed(_EXTENSION_COLUMNS):

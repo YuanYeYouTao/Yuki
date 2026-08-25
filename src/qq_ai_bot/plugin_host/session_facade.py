@@ -33,6 +33,7 @@ class BoundAgentSessionFacade:
         actor_user_id: str,
         current_group_id: str | None,
         approved_permissions: Iterable[PluginPermission | str],
+        conversation_id: str | None = None,
     ) -> None:
         self._service = service
         self._authority = PluginSessionAuthority(
@@ -43,6 +44,7 @@ class BoundAgentSessionFacade:
                 permission.value if isinstance(permission, PluginPermission) else str(permission)
                 for permission in approved_permissions
             ),
+            conversation_id=conversation_id,
         )
 
     async def create(self, request: CreateAgentSessionRequest) -> AgentSession:

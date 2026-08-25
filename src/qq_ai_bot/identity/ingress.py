@@ -16,13 +16,10 @@ from qq_ai_bot.gateway.registry import GatewayConnectionRegistry, RegistryClosed
 from qq_ai_bot.identity.db_models import PresenceModel
 from qq_ai_bot.identity.dual_write import (
     _binding_for,
-    _classify,
     _create_person_binding,
-    _create_presence,
     _external_id,
     _presence_for,
     _space_binding_for,
-    ensure_runtime_people_row,
 )
 from qq_ai_bot.identity.errors import IdentityDualWriteError
 from qq_ai_bot.identity.routing import PresenceRouter
@@ -31,9 +28,11 @@ from qq_ai_bot.identity.runtime import (
     load_identity_runtime,
     require_complete_v2_runtime,
 )
-from qq_ai_bot.identity.write_settings import identity_write_settings
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import PersonModel
+from qq_ai_bot.persistence.models import ChatEventModel
+
+_KEEPER_STATUS = "keeper"
+_AMBIGUOUS_REPLY_AUTHOR = "ambiguous"
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,20 +182,16 @@ class CanonicalIngressResolver:
                 return _drop(fence, overlay)
         else:
             if author_kind == AuthorKind.PERSON.value and person_id is None:
-                person_id = await _ensure_person_id(session, overlay.sender.user_id)
+                person_id = await _ensure_person_id(
+                    session, overlay.sender.user_id, display_name=overlay.sender.nickname
+                )
             if person_id is None and author_kind == AuthorKind.PERSON.value:
                 return _drop("no_person", overlay)
         if author_kind == AuthorKind.PERSON.value and person_id is None:
-            person_id = await _ensure_person_id(session, overlay.sender.user_id)
+            person_id = await _ensure_person_id(
+                session, overlay.sender.user_id, display_name=overlay.sender.nickname
+            )
         author_person_id = person_id if author_kind == AuthorKind.PERSON.value else None
-        await ensure_runtime_people_row(
-            session,
-            overlay.sender.user_id,
-            nickname=overlay.sender.nickname,
-            is_bot=author_kind in {AuthorKind.EXTERNAL_BOT.value, AuthorKind.YUKI.value}
-            or overlay.sender.is_bot,
-            now=message_now(),
-        )
         if author_kind != AuthorKind.PERSON.value and overlay.scope_type is ScopeType.PRIVATE:
             return IngressPreAdmit(
                 dropped=False,
@@ -224,6 +219,11 @@ class CanonicalIngressResolver:
             space_id=space_id,
             ingress_bot_user_id=connection.snapshot.external_account_id,
         )
+        reply_to_yuki, reply_author_kind = await resolve_canonical_reply(
+            session,
+            conversation_id=hydrated.conversation_id,
+            reply_to_message_id=overlay.reply_to_message_id,
+        )
         overlay = replace(
             overlay,
             legacy_conversation_key=hydrated.primary_alias,
@@ -231,6 +231,8 @@ class CanonicalIngressResolver:
             space_id=space_id,
             conversation_id=hydrated.conversation_id,
             presence_id=presence_id,
+            canonical_reply_to_yuki=reply_to_yuki,
+            canonical_reply_author_kind=reply_author_kind,
         )
         return IngressPreAdmit(
             dropped=False,
@@ -253,6 +255,47 @@ class CanonicalIngressResolver:
         )
 
 
+async def resolve_canonical_reply(
+    session: AsyncSession,
+    *,
+    conversation_id: str,
+    reply_to_message_id: str | None,
+) -> tuple[bool | None, str | None]:
+    """Resolve reply-to-Yuki from the unique keeper in this conversation.
+
+    None/None means no usable keeper: policy may fall back to Presence ids.
+    False plus a kind (including ``ambiguous``) is a found non-Yuki verdict and
+    must not be overridden by ``reply_sender_user_id``.
+    """
+
+    reply_id = (reply_to_message_id or "").strip()
+    if not reply_id:
+        return None, None
+    keepers = list(
+        await session.scalars(
+            select(ChatEventModel).where(
+                ChatEventModel.canonical_conversation_id == conversation_id,
+                ChatEventModel.platform_message_id == reply_id,
+                ChatEventModel.suppression_status == _KEEPER_STATUS,
+            )
+        )
+    )
+    if len(keepers) > 1:
+        return False, _AMBIGUOUS_REPLY_AUTHOR
+    if not keepers:
+        return None, None
+    kind = keepers[0].author_kind
+    if kind == AuthorKind.YUKI.value:
+        return True, kind
+    if kind in {
+        AuthorKind.PERSON.value,
+        AuthorKind.EXTERNAL_BOT.value,
+        AuthorKind.SYSTEM.value,
+    }:
+        return False, kind
+    return None, None
+
+
 async def _same_platform_yuki_accounts(session: AsyncSession, platform: str) -> frozenset[str]:
     rows = list(
         await session.scalars(select(PresenceModel).where(PresenceModel.platform == platform))
@@ -267,59 +310,30 @@ async def _author_for(
     yuki_ids: frozenset[str],
     ingress_presence_id: str,
 ) -> tuple[str, str | None, str | None]:
-    sender_id = _external_id(message.sender.user_id)
-    settings = identity_write_settings()
-    if sender_id in yuki_ids:
-        presence = await _presence_for(session, sender_id)
-        if presence is None:
-            raise IdentityDualWriteError("unclassified")
-        return AuthorKind.YUKI.value, None, presence.id
-    if sender_id in settings.ignored_bot_users or message.sender.is_bot:
-        return AuthorKind.EXTERNAL_BOT.value, None, None
-    people = await session.get(PersonModel, sender_id)
-    binding = await _binding_for(session, sender_id)
-    presence = await _presence_for(session, sender_id)
-    classification = _classify(
-        external_id=sender_id,
-        role="human",
-        is_bot=False,
-        people=people,
-        binding=binding,
-        presence=presence,
+    from qq_ai_bot.identity.event_author import project_complete_v2_event_author
+
+    del yuki_ids, ingress_presence_id
+    author = await project_complete_v2_event_author(
+        session,
+        sender_user_id=message.sender.user_id,
+        sender_is_bot=message.sender.is_bot,
     )
-    if classification == "yuki_presence":
-        if presence is None:
-            raise IdentityDualWriteError("unclassified")
-        return AuthorKind.YUKI.value, None, presence.id
-    if classification != "person":
-        return AuthorKind.EXTERNAL_BOT.value, None, None
-    person_id = binding.person_id if binding is not None else None
-    if person_id is None and people is not None:
-        person_id = people.canonical_person_id
-    return AuthorKind.PERSON.value, person_id, None
+    return author.as_tuple()
 
 
-async def _ensure_person_id(session: AsyncSession, user_id: str) -> str:
-    from qq_ai_bot.identity.dual_write import ensure_runtime_people_row
-
+async def _ensure_person_id(session: AsyncSession, user_id: str, *, display_name: str = "") -> str:
     await require_complete_v2_runtime(session)
     external_id = _external_id(user_id)
-    people = await ensure_runtime_people_row(session, external_id, now=message_now())
     binding = await _binding_for(session, external_id)
     if binding is not None:
-        if people.canonical_person_id is None:
-            people.canonical_person_id = binding.person_id
         return binding.person_id
-    now = message_now()
-    binding = await _create_person_binding(
+    created = await _create_person_binding(
         session,
         external_id=external_id,
-        display_name=people.nickname if people is not None else "",
-        now=now,
+        display_name=display_name,
+        now=message_now(),
     )
-    if people.canonical_person_id is None:
-        people.canonical_person_id = binding.person_id
-    return binding.person_id
+    return created.person_id
 
 
 def message_now() -> datetime:
@@ -356,14 +370,18 @@ async def _hydrate_for_message(
     )
 
 
-async def ensure_v2_presence(session: AsyncSession, bot_user_id: str) -> str:
+async def require_existing_presence(session: AsyncSession, bot_user_id: str) -> str:
     await require_complete_v2_runtime(session)
-    external_id = _external_id(bot_user_id)
-    presence = await _presence_for(session, external_id)
-    if presence is not None:
-        return presence.id
-    created = await _create_presence(session, external_id=external_id, now=message_now())
-    return created.id
+    presence = await _presence_for(session, _external_id(bot_user_id))
+    if presence is None:
+        raise IdentityDualWriteError("no_presence")
+    return presence.id
+
+
+async def ensure_v2_presence(session: AsyncSession, bot_user_id: str) -> str:
+    """v2 never auto-registers Presence. Control/preconfig must already exist."""
+
+    return await require_existing_presence(session, bot_user_id)
 
 
 async def ensure_v2_space(session: AsyncSession, group_id: str) -> str:
@@ -372,26 +390,10 @@ async def ensure_v2_space(session: AsyncSession, group_id: str) -> str:
 
 
 async def sync_space_v2(session: AsyncSession, group_id: str) -> str:
-    """Space ensure that accepts complete v2. Does not call require_v1_runtime."""
-
-    from qq_ai_bot.identity.dual_write import _create_space_binding
-    from qq_ai_bot.persistence.models import GroupModel
+    """Require an existing SpaceBinding. Unknown groups fail closed."""
 
     await require_complete_v2_runtime(session)
-    external_id = _external_id(group_id)
-    group = await session.get(GroupModel, external_id)
-    binding = await _space_binding_for(session, external_id)
-    now = datetime.now(UTC)
+    binding = await _space_binding_for(session, _external_id(group_id))
     if binding is None:
-        binding = await _create_space_binding(
-            session,
-            group_id=external_id,
-            name=group.name if group is not None else "",
-            enabled=True if group is None else bool(group.enabled),
-            autonomous_enabled=True if group is None else bool(group.autonomous_enabled),
-            require_mention=True if group is None else bool(group.require_mention),
-            now=now,
-        )
-    if group is not None and group.canonical_space_id is None:
-        group.canonical_space_id = binding.space_id
+        raise IdentityDualWriteError("no_space_binding")
     return binding.space_id

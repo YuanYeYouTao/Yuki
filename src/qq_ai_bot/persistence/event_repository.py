@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -29,11 +28,38 @@ from qq_ai_bot.persistence.models import (
     PersonModel,
     ProcessedEventModel,
 )
-from qq_ai_bot.persistence.repository_helpers import _event_record
+from qq_ai_bot.persistence.repository_helpers import _event_record, keeper_event_clause
 from qq_ai_bot.persistence.repository_records import (
     EventRecord,
 )
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+
+
+async def _starts_after_event_id_for_scope(session: AsyncSession, scope: ConversationScope) -> int:
+    from qq_ai_bot.conversation.canonical_db_models import (
+        CanonicalConversationModel,
+        ConversationLegacyAliasModel,
+    )
+    from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
+
+    if await identity_runtime_is_complete_v2(session):
+        alias = await session.scalar(
+            select(ConversationLegacyAliasModel).where(
+                ConversationLegacyAliasModel.scope_key == scope.key
+            )
+        )
+        if alias is None:
+            return 0
+        conversation = await session.get(CanonicalConversationModel, alias.conversation_id)
+        if conversation is None:
+            return 0
+        return int(conversation.starts_after_event_id)
+    starts_after = await session.scalar(
+        select(ConversationScopeModel.starts_after_event_id).where(
+            ConversationScopeModel.scope_key == scope.key
+        )
+    )
+    return int(starts_after or 0)
 
 
 def _scope_conditions(scope: ConversationScope) -> tuple[Any, ...]:
@@ -321,6 +347,25 @@ class EventLedgerRepository:
         rows.reverse()
         return tuple(_event_record(row) for row in rows)
 
+    async def list_canonical_recent(
+        self,
+        conversation_id: str,
+        *,
+        limit: int,
+    ) -> tuple[EventRecord, ...]:
+        """Newest keeper or legacy-null events. Non-live statuses never participate."""
+
+        query = select(ChatEventModel).where(
+            ChatEventModel.canonical_conversation_id == conversation_id,
+            keeper_event_clause(),
+        )
+        async with self._database.sessions() as session:
+            rows = list(
+                (await session.scalars(query.order_by(ChatEventModel.id.desc()).limit(limit))).all()
+            )
+        rows.reverse()
+        return tuple(_event_record(row) for row in rows)
+
     async def list_scope_before(
         self,
         scope: ConversationScope,
@@ -426,12 +471,7 @@ class EventLedgerRepository:
         if center_scope != scope:
             return None, (), ()
         async with self._database.sessions() as session:
-            starts_after = await session.scalar(
-                select(ConversationScopeModel.starts_after_event_id).where(
-                    ConversationScopeModel.scope_key == scope.key
-                )
-            )
-        boundary = int(starts_after or 0)
+            boundary = await _starts_after_event_id_for_scope(session, scope)
         if center.id <= boundary:
             return None, (), ()
         earlier = (
@@ -479,10 +519,48 @@ class EventLedgerRepository:
                 referenced is not None
                 and referenced.scope_type is ScopeType.GROUP
                 and referenced.group_id == event.group_id
-                and referenced.sender_user_id != event.bot_user_id
+                and referenced.author_is_human()
             ):
                 reply_sender = referenced.sender_user_id
-        blocked = {"", event.sender_user_id, event.bot_user_id}
+        from qq_ai_bot.identity.event_author import (
+            complete_v2_person_reference_ids,
+            same_platform_presence_external_ids,
+        )
+        from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
+        from qq_ai_bot.persistence.repository_records import legacy_v1_reference_blocklist
+
+        async with self._database.sessions() as session:
+            if await identity_runtime_is_complete_v2(session):
+                blocked = {
+                    "",
+                    event.sender_user_id,
+                    *await same_platform_presence_external_ids(session),
+                }
+                mention_ids = await complete_v2_person_reference_ids(
+                    session,
+                    tuple(user_id for user_id in mentions if user_id not in blocked),
+                    speaker_user_id=event.sender_user_id,
+                )
+                reply_ids = (
+                    await complete_v2_person_reference_ids(
+                        session,
+                        (reply_sender,),
+                        speaker_user_id=event.sender_user_id,
+                    )
+                    if reply_sender is not None and reply_sender not in blocked
+                    else ()
+                )
+                return replace(
+                    event,
+                    mentioned_user_ids=mention_ids,
+                    reply_sender_user_id=reply_ids[0] if reply_ids else None,
+                )
+            blocked = set(
+                legacy_v1_reference_blocklist(
+                    sender_user_id=event.sender_user_id,
+                    bot_user_id=event.bot_user_id,
+                )
+            )
         return replace(
             event,
             mentioned_user_ids=tuple(
@@ -565,35 +643,7 @@ class EventLedgerRepository:
             mappings = (await session.execute(sql, params)).mappings().all()
         records: list[EventRecord] = []
         for row in mappings:
-            raw_occurred = row["occurred_at"]
-            occurred = (
-                datetime.fromisoformat(raw_occurred)
-                if isinstance(raw_occurred, str)
-                else raw_occurred
-            )
-            raw_segments = json.loads(str(row["segments_json"]))
-            records.append(
-                EventRecord(
-                    id=int(row["id"]),
-                    bot_user_id=str(row["bot_user_id"]),
-                    platform_message_id=str(row["platform_message_id"]),
-                    scope_type=ScopeType(str(row["scope_type"])),
-                    sender_user_id=str(row["sender_user_id"]),
-                    sender_nickname=str(row["sender_nickname"] or ""),
-                    sender_group_card=str(row["sender_group_card"] or ""),
-                    direction=str(row["direction"]),
-                    content=str(row["content"]),
-                    visual_summary=str(row["visual_summary"] or ""),
-                    segments=tuple(raw_segments) if isinstance(raw_segments, list) else (),
-                    occurred_at=occurred,
-                    group_id=row["group_id"],
-                    private_peer_user_id=row["private_peer_user_id"],
-                    reply_to_message_id=row["reply_to_message_id"],
-                    origin=str(row["origin"] or "user_message"),
-                    automation_id=row["automation_id"],
-                    automation_run_id=row["automation_run_id"],
-                )
-            )
+            records.append(_event_record(dict(row)))
         return tuple(reversed(records))
 
     async def set_visual_summary(self, event_id: int, summary: str) -> bool:

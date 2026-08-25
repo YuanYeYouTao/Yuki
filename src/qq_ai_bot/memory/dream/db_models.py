@@ -47,9 +47,7 @@ class MemoryDreamRunModel(Base):
     scheduled_slot: Mapped[str | None] = mapped_column(String(64), nullable=True)
     snapshot_max_fact_id: Mapped[int] = mapped_column(Integer, nullable=False)
     snapshot_created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_by_user_id: Mapped[str | None] = mapped_column(
-        ForeignKey("people.user_id", ondelete="SET NULL"), nullable=True
-    )
+    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     statistics_json: Mapped[str] = mapped_column(Text, nullable=False)
     model_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     completed_clusters: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -74,6 +72,22 @@ class MemoryDreamClusterModel(Base):
         ),
         CheckConstraint("kind IN ('fact','preference','episode')", name="ck_dream_cluster_kind"),
         Index("ix_memory_dream_clusters_run_status", "run_id", "status", "id"),
+        Index(
+            "ix_memory_dream_clusters_canonical_subject_person_id",
+            "canonical_subject_person_id",
+        ),
+        Index(
+            "ix_memory_dream_clusters_canonical_subject_space_id",
+            "canonical_subject_space_id",
+        ),
+        Index(
+            "ix_memory_dream_clusters_canonical_visibility_person_id",
+            "canonical_visibility_person_id",
+        ),
+        Index(
+            "ix_memory_dream_clusters_canonical_visibility_space_id",
+            "canonical_visibility_space_id",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -83,6 +97,26 @@ class MemoryDreamClusterModel(Base):
     cluster_key: Mapped[str] = mapped_column(String(64), nullable=False)
     partition_key: Mapped[str] = mapped_column(String(64), nullable=False)
     bot_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    canonical_subject_person_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    canonical_subject_space_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("spaces.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    canonical_visibility_person_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    canonical_visibility_space_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("spaces.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     fact_ids_json: Mapped[str] = mapped_column(Text, nullable=False)

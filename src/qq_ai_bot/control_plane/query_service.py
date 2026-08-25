@@ -12,6 +12,7 @@ from qq_ai_bot.control_plane.query_types import (
     AutomationView,
     BackfillConflictView,
     BackfillOperationView,
+    ConfigOverrideView,
     ConfigSpecView,
     ControlQueryError,
     ConversationView,
@@ -185,6 +186,15 @@ class ControlQueryService:
         _require_capability(authorized, "control.config.read")
         return await self._port.list_effective_configs(request)
 
+    async def list_config_overrides(
+        self, context: object, request: PageRequest
+    ) -> Page[ConfigOverrideView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, "control.config.read")
+        return await self._port.list_config_overrides(
+            request, reveal_external=_reveal_external(authorized)
+        )
+
     async def list_memory_facts(
         self, context: object, request: PageRequest
     ) -> Page[MemoryFactView]:
@@ -233,7 +243,11 @@ class ControlQueryService:
     ) -> Page[EmojiAssetView]:
         authorized = _require_context(context)
         _require_capability(authorized, "control.emoji.read")
-        return await self._port.list_emoji_assets(request)
+        return await self._port.list_emoji_assets(
+            request,
+            reveal_first_seen_person=authorized.principal.allows("identity.person.read"),
+            reveal_first_seen_space=authorized.principal.allows("identity.space.read"),
+        )
 
     async def list_speech_profiles(
         self, context: object, request: PageRequest

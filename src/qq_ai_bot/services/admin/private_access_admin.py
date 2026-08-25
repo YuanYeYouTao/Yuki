@@ -10,11 +10,14 @@ from qq_ai_bot.admin.models import ControlAuditRef
 from qq_ai_bot.control_plane.principal import ControlPrincipal, PrincipalSource
 from qq_ai_bot.control_plane.targets import PersonControlTarget
 from qq_ai_bot.domain.control import DecisionContext
+from qq_ai_bot.identity.errors import IdentityDualWriteError
 from qq_ai_bot.persistence.repositories import (
     PrivateUserSetting,
     PrivateUserSettingsRepository,
 )
 from qq_ai_bot.services.admin.control_auth import person_storage_id, require_capability
+
+_CANONICAL_OWNER_DISABLED = "canonical_owner_disabled"
 
 type PersonAdminContext = DecisionContext[ControlPrincipal, PrincipalSource, PersonControlTarget]
 
@@ -67,7 +70,12 @@ class PrivateAccessAdminService:
         initial_affection: int | None = None
         initial_trust: int | None = None
         if self._runtime_config is not None:
-            runtime = await self._runtime_config.snapshot(user_id=target_user_id)
+            try:
+                runtime = await self._runtime_config.snapshot(user_id=target_user_id)
+            except IdentityDualWriteError as exc:
+                if not enabled or exc.category != _CANONICAL_OWNER_DISABLED:
+                    raise
+                runtime = await self._runtime_config.snapshot()
             initial_affection = runtime.relationship.initial_affection
             initial_trust = runtime.relationship.initial_trust
         async with self._audit.transaction() as session:

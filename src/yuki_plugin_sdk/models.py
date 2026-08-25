@@ -103,7 +103,16 @@ class AdmissionSignal(StrictModel):
     expires_at: datetime | None = None
 
 
-class CurrentMessage(StrictModel):
+class CanonicalIdentityProjection(StrictModel):
+    """Optional complete-v2 identity. Host-stamped only; absent in v1 payloads."""
+
+    person_id: str | None = Field(default=None, max_length=36)
+    space_id: str | None = Field(default=None, max_length=36)
+    conversation_id: str | None = Field(default=None, max_length=36)
+    presence_id: str | None = Field(default=None, max_length=36)
+
+
+class CurrentMessage(CanonicalIdentityProjection):
     """Sanitized current-event projection, never a raw NoneBot event."""
 
     message_id: str = Field(min_length=1, max_length=128)
@@ -113,23 +122,15 @@ class CurrentMessage(StrictModel):
     text: str = Field(default="", max_length=12_000)
     mentioned_user_ids: tuple[str, ...] = Field(default=(), max_length=20)
     received_at: datetime
-    person_id: str | None = Field(default=None, max_length=36)
-    space_id: str | None = Field(default=None, max_length=36)
-    conversation_id: str | None = Field(default=None, max_length=36)
-    presence_id: str | None = Field(default=None, max_length=36)
 
 
-class AdmissionSignalContext(StrictModel):
+class AdmissionSignalContext(CanonicalIdentityProjection):
     """Current trusted envelope plus untrusted message text for one signal callback."""
 
     conversation_key: str = Field(min_length=1, max_length=256)
     origin: TurnOrigin
     current: CurrentMessage
     text_is_untrusted: bool = True
-    person_id: str | None = Field(default=None, max_length=36)
-    space_id: str | None = Field(default=None, max_length=36)
-    conversation_id: str | None = Field(default=None, max_length=36)
-    presence_id: str | None = Field(default=None, max_length=36)
 
 
 class EmojiSelectionCandidate(StrictModel):

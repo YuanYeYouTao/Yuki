@@ -7,6 +7,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
 from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -14,11 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
 from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.identity.dual_write import ensure_runtime_people_row, sync_presence
+from qq_ai_bot.domain.identity import AuthorKind
+from qq_ai_bot.identity.dual_write import sync_presence
+from qq_ai_bot.identity.errors import IdentityDualWriteError
 from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
 from qq_ai_bot.identity.shadows import (
-    active_person_id_for,
-    active_space_id_for,
     fill_person_space_shadows,
     fill_presence_shadow,
 )
@@ -32,6 +33,25 @@ from qq_ai_bot.plugin_host.db_models import (
     PluginInstallationModel,
     PluginMediaArtifactModel,
     PluginNotificationOutboxModel,
+)
+from qq_ai_bot.plugin_host.ownership import (
+    CANONICAL_OWNER_DISABLED,
+    CANONICAL_OWNER_MISMATCH,
+    MISSING_CANONICAL_OWNER,
+    STATE_MISMATCH,
+    PluginOwnershipError,
+    find_grant_lineage,
+    inherit_publication_canonicals,
+    plugin_ownership_error,
+    require_inherited_publication,
+    require_live_conversation,
+    require_live_person,
+    require_live_presence,
+    require_live_space,
+    require_v2_grant_readable,
+    resolve_grant_target_owners,
+    resolve_human_person_id,
+    stamp_grant_owners,
 )
 from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.models import (
@@ -60,6 +80,7 @@ class OutboxRecord:
     canonical_target_person_id: str | None
     canonical_target_space_id: str | None
     canonical_presence_id: str | None
+    canonical_conversation_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +93,22 @@ class BackgroundTurnJobRecord:
     bot_user_id: str
     agent_intent: str
     attempts: int
+    canonical_target_person_id: str | None
+    canonical_target_space_id: str | None
+    canonical_presence_id: str | None
+    canonical_conversation_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class QueuedCanonicalContext:
+    person_id: str | None
+    space_id: str | None
+    conversation_id: str
+    provenance_presence_id: str | None
+    creator_person_id: str
+    primary_alias: str
+    generation: int
+    scope_id: int
 
 
 class PluginNotificationRepository:
@@ -102,19 +139,35 @@ class PluginNotificationRepository:
     ) -> BackgroundTargetGrantView:
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
-            await _require_grant_identities(
-                session,
-                created_by_user_id=created_by_user_id,
-                target=target,
-            )
-            await _sync_grant_presence(session, bot_user_id, now=now)
-            row = await session.scalar(
-                select(PluginBackgroundTargetGrantModel).where(
-                    PluginBackgroundTargetGrantModel.plugin_id == plugin_id,
-                    PluginBackgroundTargetGrantModel.target_type == target.target_type,
-                    PluginBackgroundTargetGrantModel.target_id == target.target_id,
+            complete_v2 = await identity_runtime_is_complete_v2(session)
+            if complete_v2:
+                person_id, space_id = await _v2_grant_owners(
+                    session,
+                    created_by_user_id=created_by_user_id,
+                    target=target,
                 )
-            )
+                row = await find_grant_lineage(
+                    session,
+                    plugin_id=plugin_id,
+                    target_type=target.target_type,
+                    target_id=target.target_id,
+                    person_id=person_id,
+                    space_id=space_id,
+                )
+            else:
+                await _require_grant_identities(
+                    session,
+                    created_by_user_id=created_by_user_id,
+                    target=target,
+                )
+                await _sync_grant_presence(session, bot_user_id, now=now)
+                row = await session.scalar(
+                    select(PluginBackgroundTargetGrantModel).where(
+                        PluginBackgroundTargetGrantModel.plugin_id == plugin_id,
+                        PluginBackgroundTargetGrantModel.target_type == target.target_type,
+                        PluginBackgroundTargetGrantModel.target_id == target.target_id,
+                    )
+                )
             if row is None:
                 row = PluginBackgroundTargetGrantModel(
                     plugin_id=plugin_id,
@@ -133,27 +186,14 @@ class PluginNotificationRepository:
                 row.created_by_user_id = created_by_user_id
                 row.updated_at = now
             await session.flush()
-            await fill_person_space_shadows(
+            await stamp_grant_owners(
                 session,
                 row,
-                person_attr="canonical_target_person_id",
-                space_attr="canonical_target_space_id",
-                user_id=target.target_id if target.target_type == "private" else None,
-                group_id=target.target_id if target.target_type == "group" else None,
-            )
-            await fill_person_space_shadows(
-                session,
-                row,
-                person_attr="canonical_created_by_person_id",
-                space_attr=None,
-                user_id=created_by_user_id,
-                group_id=None,
-            )
-            await fill_presence_shadow(
-                session,
-                row,
-                attr="canonical_presence_id",
+                created_by_user_id=created_by_user_id,
+                target_type=target.target_type,
+                target_id=target.target_id,
                 bot_user_id=bot_user_id,
+                complete_v2=complete_v2,
             )
             return _grant_view(row)
 
@@ -165,17 +205,70 @@ class PluginNotificationRepository:
     ) -> bool:
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
-            row = await session.scalar(
-                select(PluginBackgroundTargetGrantModel).where(
-                    PluginBackgroundTargetGrantModel.plugin_id == plugin_id,
-                    PluginBackgroundTargetGrantModel.target_type == target.target_type,
-                    PluginBackgroundTargetGrantModel.target_id == target.target_id,
+            complete_v2 = await identity_runtime_is_complete_v2(session)
+            if complete_v2:
+                person_id, space_id = await resolve_grant_target_owners(
+                    session,
+                    target_type=target.target_type,
+                    target_id=target.target_id,
+                    complete_v2=True,
                 )
-            )
+                row = await find_grant_lineage(
+                    session,
+                    plugin_id=plugin_id,
+                    target_type=target.target_type,
+                    target_id=target.target_id,
+                    person_id=person_id,
+                    space_id=space_id,
+                )
+            else:
+                row = await session.scalar(
+                    select(PluginBackgroundTargetGrantModel).where(
+                        PluginBackgroundTargetGrantModel.plugin_id == plugin_id,
+                        PluginBackgroundTargetGrantModel.target_type == target.target_type,
+                        PluginBackgroundTargetGrantModel.target_id == target.target_id,
+                    )
+                )
             if row is None:
                 return False
+            if complete_v2:
+                await require_v2_grant_readable(session, row)
             row.enabled = False
             row.updated_at = now
+            if complete_v2:
+                outbox_match = (
+                    PluginNotificationOutboxModel.canonical_target_person_id
+                    == row.canonical_target_person_id
+                    if row.canonical_target_person_id
+                    else PluginNotificationOutboxModel.canonical_target_space_id
+                    == row.canonical_target_space_id
+                )
+                turn_match = (
+                    PluginBackgroundTurnJobModel.canonical_target_person_id
+                    == row.canonical_target_person_id
+                    if row.canonical_target_person_id
+                    else PluginBackgroundTurnJobModel.canonical_target_space_id
+                    == row.canonical_target_space_id
+                )
+                await session.execute(
+                    update(PluginNotificationOutboxModel)
+                    .where(
+                        PluginNotificationOutboxModel.plugin_id == plugin_id,
+                        outbox_match,
+                        PluginNotificationOutboxModel.status.in_(("pending", "processing")),
+                    )
+                    .values(status="cancelled", lease_until=None, updated_at=now)
+                )
+                await session.execute(
+                    update(PluginBackgroundTurnJobModel)
+                    .where(
+                        PluginBackgroundTurnJobModel.plugin_id == plugin_id,
+                        turn_match,
+                        PluginBackgroundTurnJobModel.status.in_(("pending", "processing")),
+                    )
+                    .values(status="cancelled", lease_until=None, updated_at=now)
+                )
+                return True
             await session.execute(
                 update(PluginNotificationOutboxModel)
                 .where(
@@ -210,12 +303,47 @@ class PluginNotificationRepository:
                     )
                 )
             ).all()
+            if await identity_runtime_is_complete_v2(session):
+                for row in rows:
+                    await require_v2_grant_readable(session, row)
         return tuple(_grant_view(row) for row in rows)
 
     async def grant_creator(
         self, *, plugin_id: str, target_type: str, target_id: str
     ) -> str | None:
         async with self._database.sessions() as session:
+            if await identity_runtime_is_complete_v2(session):
+                try:
+                    person_id, space_id = await resolve_grant_target_owners(
+                        session,
+                        target_type=target_type,
+                        target_id=target_id,
+                        complete_v2=True,
+                    )
+                    row = await find_grant_lineage(
+                        session,
+                        plugin_id=plugin_id,
+                        target_type=target_type,
+                        target_id=target_id,
+                        person_id=person_id,
+                        space_id=space_id,
+                    )
+                except PluginOwnershipError:
+                    return None
+                if row is None or not row.enabled:
+                    return None
+                installation = await session.get(PluginInstallationModel, plugin_id)
+                if (
+                    installation is None
+                    or not installation.enabled
+                    or installation.status != "running"
+                ):
+                    return None
+                try:
+                    await require_v2_grant_readable(session, row)
+                except PluginOwnershipError:
+                    return None
+                return row.created_by_user_id
             creator = await session.scalar(
                 select(PluginBackgroundTargetGrantModel.created_by_user_id)
                 .join(
@@ -275,39 +403,44 @@ class PluginNotificationRepository:
     ) -> NotificationPublishReceipt:
         now = datetime.now(UTC)
         target = request.target
-        scope, bot_user_id = await self._resolve_publication_scope(
-            plugin_id=plugin_id,
-            target=target,
-        )
-        appended = await self._scoped_events.append_external(
-            scope=scope,
-            platform_message_id=_external_platform_id(plugin_id, request.event_key, target),
-            source_plugin_id=plugin_id,
-            external_source=request.external_source,
-            external_event_key=request.event_key,
-            external_event_type=request.event_type,
-            external_payload=request.payload,
-            external_target_id=target.target_id,
-            content=request.summary,
-            occurred_at=_aware(request.occurred_at),
-        )
-        async with self._database.sessions() as session, session.begin():
+        notify = False
+        async with self._database.immediate_session() as session:
+            complete_v2 = await identity_runtime_is_complete_v2(session)
             installation = await session.get(PluginInstallationModel, plugin_id)
             if installation is None or not installation.enabled or installation.status != "running":
                 raise PluginPermissionError("plugin is not running")
-            grant = await session.scalar(
-                select(PluginBackgroundTargetGrantModel).where(
-                    PluginBackgroundTargetGrantModel.plugin_id == plugin_id,
-                    PluginBackgroundTargetGrantModel.target_type == target.target_type,
-                    PluginBackgroundTargetGrantModel.target_id == target.target_id,
-                    PluginBackgroundTargetGrantModel.enabled.is_(True),
-                )
+            grant = await _load_enabled_grant(
+                session,
+                plugin_id=plugin_id,
+                target=target,
+                complete_v2=complete_v2,
             )
             if grant is None:
                 raise PluginPermissionError("notification target is not granted")
-            if grant.bot_user_id != bot_user_id:
-                raise PluginPermissionError("notification target grant changed during publish")
-            await _require_publication_target(session, target)
+            if complete_v2:
+                await require_v2_grant_readable(session, grant)
+            else:
+                await _require_publication_target(session, target)
+            if target.target_type == "group":
+                scope = ConversationScope.group(grant.bot_user_id, target.target_id)
+            else:
+                scope = ConversationScope.private(grant.bot_user_id, target.target_id)
+            try:
+                appended = await self._scoped_events.append_external(
+                    scope=scope,
+                    platform_message_id=_external_platform_id(plugin_id, request.event_key, target),
+                    source_plugin_id=plugin_id,
+                    external_source=request.external_source,
+                    external_event_key=request.event_key,
+                    external_event_type=request.event_type,
+                    external_payload=request.payload,
+                    external_target_id=target.target_id,
+                    content=request.summary,
+                    occurred_at=_aware(request.occurred_at),
+                    session=session,
+                )
+            except IdentityDualWriteError as exc:
+                raise plugin_ownership_error(exc) from None
             notification_id = _notification_id(
                 plugin_id, request.event_key, target.target_type, target.target_id
             )
@@ -328,17 +461,14 @@ class PluginNotificationRepository:
                     or _aware(artifact.expires_at) <= now
                 ):
                     raise PluginPermissionError("media handle is invalid, expired, or foreign")
-            existing = await session.scalar(
-                select(ChatEventModel).where(
-                    ChatEventModel.event_kind == "external_event",
-                    ChatEventModel.source_plugin_id == plugin_id,
-                    ChatEventModel.external_event_key == request.event_key,
-                    ChatEventModel.scope_type == scope.scope_type.value,
-                    ChatEventModel.external_target_id == target.target_id,
-                )
-            )
-            if existing is None or existing.id != appended.event.id:
+            existing = await session.get(ChatEventModel, appended.event.id)
+            if existing is None:
                 raise RuntimeError("scoped external event could not be reloaded")
+            if complete_v2:
+                if existing.author_kind != AuthorKind.SYSTEM.value:
+                    raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
+                if existing.author_person_id or existing.author_presence_id:
+                    raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
             event_created = appended.created
             delivery_enqueued = False
             for index, handle_id in enumerate(request.media_handles):
@@ -349,10 +479,12 @@ class PluginNotificationRepository:
                     source_event_id=existing.id,
                     plugin_id=plugin_id,
                     grant=grant,
+                    event=existing,
                     part_type="media",
                     text="",
                     media_handle_id=handle_id,
                     now=now,
+                    complete_v2=complete_v2,
                 )
             if request.text:
                 delivery_enqueued |= await _ensure_outbox_part(
@@ -362,10 +494,12 @@ class PluginNotificationRepository:
                     source_event_id=existing.id,
                     plugin_id=plugin_id,
                     grant=grant,
+                    event=existing,
                     part_type="text",
                     text=request.text,
                     media_handle_id=None,
                     now=now,
+                    complete_v2=complete_v2,
                 )
             job_created = False
             if request.ask_agent:
@@ -378,8 +512,8 @@ class PluginNotificationRepository:
                     job = PluginBackgroundTurnJobModel(
                         source_event_id=existing.id,
                         plugin_id=plugin_id,
-                        target_type=target.target_type,
-                        target_id=target.target_id,
+                        target_type=grant.target_type,
+                        target_id=grant.target_id,
                         bot_user_id=grant.bot_user_id,
                         agent_intent=request.agent_intent,
                         status="pending",
@@ -397,15 +531,15 @@ class PluginNotificationRepository:
                     )
                     session.add(job)
                     await session.flush()
-                    await _fill_target_shadows(
+                    await _stamp_publication_child(
                         session,
                         job,
-                        target.target_type,
-                        target.target_id,
-                        grant.bot_user_id,
+                        grant=grant,
+                        event=existing,
+                        complete_v2=complete_v2,
                     )
                     job_created = True
-            return NotificationPublishReceipt(
+            receipt = NotificationPublishReceipt(
                 notification_id=notification_id,
                 source_event_id=existing.id,
                 event_created=event_created,
@@ -413,35 +547,10 @@ class PluginNotificationRepository:
                 agent_turn_enqueued=job_created,
                 deduplicated=not event_created,
             )
-
-    async def _resolve_publication_scope(
-        self,
-        *,
-        plugin_id: str,
-        target: NotificationTarget,
-    ) -> tuple[ConversationScope, str]:
-        """Resolve authorization separately from the target conversation identity."""
-
-        async with self._database.sessions() as session:
-            installation = await session.get(PluginInstallationModel, plugin_id)
-            if installation is None or not installation.enabled or installation.status != "running":
-                raise PluginPermissionError("plugin is not running")
-            grant = await session.scalar(
-                select(PluginBackgroundTargetGrantModel).where(
-                    PluginBackgroundTargetGrantModel.plugin_id == plugin_id,
-                    PluginBackgroundTargetGrantModel.target_type == target.target_type,
-                    PluginBackgroundTargetGrantModel.target_id == target.target_id,
-                    PluginBackgroundTargetGrantModel.enabled.is_(True),
-                )
-            )
-            if grant is None:
-                raise PluginPermissionError("notification target is not granted")
-            await _require_publication_target(session, target)
-            if target.target_type == "group":
-                scope = ConversationScope.group(grant.bot_user_id, target.target_id)
-            else:
-                scope = ConversationScope.private(grant.bot_user_id, target.target_id)
-        return scope, grant.bot_user_id
+            notify = appended.job_signalled and not complete_v2
+        if notify:
+            self._scoped_events._notify_after_commit(True)
+        return receipt
 
     async def claim_outbox(self, *, lease_seconds: int = 60) -> OutboxRecord | None:
         now = datetime.now(UTC)
@@ -470,6 +579,14 @@ class PluginNotificationRepository:
             row.lease_until = now + timedelta(seconds=lease_seconds)
             row.updated_at = now
             await session.flush()
+            if await identity_runtime_is_complete_v2(session):
+                try:
+                    await require_v2_queued_work_readable(session, row)
+                except PluginOwnershipError as exc:
+                    row.status = "failed"
+                    row.last_error_category = queued_work_error_category(exc, row)
+                    row.lease_until = None
+                    return None
             return _outbox_record(row)
 
     async def finish_outbox(
@@ -539,6 +656,14 @@ class PluginNotificationRepository:
             row.lease_until = now + timedelta(seconds=lease_seconds)
             row.updated_at = now
             await session.flush()
+            if await identity_runtime_is_complete_v2(session):
+                try:
+                    await require_v2_queued_work_readable(session, row)
+                except PluginOwnershipError as exc:
+                    row.status = "failed"
+                    row.last_error_category = queued_work_error_category(exc, row)
+                    row.lease_until = None
+                    return None
             return _turn_record(row)
 
     async def finish_turn(
@@ -601,6 +726,15 @@ class PluginNotificationRepository:
                         updated_at=now,
                         sent_at=None,
                     )
+                    if await identity_runtime_is_complete_v2(session):
+                        event = await session.get(ChatEventModel, job.source_event_id)
+                        inherit_queued_canonicals(reply, parent=job, event=event)
+                        try:
+                            await require_v2_queued_work_readable(session, reply)
+                        except PluginOwnershipError:
+                            return
+                        session.add(reply)
+                        return
                     session.add(reply)
                     await session.flush()
                     await _fill_target_shadows(
@@ -693,6 +827,237 @@ class PluginNotificationRepository:
                 result[key] = result.get(key, 0) + 1
         return result
 
+    async def require_v2_outbox_ready(self, item: OutboxRecord) -> None:
+        """complete-v2 read: live target XOR, live Conversation, live provenance Presence."""
+
+        async with self._database.sessions() as session:
+            if not await identity_runtime_is_complete_v2(session):
+                return
+            await require_v2_queued_work_readable(session, item)
+
+    async def granted_canonical_creator(
+        self,
+        *,
+        plugin_id: str,
+        person_id: str | None,
+        space_id: str | None,
+    ) -> str | None:
+        """complete-v2 grant read by persisted Person XOR Space. No raw QQ/group key."""
+
+        async with self._database.sessions() as session:
+            if not await identity_runtime_is_complete_v2(session):
+                return None
+            try:
+                grant = await _canonical_enabled_grant(
+                    session,
+                    plugin_id=plugin_id,
+                    person_id=person_id,
+                    space_id=space_id,
+                )
+            except PluginOwnershipError:
+                return None
+            if grant is None:
+                return None
+            installation = await session.get(PluginInstallationModel, plugin_id)
+            if installation is None or not installation.enabled or installation.status != "running":
+                return None
+            return grant.canonical_created_by_person_id
+
+    async def load_v2_background_context(
+        self, job: BackgroundTurnJobRecord
+    ) -> QueuedCanonicalContext:
+        """Load live queued Conversation + grant creator. Never re-resolve from raw keys."""
+
+        from qq_ai_bot.conversation.hydrate import (
+            require_primary_alias_for_conversation,
+            synthetic_scope_id,
+        )
+
+        async with self._database.sessions() as session:
+            if not await identity_runtime_is_complete_v2(session):
+                raise PluginOwnershipError(STATE_MISMATCH)
+            await require_v2_queued_work_readable(session, job)
+            grant = await _canonical_enabled_grant(
+                session,
+                plugin_id=job.plugin_id,
+                person_id=job.canonical_target_person_id,
+                space_id=job.canonical_target_space_id,
+            )
+            if grant is None:
+                raise PluginOwnershipError(MISSING_CANONICAL_OWNER)
+            conversation = await require_live_conversation(session, job.canonical_conversation_id)
+            try:
+                primary = await require_primary_alias_for_conversation(session, conversation.id)
+            except IdentityDualWriteError as exc:
+                raise plugin_ownership_error(exc) from None
+            creator_id = grant.canonical_created_by_person_id
+            if not creator_id:
+                raise PluginOwnershipError(MISSING_CANONICAL_OWNER)
+            await require_live_person(session, creator_id)
+            return QueuedCanonicalContext(
+                person_id=job.canonical_target_person_id,
+                space_id=job.canonical_target_space_id,
+                conversation_id=conversation.id,
+                provenance_presence_id=job.canonical_presence_id,
+                creator_person_id=creator_id,
+                primary_alias=primary,
+                generation=int(conversation.generation),
+                scope_id=synthetic_scope_id(conversation.id),
+            )
+
+    async def ensure_resolved_transport_alias(
+        self,
+        *,
+        conversation_id: str,
+        transport_key: str,
+    ) -> None:
+        """Attach the current Presence key as a secondary alias. Primary stays frozen."""
+
+        from qq_ai_bot.conversation.hydrate import ensure_legacy_alias
+
+        async with self._database.sessions() as session, session.begin():
+            if not await identity_runtime_is_complete_v2(session):
+                return
+            conversation = await require_live_conversation(session, conversation_id)
+            try:
+                await ensure_legacy_alias(
+                    session,
+                    conversation_id=conversation.id,
+                    scope_key=transport_key,
+                    primary=False,
+                )
+            except IdentityDualWriteError as exc:
+                raise plugin_ownership_error(exc) from None
+
+    async def conversation_watermark(self, conversation_id: str) -> tuple[int, str] | None:
+        """Return frozen (generation, primary alias) for one queued Conversation."""
+
+        from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+        from qq_ai_bot.conversation.hydrate import require_primary_alias_for_conversation
+
+        if not conversation_id:
+            return None
+        async with self._database.sessions() as session:
+            conversation = await session.get(CanonicalConversationModel, conversation_id)
+            if conversation is None:
+                return None
+            try:
+                primary = await require_primary_alias_for_conversation(session, conversation.id)
+            except IdentityDualWriteError:
+                return None
+            return int(conversation.generation), primary
+
+
+def inherit_queued_canonicals(
+    child: Any,
+    *,
+    parent: object,
+    event: ChatEventModel | None = None,
+) -> None:
+    """Copy persisted job/event canonicals. Never recompute from raw target/bot keys."""
+
+    person_id = getattr(parent, "canonical_target_person_id", None)
+    space_id = getattr(parent, "canonical_target_space_id", None)
+    conversation_id = getattr(parent, "canonical_conversation_id", None)
+    presence_id = getattr(parent, "canonical_presence_id", None)
+    if event is not None:
+        if not conversation_id:
+            conversation_id = event.canonical_conversation_id
+        if not presence_id:
+            presence_id = event.ingress_presence_id
+    child.canonical_target_person_id = person_id
+    child.canonical_target_space_id = space_id
+    child.canonical_conversation_id = conversation_id
+    child.canonical_presence_id = presence_id
+
+
+def queued_work_error_category(exc: PluginOwnershipError, row: object) -> str:
+    """Sanitize claim/read failures. Dual/missing XOR keep stable delivery names."""
+
+    person_id = getattr(row, "canonical_target_person_id", None)
+    space_id = getattr(row, "canonical_target_space_id", None)
+    if exc.category == MISSING_CANONICAL_OWNER and not person_id and not space_id:
+        return "canonical_target_missing"
+    if exc.category == STATE_MISMATCH and person_id and space_id:
+        return "canonical_target_ambiguous"
+    return exc.category
+
+
+async def require_v2_queued_work_readable(session: AsyncSession, row: object) -> None:
+    """complete-v2 queued work: live Person XOR Space, live Conversation, live Presence."""
+
+    person_id = getattr(row, "canonical_target_person_id", None)
+    space_id = getattr(row, "canonical_target_space_id", None)
+    if person_id and space_id:
+        raise PluginOwnershipError(STATE_MISMATCH)
+    if not person_id and not space_id:
+        raise PluginOwnershipError(MISSING_CANONICAL_OWNER)
+    target_type = getattr(row, "target_type", None)
+    if target_type == "private":
+        if space_id:
+            raise PluginOwnershipError(STATE_MISMATCH)
+        await require_live_person(session, person_id)
+    elif target_type == "group":
+        if person_id:
+            raise PluginOwnershipError(STATE_MISMATCH)
+        await require_live_space(session, space_id)
+    else:
+        raise PluginOwnershipError(STATE_MISMATCH)
+    conversation = await require_live_conversation(
+        session, getattr(row, "canonical_conversation_id", None)
+    )
+    if person_id:
+        if conversation.person_id != person_id or conversation.space_id:
+            raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
+    elif conversation.space_id != space_id or conversation.person_id:
+        raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
+    presence_id = getattr(row, "canonical_presence_id", None)
+    if presence_id:
+        await require_live_presence(session, presence_id)
+
+
+async def _canonical_enabled_grant(
+    session: AsyncSession,
+    *,
+    plugin_id: str,
+    person_id: str | None,
+    space_id: str | None,
+) -> PluginBackgroundTargetGrantModel | None:
+    if person_id and space_id:
+        raise PluginOwnershipError(STATE_MISMATCH)
+    if not person_id and not space_id:
+        raise PluginOwnershipError(MISSING_CANONICAL_OWNER)
+    if person_id:
+        rows = list(
+            (
+                await session.scalars(
+                    select(PluginBackgroundTargetGrantModel).where(
+                        PluginBackgroundTargetGrantModel.plugin_id == plugin_id,
+                        PluginBackgroundTargetGrantModel.canonical_target_person_id == person_id,
+                        PluginBackgroundTargetGrantModel.enabled.is_(True),
+                    )
+                )
+            ).all()
+        )
+    else:
+        rows = list(
+            (
+                await session.scalars(
+                    select(PluginBackgroundTargetGrantModel).where(
+                        PluginBackgroundTargetGrantModel.plugin_id == plugin_id,
+                        PluginBackgroundTargetGrantModel.canonical_target_space_id == space_id,
+                        PluginBackgroundTargetGrantModel.enabled.is_(True),
+                    )
+                )
+            ).all()
+        )
+    if len(rows) > 1:
+        raise PluginOwnershipError(STATE_MISMATCH)
+    if not rows:
+        return None
+    await require_v2_grant_readable(session, rows[0])
+    return rows[0]
+
 
 async def _ensure_outbox_part(
     session: AsyncSession,
@@ -702,10 +1067,12 @@ async def _ensure_outbox_part(
     source_event_id: int,
     plugin_id: str,
     grant: PluginBackgroundTargetGrantModel,
+    event: ChatEventModel,
     part_type: str,
     text: str,
     media_handle_id: str | None,
     now: datetime,
+    complete_v2: bool,
 ) -> bool:
     existing = await session.scalar(
         select(PluginNotificationOutboxModel).where(
@@ -739,8 +1106,125 @@ async def _ensure_outbox_part(
     )
     session.add(row)
     await session.flush()
-    await _fill_target_shadows(session, row, grant.target_type, grant.target_id, grant.bot_user_id)
+    await _stamp_publication_child(
+        session,
+        row,
+        grant=grant,
+        event=event,
+        complete_v2=complete_v2,
+    )
     return True
+
+
+async def _stamp_publication_child(
+    session: AsyncSession,
+    row: object,
+    *,
+    grant: PluginBackgroundTargetGrantModel,
+    event: ChatEventModel,
+    complete_v2: bool,
+) -> None:
+    if complete_v2:
+        inherit_publication_canonicals(
+            row,
+            grant=grant,
+            conversation_id=event.canonical_conversation_id,
+            presence_id=event.ingress_presence_id,
+        )
+        await require_inherited_publication(
+            session,
+            row,
+            grant=grant,
+            conversation_id=event.canonical_conversation_id,
+            presence_id=event.ingress_presence_id,
+        )
+        return
+    await _fill_target_shadows(
+        session,
+        row,
+        grant.target_type,
+        grant.target_id,
+        grant.bot_user_id,
+    )
+
+
+async def _v2_grant_owners(
+    session: AsyncSession,
+    *,
+    created_by_user_id: str,
+    target: NotificationTarget,
+) -> tuple[str | None, str | None]:
+    try:
+        await resolve_human_person_id(
+            session,
+            created_by_user_id,
+            complete_v2=True,
+            missing_message="grant creator is not a known person",
+        )
+    except PluginOwnershipError as exc:
+        raise _grant_api_error(exc, creator=True, target=target) from None
+    try:
+        return await resolve_grant_target_owners(
+            session,
+            target_type=target.target_type,
+            target_id=target.target_id,
+            complete_v2=True,
+        )
+    except PluginOwnershipError as exc:
+        raise _grant_api_error(exc, creator=False, target=target) from None
+
+
+def _grant_api_error(
+    exc: PluginOwnershipError,
+    *,
+    creator: bool,
+    target: NotificationTarget,
+) -> PluginPermissionError | PluginOwnershipError:
+    if exc.category not in {MISSING_CANONICAL_OWNER, CANONICAL_OWNER_DISABLED}:
+        return exc
+    if creator:
+        return PluginPermissionError("grant creator is not a known person")
+    if target.target_type == "group":
+        return PluginPermissionError("notification group is unknown or disabled")
+    return PluginPermissionError("notification private target is unknown")
+
+
+async def _load_enabled_grant(
+    session: AsyncSession,
+    *,
+    plugin_id: str,
+    target: NotificationTarget,
+    complete_v2: bool,
+) -> PluginBackgroundTargetGrantModel | None:
+    if complete_v2:
+        person_id, space_id = await resolve_grant_target_owners(
+            session,
+            target_type=target.target_type,
+            target_id=target.target_id,
+            complete_v2=True,
+        )
+        row = await find_grant_lineage(
+            session,
+            plugin_id=plugin_id,
+            target_type=target.target_type,
+            target_id=target.target_id,
+            person_id=person_id,
+            space_id=space_id,
+        )
+        if row is None or not row.enabled:
+            return None
+        return row
+    return cast(
+        PluginBackgroundTargetGrantModel | None,
+        await session.scalar(
+            select(PluginBackgroundTargetGrantModel).where(
+                PluginBackgroundTargetGrantModel.plugin_id == plugin_id,
+                PluginBackgroundTargetGrantModel.target_type == target.target_type,
+                PluginBackgroundTargetGrantModel.target_id == target.target_id,
+                PluginBackgroundTargetGrantModel.enabled.is_(True),
+            )
+        ),
+    )
 
 
 async def _require_grant_identities(
@@ -749,12 +1233,6 @@ async def _require_grant_identities(
     created_by_user_id: str,
     target: NotificationTarget,
 ) -> None:
-    if await identity_runtime_is_complete_v2(session):
-        if await active_person_id_for(session, created_by_user_id) is None:
-            raise PluginPermissionError("grant creator is not a known person")
-        await _require_publication_target(session, target)
-        await ensure_runtime_people_row(session, created_by_user_id, now=datetime.now(UTC))
-        return
     creator = await session.get(PersonModel, created_by_user_id)
     if creator is None:
         raise PluginPermissionError("grant creator is not a known person")
@@ -763,9 +1241,9 @@ async def _require_grant_identities(
 
 async def _sync_grant_presence(session: AsyncSession, bot_user_id: str, *, now: datetime) -> None:
     if await identity_runtime_is_complete_v2(session):
-        from qq_ai_bot.identity.ingress import ensure_v2_presence
+        from qq_ai_bot.identity.ingress import require_existing_presence
 
-        await ensure_v2_presence(session, bot_user_id)
+        await require_existing_presence(session, bot_user_id)
         return
     await sync_presence(session, bot_user_id, now=now)
 
@@ -780,10 +1258,6 @@ async def _require_publication_target(session: AsyncSession, target: Notificatio
 async def _publication_target_known(
     session: AsyncSession, target_type: str, target_id: str
 ) -> bool:
-    if await identity_runtime_is_complete_v2(session):
-        if target_type == "group":
-            return await active_space_id_for(session, target_id) is not None
-        return await active_person_id_for(session, target_id) is not None
     if target_type == "group":
         group = await session.get(GroupModel, target_id)
         return group is not None and bool(group.enabled)
@@ -792,11 +1266,13 @@ async def _publication_target_known(
 
 async def _fill_target_shadows(
     session: AsyncSession,
-    row: object,
+    row: Any,
     target_type: str,
     target_id: str,
     bot_user_id: str,
 ) -> None:
+    from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
+
     await fill_person_space_shadows(
         session,
         row,
@@ -806,6 +1282,24 @@ async def _fill_target_shadows(
         group_id=target_id if target_type == "group" else None,
     )
     await fill_presence_shadow(session, row, attr="canonical_presence_id", bot_user_id=bot_user_id)
+    person_id = getattr(row, "canonical_target_person_id", None)
+    space_id = getattr(row, "canonical_target_space_id", None)
+    if person_id and not space_id:
+        hydrated = await ensure_canonical_conversation(
+            session,
+            kind="private",
+            primary_scope_key=ConversationScope.private(bot_user_id, target_id).key,
+            person_id=person_id,
+        )
+        row.canonical_conversation_id = hydrated.conversation_id
+    elif space_id and not person_id:
+        hydrated = await ensure_canonical_conversation(
+            session,
+            kind="space",
+            primary_scope_key=ConversationScope.group(bot_user_id, target_id).key,
+            space_id=space_id,
+        )
+        row.canonical_conversation_id = hydrated.conversation_id
 
 
 def _grant_view(row: PluginBackgroundTargetGrantModel) -> BackgroundTargetGrantView:
@@ -834,6 +1328,7 @@ def _outbox_record(row: PluginNotificationOutboxModel) -> OutboxRecord:
         canonical_target_person_id=row.canonical_target_person_id,
         canonical_target_space_id=row.canonical_target_space_id,
         canonical_presence_id=row.canonical_presence_id,
+        canonical_conversation_id=row.canonical_conversation_id,
     )
 
 
@@ -847,6 +1342,10 @@ def _turn_record(row: PluginBackgroundTurnJobModel) -> BackgroundTurnJobRecord:
         bot_user_id=row.bot_user_id,
         agent_intent=row.agent_intent,
         attempts=row.attempts,
+        canonical_target_person_id=row.canonical_target_person_id,
+        canonical_target_space_id=row.canonical_target_space_id,
+        canonical_presence_id=row.canonical_presence_id,
+        canonical_conversation_id=row.canonical_conversation_id,
     )
 
 

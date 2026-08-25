@@ -37,6 +37,7 @@ from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
 from qq_ai_bot.memory.rebuild.worker import MemoryRebuildWorker
+from qq_ai_bot.memory.runtime.partition_lookup import DatabaseMemoryPartitionLookup
 from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
 from qq_ai_bot.memory.self_reflection.service import SelfReflectionService
 from qq_ai_bot.memory.self_reflection.worker import SelfReflectionWorker
@@ -248,6 +249,7 @@ class ConversationModule:
             people=persistence.people,
             memories=persistence.memories,
             memory_context=persistence.memory_context,
+            memory_partition_lookup=DatabaseMemoryPartitionLookup(persistence.database),
             memory_attribution=memory_attribution_worker,
             relationships=persistence.relationships,
             tools=agent_tools,

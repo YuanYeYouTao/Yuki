@@ -1024,3 +1024,41 @@ async def test_all_rejected_mutation_proposals_fail_the_batch() -> None:
 
     with pytest.raises(RuntimeError, match="all self-reflection mutations failed"):
         await service.reflect(cast(SelfReflectionBatch, object()))
+
+
+@pytest.mark.asyncio
+async def test_self_reflection_recognizes_old_presence_yuki_author(
+    database: Database,
+) -> None:
+    from qq_ai_bot.persistence.models import ChatEventModel
+
+    repository = SelfReflectionRepository(database)
+    await repository.scan_new_events()
+    now = datetime.now(UTC)
+    async with database.sessions() as session, session.begin():
+        session.add(
+            ChatEventModel(
+                bot_user_id="8001",
+                platform_message_id="old-yuki-out",
+                scope_type="group",
+                group_id="3001",
+                sender_user_id="8000",
+                sender_nickname="",
+                sender_group_card="",
+                direction="outbound",
+                event_kind="message",
+                content="旧 Presence 的回复",
+                visual_summary="",
+                segments_json="[]",
+                origin="user_message",
+                occurred_at=now,
+                observed_at=now,
+                author_kind="yuki",
+            )
+        )
+    assert await repository.scan_new_events() == 1
+    async with database.sessions() as session:
+        state = await session.scalar(select(MemorySelfReflectionStateModel))
+    assert state is not None
+    assert state.has_yuki_reply is True
+    assert state.bot_user_id == "8001"

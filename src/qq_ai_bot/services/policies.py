@@ -93,11 +93,7 @@ def replies_to_bot(
 ) -> bool:
     """Return whether this inbound message is a platform reply to Yuki."""
 
-    if not message.reply_sender_user_id:
-        return False
-    if message.reply_sender_user_id == message.bot_user_id:
-        return True
-    return message.reply_sender_user_id in yuki_account_ids
+    return message.replies_to_yuki(yuki_account_ids=yuki_account_ids)
 
 
 def evaluate_message(
@@ -151,6 +147,13 @@ def evaluate_message(
             content=content,
             command=command,
             reason=reason,
+        )
+    if not group_policy_effective.require_mention:
+        return PolicyDecision(
+            True,
+            content=content,
+            command=command,
+            reason="group_open",
         )
     return PolicyDecision(False, reason="group_not_triggered")
 

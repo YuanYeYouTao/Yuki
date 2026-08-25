@@ -5,7 +5,10 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+from qq_ai_bot.identity.c21_evidence import event_is_v2_live, fact_conversation_aligns
 from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
+from qq_ai_bot.memory.partition import canonical_fact_owner_complete
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
     MemoryEvidenceModel,
@@ -15,11 +18,24 @@ from qq_ai_bot.persistence.models import (
 
 
 async def refuse_legacy_live_event(session: AsyncSession, event: ChatEventModel) -> bool:
-    """True when a NULL canonical_event_id must not enter a live v2 branch."""
+    """True when a live v2 Memory path must not accept this chat event."""
 
-    if event.canonical_event_id:
+    if not await identity_runtime_is_complete_v2(session):
         return False
-    return await identity_runtime_is_complete_v2(session)
+    if not event.canonical_event_id:
+        return True
+    conversation_id = event.canonical_conversation_id
+    if not conversation_id:
+        return True
+    conversation = await session.get(CanonicalConversationModel, conversation_id)
+    if conversation is None:
+        return True
+    event_id = int(event.id)
+    if event_id <= int(conversation.starts_after_event_id):
+        return True
+    if event_id <= int(conversation.last_generation_change_event_id):
+        return True
+    return False
 
 
 async def refuse_legacy_live_fact(session: AsyncSession, fact_id: int) -> bool:
@@ -64,16 +80,78 @@ async def refuse_legacy_live_fact(session: AsyncSession, fact_id: int) -> bool:
     )
     if any(item is None for item in tool_ids):
         return True
-    if fact.scope_type == "self":
-        return False
-    owned = any(
-        (
-            fact.canonical_subject_person_id,
-            fact.canonical_subject_space_id,
-            fact.canonical_visibility_person_id,
-            fact.canonical_visibility_space_id,
-        )
+    return not canonical_fact_owner_complete(fact)
+
+
+def _fact_aligns_conversation(
+    fact: MemoryFactModel, conversation: CanonicalConversationModel
+) -> bool:
+    return fact_conversation_aligns(
+        scope_type=str(fact.scope_type or ""),
+        visibility_type=fact.visibility_type,
+        subject_person_id=fact.canonical_subject_person_id,
+        subject_space_id=fact.canonical_subject_space_id,
+        visibility_person_id=fact.canonical_visibility_person_id,
+        visibility_space_id=fact.canonical_visibility_space_id,
+        conversation_person_id=conversation.person_id,
+        conversation_space_id=conversation.space_id,
     )
-    if owned or event_ids or tool_ids:
+
+
+async def refuse_unreadable_v2_evidence_event(session: AsyncSession, event: ChatEventModel) -> bool:
+    """True when v2 must not treat this event as readable evidence/history.
+
+    Enqueue/worker watermarks (starts_after_event_id / generation) are not a
+    history-read gate. Hidden suppression and missing canonical chain are.
+    """
+
+    if not await identity_runtime_is_complete_v2(session):
         return False
-    return True
+    return not event_is_v2_live(
+        canonical_event_id=event.canonical_event_id,
+        suppression_status=event.suppression_status,
+        canonical_conversation_id=event.canonical_conversation_id,
+        author_kind=event.author_kind,
+    )
+
+
+async def v2_evidence_event_chain_readable(
+    session: AsyncSession,
+    fact: MemoryFactModel,
+    event: ChatEventModel,
+) -> bool:
+    if not await identity_runtime_is_complete_v2(session):
+        return True
+    if not canonical_fact_owner_complete(fact):
+        return False
+    if await refuse_unreadable_v2_evidence_event(session, event):
+        return False
+    if not event.canonical_conversation_id:
+        return False
+    conversation = await session.get(CanonicalConversationModel, event.canonical_conversation_id)
+    if conversation is None:
+        return False
+    return _fact_aligns_conversation(fact, conversation)
+
+
+async def v2_evidence_row_readable(
+    session: AsyncSession,
+    fact: MemoryFactModel,
+    evidence: MemoryEvidenceModel,
+) -> bool:
+    if not await identity_runtime_is_complete_v2(session):
+        return True
+    if evidence.event_id is not None:
+        event = await session.get(ChatEventModel, evidence.event_id)
+        if event is None:
+            return False
+        return await v2_evidence_event_chain_readable(session, fact, event)
+    if evidence.tool_receipt_id is None:
+        return False
+    receipt = await session.get(MemoryToolReceiptModel, evidence.tool_receipt_id)
+    if receipt is None or receipt.trigger_event_id is None:
+        return False
+    trigger = await session.get(ChatEventModel, receipt.trigger_event_id)
+    if trigger is None:
+        return False
+    return await v2_evidence_event_chain_readable(session, fact, trigger)

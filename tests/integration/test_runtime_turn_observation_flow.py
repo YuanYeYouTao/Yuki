@@ -42,7 +42,9 @@ async def test_turn_touching_a_write_point_records_one_row(database) -> None:
     harness = build_harness(database, settings, FakeLLMProvider(lambda _request: "回复"))
     processor = harness.processor
 
-    async def touching_turn(message, sender, profile_resolver=None) -> ProcessResult:
+    async def touching_turn(
+        message, sender, profile_resolver=None, **_kwargs: object
+    ) -> ProcessResult:
         assert claim_runtime_turn_id() is not None
         return ProcessResult(True, 2, "chat")
 
@@ -69,7 +71,9 @@ async def test_untouched_turn_stays_silent(database) -> None:
     harness = build_harness(database, settings, FakeLLMProvider(lambda _request: "回复"))
     processor = harness.processor
 
-    async def command_like_turn(message, sender, profile_resolver=None) -> ProcessResult:
+    async def command_like_turn(
+        message, sender, profile_resolver=None, **_kwargs: object
+    ) -> ProcessResult:
         return ProcessResult(True, 1, "command")
 
     processor._handle_admitted = command_like_turn
@@ -85,7 +89,9 @@ async def test_unexpected_failure_records_error_category_and_reraises(database) 
     harness = build_harness(database, settings, FakeLLMProvider(lambda _request: "回复"))
     processor = harness.processor
 
-    async def exploding_turn(message, sender, profile_resolver=None) -> ProcessResult:
+    async def exploding_turn(
+        message, sender, profile_resolver=None, **_kwargs: object
+    ) -> ProcessResult:
         raise ValueError("boom")
 
     processor._handle_admitted = exploding_turn
@@ -106,7 +112,9 @@ async def test_two_turns_get_distinct_runtime_turn_ids(database) -> None:
     harness = build_harness(database, settings, FakeLLMProvider(lambda _request: "回复"))
     processor = harness.processor
 
-    async def touching_turn(message, sender, profile_resolver=None) -> ProcessResult:
+    async def touching_turn(
+        message, sender, profile_resolver=None, **_kwargs: object
+    ) -> ProcessResult:
         claim_runtime_turn_id()
         return ProcessResult(True, 1, "chat")
 

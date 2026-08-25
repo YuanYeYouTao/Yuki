@@ -227,20 +227,25 @@ class GatewayConnectionRegistry:
                     gateway_instance_id=self.gateway_instance_id,
                     live_count=0,
                 )
-            pin = self._pins.get(presence_id.strip())
-            chosen: _LiveConnection | None = None
-            if live_count == 1:
-                chosen = self._by_id[ids[0]]
-            elif pin is not None and pin in self._by_id and pin in ids:
-                chosen = self._by_id[pin]
-            if chosen is None:
+            try:
+                chosen_id = self._choose_id(ids, pin_key=presence_id.strip())
+            except RegistryClosed as exc:
+                if exc.category == "ambiguous":
+                    return PresenceConnectionSnapshot(
+                        health=ConnectionHealth.AMBIGUOUS,
+                        generation=None,
+                        connection_id=None,
+                        gateway_instance_id=self.gateway_instance_id,
+                        live_count=live_count,
+                    )
                 return PresenceConnectionSnapshot(
-                    health=ConnectionHealth.AMBIGUOUS,
-                    generation=None,
+                    health=ConnectionHealth.DISCONNECTED,
+                    generation=self._account_generation.get(account),
                     connection_id=None,
                     gateway_instance_id=self.gateway_instance_id,
                     live_count=live_count,
                 )
+            chosen = self._by_id[chosen_id]
             return PresenceConnectionSnapshot(
                 health=ConnectionHealth.CONNECTED,
                 generation=chosen.generation,
@@ -310,24 +315,28 @@ class GatewayConnectionRegistry:
             and self._by_id[item].bot is not None
         ]
 
+    def _choose_id(self, ids: list[str], *, pin_key: str | None) -> str:
+        """Determine one live connection. Never first-item among unpinned many."""
+
+        if not ids:
+            raise RegistryClosed("disconnected")
+        if len(ids) == 1:
+            chosen_id = ids[0]
+            if pin_key:
+                self._pins[pin_key] = chosen_id
+            return chosen_id
+        pin = self._pins.get(pin_key or "")
+        if pin is not None and pin in ids:
+            return pin
+        raise RegistryClosed("ambiguous")
+
     def _resolve_ids(
         self,
         ids: list[str],
         *,
         pin_key: str | None,
     ) -> ConnectionResolution:
-        if not ids:
-            raise RegistryClosed("disconnected")
-        pin = self._pins.get(pin_key or "")
-        chosen_id: str | None = None
-        if len(ids) == 1:
-            chosen_id = ids[0]
-            if pin_key:
-                self._pins[pin_key] = chosen_id
-        elif pin is not None and pin in ids:
-            chosen_id = pin
-        if chosen_id is None:
-            raise RegistryClosed("ambiguous")
+        chosen_id = self._choose_id(ids, pin_key=pin_key)
         live = self._by_id[chosen_id]
         if live.bot is None or not live.healthy:
             raise RegistryClosed("disconnected")

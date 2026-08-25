@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from typing import NoReturn
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -14,11 +15,25 @@ from qq_ai_bot.conversation.rollup.errors import (
     RollupSourceChangedError,
 )
 from qq_ai_bot.conversation.rollup.metrics import ConversationRollupMetrics
-from qq_ai_bot.conversation.rollup.models import RollupJobClaim
+from qq_ai_bot.conversation.rollup.models import (
+    LLM_ORIGIN_INELIGIBLE,
+    EmergencyOverlayDisposition,
+    RollupCandidate,
+    RollupJobClaim,
+    RollupKind,
+)
 from qq_ai_bot.conversation.rollup.repository import ConversationRollupRepository
 from qq_ai_bot.conversation.rollup.service import ConversationRollupService
 
 logger = logging.getLogger(__name__)
+
+
+def _model_failure_error_category(exc: BaseException) -> str:
+    if isinstance(exc, TimeoutError):
+        return "model_timeout"
+    if isinstance(exc, ValueError):
+        return "model_quality"
+    return type(exc).__name__
 
 
 class ConversationRollupWorker:
@@ -130,24 +145,23 @@ class ConversationRollupWorker:
                     if candidate is None:
                         await self._repository.finish_without_candidate(claim)
                         break
-                    summary_task = asyncio.create_task(
-                        self._service.summarize_candidate(candidate),
-                        name="conversation-rollup-model",
+                    if not self._service.candidate_uses_model(candidate):
+                        summary, _kind = self._service.emergency(candidate)
+                        await self._repository.commit_emergency_overlay(
+                            claim,
+                            candidate,
+                            summary,
+                            error_category=LLM_ORIGIN_INELIGIBLE,
+                            disposition=EmergencyOverlayDisposition.POLICY,
+                            source_emergency=False,
+                            retry_max_seconds=self._retry_max_seconds,
+                        )
+                        break
+                    summary, kind = await self._summarize_or_emergency_overlay(
+                        claim, candidate, heartbeat
                     )
-                    done, _pending = await asyncio.wait(
-                        {summary_task, heartbeat},
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    if heartbeat in done:
-                        summary_task.cancel()
-                        await asyncio.gather(summary_task, return_exceptions=True)
-                        error = heartbeat.exception()
-                        if error is not None:
-                            raise RollupLeaseLostError(
-                                "heartbeat rejected rollup result"
-                            ) from error
-                        raise RollupLeaseLostError("heartbeat stopped before rollup result")
-                    summary, kind = await summary_task
+                    if kind is RollupKind.EMERGENCY:
+                        break
                     committed = await self._repository.commit_candidate(
                         claim,
                         candidate,
@@ -167,11 +181,66 @@ class ConversationRollupWorker:
                 await self._safe_retry(claim, "source_changed")
             except ConversationCoverageError:
                 await self._safe_retry(claim, "coverage_invariant")
-            except (OSError, RuntimeError, SQLAlchemyError) as exc:
+            except (OSError, RuntimeError, SQLAlchemyError, ValueError) as exc:
                 await self._safe_retry(claim, type(exc).__name__)
             finally:
                 heartbeat.cancel()
                 await asyncio.gather(heartbeat, return_exceptions=True)
+
+    async def _summarize_or_emergency_overlay(
+        self,
+        claim: RollupJobClaim,
+        candidate: RollupCandidate,
+        heartbeat: asyncio.Task[None],
+    ) -> tuple[str, RollupKind]:
+        """Await model summary; model failures write overlay without moving coverage."""
+
+        summary_task = asyncio.create_task(
+            self._service.summarize_candidate(candidate),
+            name="conversation-rollup-model",
+        )
+        done, _pending = await asyncio.wait(
+            {summary_task, heartbeat},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if heartbeat in done:
+            summary_task.cancel()
+            await asyncio.gather(summary_task, return_exceptions=True)
+            self._raise_lease_lost(heartbeat)
+        try:
+            summary, kind = await summary_task
+        except (TimeoutError, ValueError, OSError, RuntimeError) as exc:
+            if heartbeat.done():
+                self._raise_lease_lost(heartbeat)
+            summary, kind = self._service.emergency(candidate)
+            await self._repository.commit_emergency_overlay(
+                claim,
+                candidate,
+                summary,
+                error_category=_model_failure_error_category(exc),
+                disposition=EmergencyOverlayDisposition.MODEL_FAILURE,
+                source_emergency=False,
+                retry_max_seconds=self._retry_max_seconds,
+            )
+            return summary, RollupKind.EMERGENCY
+        if kind is RollupKind.EMERGENCY:
+            await self._repository.commit_emergency_overlay(
+                claim,
+                candidate,
+                summary,
+                error_category=LLM_ORIGIN_INELIGIBLE,
+                disposition=EmergencyOverlayDisposition.POLICY,
+                source_emergency=False,
+                retry_max_seconds=self._retry_max_seconds,
+            )
+        return summary, kind
+
+    @staticmethod
+    def _raise_lease_lost(heartbeat: asyncio.Task[None]) -> NoReturn:
+        error = heartbeat.exception()
+        if error is not None:
+            raise RollupLeaseLostError("heartbeat rejected rollup result") from error
+        raise RollupLeaseLostError("heartbeat stopped before rollup result")
 
     async def _heartbeat(self, claim: RollupJobClaim) -> None:
         current = claim

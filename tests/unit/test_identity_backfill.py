@@ -41,9 +41,13 @@ from qq_ai_bot.identity.inventory import (
     HUMAN_PLUGIN_MESSAGE_ROLES,
     IDENTITY_PLATFORM,
     REQUIRED_C7_SCHEMA,
+    SHADOW_FILL_SPECS,
+    SHAPE_ONLY_OPTIONAL_SHADOWS,
     SPACE_SOURCE_INVENTORY,
     STRONG_PERSON_SOURCES,
     WEAK_PERSON_SOURCES,
+    shadow_inventory_drift,
+    shadow_spec_policy_errors,
 )
 from qq_ai_bot.identity.reporting import render_report
 from qq_ai_bot.persistence.metadata import Base
@@ -280,6 +284,31 @@ def test_inventory_covers_required_sources() -> None:
     assert any(item[0] == "people.canonical_person_id" for item in FILLABLE_SHADOWS)
 
 
+def test_shadow_fill_specs_cover_fillable_inventory() -> None:
+    missing, extra = shadow_inventory_drift()
+    assert not missing, sorted(missing)
+    assert not extra, sorted(extra)
+    fillable_kinds = {item[0]: item[1] for item in FILLABLE_SHADOWS}
+    assert {spec.dotted: spec.kind for spec in SHADOW_FILL_SPECS} == fillable_kinds
+    assert shadow_spec_policy_errors() == ()
+    assert SHAPE_ONLY_OPTIONAL_SHADOWS == {
+        "automations.canonical_target_person_id",
+        "automations.canonical_target_space_id",
+        "runtime_turn_observations.canonical_person_id",
+        "runtime_turn_observations.canonical_space_id",
+    }
+    assert all(
+        spec.source_column is None
+        for spec in SHADOW_FILL_SPECS
+        if spec.completeness == "shape_only_optional"
+    )
+    assert all(
+        spec.source_column is not None
+        for spec in SHADOW_FILL_SPECS
+        if spec.completeness == "verified_from_source"
+    )
+
+
 def test_business_modules_do_not_import_cli_renderer_or_orm() -> None:
     for name in (
         "inventory.py",
@@ -288,6 +317,8 @@ def test_business_modules_do_not_import_cli_renderer_or_orm() -> None:
         "sanitize.py",
         "backfill_repository.py",
         "backfill_service.py",
+        "canonical_memory_owners.py",
+        "c21_readable_owners.py",
         "errors.py",
     ):
         modules = _imported_modules(_IDENTITY_SRC / name)
@@ -778,7 +809,7 @@ def test_fresh_and_0046_to_0047_and_historical_paths(
         assert connection.execute(
             "SELECT canonical_space_id FROM person_aliases WHERE user_id = '1001'"
         ).fetchone()[0]
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0047"
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0048"
         assert all(
             UUID(str(row[0])).version == 4 for row in connection.execute("SELECT id FROM persons")
         )

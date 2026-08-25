@@ -138,6 +138,9 @@ class RuntimeTurnObservation:
     expires_at: datetime
     subject_user_id: str | None = None
     group_id: str | None = None
+    canonical_conversation_id: str | None = None
+    canonical_person_id: str | None = None
+    canonical_space_id: str | None = None
 
 
 class TurnObservationRecorder(Protocol):
@@ -160,6 +163,9 @@ def build_turn_observation(
     now: datetime | None = None,
     subject_user_id: str | None = None,
     group_id: str | None = None,
+    canonical_conversation_id: str | None = None,
+    canonical_person_id: str | None = None,
+    canonical_space_id: str | None = None,
 ) -> RuntimeTurnObservation:
     """Project one finished turn onto the content-free observation row.
 
@@ -183,6 +189,9 @@ def build_turn_observation(
         expires_at=created + timedelta(days=max(1, retention_days)),
         subject_user_id=subject_user_id,
         group_id=group_id,
+        canonical_conversation_id=canonical_conversation_id,
+        canonical_person_id=canonical_person_id,
+        canonical_space_id=canonical_space_id,
     )
 
 

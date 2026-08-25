@@ -20,6 +20,7 @@ class SpeechSynthesisRequest:
     trigger_event_id: int | None
     turn_token: TurnToken | None
     language_hint: str = "auto"
+    canonical_conversation_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

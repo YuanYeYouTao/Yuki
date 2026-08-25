@@ -242,6 +242,55 @@ def _identity_command(settings: Settings, args: argparse.Namespace) -> int:
     return IdentityBackfillService.exit_code(report)
 
 
+def _add_identity_cutover_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    cutover = subparsers.add_parser("identity-cutover", help="停机 identity cutover plan/apply")
+    mode = cutover.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--plan", action="store_true", help="校验并生成不可变 source manifest")
+    mode.add_argument("--apply", metavar="MANIFEST", help="按 manifest 指纹原子翻转 v2")
+    cutover.add_argument("--git-revision", required=True)
+    cutover.add_argument("--expected-revision")
+    cutover.add_argument("--downtime-token", required=True)
+    cutover.add_argument("--snapshot-db", required=True)
+    cutover.add_argument("--snapshot-wal", required=True)
+    cutover.add_argument("--snapshot-shm", required=True)
+    cutover.add_argument("--format", choices=("json", "text"), default="json")
+    cutover.add_argument("--database-url")
+
+
+def _identity_cutover_command(settings: Settings, args: argparse.Namespace) -> int:
+    from qq_ai_bot.identity.backfill_repository import sqlite_path_from_url
+    from qq_ai_bot.identity.cutover_reporting import render_cutover_report
+    from qq_ai_bot.identity.cutover_service import IdentityCutoverService
+    from qq_ai_bot.identity.cutover_types import CutoverSettingsInput, failed_cutover_report
+    from qq_ai_bot.identity.errors import IdentityCutoverError
+
+    mode: Literal["plan", "apply"] = "apply" if args.apply else "plan"
+    try:
+        url = str(args.database_url or settings.database_url)
+        service = IdentityCutoverService(
+            sqlite_path_from_url(url),
+            CutoverSettingsInput(
+                expected_git_revision=str(args.expected_revision or args.git_revision),
+                git_revision=str(args.git_revision),
+                downtime_token=str(args.downtime_token),
+                snapshot_db=str(args.snapshot_db),
+                snapshot_wal=str(args.snapshot_wal),
+                snapshot_shm=str(args.snapshot_shm),
+            ),
+        )
+        report = service.apply(str(args.apply)) if args.apply else service.plan()
+    except IdentityCutoverError as exc:
+        report = failed_cutover_report(mode, exc.category)
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception:
+        report = failed_cutover_report(mode, "operational_error")
+    print(render_cutover_report(report, str(args.format)))
+    return IdentityCutoverService.exit_code(report)
+
+
 def _add_memory_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     memory = subparsers.add_parser("memory", help="Memory V2 质量、审计与显式治理")
     commands = memory.add_subparsers(dest="memory_command", required=True)
@@ -1044,6 +1093,7 @@ def main() -> None:
     _add_diagnostics_parsers(subparsers)
     _add_memory_parser(subparsers)
     _add_identity_parser(subparsers)
+    _add_identity_cutover_parser(subparsers)
     args = parser.parse_args()
     if args.command == "setup":
         raise SystemExit(run_setup_command(args))
@@ -1088,6 +1138,8 @@ def main() -> None:
         raise SystemExit(asyncio.run(_memory_command(settings, args)))
     elif args.command == "identity":
         raise SystemExit(_identity_command(settings, args))
+    elif args.command == "identity-cutover":
+        raise SystemExit(_identity_cutover_command(settings, args))
 
 
 if __name__ == "__main__":

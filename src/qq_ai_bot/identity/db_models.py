@@ -16,6 +16,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     event,
     text,
@@ -29,6 +30,12 @@ from qq_ai_bot.identity.canonical_extension_schema import (
     C6_OWNERSHIP_TABLES,
     C6_TRIGGER_NAMES,
     C6_TRIGGER_SQL,
+)
+from qq_ai_bot.identity.canonical_memory_schema import (
+    C21_OWNER_TABLES,
+    C21_OWNERSHIP_COLUMNS,
+    C21_TRIGGER_NAMES,
+    C21_TRIGGER_SQL,
 )
 from qq_ai_bot.identity.canonical_ownership_schema import (
     C5_OWNERSHIP_COLUMNS,
@@ -47,6 +54,8 @@ CANONICAL_IDENTITY_TABLES: tuple[str, ...] = (
     "identity_runtime_state",
     "identity_backfill_runs",
     "identity_conflicts",
+    "identity_cutover_manifests",
+    "identity_cutover_runs",
 )
 CANONICAL_IDENTITY_CREATE_ORDER: tuple[str, ...] = (
     "persons",
@@ -57,6 +66,8 @@ CANONICAL_IDENTITY_CREATE_ORDER: tuple[str, ...] = (
     "identity_runtime_state",
     "identity_backfill_runs",
     "identity_conflicts",
+    "identity_cutover_manifests",
+    "identity_cutover_runs",
 )
 
 _UUID4_GLOB = (
@@ -435,6 +446,73 @@ class IdentityConflictModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+_HEX64_GLOB = "[0-9a-f]" * 64
+
+
+class IdentityCutoverManifestModel(Base):
+    """Immutable cutover source manifest keyed by recomputable fingerprint."""
+
+    __tablename__ = "identity_cutover_manifests"
+    __table_args__ = (
+        CheckConstraint(
+            f"length(fingerprint) = 64 AND fingerprint = lower(fingerprint) "
+            f"AND fingerprint GLOB '{_HEX64_GLOB}'",
+            name="ck_identity_cutover_manifests_fingerprint",
+        ),
+        CheckConstraint(
+            "length(payload_json) > 0",
+            name="ck_identity_cutover_manifests_payload",
+        ),
+    )
+
+    fingerprint: Mapped[str] = mapped_column(String(64), primary_key=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class IdentityCutoverRunModel(Base):
+    """Local ledger for identity-cutover plan/apply attempts."""
+
+    __tablename__ = "identity_cutover_runs"
+    __table_args__ = (
+        CheckConstraint("mode IN ('plan', 'apply')", name="ck_identity_cutover_runs_mode"),
+        CheckConstraint(
+            "status IN ('succeeded', 'failed', 'blocked')",
+            name="ck_identity_cutover_runs_status",
+        ),
+        CheckConstraint(
+            "length(git_revision) > 0 AND git_revision = trim(git_revision)",
+            name="ck_identity_cutover_runs_git_revision",
+        ),
+        CheckConstraint(
+            "length(downtime_token) > 0",
+            name="ck_identity_cutover_runs_downtime_token",
+        ),
+        CheckConstraint(
+            "source_fingerprint IS NULL OR ("
+            f"length(source_fingerprint) = 64 "
+            f"AND source_fingerprint = lower(source_fingerprint) "
+            f"AND source_fingerprint GLOB '{_HEX64_GLOB}'"
+            ")",
+            name="ck_identity_cutover_runs_source_fingerprint",
+        ),
+        Index("ix_identity_cutover_runs_status_created", "status", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    git_revision: Mapped[str] = mapped_column(String(64), nullable=False)
+    downtime_token: Mapped[str] = mapped_column(String(128), nullable=False)
+    snapshot_db: Mapped[str] = mapped_column(String(512), nullable=False)
+    snapshot_wal: Mapped[str] = mapped_column(String(512), nullable=False)
+    snapshot_shm: Mapped[str] = mapped_column(String(512), nullable=False)
+    source_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 _C5_PARENT_TABLES: tuple[str, ...] = ("persons", "spaces")
 
 
@@ -554,3 +632,49 @@ def _install_c6_triggers_after_metadata_create(
     if not _is_sqlite_connection(connection):
         return
     _install_c6_triggers_if_ready(connection)
+
+
+_C21_PARENT_TABLES: tuple[str, ...] = ("persons", "spaces")
+
+
+def _c21_hosts_and_parents_ready(connection: Connection) -> bool:
+    required = (*C21_OWNER_TABLES, *_C21_PARENT_TABLES)
+    present = connection.execute(
+        text(
+            "SELECT COUNT(*) FROM sqlite_master "
+            "WHERE type = 'table' AND name IN "
+            f"({', '.join(repr(name) for name in required)})"
+        )
+    ).scalar()
+    if int(present or 0) != len(required):
+        return False
+    for table, columns in C21_OWNERSHIP_COLUMNS.items():
+        info = {str(row[1]) for row in connection.execute(text(f'PRAGMA table_info("{table}")'))}
+        if not set(columns) <= info:
+            return False
+    return True
+
+
+def _install_c21_triggers_if_ready(connection: Connection) -> None:
+    """Install Memory-owner guards once every C21 host and parent exists."""
+
+    if not _is_sqlite_connection(connection):
+        return
+    if not _c21_hosts_and_parents_ready(connection):
+        return
+    _install_missing_triggers(connection, C21_TRIGGER_NAMES, C21_TRIGGER_SQL)
+
+
+@event.listens_for(Base.metadata, "after_create")
+def _install_c21_triggers_after_metadata_create(
+    target: MetaData,
+    connection: Connection,
+    **_kwargs: object,
+) -> None:
+    """Install C21 triggers after create_all, independent of table order."""
+
+    if target is not Base.metadata:
+        return
+    if not _is_sqlite_connection(connection):
+        return
+    _install_c21_triggers_if_ready(connection)

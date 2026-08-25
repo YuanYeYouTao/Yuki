@@ -78,3 +78,17 @@ class ConversationScope:
             key=f"bot:{bot}:group:{group}",
             group_id=group,
         )
+
+    @classmethod
+    def parse(cls, key: str) -> ConversationScope:
+        """Parse a stable ``bot:{account}:{private|group}:{target}`` key."""
+
+        parts = key.strip().split(":")
+        if len(parts) != 4 or parts[0] != "bot" or not parts[1] or not parts[3]:
+            raise ValueError("conversation scope key is invalid")
+        kind = parts[2]
+        if kind == ScopeType.PRIVATE.value:
+            return cls.private(parts[1], parts[3])
+        if kind == ScopeType.GROUP.value:
+            return cls.group(parts[1], parts[3])
+        raise ValueError("conversation scope key is invalid")

@@ -17,6 +17,7 @@ from sqlalchemy import create_engine, event, text
 from tests.unit.test_migration_0021 import _config
 
 from qq_ai_bot.identity.canonical_extension_schema import C6_OWNERSHIP_TABLES
+from qq_ai_bot.identity.canonical_memory_schema import C21_OWNER_TABLES
 from qq_ai_bot.identity.canonical_ownership_schema import C5_OWNERSHIP_TABLES
 from qq_ai_bot.identity.db_models import (
     CANONICAL_IDENTITY_CREATE_ORDER,
@@ -24,6 +25,7 @@ from qq_ai_bot.identity.db_models import (
     IdentityRuntimeStateModel,
     seed_identity_runtime_state_v1,
 )
+from qq_ai_bot.identity.legacy_fk_inventory import LEGACY_CARRIER_REBUILD_TABLES
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.metadata import Base
 
@@ -33,8 +35,6 @@ _FORBIDDEN_TABLES = {
     "yuki_self",
     "yukiself",
     "gateway_connections",
-    "identity_cutover_manifests",
-    "identity_cutover_runs",
 }
 _REQUIRED_CONSTRAINT_FRAGMENTS = (
     "ck_persons_id",
@@ -134,20 +134,6 @@ def _normalized_schema(path: Path) -> dict[str, Any]:
         }
 
 
-def _identity_schema(path: Path) -> dict[tuple[str, str], str]:
-    dump = _schema_dump(path)
-    return {
-        key: sql
-        for key, sql in dump.items()
-        if key[1] in CANONICAL_IDENTITY_TABLES
-        or (
-            key[1] not in C5_OWNERSHIP_TABLES
-            and key[1] not in C6_OWNERSHIP_TABLES
-            and any(table in sql for table in CANONICAL_IDENTITY_TABLES)
-        )
-    }
-
-
 def _normalized_identity_schema(path: Path) -> dict[str, Any]:
     full = _normalized_schema(path)
     tables = [name for name in full["tables"] if name in CANONICAL_IDENTITY_TABLES]
@@ -222,7 +208,7 @@ def test_fresh_upgrade_head_creates_canonical_identity_foundation(
     path = tmp_path / "fresh-head.db"
     _upgrade(path, monkeypatch, "head")
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0047",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0048",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         tables = _tables(connection)
         assert set(CANONICAL_IDENTITY_TABLES) <= tables
@@ -248,30 +234,28 @@ def test_upgrade_from_real_0042_schema_to_head(
     before = _schema_dump(path)
     _upgrade(path, monkeypatch, "head")
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0047",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0048",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert set(CANONICAL_IDENTITY_TABLES) <= _tables(connection)
         assert connection.execute("SELECT state FROM identity_runtime_state").fetchall() == [
             ("v1",)
         ]
     after = _schema_dump(path)
-    preserved = {
+    rewritten = {
         "alembic_version",
-        "chat_events",
-        "conversation_scopes",
+        "uq_chat_events_bot_platform_message",
         "people",
         "groups",
-        "person_aliases",
-        "memberships",
-        "person_relationships",
-        "relationship_events",
-        "relationship_jobs",
-        "person_time_settings",
-        "person_speech_preferences",
-        "memory_facts",
+        *C5_OWNERSHIP_TABLES,
         *C6_OWNERSHIP_TABLES,
+        *C21_OWNER_TABLES,
+        *LEGACY_CARRIER_REBUILD_TABLES,
     }
-    assert all(after[key] == sql for key, sql in before.items() if key[1] not in preserved)
+    assert all(
+        after[key] == sql
+        for key, sql in before.items()
+        if key[1] not in rewritten and not str(key[1]).startswith("chat_events_fts")
+    )
 
 
 def test_fresh_head_and_0042_to_head_schemas_are_equivalent(
@@ -284,7 +268,7 @@ def test_fresh_head_and_0042_to_head_schemas_are_equivalent(
     _upgrade(upgraded, monkeypatch, "0042")
     _upgrade(upgraded, monkeypatch, "head")
     assert _normalized_schema(fresh) == _normalized_schema(upgraded)
-    assert _identity_schema(fresh) == _identity_schema(upgraded)
+    assert _normalized_identity_schema(fresh) == _normalized_identity_schema(upgraded)
 
 
 def test_downgrade_0043_removes_only_identity_tables(
@@ -294,7 +278,7 @@ def test_downgrade_0043_removes_only_identity_tables(
     expected = tmp_path / "expected-0042.db"
     path = tmp_path / "downgrade.db"
     _upgrade(expected, monkeypatch, "0042")
-    _upgrade(path, monkeypatch, "head")
+    _upgrade(path, monkeypatch, "0047")
     _downgrade(path, monkeypatch, "0042")
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0042",)
@@ -319,7 +303,7 @@ def test_orm_metadata_matches_0043_identity_schema(
 def test_alembic_heads_is_exactly_0044() -> None:
     config = Config("alembic.ini")
     heads = ScriptDirectory.from_config(config).get_heads()
-    assert heads == ["0047"]
+    assert heads == ["0048"]
 
 
 def test_fk_cutover_split_is_not_hardcoded_to_current_head() -> None:

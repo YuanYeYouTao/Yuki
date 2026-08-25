@@ -16,6 +16,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     event,
     text,
@@ -53,6 +54,11 @@ CANONICAL_CONVERSATION_CREATE_ORDER: tuple[str, ...] = (
     "control_command_receipts",
 )
 CANONICAL_EVENT_TABLES: tuple[str, ...] = ("canonical_event_receipts",)
+CANONICAL_CONVERSATION_ROLLUP_TABLES: tuple[str, ...] = (
+    "canonical_conversation_rollups",
+    "canonical_conversation_rollup_jobs",
+    "canonical_conversation_rollup_emergency_overlays",
+)
 
 
 def sha256_hex_sql(column: str) -> str:
@@ -311,6 +317,136 @@ class ConversationLegacyAliasModel(Base):
     conversation_id: Mapped[str] = mapped_column(String(36), nullable=False)
     scope_key: Mapped[str] = mapped_column(String(255), nullable=False)
     is_primary: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CanonicalConversationRollupModel(Base):
+    """Single canonical conversation checkpoint. Does not write conversation_rollups."""
+
+    __tablename__ = "canonical_conversation_rollups"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["conversation_id"],
+            ["canonical_conversations.id"],
+            name="fk_canonical_conversation_rollups_conversation",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            uuid4_text36_sql("conversation_id"),
+            name="ck_canonical_conversation_rollups_conversation_id",
+        ),
+        CheckConstraint(
+            "summary_kind IN ('model', 'extractive', 'migration')",
+            name="ck_canonical_conversation_rollups_kind",
+        ),
+        CheckConstraint(
+            "generation >= 1 AND covered_through_event_id >= 0 "
+            "AND revision >= 1 AND length(summary_text) > 0",
+            name="ck_canonical_conversation_rollups_state",
+        ),
+        CheckConstraint(
+            sha256_hex_sql("source_fingerprint"),
+            name="ck_canonical_conversation_rollups_fingerprint",
+        ),
+    )
+
+    conversation_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    covered_through_event_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    summary_text: Mapped[str] = mapped_column(Text, nullable=False)
+    summary_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CanonicalConversationRollupJobModel(Base):
+    """Canonical rollup worker job. Does not write conversation_rollup_jobs."""
+
+    __tablename__ = "canonical_conversation_rollup_jobs"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["conversation_id"],
+            ["canonical_conversations.id"],
+            name="fk_canonical_conversation_rollup_jobs_conversation",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            uuid4_text36_sql("conversation_id"),
+            name="ck_canonical_conversation_rollup_jobs_conversation_id",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'processing')",
+            name="ck_canonical_conversation_rollup_jobs_status",
+        ),
+        CheckConstraint(
+            "generation >= 1 AND signal_revision >= 1 AND failure_count >= 0",
+            name="ck_canonical_conversation_rollup_jobs_state",
+        ),
+        CheckConstraint(
+            "(status = 'pending' AND lease_owner IS NULL AND lease_token IS NULL "
+            "AND lease_until IS NULL) OR (status = 'processing' AND lease_owner IS NOT NULL "
+            "AND lease_token IS NOT NULL AND lease_until IS NOT NULL)",
+            name="ck_canonical_conversation_rollup_jobs_lease",
+        ),
+        Index(
+            "ix_canonical_conversation_rollup_jobs_claim",
+            "status",
+            "next_attempt_at",
+            "lease_until",
+        ),
+    )
+
+    conversation_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    signal_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CanonicalConversationRollupEmergencyOverlayModel(Base):
+    """Temporary canonical prompt overlay. Does not write canonical_conversation_rollups."""
+
+    __tablename__ = "canonical_conversation_rollup_emergency_overlays"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["conversation_id"],
+            ["canonical_conversations.id"],
+            name="fk_canonical_conversation_rollup_emergency_overlays_conversation",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            uuid4_text36_sql("conversation_id"),
+            name="ck_canonical_conversation_rollup_emergency_overlays_conversation_id",
+        ),
+        CheckConstraint(
+            "generation >= 1 AND covered_through_event_id >= 0 "
+            "AND base_semantic_revision >= 0 AND revision >= 1 "
+            "AND length(summary_text) > 0",
+            name="ck_canonical_conversation_rollup_emergency_overlays_state",
+        ),
+        CheckConstraint(
+            sha256_hex_sql("source_fingerprint"),
+            name="ck_canonical_conversation_rollup_emergency_overlays_fingerprint",
+        ),
+    )
+
+    conversation_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    covered_through_event_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    summary_text: Mapped[str] = mapped_column(Text, nullable=False)
+    source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    base_semantic_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

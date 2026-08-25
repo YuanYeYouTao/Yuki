@@ -298,7 +298,7 @@ def test_fresh_upgrade_head_creates_only_inventory_columns(
     path = tmp_path / "fresh-head.db"
     _upgrade(path, monkeypatch, "head")
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0047",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0048",)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         for table, columns in C5_OWNERSHIP_COLUMNS.items():
             assert set(columns) <= set(_column_names(connection, table))
@@ -413,7 +413,7 @@ def test_c5_metadata_hook_skips_non_sqlite_dialect() -> None:
 def test_alembic_heads_is_exactly_0046() -> None:
     config = Config("alembic.ini")
     heads = ScriptDirectory.from_config(config).get_heads()
-    assert heads == ["0047"]
+    assert heads == ["0048"]
 
 
 def test_0046_is_self_contained_alembic() -> None:
@@ -1001,6 +1001,8 @@ def test_ownership_foreign_keys_reject_dangling_and_parent_mutation(c5_db: Path)
 
 def test_old_writer_inventory_does_not_pass_shadow_columns() -> None:
     found_writers = 0
+    found_create_fact = 0
+    memory_fact_shadows = set(C5_OWNERSHIP_COLUMNS["memory_facts"])
     writer_names = {
         "PersonModel",
         "GroupModel",
@@ -1015,12 +1017,20 @@ def test_old_writer_inventory_does_not_pass_shadow_columns() -> None:
     }
     for path in _KNOWN_WRITERS:
         tree = ast.parse(path.read_text(encoding="utf-8"))
+        for fn in ast.walk(tree):
+            if not isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                    if node.func.id in writer_names:
+                        found_writers += 1
+                        keywords = {keyword.arg for keyword in node.keywords if keyword.arg}
+                        if node.func.id == "MemoryFactModel" and fn.name == "create_fact":
+                            found_create_fact += 1
+                            assert keywords & _SHADOW_NAMES == memory_fact_shadows
+                        else:
+                            assert keywords.isdisjoint(_SHADOW_NAMES)
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                if node.func.id in writer_names:
-                    found_writers += 1
-                    keywords = {keyword.arg for keyword in node.keywords if keyword.arg}
-                    assert keywords.isdisjoint(_SHADOW_NAMES)
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 if "INSERT INTO " in node.value:
                     for table in C5_OWNERSHIP_TABLES:
@@ -1029,3 +1039,4 @@ def test_old_writer_inventory_does_not_pass_shadow_columns() -> None:
                             for column in _SHADOW_NAMES:
                                 assert column not in node.value
     assert found_writers >= 8
+    assert found_create_fact == 1

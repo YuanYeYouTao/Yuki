@@ -11,7 +11,9 @@ from typing import cast
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.models import TurnOrigin
+from qq_ai_bot.conversation.scope import plugin_conversation_key
 from qq_ai_bot.domain.messages import InboundMessage
+from qq_ai_bot.plugin_host.canonical_projection import projection_from_inbound
 from qq_ai_bot.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
 from yuki_plugin_sdk.models import (
     AdmissionSignal as SdkAdmissionSignal,
@@ -63,8 +65,9 @@ class PluginAdmissionSignalAdapter:
         origin: TurnOrigin,
         runtime: RuntimeConfigSnapshot,
     ) -> tuple[SdkAdmissionSignal, ...]:
+        identity = projection_from_inbound(message)
         signal_context = AdmissionSignalContext(
-            conversation_key=message.legacy_conversation_key or message.scope().key,
+            conversation_key=plugin_conversation_key(message, message.scope()),
             origin=SdkTurnOrigin(origin.value),
             current=CurrentMessage(
                 message_id=message.message_id,
@@ -73,15 +76,9 @@ class PluginAdmissionSignalAdapter:
                 group_id=message.group_id,
                 text=message.text[:12_000],
                 received_at=message.received_at,
-                person_id=message.person_id,
-                space_id=message.space_id,
-                conversation_id=message.conversation_id,
-                presence_id=message.presence_id,
+                **identity.sdk_fields(),
             ),
-            person_id=message.person_id,
-            space_id=message.space_id,
-            conversation_id=message.conversation_id,
-            presence_id=message.presence_id,
+            **identity.sdk_fields(),
         )
         tasks = [
             self._collect_one(

@@ -69,12 +69,8 @@ class EmojiAssetModel(Base):
     source_event_id: Mapped[int | None] = mapped_column(
         ForeignKey("chat_events.id", ondelete="SET NULL"), nullable=True
     )
-    first_seen_user_id: Mapped[str | None] = mapped_column(
-        ForeignKey("people.user_id", ondelete="SET NULL"), nullable=True
-    )
-    first_seen_group_id: Mapped[str | None] = mapped_column(
-        ForeignKey("groups.group_id", ondelete="SET NULL"), nullable=True
-    )
+    first_seen_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    first_seen_group_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     source_sub_type: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     source_emoji_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     source_package_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")

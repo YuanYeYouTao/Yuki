@@ -13,6 +13,7 @@ from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.memory.attribution import MemoryExposure, MemoryExposureSource
 from qq_ai_bot.memory.enums import MemoryRecallPurpose
 from qq_ai_bot.memory.models import MemoryQueryIntent
+from qq_ai_bot.memory.partition import format_legacy_memory_partition
 from qq_ai_bot.memory.receipt import MemoryRecallTurn
 from qq_ai_bot.memory.runtime.capability_view import build_capability_view
 from qq_ai_bot.memory.runtime.contract import (
@@ -43,6 +44,8 @@ class _FakeMemoryContext:
         self.retrieve_calls = 0
         self.mark_injected_calls: list[tuple[int, ...]] = []
         self.record_recall_calls: list[tuple[int, ...]] = []
+        self.conversation_keys: list[str] = []
+        self.record_recall_kwargs: list[dict[str, object]] = []
 
     async def retrieve_for_turn(self, **_kwargs: object) -> object:
         self.retrieve_calls += 1
@@ -58,10 +61,27 @@ class _FakeMemoryContext:
     async def record_recall(self, **kwargs: object) -> MemoryRecallTurn:
         injected = kwargs.get("injected_fact_ids")
         assert isinstance(injected, tuple)
+        key = kwargs.get("conversation_key")
+        assert isinstance(key, str)
         self.record_recall_calls.append(injected)
+        self.conversation_keys.append(key)
+        self.record_recall_kwargs.append(dict(kwargs))
         return MemoryRecallTurn(
             turn_id=f"receipt-{len(self.record_recall_calls)}",
             injected_fact_ids=injected,
+        )
+
+
+class _FormatLookup:
+    async def resolve_from_scope(
+        self,
+        *,
+        group_id: str | None,
+        private_peer_user_id: str | None,
+    ) -> str:
+        return format_legacy_memory_partition(
+            group_id=group_id,
+            private_peer_user_id=private_peer_user_id,
         )
 
 
@@ -115,6 +135,7 @@ def _open(
         identity=ConversationScope.private("bot-9", "1001"),
         runtime=_runtime(),
         memory_context=context,  # type: ignore[arg-type]
+        partition_lookup=_FormatLookup(),
         origin=origin,
         user_question=inbound.text,
         authority=_authority(origin),
@@ -216,9 +237,20 @@ class TestPrefetchReceiptDelay:
         assert handle.receipt_turn_id == "receipt-1"
         assert context.mark_injected_calls == [(11,)]
         assert context.record_recall_calls == [(11,)]
+        assert context.conversation_keys == ["private:1001"]
+        assert set(context.record_recall_kwargs[0]) == {
+            "conversation_key",
+            "trigger_message_id",
+            "origin",
+            "intent",
+            "result",
+            "injected_fact_ids",
+            "runtime",
+        }
         second = await session.confirm_prompt_exposure()
         assert second is None
         assert context.record_recall_calls == [(11,)]
+        assert context.conversation_keys == ["private:1001"]
 
     @pytest.mark.asyncio
     async def test_exclusive_write_skips_prefetch(self) -> None:

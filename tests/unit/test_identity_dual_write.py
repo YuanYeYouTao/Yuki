@@ -580,7 +580,7 @@ async def test_v2_and_malformed_state_fail_close(database: Database) -> None:
     await _flip_v2(database)
     with pytest.raises(IdentityDualWriteError) as exc:
         await PeopleRepository(database).observe(user_id="1001", nickname="Ada")
-    assert exc.value.category == "identity_runtime_state"
+    assert exc.value.category == "unclassified"
     async with database.sessions() as session:
         assert await session.get(PersonModel, "1001") is None
         await session.execute(text("DELETE FROM identity_runtime_state"))

@@ -900,9 +900,15 @@ class MemoryRebuildRepository:
                     item.error_category = "failed_live_job_not_selected"
                     item.updated_at = now
                     continue
+                event = await session.get(ChatEventModel, item.event_id)
+                from qq_ai_bot.identity.owner_dual_write import optional_xor_owner_for_event
+
+                person_id, space_id = await optional_xor_owner_for_event(session, event)
                 statement = insert(MemoryJobModel).values(
                     event_id=item.event_id,
                     conversation_key=f"rebuild:{public_id}",
+                    canonical_person_id=person_id,
+                    canonical_space_id=space_id,
                     status="done",
                     attempts=0,
                     next_attempt_at=now,
@@ -926,6 +932,8 @@ class MemoryRebuildRepository:
                             "rebuild_run_id": run_id,
                             "outcome": outcome.value,
                             "completed_at": now,
+                            "canonical_person_id": person_id,
+                            "canonical_space_id": space_id,
                         },
                     )
                 )

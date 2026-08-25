@@ -29,7 +29,7 @@ from qq_ai_bot.memory.quality.report import write_reports
 from qq_ai_bot.memory.quality.runner import MemoryQualityRunner
 from qq_ai_bot.persistence.database import Database
 
-_ALEMBIC_HEAD = "0047"
+_ALEMBIC_HEAD = "0048"
 _EXPECTED_RELEASE_VERSION = "3.7.1"
 
 
@@ -217,6 +217,7 @@ class MemoryReleaseCheck:
             "0045_canonical_event_shadows.py",
             "0046_canonical_ownership_shadows.py",
             "0047_canonical_extension_shadows.py",
+            "0048_identity_cutover.py",
         }
         missing = sorted(required - versions)
         return self._item(

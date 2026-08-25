@@ -17,9 +17,9 @@ from qq_ai_bot.automation.authority import (
     PermissionLevel,
     effective_delegated_capabilities,
 )
-from qq_ai_bot.automation.executor import AutomationExecutor
+from qq_ai_bot.automation.executor import AutomationExecutionError, AutomationExecutor
 from qq_ai_bot.automation.gateway import ProactiveGatewayError
-from qq_ai_bot.automation.handlers import _AutomationAgentBackend
+from qq_ai_bot.automation.handlers import AutomationCapabilityHandlers, _AutomationAgentBackend
 from qq_ai_bot.automation.models import (
     AutomationContext,
     AutomationScript,
@@ -268,6 +268,73 @@ async def test_delegated_create_tool_exposes_task_spec_and_validation_issues() -
     assert result["ok"] is False
     assert result["error"] == "invalid_arguments"
     assert {issue["path"] for issue in result["issues"]} == {"task.goal", "task.trigger"}
+
+
+class _RecordingAdminActions:
+    def __init__(self) -> None:
+        self.calls: list[tuple[object, ...]] = []
+
+    async def execute(self, *args: object, **kwargs: object) -> dict[str, object]:
+        self.calls.append(args)
+        raise AssertionError("admin action must not execute")
+
+
+def _admin_action_context(*, superuser: bool) -> CapabilityExecutionContext:
+    now = datetime(2026, 8, 5, 8, tzinfo=UTC)
+    return CapabilityExecutionContext(
+        authority=AuthorityContext(
+            origin=TurnOrigin.SCHEDULED_AUTOMATION,
+            actor_user_id="9000",
+            actor_is_superuser=superuser,
+            bot_user_id="7777",
+            delegated_authority=None,
+            allowed_capabilities=frozenset({"admin.execute_action"}),
+        ),
+        automation_id=19,
+        automation_run_id=23,
+        step_id="execute",
+        creator_user_id="9000",
+        bot_user_id="7777",
+        current_group_id=None,
+        scheduled_for=now,
+        actual_started_at=now,
+        local_time=now,
+        timezone="Asia/Shanghai",
+        automation_context=AutomationContext(scene="none"),
+        conversation_key="automation:19",
+    )
+
+
+@pytest.mark.asyncio
+async def test_admin_action_is_unavailable_and_does_not_execute() -> None:
+    actions = _RecordingAdminActions()
+    handlers = object.__new__(AutomationCapabilityHandlers)
+    handlers._admin_actions = actions
+    with pytest.raises(AutomationExecutionError) as caught:
+        await handlers.admin_action(
+            {
+                "action": "relationship.set_affection",
+                "user_id": "1001",
+                "value": 88,
+            },
+            _admin_action_context(superuser=True),
+        )
+    assert caught.value.category == "operation_unavailable"
+    assert actions.calls == []
+
+
+@pytest.mark.asyncio
+async def test_admin_action_still_revokes_non_superuser_without_executing() -> None:
+    actions = _RecordingAdminActions()
+    handlers = object.__new__(AutomationCapabilityHandlers)
+    handlers._admin_actions = actions
+    with pytest.raises(AutomationExecutionError) as caught:
+        await handlers.admin_action(
+            {"action": "relationship.get", "user_id": "9000"},
+            _admin_action_context(superuser=False),
+        )
+    assert caught.value.category == "permission_revoked"
+    assert actions.calls == []
 
 
 @pytest.mark.asyncio
@@ -1082,9 +1149,19 @@ async def test_v2_create_person_automation_does_not_insert_people(database) -> N
     assert row.canonical_target_space_id is None
     assert await _person_count(database) == persons_before
     assert await _binding_count(database) == bindings_before
-    assert await _people_count(database) == 1
+    assert await _people_count(database) == 0
     assert not await _people_has(database, "1808058482")
-    assert await _people_has(database, "9000")
+    assert not await _people_has(database, "9000")
+    async with database.sessions() as session:
+        from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
+        from qq_ai_bot.persistence.models import GroupModel
+
+        scopes = int(
+            await session.scalar(select(func.count()).select_from(ConversationScopeModel)) or 0
+        )
+        groups = int(await session.scalar(select(func.count()).select_from(GroupModel)) or 0)
+    assert scopes == 0
+    assert groups == 0
 
 
 @pytest.mark.asyncio
@@ -1126,10 +1203,10 @@ async def test_v2_update_switches_to_same_person_alias(database) -> None:
         conversation_key="private:9000",
     )
     assert updated.canonical_target_person_id == target
-    assert await _people_count(database) == 1
+    assert await _people_count(database) == 0
     assert not await _people_has(database, "1808058482")
     assert not await _people_has(database, "1808058483")
-    assert await _people_has(database, "9000")
+    assert not await _people_has(database, "9000")
 
 
 @pytest.mark.asyncio
@@ -1260,8 +1337,14 @@ async def test_v2_disabled_binding_and_space_fallback_are_canonical_only(databas
     assert row.canonical_target_space_id == space
     assert row.canonical_target_person_id is None
     async with database.sessions() as session:
+        from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
+
         groups = int(await session.scalar(select(func.count()).select_from(GroupModel)) or 0)
+        scopes = int(
+            await session.scalar(select(func.count()).select_from(ConversationScopeModel)) or 0
+        )
     assert groups == 0
-    assert await _people_count(database) == 1
+    assert scopes == 0
+    assert await _people_count(database) == 0
     assert not await _people_has(database, "1808058482")
-    assert await _people_has(database, "9000")
+    assert not await _people_has(database, "9000")

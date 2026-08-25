@@ -13,7 +13,6 @@ from pydantic import ValidationError
 
 from qq_ai_bot.admin.action_service import AdminActionService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.admin.models import AdminActor
 from qq_ai_bot.automation.executor import AutomationExecutionError
 from qq_ai_bot.automation.gateway import ProactiveGateway
 from qq_ai_bot.automation.registry import (
@@ -250,14 +249,25 @@ class AutomationCapabilityHandlers:
             user_id=context.creator_user_id,
             group_id=context.current_group_id,
         )
+        request = _chat_request(messages, snapshot, tools=())
+        execute = (
+            partial(
+                self._models.execute,
+                ModelTask.AUTOMATION_TEXT_GENERATION,
+                request,
+                canonical_conversation_id=context.canonical_conversation_id,
+            )
+            if context.canonical_conversation_id is not None
+            else partial(
+                self._models.execute,
+                ModelTask.AUTOMATION_TEXT_GENERATION,
+                request,
+            )
+        )
         try:
             response = await self._concurrency.run_llm(
                 context.conversation_key,
-                partial(
-                    self._models.execute,
-                    ModelTask.AUTOMATION_TEXT_GENERATION,
-                    _chat_request(messages, snapshot, tools=()),
-                ),
+                execute,
             )
         except LLMError as exc:
             raise _automation_llm_error(exc, llm_calls=1) from exc
@@ -299,6 +309,7 @@ class AutomationCapabilityHandlers:
             max_model_requests=min(
                 int(arguments["max_model_requests"]), snapshot.agent.max_model_requests
             ),
+            canonical_conversation_id=context.canonical_conversation_id,
         )
         backend = _AutomationAgentBackend(self._registry, context)
         messages = await self._generation_messages(arguments, context)
@@ -503,29 +514,7 @@ class AutomationCapabilityHandlers:
     ) -> CapabilityResult:
         if not context.authority.actor_is_superuser:
             raise AutomationExecutionError("permission_revoked")
-        action = str(arguments.pop("action"))
-        action_arguments = {key: value for key, value in arguments.items() if value is not None}
-        actor = AdminActor(
-            user_id=context.creator_user_id,
-            is_superuser=(
-                context.authority.actor_is_superuser
-                and context.creator_user_id in self._settings.superusers
-            ),
-            trigger_message_id=f"automation:{context.automation_id}:{context.automation_run_id}",
-            conversation_key=context.conversation_key,
-            current_group_id=context.current_group_id,
-            mentioned_user_ids=(),
-            current_message_text=" ".join(
-                str(value)
-                for key, value in action_arguments.items()
-                if key in {"user_id", "group_id"}
-            ),
-        )
-        try:
-            result = await self._admin_actions.execute(action, action_arguments, actor)
-        except (KeyError, PermissionError, ValueError) as exc:
-            raise AutomationExecutionError("admin_action_rejected") from exc
-        return CapabilityResult(data=result)
+        raise AutomationExecutionError("operation_unavailable")
 
     async def config_get(
         self, arguments: dict[str, Any], context: CapabilityExecutionContext
@@ -651,14 +640,30 @@ class AutomationCapabilityHandlers:
                 raise AutomationExecutionError("group_scope_denied")
             if user_id is None and group_id is None:
                 user_id = context.creator_user_id
-        rows = await self._ledger.search(
-            keyword=str(arguments["keyword"]),
-            limit=int(arguments["limit"]),
-            user_id=str(user_id) if user_id else None,
-            group_id=str(group_id) if group_id else None,
-            after=_parse_time(arguments.get("after")),
-            before=_parse_time(arguments.get("before")),
-        )
+        if context.canonical_conversation_id:
+            keyword = str(arguments["keyword"]).casefold()
+            after = _parse_time(arguments.get("after"))
+            before = _parse_time(arguments.get("before"))
+            recent = await self._ledger.list_canonical_recent(
+                context.canonical_conversation_id,
+                limit=max(int(arguments["limit"]), 1),
+            )
+            rows = tuple(
+                row
+                for row in recent
+                if keyword in row.content.casefold()
+                and (after is None or row.occurred_at >= after)
+                and (before is None or row.occurred_at <= before)
+            )
+        else:
+            rows = await self._ledger.search(
+                keyword=str(arguments["keyword"]),
+                limit=int(arguments["limit"]),
+                user_id=str(user_id) if user_id else None,
+                group_id=str(group_id) if group_id else None,
+                after=_parse_time(arguments.get("after")),
+                before=_parse_time(arguments.get("before")),
+            )
         return CapabilityResult(
             data={
                 "events": [
@@ -711,11 +716,21 @@ class AutomationCapabilityHandlers:
                     self._settings.bot_display_name,
                 )
             if declared.history_limit:
-                conversation_scope = (
-                    ConversationScope.group(context.bot_user_id, context.current_group_id)
-                    if scope is ScopeType.GROUP and context.current_group_id is not None
-                    else ConversationScope.private(context.bot_user_id, context.creator_user_id)
-                )
+                if context.canonical_conversation_id:
+                    history_rows = await self._ledger.list_canonical_recent(
+                        context.canonical_conversation_id,
+                        limit=declared.history_limit,
+                    )
+                else:
+                    conversation_scope = (
+                        ConversationScope.group(context.bot_user_id, context.current_group_id)
+                        if scope is ScopeType.GROUP and context.current_group_id is not None
+                        else ConversationScope.private(context.bot_user_id, context.creator_user_id)
+                    )
+                    history_rows = await self._ledger.list_scope_recent(
+                        conversation_scope,
+                        limit=declared.history_limit,
+                    )
                 data["recent_history"] = [
                     {
                         "role": "assistant" if row.direction == "outbound" else "user",
@@ -724,10 +739,7 @@ class AutomationCapabilityHandlers:
                             context.local_time.tzinfo
                         ).isoformat(),
                     }
-                    for row in await self._ledger.list_scope_recent(
-                        conversation_scope,
-                        limit=declared.history_limit,
-                    )
+                    for row in history_rows
                 ]
         return (
             ChatMessage(role="system", content=self._settings.system_prompt),

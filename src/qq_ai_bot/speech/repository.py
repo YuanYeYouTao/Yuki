@@ -8,7 +8,10 @@ from datetime import UTC, datetime
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from qq_ai_bot.identity.shadows import conversation_id_for_event
+from qq_ai_bot.identity.c24_conversation import (
+    resolve_conversation_id_for_event,
+    stamp_conversation_correlation,
+)
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.speech.db_models import (
     SpeechGenerationModel,
@@ -332,6 +335,7 @@ class SpeechGenerationRepository:
         character_count: int,
         cache_key: str,
         expires_at: datetime | None,
+        canonical_conversation_id: str | None = None,
     ) -> SpeechGeneration:
         row = SpeechGenerationModel(
             request_id=request_id,
@@ -352,9 +356,9 @@ class SpeechGenerationRepository:
         async with self._database.sessions() as session, session.begin():
             session.add(row)
             await session.flush()
-            proven = await conversation_id_for_event(session, trigger_event_id)
-            if proven is not None and row.canonical_conversation_id is None:
-                row.canonical_conversation_id = proven
+            await stamp_conversation_correlation(session, row, canonical_conversation_id)
+            proven = await resolve_conversation_id_for_event(session, trigger_event_id)
+            await stamp_conversation_correlation(session, row, proven)
             return self._generation(row)
 
     async def get(self, generation_id: int) -> SpeechGeneration | None:

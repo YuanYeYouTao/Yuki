@@ -22,7 +22,14 @@ from qq_ai_bot.identity.backfill_types import (
     BackfillSettingsInput,
     BackfillStatus,
     ConflictReport,
+    MemoryOwnerCounts,
     failed_report,
+)
+from qq_ai_bot.identity.c22_automation import plan_c22_automation_targets
+from qq_ai_bot.identity.c23_plugin import plan_c23_plugin_owners
+from qq_ai_bot.identity.canonical_memory_owners import (
+    merge_source_fingerprint,
+    plan_c21_memory_owners,
 )
 from qq_ai_bot.identity.classifier import build_plan
 from qq_ai_bot.identity.errors import IdentityBackfillError
@@ -202,7 +209,7 @@ class IdentityBackfillService:
             shadows,
             fingerprint,
         ) = self._repository.load_snapshot(connection, self._settings)
-        return build_plan(
+        plan = build_plan(
             accounts=accounts,
             spaces=spaces,
             persons=persons,
@@ -212,6 +219,78 @@ class IdentityBackfillService:
             presences=presences,
             shadows=shadows,
             source_fingerprint=fingerprint,
+        )
+        planned_person_bindings = {
+            item.external_id: item.person_id
+            for item in plan.accounts
+            if item.classification == "person" and item.person_id
+        }
+        planned_space_bindings = {item.external_id: item.space_id for item in plan.spaces}
+        non_person_accounts = frozenset(
+            item.external_id
+            for item in plan.accounts
+            if item.classification in {"yuki_presence", "external_bot"}
+        )
+        memory_owners, memory_conflicts, memory_counts, memory_material = plan_c21_memory_owners(
+            connection,
+            planned_shadows=plan.shadows,
+            planned_person_bindings=planned_person_bindings,
+            planned_space_bindings=planned_space_bindings,
+            non_person_accounts=non_person_accounts,
+        )
+        (
+            automation_targets,
+            automation_conflicts,
+            automation_filled,
+            automation_material,
+        ) = plan_c22_automation_targets(
+            connection,
+            planned_person_bindings=planned_person_bindings,
+            planned_space_bindings=planned_space_bindings,
+            non_person_accounts=non_person_accounts,
+        )
+        planned_presence_bindings = {
+            item.external_id: item.presence_id
+            for item in plan.accounts
+            if item.classification == "yuki_presence" and item.presence_id
+        }
+        plugin_targets, plugin_conflicts, plugin_filled, plugin_material = plan_c23_plugin_owners(
+            connection,
+            planned_person_bindings=planned_person_bindings,
+            planned_space_bindings=planned_space_bindings,
+            planned_presence_bindings=planned_presence_bindings,
+            non_person_accounts=non_person_accounts,
+        )
+        fingerprint = merge_source_fingerprint(
+            merge_source_fingerprint(
+                merge_source_fingerprint(plan.source_fingerprint, memory_material),
+                automation_material,
+            ),
+            plugin_material,
+        )
+        return BackfillPlan(
+            accounts=plan.accounts,
+            spaces=plan.spaces,
+            conflicts=tuple(
+                (*plan.conflicts, *memory_conflicts, *automation_conflicts, *plugin_conflicts)
+            ),
+            shadows=tuple((*plan.shadows, *plugin_targets)),
+            skipped_external_bots=plan.skipped_external_bots,
+            source_fingerprint=fingerprint,
+            processed_subjects=plan.processed_subjects,
+            memory_owners=memory_owners,
+            memory_owner_counts=MemoryOwnerCounts(
+                jobs=memory_counts.jobs,
+                receipts=memory_counts.receipts,
+                reflection_states=memory_counts.reflection_states,
+                reflection_runs=memory_counts.reflection_runs,
+                dream_clusters=memory_counts.dream_clusters,
+                facts_verified=memory_counts.facts_verified,
+                automation_targets=automation_filled,
+                plugin_targets=plugin_filled,
+            ),
+            automation_targets=automation_targets,
+            plugin_targets=plugin_targets,
         )
 
     def _report(
@@ -248,6 +327,14 @@ class IdentityBackfillService:
                 yuki_presence_class=presences,
                 external_bot_class=bots,
                 space_class=len(plan.spaces),
+                memory_job_owners=plan.memory_owner_counts.jobs,
+                memory_receipt_owners=plan.memory_owner_counts.receipts,
+                memory_reflection_state_owners=plan.memory_owner_counts.reflection_states,
+                memory_reflection_run_owners=plan.memory_owner_counts.reflection_runs,
+                memory_dream_cluster_owners=plan.memory_owner_counts.dream_clusters,
+                memory_facts_verified=plan.memory_owner_counts.facts_verified,
+                automation_targets=plan.memory_owner_counts.automation_targets,
+                plugin_targets=plan.memory_owner_counts.plugin_targets,
             ),
             conflicts=tuple(
                 ConflictReport(

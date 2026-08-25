@@ -21,13 +21,14 @@ from typing import Any, Protocol, cast
 from uuid import UUID
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.admin.control_resolution import ControlAccess, audit_ref_from_actor
-from qq_ai_bot.admin.models import AdminActor, ControlAuditRef, RuntimeConfigSnapshot
+from qq_ai_bot.admin.control_resolution import ControlAccess
+from qq_ai_bot.admin.models import ControlAuditRef, RuntimeConfigSnapshot
 from qq_ai_bot.automation.authority import DelegatedAuthority
 from qq_ai_bot.automation.models import AutomationRecord, TurnOrigin
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.control_plane.principal import ControlPrincipal
 from qq_ai_bot.conversation.reply import ReplyEffect
+from qq_ai_bot.conversation.scope import runtime_conversation_key
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage
 from qq_ai_bot.emoji.collector import EmojiCollector
@@ -61,15 +62,20 @@ from qq_ai_bot.persistence.repositories import (
     RelationshipRepository,
 )
 from qq_ai_bot.plugin_host.audit import PluginAuditService
+from qq_ai_bot.plugin_host.canonical_projection import (
+    projection_from_event,
+    projection_from_inbound,
+)
 from qq_ai_bot.plugin_host.config import BoundConfigFacade
 from qq_ai_bot.plugin_host.event_bus import PluginEventBus
 from qq_ai_bot.plugin_host.http_client import BoundHttpFacade
 from qq_ai_bot.plugin_host.media_artifacts import PluginMediaArtifactStore
 from qq_ai_bot.plugin_host.notification_repository import PluginNotificationRepository
+from qq_ai_bot.plugin_host.ownership import PluginOwnershipError
 from qq_ai_bot.plugin_host.secrets import BoundSecretsFacade
 from qq_ai_bot.plugin_host.session_facade import BoundAgentSessionFacade
 from qq_ai_bot.plugin_host.storage import BoundStorageFacade
-from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
+from qq_ai_bot.services.admin.memory_admin import MemoryAdminService, MemoryPreferenceTrigger
 from qq_ai_bot.services.admin.relationship_admin import RelationshipAdminService
 from qq_ai_bot.services.agent_runner import (
     AgentRunner,
@@ -240,6 +246,14 @@ class PluginInvocation:
             authority = self.delegated_authority
             if authority is None or authority.creator_user_id != self.actor_user_id:
                 raise ValueError("scheduled plugin invocation requires matching delegation")
+        if self.inbound is not None:
+            projection = projection_from_inbound(self.inbound)
+            object.__setattr__(self, "person_id", projection.person_id)
+            object.__setattr__(self, "space_id", projection.space_id)
+            object.__setattr__(self, "conversation_id", projection.conversation_id)
+            object.__setattr__(self, "presence_id", projection.presence_id)
+            if projection.conversation_key:
+                object.__setattr__(self, "legacy_conversation_key", projection.conversation_key)
 
     @property
     def current_group_id(self) -> str | None:
@@ -258,10 +272,13 @@ class PluginInvocation:
     def conversation_key(self) -> str:
         if self.legacy_conversation_key:
             return self.legacy_conversation_key
-        if self.inbound is not None and self.inbound.legacy_conversation_key:
-            return self.inbound.legacy_conversation_key
         if self.inbound is not None:
-            return self.inbound.scope().key
+            return runtime_conversation_key(
+                identity=self.inbound.scope(),
+                inbound=self.inbound,
+            )
+        if self.conversation_id:
+            raise ValueError("v2 conversation is missing primary runtime key")
         if self.current_group_id:
             return ConversationScope.group(self.bot_user_id, self.current_group_id).key
         return ConversationScope.private(self.bot_user_id, self.actor_user_id).key
@@ -575,6 +592,11 @@ class HostPluginContext:
             actor_user_id=actor_user_id,
             bot_user_id=inbound.bot_user_id,
             inbound=inbound,
+            legacy_conversation_key=inbound.legacy_conversation_key,
+            person_id=inbound.person_id,
+            space_id=inbound.space_id,
+            conversation_id=inbound.conversation_id,
+            presence_id=inbound.presence_id,
             gateway=cast(OneBotFacadeGateway | None, getattr(runtime, "gateway", None)),
             runtime_config=cast(
                 RuntimeConfigSnapshot | None,
@@ -684,7 +706,7 @@ class HostPluginContext:
     ) -> tuple[ControlPrincipal, ControlAuditRef]:
         return (
             await self._control_access().principal_for_qq(invocation.actor_user_id),
-            audit_ref_from_actor(_admin_actor(invocation, is_superuser=False)),
+            _control_audit_ref(invocation),
         )
 
     def _require_user_scope(
@@ -1230,7 +1252,7 @@ class _MemoryFacade:
         )
         service = _require_service(self._host._services.memory_admin, "memory mutation")
         row = await service.add_memory(
-            _admin_actor(
+            _memory_mutation_subject(
                 invocation,
                 is_superuser=self._host._is_real_superuser(invocation),
             ),
@@ -1263,21 +1285,26 @@ class _MemoryFacade:
             raise ValueError("confidence must be between zero and one")
         memories = _require_service(self._host._services.memories, "memory")
         current = await memories.get_fact(numeric_id)
-        if current is None or current.subject_user_id != invocation.actor_user_id:
-            changed = False
-        else:
+        visible = None
+        if current is not None and current.subject_user_id == invocation.actor_user_id:
+            expected = _bounded_text(content, maximum=4_000, field_name="content")
             service = _require_service(self._host._services.memory_admin, "memory mutation")
-            changed = (
-                await service.correct_fact(
-                    _admin_actor(
-                        invocation,
-                        is_superuser=self._host._is_real_superuser(invocation),
-                    ),
-                    numeric_id,
-                    _bounded_text(content, maximum=4_000, field_name="content"),
-                )
-                is not None
+            corrected = await service.correct_fact(
+                _memory_mutation_subject(
+                    invocation,
+                    is_superuser=self._host._is_real_superuser(invocation),
+                ),
+                numeric_id,
+                expected,
             )
+            visible = await _visible_person_projection_fact(
+                memories,
+                user_id=invocation.actor_user_id,
+                fact_id=corrected.id if corrected is not None else None,
+                content=expected,
+            )
+        changed = visible is not None
+        result_id = f"person:{visible.id}" if visible is not None else memory_id
         await self._host._audit(
             invocation,
             operation="memory.update",
@@ -1287,7 +1314,7 @@ class _MemoryFacade:
         )
         return PluginResult(
             ok=changed,
-            data={"memory_id": memory_id},
+            data={"memory_id": result_id},
             error_code=None if changed else "memory.not_found",
             detail="" if changed else "memory is not owned by the current user",
         )
@@ -1306,7 +1333,7 @@ class _MemoryFacade:
         else:
             service = _require_service(self._host._services.memory_admin, "memory mutation")
             changed = await service.invalidate_fact(
-                _admin_actor(
+                _memory_mutation_subject(
                     invocation,
                     is_superuser=self._host._is_real_superuser(invocation),
                 ),
@@ -1536,6 +1563,7 @@ class _AgentFacade:
             allowed_capabilities=effective,
             max_tool_calls=max(0, tool_limit),
             max_model_requests=max(1, request_limit),
+            canonical_conversation_id=base_runtime.canonical_conversation_id,
         )
         result = await runner.run(
             (
@@ -1702,6 +1730,9 @@ class _MCPFacade:
                     "web_was_used": invocation.web_was_used,
                 },
             ),
+            canonical_conversation_id=invocation.conversation_id,
+            bot_user_id=invocation.bot_user_id,
+            ingress_presence_id=invocation.presence_id,
         )
         return PluginResult(
             ok=result.ok,
@@ -2178,6 +2209,7 @@ class _SpeechFacade:
                 conversation_key=invocation.conversation_key,
                 trigger_event_id=invocation.source_event_id,
                 turn_token=None,
+                canonical_conversation_id=invocation.conversation_id,
             ),
             runtime=runtime.speech,
         )
@@ -2781,6 +2813,7 @@ async def _agent_dependencies(
         allowed_capabilities=frozenset(),
         max_tool_calls=runtime.agent.max_tool_calls,
         max_model_requests=runtime.agent.max_model_requests,
+        canonical_conversation_id=invocation.conversation_id,
     )
 
 
@@ -3009,6 +3042,8 @@ def _result_error_category(result: PluginResult) -> str | None:
 
 
 def _facade_error_category(exc: Exception) -> str:
+    if isinstance(exc, PluginOwnershipError):
+        return exc.category[:64]
     if isinstance(exc, PluginPermissionError):
         return "permission_denied"
     if isinstance(exc, FeatureUnavailableError):
@@ -3018,14 +3053,21 @@ def _facade_error_category(exc: Exception) -> str:
     return type(exc).__name__[:64]
 
 
-def _current_message(inbound: InboundMessage | None) -> CurrentMessage | None:
-    if inbound is None:
-        return None
-    mentioned_user_ids = tuple(
+def _legacy_facade_mentions_excluding_current_handle(inbound: InboundMessage) -> tuple[str, ...]:
+    """v1 plugin DTO strip of the current transport handle. Not author_kind."""
+
+    return tuple(
         dict.fromkeys(
             user_id for user_id in inbound.mentioned_user_ids if user_id != inbound.bot_user_id
         )
     )[:20]
+
+
+def _current_message(inbound: InboundMessage | None) -> CurrentMessage | None:
+    if inbound is None:
+        return None
+    mentioned_user_ids = _legacy_facade_mentions_excluding_current_handle(inbound)
+    projection = projection_from_inbound(inbound)
     return CurrentMessage(
         message_id=inbound.message_id,
         sender_user_id=inbound.sender.user_id,
@@ -3034,10 +3076,12 @@ def _current_message(inbound: InboundMessage | None) -> CurrentMessage | None:
         text=inbound.text[:12_000],
         mentioned_user_ids=mentioned_user_ids,
         received_at=inbound.received_at,
+        **projection.sdk_fields(),
     )
 
 
 def _record_message(record: Any) -> CurrentMessage:
+    projection = projection_from_event(record)
     return CurrentMessage(
         message_id=record.platform_message_id,
         sender_user_id=record.sender_user_id,
@@ -3045,28 +3089,38 @@ def _record_message(record: Any) -> CurrentMessage:
         group_id=record.group_id,
         text=record.content[:12_000],
         received_at=record.occurred_at,
+        **projection.sdk_fields(),
     )
 
 
-def _admin_actor(
-    invocation: PluginInvocation,
-    *,
-    is_superuser: bool,
-) -> AdminActor:
+def _control_audit_ref(invocation: PluginInvocation) -> ControlAuditRef:
     inbound = invocation.inbound
-    return AdminActor(
+    return ControlAuditRef(
         user_id=invocation.actor_user_id,
-        # This value is derived by HostPluginContext from its immutable
-        # SUPERUSERS set; plugin code never supplies it.
-        is_superuser=is_superuser,
         trigger_message_id=inbound.message_id if inbound else "plugin-task",
         conversation_key=invocation.conversation_key,
-        current_group_id=invocation.current_group_id,
-        mentioned_user_ids=inbound.mentioned_user_ids if inbound else (),
-        current_message_text=inbound.text if inbound else "",
         bot_user_id=invocation.bot_user_id,
         decision_actor_type="plugin",
         decision_actor_id=invocation.plugin_id,
+    )
+
+
+def _memory_mutation_subject(
+    invocation: PluginInvocation,
+    *,
+    is_superuser: bool,
+) -> MemoryPreferenceTrigger:
+    inbound = invocation.inbound
+    return MemoryPreferenceTrigger(
+        user_id=invocation.actor_user_id,
+        bot_user_id=invocation.bot_user_id,
+        trigger_message_id=inbound.message_id if inbound else "plugin-task",
+        conversation_key=invocation.conversation_key,
+        decision_actor_type="plugin",
+        decision_actor_id=invocation.plugin_id,
+        # HostPluginContext derives this from its immutable SUPERUSERS set;
+        # plugin code never supplies it.
+        actor_is_superuser=is_superuser,
     )
 
 
@@ -3078,6 +3132,26 @@ def _group_record(row: Any) -> dict[str, JsonValue]:
         "require_mention": row.require_mention,
         "autonomous_enabled": row.autonomous_enabled,
     }
+
+
+async def _visible_person_projection_fact(
+    memories: MemoryFactService,
+    *,
+    user_id: str,
+    fact_id: int | None,
+    content: str,
+) -> Any | None:
+    if fact_id is None:
+        return None
+    expected = normalize_memory_text(content, maximum=4000)
+    return next(
+        (
+            row
+            for row in await memories.list_person(user_id)
+            if row.id == fact_id and row.subject_user_id == user_id and row.content == expected
+        ),
+        None,
+    )
 
 
 def _memory_record(row: Any, scope: str) -> dict[str, JsonValue]:

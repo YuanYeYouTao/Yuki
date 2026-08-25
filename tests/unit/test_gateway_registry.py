@@ -79,6 +79,56 @@ def test_resolve_by_handle_never_picks_another_presence() -> None:
         registry.resolve_by_handle(_Bot("8002"))
 
 
+def test_pinned_multi_keeps_incumbent_and_snapshot_matches() -> None:
+    registry = GatewayConnectionRegistry(gateway_instance_id="gw-pin")
+    first = _Bot("8000")
+    extra = _Bot("8000")
+    registry.connect(first, presence_id="p-a")
+    pinned = registry.resolve_active("p-a")
+    assert pinned.bot is first
+    registry.connect(extra, presence_id="p-a")
+    still = registry.resolve_active("p-a")
+    assert still.bot is first
+    assert still.snapshot.connection_id == pinned.snapshot.connection_id
+    snap = registry.snapshot_presence(presence_id="p-a", platform="qq", external_account_id="8000")
+    assert snap.health is ConnectionHealth.CONNECTED
+    assert snap.live_count == 2
+    assert snap.connection_id == pinned.snapshot.connection_id
+
+
+def test_unpinned_multi_is_ambiguous_for_resolve_and_snapshot() -> None:
+    registry = GatewayConnectionRegistry(gateway_instance_id="gw-unpin")
+    left = _Bot("8000")
+    right = _Bot("8000")
+    registry.connect(left)
+    registry.connect(right)
+    registry.bind_presence(platform="qq", external_account_id="8000", presence_id="p-a")
+    with pytest.raises(RegistryClosed) as ambiguous:
+        registry.resolve_active("p-a")
+    assert ambiguous.value.category == "ambiguous"
+    snap = registry.snapshot_presence(presence_id="p-a", platform="qq", external_account_id="8000")
+    assert snap.health is ConnectionHealth.AMBIGUOUS
+    assert snap.live_count == 2
+    assert snap.connection_id is None
+
+
+def test_pin_disconnect_redetermines_remaining_unique() -> None:
+    registry = GatewayConnectionRegistry(gateway_instance_id="gw-repin")
+    first = _Bot("8000")
+    extra = _Bot("8000")
+    registry.connect(first, presence_id="p-a")
+    registry.resolve_active("p-a")
+    registry.connect(extra, presence_id="p-a")
+    assert registry.resolve_active("p-a").bot is first
+    registry.disconnect(first)
+    rebound = registry.resolve_active("p-a")
+    assert rebound.bot is extra
+    snap = registry.snapshot_presence(presence_id="p-a", platform="qq", external_account_id="8000")
+    assert snap.health is ConnectionHealth.CONNECTED
+    assert snap.live_count == 1
+    assert snap.connection_id == rebound.snapshot.connection_id
+
+
 def test_snapshot_health_and_process_registry() -> None:
     registry = GatewayConnectionRegistry(gateway_instance_id="gw-1")
     configure_process_registry(registry)

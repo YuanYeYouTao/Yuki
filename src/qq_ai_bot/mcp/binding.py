@@ -55,6 +55,10 @@ class MCPToolBinding:
         self,
         arguments: dict[str, object],
         context: ToolInvocationContext,
+        *,
+        canonical_conversation_id: str | None = None,
+        bot_user_id: str | None = None,
+        ingress_presence_id: str | None = None,
     ) -> ToolExecutionResult:
         try:
             metadata = await self.manager.resolve_tool(self.server_id, self.remote_tool_name)
@@ -90,6 +94,9 @@ class MCPToolBinding:
             arguments,
             conversation_key=context.conversation_key,
             record_invocation=self.record_invocation,
+            canonical_conversation_id=canonical_conversation_id,
+            bot_user_id=bot_user_id,
+            ingress_presence_id=ingress_presence_id,
         )
         mutation_committed = resolve_mutation_commit(result, descriptor)
         return replace(

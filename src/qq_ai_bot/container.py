@@ -393,6 +393,7 @@ class ApplicationContainer:
             turns=self.turn_coordinator,
             conversation_scopes=self.conversation_scopes,
             turn_observations=self.turn_observations,
+            router=self.presence_router,
         )
         self.plugin_module = PluginModule(
             settings=settings.plugins,
@@ -565,6 +566,7 @@ class ApplicationContainer:
                 actor_user_id=invocation.actor_user_id,
                 current_group_id=invocation.current_group_id,
                 approved_permissions=permissions,
+                conversation_id=invocation.conversation_id,
             )
 
         agent_capabilities: set[str] = set()

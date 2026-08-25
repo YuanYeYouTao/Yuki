@@ -34,7 +34,20 @@ _C4_CHAT_EVENT_SHADOW_INDEXES: tuple[str, ...] = (
     "ix_chat_events_canonical_event_id",
     "ix_chat_events_canonical_conversation_id",
     "uq_chat_events_canonical_event_keeper",
+    "uq_chat_events_bot_platform_message",
 )
+_C27_0005_RESTORED_CARRIER_FKS: dict[str, tuple[tuple[str, str, str, str], ...]] = {
+    "person_aliases": (("user_id", "people", "user_id", "CASCADE"),),
+    "memberships": (
+        ("user_id", "people", "user_id", "CASCADE"),
+        ("group_id", "groups", "group_id", "CASCADE"),
+    ),
+    "chat_events": (
+        ("sender_user_id", "people", "user_id", "CASCADE"),
+        ("private_peer_user_id", "people", "user_id", "CASCADE"),
+        ("group_id", "groups", "group_id", "CASCADE"),
+    ),
+}
 _C5_OWNERSHIP_SHADOW_COLUMNS: dict[str, tuple[str, ...]] = {
     "people": ("canonical_person_id",),
     "groups": ("canonical_space_id",),
@@ -109,14 +122,32 @@ def _copy_table_without_future_shadows(table_name: str, side: MetaData) -> Table
         if isinstance(constraint, CheckConstraint):
             table.append_constraint(CheckConstraint(constraint.sqltext, name=constraint.name))
     for index in source.indexes:
+        if index.name == "uq_chat_events_bot_platform_message":
+            continue
         names = [column.name for column in index.columns]
         if set(names) & excluded:
             continue
         kwargs: dict[str, object] = {"unique": index.unique}
         sqlite_opts = index.dialect_options.get("sqlite", {})
         if "where" in sqlite_opts:
-            kwargs["sqlite_where"] = sqlite_opts["where"]
+            continue
         Index(index.name, *[table.c[name] for name in names], **kwargs)
+    if table_name == "chat_events":
+        table.append_constraint(
+            UniqueConstraint(
+                "bot_user_id",
+                "platform_message_id",
+                name="uq_chat_events_bot_platform_message",
+            )
+        )
+    for local, parent, remote, ondelete in _C27_0005_RESTORED_CARRIER_FKS.get(table_name, ()):
+        table.append_constraint(
+            ForeignKeyConstraint(
+                [local],
+                [f"{parent}.{remote}"],
+                ondelete=ondelete,
+            )
+        )
     return table
 
 
@@ -256,6 +287,12 @@ def upgrade() -> None:
             "space_active_routes",
             "control_command_receipts",
             "canonical_event_receipts",
+            "identity_cutover_manifests",
+            "identity_cutover_runs",
+            "canonical_conversation_rollups",
+            "canonical_conversation_rollup_jobs",
+            "conversation_rollup_emergency_overlays",
+            "canonical_conversation_rollup_emergency_overlays",
         }
     ]
     create_tables = [table for table in v1_tables if table.name not in _STRIPPED_AT_0005]
