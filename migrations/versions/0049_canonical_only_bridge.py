@@ -98,8 +98,15 @@ _LEASE_STATUS: Final[dict[str, tuple[str, ...]]] = {
     "plugin_background_turn_jobs": ("pending", "processing"),
 }
 
-_HISTORICAL_SCHEMA_DIGEST: Final[str] = (
-    "235100f1310f0362bdcfecd13124da7f7c729bfbfd760c6b9233e0128a9f8168"
+_HISTORICAL_SCHEMA_DIGESTS: Final[frozenset[str]] = frozenset(
+    {
+        # Frozen, redacted 0048 migration fixture.
+        "235100f1310f0362bdcfecd13124da7f7c729bfbfd760c6b9233e0128a9f8168",
+        # Read-only digest of the deployed 0048 schema. Its only accepted DDL
+        # differences are frozen in the migration tests; arbitrary schemas are
+        # never accepted by column-set similarity.
+        "11e87cc3e57199863be5ee6bfe8fb72ab90a070bc1253cf5475825fb6cc978b2",
+    }
 )
 _FINAL_SCHEMA_DIGEST: Final[str] = (
     "4ef4a733b476e7dfa8dab29839733d50e46da8b6b4a956a27ae6babc37723cba"
@@ -519,10 +526,15 @@ def _require_legacy_crosswalks(connection: Connection) -> None:
     """Prove every retiring raw QQ owner resolves to the stored canonical owner."""
 
     checks = (
-        "SELECT COUNT(*) FROM person_aliases x WHERE NOT EXISTS ("
+        "SELECT COUNT(*) FROM person_aliases x WHERE (NOT EXISTS ("
         "SELECT 1 FROM identity_bindings b WHERE b.platform = 'qq' "
         "AND b.external_account_id = x.user_id "
-        "AND b.person_id = x.canonical_person_id) OR "
+        "AND b.person_id = x.canonical_person_id) AND NOT ("
+        "x.group_scope = '' AND x.canonical_space_id IS NULL "
+        "AND x.user_id = x.canonical_person_id "
+        "AND EXISTS (SELECT 1 FROM persons p WHERE p.id = x.canonical_person_id) "
+        "AND EXISTS (SELECT 1 FROM identity_bindings b WHERE b.platform = 'qq' "
+        "AND b.person_id = x.canonical_person_id AND b.status = 'active'))) OR "
         "(x.group_scope <> '' AND NOT EXISTS (SELECT 1 FROM space_bindings b "
         "WHERE b.platform = 'qq' AND b.external_space_id = x.group_scope "
         "AND b.space_id = x.canonical_space_id))",
@@ -999,7 +1011,7 @@ def _validate_database(connection: Connection, tables: frozenset[str]) -> None:
 
 
 def _upgrade_historical_0048(connection: Connection, tables: frozenset[str]) -> None:
-    if _schema_digest(connection) != _HISTORICAL_SCHEMA_DIGEST:
+    if _schema_digest(connection) not in _HISTORICAL_SCHEMA_DIGESTS:
         raise CanonicalBridgeError("historical_schema_manifest_mismatch")
     if connection.exec_driver_sql("PRAGMA foreign_key_check").first() is not None:
         raise CanonicalBridgeError("foreign_key_check")

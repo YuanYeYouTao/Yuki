@@ -7,6 +7,7 @@ import gzip
 import hashlib
 import importlib.util
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -386,6 +387,60 @@ i9$btbk%^QhVrvMwBeFk$5;~7x^)!TQDBGyk7AJ>d3NO4o;(?Qd*6G1``4dde}@>}hj+c^*Rt3HNEp8!
 00
 """
 
+# Redacted sqlite_master SQL from the deployed 0048 database. The live database
+# was opened read-only; no rows, account identifiers, or message content are
+# embedded here. Keeping the exact DDL makes the second accepted digest as
+# strict as the frozen fixture digest.
+_PRODUCTION_0048_CHAT_EVENTS_DDL = """CREATE TABLE "chat_events" (
+    id INTEGER NOT NULL,
+    bot_user_id VARCHAR(64) NOT NULL,
+    platform_message_id VARCHAR(128) NOT NULL,
+    scope_type VARCHAR(16) NOT NULL,
+    group_id VARCHAR(64),
+    private_peer_user_id VARCHAR(64),
+    sender_user_id VARCHAR(64) NOT NULL,
+    direction VARCHAR(16) NOT NULL,
+    content TEXT NOT NULL,
+    segments_json TEXT NOT NULL,
+    reply_to_message_id VARCHAR(128),
+    occurred_at DATETIME NOT NULL,
+    observed_at DATETIME NOT NULL,
+    visual_summary TEXT DEFAULT '' NOT NULL,
+    origin VARCHAR(32) DEFAULT 'user_message' NOT NULL,
+    automation_id INTEGER,
+    automation_run_id INTEGER,
+    event_kind VARCHAR(32) DEFAULT 'message' NOT NULL,
+    source_plugin_id VARCHAR(128),
+    external_source VARCHAR(64),
+    external_event_key VARCHAR(255),
+    external_event_type VARCHAR(128),
+    external_payload_json TEXT,
+    external_target_id VARCHAR(64),
+    sender_nickname VARCHAR(128) DEFAULT '' NOT NULL,
+    sender_group_card VARCHAR(128) DEFAULT '' NOT NULL,
+    canonical_event_id VARCHAR(36),
+    canonical_conversation_id VARCHAR(36)
+        REFERENCES canonical_conversations(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+    author_kind VARCHAR(16),
+    author_person_id VARCHAR(36)
+        REFERENCES persons(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+    author_presence_id VARCHAR(36)
+        REFERENCES presences(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+    ingress_presence_id VARCHAR(36)
+        REFERENCES presences(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+    utterance_fingerprint VARCHAR(64),
+    suppression_status VARCHAR(16),
+    ingress_provider VARCHAR(32),
+    ingress_gateway_instance_id VARCHAR(128),
+    PRIMARY KEY (id)
+)"""
+
+_CARRIER_PERSON_IDS = (
+    "e8b15d59-3988-473e-a13c-d277ca77b5c1",
+    "11111111-1111-4111-8111-111111111111",
+    "22222222-2222-4222-8222-222222222222",
+)
+
 
 class _SyntheticFailpoint(RuntimeError):
     pass
@@ -407,6 +462,79 @@ def _restore_historical_0048(path: Path) -> None:
         connection.executescript(script)
 
 
+def _rewrite_chat_events_as_production_0048(connection: sqlite3.Connection) -> None:
+    objects = tuple(
+        str(row[0])
+        for row in connection.execute(
+            "SELECT sql FROM sqlite_master WHERE tbl_name='chat_events' "
+            "AND type IN ('index','trigger') AND sql IS NOT NULL ORDER BY type, name"
+        )
+    )
+    columns = tuple(str(row[1]) for row in connection.execute("PRAGMA table_info('chat_events')"))
+    projection = ", ".join(f'"{column}"' for column in columns)
+    temporary = "__production_0048_chat_events"
+    ddl = _PRODUCTION_0048_CHAT_EVENTS_DDL.replace(
+        'CREATE TABLE "chat_events"',
+        f'CREATE TABLE "{temporary}"',
+        1,
+    )
+
+    connection.execute("PRAGMA foreign_keys=OFF")
+    connection.execute(ddl)
+    connection.execute(
+        f'INSERT INTO "{temporary}" ({projection}) SELECT {projection} FROM "chat_events"'
+    )
+    connection.execute('DROP TABLE "chat_events"')
+    connection.execute(f'ALTER TABLE "{temporary}" RENAME TO "chat_events"')
+    for statement in objects:
+        connection.execute(statement)
+
+
+def _restore_production_historical_0048(path: Path) -> None:
+    _restore_historical_0048(path)
+    with sqlite3.connect(path) as connection:
+        _rewrite_chat_events_as_production_0048(connection)
+
+
+def _seed_production_alias_carriers(path: Path) -> None:
+    now = "2026-08-26T00:00:00+00:00"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE person_aliases SET user_id=canonical_person_id "
+            "WHERE canonical_person_id=? AND group_scope=''",
+            (_CARRIER_PERSON_IDS[0],),
+        )
+        for index, person_id in enumerate(_CARRIER_PERSON_IDS[1:], start=2):
+            connection.execute(
+                "INSERT INTO persons "
+                "(id, enabled, revision, created_at, updated_at) VALUES (?, 1, 1, ?, ?)",
+                (person_id, now, now),
+            )
+            connection.execute(
+                "INSERT INTO identity_bindings "
+                "(id, person_id, platform, external_account_id, display_name, status, "
+                "revision, created_at, updated_at) VALUES (?, ?, 'qq', ?, ?, 'active', 1, ?, ?)",
+                (
+                    f"{index + 2}{index + 2}{index + 2}{index + 2}{index + 2}{index + 2}"
+                    f"{index + 2}{index + 2}-{index + 2}{index + 2}{index + 2}{index + 2}"
+                    f"-4{index + 2}{index + 2}{index + 2}-8{index + 2}{index + 2}{index + 2}"
+                    f"-{str(index + 2) * 12}",
+                    person_id,
+                    f"fixture-account-{index}",
+                    f"Fixture Person {index}",
+                    now,
+                    now,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO person_aliases "
+                "(user_id, group_scope, alias, alias_type, first_seen_at, last_seen_at, "
+                "canonical_person_id, canonical_space_id) "
+                "VALUES (?, '', ?, 'nickname', ?, ?, ?, NULL)",
+                (person_id, f"canonical carrier {index}", now, now, person_id),
+            )
+
+
 def _load_bridge() -> ModuleType:
     spec = importlib.util.spec_from_file_location("test_revision_0049", _BRIDGE_PATH)
     if spec is None or spec.loader is None:
@@ -414,6 +542,16 @@ def _load_bridge() -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _bridge_schema_digest(path: Path) -> str:
+    bridge = _load_bridge()
+    engine = create_engine(f"sqlite:///{path.as_posix()}")
+    try:
+        with engine.connect() as connection:
+            return str(bridge._schema_digest(connection))
+    finally:
+        engine.dispose()
 
 
 def _tables(connection: sqlite3.Connection) -> set[str]:
@@ -591,6 +729,21 @@ def _apply_preflight_case(connection: sqlite3.Connection, case: str) -> None:
         raise AssertionError(f"unknown preflight case: {case}")
 
 
+def test_only_two_explicit_historical_0048_schema_digests_are_accepted(tmp_path: Path) -> None:
+    bridge = _load_bridge()
+    fixture = tmp_path / "fixture-0048.db"
+    production = tmp_path / "production-0048.db"
+    _restore_historical_0048(fixture)
+    _restore_production_historical_0048(production)
+
+    observed = {_bridge_schema_digest(fixture), _bridge_schema_digest(production)}
+    assert observed == bridge._HISTORICAL_SCHEMA_DIGESTS
+    assert observed == {
+        "235100f1310f0362bdcfecd13124da7f7c729bfbfd760c6b9233e0128a9f8168",
+        "11e87cc3e57199863be5ee6bfe8fb72ab90a070bc1253cf5475825fb6cc978b2",
+    }
+
+
 def test_fresh_baseline_reaches_0049_with_final_integrity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -606,13 +759,19 @@ def test_fresh_baseline_reaches_0049_with_final_integrity(
     _assert_orm_shape(path)
 
 
+@pytest.mark.parametrize(
+    "restore_historical",
+    (_restore_historical_0048, _restore_production_historical_0048),
+    ids=("frozen-fixture", "deployed-production-ddl"),
+)
 def test_populated_historical_0048_preserves_data_and_matches_fresh_schema(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    restore_historical: Callable[[Path], None],
 ) -> None:
     path = tmp_path / "historical.db"
     fresh = tmp_path / "fresh.db"
-    _restore_historical_0048(path)
+    restore_historical(path)
     _upgrade(path, monkeypatch)
     _upgrade(fresh, monkeypatch)
 
@@ -693,12 +852,18 @@ def test_historical_preflight_rejects_without_partial_write(
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0048",)
 
 
+@pytest.mark.parametrize(
+    "restore_historical",
+    (_restore_historical_0048, _restore_production_historical_0048),
+    ids=("frozen-fixture", "deployed-production-ddl"),
+)
 def test_historical_schema_manifest_rejects_unknown_ddl(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    restore_historical: Callable[[Path], None],
 ) -> None:
     path = tmp_path / "unknown-ddl.db"
-    _restore_historical_0048(path)
+    restore_historical(path)
     with sqlite3.connect(path) as connection:
         connection.execute("ALTER TABLE persons ADD COLUMN injected TEXT")
         connection.commit()
@@ -708,6 +873,89 @@ def test_historical_schema_manifest_rejects_unknown_ddl(
         _upgrade(path, monkeypatch)
 
     assert _logical_digest(path) == before
+
+
+def test_production_global_canonical_alias_carriers_upgrade(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "production-alias-carriers.db"
+    _restore_production_historical_0048(path)
+    _seed_production_alias_carriers(path)
+
+    _upgrade(path, monkeypatch)
+
+    with sqlite3.connect(path) as connection:
+        aliases = set(
+            connection.execute(
+                "SELECT canonical_person_id, alias, canonical_space_id "
+                "FROM person_aliases WHERE canonical_person_id IN (?, ?, ?)",
+                _CARRIER_PERSON_IDS,
+            ).fetchall()
+        )
+        assert {
+            (_CARRIER_PERSON_IDS[0], "known alias", None),
+            (_CARRIER_PERSON_IDS[1], "canonical carrier 2", None),
+            (_CARRIER_PERSON_IDS[2], "canonical carrier 3", None),
+        } <= aliases
+        assert connection.execute(
+            "SELECT COUNT(*) FROM identity_bindings "
+            "WHERE person_id IN (?, ?, ?) AND status='active'",
+            _CARRIER_PERSON_IDS,
+        ).fetchone() == (3,)
+    _assert_final_health(path, populated=True)
+
+
+@pytest.mark.parametrize(
+    "case",
+    ("person-missing", "binding-missing", "canonical-mismatch", "group-space-mismatch"),
+)
+def test_canonical_alias_carrier_crosswalk_rejects_invalid_owner(
+    tmp_path: Path,
+    case: str,
+) -> None:
+    path = tmp_path / f"invalid-alias-carrier-{case}.db"
+    _restore_production_historical_0048(path)
+    _seed_production_alias_carriers(path)
+    with sqlite3.connect(path) as connection:
+        if case == "person-missing":
+            connection.execute("PRAGMA foreign_keys=OFF")
+            connection.execute(
+                "DELETE FROM identity_bindings WHERE person_id=?",
+                (_CARRIER_PERSON_IDS[1],),
+            )
+            connection.execute(
+                "DELETE FROM persons WHERE id=?",
+                (_CARRIER_PERSON_IDS[1],),
+            )
+        elif case == "binding-missing":
+            connection.execute(
+                "DELETE FROM identity_bindings WHERE person_id=?",
+                (_CARRIER_PERSON_IDS[1],),
+            )
+        elif case == "canonical-mismatch":
+            connection.execute(
+                "UPDATE person_aliases SET user_id=? WHERE canonical_person_id=?",
+                (_CARRIER_PERSON_IDS[2], _CARRIER_PERSON_IDS[1]),
+            )
+        elif case == "group-space-mismatch":
+            connection.execute(
+                "UPDATE person_aliases SET user_id='1001', group_scope='fixture-wrong-space', "
+                "canonical_space_id='6439f510-e073-4c3d-8d51-106d3c0b7ee5' "
+                "WHERE canonical_person_id=?",
+                (_CARRIER_PERSON_IDS[0],),
+            )
+        else:
+            raise AssertionError(f"unknown carrier case: {case}")
+
+    bridge = _load_bridge()
+    engine = create_engine(f"sqlite:///{path.as_posix()}")
+    try:
+        with engine.connect() as connection:
+            with pytest.raises(bridge.CanonicalBridgeError, match="canonical_crosswalk_mismatch"):
+                bridge._require_legacy_crosswalks(connection)
+    finally:
+        engine.dispose()
 
 
 def test_historical_semantic_forgery_and_crosswalks_fail_closed(
