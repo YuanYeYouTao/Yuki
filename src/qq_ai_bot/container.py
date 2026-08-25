@@ -35,6 +35,7 @@ from qq_ai_bot.application.modules import (
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.messages import InboundMessage
+from qq_ai_bot.gateway.providers.napcat import napcat_provider_catalog
 from qq_ai_bot.gateway.registry import GatewayConnectionRegistry, configure_process_registry
 from qq_ai_bot.identity.bootstrap import bootstrap_settings_identity
 from qq_ai_bot.identity.canonical_uow import CanonicalIngressUnitOfWork
@@ -104,7 +105,8 @@ class ApplicationContainer:
         self.persistence = persistence
         self.database = persistence.database
         self.runtime_config = persistence.runtime_config
-        self.gateway_registry = GatewayConnectionRegistry()
+        self.gateway_providers = napcat_provider_catalog()
+        self.gateway_registry = GatewayConnectionRegistry(providers=self.gateway_providers)
         configure_process_registry(self.gateway_registry)
         self.presence_router = PresenceRouter(self.database, self.gateway_registry)
         self.route_monitor = RouteMonitor(self.presence_router)

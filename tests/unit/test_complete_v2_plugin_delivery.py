@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 from tests.conftest import build_harness, make_settings
+from tests.support.gateway import napcat_registry
 
 from qq_ai_bot.conversation.canonical_db_models import (
     ConversationLegacyAliasModel,
@@ -23,7 +24,6 @@ from qq_ai_bot.conversation.hydrate import (
 from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
 from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityRuntimeStateModel
 from qq_ai_bot.identity.dual_write import (
     ensure_canonical_person_preconfig,
@@ -221,7 +221,7 @@ async def test_v2_old_outbox_follows_switched_presence_and_keeps_conversation(
         assert conversation_id
         generation, primary = await notifications.conversation_watermark(conversation_id)
         assert event.ingress_presence_id == presence_a
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-c23b2b-person")
+    registry = napcat_registry(gateway_instance_id="gw-c23b2b-person")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot_a = _Bot("8000")
     bot_b = _Bot("8001")
@@ -292,7 +292,7 @@ async def test_v2_route_paused_missing_ambiguous_retries_without_send(
         target=NotificationTarget(target_type="private", target_id="1001"),
         event_key=f"route-{mutate}",
     )
-    registry = GatewayConnectionRegistry(gateway_instance_id=f"gw-c23b2b-{mutate}")
+    registry = napcat_registry(gateway_instance_id=f"gw-c23b2b-{mutate}")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot = _Bot("8000")
     registry.connect(bot)
@@ -407,7 +407,7 @@ async def test_v2_background_paused_retries_without_agent(database: Database) ->
         event_key="bg-paused",
         ask_agent=True,
     )
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-c23b2b-bg-paused")
+    registry = napcat_registry(gateway_instance_id="gw-c23b2b-bg-paused")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot = _Bot("8000")
     registry.connect(bot)
@@ -502,7 +502,7 @@ async def test_v2_background_sdk_uses_job_space_and_actual_presence(
         event_key="bg-space",
         ask_agent=True,
     )
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-c23b2b-bg")
+    registry = napcat_registry(gateway_instance_id="gw-c23b2b-bg")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot_a = _Bot("8000")
     bot_b = _Bot("8001")
@@ -636,7 +636,7 @@ async def test_v1_outbox_still_sends_via_exact_account(
         plugin_id=PLUGIN_ID,
         request=_publish_request(target, event_key="v1-send"),
     )
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-c23b2b-v1")
+    registry = napcat_registry(gateway_instance_id="gw-c23b2b-v1")
     bot = _Bot("8000")
     registry.connect(bot)
     worker = PluginNotificationOutboxWorker(
@@ -659,7 +659,7 @@ async def _switch_person_presence(
     presence_b: str,
     gateway_id: str,
 ) -> PresenceRouter:
-    registry = GatewayConnectionRegistry(gateway_instance_id=gateway_id)
+    registry = napcat_registry(gateway_instance_id=gateway_id)
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot_a = _Bot("8000")
     bot_b = _Bot("8001")

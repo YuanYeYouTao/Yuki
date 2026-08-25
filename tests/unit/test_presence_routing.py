@@ -8,13 +8,13 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
+from tests.support.gateway import napcat_registry
 
 from qq_ai_bot.conversation.canonical_db_models import (
     PersonActiveRouteModel,
     SpaceActiveRouteModel,
     SpaceBindingIngestRouteModel,
 )
-from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
 from qq_ai_bot.identity.db_models import IdentityRuntimeStateModel
 from qq_ai_bot.identity.dual_write import (
     ensure_canonical_presence_preconfig as ensure_v2_presence,
@@ -58,7 +58,7 @@ async def test_takeover_zero_one_many_and_route_pause(database: Database) -> Non
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     await _flip_v2(database)
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-route")
+    registry = napcat_registry(gateway_instance_id="gw-route")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot_a = _Bot("8000")
     bot_b = _Bot("8001")
@@ -111,7 +111,7 @@ async def test_reconnect_does_not_change_route_or_conversation_generation(
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     await _flip_v2(database)
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-gen")
+    registry = napcat_registry(gateway_instance_id="gw-gen")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot = _Bot("8000")
     async with database.sessions() as session, session.begin():
@@ -150,7 +150,7 @@ async def test_space_takeover_zero_one_many_and_membership_probe(database: Datab
         calls.append(f"{getattr(bot, 'self_id', '')}:{group_id}:{user_id}")
         return getattr(bot, "self_id", "") == "8000"
 
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-space")
+    registry = napcat_registry(gateway_instance_id="gw-space")
     router = PresenceRouter(database, registry, membership_probe=_probe)
     bot_a = _Bot("8000")
     bot_b = _Bot("8001")
@@ -215,7 +215,7 @@ async def test_authoritative_ingest_survives_second_presence(database: Database)
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     await _flip_v2(database)
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-ingest")
+    registry = napcat_registry(gateway_instance_id="gw-ingest")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot_a = _Bot("8000")
     bot_b = _Bot("8001")
@@ -272,7 +272,7 @@ async def test_reconcile_paused_is_idempotent_and_keeps_explicit_pause(
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     await _flip_v2(database)
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-pause")
+    registry = napcat_registry(gateway_instance_id="gw-pause")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot = _Bot("8000")
     extra = _Bot("8001")
@@ -343,7 +343,7 @@ async def test_ingest_eligible_does_not_block_person_or_space_send(
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     await _flip_v2(database)
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-elig")
+    registry = napcat_registry(gateway_instance_id="gw-elig")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot = _Bot("8000")
     async with database.sessions() as session, session.begin():
@@ -383,7 +383,7 @@ async def test_person_takeover_cas_does_not_overwrite_concurrent_write(
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     await _flip_v2(database)
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-cas-person")
+    registry = napcat_registry(gateway_instance_id="gw-cas-person")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot_a = _Bot("8000")
     bot_b = _Bot("8001")
@@ -444,7 +444,7 @@ async def test_space_takeover_cas_does_not_overwrite_concurrent_write(
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     await _flip_v2(database)
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-cas-space")
+    registry = napcat_registry(gateway_instance_id="gw-cas-space")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot_a = _Bot("8000")
     bot_b = _Bot("8001")
@@ -499,7 +499,7 @@ async def test_ingest_provision_cas_does_not_overwrite_concurrent_write(
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     await _flip_v2(database)
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-cas-ingest")
+    registry = napcat_registry(gateway_instance_id="gw-cas-ingest")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot_a = _Bot("8000")
     bot_b = _Bot("8001")

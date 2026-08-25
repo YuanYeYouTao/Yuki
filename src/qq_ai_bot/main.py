@@ -13,6 +13,7 @@ from nonebot.drivers.fastapi import Driver as FastAPIDriver
 
 from qq_ai_bot.config import Settings
 from qq_ai_bot.container import ApplicationContainer, get_container, set_container
+from qq_ai_bot.gateway.providers.napcat import NAPCAT_PROVIDER_ID
 from qq_ai_bot.health import HealthPayload, build_health_payload
 from qq_ai_bot.logging import configure_logging
 from qq_ai_bot.persistence.instance_lock import SQLiteApplicationLock
@@ -73,7 +74,11 @@ def bootstrap(settings: Settings | None = None) -> None:
             )
             if presence is not None:
                 presence_id = presence.id
-        container.gateway_registry.connect(bot, presence_id=presence_id)
+        container.gateway_registry.connect(
+            bot,
+            provider_id=NAPCAT_PROVIDER_ID,
+            presence_id=presence_id,
+        )
         await container.route_monitor.on_connection_change()
 
     @driver.on_bot_disconnect

@@ -13,6 +13,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+from tests.support.gateway import napcat_registry
 
 from qq_ai_bot.admin.models import ConversationRuntimeConfig
 from qq_ai_bot.conversation.canonical_db_models import (
@@ -25,7 +26,6 @@ from qq_ai_bot.conversation.rollup.repository import ConversationScopeRepository
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
-from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
 from qq_ai_bot.identity.db_models import IdentityRuntimeStateModel
 from qq_ai_bot.identity.dual_write import (
     ensure_canonical_person_preconfig,
@@ -574,7 +574,7 @@ async def _bind_person_route(
     presence: str,
     gateway_id: str,
 ) -> PresenceRouter:
-    registry = GatewayConnectionRegistry(gateway_instance_id=gateway_id)
+    registry = napcat_registry(gateway_instance_id=gateway_id)
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot = _Bot("8000")
     registry.connect(bot)
@@ -590,7 +590,7 @@ async def _bind_space_route(
     presence: str,
     gateway_id: str,
 ) -> PresenceRouter:
-    registry = GatewayConnectionRegistry(gateway_instance_id=gateway_id)
+    registry = napcat_registry(gateway_instance_id=gateway_id)
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot = _Bot("8000")
     registry.connect(bot)

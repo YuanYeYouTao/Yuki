@@ -5,10 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pytest
+from tests.support.gateway import napcat_registry
 
 from qq_ai_bot.gateway.models import ConnectionHealth
 from qq_ai_bot.gateway.registry import (
-    GatewayConnectionRegistry,
     RegistryClosed,
     configure_process_registry,
     process_registry,
@@ -21,7 +21,7 @@ class _Bot:
 
 
 def test_registry_zero_one_many_and_coexisting_presences() -> None:
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-1")
+    registry = napcat_registry(gateway_instance_id="gw-1")
     first = _Bot("8000")
     second = _Bot("8001")
     registry.connect(first, presence_id="p-a")
@@ -34,7 +34,7 @@ def test_registry_zero_one_many_and_coexisting_presences() -> None:
     with pytest.raises(RegistryClosed) as missing:
         registry.resolve_active("p-missing")
     assert missing.value.category == "disconnected"
-    unpinned = GatewayConnectionRegistry(gateway_instance_id="gw-2")
+    unpinned = napcat_registry(gateway_instance_id="gw-2")
     left = _Bot("8000")
     right = _Bot("8000")
     unpinned.connect(left)
@@ -46,7 +46,7 @@ def test_registry_zero_one_many_and_coexisting_presences() -> None:
 
 
 def test_reconnect_same_handle_only_increments_connection_generation() -> None:
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-1")
+    registry = napcat_registry(gateway_instance_id="gw-1")
     bot = _Bot("8000")
     first = registry.connect(bot, presence_id="p-a")
     second = registry.connect(bot, presence_id="p-a")
@@ -56,7 +56,7 @@ def test_reconnect_same_handle_only_increments_connection_generation() -> None:
 
 
 def test_disconnect_then_new_handle_is_new_connection() -> None:
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-1")
+    registry = napcat_registry(gateway_instance_id="gw-1")
     bot = _Bot("8000")
     first = registry.connect(bot, presence_id="p-a")
     registry.disconnect(bot)
@@ -68,7 +68,7 @@ def test_disconnect_then_new_handle_is_new_connection() -> None:
 
 
 def test_resolve_by_handle_never_picks_another_presence() -> None:
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-1")
+    registry = napcat_registry(gateway_instance_id="gw-1")
     alpha = _Bot("8000")
     beta = _Bot("8001")
     registry.connect(alpha, presence_id="p-a")
@@ -80,7 +80,7 @@ def test_resolve_by_handle_never_picks_another_presence() -> None:
 
 
 def test_pinned_multi_keeps_incumbent_and_snapshot_matches() -> None:
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-pin")
+    registry = napcat_registry(gateway_instance_id="gw-pin")
     first = _Bot("8000")
     extra = _Bot("8000")
     registry.connect(first, presence_id="p-a")
@@ -97,7 +97,7 @@ def test_pinned_multi_keeps_incumbent_and_snapshot_matches() -> None:
 
 
 def test_unpinned_multi_is_ambiguous_for_resolve_and_snapshot() -> None:
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-unpin")
+    registry = napcat_registry(gateway_instance_id="gw-unpin")
     left = _Bot("8000")
     right = _Bot("8000")
     registry.connect(left)
@@ -113,7 +113,7 @@ def test_unpinned_multi_is_ambiguous_for_resolve_and_snapshot() -> None:
 
 
 def test_pin_disconnect_redetermines_remaining_unique() -> None:
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-repin")
+    registry = napcat_registry(gateway_instance_id="gw-repin")
     first = _Bot("8000")
     extra = _Bot("8000")
     registry.connect(first, presence_id="p-a")
@@ -130,7 +130,7 @@ def test_pin_disconnect_redetermines_remaining_unique() -> None:
 
 
 def test_snapshot_health_and_process_registry() -> None:
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-1")
+    registry = napcat_registry(gateway_instance_id="gw-1")
     configure_process_registry(registry)
     try:
         assert process_registry() is registry
@@ -146,7 +146,7 @@ def test_snapshot_health_and_process_registry() -> None:
         assert live.generation == 1
         left = _Bot("8000")
         right = _Bot("8000")
-        clash_registry = GatewayConnectionRegistry(gateway_instance_id="gw-clash")
+        clash_registry = napcat_registry(gateway_instance_id="gw-clash")
         clash_registry.connect(left)
         clash_registry.connect(right)
         clash_registry.bind_presence(platform="qq", external_account_id="8000", presence_id="p-a")

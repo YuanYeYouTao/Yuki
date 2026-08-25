@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import select, text
+from tests.support.gateway import napcat_registry
 
 from qq_ai_bot.automation.authority import (
     AuthorityContext,
@@ -26,7 +27,6 @@ from qq_ai_bot.conversation.scope import plugin_conversation_key
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
 from qq_ai_bot.identity.db_models import IdentityRuntimeStateModel
 from qq_ai_bot.identity.dual_write import ensure_canonical_person_preconfig
 from qq_ai_bot.identity.dual_write import (
@@ -425,7 +425,7 @@ async def test_missing_or_duplicate_primary_alias_fails_closed(database: Databas
 async def test_presence_switch_keeps_sdk_conversation_key(database: Database) -> None:
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     await _flip_v2(database)
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-c23a")
+    registry = napcat_registry(gateway_instance_id="gw-c23a")
     router = PresenceRouter(database, registry, membership_probe=_true)
     resolver = CanonicalIngressResolver(database, registry, router)
     bot_a = _Bot("8000")
@@ -513,7 +513,7 @@ async def test_external_bot_private_ingress_has_no_person(database: Database) ->
         IdentityWriteSettings(superusers=frozenset({"9000"}), ignored_bot_users=frozenset({"7001"}))
     )
     await _flip_v2(database)
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-ext-bot")
+    registry = napcat_registry(gateway_instance_id="gw-ext-bot")
     router = PresenceRouter(database, registry, membership_probe=_true)
     resolver = CanonicalIngressResolver(database, registry, router)
     bot = _Bot("8000")

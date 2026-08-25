@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select, update
+from tests.support.gateway import napcat_registry
 
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
@@ -214,7 +215,6 @@ async def test_outbox_delivers_persisted_person_after_legacy_remap(
 ) -> None:
     from uuid import uuid4
 
-    from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
     from qq_ai_bot.identity.db_models import IdentityBindingModel
     from qq_ai_bot.identity.dual_write import (
         ensure_canonical_presence_preconfig as ensure_v2_presence,
@@ -273,7 +273,7 @@ async def test_outbox_delivers_persisted_person_after_legacy_remap(
     assert stored.canonical_target_person_id == person_a
     assert stored.canonical_target_space_id is None
     await _flip_v2(database)
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-outbox-person")
+    registry = napcat_registry(gateway_instance_id="gw-outbox-person")
     router = PresenceRouter(database, registry, membership_probe=_true)
 
     class _RecordBot:
@@ -345,7 +345,6 @@ async def test_outbox_delivers_persisted_space_after_legacy_remap(
 ) -> None:
     from uuid import uuid4
 
-    from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
     from qq_ai_bot.identity.db_models import SpaceBindingModel
     from qq_ai_bot.identity.dual_write import (
         ensure_canonical_presence_preconfig as ensure_v2_presence,
@@ -424,7 +423,7 @@ async def test_outbox_delivers_persisted_space_after_legacy_remap(
             )
         )
         presence = await ensure_v2_presence(session, "8001")
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-outbox-space")
+    registry = napcat_registry(gateway_instance_id="gw-outbox-space")
     router = PresenceRouter(database, registry, membership_probe=_true)
 
     class _RecordBot:

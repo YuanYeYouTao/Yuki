@@ -15,6 +15,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import func, select
 from tests.conftest import MemorySender, build_harness, make_settings
+from tests.support.gateway import napcat_registry
 
 from qq_ai_bot.conversation.canonical_db_models import ConversationLegacyAliasModel
 from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
@@ -221,7 +222,7 @@ class _CountingIngress:
 def _wire_ingress(
     harness: object, database: Database
 ) -> tuple[GatewayConnectionRegistry, PresenceRouter]:
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-v2-proc")
+    registry = napcat_registry(gateway_instance_id="gw-v2-proc")
     router = PresenceRouter(database, registry, membership_probe=_true)
     resolver = CanonicalIngressResolver(database, registry, router)
     uow = CanonicalIngressUnitOfWork(database, router)

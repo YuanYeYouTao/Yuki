@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select
+from tests.support.gateway import napcat_registry
 
 from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
@@ -102,7 +103,7 @@ def _inbound(
 async def _canonical_stack(
     database: Database,
 ) -> tuple[GatewayConnectionRegistry, CanonicalIngressResolver, CanonicalIngressUnitOfWork]:
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-author")
+    registry = napcat_registry(gateway_instance_id="gw-author")
     router = PresenceRouter(database, registry, membership_probe=lambda *_a, **_k: _true())
     return (
         registry,

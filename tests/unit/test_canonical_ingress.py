@@ -7,10 +7,12 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import func, select
+from tests.support.gateway import napcat_registry
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
+from qq_ai_bot.gateway.provider import GatewayConnectionProfile, GatewayProviderCatalog
 from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
 from qq_ai_bot.identity.canonical_uow import CanonicalIngressUnitOfWork
 from qq_ai_bot.identity.db_models import IdentityBindingModel, IdentityRuntimeStateModel
@@ -34,6 +36,18 @@ class _Bot:
 
     async def call_api(self, *_args: object, **_kwargs: object) -> dict[str, object]:
         return {}
+
+
+class _LagrangeProvider:
+    provider_id = "lagrange"
+
+    def describe_connection(self, handle: object) -> GatewayConnectionProfile:
+        return GatewayConnectionProfile(
+            provider_id=self.provider_id,
+            platform="qq",
+            external_account_id=str(getattr(handle, "self_id", "")),
+            capabilities=frozenset({"send_private", "send_group", "group_member_probe"}),
+        )
 
 
 def _message(
@@ -80,7 +94,7 @@ async def _stack(
     configure_identity_write_settings(
         IdentityWriteSettings(superusers=frozenset({"9000"}), ignored_bot_users=frozenset({"7777"}))
     )
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-test")
+    registry = napcat_registry(gateway_instance_id="gw-test")
     router = PresenceRouter(
         database,
         registry,
@@ -264,7 +278,7 @@ def test_private_reply_prefers_ingress_and_fails_over_same_presence_only() -> No
     from qq_ai_bot.adapters.onebot.sender import OneBotSender
     from qq_ai_bot.gateway.registry import configure_process_registry
 
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-affinity")
+    registry = napcat_registry(gateway_instance_id="gw-affinity")
     configure_process_registry(registry)
     try:
         ingress = _Bot("8000")
@@ -306,7 +320,12 @@ async def test_ingress_uses_handle_provider_and_rejects_bot_mismatch(
     )
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-lagrange", provider="lagrange")
+    registry = GatewayConnectionRegistry(
+        providers=GatewayProviderCatalog(
+            (_LagrangeProvider(),),
+        ),
+        gateway_instance_id="gw-lagrange",
+    )
     router = PresenceRouter(database, registry, membership_probe=lambda *_a, **_k: _true())
     resolver = CanonicalIngressResolver(database, registry, router)
     uow = CanonicalIngressUnitOfWork(database, router)

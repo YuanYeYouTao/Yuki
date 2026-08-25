@@ -1,5 +1,10 @@
-"""In-memory NapCat connection registry. Handles never persist."""
+"""Provider-neutral in-memory gateway connections. Handles never persist."""
 
+from qq_ai_bot.gateway.provider import (
+    GatewayConnectionProfile,
+    GatewayProvider,
+    GatewayProviderCatalog,
+)
 from qq_ai_bot.gateway.registry import (
     ConnectionResolution,
     GatewayConnectionRegistry,
@@ -8,6 +13,9 @@ from qq_ai_bot.gateway.registry import (
 
 __all__ = [
     "ConnectionResolution",
+    "GatewayConnectionProfile",
     "GatewayConnectionRegistry",
+    "GatewayProvider",
+    "GatewayProviderCatalog",
     "RegistryClosed",
 ]

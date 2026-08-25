@@ -8,11 +8,11 @@ from typing import Any
 from uuid import uuid4
 
 from qq_ai_bot.gateway.models import (
-    DEFAULT_NAPCAT_CAPABILITIES,
     ConnectionHealth,
     ConnectionSnapshot,
     PresenceConnectionSnapshot,
 )
+from qq_ai_bot.gateway.provider import GatewayProviderCatalog
 
 
 class RegistryClosed(RuntimeError):
@@ -48,23 +48,21 @@ def _account_key(platform: str, external_account_id: str) -> tuple[str, str]:
     return (platform.strip().casefold(), str(external_account_id).strip())
 
 
-def _self_id(bot: object) -> str:
-    return str(getattr(bot, "self_id", "")).strip()
-
-
 class GatewayConnectionRegistry:
-    """NapCat connect/disconnect bound to Presence. Selection is never first-item."""
+    """Provider-neutral live connections bound to Presence; never first-item."""
 
     def __init__(
         self,
         *,
+        providers: GatewayProviderCatalog,
         gateway_instance_id: str | None = None,
-        provider: str = "napcat",
     ) -> None:
         self.gateway_instance_id = (gateway_instance_id or str(uuid4())).strip()
         if not self.gateway_instance_id:
             raise ValueError("gateway_instance_id must be non-empty")
-        self._provider = provider.strip().casefold() or "napcat"
+        if type(providers) is not GatewayProviderCatalog:
+            raise TypeError("providers must be GatewayProviderCatalog")
+        self._providers = providers
         self._lock = threading.RLock()
         self._by_handle: dict[int, str] = {}
         self._by_id: dict[str, _LiveConnection] = {}
@@ -78,28 +76,33 @@ class GatewayConnectionRegistry:
         self,
         bot: object,
         *,
-        platform: str = "qq",
+        provider_id: str | None = None,
+        gateway_instance_id: str | None = None,
         presence_id: str | None = None,
-        capabilities: frozenset[str] | None = None,
     ) -> ConnectionSnapshot:
         """Register a live handle. Reconnect of the same handle only increments generation."""
 
-        if bot is None:
-            raise TypeError("bot handle is required")
-        external = _self_id(bot)
-        if not external:
-            raise ValueError("bot self_id is required")
-        platform_key = platform.strip().casefold() or "qq"
-        account = _account_key(platform_key, external)
-        caps = capabilities if capabilities is not None else DEFAULT_NAPCAT_CAPABILITIES
+        profile = self._providers.describe_connection(bot, provider_id=provider_id)
+        instance_id = (gateway_instance_id or self.gateway_instance_id).strip()
+        if not instance_id:
+            raise ValueError("gateway_instance_id must be non-empty")
+        account = _account_key(profile.platform, profile.external_account_id)
         handle_id = id(bot)
         with self._lock:
             existing_id = self._by_handle.get(handle_id)
             if existing_id is not None:
                 live = self._by_id[existing_id]
+                if (
+                    live.provider != profile.provider_id
+                    or live.platform != profile.platform
+                    or live.external_account_id != profile.external_account_id
+                    or live.gateway_instance_id != instance_id
+                ):
+                    raise ValueError("gateway handle identity changed during reconnect")
                 live.generation += 1
                 live.healthy = True
                 live.bot = bot
+                live.capabilities = profile.capabilities
                 self._account_generation[account] = live.generation
                 if presence_id:
                     self._bind_locked(account, presence_id)
@@ -109,14 +112,14 @@ class GatewayConnectionRegistry:
             bound_presence = presence_id or self._account_presence.get(account)
             live = _LiveConnection(
                 connection_id=str(uuid4()),
-                gateway_instance_id=self.gateway_instance_id,
-                provider=self._provider,
-                platform=platform_key,
-                external_account_id=external,
+                gateway_instance_id=instance_id,
+                provider=profile.provider_id,
+                platform=profile.platform,
+                external_account_id=profile.external_account_id,
                 presence_id=bound_presence,
                 generation=generation,
                 healthy=True,
-                capabilities=frozenset(caps),
+                capabilities=profile.capabilities,
                 bot=bot,
                 handle_id=handle_id,
             )

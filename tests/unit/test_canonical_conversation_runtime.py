@@ -9,13 +9,13 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select
+from tests.support.gateway import napcat_registry
 
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.conversation.canonical_db_models import ConversationLegacyAliasModel
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot, turn_matches_hydrated_scope
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
 from qq_ai_bot.identity.canonical_uow import CanonicalIngressUnitOfWork
 from qq_ai_bot.identity.db_models import IdentityRuntimeStateModel
 from qq_ai_bot.identity.dual_write import ensure_canonical_presence_preconfig as ensure_v2_presence
@@ -90,7 +90,7 @@ async def test_primary_alias_freezes_and_generation_only_on_new(database: Databa
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     await _flip_v2(database)
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-conv")
+    registry = napcat_registry(gateway_instance_id="gw-conv")
     router = PresenceRouter(database, registry, membership_probe=_true)
     resolver = CanonicalIngressResolver(database, registry, router)
     uow = CanonicalIngressUnitOfWork(database, router)
@@ -387,7 +387,7 @@ async def test_automation_send_uses_current_binding_and_presence_provenance(
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     await _flip_v2(database)
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-auto")
+    registry = napcat_registry(gateway_instance_id="gw-auto")
     router = PresenceRouter(database, registry, membership_probe=_true)
 
     class _RecordBot:
@@ -473,7 +473,7 @@ async def test_plugin_transport_uses_resolved_target_and_presence(
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     await _flip_v2(database)
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-plugin")
+    registry = napcat_registry(gateway_instance_id="gw-plugin")
     router = PresenceRouter(database, registry, membership_probe=_true)
 
     class _RecordBot:
@@ -928,7 +928,7 @@ async def test_created_automation_sends_persisted_person_not_creator(
     assert row.canonical_target_person_id != row.canonical_creator_person_id
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     await _flip_v2(database)
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-auto-persist")
+    registry = napcat_registry(gateway_instance_id="gw-auto-persist")
     router = PresenceRouter(database, registry, membership_probe=_true)
 
     class _RecordBot:

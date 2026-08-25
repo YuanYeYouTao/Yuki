@@ -14,6 +14,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import func, or_, select, text
 from tests.conftest import make_settings
+from tests.support.gateway import napcat_registry
 from tests.unit.test_control_query_projections import _context, _principal
 from tests.unit.test_control_query_projections import _service as _query
 from tests.unit.test_identity_backfill import (
@@ -57,7 +58,6 @@ from qq_ai_bot.conversation.hydrate import conversation_for_owner, primary_alias
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
 from qq_ai_bot.identity.backfill_repository import IdentityBackfillRepository
 from qq_ai_bot.identity.c22_automation import (
     C22_AUTOMATION_INCOMPLETE,
@@ -586,7 +586,7 @@ def test_cutover_blocks_null_wrong_owner_and_xor_then_accepts_complete(
 async def test_person_send_follows_route_without_rewriting_task(database: Database) -> None:
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     await _flip_v2(database)
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-c22-person")
+    registry = napcat_registry(gateway_instance_id="gw-c22-person")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot_a = _Bot("8000")
     bot_b = _Bot("8001")
@@ -675,7 +675,7 @@ async def test_space_send_follows_route_and_rejects_platform_mismatch(
 ) -> None:
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     await _flip_v2(database)
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-c22-space")
+    registry = napcat_registry(gateway_instance_id="gw-c22-space")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot_a = _Bot("8000")
     bot_b = _Bot("8001")
@@ -754,7 +754,7 @@ async def test_space_send_follows_route_and_rejects_platform_mismatch(
 async def test_fail_closed_routes_never_send(database: Database) -> None:
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     await _flip_v2(database)
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-c22-fail")
+    registry = napcat_registry(gateway_instance_id="gw-c22-fail")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot = _Bot("8000")
     async with database.sessions() as session, session.begin():
@@ -830,7 +830,7 @@ async def test_fail_closed_routes_never_send(database: Database) -> None:
     assert disconnected.status is RunStatus.BLOCKED
     assert bot.calls == []
 
-    unpinned = GatewayConnectionRegistry(gateway_instance_id="gw-c22-unpin")
+    unpinned = napcat_registry(gateway_instance_id="gw-c22-unpin")
     left = _Bot("8000")
     right = _Bot("8000")
     unpinned.connect(left)
@@ -843,7 +843,7 @@ async def test_fail_closed_routes_never_send(database: Database) -> None:
     assert ambiguous.value.category == "ambiguous"
     assert bot.calls == []
 
-    bare = GatewayConnectionRegistry(gateway_instance_id="gw-c22-none")
+    bare = napcat_registry(gateway_instance_id="gw-c22-none")
     empty_router = PresenceRouter(database, bare, membership_probe=_true)
     async with database.sessions() as session, session.begin():
         await session.delete(await session.get(PersonActiveRouteModel, person))
@@ -900,7 +900,7 @@ async def test_multi_binding_history_stays_on_primary_alias(database: Database) 
         captured["history"] = [row.content for row in rows]
         return CapabilityResult(data={"text": "ok"}, llm_calls=1, tool_calls=0)
 
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-c22-hist")
+    registry = napcat_registry(gateway_instance_id="gw-c22-hist")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot_a = _Bot("8000")
     bot_b = _Bot("8001")
@@ -1011,7 +1011,7 @@ async def test_multi_binding_history_stays_on_primary_alias(database: Database) 
 async def test_author_kind_four_states_and_automation_is_origin(database: Database) -> None:
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     await _flip_v2(database)
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-c22-author")
+    registry = napcat_registry(gateway_instance_id="gw-c22-author")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot = _Bot("8000")
     async with database.sessions() as session, session.begin():
@@ -1616,7 +1616,7 @@ async def test_stale_claimed_record_blocks_after_db_mutation(database: Database)
 async def test_v2_null_target_or_missing_router_never_sends(database: Database) -> None:
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     await _flip_v2(database)
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-c22-legacy")
+    registry = napcat_registry(gateway_instance_id="gw-c22-legacy")
     bot = _Bot("8000")
     sent: list[object] = []
 
@@ -1784,7 +1784,7 @@ async def test_dual_filled_target_blocks_even_if_trigger_bypassed(
 async def test_pinned_multi_connection_still_sends(database: Database) -> None:
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     await _flip_v2(database)
-    registry = GatewayConnectionRegistry(gateway_instance_id="gw-c22-pin")
+    registry = napcat_registry(gateway_instance_id="gw-c22-pin")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot = _Bot("8000")
     extra = _Bot("8000")

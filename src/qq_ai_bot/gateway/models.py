@@ -4,11 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Final, final
-
-DEFAULT_NAPCAT_CAPABILITIES: Final[frozenset[str]] = frozenset(
-    {"send_private", "send_group", "group_member_probe"}
-)
+from typing import final
 
 
 @final
