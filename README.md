@@ -9,7 +9,8 @@
 <p>面向个人部署、以长期关系和长期记忆为核心的 QQ AI Agent</p>
 
 <p>
-  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.7.0"><img src="https://img.shields.io/badge/Version-3.7.0-orange" alt="Version 3.7.0"></a>
+  <img src="https://img.shields.io/badge/Code-3.8.0--unreleased-orange" alt="Code version 3.8.0, unreleased">
+  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.7.1"><img src="https://img.shields.io/badge/Latest%20Release-3.7.1-blue" alt="Latest release 3.7.1"></a>
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <img src="https://img.shields.io/badge/NoneBot2-OneBot%20v11-green" alt="NoneBot2 and OneBot v11">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
@@ -37,8 +38,9 @@ Yuki 不是把大模型简单接到 QQ 上的问答机器人。它以 NapCat 或
 Conversation / Memory / Capability Runtime、受控 Agent 工具循环、身份隔离的 Memory V2、持久化自动化和插件系统，
 让一个可自托管的 QQ 角色能够长期对话、记住人与共同经历，并安全地执行外部操作。
 
-项目主要通过 Codex 协作开发，当前稳定版本为 **3.6.0**。它适合愿意自行维护模型配置、QQ
-登录态和本地数据的个人用户；不是面向多租户的托管机器人平台。
+项目主要通过 Codex 协作开发。仓库当前代码版本为 **3.8.0（待发布）**，GitHub 最新正式版仍为
+**3.7.1**；尚不存在可供普通用户直接拉取的 3.8.0 GHCR 镜像或 Release 安装包。它适合愿意
+自行维护模型配置、QQ 登录态和本地数据的个人用户；不是面向多租户的托管机器人平台。
 
 ## 项目概览
 
@@ -91,6 +93,8 @@ Conversation / Memory / Capability Runtime、受控 Agent 工具循环、身份�
 
 | 模块 | 当前能力 |
 | --- | --- |
+| 永久身份 | 一个数据库对应一个永久 Yuki；Person、Binding、Space、Presence 和 canonical Conversation 解耦账号、平台与网关 |
+| QQ Gateway | NapCat、SnowLuma 同为正式 Provider；不同 QQ 可并存，同一 QQ 的重复活动连接失败关闭 |
 | 对话编排 | 私聊、群聊、回复与 @ 元数据、多轮历史、Conversation Runtime 准入、自主群评分与 History Rollup |
 | Main Agent | OpenAI-compatible Chat Completions / Responses、思考模型、有界工具循环、输出清理与分段发送 |
 | Memory V2 | 身份隔离、自动提炼、混合召回、结构化意图重排、自然衰减、使用强化、冲突与版本链 |
@@ -100,7 +104,7 @@ Conversation / Memory / Capability Runtime、受控 Agent 工具循环、身份�
 | MCP Client | stdio 与 Streamable HTTP、动态发现、Schema 预算、并发控制、结果 Artifact |
 | 联网搜索 | DeepSeek 原生搜索、Tavily 或受控降级链路，最终回答可携带来源 |
 | 多模态 | 可选 Qwen 图片理解、持久化表情包系统、本地 Genie-TTS 语音回复 |
-| 关系系统 | 按 QQ 身份保存独立好感度、信任度和关系阶段，并由后台任务更新 |
+| 关系系统 | 按永久 Person 保存好感度、信任度和关系阶段；换 Binding 或 Presence 不分裂关系 |
 | 运行治理 | SQLite、Alembic、热配置、权限审计、健康检查、无正文指标和质量门禁 |
 
 ## Memory V2
@@ -432,9 +436,10 @@ MCP Client 支持 stdio 和 Streamable HTTP，包含动态发现、元数据缓�
 
 ### 1. 运行引导安装器
 
-从 [Yuki 3.7.0 Release](https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.7.0)
-下载对应安装器。它会校验部署包、拉取正式镜像，并在一次性容器中启动彩色向导；宿主机不需要
-Python、uv 或源码。
+普通用户当前应从 [Yuki 3.7.1 Release](https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.7.1)
+下载正式安装器。仓库中的 3.8.0 安装器、SnowLuma profile 和永久身份迁移仍属于待发布代码；
+不要在 3.8.0 tag、GHCR 镜像和 Release 资产真正发布前把生产 `.env` 改成 `3.8.0`。源码验收与
+预发布升级必须阅读 [3.8.0 升级指南](docs/upgrade-3.8.0.md)。
 
 Linux：
 
@@ -490,17 +495,17 @@ QQ 登录态、插件文件和其他持久化目录不会被删除或覆盖。�
 `.yuki/backups/`，最近保留 5 份。安装器每次都会校验对应版本部署包并只更新 Release 管理的
 Compose、环境模板、安装器和升级说明；`.env`、自定义配置及持久化目录保持原样。
 
-升级前先备份 `data/`，再把 `.env` 中的 `YUKI_VERSION` 修改为目标版本：
+3.7.x 补丁升级前先备份 `data/`，再把 `.env` 中的 `YUKI_VERSION` 修改为目标版本：
 
 ```bash
 docker compose pull
 docker compose up -d
 ```
 
-版本镜像不可变；`docker compose pull` 只拉取 `.env` 当前指定的版本。不要用新部署包直接覆盖
-旧目录，保留现有 `config/`、`plugins/`、`data/` 和 `napcat-*`。从 3.5.3 升级必须走安装器
-快照与 `setup migrate-3-6`，见 [3.6.0 发布与升级说明](docs/releases/v3.6.0.md) 和
-[3.6.0 升级指南](docs/upgrade-3.6.0.md)。
+版本镜像不可变；`docker compose pull` 只拉取 `.env` 当前指定的版本。**3.7.1 → 3.8.0 不能只
+执行上述两条命令**：3.8.0 包含 Alembic `0043`–`0048` 和一次停机 identity cutover，必须按
+[3.8.0 升级指南](docs/upgrade-3.8.0.md) 备份、回填、plan/apply 后再启动。不要用新部署包直接
+覆盖旧目录，保留现有 `config/`、`plugins/`、`data/`、`napcat-*` 与 `snowluma-*`。
 
 停止全部服务：
 
@@ -646,6 +651,11 @@ GitHub Actions 还会验证 Docker Compose、运行时镜像、隔离的 Genie-T
 ## 文档
 
 - [完整使用帮助](docs/help.md)
+- [3.8.0 发布说明（待发布）](docs/releases/v3.8.0.md)
+- [从 3.7.1 升级到 3.8.0](docs/upgrade-3.8.0.md)
+- [永久主体 Identity Cutover](docs/upgrade-identity-cutover.md)
+- [SnowLuma Provider 部署与切换](docs/deployment/snowluma.md)
+- [3.7.1 发布说明](docs/releases/v3.7.1.md)
 - [3.7.0 发布说明](docs/releases/v3.7.0.md)
 - [从 3.6.1 升级到 3.7.0](docs/upgrade-3.7.0.md)
 - [ConversationScope 与单检查点 Rollup 合同](docs/architecture/conversation-rollup.md)

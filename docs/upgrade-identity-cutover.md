@@ -1,6 +1,11 @@
-# 永久主体 Identity Cutover（0048 / v2）
+# Yuki 3.8.0 永久主体 Identity Cutover（0048 / v2）
 
-本页描述 Alembic `0048` 与 `identity-cutover --plan/--apply`。它不是产品版本号切换，也不替代 3.7.0 的 0042 破坏性升级。
+本页描述 3.8.0 的 Alembic `0048` 与 `identity-cutover --plan/--apply` 内部合同。面向部署者的
+完整顺序、容器挂载与 3.7.1 回退步骤见 [3.8.0 升级指南](upgrade-3.8.0.md)。它不替代
+3.7.0 的 `0042` 破坏性升级。
+
+当前 3.8.0 预发布流程只认证已有 3.7.1 数据的升级演练；全新数据库的首个 Yuki Presence
+bootstrap 尚未完成正式发布认证。
 
 `IDENTITY_BINARY_EPOCH` 是进程内的 v1/v2 标记，与 `YUKI_VERSION` 无关。v2 二进制遇到 `identity_runtime_state=v1` 拒绝启动；v1 二进制遇到 v2 拒绝启动。
 

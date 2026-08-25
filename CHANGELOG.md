@@ -1,6 +1,37 @@
 # 更新日志
 
-## Unreleased
+## Unreleased — 3.8.0
+
+### Permanent Yuki / Identity V2
+
+- 一个数据库成为永久 Yuki 主体；Person、IdentityBinding、Space、SpaceBinding、Presence 与
+  canonical Conversation 把人格、记忆、关系和会话从 QQ 号及网关连接中解耦。
+- Alembic `0043`–`0048` 增加 canonical identity shadow、确定性路由、事件作者/provenance、
+  回填与原子 cutover。3.7.1 升级必须停机执行 backfill 和 plan/apply。
+- 自动化、插件、Memory、Config、Emoji、Speech 与 MCP 补齐 canonical owner；旧事件不会因
+  cutover 重新进入 Memory worker。
+
+### Control Plane / Multi-Presence
+
+- 新增 transport-neutral Principal、Capability、Query/Command、Cursor Page、审计、幂等回执和
+  OperationRef，可供未来 WebUI 复用；本版不新增管理 HTTP API 或前端。
+- 同一 Person 的多个 Binding 共享私聊 Conversation；多个 Yuki Presence 可以同时在线。
+- Person 主动路由、Space ingest 路由和 Space 主动路由各自确定；RouteGeneration、
+  ConnectionGeneration 与 ConversationGeneration 相互隔离。
+
+### QQ Gateway Providers
+
+- NapCat 降为正式 Provider，并新增同层 SnowLuma Provider；运行时 Provider 归属由反向
+  WebSocket Adapter 入口确定，不依赖 `.env` 中可选的 NapCat 登录账号提示。
+- 不同 QQ 可分别通过 NapCat、SnowLuma 并存；同一 QQ 的第二条活动连接失败关闭。
+- Compose profiles、SnowLuma 配置渲染、持久目录、localhost-only noVNC/WebUI 和可重试
+  stop-old-before-start-new 安装动作进入发布包。
+
+### Prompt / Responses
+
+- 首轮工具与 native web 形状固定，消息 origin 不再分裂公共 Prompt 前缀。
+- 自主群聊准入后可以使用与显式 @ 相同的受控写能力。
+- Responses 请求省略 `temperature`；关闭思考时显式发送 `none` effort。
 
 ## 3.7.1 - 2026-08-21
 
