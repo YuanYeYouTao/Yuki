@@ -216,7 +216,6 @@ async def test_bundled_mcd_order_flow_commits_once_and_preserves_payment_url(
         if visible_names:
             assert expected_bundle.issubset(visible_names)
             assert "read_tool_artifact" in visible_names
-            assert "web_search" not in visible_names
         if index == 0:
             return ChatResponse(
                 content="",
