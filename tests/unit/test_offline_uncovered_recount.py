@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
@@ -52,7 +54,10 @@ async def test_offline_recount_command_outputs_counts_without_ids(
 ) -> None:
     from qq_ai_bot.cli import _conversation_command
     from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-    from qq_ai_bot.conversation.offline_recount import recount_all_canonical_uncovered
+    from qq_ai_bot.conversation.offline_recount import (
+        check_all_canonical_uncovered,
+        recount_all_canonical_uncovered,
+    )
     from qq_ai_bot.domain.conversations import ConversationScope
     from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence
     from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
@@ -90,7 +95,12 @@ async def test_offline_recount_command_outputs_counts_without_ids(
         )
         assert conversation is not None
         conversation.uncovered_character_count = 99_999
+        drift = await check_all_canonical_uncovered(session, policy)
+        assert drift.mismatch_count == 1
+        assert conversation.uncovered_character_count == 99_999
         report = await recount_all_canonical_uncovered(session, policy)
+        repaired = await check_all_canonical_uncovered(session, policy)
+        assert repaired.mismatch_count == 0
     assert report.uncovered_event_count == 2
     assert report.uncovered_character_count < 99_999
     assert report.uncovered_character_count > 0
@@ -117,6 +127,86 @@ async def test_offline_recount_command_outputs_counts_without_ids(
     assert appended.event.canonical_conversation_id not in captured
     assert "1001" not in captured
     assert "github-monitor" not in captured
+
+
+async def test_offline_recount_check_returns_nonzero_for_drift(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qq_ai_bot.cli import _conversation_command
+    from qq_ai_bot.conversation.offline_recount import UncoveredCheckReport
+
+    settings = make_settings("sqlite+aiosqlite:///:memory:")
+
+    async def _check(database_url: str, config: RollupPolicyConfig) -> UncoveredCheckReport:
+        del database_url, config
+        return UncoveredCheckReport(
+            conversation_count=2,
+            mismatch_count=1,
+            uncovered_event_count=4,
+            uncovered_character_count=20,
+        )
+
+    monkeypatch.setattr("qq_ai_bot.cli.run_offline_uncovered_check", _check)
+    status = await _conversation_command(
+        settings,
+        type(
+            "Args",
+            (),
+            {"conversation_command": "recount-uncovered", "check": True},
+        )(),
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert status == 1
+    assert payload == {
+        "ok": False,
+        "conversation_count": 2,
+        "mismatch_count": 1,
+        "uncovered_event_count": 4,
+        "uncovered_character_count": 20,
+    }
+
+
+async def test_offline_check_does_not_change_sqlite_journal_mode(
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qq_ai_bot.conversation.offline_recount import run_offline_uncovered_check
+
+    async def _skip_schema(database_url: str) -> None:
+        del database_url
+
+    monkeypatch.setattr(
+        "qq_ai_bot.conversation.offline_recount.require_canonical_schema",
+        _skip_schema,
+    )
+
+    await database.close()
+    path = database.url.removeprefix("sqlite+aiosqlite:///")
+    connection = sqlite3.connect(path)
+    assert connection.execute("PRAGMA journal_mode=DELETE").fetchone() == ("delete",)
+    connection.close()
+
+    await run_offline_uncovered_check(
+        database.url,
+        RollupPolicyConfig(),
+    )
+
+    connection = sqlite3.connect(path)
+    assert connection.execute("PRAGMA journal_mode").fetchone() == ("delete",)
+    connection.close()
+
+
+async def test_offline_check_does_not_create_a_missing_database(tmp_path: Path) -> None:
+    from qq_ai_bot.conversation.offline_recount import run_offline_uncovered_check
+
+    path = tmp_path / "missing.db"
+    with pytest.raises(UncoveredRecountError, match="incompatible schema"):
+        await run_offline_uncovered_check(
+            f"sqlite+aiosqlite:///{path.as_posix()}",
+            RollupPolicyConfig(),
+        )
+    assert not path.exists()
 
 
 async def test_offline_recount_command_fail_closed_prints_no_ids(

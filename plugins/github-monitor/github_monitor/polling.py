@@ -55,9 +55,11 @@ from .renderer import render_event_card
 from .state import (
     QueueSnapshot,
     QueueStateConflict,
+    clear_queue_diagnostic,
     compare_and_set_queue_state,
     load_queue_state,
     mirror_legacy_state,
+    record_queue_diagnostic,
 )
 
 AGENT_INTENT = "根据当前主会话关系和仓库事件，自然说一句真实反应；不要复述完整卡片。"
@@ -117,13 +119,36 @@ class GitHubPoller:
                 if not subscription.enabled:
                     continue
                 try:
-                    await self.poll_repository(subscription, config)
+                    completed = await self.poll_repository(subscription, config)
+                    if completed:
+                        try:
+                            await clear_queue_diagnostic(self._context, subscription.repository)
+                        except Exception as diagnostic_exc:
+                            self._context.logger.warning(
+                                "github_diagnostic_clear_failed error_category=%s",
+                                type(diagnostic_exc).__name__,
+                            )
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
+                    category = (
+                        str(exc)
+                        if isinstance(exc, QueueStateConflict)
+                        else str(getattr(exc, "category", "")) or type(exc).__name__
+                    )
+                    try:
+                        await record_queue_diagnostic(
+                            self._context,
+                            subscription.repository,
+                            category,
+                        )
+                    except Exception as diagnostic_exc:
+                        self._context.logger.warning(
+                            "github_diagnostic_write_failed error_category=%s",
+                            type(diagnostic_exc).__name__,
+                        )
                     self._context.logger.warning(
-                        "github_poll_failed repository=%s error_category=%s",
-                        subscription.repository,
+                        "github_poll_failed error_category=%s",
                         type(exc).__name__,
                     )
             elapsed = (datetime.now(UTC) - started).total_seconds()
@@ -137,13 +162,13 @@ class GitHubPoller:
         self,
         subscription: RepositorySubscription,
         config: GitHubMonitorConfig,
-    ) -> None:
+    ) -> bool:
         async with self.repository_guard(subscription.repository):
             current_config = await load_config(self._context)
             current_subscription = self._find_subscription(current_config, subscription.repository)
             if current_subscription is None:
-                return
-            await self._poll_repository_locked(current_subscription, current_config)
+                return False
+            return await self._poll_repository_locked(current_subscription, current_config)
 
     async def rebaseline(
         self,
@@ -358,9 +383,9 @@ class GitHubPoller:
         self,
         subscription: RepositorySubscription,
         config: GitHubMonitorConfig,
-    ) -> None:
+    ) -> bool:
         if not subscription.enabled:
-            return
+            return False
         repository = subscription.repository
         snapshot = await load_queue_state(self._context, repository)
         if snapshot.raw is None and snapshot.state.legacy_imported:
@@ -372,9 +397,9 @@ class GitHubPoller:
             )
         now = datetime.now(UTC)
         if snapshot.state.paused_until is not None and snapshot.state.paused_until > now:
-            return
+            return False
         if snapshot.state.gap_reason:
-            return
+            return False
         had_queued_work = bool(snapshot.state.pending or snapshot.state.inflight is not None)
         snapshot = await self._drain_activation(subscription, snapshot)
         snapshot = await self._drain_queue(
@@ -386,9 +411,9 @@ class GitHubPoller:
         )
         if had_queued_work:
             await self._mirror_if_drained(repository, snapshot.state)
-            return
+            return self._queue_cycle_complete(snapshot.state)
         if snapshot.state.pending or snapshot.state.inflight is not None:
-            return
+            return False
         self._context.logger.info("github_poll_started repository=%s", repository)
         try:
             response, raw_events, cursor_found = await self._fetch_pages(
@@ -398,10 +423,10 @@ class GitHubPoller:
             )
         except GitHubAPIError as exc:
             await self._record_failure(repository, snapshot, exc)
-            return
+            return False
         except GitHubEventIdentityError as exc:
             await self._record_gap(repository, snapshot, str(exc))
-            return
+            return False
         now = datetime.now(UTC)
         if response.status_code == 304:
             if snapshot.state.backlog_pending:
@@ -410,18 +435,18 @@ class GitHubPoller:
                     snapshot,
                     "github_backlog_returned_not_modified",
                 )
-                return
+                return False
             snapshot = await self._write_success_metadata(repository, snapshot, response, now)
             await self._mirror_if_drained(repository, snapshot.state)
-            return
+            return self._queue_cycle_complete(snapshot.state)
         if snapshot.state.accepted_cursor and not cursor_found:
             await self._record_gap(repository, snapshot, "github_cursor_missing_from_overlap")
-            return
+            return False
         try:
             ordered = deduplicate_raw_events(raw_events)
         except GitHubEventIdentityError as exc:
             await self._record_gap(repository, snapshot, str(exc))
-            return
+            return False
         if snapshot.state.accepted_cursor:
             boundary = next(
                 (raw for raw in ordered if str(raw["id"]) == snapshot.state.accepted_cursor),
@@ -429,14 +454,14 @@ class GitHubPoller:
             )
             if boundary is None:
                 await self._record_gap(repository, snapshot, "github_cursor_missing_from_overlap")
-                return
+                return False
             boundary_fingerprint = raw_event_fingerprint(boundary)
             if (
                 snapshot.state.accepted_fingerprint
                 and snapshot.state.accepted_fingerprint != boundary_fingerprint
             ):
                 await self._record_gap(repository, snapshot, "github_cursor_payload_conflict")
-                return
+                return False
             if not snapshot.state.accepted_fingerprint:
                 updates: dict[str, object] = {"accepted_fingerprint": boundary_fingerprint}
                 if (
@@ -460,7 +485,7 @@ class GitHubPoller:
                 )
             except GitHubEventIdentityError as exc:
                 await self._record_gap(repository, snapshot, str(exc))
-                return
+                return False
         else:
             candidates = [
                 raw for raw in ordered if int(str(raw["id"])) > int(snapshot.state.accepted_cursor)
@@ -473,7 +498,7 @@ class GitHubPoller:
                     )
                 except GitHubEventIdentityError as exc:
                     await self._record_gap(repository, snapshot, str(exc))
-                    return
+                    return False
                 state = snapshot.state.model_copy(
                     update={
                         "accepted_cursor": str(candidates[-1]["id"]),
@@ -504,6 +529,17 @@ class GitHubPoller:
             snapshot.state.accepted_cursor,
             snapshot.state.committed_cursor,
             snapshot.state.backlog_pending,
+        )
+        return self._queue_cycle_complete(snapshot.state)
+
+    @staticmethod
+    def _queue_cycle_complete(state: QueueState) -> bool:
+        return bool(
+            not state.pending
+            and state.inflight is None
+            and not state.backlog_pending
+            and not state.gap_reason
+            and (state.activation is None or state.activation.complete)
         )
 
     async def _fetch_pages(

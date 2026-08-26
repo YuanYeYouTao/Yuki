@@ -7,7 +7,7 @@
 <p>面向个人部署、以长期关系和长期记忆为核心的 QQ AI Agent</p>
 
 <p>
-  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.0"><img src="https://img.shields.io/badge/Release-3.8.0-blue" alt="Yuki 3.8.0 release"></a>
+  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.1"><img src="https://img.shields.io/badge/Release-3.8.1-blue" alt="Yuki 3.8.1 release"></a>
   <img src="https://img.shields.io/badge/Schema-0049-blue" alt="Alembic head 0049">
   <img src="https://img.shields.io/badge/Plugin%20API-2.0-8A2BE2" alt="Plugin API 2.0">
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
@@ -22,7 +22,7 @@ Yuki 不是给 QQ 套一层模型回复的问答机器人。它把 Conversation�
 Automation、Plugin 与 QQ 登录账号和 Gateway 连接分开，让同一个长期角色能够换账号、换
 Provider，并在权限边界内持续记住人与共同经历。
 
-当前版本为 **3.8.0**。3.8 只运行 canonical schema；Alembic head 为 `0049`。
+当前版本为 **3.8.1**。3.8 只运行 canonical schema；Alembic head 仍为 `0049`。
 
 ## 3.8 核心合同
 
@@ -74,6 +74,8 @@ action 或宿主机；工具调用由后端进行权限、预算、幂等和审�
 - Memory V2：证据、事实、混合召回、冲突、版本链、生命周期、Dream 与受控变更。
 - 按永久 Person 保存的好感度、信任度和偏好。
 - 有界 Agent 工具循环、联网搜索、MCP、自动化与 Plugin API 2.0。
+- 插件外部事件使用独立账本类型与有界不可信 digest，不进入普通历史，也不会把稳定前缀改写成
+  动态 system 消息。
 - 可选图片理解、表情资产管理和本地 Genie-TTS 语音。
 - NapCat/SnowLuma 多 Provider、多 Presence、确定性路由与连接健康投影。
 - transport-neutral Control Plane；3.8 本身不开放管理 HTTP API，也不包含 WebUI。
@@ -90,7 +92,7 @@ action 或宿主机；工具调用由后端进行权限、预算、幂等和审�
 Linux：
 
 ```bash
-curl -fLO https://github.com/YuanYeYouTao/Yuki-QQbot/releases/download/v3.8.0/install.sh
+curl -fLO https://github.com/YuanYeYouTao/Yuki-QQbot/releases/download/v3.8.1/install.sh
 chmod +x install.sh
 ./install.sh
 ```
@@ -98,12 +100,13 @@ chmod +x install.sh
 Windows PowerShell：
 
 ```powershell
-Invoke-WebRequest -Uri https://github.com/YuanYeYouTao/Yuki-QQbot/releases/download/v3.8.0/install.ps1 -OutFile install.ps1
+Invoke-WebRequest -Uri https://github.com/YuanYeYouTao/Yuki-QQbot/releases/download/v3.8.1/install.ps1 -OutFile install.ps1
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-安装器默认版本为 `3.8.0`。它会校验 Release bundle、固定镜像版本、备份已有部署、运行引导配置、
-执行 Compose 检查并启动所选 Provider。密钥输入不回显，安装器不会在线试用 API key。
+安装器默认版本为 `3.8.1`。它会校验 Release bundle、固定镜像版本、备份已有部署、受控更新
+内置插件，并在 Bot 启动前执行离线 recount/check 与队列 doctor。任一门禁失败都保持
+Bot 停止。密钥输入不回显，安装器不会在线试用 API key。
 
 源码验证：
 
@@ -149,8 +152,9 @@ docker compose up -d
 - `data/qq_ai_bot.db-wal`
 - `data/qq_ai_bot.db-shm`
 - `.env`、`config/`、Compose 文件与镜像 digest
+- `plugins/github-monitor/` 与 `data/plugin_artifacts/`；Bot 镜像不包含 Compose 挂载的插件代码
 
-完整步骤见 [Yuki 3.8 升级指南](docs/upgrade-3.8.0.md)。不满足桥接前提时，新建 3.8 部署，
+完整步骤见 [Yuki 3.8.1 升级指南](docs/upgrade-3.8.1.md)。不满足桥接前提时，新建 3.8 部署，
 不要让 3.8 自动猜测或修复旧身份数据。
 
 ## 未来 WebUI
@@ -209,8 +213,8 @@ uv run pytest
 - [Plugin API 2.0](docs/plugin-development/index.md)
 - [MCP 架构](docs/mcp/architecture.md)
 - [SnowLuma Provider](docs/deployment/snowluma.md)
-- [3.8 升级指南](docs/upgrade-3.8.0.md)
-- [3.8 发布说明](docs/releases/v3.8.0.md)
+- [3.8.1 升级指南](docs/upgrade-3.8.1.md)
+- [3.8.1 发布说明](docs/releases/v3.8.1.md)
 - [版本化 Docker Release](docs/operations/versioned-docker-release.md)
 - [CHANGELOG](CHANGELOG.md)
 

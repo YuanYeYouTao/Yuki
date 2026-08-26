@@ -14,6 +14,7 @@ from .models import ActivationState, DeliveryUnit, QueueState, RepositoryState
 
 LEGACY_NAMESPACE = "github_monitor"
 QUEUE_NAMESPACE = "github_monitor_queue_v1"
+DIAGNOSTIC_NAMESPACE = "github_monitor_diagnostics_v1"
 
 
 class QueueStateConflict(RuntimeError):
@@ -30,6 +31,41 @@ class QueueSnapshot:
     state: QueueState
 
 
+async def record_queue_diagnostic(
+    context: PluginContext,
+    repository: str,
+    category: str,
+) -> None:
+    """Persist only a bounded failure category outside authoritative queue state."""
+
+    candidate = category.strip()
+    safe = (
+        candidate
+        if candidate
+        and len(candidate) <= 64
+        and all(
+            character.isascii() and (character.isalnum() or character == "_")
+            for character in candidate
+        )
+        else "unknown_failure"
+    )
+    await context.storage.set(
+        DIAGNOSTIC_NAMESPACE,
+        repository.casefold(),
+        {
+            "version": 1,
+            "category": safe,
+            "recorded_at": datetime.now(UTC).isoformat(),
+        },
+    )
+
+
+async def clear_queue_diagnostic(context: PluginContext, repository: str) -> None:
+    """Clear a transient diagnostic only after a complete repository poll succeeds."""
+
+    await context.storage.delete(DIAGNOSTIC_NAMESPACE, repository.casefold())
+
+
 async def load_queue_state(context: PluginContext, repository: str) -> QueueSnapshot:
     """Load the exact raw CAS value and parse its immutable projection."""
 
@@ -41,7 +77,7 @@ async def load_queue_state(context: PluginContext, repository: str) -> QueueSnap
     if legacy_raw is None:
         return QueueSnapshot(raw=None, state=QueueState())
     legacy = RepositoryState.model_validate(legacy_raw)
-    return QueueSnapshot(raw=None, state=_import_legacy(legacy, key))
+    return QueueSnapshot(raw=None, state=import_legacy_queue_state(legacy, key))
 
 
 async def compare_and_set_queue_state(
@@ -214,7 +250,7 @@ def repository_state_projection(state: QueueState) -> RepositoryState:
     )
 
 
-def _import_legacy(legacy: RepositoryState, repository: str) -> QueueState:
+def import_legacy_queue_state(legacy: RepositoryState, repository: str) -> QueueState:
     cursor = legacy.last_event_id
     activation = (
         ActivationState(

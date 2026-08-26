@@ -1,6 +1,38 @@
 # 更新日志
 
-## Unreleased — 3.8.0
+## 3.8.1 - 2026-08-27
+
+### External event isolation
+
+- Plugin background notifications are stored as canonical `external_event` rows instead of ordinary
+  `system` conversation messages. They no longer enter normal history, impersonate a speaker, or split the
+  stable provider prefix.
+- The main Agent sees only a bounded, explicitly untrusted recent-event digest. External rows have zero
+  foreground Prompt cost, while durable watermarks and compaction source accounting retain continuous raw
+  coverage.
+- Background turns, replies, tools, Memory, Automation and delivery side effects now revalidate immutable
+  conversation, authorization and notification snapshots immediately before use.
+- Notification idempotency covers the full Host request, including text, payload, target, Agent intent and
+  ordered media identity. Conflicting reuse fails closed.
+
+### GitHub Monitor
+
+- Repository events use a CAS-backed oldest-first WAL with durable accepted/committed cursors, payload
+  fingerprints, target snapshots, crash recovery, explicit gap state and byte-stable retry requests.
+- Adjacent Create/Delete and Watch/Fork events can be coalesced inside the plugin. Push, Release, PR, Issue,
+  comments and reviews remain singletons; aggregate cards are intentionally disabled.
+- Batch keys derive from ordered singleton keys, payloads retain every source event ID under the Host 32 KiB
+  limit, and `coalesce=false` safely drains unsealed work as singletons.
+
+### Operations
+
+- Product version is 3.8.1; Alembic remains `0049` and Plugin API remains `2.0`.
+- Existing 3.8.0 deployments must stop writers, snapshot DB/WAL/SHM and run the offline conversation
+  uncovered recount before the 3.8.1 Bot resumes writes.
+- Installers and the manual upgrade path now stage built-in plugin code, run a read-only recount check,
+  import legacy GitHub queue state under an exclusive transaction, and fail closed before Bot startup.
+
+## 3.8.0 - 2026-08-26
 
 ### Canonical-only identity
 

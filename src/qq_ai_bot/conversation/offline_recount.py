@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.conversation.rollup.errors import ConversationRollupError
 from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
 from qq_ai_bot.conversation.rollup.origins import parse_rollup_llm_origins
-from qq_ai_bot.conversation.rollup.repository import recount_canonical_uncovered
+from qq_ai_bot.conversation.rollup.repository import (
+    calculate_canonical_uncovered,
+    recount_canonical_uncovered,
+)
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.schema_guard import CanonicalSchemaError, require_canonical_schema
 
@@ -53,6 +57,24 @@ class UncoveredRecountReport:
 
         return {
             "conversation_count": self.conversation_count,
+            "uncovered_event_count": self.uncovered_event_count,
+            "uncovered_character_count": self.uncovered_character_count,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class UncoveredCheckReport:
+    conversation_count: int
+    mismatch_count: int
+    uncovered_event_count: int
+    uncovered_character_count: int
+
+    def as_counts(self) -> dict[str, int]:
+        """Return only aggregate counters; never include content or identifiers."""
+
+        return {
+            "conversation_count": self.conversation_count,
+            "mismatch_count": self.mismatch_count,
             "uncovered_event_count": self.uncovered_event_count,
             "uncovered_character_count": self.uncovered_character_count,
         }
@@ -105,6 +127,42 @@ async def recount_all_canonical_uncovered(
     )
 
 
+async def check_all_canonical_uncovered(
+    session: AsyncSession,
+    config: RollupPolicyConfig,
+) -> UncoveredCheckReport:
+    """Compare stored counters with current rulers without writing any row."""
+
+    conversations = tuple(
+        (
+            await session.scalars(
+                select(CanonicalConversationModel).order_by(CanonicalConversationModel.id.asc())
+            )
+        ).all()
+    )
+    mismatches = 0
+    total_events = 0
+    total_characters = 0
+    for conversation in conversations:
+        event_count, character_count = await calculate_canonical_uncovered(
+            session,
+            conversation,
+            config,
+        )
+        total_events += event_count
+        total_characters += character_count
+        mismatches += int(
+            conversation.uncovered_event_count != event_count
+            or conversation.uncovered_character_count != character_count
+        )
+    return UncoveredCheckReport(
+        conversation_count=len(conversations),
+        mismatch_count=mismatches,
+        uncovered_event_count=total_events,
+        uncovered_character_count=total_characters,
+    )
+
+
 async def run_stopped_offline_uncovered_recount(
     database_url: str,
     config: RollupPolicyConfig,
@@ -130,6 +188,48 @@ async def run_stopped_offline_uncovered_recount(
         raise UncoveredRecountError(_ERROR_DOMAIN_FAILURE) from exc
     finally:
         await database.close()
+
+
+async def run_offline_uncovered_check(
+    database_url: str,
+    config: RollupPolicyConfig,
+) -> UncoveredCheckReport:
+    """Read-only coverage drift check for a canonical stopped-database rehearsal."""
+
+    read_only_url = _read_only_sqlite_url(database_url)
+    try:
+        await require_canonical_schema(read_only_url)
+    except CanonicalSchemaError as exc:
+        raise UncoveredRecountError(_ERROR_INCOMPATIBLE_SCHEMA) from exc
+    engine = create_async_engine(read_only_url, pool_pre_ping=True)
+    sessions = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    try:
+        async with sessions() as session:
+            await _require_uncovered_watermark_columns(session)
+            return await check_all_canonical_uncovered(session, config)
+    except UncoveredRecountError:
+        raise
+    except ConversationRollupError as exc:
+        raise UncoveredRecountError(_ERROR_INVARIANT_VIOLATION) from exc
+    except SQLAlchemyError as exc:
+        raise UncoveredRecountError(_ERROR_INCOMPATIBLE_RUNTIME) from exc
+    except (ValueError, TypeError) as exc:
+        raise UncoveredRecountError(_ERROR_DOMAIN_FAILURE) from exc
+    finally:
+        await engine.dispose()
+
+
+def _read_only_sqlite_url(database_url: str) -> str:
+    prefix = "sqlite+aiosqlite:///"
+    if not database_url.startswith(prefix):
+        raise UncoveredRecountError(_ERROR_INCOMPATIBLE_SCHEMA)
+    raw_path = database_url.removeprefix(prefix)
+    if raw_path == ":memory:":
+        raise UncoveredRecountError(_ERROR_INCOMPATIBLE_SCHEMA)
+    path = Path(raw_path).resolve()
+    if not path.is_file():
+        raise UncoveredRecountError(_ERROR_INCOMPATIBLE_SCHEMA)
+    return f"{prefix}file:{path.as_posix()}?mode=ro&uri=true"
 
 
 async def _require_uncovered_watermark_columns(session: AsyncSession) -> None:

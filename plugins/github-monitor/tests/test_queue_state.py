@@ -15,13 +15,16 @@ from github_monitor.models import (
     delivery_target_key,
 )
 from github_monitor.state import (
+    DIAGNOSTIC_NAMESPACE,
     LEGACY_NAMESPACE,
     QUEUE_NAMESPACE,
     QueueSnapshot,
     QueueStateConflict,
     QueueStateInvariantError,
+    clear_queue_diagnostic,
     compare_and_set_queue_state,
     load_queue_state,
+    record_queue_diagnostic,
     validate_queue_transition,
 )
 from pydantic import ValidationError
@@ -30,6 +33,20 @@ from yuki_plugin_sdk.testing import FakePluginContext
 
 NOW = datetime(2026, 8, 27, tzinfo=UTC)
 FINGERPRINT = "a" * 64
+
+
+@pytest.mark.asyncio
+async def test_queue_diagnostic_is_bounded_and_clearable() -> None:
+    context = FakePluginContext(plugin_id="github-monitor")
+    await record_queue_diagnostic(context, "Owner/Repo", "receipt conflict: do-not-store")
+    stored = await context.storage.get(DIAGNOSTIC_NAMESPACE, "owner/repo")
+    assert stored == {
+        "version": 1,
+        "category": "unknown_failure",
+        "recorded_at": stored["recorded_at"],
+    }
+    await clear_queue_diagnostic(context, "owner/repo")
+    assert await context.storage.get(DIAGNOSTIC_NAMESPACE, "owner/repo") is None
 
 
 class RecordingCASStorage:

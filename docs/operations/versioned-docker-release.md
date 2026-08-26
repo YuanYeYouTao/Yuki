@@ -1,13 +1,13 @@
 # Versioned Docker Release 运维说明
 
-Yuki 3.8.0 正式产物只由 `.github/workflows/release.yml` 发布，目标平台为 `linux/amd64`。
+Yuki 3.8.1 正式产物只由 `.github/workflows/release.yml` 发布，目标平台为 `linux/amd64`。
 本地开发镜像不属于发布合同。
 
 ## 发布前一致性
 
 最终 main SHA 必须满足：
 
-- `pyproject.toml`、运行时 `__version__`、`uv.lock` 和 Release notes 均为 `3.8.0`。
+- `pyproject.toml`、运行时 `__version__`、`uv.lock` 和 Release notes 均为 `3.8.1`。
 - Alembic head 为 `0049`；fresh `0048 -> 0049` 和 historical populated `0048 -> 0049` 通过。
 - Plugin API 为 `2.0`；Genie-TTS Worker 内部版本仍为 `1.9.0`。
 - README、安装器默认版本、升级指南与部署包文件名一致。
@@ -33,28 +33,30 @@ bootstrap 不创建正式 Release，不发布版本 tag 或 `latest`。
 
 1. 确认目标 commit 已合入 main，工作树与远端 main 一致。
 2. 确认 Quality workflow 对该 SHA 通过。
-3. 创建严格的 `v3.8.0` annotated tag 并推送。
+3. 创建严格的 `v3.8.1` annotated tag 并推送。
 4. Release workflow 在 tag SHA 上重新运行完整 Quality。
 5. 构建 amd64 Bot/Worker 镜像和无源码部署包。
 6. 在临时部署中验证 fresh baseline、0049 head、Provider profiles、挂载与容器重建。
-7. 推送不可变 `3.8.0` 镜像。
+7. 推送不可变 `3.8.1` 镜像。
 8. 在匿名环境拉取版本镜像并启动；digest 校验通过后才更新 `latest`。
 9. 上传带 SHA-256 的部署资产并创建 GitHub Release，正文使用
-   [v3.8.0 发布说明](../releases/v3.8.0.md)。
+   [v3.8.1 发布说明](../releases/v3.8.1.md)。
 
 同一版本 tag 重跑时，只有 OCI `org.opencontainers.image.revision` 等于当前 tag SHA 才允许
 复用或覆盖资产；不同 revision 不得覆盖既有版本镜像。
+
+`v3.8.0` tag、Release、版本镜像和部署资产已经不可变，3.8.1 流程不得覆盖或删除它们。
 
 ## Release 资产
 
 至少包含：
 
-- `yuki-3.8.0-deploy.tar.gz`
+- `yuki-3.8.1-deploy.tar.gz`
 - `SHA256SUMS`
 - `install.sh`
 - `install.ps1`
 - SnowLuma Provider 文档
-- 3.8 升级指南
+- 3.8.1 升级指南
 
 安装器必须验证 archive checksum 和精确目录布局；不能从 main 分支即时下载未固定文件补齐
 Release bundle。
@@ -71,6 +73,50 @@ Release bundle。
 6. 旧事件不重新进入 Memory worker。
 
 `0049` 没有 downgrade。Release 与升级文档必须把 DB/WAL/SHM 同时点快照列为唯一回退路径。
+
+3.8.0 运行时会把 3.8.1 已落账的 external event 再投影为普通 system 历史，不是生产安全回退
+下限。至少保留含 external-event Prompt 隔离与 Host request idempotency 的本地回退镜像。
+
+## 本地生产镜像交付
+
+生产替换使用本机构建的 Bot 镜像；生产机只执行 `docker load`，不得构建、`uv sync` 或挂载源码：
+
+```bash
+VERSION=3.8.1
+REVISION="$(git rev-parse HEAD)"
+IMAGE="ghcr.io/yuanyeyoutao/yuki-qqbot:$VERSION"
+
+docker buildx build \
+  --platform linux/amd64 \
+  --load \
+  --build-arg "YUKI_VERSION=$VERSION" \
+  --build-arg "VCS_REF=$REVISION" \
+  --label "org.opencontainers.image.version=$VERSION" \
+  --label "org.opencontainers.image.revision=$REVISION" \
+  --tag "$IMAGE" \
+  .
+docker save --output "yuki-qqbot-$VERSION-amd64.tar" "$IMAGE"
+sha256sum "yuki-qqbot-$VERSION-amd64.tar" \
+  > "yuki-qqbot-$VERSION-amd64.tar.sha256"
+```
+
+传输后在生产机验证 SHA-256，执行 `docker load`，然后只替换 Bot：
+
+```bash
+docker load --input yuki-qqbot-3.8.1-amd64.tar
+YUKI_VERSION=3.8.1 docker compose up -d \
+  --no-deps --no-build --force-recreate bot
+```
+
+Bot 镜像不携带 Compose 只读挂载的 `plugins/` 源码。若发布包含内置插件变更，必须在 Bot
+停止期间同时备份并分阶段替换对应插件目录，并运行该插件的离线 doctor。3.8.1 的
+精确步骤见 `docs/upgrade-3.8.1.md`；只 `docker load` / 只换 Bot 容器不会更新 GitHub
+Monitor。
+
+SnowLuma、NapCat 和 Speech Worker 不在这次生产替换范围。替换前必须完成停写快照与
+`conversation recount-uncovered`、只读 `--check` 与插件队列 doctor；镜像
+architecture、version/revision label 和 `/healthz` 必须与
+目标 commit 一致。
 
 ## Provider 发布门
 

@@ -1412,6 +1412,23 @@ async def recount_canonical_uncovered(
 ) -> tuple[int, int]:
     """Repair canonical uncovered counters for live keeper events."""
 
+    event_count, character_count = await calculate_canonical_uncovered(
+        session,
+        conversation,
+        config,
+    )
+    conversation.uncovered_event_count = event_count
+    conversation.uncovered_character_count = character_count
+    return event_count, character_count
+
+
+async def calculate_canonical_uncovered(
+    session: AsyncSession,
+    conversation: CanonicalConversationModel,
+    config: RollupPolicyConfig | None = None,
+) -> tuple[int, int]:
+    """Calculate the durable keeper/message rulers without mutating the conversation."""
+
     rollup = await session.get(CanonicalConversationRollupModel, conversation.id)
     if rollup is not None and rollup.generation != conversation.generation:
         raise ConversationCoverageError("cannot recount across rollup generations")
@@ -1432,9 +1449,8 @@ async def recount_canonical_uncovered(
     )
     events = tuple(_event_record(row) for row in rows)
     policy = config or RollupPolicyConfig()
-    conversation.uncovered_event_count = len(events)
-    conversation.uncovered_character_count = durable_uncovered_characters(
+    character_count = durable_uncovered_characters(
         events,
         **_prompt_kwargs(policy),
     )
-    return conversation.uncovered_event_count, conversation.uncovered_character_count
+    return len(events), character_count

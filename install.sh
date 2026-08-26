@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-VERSION="3.8.0"
+VERSION="3.8.1"
 INSTALL_DIR=""
 REPOSITORY="YuanYeYouTao/Yuki-QQbot"
 BOT_IMAGE="ghcr.io/yuanyeyoutao/yuki-qqbot"
@@ -146,6 +146,10 @@ if [ "$existing" = true ]; then
     copy_upgrade_file "$INSTALL_DIR/data/qq_ai_bot.db" "$snap/data/qq_ai_bot.db"
     copy_upgrade_file "$INSTALL_DIR/data/qq_ai_bot.db-wal" "$snap/data/qq_ai_bot.db-wal"
     copy_upgrade_file "$INSTALL_DIR/data/qq_ai_bot.db-shm" "$snap/data/qq_ai_bot.db-shm"
+    if [ -d "$INSTALL_DIR/data/plugin_artifacts" ]; then
+        cp -Rp "$INSTALL_DIR/data/plugin_artifacts" "$snap/data/plugin_artifacts" \
+            || fail "unable to snapshot plugin media artifacts"
+    fi
     printf '%s\n' "{\"source_image\":$source_image_json,\"source_image_id\":\"$source_image_id\",\"source_digest\":\"$source_digest\",\"target_version\":\"$VERSION\",\"created_at\":\"$stamp\"}" > "$snap/manifest.json" \
         || fail "unable to write the upgrade snapshot manifest"
     verify_snapshot='
@@ -186,6 +190,25 @@ if db.is_file():
         cp "$source/$relative" "$INSTALL_DIR/$relative.yuki-new"
         mv -f "$INSTALL_DIR/$relative.yuki-new" "$INSTALL_DIR/$relative"
     done
+    mkdir -p "$INSTALL_DIR/plugins" "$managed_backup/plugins"
+    for plugin_source in "$source"/plugins/*; do
+        [ -d "$plugin_source" ] || continue
+        [ -f "$plugin_source/plugin.toml" ] || fail "release bundle contains an invalid plugin"
+        plugin_id=$(basename "$plugin_source")
+        plugin_target="$INSTALL_DIR/plugins/$plugin_id"
+        plugin_staged="$INSTALL_DIR/plugins/.$plugin_id.yuki-new-$stamp"
+        [ ! -e "$plugin_staged" ] || fail "staged plugin path already exists"
+        cp -R "$plugin_source" "$plugin_staged" || fail "unable to stage built-in plugin $plugin_id"
+        if [ -e "$plugin_target" ]; then
+            mv "$plugin_target" "$managed_backup/plugins/$plugin_id" \
+                || fail "unable to back up built-in plugin $plugin_id"
+        fi
+        if ! mv "$plugin_staged" "$plugin_target"; then
+            [ ! -e "$managed_backup/plugins/$plugin_id" ] \
+                || mv "$managed_backup/plugins/$plugin_id" "$plugin_target" || true
+            fail "unable to install built-in plugin $plugin_id"
+        fi
+    done
     printf '%s\n' "Updated release-managed deployment files; mutable data and configuration were preserved."
 fi
 
@@ -199,11 +222,30 @@ docker run --rm -it \
 
 cd "$INSTALL_DIR"
 docker compose config --quiet
-docker compose pull
-old_bot=$(docker compose ps -q bot 2>/dev/null || true)
+if [ "$existing" = true ]; then
+    YUKI_VERSION="$VERSION" docker compose pull bot
+else
+    YUKI_VERSION="$VERSION" docker compose pull
+fi
+old_bot=$(docker compose ps --all -q bot 2>/dev/null || true)
+
+printf '%s\n' "Running stopped-database upgrade gates with Yuki $VERSION"
+YUKI_VERSION="$VERSION" docker compose run --rm --no-deps \
+    --entrypoint qq-ai-bot-cli bot init-db \
+    || fail "target database initialization failed; Bot remains stopped"
+YUKI_VERSION="$VERSION" docker compose run --rm --no-deps \
+    --entrypoint qq-ai-bot-cli bot conversation recount-uncovered \
+    || fail "conversation recount failed; Bot remains stopped"
+YUKI_VERSION="$VERSION" docker compose run --rm --no-deps \
+    --entrypoint qq-ai-bot-cli bot conversation recount-uncovered --check \
+    || fail "conversation coverage check failed; Bot remains stopped"
+YUKI_VERSION="$VERSION" docker compose run --rm --no-deps \
+    --entrypoint python bot /app/plugins/github-monitor/doctor.py --apply-legacy-import \
+    || fail "GitHub Monitor queue preflight failed; Bot remains stopped"
 
 gateway_action="data/setup/gateway-action.json"
 gateway_target=""
+gateway_added=""
 if [ -f "$gateway_action" ]; then
     gateway_reader='import json, pathlib
 path = pathlib.Path("/deploy/data/setup/gateway-action.json")
@@ -218,6 +260,7 @@ if not target or any(type(item) is not str or item not in allowed for item in [*
 if len(set(previous)) != len(previous) or len(set(target)) != len(target):
     raise SystemExit("duplicate gateway provider")
 print("removed=" + " ".join(item for item in previous if item not in target))
+print("added=" + " ".join(item for item in target if item not in previous))
 print("target=" + " ".join(target))'
     if ! gateway_plan=$(docker run --rm \
         --user "$(id -u):$(id -g)" \
@@ -227,6 +270,7 @@ print("target=" + " ".join(target))'
         fail "pending QQ Gateway action is invalid"
     fi
     gateway_removed=$(printf '%s\n' "$gateway_plan" | sed -n 's/^removed=//p')
+    gateway_added=$(printf '%s\n' "$gateway_plan" | sed -n 's/^added=//p')
     gateway_target=$(printf '%s\n' "$gateway_plan" | sed -n 's/^target=//p')
     [ -n "$gateway_target" ] || fail "pending QQ Gateway action has no target"
     for service in $gateway_removed; do
@@ -240,7 +284,17 @@ print("target=" + " ".join(target))'
     done
 fi
 
-docker compose up -d
+if [ "$existing" = true ]; then
+    YUKI_VERSION="$VERSION" docker compose up -d \
+        --no-deps --no-build --force-recreate bot
+    for service in $gateway_added; do
+        docker compose --profile napcat --profile snowluma \
+            up -d --no-deps "$service" \
+            || fail "unable to start new QQ Gateway Provider"
+    done
+else
+    YUKI_VERSION="$VERSION" docker compose up -d
+fi
 
 wait_for_bot() {
     deadline=$(( $(date +%s) + 180 ))
