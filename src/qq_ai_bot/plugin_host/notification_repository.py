@@ -10,7 +10,6 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import or_, select, update
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import (
@@ -36,6 +35,16 @@ from qq_ai_bot.plugin_host.db_models import (
     PluginInstallationModel,
     PluginMediaArtifactModel,
     PluginNotificationOutboxModel,
+)
+from qq_ai_bot.plugin_host.notification_manifest import (
+    MediaIdentity,
+    PublicationManifest,
+    canonical_json,
+    is_sha256_digest,
+    manifest_from_request,
+    manifest_from_stored,
+    media_part_key,
+    parse_media_part_key,
 )
 from qq_ai_bot.plugin_host.ownership import (
     CANONICAL_OWNER_DISABLED,
@@ -306,29 +315,25 @@ class PluginNotificationRepository:
         plugin_id: str,
         request: PublishNotificationRequest,
     ) -> NotificationPublishReceipt:
-        payload_json = json.dumps(request.payload, ensure_ascii=False, separators=(",", ":"))
+        if not request.ask_agent and request.agent_intent:
+            raise ValueError("agent_intent requires ask_agent=true")
+        payload_json = canonical_json(request.payload)
         if len(payload_json.encode("utf-8")) > 32 * 1024:
             raise ValueError("notification payload exceeds 32 KiB")
-        for attempt in range(2):
-            try:
-                receipt = await self._publish_once(
-                    plugin_id=plugin_id,
-                    request=request,
-                )
-                logger.info(
-                    "plugin_external_event_published plugin_id=%s event_type=%s "
-                    "target_type=%s event_created=%s deduplicated=%s",
-                    plugin_id,
-                    request.event_type,
-                    request.target.target_type,
-                    receipt.event_created,
-                    receipt.deduplicated,
-                )
-                return receipt
-            except IntegrityError:
-                if attempt:
-                    raise
-        raise AssertionError("publication retry must return")
+        receipt = await self._publish_once(
+            plugin_id=plugin_id,
+            request=request,
+        )
+        logger.info(
+            "plugin_external_event_published plugin_id=%s event_type=%s "
+            "target_type=%s event_created=%s deduplicated=%s",
+            plugin_id,
+            request.event_type,
+            request.target.target_type,
+            receipt.event_created,
+            receipt.deduplicated,
+        )
+        return receipt
 
     async def _publish_once(
         self,
@@ -354,124 +359,139 @@ class PluginNotificationRepository:
                 scope = ConversationScope.group(grant.bot_user_id, target.target_id)
             else:
                 scope = ConversationScope.private(grant.bot_user_id, target.target_id)
-            try:
-                appended = await self._scoped_events.append_external(
-                    scope=scope,
-                    platform_message_id=_external_platform_id(plugin_id, request.event_key, target),
-                    source_plugin_id=plugin_id,
-                    external_source=request.external_source,
-                    external_event_key=request.event_key,
-                    external_event_type=request.event_type,
-                    external_payload=request.payload,
-                    external_target_id=target.target_id,
-                    content=request.summary,
-                    occurred_at=_aware(request.occurred_at),
-                    session=session,
-                )
-            except CanonicalIdentityError as exc:
-                raise plugin_ownership_error(exc) from None
             notification_id = _notification_id(
                 plugin_id, request.event_key, target.target_type, target.target_id
             )
-            for index, handle_id in enumerate(request.media_handles):
-                part_key = f"media:{index}:{handle_id}"
-                existing_part = await session.scalar(
-                    select(PluginNotificationOutboxModel.id).where(
-                        PluginNotificationOutboxModel.notification_id == notification_id,
-                        PluginNotificationOutboxModel.part_key == part_key,
-                    )
-                )
-                if existing_part is not None:
-                    continue
-                artifact = await session.get(PluginMediaArtifactModel, handle_id)
-                if (
-                    artifact is None
-                    or artifact.plugin_id != plugin_id
-                    or _aware(artifact.expires_at) <= now
-                ):
-                    raise PluginPermissionError("media handle is invalid, expired, or foreign")
-            existing = await session.get(ChatEventModel, appended.event.id)
-            if existing is None:
-                raise RuntimeError("scoped external event could not be reloaded")
-            if existing.author_kind != AuthorKind.SYSTEM.value:
-                raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
-            if existing.author_person_id or existing.author_presence_id:
-                raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
-            event_created = appended.created
-            delivery_enqueued = False
-            for index, handle_id in enumerate(request.media_handles):
-                delivery_enqueued |= await _ensure_outbox_part(
-                    session,
-                    notification_id=notification_id,
-                    part_key=f"media:{index}:{handle_id}",
-                    source_event_id=existing.id,
-                    plugin_id=plugin_id,
-                    grant=grant,
-                    event=existing,
-                    part_type="media",
-                    text="",
-                    media_handle_id=handle_id,
-                    now=now,
-                )
-            if request.text:
-                delivery_enqueued |= await _ensure_outbox_part(
-                    session,
-                    notification_id=notification_id,
-                    part_key="text",
-                    source_event_id=existing.id,
-                    plugin_id=plugin_id,
-                    grant=grant,
-                    event=existing,
-                    part_type="text",
-                    text=request.text,
-                    media_handle_id=None,
-                    now=now,
-                )
-            job_created = False
-            if request.ask_agent:
-                job = await session.scalar(
-                    select(PluginBackgroundTurnJobModel).where(
-                        PluginBackgroundTurnJobModel.source_event_id == existing.id
-                    )
-                )
-                if job is None:
-                    job = PluginBackgroundTurnJobModel(
-                        source_event_id=existing.id,
-                        plugin_id=plugin_id,
-                        target_type=grant.target_type,
-                        target_id=target.target_id,
-                        bot_user_id=grant.bot_user_id,
-                        agent_intent=request.agent_intent,
-                        status="pending",
-                        attempts=0,
-                        max_attempts=3,
-                        next_attempt_at=now,
-                        lease_until=None,
-                        generated_text="",
-                        tool_calls_used=0,
-                        model_requests=0,
-                        last_error_category=None,
-                        created_at=now,
-                        updated_at=now,
-                        completed_at=None,
-                    )
-                    await _stamp_publication_child(
-                        session,
-                        job,
-                        grant=grant,
-                        event=existing,
-                    )
-                    session.add(job)
-                    await session.flush()
-                    job_created = True
-            receipt = NotificationPublishReceipt(
-                notification_id=notification_id,
-                source_event_id=existing.id,
-                event_created=event_created,
-                delivery_enqueued=delivery_enqueued,
-                agent_turn_enqueued=job_created,
-                deduplicated=not event_created,
+            existing = await _load_existing_external_event(
+                session,
+                plugin_id=plugin_id,
+                event_key=request.event_key,
+                scope_type=scope.scope_type.value,
+                target_id=target.target_id,
             )
+            media = await _resolve_request_media(
+                session,
+                plugin_id=plugin_id,
+                handle_ids=request.media_handles,
+                now=now,
+            )
+            incoming = manifest_from_request(
+                request,
+                plugin_id=plugin_id,
+                media=tuple(
+                    MediaIdentity(index=index, sha256=sha256) for index, _handle_id, sha256 in media
+                ),
+            )
+            if existing is not None:
+                receipt = await _existing_event_receipt(
+                    session,
+                    plugin_id=plugin_id,
+                    event=existing,
+                    notification_id=notification_id,
+                    incoming=incoming,
+                )
+            else:
+                try:
+                    appended = await self._scoped_events.append_external(
+                        scope=scope,
+                        platform_message_id=_external_platform_id(
+                            plugin_id, request.event_key, target
+                        ),
+                        source_plugin_id=plugin_id,
+                        external_source=request.external_source,
+                        external_event_key=request.event_key,
+                        external_event_type=request.event_type,
+                        external_payload=request.payload,
+                        external_target_id=target.target_id,
+                        content=request.summary,
+                        occurred_at=_aware(request.occurred_at),
+                        session=session,
+                    )
+                except CanonicalIdentityError as exc:
+                    if exc.category == "receipt_conflict":
+                        raise
+                    raise plugin_ownership_error(exc) from None
+                created = await session.get(ChatEventModel, appended.event.id)
+                if created is None:
+                    raise RuntimeError("scoped external event could not be reloaded")
+                _require_system_external(created)
+                if not appended.created:
+                    receipt = await _existing_event_receipt(
+                        session,
+                        plugin_id=plugin_id,
+                        event=created,
+                        notification_id=notification_id,
+                        incoming=incoming,
+                    )
+                else:
+                    delivery_enqueued = False
+                    for index, handle_id, sha256 in media:
+                        delivery_enqueued |= await _ensure_outbox_part(
+                            session,
+                            notification_id=notification_id,
+                            part_key=media_part_key(index=index, sha256=sha256),
+                            source_event_id=created.id,
+                            plugin_id=plugin_id,
+                            grant=grant,
+                            event=created,
+                            part_type="media",
+                            text="",
+                            media_handle_id=handle_id,
+                            now=now,
+                        )
+                    if request.text:
+                        delivery_enqueued |= await _ensure_outbox_part(
+                            session,
+                            notification_id=notification_id,
+                            part_key="text",
+                            source_event_id=created.id,
+                            plugin_id=plugin_id,
+                            grant=grant,
+                            event=created,
+                            part_type="text",
+                            text=request.text,
+                            media_handle_id=None,
+                            now=now,
+                        )
+                    job_created = False
+                    if request.ask_agent:
+                        job = PluginBackgroundTurnJobModel(
+                            source_event_id=created.id,
+                            plugin_id=plugin_id,
+                            target_type=grant.target_type,
+                            target_id=target.target_id,
+                            bot_user_id=grant.bot_user_id,
+                            agent_intent=request.agent_intent,
+                            status="pending",
+                            attempts=0,
+                            max_attempts=3,
+                            next_attempt_at=now,
+                            lease_until=None,
+                            generated_text="",
+                            tool_calls_used=0,
+                            model_requests=0,
+                            last_error_category=None,
+                            created_at=now,
+                            updated_at=now,
+                            completed_at=None,
+                        )
+                        await _stamp_publication_child(
+                            session,
+                            job,
+                            grant=grant,
+                            event=created,
+                        )
+                        session.add(job)
+                        await session.flush()
+                        job_created = True
+                    receipt = NotificationPublishReceipt(
+                        notification_id=notification_id,
+                        source_event_id=created.id,
+                        event_created=True,
+                        delivery_enqueued=delivery_enqueued,
+                        agent_turn_enqueued=job_created,
+                        deduplicated=False,
+                    )
         return receipt
 
     async def claim_outbox(
@@ -1252,6 +1272,250 @@ async def _canonical_enabled_grant(
         return None
     await require_grant_readable(session, rows[0])
     return rows[0]
+
+
+def _require_system_external(event: ChatEventModel) -> None:
+    if (
+        event.event_kind != "external_event"
+        or event.direction != "external"
+        or event.origin != "plugin_background"
+        or event.author_kind != AuthorKind.SYSTEM.value
+    ):
+        raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
+    if event.author_person_id or event.author_presence_id:
+        raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
+
+
+def _receipt_conflict() -> CanonicalIdentityError:
+    return CanonicalIdentityError("receipt_conflict")
+
+
+async def _load_existing_external_event(
+    session: AsyncSession,
+    *,
+    plugin_id: str,
+    event_key: str,
+    scope_type: str,
+    target_id: str,
+) -> ChatEventModel | None:
+    rows = list(
+        (
+            await session.scalars(
+                select(ChatEventModel).where(
+                    ChatEventModel.event_kind == "external_event",
+                    ChatEventModel.source_plugin_id == plugin_id,
+                    ChatEventModel.external_event_key == event_key,
+                    ChatEventModel.scope_type == scope_type,
+                    ChatEventModel.external_target_id == target_id,
+                )
+            )
+        ).all()
+    )
+    if len(rows) > 1:
+        raise _receipt_conflict()
+    return rows[0] if rows else None
+
+
+async def _resolve_request_media(
+    session: AsyncSession,
+    *,
+    plugin_id: str,
+    handle_ids: tuple[str, ...],
+    now: datetime,
+) -> tuple[tuple[int, str, str], ...]:
+    resolved: list[tuple[int, str, str]] = []
+    for index, handle_id in enumerate(handle_ids):
+        artifact = await session.get(PluginMediaArtifactModel, handle_id)
+        if (
+            artifact is None
+            or artifact.plugin_id != plugin_id
+            or _aware(artifact.expires_at) <= now
+            or not is_sha256_digest(artifact.sha256)
+        ):
+            raise PluginPermissionError("media handle is invalid, expired, or foreign")
+        resolved.append((index, handle_id, artifact.sha256))
+    return tuple(resolved)
+
+
+async def _stored_media_identity(
+    session: AsyncSession,
+    *,
+    plugin_id: str,
+    notification_id: str,
+    source_event_id: int,
+    target_type: str,
+    target_id: str,
+) -> tuple[MediaIdentity, ...]:
+    rows = list(
+        (
+            await session.scalars(
+                select(PluginNotificationOutboxModel).where(
+                    PluginNotificationOutboxModel.notification_id == notification_id,
+                    PluginNotificationOutboxModel.part_type == "media",
+                )
+            )
+        ).all()
+    )
+    items: list[MediaIdentity] = []
+    seen: set[int] = set()
+    for row in rows:
+        _require_publication_child_provenance(
+            row,
+            plugin_id=plugin_id,
+            source_event_id=source_event_id,
+            target_type=target_type,
+            target_id=target_id,
+        )
+        if row.text:
+            raise _receipt_conflict()
+        parsed = parse_media_part_key(row.part_key)
+        if parsed is None:
+            raise _receipt_conflict()
+        index, token = parsed
+        if index in seen:
+            raise _receipt_conflict()
+        seen.add(index)
+        if is_sha256_digest(token):
+            sha256 = token
+            if row.media_handle_id:
+                artifact = await session.get(PluginMediaArtifactModel, row.media_handle_id)
+                if artifact is not None and (
+                    artifact.plugin_id != plugin_id or artifact.sha256 != token
+                ):
+                    raise _receipt_conflict()
+        else:
+            if row.media_handle_id != token:
+                raise _receipt_conflict()
+            artifact = await session.get(PluginMediaArtifactModel, token)
+            if (
+                artifact is None
+                or artifact.plugin_id != plugin_id
+                or not is_sha256_digest(artifact.sha256)
+            ):
+                raise _receipt_conflict()
+            sha256 = artifact.sha256
+        items.append(MediaIdentity(index=index, sha256=sha256))
+    return tuple(sorted(items, key=lambda item: item.index))
+
+
+async def _load_stored_manifest(
+    session: AsyncSession,
+    *,
+    plugin_id: str,
+    event: ChatEventModel,
+    notification_id: str,
+) -> PublicationManifest:
+    try:
+        payload = json.loads(event.external_payload_json or "")
+    except json.JSONDecodeError:
+        raise _receipt_conflict() from None
+    if not isinstance(payload, dict):
+        raise _receipt_conflict()
+    text_row = await session.scalar(
+        select(PluginNotificationOutboxModel).where(
+            PluginNotificationOutboxModel.notification_id == notification_id,
+            PluginNotificationOutboxModel.part_key == "text",
+        )
+    )
+    job = await session.scalar(
+        select(PluginBackgroundTurnJobModel).where(
+            PluginBackgroundTurnJobModel.source_event_id == event.id
+        )
+    )
+    if (
+        not event.source_plugin_id
+        or not event.external_event_key
+        or not event.external_source
+        or not event.external_event_type
+        or not event.external_target_id
+    ):
+        raise _receipt_conflict()
+    if text_row is not None:
+        _require_publication_child_provenance(
+            text_row,
+            plugin_id=plugin_id,
+            source_event_id=event.id,
+            target_type=event.scope_type,
+            target_id=event.external_target_id,
+        )
+        if text_row.part_type != "text" or text_row.media_handle_id is not None:
+            raise _receipt_conflict()
+    if job is not None:
+        _require_publication_child_provenance(
+            job,
+            plugin_id=plugin_id,
+            source_event_id=event.id,
+            target_type=event.scope_type,
+            target_id=event.external_target_id,
+        )
+    return manifest_from_stored(
+        plugin_id=event.source_plugin_id,
+        event_key=event.external_event_key,
+        occurred_at=_aware(event.occurred_at),
+        summary=event.content,
+        payload=payload,
+        text="" if text_row is None else text_row.text,
+        target_type=event.scope_type,
+        target_id=event.external_target_id,
+        external_source=event.external_source,
+        event_type=event.external_event_type,
+        ask_agent=job is not None,
+        agent_intent="" if job is None else job.agent_intent,
+        media=await _stored_media_identity(
+            session,
+            plugin_id=plugin_id,
+            notification_id=notification_id,
+            source_event_id=event.id,
+            target_type=event.scope_type,
+            target_id=event.external_target_id,
+        ),
+    )
+
+
+def _require_publication_child_provenance(
+    child: PluginNotificationOutboxModel | PluginBackgroundTurnJobModel,
+    *,
+    plugin_id: str,
+    source_event_id: int,
+    target_type: str,
+    target_id: str,
+) -> None:
+    if (
+        child.plugin_id != plugin_id
+        or child.source_event_id != source_event_id
+        or child.target_type != target_type
+        or child.target_id != target_id
+    ):
+        raise _receipt_conflict()
+
+
+async def _existing_event_receipt(
+    session: AsyncSession,
+    *,
+    plugin_id: str,
+    event: ChatEventModel,
+    notification_id: str,
+    incoming: PublicationManifest,
+) -> NotificationPublishReceipt:
+    """Exact match returns the prior receipt. Any mismatch fails closed. No child writes."""
+
+    _require_system_external(event)
+    stored = await _load_stored_manifest(
+        session,
+        plugin_id=plugin_id,
+        event=event,
+        notification_id=notification_id,
+    )
+    if stored != incoming:
+        raise _receipt_conflict()
+    return NotificationPublishReceipt(
+        notification_id=notification_id,
+        source_event_id=event.id,
+        event_created=False,
+        delivery_enqueued=False,
+        agent_turn_enqueued=False,
+        deduplicated=True,
+    )
 
 
 async def _ensure_outbox_part(
