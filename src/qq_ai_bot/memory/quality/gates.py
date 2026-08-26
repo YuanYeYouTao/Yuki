@@ -13,6 +13,8 @@ from qq_ai_bot.memory.quality.models import (
     QualityMetricValue,
 )
 
+_INFORMATIONAL_BASELINE_METRICS = frozenset({"quality_suite_total_ms"})
+
 
 @dataclass(frozen=True, slots=True)
 class GateDefinition:
@@ -102,6 +104,10 @@ def compare_baseline(
 ) -> tuple[str, ...]:
     regressions: list[str] = []
     for name, prior in baseline.metrics.items():
+        if name in _INFORMATIONAL_BASELINE_METRICS:
+            # This is a sum of one wall-clock observation from each heterogeneous case.
+            # Keep it in reports, but use the per-operation p50 metrics for latency gates.
+            continue
         current = metrics.get(name)
         if prior is None or current is None or current.value is None:
             continue

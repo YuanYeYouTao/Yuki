@@ -62,6 +62,10 @@ consolidation 请求、每 query embedding 请求、平均上下文字数，以�
 context 的 p50/p95 延迟。`total_model_requests` 和 `total_query_embedding_requests` 用于宽松的
 baseline 比例回归。
 
+`quality_suite_total_ms` 是各异构 case 单次 wall-clock observation 的总和，只用于报告趋势，
+不参与 baseline 回归判定；它会把单个 runner 的调度或 SQLite 抖动累加成伪回归。延迟门继续由
+extraction/retrieval/context 的 p50/p95 指标承担，大规模性能变化另由固定 100,000 事件场景衡量。
+
 p95 至少需要 20 个实际 observation；样本不足时按统一空分母规则输出 `null`，不能把单次最大
 耗时伪装成尾延迟。p50 没有该最小样本限制。100,000 事件性能场景固定执行 50 次检索，因此会
 独立提供可比较的 retrieval/context p95。
