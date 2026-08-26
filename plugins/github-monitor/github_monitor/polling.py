@@ -14,6 +14,12 @@ from uuid import uuid4
 from yuki_plugin_sdk.context import PluginContext
 from yuki_plugin_sdk.models import NotificationTarget, PublishNotificationRequest
 
+from .aggregation import (
+    BATCH_EVENT_TYPE,
+    AggregatePayloadTooLarge,
+    build_aggregate_projection,
+    plan_adjacent_members,
+)
 from .client import GitHubClient
 from .config import (
     GitHubMonitorConfig,
@@ -245,7 +251,9 @@ class GitHubPoller:
         return await self._drain_queue(
             subscription,
             snapshot,
-            max_units=1,
+            max_events=1,
+            max_batch_members=1,
+            coalesce=False,
         )
 
     async def retire_target_locked(
@@ -254,6 +262,8 @@ class GitHubPoller:
         target: NotificationTargetConfig,
         *,
         last_target: bool,
+        coalesce: bool = True,
+        max_batch_members: int = 50,
     ) -> None:
         """Resolve a removed target before its Host grant can be revoked.
 
@@ -328,7 +338,12 @@ class GitHubPoller:
                     raise GitHubQueueGap("github_target_removal_not_drained")
         if last_target:
             snapshot = await self._drain_activation(without_target, snapshot)
-            snapshot = await self._drain_queue(without_target, snapshot)
+            snapshot = await self._drain_queue(
+                without_target,
+                snapshot,
+                coalesce=coalesce,
+                max_batch_members=max_batch_members,
+            )
             if (
                 snapshot.state.pending
                 or snapshot.state.inflight is not None
@@ -365,7 +380,9 @@ class GitHubPoller:
         snapshot = await self._drain_queue(
             subscription,
             snapshot,
-            max_units=config.max_events_per_poll,
+            max_events=config.max_events_per_poll,
+            max_batch_members=config.max_events_per_poll,
+            coalesce=config.coalesce,
         )
         if had_queued_work:
             await self._mirror_if_drained(repository, snapshot.state)
@@ -475,7 +492,9 @@ class GitHubPoller:
         snapshot = await self._drain_queue(
             subscription,
             snapshot,
-            max_units=config.max_events_per_poll,
+            max_events=config.max_events_per_poll,
+            max_batch_members=config.max_events_per_poll,
+            coalesce=config.coalesce,
         )
         snapshot = await self._mark_success(repository, snapshot, response, now)
         await self._mirror_if_drained(repository, snapshot.state)
@@ -635,29 +654,56 @@ class GitHubPoller:
         subscription: RepositorySubscription,
         snapshot: QueueSnapshot,
         *,
-        max_units: int | None = None,
+        max_events: int | None = None,
+        max_batch_members: int = 50,
+        coalesce: bool = True,
     ) -> QueueSnapshot:
-        completed_units = 0
+        completed_events = 0
         while not self._stop.is_set():
-            if max_units is not None and completed_units >= max_units:
+            if max_events is not None and completed_events >= max_events:
                 return snapshot
             if snapshot.state.gap_reason:
                 return snapshot
             if snapshot.state.inflight is None:
                 if not snapshot.state.pending:
                     return snapshot
-                source = snapshot.state.pending[0]
-                deliveries = tuple(
-                    self._target_delivery(target) for target in source.target_snapshot
+                remaining = (
+                    len(snapshot.state.pending)
+                    if max_events is None
+                    else max_events - completed_events
                 )
+                members = plan_adjacent_members(
+                    snapshot.state.pending,
+                    coalesce=coalesce,
+                    limit=max(1, min(remaining, max_batch_members)),
+                )
+                while len(members) > 1:
+                    try:
+                        build_aggregate_projection(
+                            members,
+                            legacy_boundary=snapshot.state.legacy_boundary,
+                        )
+                    except AggregatePayloadTooLarge:
+                        members = members[:-1]
+                        continue
+                    break
+                if len(members) > 1:
+                    deliveries = self._aggregate_deliveries(
+                        members,
+                        snapshot.state.legacy_boundary,
+                    )
+                else:
+                    deliveries = tuple(
+                        self._target_delivery(target) for target in members[0].target_snapshot
+                    )
                 unit = DeliveryUnit(
-                    unit_id=self._unit_id(subscription.repository, (source,)),
-                    members=(source,),
+                    unit_id=self._unit_id(subscription.repository, members),
+                    members=members,
                     deliveries=deliveries,
                     sealed_at=datetime.now(UTC),
                 )
                 state = snapshot.state.model_copy(
-                    update={"pending": snapshot.state.pending[1:], "inflight": unit}
+                    update={"pending": snapshot.state.pending[len(members) :], "inflight": unit}
                 )
                 snapshot = await compare_and_set_queue_state(
                     self._context, subscription.repository, snapshot, state
@@ -694,8 +740,38 @@ class GitHubPoller:
             snapshot = await compare_and_set_queue_state(
                 self._context, subscription.repository, snapshot, state
             )
-            completed_units += 1
+            completed_events += len(current_unit.members)
         return snapshot
+
+    def _aggregate_deliveries(
+        self,
+        members: tuple[QueuedSourceEvent, ...],
+        legacy_boundary: str,
+    ) -> tuple[TargetDelivery, ...]:
+        projection = build_aggregate_projection(
+            members,
+            legacy_boundary=legacy_boundary,
+        )
+        deliveries: list[TargetDelivery] = []
+        for target in members[0].target_snapshot:
+            prepared = build_prepared_notification(
+                event_key=projection.event_key,
+                event_type=BATCH_EVENT_TYPE,
+                target_type=target.target_type,
+                target_id=target.target_id,
+                occurred_at=projection.occurred_at,
+                summary=projection.summary,
+                payload=projection.payload,
+                text=projection.text if target.send_text else "",
+                ask_agent=target.ask_agent,
+                agent_intent=AGENT_INTENT if target.ask_agent else "",
+            )
+            deliveries.append(
+                self._target_delivery(target).model_copy(
+                    update={"status": "prepared", "prepared": prepared}
+                )
+            )
+        return tuple(deliveries)
 
     async def _drain_unit_target(
         self,

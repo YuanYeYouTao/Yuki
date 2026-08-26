@@ -53,15 +53,26 @@ TARGET = NotificationTargetConfig(
 )
 
 
-def _raw(event_id: int, *, action: str = "started", actor: str = "alice") -> dict[str, Any]:
+def _raw(
+    event_id: int,
+    *,
+    action: str = "started",
+    actor: str = "alice",
+    event_type: str = "WatchEvent",
+    ref: str = "",
+    ref_type: str = "branch",
+) -> dict[str, Any]:
+    payload: dict[str, object] = {"action": action}
+    if event_type in {"CreateEvent", "DeleteEvent"}:
+        payload.update({"ref": ref or f"feature/{event_id}", "ref_type": ref_type})
     return {
         "id": str(event_id),
-        "type": "WatchEvent",
+        "type": event_type,
         "actor": {"login": actor, "type": "User"},
         "created_at": (datetime(2026, 8, 27, tzinfo=UTC) + timedelta(seconds=event_id))
         .isoformat()
         .replace("+00:00", "Z"),
-        "payload": {"action": action},
+        "payload": payload,
     }
 
 
@@ -246,6 +257,18 @@ def _target_snapshot(target: NotificationTargetConfig = TARGET) -> TargetPolicyS
     )
 
 
+def _queued(raw: dict[str, Any], target: NotificationTargetConfig = TARGET) -> QueuedSourceEvent:
+    event = normalize_event(REPOSITORY, raw)
+    assert event is not None
+    return QueuedSourceEvent(
+        github_event_id=str(raw["id"]),
+        source_fingerprint=raw_event_fingerprint(raw),
+        source_created_at=event.created_at,
+        normalized=event,
+        target_snapshot=(_target_snapshot(target),),
+    )
+
+
 @pytest.mark.asyncio
 async def test_oldest_first_backlog_advances_without_truncating_newest() -> None:
     context = FakePluginContext(plugin_id="github-monitor")
@@ -260,9 +283,8 @@ async def test_oldest_first_backlog_advances_without_truncating_newest() -> None
 
     await _poll(poller, context, subscription, config)
     first = (await load_queue_state(context, REPOSITORY)).state
-    assert [request.event_key for request in context.notifications.published] == [
-        "github:owner/repo:event:99",
-        "github:owner/repo:event:100",
+    assert [request.payload["source_event_ids"] for request in context.notifications.published] == [
+        ["99", "100"]
     ]
     assert first.accepted_cursor == "105"
     assert first.committed_cursor == "100"
@@ -270,10 +292,9 @@ async def test_oldest_first_backlog_advances_without_truncating_newest() -> None
     assert first.backlog_pending is True
 
     await _poll(poller, context, subscription, config)
-    assert [request.event_key for request in context.notifications.published][-2:] == [
-        "github:owner/repo:event:101",
-        "github:owner/repo:event:102",
-    ]
+    assert [request.payload["source_event_ids"] for request in context.notifications.published][
+        -1:
+    ] == [["101", "102"]]
     assert len(client.requests) == 1
     second = (await load_queue_state(context, REPOSITORY)).state
     assert second.accepted_cursor == "105"
@@ -486,16 +507,18 @@ async def test_first_target_completion_survives_second_target_failure() -> None:
     context.notifications = notifications  # type: ignore[assignment]
     _seed_state(storage, _cursor_state(98))
     poller = GitHubPoller(context, asyncio.Event())
-    poller._client = PageClient({1: [_raw(99), _raw(98)]})  # type: ignore[assignment]
+    poller._client = PageClient({1: [_raw(100), _raw(99), _raw(98)]})  # type: ignore[assignment]
 
     with pytest.raises(RuntimeError, match="second target"):
         await _poll(poller, context, subscription, config)
     state = (await load_queue_state(context, REPOSITORY)).state
     assert state.inflight is not None
+    assert len(state.inflight.members) == 2
     assert [item.status for item in state.inflight.deliveries] == ["completed", "attempting"]
     await _poll(poller, context, subscription, config)
     targets = [request.target.target_id for request in notifications.published]
     assert targets == ["2001", "2002", "2002"]
+    assert all(request.event_type == "github_event_batch" for request in notifications.published)
     assert notifications.published[1] == notifications.published[2]
 
 
@@ -825,8 +848,10 @@ async def test_rebaseline_mode_survives_crash_between_reset_and_fetch() -> None:
     assert interrupted.rebaseline_mode == "replay_recent"
     storage.arm(None)
     await poller.poll_repository(subscription, config)
-    event_keys = [item.event_key for item in context.notifications.published]
-    assert "github:owner/repo:event:98" in event_keys
+    source_ids = [
+        item.payload.get("source_event_ids", []) for item in context.notifications.published
+    ]
+    assert any("98" in item for item in source_ids)
     assert (await load_queue_state(context, REPOSITORY)).state.rebaseline_mode == ""
 
 
@@ -1067,3 +1092,219 @@ async def test_c4_drains_prepared_multi_member_unit() -> None:
     assert [item.event_key for item in context.notifications.published] == [
         "github:owner/repo:batch:v1:test"
     ]
+
+
+@pytest.mark.asyncio
+async def test_adjacent_delete_events_publish_one_body_free_batch() -> None:
+    context = FakePluginContext(plugin_id="github-monitor")
+    _seed_state(context.storage, _cursor_state(98))
+    target = TARGET.model_copy(update={"ask_agent": True})
+    subscription = _subscription(targets=(target,))
+    config = _config(subscription)
+    client = PageClient(
+        {
+            1: [
+                _raw(100, event_type="DeleteEvent", action="deleted", ref="feature/b"),
+                _raw(99, event_type="DeleteEvent", action="deleted", ref="feature/a"),
+                _raw(98),
+            ]
+        }
+    )
+    poller = GitHubPoller(context, asyncio.Event())
+    poller._client = client  # type: ignore[assignment]
+
+    await _poll(poller, context, subscription, config)
+
+    assert len(context.notifications.published) == 1
+    request = context.notifications.published[0]
+    assert request.event_type == "github_event_batch"
+    assert request.event_key.startswith("github:owner/repo:batch:v1:")
+    assert request.payload["source_event_ids"] == ["99", "100"]
+    assert request.media_handles == ()
+    assert request.ask_agent is True
+    assert "feature/a" in request.text and "feature/b" in request.text
+    assert "excerpt" not in str(request.payload)
+    state = (await load_queue_state(context, REPOSITORY)).state
+    assert state.committed_cursor == "100"
+    assert not state.pending and state.inflight is None
+
+
+@pytest.mark.asyncio
+async def test_coalesce_false_drains_unsealed_events_as_singletons() -> None:
+    context = FakePluginContext(plugin_id="github-monitor")
+    _seed_state(context.storage, _cursor_state(98))
+    subscription = _subscription()
+    config = _config(subscription).model_copy(update={"coalesce": False})
+    client = PageClient(
+        {
+            1: [
+                _raw(100, event_type="DeleteEvent", action="deleted"),
+                _raw(99, event_type="DeleteEvent", action="deleted"),
+                _raw(98),
+            ]
+        }
+    )
+    poller = GitHubPoller(context, asyncio.Event())
+    poller._client = client  # type: ignore[assignment]
+
+    await _poll(poller, context, subscription, config)
+
+    assert [item.event_type for item in context.notifications.published] == [
+        "DeleteEvent",
+        "DeleteEvent",
+    ]
+    assert [item.payload["branch"] for item in context.notifications.published] == [
+        "feature/99",
+        "feature/100",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_batch_budget_counts_source_events_not_delivery_units() -> None:
+    context = FakePluginContext(plugin_id="github-monitor")
+    _seed_state(context.storage, _cursor_state(98))
+    subscription = _subscription()
+    config = _config(subscription, maximum=2)
+    client = PageClient(
+        {
+            1: [
+                _raw(101, event_type="DeleteEvent", action="deleted"),
+                _raw(100, event_type="DeleteEvent", action="deleted"),
+                _raw(99, event_type="DeleteEvent", action="deleted"),
+                _raw(98),
+            ]
+        }
+    )
+    poller = GitHubPoller(context, asyncio.Event())
+    poller._client = client  # type: ignore[assignment]
+
+    await _poll(poller, context, subscription, config)
+
+    assert len(context.notifications.published) == 1
+    assert context.notifications.published[0].payload["source_event_ids"] == ["99", "100"]
+    state = (await load_queue_state(context, REPOSITORY)).state
+    assert state.committed_cursor == "100"
+    assert [item.github_event_id for item in state.pending] == ["101"]
+
+
+@pytest.mark.asyncio
+async def test_prepared_batch_target_can_be_skipped_before_first_attempt() -> None:
+    context = FakePluginContext(plugin_id="github-monitor")
+    members = (
+        _queued(_raw(99, event_type="DeleteEvent", action="deleted")),
+        _queued(_raw(100, event_type="DeleteEvent", action="deleted")),
+    )
+    poller = GitHubPoller(context, asyncio.Event())
+    unit = DeliveryUnit(
+        unit_id=poller._unit_id(REPOSITORY, members),
+        members=members,
+        deliveries=poller._aggregate_deliveries(members, ""),
+        sealed_at=datetime.now(UTC),
+    )
+    boundary = _cursor_state(98)
+    _seed_state(
+        context.storage,
+        boundary.model_copy(
+            update={
+                "accepted_cursor": "100",
+                "accepted_fingerprint": members[-1].source_fingerprint,
+                "inflight": unit,
+            }
+        ),
+    )
+    disabled_target = TARGET.model_copy(update={"send_text": False})
+    subscription = _subscription(targets=(disabled_target,))
+    snapshot = await load_queue_state(context, REPOSITORY)
+
+    result = await poller._drain_queue(
+        subscription,
+        snapshot,
+        max_events=50,
+        max_batch_members=50,
+        coalesce=True,
+    )
+
+    assert context.notifications.published == []
+    assert result.state.committed_cursor == "100"
+    assert result.state.inflight is None
+
+
+@pytest.mark.asyncio
+async def test_coalesce_false_does_not_change_an_already_sealed_batch() -> None:
+    context = FakePluginContext(plugin_id="github-monitor")
+    members = (
+        _queued(_raw(99, event_type="DeleteEvent", action="deleted")),
+        _queued(_raw(100, event_type="DeleteEvent", action="deleted")),
+    )
+    poller = GitHubPoller(context, asyncio.Event())
+    deliveries = poller._aggregate_deliveries(members, "")
+    frozen_hash = deliveries[0].prepared.request_hash if deliveries[0].prepared else ""
+    unit = DeliveryUnit(
+        unit_id=poller._unit_id(REPOSITORY, members),
+        members=members,
+        deliveries=deliveries,
+        sealed_at=datetime.now(UTC),
+    )
+    boundary = _cursor_state(98)
+    _seed_state(
+        context.storage,
+        boundary.model_copy(
+            update={
+                "accepted_cursor": "100",
+                "accepted_fingerprint": members[-1].source_fingerprint,
+                "inflight": unit,
+            }
+        ),
+    )
+    snapshot = await load_queue_state(context, REPOSITORY)
+
+    result = await poller._drain_queue(
+        _subscription(),
+        snapshot,
+        max_events=50,
+        max_batch_members=50,
+        coalesce=False,
+    )
+
+    assert len(context.notifications.published) == 1
+    assert context.notifications.published[0].event_type == "github_event_batch"
+    assert deliveries[0].prepared is not None
+    assert deliveries[0].prepared.request_hash == frozen_hash
+    assert result.state.committed_cursor == "100"
+
+
+@pytest.mark.asyncio
+async def test_unbounded_drain_still_caps_each_sealed_batch() -> None:
+    context = FakePluginContext(plugin_id="github-monitor")
+    members = tuple(
+        _queued(_raw(event_id, event_type="DeleteEvent", action="deleted"))
+        for event_id in range(99, 104)
+    )
+    boundary = _cursor_state(98)
+    _seed_state(
+        context.storage,
+        boundary.model_copy(
+            update={
+                "accepted_cursor": "103",
+                "accepted_fingerprint": members[-1].source_fingerprint,
+                "pending": members,
+            }
+        ),
+    )
+    poller = GitHubPoller(context, asyncio.Event())
+    snapshot = await load_queue_state(context, REPOSITORY)
+
+    result = await poller._drain_queue(
+        _subscription(),
+        snapshot,
+        max_events=None,
+        max_batch_members=2,
+        coalesce=True,
+    )
+
+    assert len(context.notifications.published) == 3
+    assert context.notifications.published[0].payload["source_event_ids"] == ["99", "100"]
+    assert context.notifications.published[1].payload["source_event_ids"] == ["101", "102"]
+    assert context.notifications.published[2].event_key == "github:owner/repo:event:103"
+    assert result.state.committed_cursor == "103"
+    assert not result.state.pending and result.state.inflight is None

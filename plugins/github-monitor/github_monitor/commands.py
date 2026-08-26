@@ -189,6 +189,8 @@ class GitHubCommands:
                         item,
                         target,
                         last_target=not targets,
+                        coalesce=config.coalesce,
+                        max_batch_members=config.max_events_per_poll,
                     )
                 if targets:
                     rows.append(item.model_copy(update={"targets": targets}))
