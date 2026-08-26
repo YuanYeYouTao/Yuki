@@ -100,6 +100,10 @@ class MemoryFact(_MemoryModel):
             visibility_type=self.visibility_type,
             visibility_user_id=self.visibility_user_id,
             visibility_group_id=self.visibility_group_id,
+            canonical_subject_person_id=self.canonical_subject_person_id,
+            canonical_subject_space_id=self.canonical_subject_space_id,
+            canonical_visibility_person_id=self.canonical_visibility_person_id,
+            canonical_visibility_space_id=self.canonical_visibility_space_id,
         )
         _validate_fact_lifecycle(
             status=self.status,
@@ -609,6 +613,10 @@ def _validate_fact_identity(
     visibility_type: SelfMemoryVisibility | None,
     visibility_user_id: str | None,
     visibility_group_id: str | None,
+    canonical_subject_person_id: str | None = None,
+    canonical_subject_space_id: str | None = None,
+    canonical_visibility_person_id: str | None = None,
+    canonical_visibility_space_id: str | None = None,
 ) -> None:
     """Keep subject identity separate from SELF conversation visibility."""
 
@@ -620,19 +628,56 @@ def _validate_fact_identity(
         identity_valid = subject_user_id is None and bool(group_id)
     else:
         identity_valid = subject_user_id is None and group_id is None
-    if not identity_valid:
+    if scope_type is MemoryScopeType.PERSON:
+        canonical_identity_valid = (
+            bool(canonical_subject_person_id) and canonical_subject_space_id is None
+        )
+    elif scope_type is MemoryScopeType.PERSON_GROUP:
+        canonical_identity_valid = bool(canonical_subject_person_id) and bool(
+            canonical_subject_space_id
+        )
+    elif scope_type is MemoryScopeType.GROUP:
+        canonical_identity_valid = canonical_subject_person_id is None and bool(
+            canonical_subject_space_id
+        )
+    else:
+        canonical_identity_valid = (
+            canonical_subject_person_id is None and canonical_subject_space_id is None
+        )
+    if not (identity_valid or canonical_identity_valid):
         raise ValueError("memory fact identity does not match its scope")
 
     if scope_type is not MemoryScopeType.SELF:
-        if any((visibility_type, visibility_user_id, visibility_group_id)):
+        if any(
+            (
+                visibility_type,
+                visibility_user_id,
+                visibility_group_id,
+                canonical_visibility_person_id,
+                canonical_visibility_space_id,
+            )
+        ):
             raise ValueError("non-self memory cannot carry self visibility")
         return
     if visibility_type is SelfMemoryVisibility.GLOBAL:
-        visibility_valid = visibility_user_id is None and visibility_group_id is None
+        visibility_valid = (
+            visibility_user_id is None
+            and visibility_group_id is None
+            and canonical_visibility_person_id is None
+            and canonical_visibility_space_id is None
+        )
     elif visibility_type is SelfMemoryVisibility.PRIVATE:
-        visibility_valid = bool(visibility_user_id) and visibility_group_id is None
+        visibility_valid = (
+            (bool(visibility_user_id) or bool(canonical_visibility_person_id))
+            and visibility_group_id is None
+            and canonical_visibility_space_id is None
+        )
     elif visibility_type is SelfMemoryVisibility.GROUP:
-        visibility_valid = visibility_user_id is None and bool(visibility_group_id)
+        visibility_valid = (
+            visibility_user_id is None
+            and canonical_visibility_person_id is None
+            and (bool(visibility_group_id) or bool(canonical_visibility_space_id))
+        )
     else:
         visibility_valid = False
     if not visibility_valid:

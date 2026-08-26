@@ -25,8 +25,8 @@ from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.domain.messages import InboundMessage
-from qq_ai_bot.identity.dual_write import trip
-from qq_ai_bot.identity.errors import IdentityDualWriteError
+from qq_ai_bot.identity.canonical_repository import trip
+from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.identity.ingress import IngressPreAdmit
 from qq_ai_bot.identity.receipt_compat import (
     load_claimed_keeper,
@@ -34,7 +34,6 @@ from qq_ai_bot.identity.receipt_compat import (
     require_compatible_v2_live,
 )
 from qq_ai_bot.identity.routing import PresenceRouter
-from qq_ai_bot.identity.runtime import require_complete_v2_runtime
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.repository_helpers import _event_record
@@ -75,11 +74,11 @@ class CanonicalIngressUnitOfWork:
         new_generation: bool = False,
     ) -> ScopedAppendResult:
         if admitted.dropped or admitted.presence_id is None or admitted.conversation_id is None:
-            raise IdentityDualWriteError("unclassified")
+            raise CanonicalIdentityError("unclassified")
         if not admitted.provider or not admitted.handle_external_account_id:
-            raise IdentityDualWriteError("unclassified")
+            raise CanonicalIdentityError("unclassified")
         if message.bot_user_id and message.bot_user_id != admitted.handle_external_account_id:
-            raise IdentityDualWriteError("bot_handle_mismatch")
+            raise CanonicalIdentityError("bot_handle_mismatch")
         scope = (
             ConversationScope.private(admitted.handle_external_account_id, message.sender.user_id)
             if message.scope_type is ScopeType.PRIVATE
@@ -100,17 +99,16 @@ class CanonicalIngressUnitOfWork:
         now = _utcnow()
         created = True
         async with self._database.immediate_session() as session:
-            await require_complete_v2_runtime(session)
             trip("before_fence_recheck")
             if message.scope_type is ScopeType.GROUP:
                 if admitted.space_binding_id is None or admitted.presence_id is None:
-                    raise IdentityDualWriteError("unclassified")
+                    raise CanonicalIdentityError("unclassified")
                 fence = await self._router.evaluate_ingest(
                     space_binding_id=admitted.space_binding_id,
                     event_presence_id=admitted.presence_id,
                 )
                 if fence != "ok":
-                    raise IdentityDualWriteError(fence)
+                    raise CanonicalIdentityError(fence)
             trip("after_fence_recheck")
             existing = await _existing_claimed_event(
                 session,
@@ -149,7 +147,7 @@ class CanonicalIngressUnitOfWork:
                     platform_message_id=message.message_id[:128],
                 )
                 if raced is None:
-                    raise IdentityDualWriteError("receipt_conflict") from exc
+                    raise CanonicalIdentityError("receipt_conflict") from exc
                 return await _reuse_claimed_inbound(
                     session,
                     raced,
@@ -206,7 +204,7 @@ class CanonicalIngressUnitOfWork:
                 )
             conversation = await session.get(CanonicalConversationModel, admitted.conversation_id)
             if conversation is None:
-                raise IdentityDualWriteError("unclassified")
+                raise CanonicalIdentityError("unclassified")
             from qq_ai_bot.conversation.canonical_rollup import signal_canonical_rollup_if_needed
 
             signalled = await signal_canonical_rollup_if_needed(
@@ -279,10 +277,10 @@ async def _reuse_claimed_inbound(
     segments: list[dict[str, object]],
 ) -> ScopedAppendResult:
     if admitted.conversation_id is None or admitted.presence_id is None:
-        raise IdentityDualWriteError("unclassified")
+        raise CanonicalIdentityError("unclassified")
     conversation = await session.get(CanonicalConversationModel, admitted.conversation_id)
     if conversation is None:
-        raise IdentityDualWriteError("unclassified")
+        raise CanonicalIdentityError("unclassified")
     receipt = await _load_receipt(
         session,
         presence_id=admitted.presence_id,
@@ -320,14 +318,14 @@ def _validate_author_shape(row: ChatEventModel) -> None:
     kind = row.author_kind
     if kind == AuthorKind.PERSON.value:
         if row.author_person_id is None or row.author_presence_id is not None:
-            raise IdentityDualWriteError("unclassified")
+            raise CanonicalIdentityError("unclassified")
         return
     if kind == AuthorKind.YUKI.value:
         if row.author_presence_id is None or row.author_person_id is not None:
-            raise IdentityDualWriteError("unclassified")
+            raise CanonicalIdentityError("unclassified")
         return
     if kind in {AuthorKind.EXTERNAL_BOT.value, AuthorKind.SYSTEM.value}:
         if row.author_person_id is not None or row.author_presence_id is not None:
-            raise IdentityDualWriteError("unclassified")
+            raise CanonicalIdentityError("unclassified")
         return
-    raise IdentityDualWriteError("unclassified")
+    raise CanonicalIdentityError("unclassified")

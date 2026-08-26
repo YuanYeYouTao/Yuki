@@ -57,7 +57,6 @@ from qq_ai_bot.conversation.rollup.service import ConversationRollupService
 from qq_ai_bot.conversation.scope import (
     ConversationTurnSnapshot,
     runtime_conversation_key,
-    snapshot_transport_key,
 )
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import (
@@ -3031,13 +3030,7 @@ class ChatService:
             identity=event.scope,
             turn=turn_snapshot,
         )
-        if conversation_id:
-            if (
-                event.canonical_conversation_id
-                and conversation_id != event.canonical_conversation_id
-            ):
-                raise TurnSupersededError("external turn snapshot scope mismatch")
-        elif snapshot_transport_key(turn_snapshot) != event.scope.key:
+        if not conversation_id or conversation_id != event.canonical_conversation_id:
             raise TurnSupersededError("external turn snapshot scope mismatch")
         context = await self._context_assembler.assemble_external(
             event=event,

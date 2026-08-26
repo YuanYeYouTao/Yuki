@@ -1,8 +1,8 @@
 """Transport-neutral admin targets. Persistence-free and I/O-free.
 
-These name an already-resolved v1 storage key plus an optional canonical
-Person/Space. Callers must not invent a PersonId or SpaceId here; missing
-bindings stay None.
+These carry a resolved canonical Person/Space plus the external transport ID
+proven by the adapter. Callers must not invent canonical IDs; missing bindings
+stay unresolved and fail closed.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ def _require_storage_id(value: object, name: str) -> str:
 @final
 @dataclass(frozen=True, slots=True)
 class PersonControlTarget:
-    """One person-scoped admin target. ``person_id`` is set only after Binding."""
+    """Canonical Person plus the adapter-proven external account identifier."""
 
     person_id: PersonId | None
     storage_user_id: str
@@ -52,7 +52,7 @@ class PersonControlTarget:
 @final
 @dataclass(frozen=True, slots=True)
 class SpaceControlTarget:
-    """One space-scoped admin target. ``space_id`` is set only after Binding."""
+    """Canonical Space plus the adapter-proven external space identifier."""
 
     space_id: SpaceId | None
     storage_group_id: str

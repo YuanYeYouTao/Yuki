@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from typing import Any, Protocol
 
@@ -41,6 +42,31 @@ class FaceNameResolver(Protocol):
 
     def resolve(self, face_id: str | int) -> str:
         """Return a readable name, or an ``ID <value>`` fallback."""
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectedMention:
+    """One ordered OneBot mention without exposing its account id in prompt text."""
+
+    kind: str
+    segment_index: int
+    target_user_id: str | None = None
+    member_index: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MentionProjection:
+    """Deterministic model-facing projection of one ordered OneBot message."""
+
+    text: str
+    mentions_yuki: bool
+    attachments: tuple[MessageAttachment, ...]
+    mentioned_user_ids: tuple[str, ...]
+    ordered_mentions: tuple[ProjectedMention, ...]
+
+
+class SegmentProjectionError(ValueError):
+    """A persisted safe-segment payload cannot be projected deterministically."""
 
 
 @lru_cache(maxsize=1)
@@ -97,14 +123,16 @@ def _attachment_from_segment(
 def _extract_segments(
     segments: Iterable[MessageSegment],
     *,
-    self_id: str,
+    yuki_account_ids: frozenset[str],
     source: str = "current",
     face_resolver: FaceNameResolver | None = None,
-) -> tuple[str, bool, tuple[MessageAttachment, ...], tuple[str, ...]]:
+) -> MentionProjection:
     text_parts: list[str] = []
-    mentions_bot = False
+    mentions_yuki = False
     attachments: list[MessageAttachment] = []
     mentioned_user_ids: list[str] = []
+    member_indices: dict[str, int] = {}
+    ordered_mentions: list[ProjectedMention] = []
     resolver = face_resolver or _default_face_resolver()
     for segment_index, segment in enumerate(segments):
         segment_type = segment.type
@@ -113,15 +141,34 @@ def _extract_segments(
             text_parts.append(str(data.get("text", "")))
         elif segment_type == "at":
             target = str(data.get("qq", ""))
-            if target == self_id:
-                mentions_bot = True
-            elif target == "all":
+            if target == "all":
                 text_parts.append("[提及全体成员]")
+                ordered_mentions.append(ProjectedMention(kind="all", segment_index=segment_index))
+            elif target in yuki_account_ids:
+                mentions_yuki = True
+                text_parts.append("[提及Yuki]")
+                ordered_mentions.append(
+                    ProjectedMention(
+                        kind="yuki",
+                        segment_index=segment_index,
+                        target_user_id=target,
+                    )
+                )
             elif target.isdecimal():
-                if target not in mentioned_user_ids:
+                index = member_indices.get(target)
+                if index is None:
                     mentioned_user_ids.append(target)
-                index = mentioned_user_ids.index(target) + 1
+                    index = len(mentioned_user_ids)
+                    member_indices[target] = index
                 text_parts.append(f"[提及成员{index}]")
+                ordered_mentions.append(
+                    ProjectedMention(
+                        kind="member",
+                        segment_index=segment_index,
+                        target_user_id=target,
+                        member_index=index,
+                    )
+                )
         elif segment_type == "face":
             face_id = str(data.get("id", "未知"))
             text_parts.append(f"[QQ表情：{resolver.resolve(face_id)}]")
@@ -140,29 +187,115 @@ def _extract_segments(
                     url=card.url if card is not None else None,
                 )
             )
-    return (
-        sanitize_input("".join(text_parts)),
-        mentions_bot,
-        tuple(attachments),
-        tuple(mentioned_user_ids),
+    return MentionProjection(
+        text=sanitize_input("".join(text_parts)),
+        mentions_yuki=mentions_yuki,
+        attachments=tuple(attachments),
+        mentioned_user_ids=tuple(mentioned_user_ids),
+        ordered_mentions=tuple(ordered_mentions),
     )
 
 
-def _reply_text(
-    reply_message: Message | None,
+def _message_from_serialized_segments(
+    segments: Iterable[dict[str, object]],
+) -> tuple[MessageSegment, ...]:
+    converted: list[MessageSegment] = []
+    for item in segments:
+        if not isinstance(item, dict):
+            raise SegmentProjectionError("segment_not_object")
+        segment_type = item.get("type")
+        data = item.get("data")
+        if not isinstance(segment_type, str) or not segment_type:
+            raise SegmentProjectionError("segment_type_invalid")
+        if not isinstance(data, dict):
+            raise SegmentProjectionError("segment_data_invalid")
+        converted.append(MessageSegment(segment_type, dict(data)))
+    return tuple(converted)
+
+
+def project_serialized_segments(
+    segments: Iterable[dict[str, object]],
     *,
-    self_id: str,
+    yuki_account_ids: frozenset[str],
+    source: str = "history",
     face_resolver: FaceNameResolver | None = None,
-) -> str | None:
-    if reply_message is None:
-        return None
-    text, _, _, _ = _extract_segments(
-        reply_message,
-        self_id=self_id,
-        source="reply",
+) -> MentionProjection:
+    """Project ledger-safe OneBot segments with the same rules as live input."""
+
+    return _extract_segments(
+        _message_from_serialized_segments(segments),
+        yuki_account_ids=yuki_account_ids,
+        source=source,
         face_resolver=face_resolver,
     )
-    return text or None
+
+
+def reproject_inbound_mentions(
+    message: InboundMessage,
+    yuki_account_ids: frozenset[str],
+    *,
+    face_resolver: FaceNameResolver | None = None,
+) -> InboundMessage:
+    """Reclassify mentions after canonical ingress discovers every Yuki Presence."""
+
+    known_yuki = frozenset(
+        item.strip()
+        for item in (*message.yuki_account_ids, *yuki_account_ids, message.bot_user_id)
+        if item and item.strip()
+    )
+    if not message.segments:
+        mentions_yuki = message.mentions_bot or any(
+            item in known_yuki for item in message.mentioned_user_ids
+        )
+        return replace(
+            message,
+            mentions_bot=mentions_yuki,
+            mentioned_user_ids=tuple(
+                item for item in message.mentioned_user_ids if item not in known_yuki
+            ),
+            yuki_account_ids=known_yuki,
+        )
+    try:
+        current = project_serialized_segments(
+            message.segments,
+            yuki_account_ids=known_yuki,
+            source="current",
+            face_resolver=face_resolver,
+        )
+        reply = (
+            project_serialized_segments(
+                message.reply_segments,
+                yuki_account_ids=known_yuki,
+                source="reply",
+                face_resolver=face_resolver,
+            )
+            if message.reply_segments
+            else None
+        )
+    except SegmentProjectionError:
+        # Live messages are serialized by this module, so this is only a defensive
+        # compatibility path for synthetic callers and pre-3.8 records.
+        mentions_yuki = message.mentions_bot or any(
+            item in known_yuki for item in message.mentioned_user_ids
+        )
+        return replace(
+            message,
+            mentions_bot=mentions_yuki,
+            mentioned_user_ids=tuple(
+                item for item in message.mentioned_user_ids if item not in known_yuki
+            ),
+            yuki_account_ids=known_yuki,
+        )
+    return replace(
+        message,
+        text=current.text,
+        mentions_bot=current.mentions_yuki,
+        mentioned_user_ids=current.mentioned_user_ids,
+        attachments=current.attachments,
+        reply_text=(reply.text or None) if reply is not None else message.reply_text,
+        reply_attachments=(reply.attachments if reply is not None else message.reply_attachments),
+        yuki_account_ids=known_yuki,
+    )
 
 
 def _json_value(value: Any) -> object:
@@ -203,33 +336,30 @@ def normalize_event(
     event: MessageEvent,
     *,
     ignored_bot_users: frozenset[str] = frozenset(),
+    yuki_account_ids: frozenset[str] = frozenset(),
     face_resolver: FaceNameResolver | None = None,
 ) -> InboundMessage:
     """Normalize a private or group OneBot message without downloading attachments."""
 
     self_id = str(event.self_id)
-    text, _, attachments, mentioned_user_ids = _extract_segments(
-        event.message,
-        self_id=self_id,
-        face_resolver=face_resolver,
-    )
-    _, mentions_bot, _, original_mentioned_user_ids = _extract_segments(
+    known_yuki = frozenset({self_id, *yuki_account_ids})
+    projection = _extract_segments(
         event.original_message,
-        self_id=self_id,
+        yuki_account_ids=known_yuki,
         face_resolver=face_resolver,
     )
-    if not mentioned_user_ids:
-        mentioned_user_ids = original_mentioned_user_ids
     sender_user_id = str(event.sender.user_id or event.user_id)
     reply_message = event.reply.message if event.reply is not None else None
-    reply_attachments: tuple[MessageAttachment, ...] = ()
-    if reply_message is not None:
-        _, _, reply_attachments, _ = _extract_segments(
+    reply_projection = (
+        _extract_segments(
             reply_message,
-            self_id=self_id,
+            yuki_account_ids=known_yuki,
             source="reply",
             face_resolver=face_resolver,
         )
+        if reply_message is not None
+        else None
+    )
 
     if isinstance(event, GroupMessageEvent):
         scope = ScopeType.GROUP
@@ -250,21 +380,17 @@ def normalize_event(
             group_card=event.sender.card or "",
             is_bot=sender_user_id in ignored_bot_users,
         ),
-        text=text,
+        text=projection.text,
         bot_user_id=self_id,
         raw_text=event.raw_message,
         group_id=group_id,
-        mentions_bot=mentions_bot,
+        mentions_bot=projection.mentions_yuki,
         is_self_message=sender_user_id == self_id,
-        reply_text=_reply_text(
-            reply_message,
-            self_id=self_id,
-            face_resolver=face_resolver,
-        ),
-        mentioned_user_ids=mentioned_user_ids,
-        attachments=attachments,
+        reply_text=(reply_projection.text or None) if reply_projection is not None else None,
+        mentioned_user_ids=projection.mentioned_user_ids,
+        attachments=projection.attachments,
         segments=_serialize_segments(event.original_message),
-        reply_attachments=reply_attachments,
+        reply_attachments=reply_projection.attachments if reply_projection is not None else (),
         reply_segments=_serialize_segments(reply_message) if reply_message is not None else (),
         reply_to_message_id=(
             str(event.reply.message_id)
@@ -276,4 +402,5 @@ def normalize_event(
             if event.reply is not None and event.reply.sender.user_id is not None
             else None
         ),
+        yuki_account_ids=known_yuki,
     )

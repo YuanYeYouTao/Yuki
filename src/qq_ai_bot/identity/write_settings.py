@@ -1,4 +1,4 @@
-"""Process-wide identity classification snapshot for C8 dual-write.
+"""Process-wide identity classification snapshot.
 
 Writers read this immutable process snapshot. Task-local storage is not
 used: worker tasks created before configure must see the same values as
@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from qq_ai_bot.config import Settings
-from qq_ai_bot.identity.errors import IdentityDualWriteError
+from qq_ai_bot.identity.errors import CanonicalIdentityError
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,7 +28,7 @@ _SNAPSHOT: IdentityWriteSettings | None = None
 def identity_write_settings() -> IdentityWriteSettings:
     snapshot = _SNAPSHOT
     if snapshot is None:
-        raise IdentityDualWriteError("identity_write_settings")
+        raise CanonicalIdentityError("identity_write_settings")
     return snapshot
 
 

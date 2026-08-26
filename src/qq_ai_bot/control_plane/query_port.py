@@ -8,8 +8,6 @@ from qq_ai_bot.control_plane.paging import Page, PageRequest
 from qq_ai_bot.control_plane.query_types import (
     AuditEventView,
     AutomationView,
-    BackfillConflictView,
-    BackfillOperationView,
     ConfigOverrideView,
     ConfigSpecView,
     ConversationView,
@@ -90,12 +88,6 @@ class ControlQueryPort(Protocol):
     ) -> Page[SpaceActiveRouteView]: ...
 
     async def list_audit_events(self, request: PageRequest) -> Page[AuditEventView]: ...
-
-    async def list_backfill_operations(
-        self, request: PageRequest
-    ) -> Page[BackfillOperationView]: ...
-
-    async def list_backfill_conflicts(self, request: PageRequest) -> Page[BackfillConflictView]: ...
 
     async def list_config_specs(self, request: PageRequest) -> Page[ConfigSpecView]: ...
 

@@ -15,6 +15,10 @@ from qq_ai_bot.memory.embedding.models import (
 )
 from qq_ai_bot.memory.embedding.text import EmbeddingDocumentBuilder
 from qq_ai_bot.memory.models import MemoryEntityTarget
+from qq_ai_bot.memory.partition import (
+    MemoryPartitionResolutionError,
+    resolve_fact_canonical_owners,
+)
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     MemoryEmbeddingJobModel,
@@ -89,35 +93,57 @@ class MemoryEmbeddingRepository:
                 MemoryFactModel.valid_until > datetime.now(UTC),
             ),
         ]
-        conditions.append(
-            MemoryFactModel.subject_user_id.is_(None)
-            if target.subject_user_id is None
-            else MemoryFactModel.subject_user_id == target.subject_user_id
-        )
-        conditions.append(
-            MemoryFactModel.group_id.is_(None)
-            if target.group_id is None
-            else MemoryFactModel.group_id == target.group_id
-        )
-        if target.scope_type.value == "self":
-            current_visibility = and_(
-                MemoryFactModel.visibility_type
-                == (target.visibility_type.value if target.visibility_type else ""),
-                (
-                    MemoryFactModel.visibility_user_id.is_(None)
-                    if target.visibility_user_id is None
-                    else MemoryFactModel.visibility_user_id == target.visibility_user_id
-                ),
-                (
-                    MemoryFactModel.visibility_group_id.is_(None)
-                    if target.visibility_group_id is None
-                    else MemoryFactModel.visibility_group_id == target.visibility_group_id
-                ),
-            )
-            conditions.append(or_(MemoryFactModel.visibility_type == "global", current_visibility))
         if kinds:
             conditions.append(MemoryFactModel.kind.in_(kinds))
         async with self._database.sessions() as session:
+            try:
+                owners = await resolve_fact_canonical_owners(session, target)
+            except MemoryPartitionResolutionError:
+                return ()
+            conditions.extend(
+                (
+                    MemoryFactModel.canonical_subject_person_id == owners.subject_person_id
+                    if owners.subject_person_id is not None
+                    else MemoryFactModel.canonical_subject_person_id.is_(None),
+                    MemoryFactModel.canonical_subject_space_id == owners.subject_space_id
+                    if owners.subject_space_id is not None
+                    else MemoryFactModel.canonical_subject_space_id.is_(None),
+                )
+            )
+            if target.scope_type.value == "self":
+                current_visibility = and_(
+                    MemoryFactModel.visibility_type
+                    == (target.visibility_type.value if target.visibility_type else ""),
+                    (
+                        MemoryFactModel.canonical_visibility_person_id
+                        == owners.visibility_person_id
+                        if owners.visibility_person_id is not None
+                        else MemoryFactModel.canonical_visibility_person_id.is_(None)
+                    ),
+                    (
+                        MemoryFactModel.canonical_visibility_space_id == owners.visibility_space_id
+                        if owners.visibility_space_id is not None
+                        else MemoryFactModel.canonical_visibility_space_id.is_(None)
+                    ),
+                )
+                conditions.append(
+                    or_(
+                        and_(
+                            MemoryFactModel.visibility_type == "global",
+                            MemoryFactModel.canonical_visibility_person_id.is_(None),
+                            MemoryFactModel.canonical_visibility_space_id.is_(None),
+                        ),
+                        current_visibility,
+                    )
+                )
+            else:
+                conditions.extend(
+                    (
+                        MemoryFactModel.visibility_type.is_(None),
+                        MemoryFactModel.canonical_visibility_person_id.is_(None),
+                        MemoryFactModel.canonical_visibility_space_id.is_(None),
+                    )
+                )
             rows = (
                 await session.execute(
                     select(

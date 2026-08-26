@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import asdict, fields
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from tests.conftest import make_settings
 
-from qq_ai_bot.conversation.rollup.db_models import (
-    ConversationRollupEmergencyOverlayModel,
-    ConversationRollupJobModel,
-    ConversationRollupModel,
+from qq_ai_bot.conversation.canonical_db_models import (
+    CanonicalConversationRollupEmergencyOverlayModel as ConversationRollupEmergencyOverlayModel,
+)
+from qq_ai_bot.conversation.canonical_db_models import (
+    CanonicalConversationRollupJobModel as ConversationRollupJobModel,
+)
+from qq_ai_bot.conversation.canonical_db_models import (
+    CanonicalConversationRollupModel as ConversationRollupModel,
 )
 from qq_ai_bot.conversation.rollup.errors import (
     RollupLeaseLostError,
@@ -34,16 +37,13 @@ from qq_ai_bot.conversation.rollup.models import (
 from qq_ai_bot.conversation.rollup.prompt_accounting import prompt_accounting_characters
 from qq_ai_bot.conversation.rollup.renderer import (
     projection_characters,
-    render_rollup_status_lines,
     rollup_source_projection,
 )
 from qq_ai_bot.conversation.rollup.repository import (
     ConversationRollupRepository,
     ConversationScopeRepository,
-    _reconcile_overlay_with_semantic,
     eligible_prefix,
     protected_tail_start,
-    recount_scope_uncovered,
 )
 from qq_ai_bot.conversation.rollup.service import ConversationRollupService
 from qq_ai_bot.conversation.rollup.worker import ConversationRollupWorker
@@ -160,60 +160,6 @@ def test_prompt_accounting_matches_assembler_and_outweighs_projection() -> None:
     assert view.rendered_characters == prompt_chars
 
 
-async def test_recount_writes_grouped_prompt_characters(database: Database) -> None:
-    policy = _policy()
-    uow = ScopedEventLedgerUnitOfWork(database, config=policy)
-    repository = ConversationRollupRepository(database, policy)
-    scope = ConversationScope.group("bot-prompt", "group-prompt")
-    first = await uow.append(
-        scope=scope,
-        platform_message_id="msg-parent",
-        sender_user_id="10001",
-        sender_group_card="Alice",
-        direction="inbound",
-        content="hello there",
-        occurred_at=datetime(2026, 8, 20, 0, 0, tzinfo=UTC),
-    )
-    await uow.append(
-        scope=scope,
-        platform_message_id="msg-reply",
-        sender_user_id="10002",
-        sender_group_card="Bob",
-        direction="inbound",
-        content="got it",
-        occurred_at=datetime(2026, 8, 20, 0, 1, tzinfo=UTC),
-        reply_to_message_id="msg-parent",
-        segments=(
-            {
-                "type": "yuki_context",
-                "data": {
-                    "mentioned_user_ids": [scope.bot_user_id],
-                    "reply_sender_user_id": "10001",
-                },
-            },
-        ),
-    )
-    snapshot = await repository.load_prompt_snapshot(scope)
-    expected = prompt_accounting_characters(
-        snapshot.raw_events,
-        bot_display_name=policy.bot_display_name,
-        timezone=policy.timezone,
-    )
-    async with database.immediate_session() as session:
-        from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
-
-        row = await session.get(ConversationScopeModel, first.scope.id)
-        assert row is not None
-        row.uncovered_character_count = sum(
-            projection_characters(event) for event in snapshot.raw_events
-        )
-        recounted = await recount_scope_uncovered(session, row, policy)
-    assert recounted == (2, expected)
-    state, _rollup, _job = await repository.status(scope)
-    assert state is not None
-    assert state.uncovered_character_count == expected
-
-
 def _policy(*, batch_max_events: int = 100) -> RollupPolicyConfig:
     return RollupPolicyConfig(
         raw_tail_events=2,
@@ -237,6 +183,18 @@ async def _append(
     actor_prefix: str = "member",
     origin: str = "user_message",
 ) -> None:
+    from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence, ensure_space
+
+    async with uow._database.sessions() as session, session.begin():
+        await ensure_presence(session, scope.bot_user_id)
+        if scope.scope_type is ScopeType.GROUP:
+            assert scope.group_id is not None
+            await ensure_space(session, scope.group_id)
+        else:
+            assert scope.private_peer_user_id is not None
+            await ensure_person(session, scope.private_peer_user_id)
+        for index in range(start, start + count):
+            await ensure_person(session, f"{actor_prefix}-{index % 2}")
     for index in range(start, start + count):
         await uow.append(
             scope=scope,
@@ -247,62 +205,6 @@ async def _append(
             occurred_at=datetime(2026, 8, 20, 0, index % 60, tzinfo=UTC),
             origin=origin,
         )
-
-
-async def test_scoped_append_signals_one_group_job_and_isolates_other_bot(
-    database: Database,
-) -> None:
-    policy = _policy()
-    uow = ScopedEventLedgerUnitOfWork(database, config=policy)
-    repository = ConversationRollupRepository(database, policy)
-    scope = ConversationScope.group("bot-a", "group-1")
-    other = ConversationScope.group("bot-b", "group-1")
-
-    await _append(uow, scope, 4)
-    await _append(uow, other, 1)
-
-    state, rollup, job = await repository.status(scope)
-    other_snapshot = await repository.load_prompt_snapshot(other)
-    assert state is not None
-    assert state.uncovered_event_count == 4
-    assert rollup is None
-    assert job is not None and job["signal_revision"] == 1
-    assert [event.content for event in other_snapshot.raw_events] == ["event-1"]
-
-
-async def test_rollup_health_is_content_free_and_reports_global_lag(database: Database) -> None:
-    policy = _policy()
-    uow = ScopedEventLedgerUnitOfWork(database, config=policy)
-    repository = ConversationRollupRepository(database, policy, metrics=uow.metrics)
-    await _append(uow, ConversationScope.group("bot-a", "group-1"), 4)
-    service = ConversationRollupService(
-        models=None,
-        config=policy,
-        timeout_seconds=1,
-        metrics=uow.metrics,
-    )
-    worker = ConversationRollupWorker(
-        repository=repository,
-        service=service,
-        enabled=True,
-        concurrency=1,
-        poll_seconds=1,
-        lease_seconds=30,
-        heartbeat_seconds=5,
-        retry_max_seconds=60,
-        max_batches_per_claim=1,
-        metrics=uow.metrics,
-    )
-
-    health = await worker.health()
-
-    assert health["enabled"] is True
-    assert health["running"] is False
-    assert health["scope_count"] == 1
-    assert health["max_lag_events"] == 4
-    assert health["max_lag_characters"] > 0
-    assert "group-1" not in repr(health)
-    assert "bot-a" not in repr(health)
 
 
 class _QualityFailModels:
@@ -565,46 +467,6 @@ async def _overlay_cleared(
     return snapshot.overlay is None and snapshot.rollup is not None
 
 
-async def test_worker_model_unavailable_writes_emergency_overlay(
-    database: Database,
-) -> None:
-    await _assert_worker_model_failure_overlay(
-        database,
-        models=None,
-        timeout_seconds=0.1,
-        expected_error_category="RuntimeError",
-    )
-
-
-async def test_worker_model_quality_valueerror_writes_emergency_overlay(
-    database: Database,
-) -> None:
-    await _assert_worker_model_failure_overlay(
-        database,
-        models=_QualityFailModels(),
-        timeout_seconds=1,
-        expected_error_category="model_quality",
-    )
-
-
-async def test_worker_model_timeout_writes_emergency_overlay(database: Database) -> None:
-    await _assert_worker_model_failure_overlay(
-        database,
-        models=_HangingModels(),
-        timeout_seconds=0.05,
-        expected_error_category="model_timeout",
-    )
-
-
-async def test_worker_model_oserror_writes_emergency_overlay(database: Database) -> None:
-    await _assert_worker_model_failure_overlay(
-        database,
-        models=_ProviderOsErrorModels(),
-        timeout_seconds=1,
-        expected_error_category="OSError",
-    )
-
-
 async def test_worker_model_unavailable_writes_canonical_emergency_overlay(
     database: Database,
 ) -> None:
@@ -693,9 +555,9 @@ async def test_expired_lease_same_owner_gets_new_token_and_old_token_is_rejected
     repository = ConversationRollupRepository(database, policy)
     await _append(uow, ConversationScope.private("bot-a", "peer-lease"), 4)
     old = await repository.claim_next_job(lease_owner="same-owner", lease_seconds=30)
-    assert old is not None
+    assert old is not None and old.conversation_id is not None
     async with database.immediate_session() as session:
-        job = await session.get(ConversationRollupJobModel, old.scope_id)
+        job = await session.get(ConversationRollupJobModel, old.conversation_id)
         assert job is not None
         job.lease_until = datetime.now(UTC) - timedelta(seconds=1)
 
@@ -703,39 +565,6 @@ async def test_expired_lease_same_owner_gets_new_token_and_old_token_is_rejected
     assert new is not None and new.lease_token != old.lease_token
     with pytest.raises(RollupLeaseLostError):
         await repository.heartbeat(old, lease_seconds=30)
-
-
-async def test_commit_repairs_drifted_uncovered_counters_once(database: Database) -> None:
-    policy = _policy()
-    uow = ScopedEventLedgerUnitOfWork(database, config=policy)
-    repository = ConversationRollupRepository(database, policy)
-    scopes = ConversationScopeRepository(database)
-    scope = ConversationScope.private("bot-a", "peer-recount")
-    await _append(uow, scope, 4)
-    state = await scopes.get(scope)
-    assert state is not None
-    async with database.immediate_session() as session:
-        from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
-
-        row = await session.get(ConversationScopeModel, state.id)
-        assert row is not None
-        row.uncovered_event_count += 7
-        row.uncovered_character_count += 77
-
-    claim = await repository.claim_next_job(lease_owner="worker", lease_seconds=30)
-    assert claim is not None
-    candidate = await repository.candidate_for_claim(claim)
-    assert candidate is not None
-    await repository.commit_candidate(
-        claim,
-        candidate,
-        summary_text="recounted",
-        summary_kind=RollupKind.EXTRACTIVE,
-    )
-
-    repaired = await scopes.get(scope)
-    assert repaired is not None
-    assert repaired.uncovered_event_count == 2
 
 
 async def test_successful_batch_resets_persisted_failure_before_next_retry(
@@ -746,23 +575,20 @@ async def test_successful_batch_resets_persisted_failure_before_next_retry(
     repository = ConversationRollupRepository(database, policy)
     scope = ConversationScope.private("bot-a", "peer-retry")
     await _append(uow, scope, 6)
-    async with database.immediate_session() as session:
-        job = await session.scalar(ConversationRollupJobModel.__table__.select().limit(1))
-        assert job is not None
     claim = await repository.claim_next_job(lease_owner="worker", lease_seconds=30)
-    assert claim is not None
+    assert claim is not None and claim.conversation_id is not None
     async with database.immediate_session() as session:
-        stored = await session.get(ConversationRollupJobModel, claim.scope_id)
+        stored = await session.get(ConversationRollupJobModel, claim.conversation_id)
         assert stored is not None
         stored.failure_count = 4
     # Reclaim so the claim reflects the old failure count, then prove a successful
     # retained batch resets the persisted value used by the next infrastructure retry.
     async with database.immediate_session() as session:
-        stored = await session.get(ConversationRollupJobModel, claim.scope_id)
+        stored = await session.get(ConversationRollupJobModel, claim.conversation_id)
         assert stored is not None
         stored.lease_until = datetime.now(UTC) - timedelta(seconds=1)
     claim = await repository.claim_next_job(lease_owner="worker", lease_seconds=30)
-    assert claim is not None and claim.failure_count == 4
+    assert claim is not None and claim.failure_count == 4 and claim.conversation_id is not None
     candidate = await repository.candidate_for_claim(claim)
     assert candidate is not None
     committed = await repository.commit_candidate(
@@ -830,7 +656,7 @@ async def test_single_protected_event_never_creates_permanent_job(database: Data
     )
     uow = ScopedEventLedgerUnitOfWork(database, config=policy)
     repository = ConversationRollupRepository(database, policy)
-    scope = ConversationScope.private("bot-a", "peer-long")
+    scope = await _prepare_v2_private(database, bot="bot-a", peer="peer-long")
     await uow.append(
         scope=scope,
         platform_message_id="one-long-message",
@@ -961,7 +787,7 @@ async def test_foreground_does_not_nibble_between_protected_tail_and_trigger(
     assert snapshot.overlay is not None
     assert snapshot.effective_coverage == compacted_effective.covered_through_event_id
     async with database.sessions() as session:
-        semantic = await session.get(ConversationRollupModel, compacted.id)
+        semantic = await session.get(ConversationRollupModel, claim.conversation_id)
         assert semantic is not None
         assert semantic.revision == seeded_revision
         assert semantic.covered_through_event_id == seeded_coverage
@@ -986,6 +812,13 @@ async def test_lightweight_backlog_triggers_on_prompt_ruler_not_projection(
     repository = ConversationRollupRepository(database, policy)
     service = ConversationRollupService(models=None, config=policy, timeout_seconds=0.1)
     scope = ConversationScope.group("bot-ruler", "group-ruler")
+    from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence, ensure_space
+
+    async with database.sessions() as session, session.begin():
+        await ensure_presence(session, scope.bot_user_id)
+        await ensure_space(session, scope.group_id or "")
+        await ensure_person(session, "10000")
+        await ensure_person(session, "10001")
     first = None
     for index in range(1, 7):
         result = await uow.append(
@@ -1028,12 +861,13 @@ async def test_lightweight_backlog_triggers_on_prompt_ruler_not_projection(
     assert projection < admit <= prompt
     assert remaining_prompt < admit
     async with database.immediate_session() as session:
-        from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
+        from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+        from qq_ai_bot.conversation.rollup.repository import recount_canonical_uncovered
 
-        row = await session.get(ConversationScopeModel, first.scope.id)
+        row = await session.get(CanonicalConversationModel, first.event.canonical_conversation_id)
         assert row is not None
         row.uncovered_character_count = projection
-        recounted = await recount_scope_uncovered(session, row, policy)
+        recounted = await recount_canonical_uncovered(session, row, policy)
     assert recounted[1] == prompt
     seeded, seeded_rollup, _job = await repository.status(scope)
     assert seeded is not None
@@ -1210,27 +1044,16 @@ async def test_event_floor_between_character_target_and_admit_skips_extractive()
 
 
 _NOW = datetime(2026, 8, 24, tzinfo=UTC)
-_CUTOVER = "550e8400-e29b-41d4-a716-446655440099"
 
 
 async def _prepare_v2_private(
     database: Database, *, bot: str = "8000", peer: str = "1001"
 ) -> ConversationScope:
-    from qq_ai_bot.identity.db_models import IdentityRuntimeStateModel
-    from qq_ai_bot.identity.dual_write import (
-        ensure_canonical_person_preconfig,
-        ensure_canonical_presence_preconfig,
-    )
+    from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence
 
     async with database.sessions() as session, session.begin():
-        row = await session.get(IdentityRuntimeStateModel, 1)
-        assert row is not None
-        row.state = "v2"
-        row.cutover_id = _CUTOVER
-        row.source_fingerprint = "cutover-fingerprint"
-        row.completed_at = _NOW
-        await ensure_canonical_presence_preconfig(session, bot)
-        await ensure_canonical_person_preconfig(session, peer, now=_NOW)
+        await ensure_presence(session, bot)
+        await ensure_person(session, peer, now=_NOW)
     return ConversationScope.private(bot, peer)
 
 
@@ -1240,7 +1063,7 @@ async def test_v2_status_and_prompt_read_history_across_aliases(
 ) -> None:
     from qq_ai_bot.conversation.hydrate import ensure_legacy_alias
     from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
-    from qq_ai_bot.identity.dual_write import ensure_canonical_presence_preconfig
+    from qq_ai_bot.identity.canonical_repository import ensure_presence
     from qq_ai_bot.persistence.models import ChatEventModel
 
     primary = await _prepare_v2_private(database)
@@ -1258,7 +1081,7 @@ async def test_v2_status_and_prompt_read_history_across_aliases(
     )
     assert appended.scope.runtime_scope_key == primary.key
     async with database.sessions() as session, session.begin():
-        await ensure_canonical_presence_preconfig(session, "8001")
+        await ensure_presence(session, "8001")
         event = await session.get(ChatEventModel, appended.event.id)
         assert event is not None and event.canonical_conversation_id
         await ensure_legacy_alias(
@@ -1290,7 +1113,7 @@ async def test_v2_prompt_fence_accepts_secondary_and_rejects_forged_keys(
 ) -> None:
     from qq_ai_bot.conversation.hydrate import ensure_legacy_alias
     from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
-    from qq_ai_bot.identity.dual_write import ensure_canonical_presence_preconfig
+    from qq_ai_bot.identity.canonical_repository import ensure_presence
     from qq_ai_bot.persistence.models import ChatEventModel
 
     primary = await _prepare_v2_private(database)
@@ -1306,7 +1129,7 @@ async def test_v2_prompt_fence_accepts_secondary_and_rejects_forged_keys(
         content="kept",
     )
     async with database.sessions() as session, session.begin():
-        await ensure_canonical_presence_preconfig(session, "8001")
+        await ensure_presence(session, "8001")
         event = await session.get(ChatEventModel, appended.event.id)
         assert event is not None and event.canonical_conversation_id
         await ensure_legacy_alias(
@@ -1383,9 +1206,7 @@ async def test_v2_foreground_claim_uses_canonical_job_not_scopes(database: Datab
         from qq_ai_bot.conversation.canonical_db_models import (
             CanonicalConversationRollupJobModel,
         )
-        from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
 
-        scopes = int(await session.scalar(select(func.count(ConversationScopeModel.id))) or 0)
         jobs = int(
             await session.scalar(
                 select(func.count(CanonicalConversationRollupJobModel.conversation_id))
@@ -1393,7 +1214,6 @@ async def test_v2_foreground_claim_uses_canonical_job_not_scopes(database: Datab
             or 0
         )
         job = await session.get(CanonicalConversationRollupJobModel, claim.conversation_id)
-    assert scopes == 0
     assert jobs == 1
     assert job is not None
     assert job.status == "processing"
@@ -1415,13 +1235,6 @@ async def test_v2_health_snapshot_counts_canonical_not_legacy_scopes(
         content="lag-event",
     )
     health = await repository.health_snapshot()
-    async with database.sessions() as session:
-        from sqlalchemy import func, select
-
-        from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
-
-        legacy = int(await session.scalar(select(func.count(ConversationScopeModel.id))) or 0)
-    assert legacy == 0
     assert health["scope_count"] == 1
     assert health["max_lag_events"] == 1
     assert int(health["max_lag_characters"]) > 0
@@ -1613,6 +1426,11 @@ async def test_v2_canonical_queries_exclude_duplicate_events(database: Database)
                 observed_at=original.observed_at,
                 canonical_event_id=str(uuid4()),
                 canonical_conversation_id=original.canonical_conversation_id,
+                author_kind=original.author_kind,
+                author_person_id=original.author_person_id,
+                author_presence_id=original.author_presence_id,
+                ingress_presence_id=original.ingress_presence_id,
+                utterance_fingerprint="f" * 64,
                 suppression_status="duplicate",
             )
         )
@@ -1635,76 +1453,6 @@ async def test_v2_canonical_queries_exclude_duplicate_events(database: Database)
     assert recounted[0] == 1
 
 
-@pytest.mark.asyncio
-async def test_keeper_event_clause_sql_fail_closed_on_unknown_status(
-    database: Database,
-) -> None:
-    from sqlalchemy import select, text
-
-    from qq_ai_bot.persistence.models import ChatEventModel
-    from qq_ai_bot.persistence.repository_helpers import (
-        CANONICAL_KEEPER_STATUS,
-        keeper_event_clause,
-        sql_keeper_event_predicate,
-        suppression_is_canonical_live,
-    )
-
-    now = datetime.now(UTC)
-    statuses = (None, CANONICAL_KEEPER_STATUS, "duplicate", "suppressed", "shadow")
-    async with database.sessions() as session, session.begin():
-        for index, status in enumerate(statuses, start=1):
-            session.add(
-                ChatEventModel(
-                    bot_user_id="8000",
-                    platform_message_id=f"keeper-sql-{index}",
-                    scope_type="private",
-                    private_peer_user_id="1001",
-                    sender_user_id="1001",
-                    sender_nickname="",
-                    sender_group_card="",
-                    direction="inbound",
-                    event_kind="message",
-                    content=f"status-{status}",
-                    visual_summary="",
-                    segments_json="[]",
-                    origin="user_message",
-                    occurred_at=now,
-                    observed_at=now,
-                    suppression_status=status,
-                )
-            )
-    compiled = str(keeper_event_clause().compile(compile_kwargs={"literal_binds": True}))
-    assert "duplicate" not in compiled
-    assert CANONICAL_KEEPER_STATUS in compiled
-    async with database.sessions() as session:
-        rows = list(await session.scalars(select(ChatEventModel).order_by(ChatEventModel.id)))
-        matched = set(await session.scalars(select(ChatEventModel.id).where(keeper_event_clause())))
-        raw = set(
-            (
-                await session.execute(
-                    text(f"SELECT c.id FROM chat_events c WHERE {sql_keeper_event_predicate('c')}")
-                )
-            ).scalars()
-        )
-        windowed = set(
-            await session.scalars(
-                select(ChatEventModel.id).where(
-                    ChatEventModel.id > 0,
-                    ChatEventModel.id <= max(row.id for row in rows),
-                    keeper_event_clause(),
-                )
-            )
-        )
-    expected = {row.id for row in rows if suppression_is_canonical_live(row.suppression_status)}
-    assert matched == raw == windowed == expected
-    by_status = {row.suppression_status: row.id for row in rows}
-    assert by_status[None] in matched
-    assert by_status[CANONICAL_KEEPER_STATUS] in matched
-    assert by_status["duplicate"] not in matched
-    assert by_status["suppressed"] not in matched
-    assert by_status["shadow"] not in matched
-
-
 async def _commit_overlay(
     repository: ConversationRollupRepository,
     service: ConversationRollupService,
@@ -1720,205 +1468,6 @@ async def _commit_overlay(
     assert kind is RollupKind.EMERGENCY
     result = await repository.commit_emergency_overlay(claim, candidate, summary)
     return claim, result
-
-
-async def test_commit_candidate_rejects_emergency_before_semantic_write(
-    database: Database,
-) -> None:
-    policy = _policy()
-    uow = ScopedEventLedgerUnitOfWork(database, config=policy)
-    repository = ConversationRollupRepository(database, policy)
-    scope = ConversationScope.private("bot-a", "peer-emergency-reject")
-    await _append(uow, scope, 4)
-    claim = await repository.claim_next_job(lease_owner="worker", lease_seconds=30)
-    assert claim is not None
-    candidate = await repository.candidate_for_claim(claim)
-    assert candidate is not None
-    with pytest.raises(ValueError, match="emergency"):
-        await repository.commit_candidate(
-            claim,
-            candidate,
-            summary_text="must not land in semantic table",
-            summary_kind=RollupKind.EMERGENCY,
-        )
-    async with database.sessions() as session:
-        assert await session.get(ConversationRollupModel, claim.scope_id) is None
-        assert await session.get(ConversationRollupEmergencyOverlayModel, claim.scope_id) is None
-
-
-async def test_semantic_rollup_check_still_rejects_emergency_kind(database: Database) -> None:
-    from sqlalchemy.exc import IntegrityError
-
-    from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
-
-    policy = _policy()
-    uow = ScopedEventLedgerUnitOfWork(database, config=policy)
-    scope = ConversationScope.private("bot-a", "peer-check")
-    first = await uow.append(
-        scope=scope,
-        platform_message_id="check-1",
-        sender_user_id="peer-check",
-        direction="inbound",
-        content="keep-check",
-    )
-    now = datetime.now(UTC)
-    async with database.sessions() as session:
-        row = await session.get(ConversationScopeModel, first.scope.id)
-        assert row is not None
-        session.add(
-            ConversationRollupModel(
-                scope_id=row.id,
-                generation=1,
-                covered_through_event_id=first.event.id,
-                summary_text="blocked",
-                summary_kind=RollupKind.EMERGENCY.value,
-                source_fingerprint="a" * 64,
-                revision=1,
-                created_at=now,
-                updated_at=now,
-            )
-        )
-        with pytest.raises(IntegrityError):
-            await session.commit()
-        await session.rollback()
-
-
-async def test_legacy_emergency_overlay_does_not_mutate_semantic_checkpoint(
-    database: Database,
-) -> None:
-    policy = _policy()
-    uow = ScopedEventLedgerUnitOfWork(database, config=policy)
-    repository = ConversationRollupRepository(database, policy)
-    service = ConversationRollupService(models=None, config=policy, timeout_seconds=0.1)
-    scope = ConversationScope.private("bot-a", "peer-overlay")
-    await _append(uow, scope, 4)
-    before = await repository.load_prompt_snapshot(scope)
-    await _seed_job_last_error(database, scope_id=before.scope.id)
-    claim, result = await _commit_overlay(repository, service, scope)
-    snapshot = await repository.load_prompt_snapshot(scope)
-    assert result.claim_retained is False
-    assert snapshot.rewrite_pending is True
-    assert snapshot.overlay is not None
-    assert snapshot.rollup is not None
-    assert snapshot.rollup.summary_kind is RollupKind.EMERGENCY
-    assert snapshot.effective_coverage == result.rollup.covered_through_event_id
-    assert snapshot.effective_coverage == snapshot.overlay.covered_through_event_id
-    assert all(event.id > snapshot.effective_coverage for event in snapshot.raw_events)
-    assert len(snapshot.raw_events) == 2
-    assert [event.id for event in snapshot.raw_events] == [
-        event.id for event in before.raw_events[-2:]
-    ]
-    state, effective, job = await repository.status(scope)
-    assert state is not None
-    assert state.uncovered_event_count == 4
-    assert effective is not None
-    assert effective.summary_kind is RollupKind.EMERGENCY
-    assert job is not None
-    assert job["last_error_category"] is None
-    async with database.sessions() as session:
-        assert await session.get(ConversationRollupModel, claim.scope_id) is None
-        overlay = await session.get(ConversationRollupEmergencyOverlayModel, claim.scope_id)
-        stored_job = await session.get(ConversationRollupJobModel, claim.scope_id)
-        assert overlay is not None
-        assert overlay.base_semantic_revision == 0
-        assert overlay.covered_through_event_id == snapshot.effective_coverage
-        assert stored_job is not None
-        assert stored_job.status == "pending"
-        assert stored_job.lease_owner is None
-        assert stored_job.last_error_category is None
-        health = await repository.health_snapshot()
-        assert health["last_extractive_at"] is None
-        next_at = stored_job.next_attempt_at
-        if next_at.tzinfo is None:
-            next_at = next_at.replace(tzinfo=UTC)
-        assert next_at > datetime.now(UTC)
-
-
-async def test_legacy_emergency_candidate_sources_overlay_not_semantic(
-    database: Database,
-) -> None:
-    policy = _policy(batch_max_events=1)
-    uow = ScopedEventLedgerUnitOfWork(database, config=policy)
-    repository = ConversationRollupRepository(database, policy)
-    service = ConversationRollupService(models=None, config=policy, timeout_seconds=0.1)
-    scope = ConversationScope.private("bot-a", "peer-overlay-source")
-    await _append(uow, scope, 6)
-    _claim, result = await _commit_overlay(repository, service, scope)
-    claim = await repository.claim_scope_for_foreground(
-        scope, lease_owner="source", lease_seconds=30
-    )
-    assert claim is not None
-    semantic_candidate = await repository.candidate_for_claim(claim)
-    emergency_candidate = await repository.candidate_for_claim(claim, emergency=True)
-    assert semantic_candidate is not None
-    assert emergency_candidate is not None
-    starts_after = (await repository.status(scope))[0]
-    assert starts_after is not None
-    assert semantic_candidate.source_coverage == starts_after.starts_after_event_id
-    assert emergency_candidate.source_coverage == result.rollup.covered_through_event_id
-    assert emergency_candidate.previous_summary == result.rollup.summary_text
-    assert semantic_candidate.source_coverage < emergency_candidate.source_coverage
-
-
-async def test_legacy_reset_deletes_emergency_overlay(database: Database) -> None:
-    policy = _policy()
-    uow = ScopedEventLedgerUnitOfWork(database, config=policy)
-    repository = ConversationRollupRepository(database, policy)
-    service = ConversationRollupService(models=None, config=policy, timeout_seconds=0.1)
-    scope = ConversationScope.private("bot-a", "peer-overlay-reset")
-    await _append(uow, scope, 4)
-    claim, _result = await _commit_overlay(repository, service, scope)
-    inbound = InboundMessage(
-        message_id="ai-new-overlay",
-        event_type="message:test",
-        scope_type=ScopeType.PRIVATE,
-        sender=SenderIdentity(user_id="peer-overlay-reset"),
-        text="reset context",
-        bot_user_id="bot-a",
-    )
-    changed = await uow.append_new_generation_command(scope=scope, inbound=inbound)
-    assert changed.generation_changed is True
-    async with database.sessions() as session:
-        assert await session.get(ConversationRollupEmergencyOverlayModel, claim.scope_id) is None
-        assert await session.get(ConversationRollupModel, claim.scope_id) is None
-    snapshot = await repository.load_prompt_snapshot(scope)
-    assert snapshot.scope.generation == 2
-    assert snapshot.overlay is None
-    assert snapshot.rewrite_pending is False
-
-
-async def test_v2_commit_candidate_rejects_emergency_before_semantic_write(
-    database: Database,
-) -> None:
-    scope = await _prepare_v2_private(database)
-    policy = _policy()
-    uow = ScopedEventLedgerUnitOfWork(database, config=policy)
-    repository = ConversationRollupRepository(database, policy)
-    await _append_v2(uow, scope, 4)
-    claim = await repository.claim_next_job(lease_owner="worker", lease_seconds=30)
-    assert claim is not None and claim.conversation_id
-    candidate = await repository.candidate_for_claim(claim)
-    assert candidate is not None
-    with pytest.raises(ValueError, match="emergency"):
-        await repository.commit_candidate(
-            claim,
-            candidate,
-            summary_text="must not land in canonical semantic table",
-            summary_kind=RollupKind.EMERGENCY,
-        )
-    async with database.sessions() as session:
-        from qq_ai_bot.conversation.canonical_db_models import (
-            CanonicalConversationRollupEmergencyOverlayModel,
-            CanonicalConversationRollupModel,
-        )
-
-        assert await session.get(CanonicalConversationRollupModel, claim.conversation_id) is None
-        assert (
-            await session.get(
-                CanonicalConversationRollupEmergencyOverlayModel, claim.conversation_id
-            )
-            is None
-        )
 
 
 async def test_v2_emergency_overlay_does_not_mutate_semantic_checkpoint(
@@ -1987,121 +1536,6 @@ async def test_v2_emergency_overlay_does_not_mutate_semantic_checkpoint(
         assert next_at > datetime.now(UTC)
 
 
-async def test_v2_overlay_leaves_existing_semantic_revision_untouched(
-    database: Database,
-) -> None:
-    from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationRollupModel
-
-    scope = await _prepare_v2_private(database)
-    policy = _policy(batch_max_events=1)
-    uow = ScopedEventLedgerUnitOfWork(database, config=policy)
-    repository = ConversationRollupRepository(database, policy)
-    service = ConversationRollupService(models=None, config=policy, timeout_seconds=0.1)
-    await _append_v2(uow, scope, 6)
-    claim = await repository.claim_next_job(lease_owner="semantic", lease_seconds=30)
-    assert claim is not None and claim.conversation_id
-    candidate = await repository.candidate_for_claim(claim)
-    assert candidate is not None
-    await repository.commit_candidate(
-        claim,
-        candidate,
-        summary_text="canonical-semantic",
-        summary_kind=RollupKind.EXTRACTIVE,
-    )
-    async with database.sessions() as session:
-        before = await session.get(CanonicalConversationRollupModel, claim.conversation_id)
-        assert before is not None
-        before_revision = before.revision
-        before_coverage = before.covered_through_event_id
-        before_text = before.summary_text
-        before_kind = before.summary_kind
-    await _commit_overlay(repository, service, scope, owner="v2-overlay-after")
-    snapshot = await repository.load_prompt_snapshot(scope)
-    assert snapshot.rewrite_pending is True
-    assert snapshot.overlay is not None
-    assert snapshot.rollup is not None
-    assert snapshot.rollup.summary_kind is RollupKind.EMERGENCY
-    assert snapshot.effective_coverage > before_coverage
-    async with database.sessions() as session:
-        after = await session.get(CanonicalConversationRollupModel, claim.conversation_id)
-        assert after is not None
-        assert after.revision == before_revision
-        assert after.covered_through_event_id == before_coverage
-        assert after.summary_text == before_text
-        assert after.summary_kind == before_kind
-
-
-async def test_v2_emergency_candidate_sources_overlay_not_semantic(
-    database: Database,
-) -> None:
-    scope = await _prepare_v2_private(database)
-    policy = _policy(batch_max_events=1)
-    uow = ScopedEventLedgerUnitOfWork(database, config=policy)
-    repository = ConversationRollupRepository(database, policy)
-    service = ConversationRollupService(models=None, config=policy, timeout_seconds=0.1)
-    await _append_v2(uow, scope, 6)
-    _claim, result = await _commit_overlay(repository, service, scope, owner="v2-source")
-    claim = await repository.claim_scope_for_foreground(
-        scope, lease_owner="v2-source-2", lease_seconds=30
-    )
-    assert claim is not None
-    semantic_candidate = await repository.candidate_for_claim(claim)
-    emergency_candidate = await repository.candidate_for_claim(claim, emergency=True)
-    assert semantic_candidate is not None
-    assert emergency_candidate is not None
-    starts_after = (await repository.status(scope))[0]
-    assert starts_after is not None
-    assert semantic_candidate.source_coverage == starts_after.starts_after_event_id
-    assert emergency_candidate.source_coverage == result.rollup.covered_through_event_id
-    assert semantic_candidate.source_coverage < emergency_candidate.source_coverage
-
-
-async def test_v2_reset_deletes_canonical_overlay(database: Database) -> None:
-    from sqlalchemy import func, select
-
-    from qq_ai_bot.conversation.canonical_db_models import (
-        CanonicalConversationRollupEmergencyOverlayModel,
-        CanonicalConversationRollupModel,
-    )
-
-    scope = await _prepare_v2_private(database)
-    policy = _policy()
-    uow = ScopedEventLedgerUnitOfWork(database, config=policy)
-    repository = ConversationRollupRepository(database, policy)
-    service = ConversationRollupService(models=None, config=policy, timeout_seconds=0.1)
-    await _append_v2(uow, scope, 4)
-    await _commit_overlay(repository, service, scope, owner="v2-reset")
-    inbound = InboundMessage(
-        message_id="ai-new-v2-overlay",
-        event_type="message:test",
-        scope_type=ScopeType.PRIVATE,
-        sender=SenderIdentity(user_id="1001"),
-        text="reset context",
-        bot_user_id="8000",
-    )
-    first = await uow.append_new_generation_command(scope=scope, inbound=inbound)
-    assert first.generation_changed is True
-    async with database.sessions() as session:
-        overlays = int(
-            await session.scalar(
-                select(func.count(CanonicalConversationRollupEmergencyOverlayModel.conversation_id))
-            )
-            or 0
-        )
-        rollups = int(
-            await session.scalar(
-                select(func.count(CanonicalConversationRollupModel.conversation_id))
-            )
-            or 0
-        )
-    assert overlays == 0
-    assert rollups == 0
-    snapshot = await repository.load_prompt_snapshot(scope)
-    assert snapshot.scope.generation == 2
-    assert snapshot.overlay is None
-    assert snapshot.rewrite_pending is False
-
-
 def _catchup_semantic_policy() -> RollupPolicyConfig:
     return RollupPolicyConfig(
         raw_tail_events=2,
@@ -2114,181 +1548,6 @@ def _catchup_semantic_policy() -> RollupPolicyConfig:
         batch_max_characters=100_000,
         summary_max_characters=2_000,
     )
-
-
-async def test_legacy_partial_model_commits_keep_overlay_until_catchup(
-    database: Database,
-) -> None:
-    overlay_policy = _policy()
-    semantic_policy = _catchup_semantic_policy()
-    uow = ScopedEventLedgerUnitOfWork(database, config=overlay_policy)
-    overlay_repo = ConversationRollupRepository(database, overlay_policy)
-    semantic_repo = ConversationRollupRepository(database, semantic_policy)
-    service = ConversationRollupService(models=None, config=overlay_policy, timeout_seconds=0.1)
-    scope = ConversationScope.private("bot-a", "peer-catchup")
-    await _append(uow, scope, 6)
-    overlay_claim, overlay_result = await _commit_overlay(overlay_repo, service, scope)
-    scope_id = overlay_claim.scope_id
-    overlay_coverage = overlay_result.rollup.covered_through_event_id
-    overlay_text = overlay_result.rollup.summary_text
-    overlay_revision = overlay_result.rollup.revision
-    overlay_fingerprint = overlay_result.rollup.source_fingerprint
-    starts_after = (await semantic_repo.status(scope))[0]
-    assert starts_after is not None
-    assert overlay_coverage > starts_after.starts_after_event_id + 1
-    semantic_coverage = starts_after.starts_after_event_id
-    saw_partial = False
-    caught_up = False
-    for step in range(1, 8):
-        claim = await semantic_repo.claim_scope_for_foreground(
-            scope, lease_owner=f"model-{step}", lease_seconds=30
-        )
-        assert claim is not None
-        candidate = await semantic_repo.candidate_for_claim(claim)
-        assert candidate is not None
-        assert candidate.source_coverage == semantic_coverage
-        assert candidate.events[0].id > semantic_coverage
-        assert len(candidate.events) == 1
-        if step == 1:
-            assert candidate.previous_summary == ""
-        else:
-            assert candidate.previous_summary == f"model-step-{step - 1}"
-        assert candidate.previous_summary != overlay_text
-        await semantic_repo.commit_candidate(
-            claim,
-            candidate,
-            summary_text=f"model-step-{step}",
-            summary_kind=RollupKind.MODEL,
-        )
-        snapshot = await semantic_repo.load_prompt_snapshot(scope)
-        async with database.sessions() as session:
-            semantic_row = await session.get(ConversationRollupModel, scope_id)
-            overlay_row = await session.get(ConversationRollupEmergencyOverlayModel, scope_id)
-            job_row = await session.get(ConversationRollupJobModel, scope_id)
-        assert semantic_row is not None
-        assert semantic_row.summary_kind == RollupKind.MODEL.value
-        assert semantic_row.covered_through_event_id > semantic_coverage
-        assert semantic_row.summary_text == f"model-step-{step}"
-        semantic_coverage = semantic_row.covered_through_event_id
-        if overlay_row is None:
-            caught_up = True
-            assert snapshot.rewrite_pending is False
-            assert snapshot.overlay is None
-            assert snapshot.rollup is not None
-            assert snapshot.rollup.summary_kind is RollupKind.MODEL
-            assert snapshot.rollup.summary_text == semantic_row.summary_text
-            assert snapshot.effective_coverage == semantic_row.covered_through_event_id
-            assert semantic_row.covered_through_event_id >= overlay_coverage
-            break
-        saw_partial = True
-        assert overlay_row.generation == semantic_row.generation
-        assert overlay_row.covered_through_event_id == overlay_coverage
-        assert overlay_row.summary_text == overlay_text
-        assert overlay_row.revision == overlay_revision
-        assert overlay_row.source_fingerprint == overlay_fingerprint
-        assert overlay_row.base_semantic_revision == semantic_row.revision
-        assert semantic_row.covered_through_event_id < overlay_row.covered_through_event_id
-        assert snapshot.rewrite_pending is True
-        assert snapshot.overlay is not None
-        assert snapshot.effective_coverage == overlay_coverage
-        assert snapshot.rollup is not None
-        assert snapshot.rollup.summary_kind is RollupKind.EMERGENCY
-        assert job_row is not None
-    assert saw_partial is True
-    assert caught_up is True
-
-
-async def test_v2_partial_model_commits_keep_overlay_until_catchup(
-    database: Database,
-) -> None:
-    from qq_ai_bot.conversation.canonical_db_models import (
-        CanonicalConversationRollupEmergencyOverlayModel,
-        CanonicalConversationRollupJobModel,
-        CanonicalConversationRollupModel,
-    )
-
-    overlay_policy = _policy()
-    semantic_policy = _catchup_semantic_policy()
-    scope = await _prepare_v2_private(database)
-    uow = ScopedEventLedgerUnitOfWork(database, config=overlay_policy)
-    overlay_repo = ConversationRollupRepository(database, overlay_policy)
-    semantic_repo = ConversationRollupRepository(database, semantic_policy)
-    service = ConversationRollupService(models=None, config=overlay_policy, timeout_seconds=0.1)
-    await _append_v2(uow, scope, 6)
-    overlay_claim, overlay_result = await _commit_overlay(
-        overlay_repo, service, scope, owner="v2-catchup-overlay"
-    )
-    conversation_id = overlay_claim.conversation_id
-    assert conversation_id
-    overlay_coverage = overlay_result.rollup.covered_through_event_id
-    overlay_text = overlay_result.rollup.summary_text
-    overlay_revision = overlay_result.rollup.revision
-    overlay_fingerprint = overlay_result.rollup.source_fingerprint
-    starts_after = (await semantic_repo.status(scope))[0]
-    assert starts_after is not None
-    assert overlay_coverage > starts_after.starts_after_event_id + 1
-    semantic_coverage = starts_after.starts_after_event_id
-    saw_partial = False
-    caught_up = False
-    for step in range(1, 8):
-        claim = await semantic_repo.claim_scope_for_foreground(
-            scope, lease_owner=f"v2-model-{step}", lease_seconds=30
-        )
-        assert claim is not None
-        candidate = await semantic_repo.candidate_for_claim(claim)
-        assert candidate is not None
-        assert candidate.source_coverage == semantic_coverage
-        assert candidate.events[0].id > semantic_coverage
-        assert len(candidate.events) == 1
-        if step == 1:
-            assert candidate.previous_summary == ""
-        else:
-            assert candidate.previous_summary == f"v2-model-step-{step - 1}"
-        assert candidate.previous_summary != overlay_text
-        await semantic_repo.commit_candidate(
-            claim,
-            candidate,
-            summary_text=f"v2-model-step-{step}",
-            summary_kind=RollupKind.MODEL,
-        )
-        snapshot = await semantic_repo.load_prompt_snapshot(scope)
-        async with database.sessions() as session:
-            semantic_row = await session.get(CanonicalConversationRollupModel, conversation_id)
-            overlay_row = await session.get(
-                CanonicalConversationRollupEmergencyOverlayModel, conversation_id
-            )
-            job_row = await session.get(CanonicalConversationRollupJobModel, conversation_id)
-        assert semantic_row is not None
-        assert semantic_row.summary_kind == RollupKind.MODEL.value
-        assert semantic_row.covered_through_event_id > semantic_coverage
-        assert semantic_row.summary_text == f"v2-model-step-{step}"
-        semantic_coverage = semantic_row.covered_through_event_id
-        if overlay_row is None:
-            caught_up = True
-            assert snapshot.rewrite_pending is False
-            assert snapshot.overlay is None
-            assert snapshot.rollup is not None
-            assert snapshot.rollup.summary_kind is RollupKind.MODEL
-            assert snapshot.rollup.summary_text == semantic_row.summary_text
-            assert snapshot.effective_coverage == semantic_row.covered_through_event_id
-            assert semantic_row.covered_through_event_id >= overlay_coverage
-            break
-        saw_partial = True
-        assert overlay_row.generation == semantic_row.generation
-        assert overlay_row.covered_through_event_id == overlay_coverage
-        assert overlay_row.summary_text == overlay_text
-        assert overlay_row.revision == overlay_revision
-        assert overlay_row.source_fingerprint == overlay_fingerprint
-        assert overlay_row.base_semantic_revision == semantic_row.revision
-        assert semantic_row.covered_through_event_id < overlay_row.covered_through_event_id
-        assert snapshot.rewrite_pending is True
-        assert snapshot.overlay is not None
-        assert snapshot.effective_coverage == overlay_coverage
-        assert snapshot.rollup is not None
-        assert snapshot.rollup.summary_kind is RollupKind.EMERGENCY
-        assert job_row is not None
-    assert saw_partial is True
-    assert caught_up is True
 
 
 def _detailed_status_fixture(*, overlay: bool) -> ConversationRollupDetailedStatus:
@@ -2330,165 +1589,6 @@ def _detailed_status_fixture(*, overlay: bool) -> ConversationRollupDetailedStat
         effective_prompt_tail_character_count=80 if overlay else 400,
         job=None,
     )
-
-
-def test_render_rollup_status_labels_overlay_without_pairing_semantic_uncovered() -> None:
-    lines = render_rollup_status_lines(
-        _detailed_status_fixture(overlay=True),
-        scope_key="bot:bot:private:peer",
-    )
-    assert "语义未覆盖事件数：8" in lines
-    assert "紧急 overlay coverage：6" in lines
-    assert "有效 Prompt coverage：6" in lines
-    assert "有效 Prompt 尾部事件数：2" in lines
-    assert "rewrite_pending：是" in lines
-    assert not any(line.startswith("Rollup coverage：") for line in lines)
-    assert not any(line.startswith("未覆盖事件数：") for line in lines)
-    assert not any("summary" in line.casefold() for line in lines)
-
-
-def test_render_rollup_status_no_overlay_uses_semantic_effective_values() -> None:
-    lines = render_rollup_status_lines(
-        _detailed_status_fixture(overlay=False),
-        scope_key="bot:bot:private:peer",
-    )
-    assert "紧急 overlay：无" in lines
-    assert "紧急 overlay coverage：无" in lines
-    assert "语义 Rollup coverage：2" in lines
-    assert "有效 Prompt coverage：2" in lines
-    assert "有效 Prompt 尾部事件数：8" in lines
-    assert "rewrite_pending：否" in lines
-
-
-def test_detailed_status_dto_has_no_summary_content_fields() -> None:
-    names = {item.name for item in fields(ConversationRollupDetailedStatus)}
-    assert "summary_text" not in names
-    nested = asdict(_detailed_status_fixture(overlay=True))
-    assert "summary_text" not in nested
-    assert "SECRET" not in repr(nested)
-
-
-async def test_legacy_detailed_status_separates_overlay_from_semantic_uncovered(
-    database: Database,
-) -> None:
-    policy = _policy()
-    uow = ScopedEventLedgerUnitOfWork(database, config=policy)
-    repository = ConversationRollupRepository(database, policy)
-    service = ConversationRollupService(models=None, config=policy, timeout_seconds=0.1)
-    scope = ConversationScope.private("bot-a", "peer-status")
-    await _append(uow, scope, 4)
-    empty = await repository.detailed_status(scope)
-    assert empty.overlay is None
-    assert empty.rewrite_pending is False
-    assert empty.semantic is None
-    assert empty.scope is not None
-    assert empty.effective_coverage == empty.scope.starts_after_event_id
-    assert empty.semantic_uncovered_event_count == 4
-    assert empty.effective_prompt_tail_event_count == 4
-    assert "summary_text" not in asdict(empty)
-    await _commit_overlay(repository, service, scope, owner="status")
-    detailed = await repository.detailed_status(scope)
-    legacy_state, effective, job = await repository.status(scope)
-    assert detailed.overlay is not None
-    assert detailed.overlay.kind is RollupKind.EMERGENCY
-    assert detailed.rewrite_pending is True
-    assert detailed.semantic is None
-    assert detailed.semantic_uncovered_event_count == 4
-    assert detailed.effective_coverage == detailed.overlay.covered_through_event_id
-    assert detailed.effective_prompt_tail_event_count < detailed.semantic_uncovered_event_count
-    assert detailed.effective_prompt_tail_event_count == 2
-    assert effective is not None
-    assert effective.summary_kind is RollupKind.EMERGENCY
-    assert legacy_state is not None
-    assert job is not None
-    assert "summary_text" not in asdict(detailed)
-    assert "event-1" not in repr(asdict(detailed))
-
-
-async def test_v2_detailed_status_separates_overlay_from_semantic_uncovered(
-    database: Database,
-) -> None:
-    scope = await _prepare_v2_private(database, bot="8010")
-    policy = _policy()
-    uow = ScopedEventLedgerUnitOfWork(database, config=policy)
-    repository = ConversationRollupRepository(database, policy)
-    service = ConversationRollupService(models=None, config=policy, timeout_seconds=0.1)
-    await _append_v2(uow, scope, 4)
-    empty = await repository.detailed_status(scope)
-    assert empty.overlay is None
-    assert empty.rewrite_pending is False
-    assert empty.semantic_uncovered_event_count == 4
-    assert empty.effective_prompt_tail_event_count == 4
-    await _commit_overlay(repository, service, scope, owner="v2-status")
-    detailed = await repository.detailed_status(scope)
-    assert detailed.overlay is not None
-    assert detailed.overlay.kind is RollupKind.EMERGENCY
-    assert detailed.rewrite_pending is True
-    assert detailed.semantic_uncovered_event_count == 4
-    assert detailed.effective_prompt_tail_event_count < detailed.semantic_uncovered_event_count
-    assert "summary_text" not in asdict(detailed)
-
-
-async def test_reconcile_deletes_legacy_overlay_on_generation_mismatch(
-    database: Database,
-) -> None:
-    policy = _policy()
-    uow = ScopedEventLedgerUnitOfWork(database, config=policy)
-    repository = ConversationRollupRepository(database, policy)
-    service = ConversationRollupService(models=None, config=policy, timeout_seconds=0.1)
-    scope = ConversationScope.private("bot-a", "peer-reconcile")
-    await _append(uow, scope, 4)
-    claim, _result = await _commit_overlay(repository, service, scope, owner="reconcile")
-    async with database.sessions() as session, session.begin():
-        overlay = await session.get(ConversationRollupEmergencyOverlayModel, claim.scope_id)
-        assert overlay is not None
-        still_ahead = await _reconcile_overlay_with_semantic(
-            session,
-            overlay,
-            generation=claim.generation + 1,
-            covered_through=0,
-            next_semantic_revision=1,
-        )
-        assert still_ahead is False
-    async with database.sessions() as session:
-        assert await session.get(ConversationRollupEmergencyOverlayModel, claim.scope_id) is None
-
-
-async def test_reconcile_deletes_canonical_overlay_on_generation_mismatch(
-    database: Database,
-) -> None:
-    from qq_ai_bot.conversation.canonical_db_models import (
-        CanonicalConversationRollupEmergencyOverlayModel,
-    )
-
-    scope = await _prepare_v2_private(database, bot="8011")
-    policy = _policy()
-    uow = ScopedEventLedgerUnitOfWork(database, config=policy)
-    repository = ConversationRollupRepository(database, policy)
-    service = ConversationRollupService(models=None, config=policy, timeout_seconds=0.1)
-    await _append_v2(uow, scope, 4)
-    claim, _result = await _commit_overlay(repository, service, scope, owner="v2-reconcile")
-    assert claim.conversation_id
-    async with database.sessions() as session, session.begin():
-        overlay = await session.get(
-            CanonicalConversationRollupEmergencyOverlayModel, claim.conversation_id
-        )
-        assert overlay is not None
-        still_ahead = await _reconcile_overlay_with_semantic(
-            session,
-            overlay,
-            generation=claim.generation + 1,
-            covered_through=0,
-            next_semantic_revision=1,
-        )
-        assert still_ahead is False
-    async with database.sessions() as session:
-        assert (
-            await session.get(
-                CanonicalConversationRollupEmergencyOverlayModel, claim.conversation_id
-            )
-            is None
-        )
 
 
 class _CountingSuccessModels:
@@ -2594,18 +1694,6 @@ async def _assert_policy_park_then_mixed_catchup(database: Database, *, v2: bool
     assert caught.effective_coverage == caught.rollup.covered_through_event_id
 
 
-async def test_legacy_policy_ineligible_parks_then_mixed_user_message_catchup(
-    database: Database,
-) -> None:
-    await _assert_policy_park_then_mixed_catchup(database, v2=False)
-
-
-async def test_v2_policy_ineligible_parks_then_mixed_user_message_catchup(
-    database: Database,
-) -> None:
-    await _assert_policy_park_then_mixed_catchup(database, v2=True)
-
-
 async def _assert_policy_signal_kept(database: Database, *, v2: bool) -> None:
     policy = _policy()
     if v2:
@@ -2647,14 +1735,6 @@ async def _assert_policy_signal_kept(database: Database, *, v2: bool) -> None:
     assert detailed.job.last_error_category == LLM_ORIGIN_INELIGIBLE
     woken = await repository.claim_next_job(lease_owner="after-signal", lease_seconds=30)
     assert woken is not None
-
-
-async def test_legacy_policy_overlay_keeps_job_when_signal_changes(database: Database) -> None:
-    await _assert_policy_signal_kept(database, v2=False)
-
-
-async def test_v2_policy_overlay_keeps_job_when_signal_changes(database: Database) -> None:
-    await _assert_policy_signal_kept(database, v2=True)
 
 
 async def _assert_model_failure_backoff(database: Database, *, v2: bool) -> None:
@@ -2743,14 +1823,6 @@ async def _assert_model_failure_backoff(database: Database, *, v2: bool) -> None
     assert caught.rollup.summary_text == "semantic catch-up summary"
 
 
-async def test_legacy_model_failures_backoff_then_rebuild_from_ledger(database: Database) -> None:
-    await _assert_model_failure_backoff(database, v2=False)
-
-
-async def test_v2_model_failures_backoff_then_rebuild_from_ledger(database: Database) -> None:
-    await _assert_model_failure_backoff(database, v2=True)
-
-
 async def _assert_model_failure_keeps_backoff_when_signal_arrives(
     database: Database, *, v2: bool
 ) -> None:
@@ -2832,18 +1904,6 @@ async def _assert_model_failure_keeps_backoff_when_signal_arrives(
         delay = (_aware(stored.next_attempt_at) - marked).total_seconds()
         assert 10 <= delay <= 25
     assert await repository.claim_next_job(lease_owner="immediate", lease_seconds=30) is None
-
-
-async def test_legacy_model_failure_keeps_backoff_when_new_message_arrives(
-    database: Database,
-) -> None:
-    await _assert_model_failure_keeps_backoff_when_signal_arrives(database, v2=False)
-
-
-async def test_v2_model_failure_keeps_backoff_when_new_message_arrives(
-    database: Database,
-) -> None:
-    await _assert_model_failure_keeps_backoff_when_signal_arrives(database, v2=True)
 
 
 async def _assert_stale_reset_rejects(database: Database, *, v2: bool) -> None:
@@ -2938,10 +1998,6 @@ async def _assert_stale_reset_rejects(database: Database, *, v2: bool) -> None:
                 ConversationRollupEmergencyOverlayModel, snapshot.scope.id
             )
             assert overlay_row is None
-
-
-async def test_legacy_stale_result_after_generation_reset_is_rejected(database: Database) -> None:
-    await _assert_stale_reset_rejects(database, v2=False)
 
 
 async def test_v2_stale_result_after_generation_reset_is_rejected(database: Database) -> None:

@@ -20,130 +20,48 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from qq_ai_bot.identity.sql_constraints import uuid4_text36_sql
+
 
 class Base(DeclarativeBase):
     """Declarative metadata root."""
 
 
-class PersonModel(Base):
-    """One human identity permanently keyed by a QQ number string."""
-
-    __tablename__ = "people"
-    __table_args__ = (Index("ix_people_canonical_person_id", "canonical_person_id"),)
-
-    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    nickname: Mapped[str] = mapped_column(String(128), nullable=False, default="")
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    is_bot: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    canonical_person_id: Mapped[str | None] = mapped_column(
-        String(36),
-        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
-        nullable=True,
-    )
-
-    aliases: Mapped[list[PersonAliasModel]] = relationship(
-        back_populates="person",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-        foreign_keys="PersonAliasModel.user_id",
-        primaryjoin="PersonModel.user_id == PersonAliasModel.user_id",
-    )
-    memberships: Mapped[list[MembershipModel]] = relationship(
-        back_populates="person",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-        foreign_keys="MembershipModel.user_id",
-        primaryjoin="PersonModel.user_id == MembershipModel.user_id",
-    )
-    relationship_state: Mapped[PersonRelationshipModel | None] = relationship(
-        back_populates="person",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-        uselist=False,
-        foreign_keys="PersonRelationshipModel.user_id",
-        primaryjoin="PersonModel.user_id == PersonRelationshipModel.user_id",
-    )
-    time_setting: Mapped[PersonTimeSettingModel | None] = relationship(
-        back_populates="person",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-        uselist=False,
-        foreign_keys="PersonTimeSettingModel.user_id",
-        primaryjoin="PersonModel.user_id == PersonTimeSettingModel.user_id",
-    )
-    automations: Mapped[list[AutomationModel]] = relationship(
-        back_populates="creator",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-        foreign_keys="AutomationModel.creator_user_id",
-        primaryjoin="PersonModel.user_id == AutomationModel.creator_user_id",
-    )
-
-
 class PersonAliasModel(Base):
-    """A nickname or group card previously observed for one QQ identity."""
+    """A nickname or group card observed for one canonical Person."""
 
     __tablename__ = "person_aliases"
     __table_args__ = (
-        UniqueConstraint("user_id", "group_scope", "alias", name="uq_person_alias_scope"),
-        Index("ix_person_aliases_user_last_seen", "user_id", "last_seen_at"),
+        Index(
+            "uq_person_alias_scope",
+            "canonical_person_id",
+            text("COALESCE(canonical_space_id, '')"),
+            "alias",
+            unique=True,
+        ),
+        Index(
+            "ix_person_aliases_person_last_seen",
+            "canonical_person_id",
+            "last_seen_at",
+        ),
         Index("ix_person_aliases_canonical_person_id", "canonical_person_id"),
         Index("ix_person_aliases_canonical_space_id", "canonical_space_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    group_scope: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     alias: Mapped[str] = mapped_column(String(128), nullable=False)
     alias_type: Mapped[str] = mapped_column(String(24), nullable=False)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    canonical_person_id: Mapped[str | None] = mapped_column(
+    canonical_person_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
-        nullable=True,
+        nullable=False,
     )
     canonical_space_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("spaces.id", onupdate="RESTRICT", ondelete="RESTRICT"),
         nullable=True,
-    )
-
-    person: Mapped[PersonModel] = relationship(
-        back_populates="aliases",
-        foreign_keys="PersonAliasModel.user_id",
-        primaryjoin="PersonAliasModel.user_id == PersonModel.user_id",
-    )
-
-
-class GroupModel(Base):
-    """A QQ group and its observation/participation settings."""
-
-    __tablename__ = "groups"
-    __table_args__ = (Index("ix_groups_canonical_space_id", "canonical_space_id"),)
-
-    group_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    name: Mapped[str] = mapped_column(String(128), nullable=False, default="")
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    require_mention: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    autonomous_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    canonical_space_id: Mapped[str | None] = mapped_column(
-        String(36),
-        ForeignKey("spaces.id", onupdate="RESTRICT", ondelete="RESTRICT"),
-        nullable=True,
-    )
-
-    memberships: Mapped[list[MembershipModel]] = relationship(
-        back_populates="group",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-        foreign_keys="MembershipModel.group_id",
-        primaryjoin="GroupModel.group_id == MembershipModel.group_id",
     )
 
 
@@ -156,31 +74,20 @@ class MembershipModel(Base):
         Index("ix_memberships_canonical_space_id", "canonical_space_id"),
     )
 
-    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    group_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     group_card: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    canonical_person_id: Mapped[str | None] = mapped_column(
+    canonical_person_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
-        nullable=True,
+        primary_key=True,
+        nullable=False,
     )
-    canonical_space_id: Mapped[str | None] = mapped_column(
+    canonical_space_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("spaces.id", onupdate="RESTRICT", ondelete="RESTRICT"),
-        nullable=True,
-    )
-
-    person: Mapped[PersonModel] = relationship(
-        back_populates="memberships",
-        foreign_keys="MembershipModel.user_id",
-        primaryjoin="MembershipModel.user_id == PersonModel.user_id",
-    )
-    group: Mapped[GroupModel] = relationship(
-        back_populates="memberships",
-        foreign_keys="MembershipModel.group_id",
-        primaryjoin="MembershipModel.group_id == GroupModel.group_id",
+        primary_key=True,
+        nullable=False,
     )
 
 
@@ -189,13 +96,6 @@ class ChatEventModel(Base):
 
     __tablename__ = "chat_events"
     __table_args__ = (
-        Index(
-            "uq_chat_events_bot_platform_message",
-            "bot_user_id",
-            "platform_message_id",
-            unique=True,
-            sqlite_where=text("canonical_event_id IS NULL"),
-        ),
         Index("ix_chat_events_scope_time", "scope_type", "occurred_at"),
         Index("ix_chat_events_group_time", "group_id", "occurred_at"),
         Index("ix_chat_events_sender_time", "sender_user_id", "occurred_at"),
@@ -244,6 +144,31 @@ class ChatEventModel(Base):
             "AND direction = 'external')",
             name="ck_chat_events_kind_payload",
         ),
+        CheckConstraint(
+            "author_kind IN ('person', 'yuki', 'external_bot', 'system')",
+            name="ck_chat_events_author_kind",
+        ),
+        CheckConstraint(
+            uuid4_text36_sql("canonical_event_id"),
+            name="ck_chat_events_canonical_event_id",
+        ),
+        CheckConstraint(
+            "(author_kind = 'person' AND author_person_id IS NOT NULL "
+            "AND author_presence_id IS NULL) OR "
+            "(author_kind = 'yuki' AND author_person_id IS NULL "
+            "AND author_presence_id IS NOT NULL) OR "
+            "(author_kind IN ('external_bot', 'system') AND author_person_id IS NULL "
+            "AND author_presence_id IS NULL)",
+            name="ck_chat_events_author",
+        ),
+        CheckConstraint(
+            "suppression_status IN ('keeper', 'duplicate')",
+            name="ck_chat_events_suppression_status",
+        ),
+        CheckConstraint(
+            "suppression_status != 'duplicate' OR utterance_fingerprint IS NOT NULL",
+            name="ck_chat_events_duplicate_fingerprint",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -285,13 +210,13 @@ class ChatEventModel(Base):
     )
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    canonical_event_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    canonical_conversation_id: Mapped[str | None] = mapped_column(
+    canonical_event_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    canonical_conversation_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("canonical_conversations.id", onupdate="RESTRICT", ondelete="RESTRICT"),
-        nullable=True,
+        nullable=False,
     )
-    author_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    author_kind: Mapped[str] = mapped_column(String(16), nullable=False)
     author_person_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
@@ -308,7 +233,7 @@ class ChatEventModel(Base):
         nullable=True,
     )
     utterance_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    suppression_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    suppression_status: Mapped[str] = mapped_column(String(16), nullable=False)
     ingress_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
     ingress_gateway_instance_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
@@ -445,58 +370,28 @@ class MemoryFactModel(Base):
         CheckConstraint("importance BETWEEN 1 AND 5", name="ck_memory_facts_importance"),
         CheckConstraint("confidence BETWEEN 0 AND 1", name="ck_memory_facts_confidence"),
         CheckConstraint(
-            "(scope_type = 'person' AND subject_user_id IS NOT NULL AND group_id IS NULL) OR "
-            "(scope_type = 'person_group' AND subject_user_id IS NOT NULL "
-            "AND group_id IS NOT NULL) OR "
-            "(scope_type = 'group' AND subject_user_id IS NULL AND group_id IS NOT NULL) OR "
-            "(scope_type = 'self' AND subject_user_id IS NULL AND group_id IS NULL)",
+            "(scope_type = 'person' AND canonical_subject_person_id IS NOT NULL "
+            "AND canonical_subject_space_id IS NULL) OR "
+            "(scope_type = 'person_group' AND canonical_subject_person_id IS NOT NULL "
+            "AND canonical_subject_space_id IS NOT NULL) OR "
+            "(scope_type = 'group' AND canonical_subject_person_id IS NULL "
+            "AND canonical_subject_space_id IS NOT NULL) OR "
+            "(scope_type = 'self' AND canonical_subject_person_id IS NULL "
+            "AND canonical_subject_space_id IS NULL)",
             name="ck_memory_facts_scope_identity",
         ),
         CheckConstraint(
             "(scope_type != 'self' AND visibility_type IS NULL AND "
-            "visibility_user_id IS NULL AND visibility_group_id IS NULL) OR "
+            "canonical_visibility_person_id IS NULL "
+            "AND canonical_visibility_space_id IS NULL) OR "
             "(scope_type = 'self' AND ("
-            "(visibility_type = 'global' AND visibility_user_id IS NULL AND "
-            "visibility_group_id IS NULL) OR "
-            "(visibility_type = 'private' AND visibility_user_id IS NOT NULL AND "
-            "visibility_group_id IS NULL) OR "
-            "(visibility_type = 'group' AND visibility_user_id IS NULL AND "
-            "visibility_group_id IS NOT NULL)))",
+            "(visibility_type = 'global' AND canonical_visibility_person_id IS NULL AND "
+            "canonical_visibility_space_id IS NULL) OR "
+            "(visibility_type = 'private' AND canonical_visibility_person_id IS NOT NULL AND "
+            "canonical_visibility_space_id IS NULL) OR "
+            "(visibility_type = 'group' AND canonical_visibility_person_id IS NULL AND "
+            "canonical_visibility_space_id IS NOT NULL)))",
             name="ck_memory_facts_self_visibility",
-        ),
-        Index(
-            "uq_memory_facts_active_person_key",
-            "subject_user_id",
-            "kind",
-            "memory_key",
-            unique=True,
-            sqlite_where=text("status = 'active' AND scope_type = 'person'"),
-        ),
-        Index(
-            "uq_memory_facts_active_person_group_key",
-            "subject_user_id",
-            "group_id",
-            "kind",
-            "memory_key",
-            unique=True,
-            sqlite_where=text("status = 'active' AND scope_type = 'person_group'"),
-        ),
-        Index(
-            "uq_memory_facts_active_group_key",
-            "group_id",
-            "kind",
-            "memory_key",
-            unique=True,
-            sqlite_where=text("status = 'active' AND scope_type = 'group'"),
-        ),
-        Index(
-            "uq_memory_facts_active_self_key",
-            "memory_key",
-            "visibility_type",
-            text("COALESCE(visibility_user_id, '')"),
-            text("COALESCE(visibility_group_id, '')"),
-            unique=True,
-            sqlite_where=text("status = 'active' AND scope_type = 'self'"),
         ),
         Index(
             "uq_memory_facts_active_canonical_person_key",
@@ -547,8 +442,8 @@ class MemoryFactModel(Base):
         Index(
             "ix_memory_facts_scope_status_updated",
             "scope_type",
-            "subject_user_id",
-            "group_id",
+            "canonical_subject_person_id",
+            "canonical_subject_space_id",
             "status",
             "updated_at",
         ),
@@ -563,11 +458,7 @@ class MemoryFactModel(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     scope_type: Mapped[str] = mapped_column(String(16), nullable=False)
-    subject_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    group_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     visibility_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    visibility_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    visibility_group_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     memory_key: Mapped[str] = mapped_column(String(128), nullable=False)
     category: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -798,6 +689,7 @@ class MemoryFactRelationModel(Base):
         ),
         Index("ix_memory_fact_relations_source", "source_fact_id"),
         Index("ix_memory_fact_relations_target", "target_fact_id"),
+        {"sqlite_autoincrement": True},
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -827,6 +719,7 @@ class MemoryFactStateEventModel(Base):
             name="ck_memory_fact_state_events_action",
         ),
         Index("ix_memory_fact_state_events_fact_created", "fact_id", "created_at"),
+        {"sqlite_autoincrement": True},
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -1003,6 +896,11 @@ class MemoryToolReceiptModel(Base):
     __tablename__ = "memory_tool_receipts"
     __table_args__ = (
         CheckConstraint("result_characters >= 0", name="ck_memory_tool_receipts_size"),
+        CheckConstraint(
+            "(canonical_person_id IS NOT NULL AND canonical_space_id IS NULL) OR "
+            "(canonical_person_id IS NULL AND canonical_space_id IS NOT NULL)",
+            name="ck_memory_tool_receipts_owner",
+        ),
         Index(
             "ix_memory_tool_receipts_conversation_created",
             "conversation_key_hash",
@@ -1044,12 +942,11 @@ class MemorySelfReflectionStateModel(Base):
 
     __tablename__ = "memory_self_reflection_states"
     __table_args__ = (
-        UniqueConstraint(
-            "conversation_key_hash",
-            "bot_user_id",
-            name="uq_memory_self_reflection_state_key_bot",
+        CheckConstraint(
+            "(canonical_person_id IS NOT NULL AND canonical_space_id IS NULL) OR "
+            "(canonical_person_id IS NULL AND canonical_space_id IS NOT NULL)",
+            name="ck_memory_self_reflection_states_owner",
         ),
-        CheckConstraint("scope_type IN ('private','group')", name="ck_self_reflection_state_scope"),
         CheckConstraint(
             "pending_events >= 0 AND pending_characters >= 0",
             name="ck_self_reflection_state_pending",
@@ -1087,9 +984,6 @@ class MemorySelfReflectionStateModel(Base):
         ForeignKey("spaces.id", onupdate="RESTRICT", ondelete="RESTRICT"),
         nullable=True,
     )
-    scope_type: Mapped[str] = mapped_column(String(16), nullable=False)
-    group_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    private_peer_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_event_id: Mapped[int] = mapped_column(Integer, nullable=False)
     latest_event_id: Mapped[int] = mapped_column(Integer, nullable=False)
     pending_events: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -1116,11 +1010,10 @@ class MemorySelfReflectionRunModel(Base):
 
     __tablename__ = "memory_self_reflection_runs"
     __table_args__ = (
-        UniqueConstraint(
-            "conversation_key_hash",
-            "bot_user_id",
-            "scheduled_slot",
-            name="uq_self_reflection_run_slot_bot",
+        CheckConstraint(
+            "(canonical_person_id IS NOT NULL AND canonical_space_id IS NULL) OR "
+            "(canonical_person_id IS NULL AND canonical_space_id IS NOT NULL)",
+            name="ck_memory_self_reflection_runs_owner",
         ),
         CheckConstraint(
             "status IN ('processing','completed','failed')",
@@ -1396,6 +1289,11 @@ class MemoryJobModel(Base):
     __table_args__ = (
         UniqueConstraint("event_id", name="uq_memory_jobs_event"),
         CheckConstraint(
+            "(canonical_person_id IS NOT NULL AND canonical_space_id IS NULL) OR "
+            "(canonical_person_id IS NULL AND canonical_space_id IS NOT NULL)",
+            name="ck_memory_jobs_owner",
+        ),
+        CheckConstraint(
             "status IN ('pending', 'processing', 'done', 'failed')",
             name="ck_memory_jobs_status",
         ),
@@ -1527,7 +1425,7 @@ class MemoryEmbeddingJobModel(Base):
 
 
 class PersonRelationshipModel(Base):
-    """Persistent affection and trust scores for one QQ identity."""
+    """Persistent affection and trust scores for one canonical Person."""
 
     __tablename__ = "person_relationships"
     __table_args__ = (
@@ -1539,27 +1437,19 @@ class PersonRelationshipModel(Base):
             "trust_score >= 0 AND trust_score <= 100",
             name="ck_person_relationships_trust_range",
         ),
-        Index("ix_person_relationships_canonical_person_id", "canonical_person_id"),
     )
 
-    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    canonical_person_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        primary_key=True,
+    )
     affection_score: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
     trust_score: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_automatic_change_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
-    )
-    canonical_person_id: Mapped[str | None] = mapped_column(
-        String(36),
-        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
-        nullable=True,
-    )
-
-    person: Mapped[PersonModel] = relationship(
-        back_populates="relationship_state",
-        foreign_keys="PersonRelationshipModel.user_id",
-        primaryjoin="PersonRelationshipModel.user_id == PersonModel.user_id",
     )
 
 
@@ -1572,7 +1462,11 @@ class RelationshipEventModel(Base):
             "change_type IN ('automatic', 'manual')",
             name="ck_relationship_events_change_type",
         ),
-        Index("ix_relationship_events_user_created", "user_id", "created_at"),
+        Index(
+            "ix_relationship_events_person_created",
+            "canonical_person_id",
+            "created_at",
+        ),
         Index(
             "uq_relationship_events_automatic_source",
             "source_event_id",
@@ -1583,7 +1477,6 @@ class RelationshipEventModel(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     source_event_id: Mapped[int | None] = mapped_column(
         ForeignKey("chat_events.id", ondelete="SET NULL"), nullable=True
     )
@@ -1598,10 +1491,10 @@ class RelationshipEventModel(Base):
     reason_code: Mapped[str] = mapped_column(String(64), nullable=False)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    canonical_person_id: Mapped[str | None] = mapped_column(
+    canonical_person_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
-        nullable=True,
+        nullable=False,
     )
 
 
@@ -1623,7 +1516,6 @@ class RelationshipJobModel(Base):
     trigger_event_id: Mapped[int] = mapped_column(
         ForeignKey("chat_events.id", ondelete="CASCADE"), nullable=False
     )
-    user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     conversation_key: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -1631,10 +1523,10 @@ class RelationshipJobModel(Base):
     error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    canonical_person_id: Mapped[str | None] = mapped_column(
+    canonical_person_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
-        nullable=True,
+        nullable=False,
     )
 
 
@@ -1669,20 +1561,38 @@ class RuntimeConfigOverrideModel(Base):
 
     __tablename__ = "runtime_config_overrides"
     __table_args__ = (
-        UniqueConstraint(
+        Index(
+            "uq_runtime_config_overrides_global_key",
             "config_key",
-            "scope_type",
-            "scope_id",
-            name="uq_runtime_config_override_scope",
+            unique=True,
+            sqlite_where=text("scope_type = 'global'"),
+        ),
+        Index(
+            "uq_runtime_config_overrides_person_key",
+            "config_key",
+            "canonical_person_id",
+            unique=True,
+            sqlite_where=text("scope_type = 'user'"),
+        ),
+        Index(
+            "uq_runtime_config_overrides_space_key",
+            "config_key",
+            "canonical_space_id",
+            unique=True,
+            sqlite_where=text("scope_type = 'group'"),
         ),
         CheckConstraint(
             "scope_type IN ('global', 'group', 'user')",
             name="ck_runtime_config_overrides_scope_type",
         ),
         CheckConstraint(
-            "(scope_type = 'global' AND scope_id = '') OR "
-            "(scope_type IN ('group', 'user') AND scope_id <> '')",
-            name="ck_runtime_config_overrides_scope_id",
+            "(scope_type = 'global' AND canonical_person_id IS NULL "
+            "AND canonical_space_id IS NULL) OR "
+            "(scope_type = 'user' AND canonical_person_id IS NOT NULL "
+            "AND canonical_space_id IS NULL) OR "
+            "(scope_type = 'group' AND canonical_person_id IS NULL "
+            "AND canonical_space_id IS NOT NULL)",
+            name="ck_runtime_config_overrides_scope_owner",
         ),
         CheckConstraint(
             "value_type IN ('string', 'integer', 'number', 'boolean', 'enum')",
@@ -1696,7 +1606,6 @@ class RuntimeConfigOverrideModel(Base):
         Index(
             "ix_runtime_config_overrides_scope_key",
             "scope_type",
-            "scope_id",
             "config_key",
         ),
         Index("ix_runtime_config_overrides_canonical_person_id", "canonical_person_id"),
@@ -1706,7 +1615,6 @@ class RuntimeConfigOverrideModel(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     config_key: Mapped[str] = mapped_column(String(128), nullable=False)
     scope_type: Mapped[str] = mapped_column(String(16), nullable=False)
-    scope_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     value_json: Mapped[str] = mapped_column(Text, nullable=False)
     value_type: Mapped[str] = mapped_column(String(16), nullable=False)
     apply_mode: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -1836,23 +1744,14 @@ class PersonTimeSettingModel(Base):
     """The preferred IANA timezone for one globally identified person."""
 
     __tablename__ = "person_time_settings"
-    __table_args__ = (Index("ix_person_time_settings_canonical_person_id", "canonical_person_id"),)
-
-    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    canonical_person_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        primary_key=True,
+    )
     timezone: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    canonical_person_id: Mapped[str | None] = mapped_column(
-        String(36),
-        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"),
-        nullable=True,
-    )
-
-    person: Mapped[PersonModel] = relationship(
-        back_populates="time_setting",
-        foreign_keys="PersonTimeSettingModel.user_id",
-        primaryjoin="PersonTimeSettingModel.user_id == PersonModel.user_id",
-    )
 
 
 class AutomationModel(Base):
@@ -1866,6 +1765,18 @@ class AutomationModel(Base):
         ),
         CheckConstraint("run_count >= 0", name="ck_automations_run_count"),
         CheckConstraint("consecutive_failures >= 0", name="ck_automations_consecutive_failures"),
+        CheckConstraint(
+            "(status IN ('active', 'paused') "
+            "AND canonical_creator_person_id IS NOT NULL "
+            "AND ((canonical_target_person_id IS NOT NULL "
+            "AND canonical_target_space_id IS NULL) OR "
+            "(canonical_target_person_id IS NULL "
+            "AND canonical_target_space_id IS NOT NULL))) OR "
+            "(status IN ('completed', 'cancelled', 'failed', 'blocked') "
+            "AND NOT (canonical_target_person_id IS NOT NULL "
+            "AND canonical_target_space_id IS NOT NULL))",
+            name="ck_automations_canonical_owner",
+        ),
         Index("ix_automations_status_next", "status", "next_run_at"),
         Index("ix_automations_creator_updated", "creator_user_id", "updated_at"),
         Index("ix_automations_claim", "claimed_until", "claimed_by"),
@@ -1918,11 +1829,6 @@ class AutomationModel(Base):
         nullable=True,
     )
 
-    creator: Mapped[PersonModel] = relationship(
-        back_populates="automations",
-        foreign_keys="AutomationModel.creator_user_id",
-        primaryjoin="AutomationModel.creator_user_id == PersonModel.user_id",
-    )
     versions: Mapped[list[AutomationVersionModel]] = relationship(
         back_populates="automation",
         cascade="all, delete-orphan",
@@ -2167,8 +2073,3 @@ class RuntimeTurnObservationModel(Base):
         ForeignKey("spaces.id", onupdate="RESTRICT", ondelete="RESTRICT"),
         nullable=True,
     )
-
-
-# Source-compatibility aliases for integrations that only inspect the old profile types.
-UserProfileModel = PersonModel
-UserGroupProfileModel = MembershipModel

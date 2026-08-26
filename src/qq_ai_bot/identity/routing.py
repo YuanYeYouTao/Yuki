@@ -9,7 +9,6 @@ from typing import Protocol
 from uuid import uuid4
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import (
     PersonActiveRouteModel,
@@ -22,13 +21,12 @@ from qq_ai_bot.gateway.registry import (
     RegistryClosed,
     require_capability,
 )
+from qq_ai_bot.identity.canonical_repository import IDENTITY_PLATFORM
 from qq_ai_bot.identity.db_models import (
     IdentityBindingModel,
     PresenceModel,
     SpaceBindingModel,
 )
-from qq_ai_bot.identity.inventory import IDENTITY_PLATFORM
-from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
 from qq_ai_bot.persistence.database import Database
 
 MembershipProbe = Callable[[object, str, str], Awaitable[bool]]
@@ -125,10 +123,6 @@ class PresenceRouter:
         self._probe = membership_probe or default_membership_probe
         self._cas_hold: Callable[[], Awaitable[None]] | None = None
 
-    async def uses_canonical_send(self) -> bool:
-        async with self._database.sessions() as session:
-            return await identity_runtime_is_complete_v2(session)
-
     async def person_owns_external(
         self,
         person_id: str,
@@ -137,7 +131,7 @@ class PresenceRouter:
         allow_unknown: bool = False,
     ) -> bool:
         async with self._database.sessions() as session:
-            from qq_ai_bot.identity.shadows import person_id_for
+            from qq_ai_bot.identity.canonical_repository import person_id_for
 
             found = await person_id_for(session, external_id)
         if found is None:
@@ -152,7 +146,7 @@ class PresenceRouter:
         allow_unknown: bool = False,
     ) -> bool:
         async with self._database.sessions() as session:
-            from qq_ai_bot.identity.shadows import space_id_for
+            from qq_ai_bot.identity.canonical_repository import space_id_for
 
             found = await space_id_for(session, external_id)
         if found is None:
@@ -170,7 +164,7 @@ class PresenceRouter:
         *,
         capability: str = "send_private",
     ) -> ResolvedSend:
-        """v1 provenance path: exact account through Registry, never get_bots()."""
+        """Resolve one exact ingress account through Registry, never get_bots()."""
 
         resolution = self._registry.resolve_account(IDENTITY_PLATFORM, bot_user_id)
         require_capability(resolution, capability)
@@ -192,32 +186,29 @@ class PresenceRouter:
         target_type: str,
         target_id: str,
     ) -> ResolvedSend:
-        """v2 Person/Space route at send time; v1 stays exact-account Registry."""
+        """Resolve a canonical Person/Space route at send time."""
 
-        capability = "send_group" if target_type == "group" else "send_private"
+        del bot_user_id
         async with self._database.sessions() as session:
-            v2 = await identity_runtime_is_complete_v2(session)
             person_id = None
             space_id = None
-            if v2 and target_type == "private":
-                from qq_ai_bot.identity.shadows import person_id_for
+            if target_type == "private":
+                from qq_ai_bot.identity.canonical_repository import person_id_for
 
                 person_id = await person_id_for(session, target_id)
-            elif v2 and target_type == "group":
-                from qq_ai_bot.identity.shadows import space_id_for
+            elif target_type == "group":
+                from qq_ai_bot.identity.canonical_repository import space_id_for
 
                 space_id = await space_id_for(session, target_id)
-            elif v2:
+            else:
                 raise RouteSendError("none")
-        if v2:
-            if target_type == "private":
-                if person_id is None:
-                    raise RouteSendError("none")
-                return await self.resolve_send_for_person(person_id)
-            if space_id is None:
+        if target_type == "private":
+            if person_id is None:
                 raise RouteSendError("none")
-            return await self.resolve_send_for_space(space_id)
-        return await self.resolve_send_for_account(bot_user_id, capability=capability)
+            return await self.resolve_send_for_person(person_id)
+        if space_id is None:
+            raise RouteSendError("none")
+        return await self.resolve_send_for_space(space_id)
 
     async def resolve_send_for_person(self, person_id: str) -> ResolvedSend:
         async with self._database.sessions() as session:
@@ -616,14 +607,19 @@ class PresenceRouter:
                     return "conflict"
             elif not _person_matches(route, observed):
                 return "conflict"
-            if len(unique) != 1:
+            if not unique:
+                # A gateway may reconnect a moment after its WebSocket closes.
+                # Keep the last deterministic route pinned while it is offline;
+                # send resolution still fails closed through the Registry.
+                return "none"
+            if len(unique) > 1:
                 if route.paused:
-                    return "paused" if unique else "none"
+                    return "paused"
                 route.paused = True
                 route.route_generation += 1
                 route.revision += 1
                 route.updated_at = now
-                return "paused" if not unique else "ambiguous"
+                return "ambiguous"
             winner = unique[0]
             if (
                 route.identity_binding_id == winner.binding_id
@@ -714,14 +710,18 @@ class PresenceRouter:
                     return "conflict"
             elif not _space_matches(route, observed):
                 return "conflict"
-            if len(unique) != 1:
+            if not unique:
+                # Zero live candidates means temporary unavailability, not an
+                # operator pause. Preserve the route for the reconnecting Presence.
+                return "none"
+            if len(unique) > 1:
                 if route.paused:
-                    return "paused" if unique else "none"
+                    return "paused"
                 route.paused = True
                 route.route_generation += 1
                 route.revision += 1
                 route.updated_at = now
-                return "paused" if not unique else "ambiguous"
+                return "ambiguous"
             winner = unique[0]
             if (
                 route.space_binding_id == winner.binding_id
@@ -787,12 +787,16 @@ class PresenceRouter:
                 return "ok"
             if current.paused:
                 return "paused"
-            if len(unique) != 1:
+            if not unique:
+                # Do not turn a transient provider disconnect into a durable
+                # ingest pause. The connection fence remains closed until reconnect.
+                return "not_ingest"
+            if len(unique) > 1:
                 current.paused = True
                 current.route_generation += 1
                 current.revision += 1
                 current.updated_at = now
-                return "paused" if unique else "not_ingest"
+                return "paused"
             winner = unique[0]
             if current.ingest_presence_id == winner.presence_id:
                 return "ok"
@@ -885,7 +889,3 @@ class RouteMonitor:
         result = await self._router.reconcile_all()
         self.last_reconcile_id = str(uuid4())
         return result
-
-
-async def send_uses_canonical_route(session: AsyncSession) -> bool:
-    return await identity_runtime_is_complete_v2(session)

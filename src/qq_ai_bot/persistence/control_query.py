@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Protocol, TypedDict, TypeVar
 
-from sqlalchemy import Integer, Select, event, func, literal_column, select, tuple_
+from sqlalchemy import Select, event, func, select, tuple_
 from sqlalchemy.exc import DatabaseError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
@@ -20,18 +20,14 @@ from qq_ai_bot.control_plane.paging import Page, PageRequest
 from qq_ai_bot.control_plane.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_cursors import (
     decode_integer_cursor_key,
-    decode_operation_cursor_key,
     decode_resource_cursor,
     decode_time_id_key,
-    encode_operation_cursor_key,
     encode_query_cursor,
     encode_time_id_key,
 )
 from qq_ai_bot.control_plane.query_types import (
     AuditEventView,
     AutomationView,
-    BackfillConflictView,
-    BackfillOperationView,
     ConfigOverrideView,
     ConfigOwnerKind,
     ConfigSpecView,
@@ -41,7 +37,6 @@ from qq_ai_bot.control_plane.query_types import (
     EffectiveConfigView,
     EmojiAssetView,
     EmojiSpaceEnablementView,
-    ExternalIdView,
     IdentityBindingView,
     IdentityResolution,
     ManagementHealthView,
@@ -78,7 +73,6 @@ from qq_ai_bot.conversation.canonical_db_models import (
     SpaceActiveRouteModel,
     SpaceBindingIngestRouteModel,
 )
-from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
 from qq_ai_bot.domain.identity import (
     ConversationGeneration,
     ConversationId,
@@ -89,22 +83,16 @@ from qq_ai_bot.domain.identity import (
     SpaceBindingId,
     SpaceId,
 )
-from qq_ai_bot.emoji.db_models import EmojiAssetModel, EmojiJobModel, EmojiScopeStateModel
+from qq_ai_bot.emoji.db_models import EmojiAssetModel, EmojiScopeStateModel
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
-    IdentityBackfillRunModel,
     IdentityBindingModel,
-    IdentityConflictModel,
-    IdentityRuntimeStateModel,
     PresenceModel,
     SpaceBindingModel,
 )
-from qq_ai_bot.identity.inventory import IDENTITY_PLATFORM
-from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
 from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.memory.audit import MemoryAuditService
-from qq_ai_bot.memory.dream.db_models import MemoryDreamRunModel
 from qq_ai_bot.memory.embedding.health import MemoryEmbeddingHealthService
 from qq_ai_bot.memory.embedding.repository import MemoryEmbeddingRepository
 from qq_ai_bot.memory.embedding.text import EmbeddingDocumentBuilder
@@ -115,18 +103,14 @@ from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     AdminOperationEventModel,
     AutomationModel,
-    AutomationRunModel,
-    GroupModel,
     MCPServerStateModel,
     MCPToolCacheModel,
     MemoryEvidenceModel,
     MemoryFactModel,
     MemoryJobModel,
-    MemoryRebuildRunModel,
-    PersonModel,
     RuntimeConfigOverrideModel,
 )
-from qq_ai_bot.plugin_host.db_models import PluginInstallationModel, PluginNotificationOutboxModel
+from qq_ai_bot.plugin_host.db_models import PluginInstallationModel
 from qq_ai_bot.speech.db_models import SpeechVoiceProfileModel
 
 
@@ -145,66 +129,8 @@ class _AuditRow(Protocol):
     created_at: datetime | None
 
 
-class _ConflictRow(Protocol):
-    id: int
-    subject_kind: object
-    conflict_kind: object
-    status: object
-    error_category: object
-
-
 _T = TypeVar("_T")
 _IdT = TypeVar("_IdT", bound=_HasId)
-_BACKFILL_STATUS = {
-    "pending": OperationStatus.QUEUED,
-    "running": OperationStatus.RUNNING,
-    "succeeded": OperationStatus.SUCCEEDED,
-    "failed": OperationStatus.FAILED,
-    "cancelled": OperationStatus.CANCELLED,
-}
-
-
-def _operation_sort_key(
-    created_at: datetime, kind: int, local_id: int
-) -> tuple[datetime, int, int]:
-    stamp = created_at if created_at.tzinfo is not None else created_at.replace(tzinfo=UTC)
-    return (stamp.astimezone(UTC), kind, int(local_id))
-
-
-def _progress_for(status: OperationStatus) -> float:
-    if status is OperationStatus.QUEUED:
-        return 0.0
-    if status is OperationStatus.RUNNING:
-        return 0.5
-    return 1.0
-
-
-def _rebuild_query_status(value: str) -> OperationStatus:
-    mapping = {
-        "planned": OperationStatus.QUEUED,
-        "extracting": OperationStatus.RUNNING,
-        "extraction_paused": OperationStatus.RUNNING,
-        "review": OperationStatus.RUNNING,
-        "committing": OperationStatus.RUNNING,
-        "commit_paused": OperationStatus.RUNNING,
-        "completed": OperationStatus.SUCCEEDED,
-        "cancelled": OperationStatus.CANCELLED,
-        "failed": OperationStatus.FAILED,
-    }
-    return mapping.get(value, OperationStatus.RUNNING)
-
-
-def _dream_query_status(value: str) -> OperationStatus:
-    mapping = {
-        "planned": OperationStatus.QUEUED,
-        "running": OperationStatus.RUNNING,
-        "partial_failed": OperationStatus.FAILED,
-        "completed": OperationStatus.SUCCEEDED,
-        "cancelled": OperationStatus.CANCELLED,
-        "rolling_back": OperationStatus.RUNNING,
-        "rolled_back": OperationStatus.CANCELLED,
-    }
-    return mapping.get(value, OperationStatus.RUNNING)
 
 
 def _automation_target_kind(row: AutomationModel) -> str:
@@ -226,97 +152,17 @@ def _automation_target_id(row: AutomationModel) -> str:
 def _automation_route_state(
     row: AutomationModel,
     *,
-    epoch: StateEpoch,
     person_route: PersonActiveRouteModel | None,
     space_route: SpaceActiveRouteModel | None,
 ) -> str:
-    if epoch is not StateEpoch.V2 or (
-        not row.canonical_target_person_id and not row.canonical_target_space_id
-    ):
-        return "legacy"
+    if not row.canonical_target_person_id and not row.canonical_target_space_id:
+        return "missing"
     route = person_route if row.canonical_target_person_id else space_route
     if route is None:
         return "missing"
     if route.paused:
         return "paused"
     return "configured"
-
-
-def _automation_query_status(value: str) -> OperationStatus:
-    mapping = {
-        "running": OperationStatus.RUNNING,
-        "succeeded": OperationStatus.SUCCEEDED,
-        "failed": OperationStatus.FAILED,
-        "skipped": OperationStatus.SUCCEEDED,
-        "missed": OperationStatus.FAILED,
-        "uncertain": OperationStatus.RUNNING,
-        "blocked": OperationStatus.FAILED,
-    }
-    return mapping.get(value, OperationStatus.RUNNING)
-
-
-def _memory_job_query_status(value: str) -> OperationStatus:
-    mapping = {
-        "pending": OperationStatus.QUEUED,
-        "processing": OperationStatus.RUNNING,
-        "done": OperationStatus.SUCCEEDED,
-        "failed": OperationStatus.FAILED,
-    }
-    return mapping.get(value, OperationStatus.RUNNING)
-
-
-def _plugin_outbox_query_status(value: str) -> OperationStatus:
-    mapping = {
-        "pending": OperationStatus.QUEUED,
-        "processing": OperationStatus.RUNNING,
-        "sent": OperationStatus.SUCCEEDED,
-        "failed": OperationStatus.FAILED,
-        "uncertain": OperationStatus.RUNNING,
-        "cancelled": OperationStatus.CANCELLED,
-    }
-    return mapping.get(value, OperationStatus.RUNNING)
-
-
-def _emoji_job_query_status(value: str) -> OperationStatus:
-    mapping = {
-        "pending": OperationStatus.QUEUED,
-        "processing": OperationStatus.RUNNING,
-        "completed": OperationStatus.SUCCEEDED,
-        "failed": OperationStatus.FAILED,
-    }
-    return mapping.get(value, OperationStatus.RUNNING)
-
-
-def _projected_operation(
-    *,
-    operation_id: str,
-    status: OperationStatus,
-    created_at: datetime,
-    updated_at: datetime,
-    mode: str,
-    error_category: object,
-) -> BackfillOperationView:
-    created = _as_aware(created_at)
-    updated = _as_aware(updated_at)
-    if created is None or updated is None:
-        raise ControlQueryError(Problem(ProblemCode.STATE_MISMATCH))
-    category = None
-    if status is OperationStatus.FAILED:
-        token = str(error_category or "unclassified")
-        category = _safe_token(token, fallback="unclassified", max_length=64)
-    return BackfillOperationView(
-        operation=OperationRef(
-            operation_id=operation_id,
-            status=status,
-            progress=_progress_for(status),
-            state_epoch=StateEpoch.V1,
-            error_category=category,
-            created_at=created,
-            updated_at=updated,
-        ),
-        mode=mode,
-        conflict_count=0,
-    )
 
 
 def _as_aware(value: datetime | None) -> datetime | None:
@@ -384,32 +230,20 @@ def _try_space_id(value: object) -> SpaceId | None:
         return None
 
 
-def _config_legacy_owner(scope_id: object, *, reveal_external: bool) -> ExternalIdView | None:
-    if type(scope_id) is not str or not scope_id:
-        return None
-    return mask_external_id(scope_id, reveal=reveal_external)
-
-
 def _unavailable_config_owner() -> tuple[
-    ConfigOwnerKind, PersonId | None, SpaceId | None, IdentityResolution, ExternalIdView | None
+    ConfigOwnerKind, PersonId | None, SpaceId | None, IdentityResolution
 ]:
     return (
         ConfigOwnerKind.UNAVAILABLE,
         None,
         None,
         IdentityResolution.UNRESOLVED,
-        None,
     )
 
 
 def _config_owner_projection(
     row: RuntimeConfigOverrideModel,
-    *,
-    complete_v2: bool,
-    reveal_external: bool,
-) -> tuple[
-    ConfigOwnerKind, PersonId | None, SpaceId | None, IdentityResolution, ExternalIdView | None
-]:
+) -> tuple[ConfigOwnerKind, PersonId | None, SpaceId | None, IdentityResolution]:
     scope = str(row.scope_type)
     person = _try_person_id(row.canonical_person_id)
     space = _try_space_id(row.canonical_space_id)
@@ -423,7 +257,6 @@ def _config_owner_projection(
             None,
             None,
             IdentityResolution.CANONICAL,
-            None,
         )
     if scope == "user":
         if space is not None:
@@ -434,17 +267,8 @@ def _config_owner_projection(
                 person,
                 None,
                 IdentityResolution.CANONICAL,
-                None,
             )
-        if complete_v2:
-            return _unavailable_config_owner()
-        return (
-            ConfigOwnerKind.PERSON,
-            None,
-            None,
-            IdentityResolution.LEGACY,
-            _config_legacy_owner(row.scope_id, reveal_external=reveal_external),
-        )
+        return _unavailable_config_owner()
     if scope == "group":
         if person is not None:
             return _unavailable_config_owner()
@@ -454,17 +278,8 @@ def _config_owner_projection(
                 None,
                 space,
                 IdentityResolution.CANONICAL,
-                None,
             )
-        if complete_v2:
-            return _unavailable_config_owner()
-        return (
-            ConfigOwnerKind.SPACE,
-            None,
-            None,
-            IdentityResolution.LEGACY,
-            _config_legacy_owner(row.scope_id, reveal_external=reveal_external),
-        )
+        return _unavailable_config_owner()
     return _unavailable_config_owner()
 
 
@@ -479,12 +294,8 @@ def _project_config_override(
     row: RuntimeConfigOverrideModel,
     *,
     spec: object | None,
-    complete_v2: bool,
-    reveal_external: bool,
 ) -> ConfigOverrideView:
-    owner_kind, person_id, space_id, resolution, legacy_owner = _config_owner_projection(
-        row, complete_v2=complete_v2, reveal_external=reveal_external
-    )
+    owner_kind, person_id, space_id, resolution = _config_owner_projection(row)
     secret = _config_override_is_secret(spec)
     spec_mode = getattr(getattr(spec, "apply_mode", None), "value", "")
     apply_mode = "secret" if secret else str(spec_mode or row.apply_mode)
@@ -500,7 +311,6 @@ def _project_config_override(
         configured=True,
         version=int(row.version),
         value=None if secret else _safe_config_value(row.value_json),
-        legacy_owner=legacy_owner,
     )
 
 
@@ -515,8 +325,6 @@ def _decode_config_override_cursor(key: str | None) -> int:
 
 def _project_emoji_space_enablement(
     row: EmojiScopeStateModel,
-    *,
-    complete_v2: bool,
 ) -> EmojiSpaceEnablementView | None:
     if str(row.scope_type) == "global":
         return None
@@ -529,7 +337,7 @@ def _project_emoji_space_enablement(
         )
     return EmojiSpaceEnablementView(
         space_id=None,
-        resolution=IdentityResolution.UNRESOLVED if complete_v2 else IdentityResolution.LEGACY,
+        resolution=IdentityResolution.UNRESOLVED,
         enabled=bool(row.enabled),
     )
 
@@ -538,7 +346,6 @@ def _project_emoji_asset(
     row: EmojiAssetModel,
     *,
     scope_rows: Sequence[EmojiScopeStateModel],
-    complete_v2: bool,
     reveal_first_seen_person: bool,
     reveal_first_seen_space: bool,
 ) -> EmojiAssetView:
@@ -548,7 +355,7 @@ def _project_emoji_asset(
         if str(scope.scope_type) == "global":
             global_enabled = bool(scope.enabled)
             continue
-        projected = _project_emoji_space_enablement(scope, complete_v2=complete_v2)
+        projected = _project_emoji_space_enablement(scope)
         if projected is not None:
             enablements.append(projected)
     enablements.sort(
@@ -602,7 +409,7 @@ def _memory_job_view(row: MemoryJobModel) -> MemoryJobView:
             operation_id=f"memory-job-{row.id}",
             status=status,
             progress=1.0 if status is OperationStatus.SUCCEEDED else 0.0,
-            state_epoch=StateEpoch.V1,
+            state_epoch=StateEpoch.V2,
             error_category=error_category,
             created_at=created,
             updated_at=updated,
@@ -641,56 +448,6 @@ def project_audit_event(row: _AuditRow, *, snapshot_at: datetime) -> AuditEventV
         )
     except (TypeError, ValueError) as exc:
         raise ControlQueryError(Problem(ProblemCode.STATE_MISMATCH)) from exc
-
-
-def _project_conflict(row: _ConflictRow) -> BackfillConflictView:
-    try:
-        return BackfillConflictView(
-            conflict_id=int(row.id),
-            subject_kind=_safe_token(row.subject_kind, fallback="account", max_length=16),
-            conflict_kind=_safe_token(row.conflict_kind, fallback="unclassified", max_length=32),
-            status=_safe_token(row.status, fallback="open", max_length=16),
-            error_category=(
-                None
-                if row.error_category is None
-                else _safe_token(row.error_category, fallback="unclassified", max_length=64)
-            ),
-        )
-    except (TypeError, ValueError) as exc:
-        raise ControlQueryError(Problem(ProblemCode.STATE_MISMATCH)) from exc
-
-
-def _legacy_rowid(value: object) -> int:
-    if type(value) is int and type(value) is not bool:
-        if value < 1:
-            raise ControlQueryError(Problem(ProblemCode.STATE_MISMATCH))
-        return value
-    if type(value) is str:
-        try:
-            rowid = int(value)
-        except ValueError as exc:
-            raise ControlQueryError(Problem(ProblemCode.STATE_MISMATCH)) from exc
-        if value != str(rowid) or rowid < 1:
-            raise ControlQueryError(Problem(ProblemCode.STATE_MISMATCH))
-        return rowid
-    raise ControlQueryError(Problem(ProblemCode.STATE_MISMATCH))
-
-
-def _unresolved_after(phase: QueryCursorPhase, key: str | None) -> int | None:
-    if phase is not QueryCursorPhase.UNRESOLVED or key is None:
-        return None
-    return decode_integer_cursor_key(key, minimum=0)
-
-
-def _backfill_progress(status: str, processed: int, skipped: int, conflicts: int) -> float:
-    if status == "pending":
-        return 0.0
-    if status in {"succeeded", "cancelled"}:
-        return 1.0
-    total = processed + skipped + conflicts
-    if total <= 0:
-        return 0.0
-    return min(1.0, processed / total)
 
 
 class _PresenceConnectionFields(TypedDict):
@@ -793,13 +550,8 @@ class ControlQueryAdapter:
                 await session.rollback()
 
     async def _runtime(self, session: AsyncSession) -> tuple[StateEpoch, int]:
-        rows = list(await session.scalars(select(IdentityRuntimeStateModel)))
-        if len(rows) != 1:
-            raise ControlQueryError(Problem(ProblemCode.STATE_MISMATCH))
-        row = rows[0]
-        if row.id != 1 or row.state not in {item.value for item in StateEpoch}:
-            raise ControlQueryError(Problem(ProblemCode.STATE_MISMATCH))
-        return StateEpoch(row.state), int(row.revision)
+        del session
+        return StateEpoch.V2, 1
 
     def _cursor_state(
         self,
@@ -835,35 +587,6 @@ class ControlQueryAdapter:
         has_more = len(rows) == limit
         return (rows[:-1] if has_more else rows), has_more
 
-    async def _unresolved_people(
-        self, session: AsyncSession, after: int | None, limit: int
-    ) -> tuple[list[tuple[PersonModel, int]], bool]:
-        rowid = literal_column("rowid", Integer)
-        stmt = select(PersonModel, rowid).where(
-            PersonModel.canonical_person_id.is_(None),
-            PersonModel.is_bot.is_(False),
-        )
-        if after is not None:
-            stmt = stmt.where(rowid > after)
-        stmt = stmt.order_by(rowid.asc()).limit(limit)
-        rows = list(await session.execute(stmt))
-        has_more = len(rows) == limit
-        selected = rows[:-1] if has_more else rows
-        return [(row[0], _legacy_rowid(row[1])) for row in selected], has_more
-
-    async def _unresolved_groups(
-        self, session: AsyncSession, after: int | None, limit: int
-    ) -> tuple[list[tuple[GroupModel, int]], bool]:
-        rowid = literal_column("rowid", Integer)
-        stmt = select(GroupModel, rowid).where(GroupModel.canonical_space_id.is_(None))
-        if after is not None:
-            stmt = stmt.where(rowid > after)
-        stmt = stmt.order_by(rowid.asc()).limit(limit)
-        rows = list(await session.execute(stmt))
-        has_more = len(rows) == limit
-        selected = rows[:-1] if has_more else rows
-        return [(row[0], _legacy_rowid(row[1])) for row in selected], has_more
-
     async def _load_by_ids(
         self,
         session: AsyncSession,
@@ -882,18 +605,6 @@ class ControlQueryAdapter:
 
     async def _queue(self, session: AsyncSession) -> QueueSummary:
         return QueueSummary(
-            backfill_pending=await self._count(
-                session,
-                select(func.count())
-                .select_from(IdentityBackfillRunModel)
-                .where(IdentityBackfillRunModel.status == "pending"),
-            ),
-            backfill_running=await self._count(
-                session,
-                select(func.count())
-                .select_from(IdentityBackfillRunModel)
-                .where(IdentityBackfillRunModel.status == "running"),
-            ),
             memory_jobs_pending=await self._count(
                 session,
                 select(func.count())
@@ -926,47 +637,34 @@ class ControlQueryAdapter:
         return PendingRestartView(unique, len(unique))
 
     async def _counts(self, session: AsyncSession) -> dict[str, CountSnapshot]:
-        unresolved_people = (
-            select(func.count())
-            .select_from(PersonModel)
-            .where(PersonModel.canonical_person_id.is_(None), PersonModel.is_bot.is_(False))
-        )
-        unresolved_groups = (
-            select(func.count())
-            .select_from(GroupModel)
-            .where(GroupModel.canonical_space_id.is_(None))
-        )
-        unresolved_scopes = (
-            select(func.count())
-            .select_from(ConversationScopeModel)
-            .where(ConversationScopeModel.canonical_conversation_id.is_(None))
-        )
         return {
             "persons": CountSnapshot(
-                await self._count(session, select(func.count()).select_from(CanonicalPersonModel)),
-                await self._count(session, unresolved_people),
+                count=await self._count(
+                    session, select(func.count()).select_from(CanonicalPersonModel)
+                ),
             ),
             "identity_bindings": CountSnapshot(
-                await self._count(session, select(func.count()).select_from(IdentityBindingModel)),
-                await self._count(session, unresolved_people),
+                count=await self._count(
+                    session, select(func.count()).select_from(IdentityBindingModel)
+                ),
             ),
             "spaces": CountSnapshot(
-                await self._count(session, select(func.count()).select_from(CanonicalSpaceModel)),
-                await self._count(session, unresolved_groups),
+                count=await self._count(
+                    session, select(func.count()).select_from(CanonicalSpaceModel)
+                ),
             ),
             "space_bindings": CountSnapshot(
-                await self._count(session, select(func.count()).select_from(SpaceBindingModel)),
-                await self._count(session, unresolved_groups),
+                count=await self._count(
+                    session, select(func.count()).select_from(SpaceBindingModel)
+                ),
             ),
             "presences": CountSnapshot(
-                await self._count(session, select(func.count()).select_from(PresenceModel)),
-                0,
+                count=await self._count(session, select(func.count()).select_from(PresenceModel)),
             ),
             "conversations": CountSnapshot(
-                await self._count(
+                count=await self._count(
                     session, select(func.count()).select_from(CanonicalConversationModel)
                 ),
-                await self._count(session, unresolved_scopes),
             ),
         }
 
@@ -1095,44 +793,11 @@ class ControlQueryAdapter:
                         next_key=rows[-1].id,
                         snapshot_at=snapshot_at,
                     )
-            if epoch is StateEpoch.V2:
-                return self._page(
-                    items,
-                    kind=QueryResourceKind.PERSON,
-                    phase=QueryCursorPhase.CANONICAL,
-                    next_key=None,
-                    snapshot_at=snapshot_at,
-                )
-            remaining = request.limit - len(items)
-            if remaining <= 0:
-                peek, _more = await self._unresolved_people(session, None, 1)
-                return self._page(
-                    items,
-                    kind=QueryResourceKind.PERSON,
-                    phase=QueryCursorPhase.UNRESOLVED,
-                    next_key="0" if peek else None,
-                    snapshot_at=snapshot_at,
-                )
-            after = _unresolved_after(phase, key)
-            unresolved, more = await self._unresolved_people(session, after, remaining + 1)
-            items.extend(
-                PersonView(
-                    person_id=None,
-                    resolution=IdentityResolution.UNRESOLVED,
-                    enabled=bool(row.enabled),
-                    revision=None,
-                    created_at=_as_aware(row.first_seen_at),
-                    updated_at=_as_aware(row.last_seen_at),
-                    binding_count=0,
-                )
-                for row, _rowid in unresolved
-            )
-            next_key = str(unresolved[-1][1]) if more and unresolved else None
             return self._page(
                 items,
                 kind=QueryResourceKind.PERSON,
-                phase=QueryCursorPhase.UNRESOLVED,
-                next_key=next_key,
+                phase=QueryCursorPhase.CANONICAL,
+                next_key=None,
                 snapshot_at=snapshot_at,
             )
 
@@ -1180,49 +845,11 @@ class ControlQueryAdapter:
                         next_key=rows[-1].id,
                         snapshot_at=snapshot_at,
                     )
-            if epoch is StateEpoch.V2:
-                return self._page(
-                    items,
-                    kind=QueryResourceKind.BINDING,
-                    phase=QueryCursorPhase.CANONICAL,
-                    next_key=None,
-                    snapshot_at=snapshot_at,
-                )
-            remaining = request.limit - len(items)
-            if remaining <= 0:
-                peek, _more = await self._unresolved_people(session, None, 1)
-                return self._page(
-                    items,
-                    kind=QueryResourceKind.BINDING,
-                    phase=QueryCursorPhase.UNRESOLVED,
-                    next_key="0" if peek else None,
-                    snapshot_at=snapshot_at,
-                )
-            after = _unresolved_after(phase, key)
-            unresolved, more = await self._unresolved_people(session, after, remaining + 1)
-            items.extend(
-                IdentityBindingView(
-                    binding_id=None,
-                    person_id=None,
-                    resolution=IdentityResolution.UNRESOLVED,
-                    platform=IDENTITY_PLATFORM,
-                    external=mask_external_id(row.user_id, reveal=reveal_external),
-                    display_name=sanitize_projected_display(
-                        row.nickname,
-                        external_ids=(row.user_id,),
-                        reveal=reveal_external,
-                    ),
-                    status="active" if row.enabled else "disabled",
-                    revision=None,
-                )
-                for row, _rowid in unresolved
-            )
-            next_key = str(unresolved[-1][1]) if more and unresolved else None
             return self._page(
                 items,
                 kind=QueryResourceKind.BINDING,
-                phase=QueryCursorPhase.UNRESOLVED,
-                next_key=next_key,
+                phase=QueryCursorPhase.CANONICAL,
+                next_key=None,
                 snapshot_at=snapshot_at,
             )
 
@@ -1275,49 +902,11 @@ class ControlQueryAdapter:
                         next_key=rows[-1].id,
                         snapshot_at=snapshot_at,
                     )
-            if epoch is StateEpoch.V2:
-                return self._page(
-                    items,
-                    kind=QueryResourceKind.SPACE,
-                    phase=QueryCursorPhase.CANONICAL,
-                    next_key=None,
-                    snapshot_at=snapshot_at,
-                )
-            remaining = request.limit - len(items)
-            if remaining <= 0:
-                peek, _more = await self._unresolved_groups(session, None, 1)
-                return self._page(
-                    items,
-                    kind=QueryResourceKind.SPACE,
-                    phase=QueryCursorPhase.UNRESOLVED,
-                    next_key="0" if peek else None,
-                    snapshot_at=snapshot_at,
-                )
-            after = _unresolved_after(phase, key)
-            unresolved, more = await self._unresolved_groups(session, after, remaining + 1)
-            items.extend(
-                SpaceView(
-                    space_id=None,
-                    resolution=IdentityResolution.UNRESOLVED,
-                    name=sanitize_projected_display(
-                        row.name,
-                        external_ids=(row.group_id,),
-                        reveal=reveal_external,
-                    ),
-                    enabled=bool(row.enabled),
-                    autonomous_enabled=bool(row.autonomous_enabled),
-                    require_mention=bool(row.require_mention),
-                    revision=None,
-                    binding_count=0,
-                )
-                for row, _rowid in unresolved
-            )
-            next_key = str(unresolved[-1][1]) if more and unresolved else None
             return self._page(
                 items,
                 kind=QueryResourceKind.SPACE,
-                phase=QueryCursorPhase.UNRESOLVED,
-                next_key=next_key,
+                phase=QueryCursorPhase.CANONICAL,
+                next_key=None,
                 snapshot_at=snapshot_at,
             )
 
@@ -1365,49 +954,11 @@ class ControlQueryAdapter:
                         next_key=rows[-1].id,
                         snapshot_at=snapshot_at,
                     )
-            if epoch is StateEpoch.V2:
-                return self._page(
-                    items,
-                    kind=QueryResourceKind.SPACE_BINDING,
-                    phase=QueryCursorPhase.CANONICAL,
-                    next_key=None,
-                    snapshot_at=snapshot_at,
-                )
-            remaining = request.limit - len(items)
-            if remaining <= 0:
-                peek, _more = await self._unresolved_groups(session, None, 1)
-                return self._page(
-                    items,
-                    kind=QueryResourceKind.SPACE_BINDING,
-                    phase=QueryCursorPhase.UNRESOLVED,
-                    next_key="0" if peek else None,
-                    snapshot_at=snapshot_at,
-                )
-            after = _unresolved_after(phase, key)
-            unresolved, more = await self._unresolved_groups(session, after, remaining + 1)
-            items.extend(
-                SpaceBindingView(
-                    binding_id=None,
-                    space_id=None,
-                    resolution=IdentityResolution.UNRESOLVED,
-                    platform=IDENTITY_PLATFORM,
-                    external=mask_external_id(row.group_id, reveal=reveal_external),
-                    display_name=sanitize_projected_display(
-                        row.name,
-                        external_ids=(row.group_id,),
-                        reveal=reveal_external,
-                    ),
-                    status="active" if row.enabled else "disabled",
-                    revision=None,
-                )
-                for row, _rowid in unresolved
-            )
-            next_key = str(unresolved[-1][1]) if more and unresolved else None
             return self._page(
                 items,
                 kind=QueryResourceKind.SPACE_BINDING,
-                phase=QueryCursorPhase.UNRESOLVED,
-                next_key=next_key,
+                phase=QueryCursorPhase.CANONICAL,
+                next_key=None,
                 snapshot_at=snapshot_at,
             )
 
@@ -1489,68 +1040,11 @@ class ControlQueryAdapter:
                         next_key=rows[-1].id,
                         snapshot_at=snapshot_at,
                     )
-            if epoch is StateEpoch.V2:
-                return self._page(
-                    items,
-                    kind=QueryResourceKind.CONVERSATION,
-                    phase=QueryCursorPhase.CANONICAL,
-                    next_key=None,
-                    snapshot_at=snapshot_at,
-                )
-            remaining = request.limit - len(items)
-            if remaining <= 0:
-                peek_stmt = (
-                    select(ConversationScopeModel.id)
-                    .where(ConversationScopeModel.canonical_conversation_id.is_(None))
-                    .order_by(ConversationScopeModel.id.asc())
-                    .limit(1)
-                )
-                peek = await session.scalar(peek_stmt)
-                return self._page(
-                    items,
-                    kind=QueryResourceKind.CONVERSATION,
-                    phase=QueryCursorPhase.UNRESOLVED,
-                    next_key="0" if peek is not None else None,
-                    snapshot_at=snapshot_at,
-                )
-            after = (
-                decode_integer_cursor_key(key, minimum=0)
-                if phase is QueryCursorPhase.UNRESOLVED and key is not None
-                else 0
-            )
-            stmt = select(ConversationScopeModel).where(
-                ConversationScopeModel.canonical_conversation_id.is_(None)
-            )
-            if after:
-                stmt = stmt.where(ConversationScopeModel.id > after)
-            stmt = stmt.order_by(ConversationScopeModel.id.asc()).limit(remaining + 1)
-            unresolved = list(await session.scalars(stmt))
-            more = len(unresolved) == remaining + 1
-            if more:
-                unresolved = unresolved[:-1]
-            items.extend(
-                ConversationView(
-                    conversation_id=None,
-                    resolution=IdentityResolution.UNRESOLVED,
-                    kind=row.scope_type,
-                    person_id=None,
-                    space_id=None,
-                    generation=ConversationGeneration(int(row.generation)),
-                    last_event_id=int(row.last_event_id),
-                    starts_after_event_id=int(row.starts_after_event_id),
-                    covered_through_event_id=None,
-                    last_generation_change_event_id=int(row.last_generation_change_event_id),
-                    uncovered_event_count=int(row.uncovered_event_count),
-                    revision=None,
-                )
-                for row in unresolved
-            )
-            next_key = str(unresolved[-1].id) if more and unresolved else None
             return self._page(
                 items,
                 kind=QueryResourceKind.CONVERSATION,
-                phase=QueryCursorPhase.UNRESOLVED,
-                next_key=next_key,
+                phase=QueryCursorPhase.CANONICAL,
+                next_key=None,
                 snapshot_at=snapshot_at,
             )
 
@@ -1749,194 +1243,17 @@ class ControlQueryAdapter:
                 snapshot_at=snapshot_at,
             )
 
-    def _operation_from_run(self, row: IdentityBackfillRunModel) -> BackfillOperationView:
-        status = _BACKFILL_STATUS.get(row.status)
-        if status is None:
-            raise ControlQueryError(Problem(ProblemCode.STATE_MISMATCH))
-        error_category = None
-        if status is OperationStatus.FAILED:
-            error_category = _safe_token(row.error_category, fallback="", max_length=64)
-            if not error_category:
-                raise ControlQueryError(Problem(ProblemCode.STATE_MISMATCH))
-        elif row.error_category is not None:
-            raise ControlQueryError(Problem(ProblemCode.STATE_MISMATCH))
-        created = _as_aware(row.created_at)
-        updated = _as_aware(row.updated_at)
-        if created is None or updated is None:
-            raise ControlQueryError(Problem(ProblemCode.STATE_MISMATCH))
-        try:
-            return BackfillOperationView(
-                operation=OperationRef(
-                    operation_id=f"backfill-{row.id}",
-                    status=status,
-                    progress=_backfill_progress(
-                        row.status,
-                        int(row.processed_count),
-                        int(row.skipped_count),
-                        int(row.conflicts_count),
-                    ),
-                    state_epoch=StateEpoch.V1,
-                    error_category=error_category,
-                    created_at=created,
-                    updated_at=updated,
-                ),
-                mode=_safe_token(row.mode, fallback="dry_run", max_length=16),
-                conflict_count=int(row.conflicts_count),
-            )
-        except (TypeError, ValueError) as exc:
-            raise ControlQueryError(Problem(ProblemCode.STATE_MISMATCH)) from exc
-
-    async def list_backfill_operations(self, request: PageRequest) -> Page[BackfillOperationView]:
-        snapshot_at = _now()
-        async with self._reader() as session:
-            epoch, _revision = await self._runtime(session)
-            _phase, key = self._cursor_state(request, QueryResourceKind.OPERATION, epoch=epoch)
-            after = decode_operation_cursor_key(key) if key is not None else None
-            collected: list[tuple[tuple[datetime, int, int], BackfillOperationView]] = []
-            for backfill in await session.scalars(select(IdentityBackfillRunModel)):
-                collected.append(
-                    (
-                        _operation_sort_key(backfill.created_at, 1, int(backfill.id)),
-                        self._operation_from_run(backfill),
-                    )
-                )
-            for rebuild in await session.scalars(select(MemoryRebuildRunModel)):
-                collected.append(
-                    (
-                        _operation_sort_key(rebuild.created_at, 2, int(rebuild.id)),
-                        _projected_operation(
-                            operation_id=f"rebuild:{rebuild.public_id}",
-                            status=_rebuild_query_status(str(rebuild.status)),
-                            created_at=rebuild.created_at,
-                            updated_at=rebuild.updated_at,
-                            mode="rebuild",
-                            error_category=rebuild.error_category,
-                        ),
-                    )
-                )
-            for dream in await session.scalars(select(MemoryDreamRunModel)):
-                collected.append(
-                    (
-                        _operation_sort_key(dream.created_at, 3, int(dream.id)),
-                        _projected_operation(
-                            operation_id=f"dream:{dream.public_id}",
-                            status=_dream_query_status(str(dream.status)),
-                            created_at=dream.created_at,
-                            updated_at=dream.updated_at,
-                            mode="dream",
-                            error_category=dream.error_category,
-                        ),
-                    )
-                )
-            for automation in await session.scalars(select(AutomationRunModel)):
-                collected.append(
-                    (
-                        _operation_sort_key(automation.created_at, 4, int(automation.id)),
-                        _projected_operation(
-                            operation_id=f"automation:{automation.id}",
-                            status=_automation_query_status(str(automation.status)),
-                            created_at=automation.created_at,
-                            updated_at=automation.finished_at or automation.created_at,
-                            mode="automation",
-                            error_category=automation.error_category,
-                        ),
-                    )
-                )
-            for job in await session.scalars(select(MemoryJobModel)):
-                collected.append(
-                    (
-                        _operation_sort_key(job.created_at, 5, int(job.id)),
-                        _projected_operation(
-                            operation_id=f"memory-job:{job.id}",
-                            status=_memory_job_query_status(str(job.status)),
-                            created_at=job.created_at,
-                            updated_at=job.updated_at,
-                            mode="memory-job",
-                            error_category=job.error_category,
-                        ),
-                    )
-                )
-            for outbox in await session.scalars(select(PluginNotificationOutboxModel)):
-                collected.append(
-                    (
-                        _operation_sort_key(outbox.created_at, 6, int(outbox.id)),
-                        _projected_operation(
-                            operation_id=f"plugin-outbox:{outbox.id}",
-                            status=_plugin_outbox_query_status(str(outbox.status)),
-                            created_at=outbox.created_at,
-                            updated_at=outbox.updated_at,
-                            mode="plugin-outbox",
-                            error_category=outbox.last_error_category,
-                        ),
-                    )
-                )
-            for emoji_job in await session.scalars(select(EmojiJobModel)):
-                collected.append(
-                    (
-                        _operation_sort_key(emoji_job.created_at, 7, int(emoji_job.id)),
-                        _projected_operation(
-                            operation_id=f"emoji-job:{emoji_job.id}",
-                            status=_emoji_job_query_status(str(emoji_job.status)),
-                            created_at=emoji_job.created_at,
-                            updated_at=emoji_job.updated_at,
-                            mode="emoji-job",
-                            error_category=emoji_job.error_category,
-                        ),
-                    )
-                )
-            collected.sort(key=lambda item: item[0])
-            if after is not None:
-                collected = [item for item in collected if item[0] > after]
-            more = len(collected) > request.limit
-            window = collected[: request.limit]
-            next_key = None
-            if more:
-                created_at, kind, local_id = window[-1][0]
-                next_key = encode_operation_cursor_key(created_at, kind, local_id)
-            return self._page(
-                [item[1] for item in window],
-                kind=QueryResourceKind.OPERATION,
-                phase=QueryCursorPhase.CANONICAL,
-                next_key=next_key,
-                snapshot_at=snapshot_at,
-            )
-
-    async def list_backfill_conflicts(self, request: PageRequest) -> Page[BackfillConflictView]:
-        snapshot_at = _now()
-        async with self._reader() as session:
-            epoch, _revision = await self._runtime(session)
-            _phase, key = self._cursor_state(request, QueryResourceKind.CONFLICT, epoch=epoch)
-            after = decode_integer_cursor_key(key, minimum=1) if key is not None else 0
-            stmt = select(
-                IdentityConflictModel.id,
-                IdentityConflictModel.subject_kind,
-                IdentityConflictModel.conflict_kind,
-                IdentityConflictModel.status,
-                IdentityConflictModel.error_category,
-            )
-            if after:
-                stmt = stmt.where(IdentityConflictModel.id > after)
-            stmt = stmt.order_by(IdentityConflictModel.id.asc()).limit(request.limit + 1)
-            rows = list(await session.execute(stmt))
-            more = len(rows) == request.limit + 1
-            if more:
-                rows = rows[:-1]
-            items = [_project_conflict(row) for row in rows]
-            return self._page(
-                items,
-                kind=QueryResourceKind.CONFLICT,
-                phase=QueryCursorPhase.CANONICAL,
-                next_key=str(rows[-1].id) if more else None,
-                snapshot_at=snapshot_at,
-            )
-
     async def list_config_specs(self, request: PageRequest) -> Page[ConfigSpecView]:
         snapshot_at = _now()
         async with self._reader() as session:
             epoch, _revision = await self._runtime(session)
             _phase, key = self._cursor_state(request, QueryResourceKind.CONFIG, epoch=epoch)
             overrides = {
-                (row.config_key, row.scope_type, row.scope_id)
+                (
+                    row.config_key,
+                    row.scope_type,
+                    row.canonical_person_id or row.canonical_space_id or "",
+                )
                 for row in (await session.scalars(select(RuntimeConfigOverrideModel))).all()
             }
         specs = sorted(ConfigRegistry().list(), key=lambda item: item.key)
@@ -2019,11 +1336,11 @@ class ControlQueryAdapter:
         *,
         reveal_external: bool,
     ) -> Page[ConfigOverrideView]:
+        del reveal_external
         snapshot_at = _now()
         specs = {item.key: item for item in ConfigRegistry().list()}
         async with self._reader() as session:
             epoch, _revision = await self._runtime(session)
-            complete_v2 = await identity_runtime_is_complete_v2(session)
             _phase, key = self._cursor_state(request, QueryResourceKind.CONFIG, epoch=epoch)
             after = _decode_config_override_cursor(key)
             stmt = select(RuntimeConfigOverrideModel)
@@ -2038,8 +1355,6 @@ class ControlQueryAdapter:
                 _project_config_override(
                     row,
                     spec=specs.get(str(row.config_key)),
-                    complete_v2=complete_v2,
-                    reveal_external=reveal_external,
                 )
                 for row in rows
             ]
@@ -2248,7 +1563,6 @@ class ControlQueryAdapter:
                     target_id=_automation_target_id(row),
                     route_state=_automation_route_state(
                         row,
-                        epoch=epoch,
                         person_route=person_routes.get(str(row.canonical_target_person_id or "")),
                         space_route=space_routes.get(str(row.canonical_target_space_id or "")),
                     ),
@@ -2358,7 +1672,6 @@ class ControlQueryAdapter:
         snapshot_at = _now()
         async with self._reader() as session:
             epoch, _revision = await self._runtime(session)
-            complete_v2 = await identity_runtime_is_complete_v2(session)
             _phase, key = self._cursor_state(request, QueryResourceKind.EMOJI, epoch=epoch)
             stmt = select(EmojiAssetModel)
             if key is not None:
@@ -2386,7 +1699,6 @@ class ControlQueryAdapter:
                 _project_emoji_asset(
                     row,
                     scope_rows=scopes_by_asset.get(str(row.id), []),
-                    complete_v2=complete_v2,
                     reveal_first_seen_person=reveal_first_seen_person,
                     reveal_first_seen_space=reveal_first_seen_space,
                 )

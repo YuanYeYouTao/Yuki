@@ -5,8 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence
 from qq_ai_bot.memory.audit import MemoryAuditService
 from qq_ai_bot.memory.enums import (
     MemoryConflictState,
@@ -26,6 +28,15 @@ from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 
 ROOT = Path(__file__).parents[2]
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _canonical_quality_identity(database: Database) -> None:
+    """Exercise governance against the same identity fence as production."""
+
+    async with database.immediate_session() as session:
+        await ensure_presence(session, "8000")
+        await ensure_person(session, "1001", display_name="quality-person")
 
 
 @pytest.mark.asyncio
@@ -249,7 +260,7 @@ async def test_hygiene_rejects_stale_fingerprint(database: Database) -> None:
 @pytest.mark.asyncio
 async def test_release_check_is_read_only_and_requires_explicit_database(tmp_path: Path) -> None:
     report = await MemoryReleaseCheck(ROOT, artifact_directory=tmp_path).run()
-    assert report.alembic_head == "0048"
+    assert report.alembic_head == "0049"
     database = next(item for item in report.items if item.code == "production_database")
     assert database.status == "warn"
     assert "--database-url" in database.detail

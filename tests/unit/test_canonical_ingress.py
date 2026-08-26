@@ -1,4 +1,4 @@
-"""C17 gated canonical ingress: v1 dormant, v2 fence/receipt/author rules."""
+"""Canonical ingress fence, receipt, and author rules."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import select
 from tests.support.gateway import napcat_registry
 
 from qq_ai_bot.domain.conversations import ScopeType
@@ -14,9 +14,19 @@ from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.gateway.provider import GatewayConnectionProfile, GatewayProviderCatalog
 from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
+from qq_ai_bot.identity.canonical_repository import (
+    ensure_person,
+    set_identity_failpoint,
+)
+from qq_ai_bot.identity.canonical_repository import (
+    ensure_presence as ensure_v2_presence,
+)
+from qq_ai_bot.identity.canonical_repository import (
+    ensure_space as ensure_v2_space,
+)
 from qq_ai_bot.identity.canonical_uow import CanonicalIngressUnitOfWork
-from qq_ai_bot.identity.db_models import IdentityBindingModel, IdentityRuntimeStateModel
-from qq_ai_bot.identity.dual_write import set_identity_failpoint
+from qq_ai_bot.identity.db_models import IdentityBindingModel
+from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.identity.ingress import CanonicalIngressResolver, overlay_yuki_signals
 from qq_ai_bot.identity.routing import PresenceRouter
 from qq_ai_bot.identity.write_settings import (
@@ -24,10 +34,9 @@ from qq_ai_bot.identity.write_settings import (
     configure_identity_write_settings,
 )
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import ChatEventModel, PersonModel
+from qq_ai_bot.persistence.models import ChatEventModel
 
 _NOW = datetime(2026, 8, 24, tzinfo=UTC)
-_CUTOVER = "550e8400-e29b-41d4-a716-446655440099"
 
 
 @dataclass
@@ -78,16 +87,6 @@ def _message(
     )
 
 
-async def _flip_v2(database: Database) -> None:
-    async with database.sessions() as session, session.begin():
-        row = await session.get(IdentityRuntimeStateModel, 1)
-        assert row is not None
-        row.state = "v2"
-        row.cutover_id = _CUTOVER
-        row.source_fingerprint = "cutover-fingerprint"
-        row.completed_at = _NOW
-
-
 async def _stack(
     database: Database,
 ) -> tuple[GatewayConnectionRegistry, CanonicalIngressResolver, CanonicalIngressUnitOfWork]:
@@ -112,25 +111,8 @@ async def _true(*_args: object, **_kwargs: object) -> bool:
 
 
 @pytest.mark.asyncio
-async def test_v1_runtime_does_not_activate_canonical_ingress(database: Database) -> None:
-    registry, resolver, _uow = await _stack(database)
-    bot = _Bot("8000")
-    registry.connect(bot, presence_id=None)
-    admitted = await resolver.pre_admit(bot, _message(message_id="v1-keep"))
-    assert admitted is None
-
-
-@pytest.mark.asyncio
 async def test_v2_private_and_group_dual_presence_same_person_space(database: Database) -> None:
-    from qq_ai_bot.identity.dual_write import (
-        ensure_canonical_presence_preconfig as ensure_v2_presence,
-    )
-    from qq_ai_bot.identity.dual_write import (
-        ensure_v2_space,
-    )
-
     registry, resolver, uow = await _stack(database)
-    await _flip_v2(database)
     bot_a = _Bot("8000")
     bot_b = _Bot("8001")
     async with database.sessions() as session, session.begin():
@@ -174,15 +156,7 @@ async def test_v2_private_and_group_dual_presence_same_person_space(database: Da
 async def test_non_ingest_drops_before_policy_without_body(
     database: Database, caplog: pytest.LogCaptureFixture
 ) -> None:
-    from qq_ai_bot.identity.dual_write import (
-        ensure_canonical_presence_preconfig as ensure_v2_presence,
-    )
-    from qq_ai_bot.identity.dual_write import (
-        ensure_v2_space,
-    )
-
     registry, resolver, _uow = await _stack(database)
-    await _flip_v2(database)
     bot = _Bot("8000")
     other = _Bot("8001")
     async with database.sessions() as session, session.begin():
@@ -213,12 +187,7 @@ async def test_non_ingest_drops_before_policy_without_body(
 
 @pytest.mark.asyncio
 async def test_fence_failpoint_is_same_immediate_and_receipt_dedupe(database: Database) -> None:
-    from qq_ai_bot.identity.dual_write import (
-        ensure_canonical_presence_preconfig as ensure_v2_presence,
-    )
-
     registry, resolver, uow = await _stack(database)
-    await _flip_v2(database)
     bot = _Bot("8000")
     async with database.sessions() as session, session.begin():
         presence = await ensure_v2_presence(session, "8000")
@@ -246,19 +215,14 @@ async def test_fence_failpoint_is_same_immediate_and_receipt_dedupe(database: Da
 
 @pytest.mark.asyncio
 async def test_external_bot_does_not_create_person(database: Database) -> None:
-    from qq_ai_bot.identity.dual_write import (
-        ensure_canonical_presence_preconfig as ensure_v2_presence,
-    )
-
     registry, resolver, _uow = await _stack(database)
-    await _flip_v2(database)
     bot = _Bot("8000")
     async with database.sessions() as session, session.begin():
         presence = await ensure_v2_presence(session, "8000")
     registry.connect(bot)
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
     admitted = await resolver.pre_admit(
-        bot, _message(message_id="bot-1", user_id="7777", is_bot=True)
+        bot, _message(message_id="bot-1", user_id="6666", is_bot=True)
     )
     assert admitted is not None and not admitted.dropped
     assert admitted.author_kind == AuthorKind.EXTERNAL_BOT.value
@@ -267,11 +231,11 @@ async def test_external_bot_does_not_create_person(database: Database) -> None:
     async with database.sessions() as session:
         from qq_ai_bot.identity.db_models import CanonicalPersonModel
 
-        assert await session.get(PersonModel, "7777") is None
-        bindings = list(await session.scalars(select(IdentityBindingModel)))
-        persons = list(await session.scalars(select(CanonicalPersonModel)))
-        assert bindings == []
-        assert persons == []
+        binding = await session.scalar(
+            select(IdentityBindingModel).where(IdentityBindingModel.external_account_id == "6666")
+        )
+        assert binding is None
+        assert list(await session.scalars(select(CanonicalPersonModel)))
 
 
 def test_private_reply_prefers_ingress_and_fails_over_same_presence_only() -> None:
@@ -296,7 +260,7 @@ def test_private_reply_prefers_ingress_and_fails_over_same_presence_only() -> No
         configure_process_registry(None)
 
 
-def test_any_presence_mention_and_reply_without_changing_v1_default() -> None:
+def test_any_presence_mention_and_reply_overlay() -> None:
     from qq_ai_bot.services.policies import replies_to_bot
 
     message = _message(
@@ -315,10 +279,6 @@ def test_any_presence_mention_and_reply_without_changing_v1_default() -> None:
 async def test_ingress_uses_handle_provider_and_rejects_bot_mismatch(
     database: Database,
 ) -> None:
-    from qq_ai_bot.identity.dual_write import (
-        ensure_canonical_presence_preconfig as ensure_v2_presence,
-    )
-
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     registry = GatewayConnectionRegistry(
         providers=GatewayProviderCatalog(
@@ -329,7 +289,6 @@ async def test_ingress_uses_handle_provider_and_rejects_bot_mismatch(
     router = PresenceRouter(database, registry, membership_probe=lambda *_a, **_k: _true())
     resolver = CanonicalIngressResolver(database, registry, router)
     uow = CanonicalIngressUnitOfWork(database, router)
-    await _flip_v2(database)
     bot = _Bot("8000")
     async with database.sessions() as session, session.begin():
         presence = await ensure_v2_presence(session, "8000")
@@ -355,49 +314,37 @@ async def test_ingress_uses_handle_provider_and_rejects_bot_mismatch(
 
 @pytest.mark.asyncio
 async def test_unknown_group_and_unknown_presence_fail_closed(database: Database) -> None:
-    from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
     from qq_ai_bot.identity.db_models import CanonicalPersonModel, SpaceBindingModel
-    from qq_ai_bot.identity.dual_write import ensure_canonical_presence_preconfig
-    from qq_ai_bot.persistence.models import GroupModel, PersonModel
 
     registry, resolver, _uow = await _stack(database)
-    await _flip_v2(database)
-    bot = _Bot("8000")
+    bot = _Bot("8888")
     registry.connect(bot, presence_id=None)
-    missing_presence = await resolver.pre_admit(bot, _message(message_id="no-p"))
+    missing_presence = await resolver.pre_admit(
+        bot, _message(message_id="no-p", bot_user_id="8888")
+    )
     assert missing_presence is not None and missing_presence.dropped
     assert missing_presence.reason == "no_presence"
     async with database.sessions() as session, session.begin():
-        presence = await ensure_canonical_presence_preconfig(session, "8000")
-    registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
+        presence = await ensure_v2_presence(session, "8888")
+    registry.bind_presence(platform="qq", external_account_id="8888", presence_id=presence)
     unknown_group = await resolver.pre_admit(
-        bot, _message(message_id="no-g", user_id="1001", group_id="404")
+        bot,
+        _message(message_id="no-g", user_id="1001", group_id="404", bot_user_id="8888"),
     )
     assert unknown_group is not None and unknown_group.dropped
     assert unknown_group.reason == "no_space_binding"
     async with database.sessions() as session:
-        assert int(await session.scalar(select(func.count()).select_from(PersonModel)) or 0) == 0
-        assert int(await session.scalar(select(func.count()).select_from(GroupModel)) or 0) == 0
         assert (
-            int(await session.scalar(select(func.count()).select_from(ConversationScopeModel)) or 0)
-            == 0
+            await session.scalar(
+                select(SpaceBindingModel).where(SpaceBindingModel.external_space_id == "404")
+            )
+            is None
         )
-        assert (
-            int(await session.scalar(select(func.count()).select_from(SpaceBindingModel)) or 0) == 0
-        )
-        assert (
-            int(await session.scalar(select(func.count()).select_from(CanonicalPersonModel)) or 0)
-            == 0
-        )
+        assert list(await session.scalars(select(CanonicalPersonModel)))
 
 
 async def _admit_private(database: Database, message_id: str, *, text: str = "hello"):
-    from qq_ai_bot.identity.dual_write import (
-        ensure_canonical_presence_preconfig as ensure_v2_presence,
-    )
-
     registry, resolver, uow = await _stack(database)
-    await _flip_v2(database)
     bot = _Bot("8000")
     async with database.sessions() as session, session.begin():
         presence = await ensure_v2_presence(session, "8000")
@@ -412,14 +359,12 @@ async def _admit_private(database: Database, message_id: str, *, text: str = "he
 
 @pytest.mark.asyncio
 async def test_canonical_ingress_content_conflict_keeps_original(database: Database) -> None:
-    from qq_ai_bot.identity.errors import IdentityDualWriteError
-
     uow, admitted = await _admit_private(database, "ingress-conflict-1", text="original-body")
     first = await uow.append_inbound(admitted.message, admitted)
     from dataclasses import replace
 
     tampered = replace(admitted.message, text="tampered-body")
-    with pytest.raises(IdentityDualWriteError) as exc:
+    with pytest.raises(CanonicalIdentityError) as exc:
         await uow.append_inbound(tampered, admitted)
     assert exc.value.category == "receipt_conflict"
     assert "tampered" not in str(exc.value)
@@ -437,16 +382,14 @@ async def test_canonical_ingress_segments_or_occurred_at_conflict_fails_closed(
 ) -> None:
     from dataclasses import replace
 
-    from qq_ai_bot.identity.errors import IdentityDualWriteError
-
     uow, admitted = await _admit_private(database, "ingress-payload-1", text="payload")
     first = await uow.append_inbound(admitted.message, admitted)
-    with pytest.raises(IdentityDualWriteError) as segments:
+    with pytest.raises(CanonicalIdentityError) as segments:
         await uow.append_inbound(
             replace(admitted.message, segments=({"type": "text", "data": {"text": "two"}},)),
             admitted,
         )
-    with pytest.raises(IdentityDualWriteError) as occurred:
+    with pytest.raises(CanonicalIdentityError) as occurred:
         await uow.append_inbound(
             replace(admitted.message, received_at=admitted.message.received_at.replace(minute=1)),
             admitted,
@@ -466,7 +409,6 @@ async def test_canonical_ingress_race_rereads_winner(
 ) -> None:
     from qq_ai_bot.conversation.canonical_db_models import CanonicalEventReceiptModel
     from qq_ai_bot.identity import canonical_uow as ingress_uow
-    from qq_ai_bot.identity.errors import IdentityDualWriteError
 
     uow, admitted = await _admit_private(database, "ingress-race-1", text="race-winner")
     first = await uow.append_inbound(admitted.message, admitted)
@@ -486,7 +428,7 @@ async def test_canonical_ingress_race_rereads_winner(
     assert replayed.event.id == first.event.id
     from dataclasses import replace
 
-    with pytest.raises(IdentityDualWriteError) as exc:
+    with pytest.raises(CanonicalIdentityError) as exc:
         await uow.append_inbound(replace(admitted.message, text="race-loser"), admitted)
     assert exc.value.category == "receipt_conflict"
     async with database.sessions() as session:
@@ -503,7 +445,6 @@ async def test_canonical_ingress_dangling_or_forged_receipt_fails_closed(
     from uuid import uuid4
 
     from qq_ai_bot.conversation.canonical_db_models import CanonicalEventReceiptModel
-    from qq_ai_bot.identity.errors import IdentityDualWriteError
 
     uow, admitted = await _admit_private(database, "ingress-forge-1", text="kept")
     first = await uow.append_inbound(admitted.message, admitted)
@@ -511,19 +452,18 @@ async def test_canonical_ingress_dangling_or_forged_receipt_fails_closed(
         receipt = await session.scalar(select(CanonicalEventReceiptModel))
         assert receipt is not None
         receipt.canonical_event_id = str(uuid4())
-    with pytest.raises(IdentityDualWriteError) as dangling:
+    with pytest.raises(CanonicalIdentityError) as dangling:
         await uow.append_inbound(admitted.message, admitted)
     assert dangling.value.category == "receipt_conflict"
     async with database.sessions() as session, session.begin():
         from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
-        from qq_ai_bot.identity.dual_write import ensure_canonical_person_preconfig
 
         receipt = await session.scalar(select(CanonicalEventReceiptModel))
         assert receipt is not None
         row = await session.get(ChatEventModel, first.event.id)
         assert row is not None
         receipt.canonical_event_id = row.canonical_event_id
-        other_person = await ensure_canonical_person_preconfig(session, "1099", now=_NOW)
+        other_person = await ensure_person(session, "1099", now=_NOW)
         other = await ensure_canonical_conversation(
             session,
             kind="private",
@@ -531,7 +471,7 @@ async def test_canonical_ingress_dangling_or_forged_receipt_fails_closed(
             person_id=other_person,
         )
         row.canonical_conversation_id = other.conversation_id
-    with pytest.raises(IdentityDualWriteError) as forged:
+    with pytest.raises(CanonicalIdentityError) as forged:
         await uow.append_inbound(admitted.message, admitted)
     assert forged.value.category == "receipt_conflict"
     assert "8000" not in str(forged.value)
@@ -541,8 +481,6 @@ async def test_canonical_ingress_dangling_or_forged_receipt_fails_closed(
 async def test_canonical_ingress_receipt_with_only_duplicate_fails_closed(
     database: Database,
 ) -> None:
-    from qq_ai_bot.identity.errors import IdentityDualWriteError
-
     uow, admitted = await _admit_private(database, "ingress-dup-only", text="kept-body")
     first = await uow.append_inbound(admitted.message, admitted)
     async with database.sessions() as session, session.begin():
@@ -550,7 +488,7 @@ async def test_canonical_ingress_receipt_with_only_duplicate_fails_closed(
         assert row is not None
         assert row.utterance_fingerprint
         row.suppression_status = "duplicate"
-    with pytest.raises(IdentityDualWriteError) as exc:
+    with pytest.raises(CanonicalIdentityError) as exc:
         await uow.append_inbound(admitted.message, admitted)
     assert exc.value.category == "receipt_conflict"
     assert "kept-body" not in str(exc.value)
@@ -574,6 +512,11 @@ async def _insert_keeper(
     from uuid import uuid4
 
     async with database.sessions() as session, session.begin():
+        author_presence_id = (
+            await ensure_v2_presence(session, bot_user_id)
+            if author_kind == AuthorKind.YUKI.value
+            else None
+        )
         session.add(
             ChatEventModel(
                 bot_user_id=bot_user_id,
@@ -594,6 +537,8 @@ async def _insert_keeper(
                 canonical_event_id=canonical_event_id or str(uuid4()),
                 canonical_conversation_id=conversation_id,
                 author_kind=author_kind,
+                author_presence_id=author_presence_id,
+                utterance_fingerprint=("a" * 64 if suppression_status == "duplicate" else None),
                 suppression_status=suppression_status,
             )
         )
@@ -603,12 +548,7 @@ async def _insert_keeper(
 async def test_canonical_reply_uses_keeper_author_and_ignores_other_conversation(
     database: Database,
 ) -> None:
-    from qq_ai_bot.identity.dual_write import (
-        ensure_canonical_presence_preconfig as ensure_v2_presence,
-    )
-
     registry, resolver, uow = await _stack(database)
-    await _flip_v2(database)
     bot = _Bot("8000")
     async with database.sessions() as session, session.begin():
         presence = await ensure_v2_presence(session, "8000")
@@ -686,17 +626,12 @@ async def test_canonical_reply_uses_keeper_author_and_ignores_other_conversation
 
 
 @pytest.mark.asyncio
-async def test_canonical_reply_ambiguous_or_suppressed_only(
+async def test_canonical_reply_ambiguous_or_duplicate_only(
     database: Database,
 ) -> None:
     from uuid import uuid4
 
-    from qq_ai_bot.identity.dual_write import (
-        ensure_canonical_presence_preconfig as ensure_v2_presence,
-    )
-
     registry, resolver, uow = await _stack(database)
-    await _flip_v2(database)
     bot = _Bot("8000")
     async with database.sessions() as session, session.begin():
         presence = await ensure_v2_presence(session, "8000")
@@ -725,7 +660,7 @@ async def test_canonical_reply_ambiguous_or_suppressed_only(
         conversation_id=first.conversation_id,
         platform_message_id="sup-only",
         author_kind=AuthorKind.YUKI.value,
-        suppression_status="suppressed",
+        suppression_status="duplicate",
         canonical_event_id=str(uuid4()),
     )
     ambiguous = await resolver.pre_admit(

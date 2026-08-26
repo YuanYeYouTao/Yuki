@@ -8,11 +8,11 @@ from math import ceil
 
 from sqlalchemy import delete, select
 
-from qq_ai_bot.conversation.db_models import ReplyEffectEventModel
-from qq_ai_bot.identity.c24_conversation import (
+from qq_ai_bot.conversation.correlation import (
     resolve_conversation_id_for_chat_event,
     stamp_conversation_correlation,
 )
+from qq_ai_bot.conversation.db_models import ReplyEffectEventModel
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.runtime.observability import claim_runtime_turn_id, stable_identifier_hash
 

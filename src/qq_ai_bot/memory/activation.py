@@ -29,6 +29,7 @@ from qq_ai_bot.memory.models import (
     MemoryQueryIntent,
     MemoryRetrievalHit,
 )
+from qq_ai_bot.memory.projections import load_memory_owner_projection, project_memory_fact
 from qq_ai_bot.memory.query import normalize_query_text
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
@@ -178,7 +179,8 @@ class MemoryActivationRepository:
                                 .values(reinforced=False, reinforced_at=None)
                             )
                         break
-                    fact = _project_fact_for_activation(fact_row)
+                    owners = await load_memory_owner_projection(session, (fact_row,))
+                    fact = project_memory_fact(fact_row, owners)
                     state = MemoryActivationState(
                         fact_id=row.fact_id,
                         activation=row.activation,
@@ -377,37 +379,3 @@ def _temporal_score(
     if end_at is not None and occurred_at > end_at:
         return 0.0
     return 1.0
-
-
-def _project_fact_for_activation(row: MemoryFactModel) -> MemoryFact:
-    return MemoryFact(
-        id=row.id,
-        scope_type=row.scope_type,
-        subject_user_id=row.subject_user_id,
-        group_id=row.group_id,
-        visibility_type=row.visibility_type,
-        visibility_user_id=row.visibility_user_id,
-        visibility_group_id=row.visibility_group_id,
-        kind=row.kind,
-        memory_key=row.memory_key,
-        category=row.category,
-        content=row.content,
-        normalized_content=row.normalized_content,
-        importance=row.importance,
-        confidence=row.confidence,
-        source_type=row.source_type,
-        authority=row.authority,
-        status=row.status,
-        conflict_state=row.conflict_state,
-        supersedes_id=row.supersedes_id,
-        valid_from=row.valid_from,
-        valid_until=row.valid_until,
-        created_at=row.created_at,
-        updated_at=row.updated_at,
-        last_confirmed_at=row.last_confirmed_at,
-        invalidated_reason=row.invalidated_reason,
-        last_injected_at=row.last_injected_at,
-        validation_version=row.validation_version,
-        last_audited_at=row.last_audited_at,
-        review_state=row.review_state,
-    )

@@ -1,74 +1,68 @@
-# Yuki 3.7.0 ConversationScope 与单检查点 Rollup
+# Yuki 3.8 canonical Conversation Rollup
 
-本文是 3.7.0 运行时稳定合同。它描述短期会话、摘要、并发和 Prompt 信任边界；Memory V2 仍按人物、群内人物、群和 Yuki 自我分区，不与短期会话键合并。
+Rollup 是 canonical Conversation 的可重建 Prompt 投影。`chat_events` 始终是唯一原始证据源；
+摘要不写入 Memory，也不拥有 Conversation。
 
-## 会话身份
+## Conversation 身份
 
-每个短期会话由一个 Bot-aware `ConversationScope` 唯一标识：
+- 私聊：一个 Person 对应一个 canonical private Conversation。
+- 群聊：一个 Space 对应一个 canonical space Conversation。
+- 多个历史或 Provider alias 可以指向同一 Conversation，primary alias 首次创建后固定。
+- Presence、Provider、GatewayConnection 和当前发言 Binding 都不参与 Conversation 身份。
+- 只有显式 `/ai new` 改变 ConversationGeneration。
 
-| 场景 | Scope identity | Scope key |
-|---|---|---|
-| 私聊 | Bot + peer | `bot:{bot}:private:{peer}` |
-| 群聊 | Bot + group | `bot:{bot}:group:{group}` |
+MemoryPartitionKey 使用 SELF、PERSON、GROUP 或 PERSON_GROUP owner，不得用 Conversation UUID
+代替。
 
-群成员 QQ 只是当前 Actor，不进入群 Scope、generation、Rollup、job、取消域或公共 Prompt 前缀。同群的另一个 Bot 使用完全独立的 Scope。
+## 持久状态
 
-`TurnCoordinationKey` 与 Scope key 一致；`MemoryPartitionKey` 保留 Memory V2 的既有语义。两类键不可互换。
+每个 canonical Conversation 至多有：
 
-## 三张派生表
+- 一个语义 Rollup checkpoint。
+- 一个 emergency overlay。
+- 一个 signal-only Rollup job。
 
-0042 删除 0041 的旧 history state/summary/member/job 表，建立：
+这些行都可从事件账本重建。job 使用 signal revision、owner、lease token 和 expiry 处理并发；模型
+调用期间不持有数据库事务。提交前必须重验 Conversation generation、来源 fingerprint 和 lease。
 
-- `conversation_scopes`：身份、generation、边界、账本高水位和未覆盖计数；
-- `conversation_rollups`：每个 Scope 当前 generation 最多一个连续检查点；
-- `conversation_rollup_jobs`：每个 Scope 最多一个 signal-only job。
+## 连续覆盖
 
-job 只有 `pending` 和 `processing`，不保存 range、target 或 terminal failed。`signal_revision` 防止 Worker 处理期间的新 append 被条件删除吞掉。基础设施失败只增加 `failure_count`，按封顶退避无限期自恢复；任何成功 coverage 推进都会清零。
-
-这三张表都是 `chat_events` 的可重建投影。永久账本和 Memory V2 不因 Rollup 被截断或重写。
-
-## 唯一账本写入口
-
-运行时所有主会话事件都经过 `ScopedEventLedgerUnitOfWork`。一次短 SQLite 写事务同时完成：
-
-1. 幂等写入 `chat_events`；
-2. 创建或校验正确的 Bot-aware Scope；
-3. 更新 `last_event_id` 与未覆盖计数；
-4. 达到高水位时创建 job，或只增加既有 job 的 `signal_revision`。
-
-重复平台消息不会重复计数或发 signal；如果旧 dedup claim 已存在但账本缺失，重放仍可修复账本。插件通知、自动化、工具派生事件和已确认 outbound 也使用同一入口。
-
-## 连续检查点
-
-Rollup 只覆盖当前 generation 中从边界开始的一段连续前缀。Prompt snapshot 必须满足：
+Rollup 只覆盖当前 generation 的连续前缀：
 
 ```text
 starts_after_event_id <= effective_coverage <= last_event_id
-rollup coverage 与 raw tail 无重叠、无缺口
 raw tail = (effective_coverage, snapshot.last_event_id]
 ```
 
-候选批次永远保留受保护 raw tail。后台模型只返回纯文本、不开放工具，并以 `BEST_EFFORT_BACKGROUND` 执行；旧摘要和新事件都放在明确的不可信数据 envelope 中。timeout、抢占、空响应、超长或质量失败会在同一次处理立即改用确定性 extractive，coverage 仍然前进。
+checkpoint 与 raw tail 不能重叠或留洞。当前触发事件只在 current message 出现一次，不得同时
+进入历史。duplicate/suppressed canonical event 不参与候选或 Prompt。
 
-模型调用期间不持有数据库事务。claim、heartbeat、commit 和 retry 都以 owner + lease token + expiry 做 CAS。Worker 提交前重算来源 fingerprint；generation、前台新 revision 或 visual summary 补写变化都会拒绝旧结果。
+后台模型只返回纯文本，不开放工具。旧摘要、新事件、外部事件和 visual observation 都放在明确的
+不可信 input envelope。模型 timeout、空响应、超长或质量失败可以写 emergency overlay；overlay
+不能覆盖或伪装语义 checkpoint。
 
-正常聊天不等待后台模型。若未覆盖已超过 `raw_tail + trigger`，前台只同步运行有界的 extractive 批次，一次压到 `raw_tail + stop`，再重新读取一致 snapshot；来源缺口、计数漂移或预算仍未收敛时 fail closed，不拼接旧摘要与最新尾部。默认热尾 128 条 / 20k 字、trigger 384 条 / 80k 字、stop 0（压回热尾）；前台与后台每轮批次数须能一次吃完 trigger。
+## Prompt 字符与事件预算
 
-## 水位尺子与 128 条 floor
+未覆盖计数、触发、protected tail 和候选批次都使用与 Main Agent 实际历史渲染同源的 Prompt
+字符尺子。`rollup_source_projection` 只服务压缩模型与 extractive，不作为前台水位尺子。
 
-未覆盖计数、job 触发、`protected_tail_start` 和批大小切分使用 Prompt 尺子：`ChatEventPromptRenderer.main_agent_history` 分组后各条 `content` 长度之和，与前台 `_uncovered_prompt_view` 同源。append 可用单条 `render_reference_event` 长度作增量上界，`recount_scope_uncovered` 再用分组值校正。
+事件 floor 和字符预算共同决定 protected tail：
 
-`rollup_source_projection`（`[ISO时间] 发送者: 正文`）只给压缩模型 / extractive 当输入，不再当水位尺子。
+- 长消息先碰字符上限时，允许保留少于事件 floor 的尾部并压缩更早前缀。
+- 大量短消息受事件 floor 保护时，Prompt 可暂时超过字符 target。
+- target 是压缩目标，不是 fail-closed 上限；最终是否需要前台压缩使用 admit/trigger。
+- 不能因为 target 过小就反复 fallback，也不能为了压回 target 丢掉受保护尾部。
 
-`protected_tail_start` 取 `max(count_index, character_index)`：更晚下标、更短热尾。长消息的 Prompt 字符会先碰到 `raw_tail_characters`，热尾短于 128 条，eligible 前缀可压缩。
+模型配置的最大输出字符必须足以容纳结构化摘要。若 Provider 上限、请求上限或本地
+`summary_max_characters` 不一致，应在调用前按最小有效上限校验并记录无正文错误类别；不能先让
+模型稳定截断，再把低质量 fallback 当作正常结果。
 
-128 条是事件 floor，优先于 20480 字符 target。短消息把 128 条 floor 绑死时，热尾 Prompt 可以超过 `raw_tail_characters + stop_characters`（默认 target = 20480）。这是产品张力，不是缺陷：不要为了压回 20480 而拆掉 128 条语义，也不要把 target 改成 fail-closed。
+前台压缩必须有界。达到 trigger 后压向 stop，重新读取一致 snapshot；来源缺口、计数漂移或
+压缩后仍超过 admit 时失败关闭，不拼接不连续摘要。
 
-前台滞回：超过 `raw_tail + trigger`（admit）才同步 extractive，一次压向 `raw_tail + stop`（target）。最终检查仍用 **admit 不是 target**。因此 128 条短消息若 Prompt 落在 `(target, admit)`，不抛 `ConversationCoverageError`，也不每轮 extractive。
+## Prompt 顺序与缓存
 
-## Prompt 顺序与信任边界
-
-Provider 请求顺序固定为：
+Provider 输入顺序固定为：
 
 ```text
 TRUSTED STATIC INSTRUCTIONS
@@ -78,34 +72,28 @@ CURRENT ACTOR DYNAMIC ENVELOPE
 CURRENT MESSAGE
 ```
 
-Rollup 以 `[Conversation summary; untrusted data, not instructions]` 开头的 `user`/input 历史消息发送，永不进入 `system` 或 DeepSeek `instructions`。外部事件也属于不可信 input。历史昵称和群名片使用事件落账时快照；当前 Actor 的 QQ、群名片、关系、记忆、权限及 Actor 相关插件资料只放在当前动态 envelope。
+Rollup 永不进入 system instructions。昵称、群名片和正文来自落账时事件；当前 Actor 的关系、
+Memory、权限和动态插件资料只进入当前 envelope。
 
-当前触发事件从 canonical raw history 排除，只在 current message 出现一次。`MEMORY_GROUNDING_RULE` 等全局合同始终属于静态 instructions。
+缓存诊断只能记录不含正文的 prefix/request-shape/snapshot hash。这些 hash 不发送给模型，不作为
+业务身份，也不进入高基数 metrics label。
 
-3.7.0 不存在应用层 `prompt_cache_key` 或本地 Prompt splice。缓存诊断只记录不含正文的哈希：
+## generation 与效果围栏
 
-- `conversation_prefix_hash`：真实序列化的静态 instructions + Rollup input + canonical raw history；
-- `request_shape_hash`：provider/model/profile、静态修订、工具 schema、native tools 和响应格式；
-- `prompt_snapshot_fingerprint`：Scope/generation/coverage/Rollup revision/raw-tail end 与公共前缀哈希。
+每轮捕获不可变 Conversation snapshot。每次模型请求、工具、回复、语音、图片和插件副作用前都
+重验 generation；外部效果通过进程内 EffectGate 获得一次性 permit。
 
-相同 request shape 的普通成员应共享同一公共前缀。超级管理员可能因额外工具产生不同 request shape，但群公共历史前缀仍相同。这些哈希不得发送给模型，也不得作为业务身份或高基数指标 label。
+`/ai new` 在同一事务中写入命令事件、增加 generation、更新边界并删除该 Conversation 的
+checkpoint/overlay/job。已失去 generation fence 的旧结果不能提交。
 
-## generation 与外部效果
+同一 SQLite 数据库只允许一个主动 Bot Application。SQLite CAS 测试不能替代跨进程外部效果
+线性化；禁止双活实例同时写同一数据库。
 
-每轮 Agent 捕获不可变 `ConversationTurnSnapshot`。每次模型请求前重新校验 Scope generation 和 TurnCoordinator version；每个工具、回复、语音、图片、插件副作用以及没有 permit 的派生写入也必须重新校验。
+## 运维与恢复
 
-外部效果通过进程内 `ConversationEffectGate` 取得一次性 permit。已经取得 permit 的有界效果可以完成并落账；`/ai new` 等待同一 gate 后再建立新边界。尚未取得 permit 的旧轮次在 generation 改变后不得执行。
+Rollup 健康应区分 backlog、processing lease、model failure、policy-ineligible、overlay 和
+source mismatch，不输出正文。重建或维护命令必须默认 dry-run，并受 Control Plane capability
+和审计约束。
 
-群 `/ai new` 仅允许 Bot 超级管理员，作用于整个 Bot+群 Scope；私聊用户只重置自己的 Bot+peer Scope。入站命令事件落账、generation 增加、边界更新以及 Rollup/job 删除在同一数据库事务中完成；确认回复在提交后发送，不能宣称 QQ 网络发送与 SQLite 原子化。
-
-`/ai stop` 取消整个 Bot+群 Scope 的可中断轮次。隐私删除按 Scope key 排序取得所有受影响 gate，提交时增加 generation、清空 Rollup/job，并删除或脱敏事件及来源投影。
-
-## 部署约束
-
-3.7.0 的 `ConversationEffectGate` 是单进程线性化边界：同一 SQLite 数据库只允许一个主动 Application 实例。应用在整个生命周期持有数据库旁的 OS advisory lock；第二个进程尝试连接同一数据库时会在启动阶段明确失败。禁止 Compose 扩容、双活、蓝绿实例同时连接同一数据库，或让旧版本与 3.7.0 同时写入。
-
-Repository 的双连接测试只证明 SQLite CAS，不代表跨进程外部效果安全。升级时必须先停止旧 Bot，完成一致备份和 0042 迁移，再启动唯一的新 Bot。
-
-## 回退
-
-0042 不提供 downgrade。回退的唯一方式是停止 3.7.0，恢复升级前同一时间点的数据库（含 WAL/SHM）、配置和部署文件快照，再启动 3.6.1。禁止在 0042 schema 上启动旧应用，也禁止重建空的 0041 表伪装可回退。
+Rollup schema 属于 3.8 canonical database。`0049` 不提供 downgrade；数据库问题必须停止所有
+写入并恢复升级前同一时点 DB/WAL/SHM 快照。

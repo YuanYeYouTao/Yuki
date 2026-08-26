@@ -50,7 +50,7 @@ from qq_ai_bot.control_plane.command_types import (
 )
 from qq_ai_bot.control_plane.commands import ControlCommand, ControlResult
 from qq_ai_bot.control_plane.json_types import JsonObject, JsonValue
-from qq_ai_bot.control_plane.operations import OperationRef, StateEpoch
+from qq_ai_bot.control_plane.operations import OperationRef
 from qq_ai_bot.control_plane.principal import ControlPrincipal
 from qq_ai_bot.control_plane.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_types import (
@@ -58,7 +58,6 @@ from qq_ai_bot.control_plane.query_types import (
     RouteReferenceState,
     classify_route_reference,
 )
-from qq_ai_bot.control_plane.tokens import require_opaque_token
 from qq_ai_bot.conversation.canonical_db_models import (
     ControlCommandReceiptModel,
     PersonActiveRouteModel,
@@ -79,12 +78,9 @@ from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
     IdentityBindingModel,
-    IdentityConflictModel,
-    IdentityRuntimeStateModel,
     PresenceModel,
     SpaceBindingModel,
 )
-from qq_ai_bot.identity.inventory import IDENTITY_PLATFORM
 from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
@@ -95,11 +91,7 @@ from qq_ai_bot.persistence.control_management import (
     ManagementUnavailable,
 )
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import (
-    AdminOperationEventModel,
-    GroupModel,
-    PersonModel,
-)
+from qq_ai_bot.persistence.models import AdminOperationEventModel
 
 _INVALID_TARGET = "invalid"
 
@@ -127,14 +119,6 @@ class _Success:
 
 def _now() -> datetime:
     return datetime.now(UTC)
-
-
-def _runtime_stamp(value: object) -> datetime:
-    if type(value) is not datetime:
-        raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-    if value.tzinfo is None or value.utcoffset() is None:
-        return value.replace(tzinfo=UTC)
-    return value
 
 
 def _problem(code: ProblemCode) -> Problem:
@@ -936,8 +920,11 @@ class ControlCommandAdapter:
                         started=started,
                     )
                 else:
-                    epoch = await self._runtime(session)
-                    if epoch is StateEpoch.V1 and not operation.startswith("control."):
+                    try:
+                        success = await mutate(session)
+                    except _CachedFailure as failure:
+                        if failure.problem.code not in CACHEABLE_COMMAND_FAILURES:
+                            raise ControlCommandError(failure.problem) from None
                         pending = await self._record_failure(
                             session,
                             principal=principal,
@@ -947,42 +934,23 @@ class ControlCommandAdapter:
                             target_type=failure_target_type,
                             target_id=target_id,
                             payload_hash=bound_hash,
-                            problem=_problem(ProblemCode.PENDING_CUTOVER),
-                            before={},
+                            problem=failure.problem,
+                            before=failure.before,
                             started=started,
                         )
                     else:
-                        try:
-                            success = await mutate(session)
-                        except _CachedFailure as failure:
-                            if failure.problem.code not in CACHEABLE_COMMAND_FAILURES:
-                                raise ControlCommandError(failure.problem) from None
-                            pending = await self._record_failure(
-                                session,
-                                principal=principal,
-                                command=command,
-                                operation=operation,
-                                capability=capability,
-                                target_type=failure_target_type,
-                                target_id=target_id,
-                                payload_hash=bound_hash,
-                                problem=failure.problem,
-                                before=failure.before,
-                                started=started,
-                            )
-                        else:
-                            result = await self._record_success(
-                                session,
-                                principal=principal,
-                                command=command,
-                                operation=operation,
-                                capability=capability,
-                                payload_hash=bound_hash,
-                                success=success,
-                                semantic_target_id=target_id,
-                                material=material,
-                                started=started,
-                            )
+                        result = await self._record_success(
+                            session,
+                            principal=principal,
+                            command=command,
+                            operation=operation,
+                            capability=capability,
+                            payload_hash=bound_hash,
+                            success=success,
+                            semantic_target_id=target_id,
+                            material=material,
+                            started=started,
+                        )
         except ControlCommandError:
             raise
         except IntegrityError as exc:
@@ -1380,43 +1348,6 @@ class ControlCommandAdapter:
             )
         raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
 
-    async def _runtime(self, session: AsyncSession) -> StateEpoch:
-        rows = list(await session.scalars(select(IdentityRuntimeStateModel)))
-        if len(rows) != 1:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        row = rows[0]
-        if type(row.id) is not int or row.id != 1:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        if type(row.revision) is bool or type(row.revision) is not int or row.revision < 1:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        created = _runtime_stamp(row.created_at)
-        updated = _runtime_stamp(row.updated_at)
-        if updated < created:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        if row.state == StateEpoch.V1.value:
-            if (
-                row.cutover_id is not None
-                or row.source_fingerprint is not None
-                or row.completed_at is not None
-            ):
-                raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-            return StateEpoch.V1
-        if row.state == StateEpoch.V2.value:
-            try:
-                if type(row.cutover_id) is not str:
-                    raise ValueError("cutover_id")
-                RequestId.parse(row.cutover_id)
-                fingerprint = require_opaque_token(
-                    row.source_fingerprint, name="source_fingerprint", max_length=64
-                )
-                _runtime_stamp(row.completed_at)
-            except (TypeError, ValueError) as exc:
-                raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH)) from exc
-            if fingerprint != row.source_fingerprint:
-                raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-            return StateEpoch.V2
-        raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-
     async def _record_success(
         self,
         session: AsyncSession,
@@ -1665,6 +1596,8 @@ class ControlCommandAdapter:
                 display_name=payload.display_name,
                 status="active",
                 revision=1,
+                first_seen_at=stamp,
+                last_seen_at=stamp,
                 created_at=stamp,
                 updated_at=stamp,
             )
@@ -1728,6 +1661,8 @@ class ControlCommandAdapter:
                 display_name=payload.display_name,
                 status="active",
                 revision=1,
+                first_seen_at=stamp,
+                last_seen_at=stamp,
                 created_at=stamp,
                 updated_at=stamp,
             )
@@ -2370,9 +2305,6 @@ class ControlCommandAdapter:
         external_account_id: str,
         owner_id: str,
     ) -> None:
-        await _reject_open_conflict(
-            session, platform=platform, external_id=external_account_id, subject_kind="account"
-        )
         binding = await session.scalar(
             select(IdentityBindingModel).where(
                 IdentityBindingModel.platform == platform,
@@ -2391,21 +2323,6 @@ class ControlCommandAdapter:
         )
         if presence is not None:
             raise _fail(ProblemCode.PRECONDITION_FAILED)
-        if platform != IDENTITY_PLATFORM:
-            return
-        leftover = await session.get(PersonModel, external_account_id)
-        if leftover is None:
-            return
-        if leftover.is_bot:
-            raise _fail(ProblemCode.PRECONDITION_FAILED)
-        canonical = leftover.canonical_person_id
-        if canonical is None:
-            raise _fail(ProblemCode.BINDING_AMBIGUOUS)
-        if canonical == owner_id:
-            raise _fail(ProblemCode.PRECONDITION_FAILED)
-        other = await session.get(CanonicalPersonModel, canonical)
-        _reject_populated_merge(other_owner_exists=other is not None)
-        raise _fail(ProblemCode.BINDING_AMBIGUOUS)
 
     async def _reject_space_attach(
         self,
@@ -2415,9 +2332,6 @@ class ControlCommandAdapter:
         external_space_id: str,
         owner_id: str,
     ) -> None:
-        await _reject_open_conflict(
-            session, platform=platform, external_id=external_space_id, subject_kind="space"
-        )
         binding = await session.scalar(
             select(SpaceBindingModel).where(
                 SpaceBindingModel.platform == platform,
@@ -2428,19 +2342,6 @@ class ControlCommandAdapter:
             if binding.space_id == owner_id:
                 raise _fail(ProblemCode.PRECONDITION_FAILED)
             raise _fail(ProblemCode.BINDING_AMBIGUOUS)
-        if platform != IDENTITY_PLATFORM:
-            return
-        leftover = await session.get(GroupModel, external_space_id)
-        if leftover is None:
-            return
-        canonical = leftover.canonical_space_id
-        if canonical is None:
-            raise _fail(ProblemCode.BINDING_AMBIGUOUS)
-        if canonical == owner_id:
-            raise _fail(ProblemCode.PRECONDITION_FAILED)
-        other = await session.get(CanonicalSpaceModel, canonical)
-        _reject_populated_merge(other_owner_exists=other is not None)
-        raise _fail(ProblemCode.BINDING_AMBIGUOUS)
 
     async def _reject_presence_register(
         self,
@@ -2449,9 +2350,6 @@ class ControlCommandAdapter:
         platform: str,
         external_account_id: str,
     ) -> None:
-        await _reject_open_conflict(
-            session, platform=platform, external_id=external_account_id, subject_kind="account"
-        )
         presence = await session.scalar(
             select(PresenceModel).where(
                 PresenceModel.platform == platform,
@@ -2470,35 +2368,6 @@ class ControlCommandAdapter:
             raise _fail(ProblemCode.PRECONDITION_FAILED)
         if presence is not None:
             raise _fail(ProblemCode.PRECONDITION_FAILED)
-        if platform != IDENTITY_PLATFORM:
-            return
-        leftover = await session.get(PersonModel, external_account_id)
-        if leftover is None:
-            return
-        if leftover.is_bot:
-            raise _fail(ProblemCode.PRECONDITION_FAILED)
-        raise _fail(ProblemCode.BINDING_AMBIGUOUS)
-
-
-async def _reject_open_conflict(
-    session: AsyncSession,
-    *,
-    platform: str,
-    external_id: str,
-    subject_kind: str,
-) -> None:
-    rows = list(
-        await session.scalars(
-            select(IdentityConflictModel).where(
-                IdentityConflictModel.platform == platform,
-                IdentityConflictModel.external_id == external_id,
-                IdentityConflictModel.subject_kind == subject_kind,
-                IdentityConflictModel.status == "open",
-            )
-        )
-    )
-    if rows:
-        raise _fail(ProblemCode.BINDING_AMBIGUOUS)
 
 
 def _empty_payload(command: ControlCommand) -> tuple[Problem | None, JsonObject]:

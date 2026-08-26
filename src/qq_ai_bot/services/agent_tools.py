@@ -200,10 +200,10 @@ def _object_schema(
     }
 
 
-def _legacy_onebot_history_row_uses_current_handle(sender_id: str, bot_user_id: str) -> bool:
-    """v1/transport: OneBot history row is the current handle, not author_kind."""
+def _history_sender_is_yuki(sender_id: str, inbound: InboundMessage) -> bool:
+    """Classify OneBot history against every canonical Yuki Presence."""
 
-    return sender_id == bot_user_id
+    return sender_id in inbound.yuki_account_ids
 
 
 class AgentToolService:
@@ -479,7 +479,9 @@ class AgentToolService:
                 ChatTool(
                     name="memory_change",
                     description=(
-                        f"{bot_name} 唯一的长期记忆变更工具。只能根据当前用户这条真实入站消息"
+                        f"{bot_name} 唯一的长期记忆变更工具。visibility 只对 "
+                        "target.scope_type=self 生效；其他目标误填 current_scope 或 global "
+                        "会被后端忽略。只能根据当前用户这条真实入站消息"
                         "创建、纠正、撤销、恢复、争议、合并、改归属或更新记忆元数据；"
                         f"不能把 {bot_name} 自己的输出当证据，也不能传 QQ 号、群号或事件 ID。"
                         "target.subject_ref 可使用 current_speaker、current_group、"
@@ -487,7 +489,7 @@ class AgentToolService:
                         "replied_message_author；正文中的当前群姓名使用 named_member 并填写"
                         f" subject_name；{bot_name} 自我记忆使用 self + self。"
                         f"自我记忆仅在功能开启且 {bot_name} 根据当前真实用户消息形成自己的"
-                        "判断时变更，visibility"
+                        "判断时变更，SELF 的 visibility"
                         "只能用 current_scope 或 global；global 只适合抽象偏好、反思和原则，"
                         "SELF 的 category 必须精确使用 self_fact、self_preference、self_episode、"
                         "self_reflection 或 self_principle；self_episode 必须与 kind=episode 配对，"
@@ -595,6 +597,11 @@ class AgentToolService:
                             "visibility": {
                                 "type": "string",
                                 "enum": ["current_scope", "global"],
+                                "description": (
+                                    "仅 target.scope_type=self 时生效；其他目标误填合法值会被"
+                                    "后端忽略。current_scope 表示当前私聊或群，global 仅适合"
+                                    "抽象偏好、反思和原则。"
+                                ),
                             },
                             "request_basis": {
                                 "type": "string",
@@ -1262,11 +1269,7 @@ class AgentToolService:
             platform_message_id=message_id,
             scope_type=inbound.scope_type,
             sender_user_id=sender_id,
-            direction=(
-                "outbound"
-                if _legacy_onebot_history_row_uses_current_handle(sender_id, inbound.bot_user_id)
-                else "inbound"
-            ),
+            direction=("outbound" if _history_sender_is_yuki(sender_id, inbound) else "inbound"),
             content=content,
             segments=segments,
             group_id=inbound.group_id,
@@ -1277,9 +1280,7 @@ class AgentToolService:
             occurred_at=occurred_at,
             sender_nickname=(sender_nickname if isinstance(sender_nickname, str) else ""),
             sender_group_card=(sender_group_card if isinstance(sender_group_card, str) else ""),
-            sender_is_bot=_legacy_onebot_history_row_uses_current_handle(
-                sender_id, inbound.bot_user_id
-            ),
+            sender_is_bot=_history_sender_is_yuki(sender_id, inbound),
         )
         return created
 
@@ -2234,8 +2235,6 @@ class AgentToolService:
         from qq_ai_bot.memory.partition import canonical_fact_owner_complete
 
         owners = await self._runtime_canonical_owners(runtime)
-        if owners is None:
-            return bool(fact.subject_user_id == runtime.inbound.sender.user_id)
         person_id = owners[0]
         if person_id is None or not canonical_fact_owner_complete(fact):
             return False
@@ -2243,8 +2242,7 @@ class AgentToolService:
 
     async def _runtime_canonical_owners(
         self, runtime: ToolRuntime
-    ) -> tuple[str | None, str | None] | None:
-        from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
+    ) -> tuple[str | None, str | None]:
         from qq_ai_bot.memory.partition import (
             MemoryPartitionResolutionError,
             resolve_active_person_id,
@@ -2252,8 +2250,6 @@ class AgentToolService:
         )
 
         async with self._memories.repository.database.sessions() as session:
-            if not await identity_runtime_is_complete_v2(session):
-                return None
             try:
                 person_id = await resolve_active_person_id(session, runtime.inbound.sender.user_id)
             except MemoryPartitionResolutionError:
@@ -2268,11 +2264,9 @@ class AgentToolService:
 
     async def _can_read_fact(self, fact: Any, runtime: ToolRuntime) -> bool:
         owners = await self._runtime_canonical_owners(runtime)
-        if owners is not None:
-            return self._can_read_fact_complete_v2(fact, runtime, *owners)
-        return self._can_read_fact_legacy(fact, runtime)
+        return self._can_read_canonical_fact(fact, runtime, *owners)
 
-    def _can_read_fact_complete_v2(
+    def _can_read_canonical_fact(
         self,
         fact: Any,
         runtime: ToolRuntime,
@@ -2309,47 +2303,6 @@ class AgentToolService:
             fact.scope_type is MemoryScopeType.PERSON_GROUP
             and space_id is not None
             and fact.canonical_subject_space_id == space_id
-            and fact.canonical_subject_person_id == person_id
-        ):
-            return True
-        return bool(
-            runtime.actor_is_superuser and runtime.actor_user_id in self._settings.superusers
-        )
-
-    def _can_read_fact_legacy(self, fact: Any, runtime: ToolRuntime) -> bool:
-        if fact.scope_type is MemoryScopeType.SELF and self._settings.self_memory_enabled:
-            if fact.visibility_type is SelfMemoryVisibility.GLOBAL:
-                return True
-            if (
-                fact.visibility_type is SelfMemoryVisibility.PRIVATE
-                and fact.visibility_user_id == runtime.inbound.sender.user_id
-                and runtime.inbound.scope_type is ScopeType.PRIVATE
-            ):
-                return True
-            if (
-                fact.visibility_type is SelfMemoryVisibility.GROUP
-                and fact.visibility_group_id == runtime.inbound.group_id
-            ):
-                return True
-        if fact.subject_user_id == runtime.inbound.sender.user_id:
-            return True
-        if (
-            fact.scope_type is MemoryScopeType.GROUP
-            and fact.group_id is not None
-            and fact.group_id == runtime.inbound.group_id
-        ):
-            return True
-        referenced_users = {
-            *runtime.inbound.mentioned_user_ids,
-            *runtime.mentioned_user_ids,
-        }
-        if runtime.inbound.reply_sender_user_id:
-            referenced_users.add(runtime.inbound.reply_sender_user_id)
-        if (
-            fact.scope_type is MemoryScopeType.PERSON_GROUP
-            and fact.group_id is not None
-            and fact.group_id == runtime.inbound.group_id
-            and fact.subject_user_id in referenced_users
         ):
             return True
         return bool(

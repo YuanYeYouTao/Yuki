@@ -97,15 +97,27 @@ class EmojiAssetModel(Base):
 class EmojiScopeStateModel(Base):
     __tablename__ = "emoji_scope_states"
     __table_args__ = (
-        UniqueConstraint("emoji_id", "scope_type", "scope_id", name="uq_emoji_scope_state"),
+        Index(
+            "uq_emoji_scope_state_global",
+            "emoji_id",
+            unique=True,
+            sqlite_where=text("scope_type = 'global'"),
+        ),
+        Index(
+            "uq_emoji_scope_state_space",
+            "emoji_id",
+            "canonical_space_id",
+            unique=True,
+            sqlite_where=text("scope_type = 'group'"),
+        ),
         CheckConstraint("scope_type IN ('global', 'group')", name="ck_emoji_scope_scope_type"),
         CheckConstraint(
-            "(scope_type = 'global' AND scope_id = '') OR "
-            "(scope_type = 'group' AND scope_id <> '')",
-            name="ck_emoji_scope_scope_id",
+            "(scope_type = 'global' AND canonical_space_id IS NULL) OR "
+            "(scope_type = 'group' AND canonical_space_id IS NOT NULL)",
+            name="ck_emoji_scope_owner",
         ),
         CheckConstraint("weight >= 0", name="ck_emoji_scope_weight"),
-        Index("ix_emoji_scope_lookup", "scope_type", "scope_id", "enabled"),
+        Index("ix_emoji_scope_lookup", "scope_type", "canonical_space_id", "enabled"),
         Index("ix_emoji_scope_states_canonical_space_id", "canonical_space_id"),
     )
 
@@ -114,7 +126,6 @@ class EmojiScopeStateModel(Base):
         ForeignKey("emoji_assets.id", ondelete="CASCADE"), nullable=False
     )
     scope_type: Mapped[str] = mapped_column(String(16), nullable=False)
-    scope_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     weight: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     adopted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

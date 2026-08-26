@@ -792,7 +792,7 @@ def _memory_stack(
 async def test_plugin_memory_facade_rejects_foreign_person_write(database: Database) -> None:
     context, _facts = _memory_stack(database)
     with context.bind(invocation()):
-        with pytest.raises(PluginPermissionError, match="outside the current real turn"):
+        with pytest.raises(PluginPermissionError, match="current person's memory"):
             await context.memory.add(
                 scope_type="person",
                 subject_id="10002",

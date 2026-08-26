@@ -38,7 +38,7 @@ from qq_ai_bot.emoji.collector import EmojiCollector
 from qq_ai_bot.emoji.worker import EmojiWorker
 from qq_ai_bot.identity.canonical_uow import CanonicalIngressUnitOfWork
 from qq_ai_bot.identity.ingress import CanonicalIngressResolver, IngressPreAdmit
-from qq_ai_bot.identity.readers import v2_group_policy, v2_private_policy
+from qq_ai_bot.identity.readers import canonical_group_policy, canonical_private_policy
 from qq_ai_bot.llm.base import LLMConfigurationError, LLMEmptyResponseError, LLMError
 from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepository
 from qq_ai_bot.memory.service import MemoryFactService
@@ -123,7 +123,7 @@ def _observation_canonical_refs(
     message: InboundMessage,
     admitted: IngressPreAdmit | None,
 ) -> tuple[str | None, str | None, str | None]:
-    """Project hydrate IDs onto observation shadows without legacy lookups.
+    """Project canonical hydrate IDs onto a runtime observation.
 
     Group rows store Space, not the speaker Person. Yuki / external_bot /
     system authors never receive ``canonical_person_id``.
@@ -1134,27 +1134,16 @@ class MessageProcessor:
     async def _effective_group_policy(self, group_id: str | None) -> EffectiveGroupPolicy | None:
         if group_id is None:
             return None
-        setting = await self._groups.get(group_id)
-        if setting is None:
-            fallback = EffectiveGroupPolicy(enabled=group_id in self._settings.enabled_groups)
-        else:
-            fallback = EffectiveGroupPolicy(
-                enabled=setting.enabled,
-                require_mention=setting.require_mention,
-                autonomous_enabled=setting.autonomous_enabled,
-            )
         async with self._ledger._database.sessions() as session:
-            return await v2_group_policy(session, group_id, fallback=fallback)
+            return await canonical_group_policy(session, group_id)
 
     async def _effective_private_policy(
         self, message: InboundMessage
     ) -> EffectivePrivatePolicy | None:
         if message.scope_type is not ScopeType.PRIVATE:
             return None
-        setting = await self._private_users.get(message.sender.user_id)
-        fallback = EffectivePrivatePolicy(enabled=True if setting is None else setting.enabled)
         async with self._ledger._database.sessions() as session:
-            return await v2_private_policy(session, message.sender.user_id, fallback=fallback)
+            return await canonical_private_policy(session, message.sender.user_id)
 
     async def _handle_command(
         self,

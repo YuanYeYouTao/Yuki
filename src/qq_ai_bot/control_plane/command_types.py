@@ -1,8 +1,4 @@
-"""Strict control-command payloads. No I/O and no catalog objects.
-
-C11 writes only canonical identity/route rows. No command is legacy-equivalent,
-so v1 always fails closed as pending_cutover without fabricating people/groups.
-"""
+"""Strict canonical control-command payloads. No I/O and no catalog objects."""
 
 from __future__ import annotations
 
@@ -199,7 +195,6 @@ CACHEABLE_COMMAND_FAILURES: Final[frozenset[ProblemCode]] = frozenset(
         ProblemCode.BINDING_AMBIGUOUS,
         ProblemCode.ROUTE_AMBIGUOUS,
         ProblemCode.POPULATED_MERGE_FORBIDDEN,
-        ProblemCode.PENDING_CUTOVER,
         ProblemCode.SECRET_NOT_READABLE,
     }
 )

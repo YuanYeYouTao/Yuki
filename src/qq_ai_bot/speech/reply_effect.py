@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.domain.messages import AttachmentKind, InboundMessage, OutboundMedia, OutboundMessage
-from qq_ai_bot.identity.errors import IdentityDualWriteError
+from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.services.plugin_events import LifecycleEventPublisher, publish_notification
 from qq_ai_bot.services.turn_coordinator import TurnSupersededError, TurnToken
 from qq_ai_bot.speech.genie_client import GenieWorkerFailure, GenieWorkerUnavailable
@@ -131,7 +131,7 @@ class VoiceReplyEffectService:
             GenieWorkerUnavailable,
             GenieWorkerFailure,
             TurnSupersededError,
-            IdentityDualWriteError,
+            CanonicalIdentityError,
             OSError,
         ) as exc:
             error_code = exc.code.value if isinstance(exc, GenieWorkerFailure) else ""

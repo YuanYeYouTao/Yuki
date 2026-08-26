@@ -18,8 +18,8 @@ from qq_ai_bot.control_plane.principal import ControlPrincipal, PrincipalSource
 from qq_ai_bot.control_plane.targets import PersonControlTarget, SpaceControlTarget
 from qq_ai_bot.domain.control import DecisionContext
 from qq_ai_bot.domain.identity import PersonId, PrincipalId, RequestId, SpaceId
+from qq_ai_bot.identity.canonical_repository import IDENTITY_PLATFORM
 from qq_ai_bot.identity.db_models import IdentityBindingModel, SpaceBindingModel
-from qq_ai_bot.identity.inventory import IDENTITY_PLATFORM
 from qq_ai_bot.persistence.database import Database
 
 USER_CAPABILITIES: frozenset[str] = frozenset(

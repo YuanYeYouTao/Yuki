@@ -341,6 +341,51 @@ async def database(tmp_path: Path) -> Database:
     path = (tmp_path / "test.db").as_posix()
     db = Database(f"sqlite+aiosqlite:///{path}")
     await db.create_schema()
+    from qq_ai_bot.identity.canonical_repository import (
+        ensure_person,
+        ensure_presence,
+        ensure_space,
+    )
+
+    async with db.immediate_session() as session:
+        for user_id in (
+            "1001",
+            "1002",
+            "1003",
+            "1004",
+            "2002",
+            "2003",
+            "9000",
+            "10001",
+            "10002",
+            "10010001",
+            "12345678",
+            "90000",
+            "123456789",
+            "3003",
+            "1808058482",
+            "1808058483",
+        ):
+            await ensure_person(session, user_id, display_name=f"test-{user_id}")
+        for bot_user_id in ("7777", "8000", "8001", "9999", "99999"):
+            await ensure_presence(session, bot_user_id)
+        for group_id in (
+            "2001",
+            "2002",
+            "2999",
+            "3001",
+            "3002",
+            "20010001",
+            "20001",
+            "29999999",
+            "1049765710",
+        ):
+            await ensure_space(
+                session,
+                group_id,
+                name=f"test-{group_id}",
+                require_mention=True,
+            )
     reset_identity_write_settings()
     configure_identity_write_settings(IdentityWriteSettings())
     try:

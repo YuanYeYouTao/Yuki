@@ -1,4 +1,4 @@
-"""v2 live-memory guards that do not require new schema columns."""
+"""Canonical live-memory safety guards."""
 
 from __future__ import annotations
 
@@ -6,8 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.identity.c21_evidence import event_is_v2_live, fact_conversation_aligns
-from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
+from qq_ai_bot.identity.evidence import event_is_canonical_live, fact_conversation_aligns
 from qq_ai_bot.memory.partition import canonical_fact_owner_complete
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
@@ -20,8 +19,6 @@ from qq_ai_bot.persistence.models import (
 async def refuse_legacy_live_event(session: AsyncSession, event: ChatEventModel) -> bool:
     """True when a live v2 Memory path must not accept this chat event."""
 
-    if not await identity_runtime_is_complete_v2(session):
-        return False
     if not event.canonical_event_id:
         return True
     conversation_id = event.canonical_conversation_id
@@ -41,8 +38,6 @@ async def refuse_legacy_live_event(session: AsyncSession, event: ChatEventModel)
 async def refuse_legacy_live_fact(session: AsyncSession, fact_id: int) -> bool:
     """True when a fact cites a legacy-NULL event or has no v2 owner chain."""
 
-    if not await identity_runtime_is_complete_v2(session):
-        return False
     fact = await session.get(MemoryFactModel, fact_id)
     if fact is None:
         return True
@@ -105,9 +100,7 @@ async def refuse_unreadable_v2_evidence_event(session: AsyncSession, event: Chat
     history-read gate. Hidden suppression and missing canonical chain are.
     """
 
-    if not await identity_runtime_is_complete_v2(session):
-        return False
-    return not event_is_v2_live(
+    return not event_is_canonical_live(
         canonical_event_id=event.canonical_event_id,
         suppression_status=event.suppression_status,
         canonical_conversation_id=event.canonical_conversation_id,
@@ -120,8 +113,6 @@ async def v2_evidence_event_chain_readable(
     fact: MemoryFactModel,
     event: ChatEventModel,
 ) -> bool:
-    if not await identity_runtime_is_complete_v2(session):
-        return True
     if not canonical_fact_owner_complete(fact):
         return False
     if await refuse_unreadable_v2_evidence_event(session, event):
@@ -139,8 +130,6 @@ async def v2_evidence_row_readable(
     fact: MemoryFactModel,
     evidence: MemoryEvidenceModel,
 ) -> bool:
-    if not await identity_runtime_is_complete_v2(session):
-        return True
     if evidence.event_id is not None:
         event = await session.get(ChatEventModel, evidence.event_id)
         if event is None:

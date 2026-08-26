@@ -181,9 +181,10 @@ class SelfReflectionState:
     id: int
     conversation_key_hash: str
     bot_user_id: str
-    scope_type: ScopeType
-    group_id: str | None
-    private_peer_user_id: str | None
+    canonical_person_id: str | None
+    canonical_space_id: str | None
+    external_person_id: str | None
+    external_space_id: str | None
     last_event_id: int
     latest_event_id: int
     pending_events: int

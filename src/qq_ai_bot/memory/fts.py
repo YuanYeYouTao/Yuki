@@ -10,6 +10,7 @@ from typing import Any, Protocol
 
 from sqlalchemy import text
 from sqlalchemy.exc import DatabaseError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.memory.enums import MemoryKind
 from qq_ai_bot.memory.errors import MemoryRetrievalError
@@ -17,6 +18,10 @@ from qq_ai_bot.memory.models import (
     MemoryEntityTarget,
     MemoryIndexHealth,
     MemoryLexicalCandidate,
+)
+from qq_ai_bot.memory.partition import (
+    MemoryPartitionResolutionError,
+    resolve_fact_canonical_owners,
 )
 from qq_ai_bot.memory.query import normalize_query_text
 from qq_ai_bot.persistence.database import Database
@@ -97,23 +102,26 @@ class SQLiteMemoryFTSIndex:
     ) -> tuple[MemoryLexicalCandidate, ...]:
         if not query.fts_expression and not (query.short_term and short_query_fallback_enabled):
             return ()
-        scope_sql, params = self._scope_filter(target)
-        params.update(
-            {
-                "now": datetime.now(UTC),
-                "limit": max(1, candidate_limit),
-            }
-        )
-        kind_sql = ""
-        if kinds:
-            placeholders = []
-            for index, kind in enumerate(kinds):
-                name = f"kind_{index}"
-                placeholders.append(f":{name}")
-                params[name] = kind.value
-            kind_sql = f" AND mf.kind IN ({', '.join(placeholders)})"
         try:
             async with self._database.sessions() as session:
+                try:
+                    scope_sql, params = await self._scope_filter(session, target)
+                except MemoryPartitionResolutionError:
+                    return ()
+                params.update(
+                    {
+                        "now": datetime.now(UTC),
+                        "limit": max(1, candidate_limit),
+                    }
+                )
+                kind_sql = ""
+                if kinds:
+                    placeholders = []
+                    for index, kind in enumerate(kinds):
+                        name = f"kind_{index}"
+                        placeholders.append(f":{name}")
+                        params[name] = kind.value
+                    kind_sql = f" AND mf.kind IN ({', '.join(placeholders)})"
                 rows: list[Any] = []
                 if query.fts_expression:
                     fts_params = {**params, "fts_query": query.fts_expression}
@@ -240,36 +248,51 @@ class SQLiteMemoryFTSIndex:
         return health
 
     @staticmethod
-    def _scope_filter(target: MemoryEntityTarget) -> tuple[str, dict[str, Any]]:
+    async def _scope_filter(
+        session: AsyncSession,
+        target: MemoryEntityTarget,
+    ) -> tuple[str, dict[str, Any]]:
+        owners = await resolve_fact_canonical_owners(session, target)
         params: dict[str, Any] = {"scope_type": target.scope_type.value}
         clauses = [" AND mf.scope_type = :scope_type"]
-        if target.subject_user_id is None:
-            clauses.append(" AND mf.subject_user_id IS NULL")
+        if owners.subject_person_id is None:
+            clauses.append(" AND mf.canonical_subject_person_id IS NULL")
         else:
-            clauses.append(" AND mf.subject_user_id = :subject_user_id")
-            params["subject_user_id"] = target.subject_user_id
-        if target.group_id is None:
-            clauses.append(" AND mf.group_id IS NULL")
+            clauses.append(" AND mf.canonical_subject_person_id = :subject_person_id")
+            params["subject_person_id"] = owners.subject_person_id
+        if owners.subject_space_id is None:
+            clauses.append(" AND mf.canonical_subject_space_id IS NULL")
         else:
-            clauses.append(" AND mf.group_id = :group_id")
-            params["group_id"] = target.group_id
+            clauses.append(" AND mf.canonical_subject_space_id = :subject_space_id")
+            params["subject_space_id"] = owners.subject_space_id
         if target.scope_type.value == "self":
             clauses.append(
-                " AND (mf.visibility_type = 'global' OR (mf.visibility_type = :visibility_type"
+                " AND ((mf.visibility_type = 'global' "
+                "AND mf.canonical_visibility_person_id IS NULL "
+                "AND mf.canonical_visibility_space_id IS NULL) "
+                "OR (mf.visibility_type = :visibility_type"
             )
             params["visibility_type"] = (
                 target.visibility_type.value if target.visibility_type else ""
             )
-            if target.visibility_user_id is None:
-                clauses.append(" AND mf.visibility_user_id IS NULL")
+            if owners.visibility_person_id is None:
+                clauses.append(" AND mf.canonical_visibility_person_id IS NULL")
             else:
-                clauses.append(" AND mf.visibility_user_id = :visibility_user_id")
-                params["visibility_user_id"] = target.visibility_user_id
-            if target.visibility_group_id is None:
-                clauses.append(" AND mf.visibility_group_id IS NULL))")
+                clauses.append(" AND mf.canonical_visibility_person_id = :visibility_person_id")
+                params["visibility_person_id"] = owners.visibility_person_id
+            if owners.visibility_space_id is None:
+                clauses.append(" AND mf.canonical_visibility_space_id IS NULL))")
             else:
-                clauses.append(" AND mf.visibility_group_id = :visibility_group_id))")
-                params["visibility_group_id"] = target.visibility_group_id
+                clauses.append(" AND mf.canonical_visibility_space_id = :visibility_space_id))")
+                params["visibility_space_id"] = owners.visibility_space_id
+        else:
+            clauses.extend(
+                (
+                    " AND mf.visibility_type IS NULL",
+                    " AND mf.canonical_visibility_person_id IS NULL",
+                    " AND mf.canonical_visibility_space_id IS NULL",
+                )
+            )
         return "".join(clauses), params
 
     @staticmethod

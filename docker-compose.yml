@@ -135,8 +135,8 @@ services:
       SNOWLUMA_EXTRA_QQ_HOMES: ${SNOWLUMA_EXTRA_QQ_HOMES:-}
       SNOWLUMA_QQ_FLAGS: ${SNOWLUMA_QQ_FLAGS:---disable-gpu --disable-software-rasterizer --disable-gpu-compositing}
     ports:
-      - "127.0.0.1:${SNOWLUMA_NOVNC_PORT:-6081}:6081"
-      - "127.0.0.1:${SNOWLUMA_WEBUI_HOST_PORT:-5099}:5099"
+      - "${SNOWLUMA_NOVNC_BIND_ADDRESS:-127.0.0.1}:${SNOWLUMA_NOVNC_PORT:-6081}:6081"
+      - "${SNOWLUMA_WEBUI_BIND_ADDRESS:-127.0.0.1}:${SNOWLUMA_WEBUI_HOST_PORT:-5099}:5099"
     volumes:
       - ./snowluma-data:/app/data
       - ./snowluma-qq-config:/app/.config

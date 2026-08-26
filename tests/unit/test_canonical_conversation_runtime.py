@@ -16,16 +16,15 @@ from qq_ai_bot.conversation.canonical_db_models import ConversationLegacyAliasMo
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot, turn_matches_hydrated_scope
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.identity.canonical_uow import CanonicalIngressUnitOfWork
-from qq_ai_bot.identity.db_models import IdentityRuntimeStateModel
-from qq_ai_bot.identity.dual_write import ensure_canonical_presence_preconfig as ensure_v2_presence
-from qq_ai_bot.identity.ingress import CanonicalIngressResolver
-from qq_ai_bot.identity.inventory import (
-    CUTOVER_BASELINE_PENDING,
-    DEFERRED_SHADOWS,
-    FILLABLE_SHADOWS,
-    LEGACY_PROVENANCE_RETAINED,
+from qq_ai_bot.identity.canonical_repository import (
+    ensure_person,
+    ensure_space,
 )
+from qq_ai_bot.identity.canonical_repository import (
+    ensure_presence as ensure_v2_presence,
+)
+from qq_ai_bot.identity.canonical_uow import CanonicalIngressUnitOfWork
+from qq_ai_bot.identity.ingress import CanonicalIngressResolver
 from qq_ai_bot.identity.routing import PresenceRouter
 from qq_ai_bot.identity.write_settings import (
     IdentityWriteSettings,
@@ -48,7 +47,6 @@ from yuki_plugin_sdk.api import PLUGIN_API_VERSION
 from yuki_plugin_sdk.models import CurrentMessage
 
 _NOW = datetime(2026, 8, 24, tzinfo=UTC)
-_CUTOVER = "550e8400-e29b-41d4-a716-446655440099"
 
 
 @dataclass
@@ -57,16 +55,6 @@ class _Bot:
 
     async def call_api(self, *_args: object, **_kwargs: object) -> dict[str, object]:
         return {}
-
-
-async def _flip_v2(database: Database) -> None:
-    async with database.sessions() as session, session.begin():
-        row = await session.get(IdentityRuntimeStateModel, 1)
-        assert row is not None
-        row.state = "v2"
-        row.cutover_id = _CUTOVER
-        row.source_fingerprint = "cutover-fingerprint"
-        row.completed_at = _NOW
 
 
 async def _true(*_args: object, **_kwargs: object) -> bool:
@@ -89,7 +77,6 @@ async def test_primary_alias_freezes_and_generation_only_on_new(database: Databa
     from qq_ai_bot.identity.ingress import _ensure_person_id
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
-    await _flip_v2(database)
     registry = napcat_registry(gateway_instance_id="gw-conv")
     router = PresenceRouter(database, registry, membership_probe=_true)
     resolver = CanonicalIngressResolver(database, registry, router)
@@ -135,7 +122,6 @@ async def test_memory_partition_stays_off_conversation_id_and_refuses_legacy_rep
     partition = ResolvedMemoryScope.for_private("1001").partition_key
     assert partition.startswith("private:")
     assert "conversation" not in partition
-    await _flip_v2(database)
     jobs = MemoryJobRepository(database)
     facts = MemoryFactRepository(database)
     async with database.sessions() as session, session.begin():
@@ -239,16 +225,16 @@ def test_plugin_command_adapter_uses_primary_legacy_key() -> None:
     )
     identity = ConversationScope.private("8001", "1001")
     assert plugin_conversation_key(inbound, identity) == "bot:8000:private:1001"
-    v1_identity = ConversationScope.private("8001", "1001")
-    v1_message = InboundMessage(
-        message_id="cmd-v1",
+    fallback_identity = ConversationScope.private("8001", "1001")
+    fallback_message = InboundMessage(
+        message_id="cmd-fallback",
         event_type="message:test",
         scope_type=ScopeType.PRIVATE,
         sender=SenderIdentity(user_id="1001"),
         text="hi",
         bot_user_id="8001",
     )
-    assert plugin_conversation_key(v1_message, v1_identity) == v1_identity.key
+    assert plugin_conversation_key(fallback_message, fallback_identity) == fallback_identity.key
 
 
 def test_runtime_conversation_key_fails_closed_when_v2_primary_missing() -> None:
@@ -326,23 +312,26 @@ def test_plugin_facade_uses_inbound_legacy_key_and_fails_closed_without_primary(
     with pytest.raises(ValueError, match="missing primary runtime key"):
         _ = scheduled.conversation_key
 
-    v1_inbound = InboundMessage(
-        message_id="facade-v1",
+    fallback_inbound = InboundMessage(
+        message_id="facade-fallback",
         event_type="message:test",
         scope_type=ScopeType.PRIVATE,
         sender=SenderIdentity(user_id="1001"),
         text="hi",
         bot_user_id="8001",
     )
-    v1_invocation = PluginInvocation(
+    fallback_invocation = PluginInvocation(
         plugin_id="demo.plugin",
         origin=TurnOrigin.USER_MESSAGE,
         actor_user_id="1001",
         bot_user_id="8001",
-        inbound=v1_inbound,
+        inbound=fallback_inbound,
     )
-    assert v1_invocation.conversation_key == ConversationScope.private("8001", "1001").key
-    assert ConversationTurnCoordinator.key_for(v1_inbound) == v1_invocation.conversation_key
+    assert fallback_invocation.conversation_key == ConversationScope.private("8001", "1001").key
+    assert (
+        ConversationTurnCoordinator.key_for(fallback_inbound)
+        == fallback_invocation.conversation_key
+    )
 
 
 @pytest.mark.asyncio
@@ -386,7 +375,6 @@ async def test_automation_send_uses_current_binding_and_presence_provenance(
     from qq_ai_bot.identity.ingress import _ensure_person_id
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
-    await _flip_v2(database)
     registry = napcat_registry(gateway_instance_id="gw-auto")
     router = PresenceRouter(database, registry, membership_probe=_true)
 
@@ -424,7 +412,6 @@ async def test_automation_send_uses_current_binding_and_presence_provenance(
         automation_run_id=1,
         ledger=_Ledger(),  # type: ignore[arg-type]
         actions=_Actions(),  # type: ignore[arg-type]
-        registry=registry,
         router=router,
         target_person_id=person_id,
     )
@@ -472,7 +459,6 @@ async def test_plugin_transport_uses_resolved_target_and_presence(
     )
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
-    await _flip_v2(database)
     registry = napcat_registry(gateway_instance_id="gw-plugin")
     router = PresenceRouter(database, registry, membership_probe=_true)
 
@@ -499,9 +485,7 @@ async def test_plugin_transport_uses_resolved_target_and_presence(
     await router.cas_takeover_person(person_id)
     transport = OneBotNotificationTransport(registry, router=router)
     receipt = await transport.send_text(
-        bot_user_id="8000",
         target_type="private",
-        target_id="1001",
         text="ping",
         canonical_target_person_id=person_id,
     )
@@ -517,178 +501,10 @@ async def test_plugin_transport_uses_resolved_target_and_presence(
 
     with pytest.raises(ProactiveGatewayError) as missing:
         await transport.send_text(
-            bot_user_id="8001",
             target_type="private",
-            target_id="404",
             text="missing",
         )
     assert missing.value.category == "none"
-
-
-@pytest.mark.asyncio
-async def test_v1_bootstrap_does_not_insert_legacy_identity_rows(database: Database) -> None:
-    from types import SimpleNamespace
-
-    from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
-    from qq_ai_bot.identity.bootstrap import bootstrap_settings_identity
-    from qq_ai_bot.identity.db_models import IdentityBindingModel, SpaceBindingModel
-    from qq_ai_bot.persistence.models import GroupModel, PersonModel
-
-    settings = SimpleNamespace(superusers=frozenset({"1001"}), enabled_groups=frozenset({"2001"}))
-    await bootstrap_settings_identity(database, settings)  # type: ignore[arg-type]
-    async with database.sessions() as session:
-        people = int(await session.scalar(select(func.count()).select_from(PersonModel)) or 0)
-        groups = int(await session.scalar(select(func.count()).select_from(GroupModel)) or 0)
-        scopes = int(
-            await session.scalar(select(func.count()).select_from(ConversationScopeModel)) or 0
-        )
-        bindings = int(
-            await session.scalar(select(func.count()).select_from(IdentityBindingModel)) or 0
-        )
-        spaces = int(await session.scalar(select(func.count()).select_from(SpaceBindingModel)) or 0)
-    assert people == 0
-    assert groups == 0
-    assert scopes == 0
-    assert bindings == 1
-    assert spaces == 1
-
-
-@pytest.mark.asyncio
-async def test_v2_bootstrap_does_not_insert_legacy_identity_rows(database: Database) -> None:
-    from types import SimpleNamespace
-
-    from qq_ai_bot.conversation.rollup.db_models import ConversationScopeModel
-    from qq_ai_bot.identity.bootstrap import bootstrap_settings_identity
-    from qq_ai_bot.identity.db_models import IdentityBindingModel, SpaceBindingModel
-    from qq_ai_bot.persistence.models import GroupModel, PersonModel
-
-    await _flip_v2(database)
-    settings = SimpleNamespace(superusers=frozenset({"1001"}), enabled_groups=frozenset({"2001"}))
-    await bootstrap_settings_identity(database, settings)  # type: ignore[arg-type]
-    async with database.sessions() as session:
-        people = int(await session.scalar(select(func.count()).select_from(PersonModel)) or 0)
-        groups = int(await session.scalar(select(func.count()).select_from(GroupModel)) or 0)
-        scopes = int(
-            await session.scalar(select(func.count()).select_from(ConversationScopeModel)) or 0
-        )
-        bindings = int(
-            await session.scalar(select(func.count()).select_from(IdentityBindingModel)) or 0
-        )
-        spaces = int(await session.scalar(select(func.count()).select_from(SpaceBindingModel)) or 0)
-    assert people == 0
-    assert groups == 0
-    assert scopes == 0
-    assert bindings == 1
-    assert spaces == 1
-
-
-@pytest.mark.asyncio
-async def test_v2_live_memory_refuses_null_canonical_event(database: Database) -> None:
-    from qq_ai_bot.identity.ingress import _ensure_person_id
-    from qq_ai_bot.identity.memory_guard import refuse_legacy_live_event, refuse_legacy_live_fact
-    from qq_ai_bot.memory.enums import MemoryJobStatus
-    from qq_ai_bot.memory.reflection.repository import MemoryReflectionRepository
-    from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
-    from qq_ai_bot.persistence.models import ChatEventModel, MemoryEvidenceModel, MemoryJobModel
-
-    configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
-    await _flip_v2(database)
-    jobs = MemoryJobRepository(database)
-    facts = MemoryFactRepository(database)
-    reflection = MemoryReflectionRepository(database)
-    self_reflection = SelfReflectionRepository(database)
-    await self_reflection.scan_new_events()
-    async with database.sessions() as session, session.begin():
-        person_id = await _ensure_person_id(session, "1001")
-        event = ChatEventModel(
-            bot_user_id="8000",
-            platform_message_id="legacy-1",
-            scope_type="private",
-            private_peer_user_id="1001",
-            sender_user_id="1001",
-            sender_nickname="",
-            sender_group_card="",
-            direction="inbound",
-            event_kind="message",
-            content="old",
-            visual_summary="",
-            segments_json="[]",
-            origin="user_message",
-            occurred_at=_NOW,
-            observed_at=_NOW,
-        )
-        session.add(event)
-        await session.flush()
-        event_id = event.id
-        assert event.canonical_event_id is None
-        assert await refuse_legacy_live_event(session, event)
-        fact = await facts.create_fact(
-            MemoryFactCreate(
-                scope_type=MemoryScopeType.PERSON,
-                subject_user_id="1001",
-                kind=MemoryKind.FACT,
-                memory_key="legacy.color",
-                category="preference",
-                content="red",
-                source_type=MemorySourceType.EXPLICIT,
-            ),
-            normalized_content="red",
-            supersedes_id=None,
-            session=session,
-        )
-        session.add(
-            MemoryEvidenceModel(
-                fact_id=fact.id,
-                event_id=event_id,
-                source_speaker_user_id="1001",
-                relation="self_statement",
-                confidence=1.0,
-                authority="self_report",
-                excerpt="old",
-                created_at=_NOW,
-            )
-        )
-        stored = await session.get(MemoryFactModel, fact.id)
-        assert stored is not None
-        assert stored.canonical_subject_person_id == person_id
-        fact_id = fact.id
-    assert await jobs.enqueue(event_id, "private:1001") is False
-    async with database.sessions() as session, session.begin():
-        session.add(
-            MemoryJobModel(
-                event_id=event_id,
-                conversation_key="private:1001",
-                status=MemoryJobStatus.PENDING.value,
-                attempts=0,
-                next_attempt_at=_NOW,
-                created_at=_NOW,
-                updated_at=_NOW,
-            )
-        )
-    claimed = await jobs.claim(limit=10)
-    assert claimed == ()
-    async with database.sessions() as session:
-        leftover = await session.scalar(
-            select(MemoryJobModel).where(MemoryJobModel.event_id == event_id)
-        )
-        assert leftover is not None
-        assert leftover.status == MemoryJobStatus.FAILED.value
-        assert leftover.error_category == "legacy_event_replay"
-        assert await refuse_legacy_live_fact(session, fact_id)
-    scanned = await self_reflection.scan_new_events()
-    assert scanned >= 1
-    async with database.sessions() as session:
-        from qq_ai_bot.persistence.models import MemorySelfReflectionStateModel
-
-        pending = int(
-            await session.scalar(
-                select(func.coalesce(func.sum(MemorySelfReflectionStateModel.pending_events), 0))
-            )
-            or 0
-        )
-    assert pending == 0
-    discovered = await reflection.discover(limit=20)
-    assert all(item.fact_id != fact_id for item in discovered)
 
 
 def _chat_event(
@@ -697,6 +513,7 @@ def _chat_event(
     content: str,
     canonical_event_id: str | None = None,
     canonical_conversation_id: str | None = None,
+    author_person_id: str,
     event_id: int | None = None,
 ) -> ChatEventModel:
     row = ChatEventModel(
@@ -717,6 +534,9 @@ def _chat_event(
         observed_at=_NOW,
         canonical_event_id=canonical_event_id,
         canonical_conversation_id=canonical_conversation_id,
+        author_kind="person",
+        author_person_id=author_person_id,
+        suppression_status="keeper",
     )
     if event_id is not None:
         row.id = event_id
@@ -731,26 +551,14 @@ async def _seed_guard_conversation(
     last_generation_change_event_id: int,
     covered_through_event_id: int,
     generation: int = 1,
-) -> str:
+) -> tuple[str, str]:
     from qq_ai_bot.conversation.canonical_db_models import (
         CanonicalConversationModel,
         ConversationLegacyAliasModel,
     )
     from qq_ai_bot.identity.ingress import _ensure_person_id
-    from qq_ai_bot.persistence.models import PersonModel
 
     person_id = await _ensure_person_id(session, "1001")  # type: ignore[arg-type]
-    if await session.get(PersonModel, "1001") is None:  # type: ignore[union-attr]
-        session.add(  # type: ignore[union-attr]
-            PersonModel(
-                user_id="1001",
-                nickname="",
-                enabled=True,
-                is_bot=False,
-                first_seen_at=_NOW,
-                last_seen_at=_NOW,
-            )
-        )
     conversation_id = str(uuid4())
     alias_id = str(uuid4())
     session.add(  # type: ignore[union-attr]
@@ -783,7 +591,7 @@ async def _seed_guard_conversation(
             updated_at=_NOW,
         )
     )
-    return conversation_id
+    return conversation_id, person_id
 
 
 @pytest.mark.asyncio
@@ -793,9 +601,8 @@ async def test_v2_refuse_legacy_live_event_uses_conversation_watermark(
     from qq_ai_bot.identity.memory_guard import refuse_legacy_live_event
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
-    await _flip_v2(database)
     async with database.sessions() as session, session.begin():
-        conversation_id = await _seed_guard_conversation(
+        conversation_id, person_id = await _seed_guard_conversation(
             session,
             starts_after_event_id=5,
             last_event_id=10,
@@ -807,6 +614,7 @@ async def test_v2_refuse_legacy_live_event_uses_conversation_watermark(
             content="old mapped",
             canonical_event_id=str(uuid4()),
             canonical_conversation_id=conversation_id,
+            author_person_id=person_id,
             event_id=5,
         )
         fresh = _chat_event(
@@ -814,59 +622,18 @@ async def test_v2_refuse_legacy_live_event_uses_conversation_watermark(
             content="post cutover",
             canonical_event_id=str(uuid4()),
             canonical_conversation_id=conversation_id,
+            author_person_id=person_id,
             event_id=10,
         )
-        unmapped = _chat_event(
-            platform_message_id="cutover-unmapped",
-            content="unmapped",
-            canonical_event_id=str(uuid4()),
-        )
-        missing = _chat_event(
-            platform_message_id="cutover-missing-event",
-            content="missing id",
-        )
-        session.add_all([old, fresh, unmapped, missing])
+        session.add_all([old, fresh])
         await session.flush()
         assert await refuse_legacy_live_event(session, old)
         assert not await refuse_legacy_live_event(session, fresh)
-        assert await refuse_legacy_live_event(session, unmapped)
-        assert await refuse_legacy_live_event(session, missing)
         old_pk = old.id
         fresh_pk = fresh.id
-        unmapped_pk = unmapped.id
-        missing_pk = missing.id
     jobs = MemoryJobRepository(database)
     assert await jobs.enqueue(old_pk, "private:1001") is False
     assert await jobs.enqueue(fresh_pk, "private:1001") is True
-    assert await jobs.enqueue(unmapped_pk, "private:1001") is False
-    assert await jobs.enqueue(missing_pk, "private:1001") is False
-
-
-@pytest.mark.asyncio
-async def test_v2_refuse_legacy_live_event_generation_mismatch(database: Database) -> None:
-    from qq_ai_bot.identity.memory_guard import refuse_legacy_live_event
-
-    configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
-    await _flip_v2(database)
-    async with database.sessions() as session, session.begin():
-        conversation_id = await _seed_guard_conversation(
-            session,
-            starts_after_event_id=0,
-            last_event_id=8,
-            last_generation_change_event_id=8,
-            covered_through_event_id=8,
-            generation=2,
-        )
-        event = _chat_event(
-            platform_message_id="gen-mismatch",
-            content="before generation",
-            canonical_event_id=str(uuid4()),
-            canonical_conversation_id=conversation_id,
-            event_id=8,
-        )
-        session.add(event)
-        await session.flush()
-        assert await refuse_legacy_live_event(session, event)
 
 
 @pytest.mark.asyncio
@@ -923,11 +690,12 @@ async def test_created_automation_sends_persisted_person_not_creator(
         raw_text="1秒后提醒 1808058482",
         bot_user_id="8001",
     )
+    async with database.sessions() as session, session.begin():
+        await ensure_person(session, "1808058482", now=_NOW)
     row = await service.create(script, inbound=inbound, conversation_key="private:9000")
     assert row.canonical_target_person_id is not None
     assert row.canonical_target_person_id != row.canonical_creator_person_id
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
-    await _flip_v2(database)
     registry = napcat_registry(gateway_instance_id="gw-auto-persist")
     router = PresenceRouter(database, registry, membership_probe=_true)
 
@@ -970,7 +738,6 @@ async def test_created_automation_sends_persisted_person_not_creator(
         automation_run_id=1,
         ledger=_Ledger(),  # type: ignore[arg-type]
         actions=_Actions(),  # type: ignore[arg-type]
-        registry=registry,
         router=router,
         target_person_id=row.canonical_target_person_id,
     )
@@ -981,31 +748,6 @@ async def test_created_automation_sends_persisted_person_not_creator(
         await gateway.send_private("9000", "错投")
     assert foreign.value.category == "target_mismatch"
     assert bot.calls == [("send_private_msg", {"user_id": "1009", "message": "给别人"})]
-
-
-def test_scope_inventory_has_owner_for_every_fillable_shadow() -> None:
-    assert any(item[0] == "people.canonical_person_id" for item in FILLABLE_SHADOWS)
-    assert any(item[0] == "automations.canonical_target_person_id" for item in FILLABLE_SHADOWS)
-    assert any(
-        item[0] == "runtime_turn_observations.canonical_person_id" for item in FILLABLE_SHADOWS
-    )
-    deferred = {item[0] for item in DEFERRED_SHADOWS}
-    baseline = {item[0] for item in CUTOVER_BASELINE_PENDING}
-    provenance = {item[0] for item in LEGACY_PROVENANCE_RETAINED}
-    deferred_text = " ".join(deferred)
-    assert "canonical_conversation_id" in deferred_text
-    assert "automations.canonical_target_person_id/space_id" not in deferred_text
-    assert "memory_jobs" not in deferred
-    assert "memory_evidence" not in deferred
-    assert "memory_tool_receipts" not in deferred
-    assert "memory_reflection_jobs" not in deferred
-    assert "memory_self_reflection_states/memory_self_reflection_runs" not in deferred
-    assert "memory_dream_runs/memory_dream_clusters/memory_dream_operations" not in deferred
-    assert "memory_jobs" in baseline
-    assert "memory_evidence" in baseline
-    assert "memory_reflection_jobs" in baseline
-    assert "memory_tool_receipts.bot_user_id/conversation_key_hash" in provenance
-    assert "memory_evidence.source_speaker_user_id" in provenance
 
 
 @pytest.mark.asyncio
@@ -1019,32 +761,13 @@ async def test_delete_person_removes_canonical_private_and_group_overlays(
     from qq_ai_bot.conversation.rollup.repository import ConversationRollupRepository
     from qq_ai_bot.conversation.rollup.service import ConversationRollupService
     from qq_ai_bot.domain.conversations import ConversationScope
-    from qq_ai_bot.identity.dual_write import (
-        ensure_canonical_person_preconfig,
-        ensure_canonical_presence_preconfig,
-        ensure_canonical_space_preconfig,
-    )
     from qq_ai_bot.persistence.repositories import PeopleRepository
     from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
-    await _flip_v2(database)
     async with database.sessions() as session, session.begin():
-        from qq_ai_bot.persistence.models import PersonModel
-
-        await ensure_canonical_presence_preconfig(session, "8000")
-        person_id = await ensure_canonical_person_preconfig(session, "1001", now=_NOW)
-        await ensure_canonical_space_preconfig(session, "2001", now=_NOW)
-        session.add(
-            PersonModel(
-                user_id="1001",
-                nickname="Ada",
-                enabled=True,
-                is_bot=False,
-                first_seen_at=_NOW,
-                last_seen_at=_NOW,
-                canonical_person_id=person_id,
-            )
-        )
+        await ensure_v2_presence(session, "8000")
+        await ensure_person(session, "1001", now=_NOW)
+        await ensure_space(session, "2001", now=_NOW)
     policy = RollupPolicyConfig(
         raw_tail_events=2,
         raw_tail_characters=100_000,
@@ -1101,16 +824,11 @@ async def test_delete_person_removes_canonical_private_and_group_overlays(
 async def _v2_private_ledger(database: Database):
     from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
     from qq_ai_bot.domain.conversations import ConversationScope
-    from qq_ai_bot.identity.dual_write import (
-        ensure_canonical_person_preconfig,
-        ensure_canonical_presence_preconfig,
-    )
     from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
-    await _flip_v2(database)
     async with database.sessions() as session, session.begin():
-        await ensure_canonical_presence_preconfig(session, "8000")
-        await ensure_canonical_person_preconfig(session, "1001", now=_NOW)
+        await ensure_v2_presence(session, "8000")
+        await ensure_person(session, "1001", now=_NOW)
     return (
         ScopedEventLedgerUnitOfWork(database, config=RollupPolicyConfig()),
         ConversationScope.private("8000", "1001"),
@@ -1145,223 +863,15 @@ async def _v2_ledger_snapshot(database: Database) -> tuple[object, object, objec
 
 
 @pytest.mark.asyncio
-async def test_v2_live_identical_repeat_reuses_receipt_and_ledger(database: Database) -> None:
-    from qq_ai_bot.conversation.canonical_db_models import CanonicalEventReceiptModel
-    from qq_ai_bot.memory.repository import MemoryJobRepository
-    from qq_ai_bot.persistence.models import MemoryJobModel, PersonModel
-
-    uow, scope = await _v2_private_ledger(database)
-    first = await uow.append(
-        scope=scope,
-        platform_message_id="live-dup-1",
-        sender_user_id="1001",
-        direction="inbound",
-        content="same-payload",
-        segments=({"type": "text", "data": {"text": "same-payload", "k": "v"}},),
-        occurred_at=_NOW,
-    )
-    assert first.created is True
-    async with database.sessions() as session, session.begin():
-        row = await session.get(ChatEventModel, first.event.id)
-        assert row is not None and row.canonical_event_id
-        session.add(
-            PersonModel(
-                user_id="1001",
-                nickname="Ada",
-                enabled=True,
-                is_bot=False,
-                first_seen_at=_NOW,
-                last_seen_at=_NOW,
-                canonical_person_id=row.author_person_id,
-            )
-        )
-        canonical_event_id = row.canonical_event_id
-    enqueued = await MemoryJobRepository(database).enqueue(first.event.id, "private:1001")
-    assert enqueued is True
-    before = await _v2_ledger_snapshot(database)
-    replayed = await uow.append(
-        scope=scope,
-        platform_message_id="live-dup-1",
-        sender_user_id="1001",
-        direction="inbound",
-        content="same-payload",
-        segments=({"data": {"k": "v", "text": "same-payload"}, "type": "text"},),
-        occurred_at=_NOW,
-    )
-    assert replayed.created is False
-    assert replayed.job_signalled is False
-    assert replayed.event.id == first.event.id
-    async with database.sessions() as session:
-        row = await session.get(ChatEventModel, first.event.id)
-        receipts = list(await session.scalars(select(CanonicalEventReceiptModel)))
-        jobs = list(await session.scalars(select(MemoryJobModel)))
-        events = list(await session.scalars(select(ChatEventModel)))
-        assert row is not None
-        assert row.canonical_event_id == canonical_event_id
-        assert len(events) == 1
-        assert len(receipts) == 1
-        assert receipts[0].canonical_event_id == canonical_event_id
-        assert len(jobs) == 1
-    assert await _v2_ledger_snapshot(database) == before
-
-
 @pytest.mark.asyncio
-async def test_v2_live_receipt_content_conflict_keeps_original(database: Database) -> None:
-    from qq_ai_bot.identity.errors import IdentityDualWriteError
-
-    uow, scope = await _v2_private_ledger(database)
-    first = await uow.append(
-        scope=scope,
-        platform_message_id="live-conflict-1",
-        sender_user_id="1001",
-        direction="inbound",
-        content="original-body",
-        occurred_at=_NOW,
-    )
-    before = await _v2_ledger_snapshot(database)
-    with pytest.raises(IdentityDualWriteError) as exc:
-        await uow.append(
-            scope=scope,
-            platform_message_id="live-conflict-1",
-            sender_user_id="1001",
-            direction="inbound",
-            content="tampered-body",
-            occurred_at=_NOW,
-        )
-    assert exc.value.category == "receipt_conflict"
-    assert await _v2_ledger_snapshot(database) == before
-    async with database.sessions() as session:
-        row = await session.get(ChatEventModel, first.event.id)
-        assert row is not None
-        assert row.content == "original-body"
-
-
 @pytest.mark.asyncio
-async def test_v2_live_segments_or_occurred_at_conflict_fails_closed(database: Database) -> None:
-    from qq_ai_bot.identity.errors import IdentityDualWriteError
-
-    uow, scope = await _v2_private_ledger(database)
-    first = await uow.append(
-        scope=scope,
-        platform_message_id="live-payload-1",
-        sender_user_id="1001",
-        direction="inbound",
-        content="payload",
-        segments=({"type": "text", "data": {"text": "one"}},),
-        occurred_at=_NOW,
-    )
-    before = await _v2_ledger_snapshot(database)
-    with pytest.raises(IdentityDualWriteError) as segments:
-        await uow.append(
-            scope=scope,
-            platform_message_id="live-payload-1",
-            sender_user_id="1001",
-            direction="inbound",
-            content="payload",
-            segments=({"type": "text", "data": {"text": "two"}},),
-            occurred_at=_NOW,
-        )
-    with pytest.raises(IdentityDualWriteError) as occurred:
-        await uow.append(
-            scope=scope,
-            platform_message_id="live-payload-1",
-            sender_user_id="1001",
-            direction="inbound",
-            content="payload",
-            segments=({"type": "text", "data": {"text": "one"}},),
-            occurred_at=_NOW.replace(minute=1),
-        )
-    assert segments.value.category == "receipt_conflict"
-    assert occurred.value.category == "receipt_conflict"
-    assert await _v2_ledger_snapshot(database) == before
-    async with database.sessions() as session:
-        row = await session.get(ChatEventModel, first.event.id)
-        assert row is not None
-        assert row.content == "payload"
-        assert '"one"' in row.segments_json
-        stored = row.occurred_at
-        if stored.tzinfo is None:
-            stored = stored.replace(tzinfo=UTC)
-        assert stored == _NOW
-
-
 @pytest.mark.asyncio
-async def test_v2_live_receipt_race_rereads_winner_not_new_uuid(
-    database: Database,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from uuid import uuid4
-
-    from qq_ai_bot.conversation.canonical_db_models import CanonicalEventReceiptModel
-    from qq_ai_bot.identity.errors import IdentityDualWriteError
-    from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
-
-    uow, scope = await _v2_private_ledger(database)
-    first = await uow.append(
-        scope=scope,
-        platform_message_id="live-race-1",
-        sender_user_id="1001",
-        direction="inbound",
-        content="race-winner",
-        occurred_at=_NOW,
-    )
-    async with database.sessions() as session:
-        winner = await session.get(ChatEventModel, first.event.id)
-        assert winner is not None and winner.canonical_event_id
-        missing = await session.scalar(
-            select(ChatEventModel).where(ChatEventModel.canonical_event_id == str(uuid4()))
-        )
-        assert missing is None
-        receipt, claimed = await uow._load_receipt_claimed_event(
-            session,
-            presence_id=winner.ingress_presence_id or "",
-            event_type="message",
-            platform_message_id="live-race-1",
-        )
-        assert receipt is not None
-        assert claimed is not None
-        assert claimed.id == first.event.id
-        assert receipt.canonical_event_id == winner.canonical_event_id
-
-    async def _miss(*_args: object, **_kwargs: object) -> tuple[None, None]:
-        return None, None
-
-    monkeypatch.setattr(ScopedEventLedgerUnitOfWork, "_find_existing_v2_live", _miss)
-    replayed = await uow.append(
-        scope=scope,
-        platform_message_id="live-race-1",
-        sender_user_id="1001",
-        direction="inbound",
-        content="race-winner",
-        occurred_at=_NOW,
-    )
-    assert replayed.created is False
-    assert replayed.event.id == first.event.id
-    before_conflict = await _v2_ledger_snapshot(database)
-    with pytest.raises(IdentityDualWriteError) as exc:
-        await uow.append(
-            scope=scope,
-            platform_message_id="live-race-1",
-            sender_user_id="1001",
-            direction="inbound",
-            content="race-loser",
-            occurred_at=_NOW,
-        )
-    assert exc.value.category == "receipt_conflict"
-    assert await _v2_ledger_snapshot(database) == before_conflict
-    async with database.sessions() as session:
-        receipts = list(await session.scalars(select(CanonicalEventReceiptModel)))
-        events = list(await session.scalars(select(ChatEventModel)))
-        assert len(receipts) == 1
-        assert len(events) == 1
-
-
 @pytest.mark.asyncio
 async def test_v2_plugin_external_stays_off_receipts_and_keeps_unique_key(
     database: Database,
 ) -> None:
     from qq_ai_bot.conversation.canonical_db_models import CanonicalEventReceiptModel
-    from qq_ai_bot.identity.errors import IdentityDualWriteError
+    from qq_ai_bot.identity.errors import CanonicalIdentityError
 
     uow, scope = await _v2_private_ledger(database)
     first = await uow.append_external(
@@ -1405,7 +915,7 @@ async def test_v2_plugin_external_stays_off_receipts_and_keeps_unique_key(
         assert row.external_event_key == "push-unique"
         assert row.platform_message_id == "plugin-ext-1"
 
-    with pytest.raises(IdentityDualWriteError) as platform_conflict:
+    with pytest.raises(CanonicalIdentityError) as platform_conflict:
         await uow.append_external(
             scope=scope,
             platform_message_id="plugin-ext-2",
@@ -1421,7 +931,7 @@ async def test_v2_plugin_external_stays_off_receipts_and_keeps_unique_key(
     assert platform_conflict.value.category == "receipt_conflict"
     assert await _v2_ledger_snapshot(database) == before
 
-    with pytest.raises(IdentityDualWriteError) as payload_conflict:
+    with pytest.raises(CanonicalIdentityError) as payload_conflict:
         await uow.append_external(
             scope=scope,
             platform_message_id="plugin-ext-1",
@@ -1437,7 +947,7 @@ async def test_v2_plugin_external_stays_off_receipts_and_keeps_unique_key(
     assert payload_conflict.value.category == "receipt_conflict"
     assert await _v2_ledger_snapshot(database) == before
 
-    with pytest.raises(IdentityDualWriteError) as content_conflict:
+    with pytest.raises(CanonicalIdentityError) as content_conflict:
         await uow.append_external(
             scope=scope,
             platform_message_id="plugin-ext-1",
@@ -1466,7 +976,7 @@ async def test_v2_plugin_external_occurred_at_conflict_keeps_original(
     database: Database,
 ) -> None:
     from qq_ai_bot.conversation.canonical_db_models import CanonicalEventReceiptModel
-    from qq_ai_bot.identity.errors import IdentityDualWriteError
+    from qq_ai_bot.identity.errors import CanonicalIdentityError
 
     uow, scope = await _v2_private_ledger(database)
     first = await uow.append_external(
@@ -1483,7 +993,7 @@ async def test_v2_plugin_external_occurred_at_conflict_keeps_original(
     )
     assert first.created is True
     before = await _v2_ledger_snapshot(database)
-    with pytest.raises(IdentityDualWriteError) as exc:
+    with pytest.raises(CanonicalIdentityError) as exc:
         await uow.append_external(
             scope=scope,
             platform_message_id="plugin-ext-time-1",
@@ -1497,7 +1007,7 @@ async def test_v2_plugin_external_occurred_at_conflict_keeps_original(
             occurred_at=_NOW.replace(minute=1),
         )
     assert exc.value.category == "receipt_conflict"
-    assert str(exc.value) == "identity dual-write failed"
+    assert str(exc.value) == "canonical identity invariant failed"
     assert "push-time" not in str(exc.value)
     assert await _v2_ledger_snapshot(database) == before
     async with database.sessions() as session:
@@ -1516,86 +1026,16 @@ async def test_v2_plugin_external_occurred_at_conflict_keeps_original(
 
 
 @pytest.mark.asyncio
-async def test_v2_plugin_external_unique_index_race_rereads_winner(
-    database: Database,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from qq_ai_bot.conversation.canonical_db_models import CanonicalEventReceiptModel
-    from qq_ai_bot.persistence.models import MemoryJobModel
-    from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
-
-    uow, scope = await _v2_private_ledger(database)
-    first = await uow.append_external(
-        scope=scope,
-        platform_message_id="plugin-ext-race-1",
-        source_plugin_id="ext-plugin",
-        external_source="github",
-        external_event_key="push-race",
-        external_event_type="PushEvent",
-        external_payload={"ok": True},
-        external_target_id="1001",
-        content="race-winner",
-        occurred_at=_NOW,
-    )
-    assert first.created is True
-    before = await _v2_ledger_snapshot(database)
-    original = ScopedEventLedgerUnitOfWork._find_existing_v2_plugin_external
-    calls = {"n": 0}
-
-    async def _miss_once(*args: object, **kwargs: object) -> object:
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return None
-        return await original(*args, **kwargs)
-
-    monkeypatch.setattr(
-        ScopedEventLedgerUnitOfWork,
-        "_find_existing_v2_plugin_external",
-        _miss_once,
-    )
-    replayed = await uow.append_external(
-        scope=scope,
-        platform_message_id="plugin-ext-race-1",
-        source_plugin_id="ext-plugin",
-        external_source="github",
-        external_event_key="push-race",
-        external_event_type="PushEvent",
-        external_payload={"ok": True},
-        external_target_id="1001",
-        content="race-winner",
-        occurred_at=_NOW,
-    )
-    assert calls["n"] == 2
-    assert replayed.created is False
-    assert replayed.job_signalled is False
-    assert replayed.event.id == first.event.id
-    assert await _v2_ledger_snapshot(database) == before
-    async with database.sessions() as session:
-        receipts = list(await session.scalars(select(CanonicalEventReceiptModel)))
-        events = list(await session.scalars(select(ChatEventModel)))
-        jobs = list(await session.scalars(select(MemoryJobModel)))
-        assert receipts == []
-        assert len(events) == 1
-        assert events[0].id == first.event.id
-        assert len(jobs) == 0
-
-
 async def _v2_group_two_presences(database: Database) -> tuple[object, object, object, str, str]:
     from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
     from qq_ai_bot.domain.conversations import ConversationScope
-    from qq_ai_bot.identity.dual_write import (
-        ensure_canonical_person_preconfig,
-        ensure_canonical_presence_preconfig,
-        ensure_canonical_space_preconfig,
-    )
     from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
-    await _flip_v2(database)
     async with database.sessions() as session, session.begin():
-        presence_a = await ensure_canonical_presence_preconfig(session, "8000")
-        presence_b = await ensure_canonical_presence_preconfig(session, "8001")
-        await ensure_canonical_person_preconfig(session, "1001", now=_NOW)
-        await ensure_canonical_space_preconfig(session, "2001", now=_NOW)
+        presence_a = await ensure_v2_presence(session, "8000")
+        presence_b = await ensure_v2_presence(session, "8001")
+        await ensure_person(session, "1001", now=_NOW)
+        await ensure_space(session, "2001", now=_NOW)
     return (
         ScopedEventLedgerUnitOfWork(database, config=RollupPolicyConfig()),
         ConversationScope.group("8000", "2001"),
@@ -1674,149 +1114,7 @@ async def test_v2_live_fanout_receipts_replay_idempotently(database: Database) -
 
 
 @pytest.mark.asyncio
-async def test_v2_live_missing_or_forged_receipt_cannot_reuse_keeper_across_bots(
-    database: Database,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from qq_ai_bot.identity.errors import IdentityDualWriteError
-    from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
-
-    uow, scope_a, scope_b, _presence_a, presence_b = await _v2_group_two_presences(database)
-    missing = await uow.append(
-        scope=scope_a,
-        platform_message_id="cross-miss",
-        sender_user_id="1001",
-        direction="inbound",
-        content="keeper-body",
-        occurred_at=_NOW,
-    )
-    independent = await uow.append(
-        scope=scope_b,
-        platform_message_id="cross-miss",
-        sender_user_id="1001",
-        direction="inbound",
-        content="keeper-body",
-        occurred_at=_NOW,
-    )
-    assert independent.created is True
-    assert independent.event.id != missing.event.id
-    async with database.sessions() as session:
-        keeper = await session.get(ChatEventModel, missing.event.id)
-        assert keeper is not None
-        assert keeper.content == "keeper-body"
-        assert keeper.bot_user_id == "8000"
-
-    forged = await uow.append(
-        scope=scope_a,
-        platform_message_id="cross-forge",
-        sender_user_id="1001",
-        direction="inbound",
-        content="forge-body",
-        occurred_at=_NOW,
-    )
-    assert forged.created is True
-    await _plant_receipt(
-        database,
-        presence_id=presence_b,
-        platform_message_id="cross-forge",
-        canonical_event_id=str(uuid4()),
-    )
-    before_forged = await _v2_ledger_snapshot(database)
-    with pytest.raises(IdentityDualWriteError) as forged_exc:
-        await uow.append(
-            scope=scope_b,
-            platform_message_id="cross-forge",
-            sender_user_id="1001",
-            direction="inbound",
-            content="forge-body",
-            occurred_at=_NOW,
-        )
-    assert forged_exc.value.category == "receipt_conflict"
-    assert await _v2_ledger_snapshot(database) == before_forged
-
-    keeper_id = missing.event.id
-
-    async def _legacy_hit(
-        _self: object,
-        session: object,
-        *_args: object,
-        **_kwargs: object,
-    ) -> tuple[ChatEventModel | None, None]:
-        existing = await session.get(ChatEventModel, keeper_id)  # type: ignore[union-attr]
-        return existing, None
-
-    monkeypatch.setattr(ScopedEventLedgerUnitOfWork, "_find_existing_v2_live", _legacy_hit)
-    before_legacy = await _v2_ledger_snapshot(database)
-    with pytest.raises(IdentityDualWriteError) as legacy_exc:
-        await uow.append(
-            scope=scope_b,
-            platform_message_id="cross-miss",
-            sender_user_id="1001",
-            direction="inbound",
-            content="keeper-body",
-            occurred_at=_NOW,
-        )
-    assert legacy_exc.value.category == "receipt_conflict"
-    assert await _v2_ledger_snapshot(database) == before_legacy
-
-
 @pytest.mark.asyncio
-async def test_v2_live_secondary_receipt_content_or_time_conflict_fails(
-    database: Database,
-) -> None:
-    from qq_ai_bot.identity.errors import IdentityDualWriteError
-
-    uow, scope_a, scope_b, _presence_a, presence_b = await _v2_group_two_presences(database)
-    first = await uow.append(
-        scope=scope_a,
-        platform_message_id="fanout-conflict",
-        sender_user_id="1001",
-        direction="inbound",
-        content="shared-body",
-        occurred_at=_NOW,
-    )
-    async with database.sessions() as session:
-        keeper = await session.get(ChatEventModel, first.event.id)
-        assert keeper is not None and keeper.canonical_event_id
-        canonical_event_id = keeper.canonical_event_id
-    await _plant_receipt(
-        database,
-        presence_id=presence_b,
-        platform_message_id="fanout-conflict",
-        canonical_event_id=canonical_event_id,
-    )
-    before = await _v2_ledger_snapshot(database)
-    with pytest.raises(IdentityDualWriteError) as content:
-        await uow.append(
-            scope=scope_b,
-            platform_message_id="fanout-conflict",
-            sender_user_id="1001",
-            direction="inbound",
-            content="tampered-body",
-            occurred_at=_NOW,
-        )
-    with pytest.raises(IdentityDualWriteError) as occurred:
-        await uow.append(
-            scope=scope_b,
-            platform_message_id="fanout-conflict",
-            sender_user_id="1001",
-            direction="inbound",
-            content="shared-body",
-            occurred_at=_NOW.replace(minute=1),
-        )
-    assert content.value.category == "receipt_conflict"
-    assert occurred.value.category == "receipt_conflict"
-    assert await _v2_ledger_snapshot(database) == before
-    async with database.sessions() as session:
-        row = await session.get(ChatEventModel, first.event.id)
-        assert row is not None
-        assert row.content == "shared-body"
-        stored = row.occurred_at
-        if stored.tzinfo is None:
-            stored = stored.replace(tzinfo=UTC)
-        assert stored == _NOW
-
-
 def _utterance_token(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
@@ -1864,87 +1162,7 @@ async def _swap_keeper_behind_earlier_duplicate(database: Database, keeper_id: i
 
 
 @pytest.mark.asyncio
-async def test_v2_live_receipts_reuse_keeper_when_duplicate_has_smaller_id(
-    database: Database,
-) -> None:
-    from qq_ai_bot.conversation.canonical_db_models import CanonicalEventReceiptModel
-
-    uow, scope_a, scope_b, _presence_a, presence_b = await _v2_group_two_presences(database)
-    first = await uow.append(
-        scope=scope_a,
-        platform_message_id="fanout-keeper-order",
-        sender_user_id="1001",
-        direction="inbound",
-        content="shared-body",
-        occurred_at=_NOW,
-    )
-    async with database.sessions() as session:
-        seeded = await session.get(ChatEventModel, first.event.id)
-        assert seeded is not None and seeded.canonical_event_id
-        canonical_event_id = seeded.canonical_event_id
-    keeper_id = await _swap_keeper_behind_earlier_duplicate(database, first.event.id)
-    assert keeper_id > first.event.id
-    await _plant_receipt(
-        database,
-        presence_id=presence_b,
-        platform_message_id="fanout-keeper-order",
-        canonical_event_id=canonical_event_id,
-    )
-    for scope in (scope_a, scope_b):
-        reused = await uow.append(
-            scope=scope,
-            platform_message_id="fanout-keeper-order",
-            sender_user_id="1001",
-            direction="inbound",
-            content="shared-body",
-            occurred_at=_NOW,
-        )
-        assert reused.created is False
-        assert reused.event.id == keeper_id
-        assert reused.event.id != first.event.id
-    async with database.sessions() as session:
-        rows = list(await session.scalars(select(ChatEventModel)))
-        receipts = list(await session.scalars(select(CanonicalEventReceiptModel)))
-        keepers = [row for row in rows if row.suppression_status == "keeper"]
-    assert len(keepers) == 1
-    assert keepers[0].id == keeper_id
-    assert {item.canonical_event_id for item in receipts} == {canonical_event_id}
-    assert len(receipts) == 2
-
-
 @pytest.mark.asyncio
-async def test_v2_live_receipt_with_only_duplicate_fails_closed(database: Database) -> None:
-    from qq_ai_bot.identity.errors import IdentityDualWriteError
-
-    uow, scope = await _v2_private_ledger(database)
-    first = await uow.append(
-        scope=scope,
-        platform_message_id="dup-only-1",
-        sender_user_id="1001",
-        direction="inbound",
-        content="kept-body",
-        occurred_at=_NOW,
-    )
-    async with database.sessions() as session, session.begin():
-        row = await session.get(ChatEventModel, first.event.id)
-        assert row is not None
-        row.utterance_fingerprint = row.utterance_fingerprint or _utterance_token(row.content)
-        row.suppression_status = "duplicate"
-    before = await _v2_ledger_snapshot(database)
-    with pytest.raises(IdentityDualWriteError) as exc:
-        await uow.append(
-            scope=scope,
-            platform_message_id="dup-only-1",
-            sender_user_id="1001",
-            direction="inbound",
-            content="kept-body",
-            occurred_at=_NOW,
-        )
-    assert exc.value.category == "receipt_conflict"
-    assert "kept-body" not in str(exc.value)
-    assert await _v2_ledger_snapshot(database) == before
-
-
 def _turn(
     *,
     scope_key: str,
@@ -2029,7 +1247,7 @@ def test_turn_matches_hydrated_scope_rejects_forged_primary_or_wrong_transport()
     )
 
 
-def test_turn_matches_hydrated_scope_rejects_v1_key_mismatch() -> None:
+def test_turn_matches_hydrated_scope_rejects_transport_key_mismatch() -> None:
     turn = _turn(scope_key="bot:8000:private:1001")
     assert not turn_matches_hydrated_scope(
         turn,

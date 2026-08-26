@@ -108,6 +108,8 @@ def test_bundle_contains_only_deployment_files_and_expected_assets(tmp_path: Pat
     assert f"{prefix}snowluma-qq-data/" in names
     assert f"{prefix}snowluma-extra-accounts/" in names
     assert f"{prefix}SnowLuma.md" in names
+    assert f"{prefix}Yuki-3.8.0-Release-Notes.md" in names
+    assert f"{prefix}Yuki-3.8.0-Upgrade.md" in names
     assert f"{prefix}install.sh" in names
     assert f"{prefix}install.ps1" in names
     assert shell_mode & 0o111
@@ -127,6 +129,12 @@ def test_bundle_contains_only_deployment_files_and_expected_assets(tmp_path: Pat
     assert len(checksums) == 7
     for name, expected in checksums.items():
         assert sha256((tmp_path / name).read_bytes()).hexdigest() == expected
+    assert (tmp_path / "Yuki-3.8.0-Upgrade.md").read_bytes() == (
+        ROOT / "docs/upgrade-3.8.0.md"
+    ).read_bytes()
+    assert (tmp_path / "Yuki-3.8.0-Upgrade.md").read_bytes() != (
+        ROOT / "docs/releases/v3.8.0.md"
+    ).read_bytes()
 
 
 def test_production_and_development_compose_are_separated() -> None:
@@ -143,8 +151,14 @@ def test_production_and_development_compose_are_separated() -> None:
     assert "motricseven7/snowluma:latest" in production
     assert "seccomp=unconfined" in production
     assert "SYS_PTRACE" in production
-    assert '"127.0.0.1:${SNOWLUMA_NOVNC_PORT:-6081}:6081"' in production
-    assert '"127.0.0.1:${SNOWLUMA_WEBUI_HOST_PORT:-5099}:5099"' in production
+    assert (
+        '"${SNOWLUMA_NOVNC_BIND_ADDRESS:-127.0.0.1}:'
+        '${SNOWLUMA_NOVNC_PORT:-6081}:6081"' in production
+    )
+    assert (
+        '"${SNOWLUMA_WEBUI_BIND_ADDRESS:-127.0.0.1}:'
+        '${SNOWLUMA_WEBUI_HOST_PORT:-5099}:5099"' in production
+    )
     assert "3000:3000" not in production
     assert "3001:3001" not in production
     assert "image: yuki-qqbot:dev" in development
@@ -242,7 +256,7 @@ def test_release_smoke_reads_alembic_version_inside_container(
                         '"plugin_system_enabled":true,"plugin_running_count":0}'
                     )
                 if "SELECT version_num FROM alembic_version" in arguments[-1]:
-                    return "0048"
+                    return "0049"
             if arguments[:5] == ("exec", "-T", "bot", "qq-ai-bot-cli", "plugin"):
                 return ""
             if arguments[:5] == ("exec", "-T", "bot", "qq-ai-bot-cli", "setup"):
@@ -286,7 +300,7 @@ def test_release_smoke_writes_pending_inside_container_when_host_cannot(
                         '{"status":"ok","version":"3.8.0","database":"ok",'
                         '"plugin_system_enabled":true,"plugin_running_count":0}'
                     )
-                return "0048"
+                return "0049"
             if arguments[:5] == ("exec", "-T", "bot", "qq-ai-bot-cli", "plugin"):
                 return ""
             if arguments[:5] == ("exec", "-T", "bot", "qq-ai-bot-cli", "setup"):
@@ -330,7 +344,7 @@ def test_release_smoke_applies_builtin_plugin_pending(
             if arguments[:4] == ("exec", "-T", "bot", "python"):
                 if "urllib.request" in arguments[-1]:
                     return next(health_payloads)
-                return "0048"
+                return "0049"
             if arguments[:3] == ("up", "-d", "--no-deps"):
                 return ""
             if arguments[3:5] == ("qq-ai-bot-cli", "plugin"):
@@ -421,20 +435,12 @@ def test_installers_are_fixed_orchestrators_without_a_docker_socket_mount() -> N
         assert "SnowLuma.md" in installer
         assert "Yuki-$VERSION-Upgrade.md" in installer or "Yuki-$Version-Upgrade.md" in installer
         assert "Updated release-managed deployment files" in installer
-        assert "upgrade-3.6" in installer
-        assert "migrate-3-6" in installer
         assert "qq_ai_bot.db" in installer
         assert "qq_ai_bot.db-wal" in installer
         assert "qq_ai_bot.db-shm" in installer
     assert '--user "$(id -u):$(id -g)"' in shell
-    assert shell.index("docker pull") < shell.index("upgrade-3.6")
-    assert shell.index("upgrade-3.6") < shell.index("migrate-3-6")
-    assert shell.index("migrate-3-6") < shell.index("docker compose config")
     assert "docker compose stop bot" in shell
     assert "docker compose stop bot" in powershell
-    assert powershell.index("docker pull") < powershell.index("upgrade-3.6")
-    assert powershell.index("upgrade-3.6") < powershell.index("migrate-3-6")
-    assert powershell.index("migrate-3-6") < powershell.index("docker compose config")
     assert "wait_for_service genie-tts-worker" in shell
     assert shell.index('stop "$service"') < shell.index("docker compose up -d")
     assert shell.index("docker compose up -d") < shell.index('rm -f "$gateway_action"')
@@ -448,6 +454,17 @@ def test_installers_are_fixed_orchestrators_without_a_docker_socket_mount() -> N
     assert powershell.index('Invoke-WebRequest -Uri "$Base/$ArchiveName"') < powershell.index(
         "if (-not $Existing)"
     )
+    assert shell.index('copy_upgrade_file "$INSTALL_DIR/docker-compose.yml"') < shell.index(
+        'cp "$source/$relative" "$INSTALL_DIR/$relative.yuki-new"'
+    )
+    assert powershell.index('@{ Source = (Join-Path $InstallDir "docker-compose.yml")') < (
+        powershell.index("Copy-Item -LiteralPath $SourceFile -Destination $TemporaryTarget")
+    )
+    for installer in (shell, powershell):
+        assert "source_image" in installer
+        assert "source_image_id" in installer
+        assert "source_digest" in installer
+        assert "target_version" in installer
 
 
 def _git(root: Path, *arguments: str) -> None:

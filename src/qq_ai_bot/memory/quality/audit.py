@@ -74,12 +74,14 @@ class MemoryProductionQualityAudit:
                 "error",
                 _query(
                     "memory_facts",
-                    "NOT ((scope_type='person' AND subject_user_id IS NOT NULL "
-                    "AND group_id IS NULL) "
-                    "OR (scope_type='person_group' AND subject_user_id IS NOT NULL "
-                    "AND group_id IS NOT NULL) OR (scope_type='group' AND subject_user_id IS NULL "
-                    "AND group_id IS NOT NULL) OR (scope_type='self' AND subject_user_id IS NULL "
-                    "AND group_id IS NULL))",
+                    "NOT ((scope_type='person' AND canonical_subject_person_id IS NOT NULL "
+                    "AND canonical_subject_space_id IS NULL) OR (scope_type='person_group' "
+                    "AND canonical_subject_person_id IS NOT NULL "
+                    "AND canonical_subject_space_id IS NOT NULL) OR (scope_type='group' "
+                    "AND canonical_subject_person_id IS NULL "
+                    "AND canonical_subject_space_id IS NOT NULL) OR (scope_type='self' "
+                    "AND canonical_subject_person_id IS NULL "
+                    "AND canonical_subject_space_id IS NULL))",
                 ),
             ),
             (
@@ -88,12 +90,15 @@ class MemoryProductionQualityAudit:
                 _query(
                     "memory_facts",
                     "(scope_type!='self' AND (visibility_type IS NOT NULL OR "
-                    "visibility_user_id IS NOT NULL OR visibility_group_id IS NOT NULL)) OR "
+                    "canonical_visibility_person_id IS NOT NULL OR "
+                    "canonical_visibility_space_id IS NOT NULL)) OR "
                     "(scope_type='self' AND NOT ((visibility_type='global' AND "
-                    "visibility_user_id IS NULL AND visibility_group_id IS NULL) OR "
-                    "(visibility_type='private' AND visibility_user_id IS NOT NULL AND "
-                    "visibility_group_id IS NULL) OR (visibility_type='group' AND "
-                    "visibility_user_id IS NULL AND visibility_group_id IS NOT NULL)))",
+                    "canonical_visibility_person_id IS NULL AND "
+                    "canonical_visibility_space_id IS NULL) OR "
+                    "(visibility_type='private' AND canonical_visibility_person_id IS NOT NULL "
+                    "AND canonical_visibility_space_id IS NULL) OR (visibility_type='group' AND "
+                    "canonical_visibility_person_id IS NULL "
+                    "AND canonical_visibility_space_id IS NOT NULL)))",
                 ),
             ),
             (
@@ -110,9 +115,11 @@ class MemoryProductionQualityAudit:
                 """
                 WITH bad AS (
                   SELECT MIN(id) AS id FROM memory_facts WHERE status='active'
-                  GROUP BY scope_type, COALESCE(subject_user_id,''), COALESCE(group_id,''),
-                           COALESCE(visibility_type,''), COALESCE(visibility_user_id,''),
-                           COALESCE(visibility_group_id,''),
+                  GROUP BY scope_type, COALESCE(canonical_subject_person_id,''),
+                           COALESCE(canonical_subject_space_id,''),
+                           COALESCE(visibility_type,''),
+                           COALESCE(canonical_visibility_person_id,''),
+                           COALESCE(canonical_visibility_space_id,''),
                            CASE WHEN scope_type='self' THEN '' ELSE kind END,
                            memory_key HAVING COUNT(*) > 1
                 ), tally AS (SELECT COUNT(*) AS n FROM bad)
@@ -269,12 +276,16 @@ class MemoryProductionQualityAudit:
                 _query(
                     "memory_fact_relations r JOIN memory_facts s ON s.id=r.source_fact_id "
                     "JOIN memory_facts t ON t.id=r.target_fact_id",
-                    "s.scope_type!=t.scope_type OR COALESCE(s.subject_user_id,'')!="
-                    "COALESCE(t.subject_user_id,'') OR COALESCE(s.group_id,'')!="
-                    "COALESCE(t.group_id,'') OR COALESCE(s.visibility_type,'')!="
-                    "COALESCE(t.visibility_type,'') OR COALESCE(s.visibility_user_id,'')!="
-                    "COALESCE(t.visibility_user_id,'') OR COALESCE(s.visibility_group_id,'')!="
-                    "COALESCE(t.visibility_group_id,'')",
+                    "s.scope_type!=t.scope_type OR "
+                    "COALESCE(s.canonical_subject_person_id,'')!="
+                    "COALESCE(t.canonical_subject_person_id,'') OR "
+                    "COALESCE(s.canonical_subject_space_id,'')!="
+                    "COALESCE(t.canonical_subject_space_id,'') OR "
+                    "COALESCE(s.visibility_type,'')!=COALESCE(t.visibility_type,'') OR "
+                    "COALESCE(s.canonical_visibility_person_id,'')!="
+                    "COALESCE(t.canonical_visibility_person_id,'') OR "
+                    "COALESCE(s.canonical_visibility_space_id,'')!="
+                    "COALESCE(t.canonical_visibility_space_id,'')",
                     id_expression="r.id",
                 ),
             ),

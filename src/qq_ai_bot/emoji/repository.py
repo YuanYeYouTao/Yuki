@@ -12,6 +12,7 @@ from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
+from sqlalchemy.sql.elements import ColumnElement
 
 from qq_ai_bot.emoji.db_models import (
     EmojiAssetModel,
@@ -26,18 +27,18 @@ from qq_ai_bot.emoji.models import (
     EmojiScopeState,
     StoredEmojiMedia,
 )
-from qq_ai_bot.identity.c24_scopes import (
+from qq_ai_bot.identity.canonical_repository import IDENTITY_PLATFORM
+from qq_ai_bot.identity.db_models import SpaceBindingModel
+from qq_ai_bot.identity.errors import CanonicalIdentityError
+from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.unit_of_work import optional_session
+from qq_ai_bot.services.canonical_owners import (
     resolve_live_person_id,
     resolve_live_space_id,
-    stamp_v2_person_space,
+    stamp_canonical_owners,
     try_live_person_id,
     try_live_space_id,
 )
-from qq_ai_bot.identity.errors import IdentityDualWriteError
-from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
-from qq_ai_bot.identity.shadows import fill_person_space_shadows
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.unit_of_work import optional_session
 
 EmojiJobType = Literal["analyze", "reanalyze", "rebuild_preview"]
 
@@ -182,31 +183,21 @@ class EmojiRepository:
             )
             if row is None:
                 raise RuntimeError("emoji candidate upsert did not return a row")
-            if await identity_runtime_is_complete_v2(session):
-                await stamp_v2_person_space(
-                    row,
-                    person_attr="canonical_first_seen_person_id",
-                    space_attr="canonical_first_seen_space_id",
-                    person_id=(
-                        None
-                        if row.canonical_first_seen_person_id is not None
-                        else await try_live_person_id(session, row.first_seen_user_id)
-                    ),
-                    space_id=(
-                        None
-                        if row.canonical_first_seen_space_id is not None
-                        else await try_live_space_id(session, row.first_seen_group_id)
-                    ),
-                )
-            else:
-                await fill_person_space_shadows(
-                    session,
-                    row,
-                    person_attr="canonical_first_seen_person_id",
-                    space_attr="canonical_first_seen_space_id",
-                    user_id=row.first_seen_user_id,
-                    group_id=row.first_seen_group_id,
-                )
+            stamp_canonical_owners(
+                row,
+                person_attr="canonical_first_seen_person_id",
+                space_attr="canonical_first_seen_space_id",
+                person_id=(
+                    None
+                    if row.canonical_first_seen_person_id is not None
+                    else await try_live_person_id(session, row.first_seen_user_id)
+                ),
+                space_id=(
+                    None
+                    if row.canonical_first_seen_space_id is not None
+                    else await try_live_space_id(session, row.first_seen_group_id)
+                ),
+            )
             created = row.id == asset_id and _rowcount(result) == 1
             return self._asset(row), created
 
@@ -294,10 +285,7 @@ class EmojiRepository:
         weight: float = 1.0,
         now: datetime | None = None,
     ) -> EmojiScopeState:
-        if scope_type == "global" and scope_id:
-            raise ValueError("global emoji scope_id must be empty")
-        if scope_type == "group" and not scope_id:
-            raise ValueError("group emoji scope_id is required")
+        self._validate_scope(scope_type, scope_id)
         if weight < 0:
             raise ValueError("emoji scope weight must be non-negative")
         timestamp = now or datetime.now(UTC)
@@ -310,30 +298,33 @@ class EmojiRepository:
                 EmojiLifecycleStatus.MISSING.value,
             }:
                 raise ValueError("banned or missing emoji cannot be adopted")
-            complete_v2 = await identity_runtime_is_complete_v2(session)
-            storage_scope_id = scope_id
             space_id = None
-            if complete_v2 and scope_type == "group":
-                space_id, storage_scope_id = await self._canonical_group_storage(
-                    session, emoji_id=emoji_id, group_id=scope_id
-                )
+            if scope_type == "group":
+                space_id = await resolve_live_space_id(session, scope_id)
             statement = insert(EmojiScopeStateModel).values(
                 emoji_id=emoji_id,
                 scope_type=scope_type,
-                scope_id=storage_scope_id,
+                canonical_space_id=space_id,
                 enabled=True,
                 weight=weight,
                 adopted_at=timestamp,
                 updated_at=timestamp,
             )
-            statement = statement.on_conflict_do_update(
-                index_elements=[
-                    EmojiScopeStateModel.emoji_id,
-                    EmojiScopeStateModel.scope_type,
-                    EmojiScopeStateModel.scope_id,
-                ],
-                set_={"enabled": True, "weight": weight, "updated_at": timestamp},
-            )
+            if scope_type == "global":
+                statement = statement.on_conflict_do_update(
+                    index_elements=[EmojiScopeStateModel.emoji_id],
+                    index_where=EmojiScopeStateModel.scope_type == "global",
+                    set_={"enabled": True, "weight": weight, "updated_at": timestamp},
+                )
+            else:
+                statement = statement.on_conflict_do_update(
+                    index_elements=[
+                        EmojiScopeStateModel.emoji_id,
+                        EmojiScopeStateModel.canonical_space_id,
+                    ],
+                    index_where=EmojiScopeStateModel.scope_type == "group",
+                    set_={"enabled": True, "weight": weight, "updated_at": timestamp},
+                )
             await session.execute(statement)
             asset.status = EmojiLifecycleStatus.ADOPTED.value
             asset.updated_at = timestamp
@@ -341,32 +332,12 @@ class EmojiRepository:
                 select(EmojiScopeStateModel).where(
                     EmojiScopeStateModel.emoji_id == emoji_id,
                     EmojiScopeStateModel.scope_type == scope_type,
-                    EmojiScopeStateModel.scope_id == storage_scope_id,
+                    EmojiScopeStateModel.canonical_space_id == space_id,
                 )
             )
             if row is None:
                 raise RuntimeError("emoji scope upsert did not return a row")
-            if complete_v2:
-                if scope_type == "group":
-                    await stamp_v2_person_space(
-                        row,
-                        person_attr=None,
-                        space_attr="canonical_space_id",
-                        person_id=None,
-                        space_id=space_id,
-                    )
-                elif row.canonical_space_id is not None:
-                    raise IdentityDualWriteError("canonical_owner_mismatch")
-            else:
-                await fill_person_space_shadows(
-                    session,
-                    row,
-                    person_attr=None,
-                    space_attr="canonical_space_id",
-                    user_id=None,
-                    group_id=scope_id if scope_type == "group" else None,
-                )
-            return self._scope(row)
+            return await self._scope(session, row)
 
     async def remove_scope(
         self,
@@ -375,8 +346,9 @@ class EmojiRepository:
         scope_type: Literal["global", "group"],
         scope_id: str = "",
     ) -> bool:
+        self._validate_scope(scope_type, scope_id)
         async with self._database.sessions() as session, session.begin():
-            if await identity_runtime_is_complete_v2(session) and scope_type == "group":
+            if scope_type == "group":
                 space_id = await resolve_live_space_id(session, scope_id)
                 result = await session.execute(
                     delete(EmojiScopeStateModel).where(
@@ -390,7 +362,7 @@ class EmojiRepository:
                     delete(EmojiScopeStateModel).where(
                         EmojiScopeStateModel.emoji_id == emoji_id,
                         EmojiScopeStateModel.scope_type == scope_type,
-                        EmojiScopeStateModel.scope_id == scope_id,
+                        EmojiScopeStateModel.canonical_space_id.is_(None),
                     )
                 )
             remaining = await session.scalar(
@@ -437,29 +409,21 @@ class EmojiRepository:
             raise ValueError("limit must be positive")
         enabled_scope = aliased(EmojiScopeStateModel, name="enabled_scope")
         async with self._database.sessions() as session:
-            complete_v2 = await identity_runtime_is_complete_v2(session)
             person_id = None
             space_id = None
-            if complete_v2:
-                if group_id is not None:
-                    space_id = await resolve_live_space_id(session, group_id)
-                else:
-                    person_id = await resolve_live_person_id(session, actor_user_id)
-                scope_filter = enabled_scope.scope_type == "global"
-                if space_id is not None:
-                    scope_filter = or_(
-                        scope_filter,
-                        (enabled_scope.scope_type == "group")
-                        & (enabled_scope.canonical_space_id == space_id),
-                    )
+            if group_id is not None:
+                space_id = await resolve_live_space_id(session, group_id)
             else:
-                scope_filter = enabled_scope.scope_type == "global"
-                if group_id:
-                    scope_filter = or_(
-                        scope_filter,
-                        (enabled_scope.scope_type == "group")
-                        & (enabled_scope.scope_id == group_id),
-                    )
+                person_id = await resolve_live_person_id(session, actor_user_id)
+            scope_filter: ColumnElement[bool] = (enabled_scope.scope_type == "global") & (
+                enabled_scope.canonical_space_id.is_(None)
+            )
+            if space_id is not None:
+                scope_filter = or_(
+                    scope_filter,
+                    (enabled_scope.scope_type == "group")
+                    & (enabled_scope.canonical_space_id == space_id),
+                )
             recent_scope = None
             if scope_cooldown_after is not None:
                 recent_scope = (
@@ -467,22 +431,14 @@ class EmojiRepository:
                     .select_from(EmojiUsageEventModel)
                     .where(EmojiUsageEventModel.created_at > scope_cooldown_after)
                 )
-                if complete_v2:
-                    if space_id is not None:
-                        recent_scope = recent_scope.where(
-                            EmojiUsageEventModel.canonical_space_id == space_id
-                        )
-                    else:
-                        recent_scope = recent_scope.where(
-                            EmojiUsageEventModel.canonical_space_id.is_(None),
-                            EmojiUsageEventModel.canonical_actor_person_id == person_id,
-                        )
-                elif group_id is not None:
-                    recent_scope = recent_scope.where(EmojiUsageEventModel.group_id == group_id)
+                if space_id is not None:
+                    recent_scope = recent_scope.where(
+                        EmojiUsageEventModel.canonical_space_id == space_id
+                    )
                 else:
                     recent_scope = recent_scope.where(
-                        EmojiUsageEventModel.group_id.is_(None),
-                        EmojiUsageEventModel.actor_user_id == actor_user_id,
+                        EmojiUsageEventModel.canonical_space_id.is_(None),
+                        EmojiUsageEventModel.canonical_actor_person_id == person_id,
                     )
             statement = (
                 select(EmojiAssetModel, func.max(enabled_scope.weight))
@@ -500,7 +456,7 @@ class EmojiRepository:
                 .order_by(EmojiAssetModel.pinned.desc(), EmojiAssetModel.last_used_at.asc())
                 .limit(limit)
             )
-            if complete_v2 and space_id is not None:
+            if space_id is not None:
                 disabled_group = aliased(EmojiScopeStateModel, name="disabled_group")
                 disabled_override = (
                     select(disabled_group.id)
@@ -509,21 +465,6 @@ class EmojiRepository:
                         disabled_group.emoji_id == EmojiAssetModel.id,
                         disabled_group.scope_type == "group",
                         disabled_group.canonical_space_id == space_id,
-                        disabled_group.enabled.is_(False),
-                    )
-                    .correlate(EmojiAssetModel)
-                    .exists()
-                )
-                statement = statement.where(~disabled_override)
-            elif group_id is not None:
-                disabled_group = aliased(EmojiScopeStateModel, name="disabled_group")
-                disabled_override = (
-                    select(disabled_group.id)
-                    .select_from(disabled_group)
-                    .where(
-                        disabled_group.emoji_id == EmojiAssetModel.id,
-                        disabled_group.scope_type == "group",
-                        disabled_group.scope_id == group_id,
                         disabled_group.enabled.is_(False),
                     )
                     .correlate(EmojiAssetModel)
@@ -540,21 +481,16 @@ class EmojiRepository:
             EmojiScopeStateModel.enabled.is_(True)
         )
         async with self._database.sessions() as session:
-            if await identity_runtime_is_complete_v2(session):
-                if group_id is None:
-                    statement = statement.where(EmojiScopeStateModel.scope_type == "global")
-                else:
-                    space_id = await resolve_live_space_id(session, group_id)
-                    statement = statement.where(
-                        EmojiScopeStateModel.scope_type == "group",
-                        EmojiScopeStateModel.canonical_space_id == space_id,
-                    )
-            elif group_id is None:
-                statement = statement.where(EmojiScopeStateModel.scope_type == "global")
+            if group_id is None:
+                statement = statement.where(
+                    EmojiScopeStateModel.scope_type == "global",
+                    EmojiScopeStateModel.canonical_space_id.is_(None),
+                )
             else:
+                space_id = await resolve_live_space_id(session, group_id)
                 statement = statement.where(
                     EmojiScopeStateModel.scope_type == "group",
-                    EmojiScopeStateModel.scope_id == group_id,
+                    EmojiScopeStateModel.canonical_space_id == space_id,
                 )
             return int(await session.scalar(statement) or 0)
 
@@ -565,8 +501,9 @@ class EmojiRepository:
         scope_type: Literal["global", "group"],
         scope_id: str,
     ) -> bool:
+        self._validate_scope(scope_type, scope_id)
         async with self._database.sessions() as session:
-            if await identity_runtime_is_complete_v2(session) and scope_type == "group":
+            if scope_type == "group":
                 space_id = await resolve_live_space_id(session, scope_id)
                 statement = (
                     select(func.count())
@@ -585,7 +522,7 @@ class EmojiRepository:
                     .where(
                         EmojiScopeStateModel.emoji_id == emoji_id,
                         EmojiScopeStateModel.scope_type == scope_type,
-                        EmojiScopeStateModel.scope_id == scope_id,
+                        EmojiScopeStateModel.canonical_space_id.is_(None),
                         EmojiScopeStateModel.enabled.is_(True),
                     )
                 )
@@ -593,23 +530,17 @@ class EmojiRepository:
 
     async def enabled_in_scope(self, emoji_id: str, *, group_id: str | None) -> bool:
         async with self._database.sessions() as session:
-            complete_v2 = await identity_runtime_is_complete_v2(session)
             space_id = None
-            if complete_v2 and group_id is not None:
+            if group_id is not None:
                 space_id = await resolve_live_space_id(session, group_id)
-            scope_filter = EmojiScopeStateModel.scope_type == "global"
-            if complete_v2:
-                if space_id is not None:
-                    scope_filter = or_(
-                        scope_filter,
-                        (EmojiScopeStateModel.scope_type == "group")
-                        & (EmojiScopeStateModel.canonical_space_id == space_id),
-                    )
-            elif group_id is not None:
+            scope_filter: ColumnElement[bool] = (EmojiScopeStateModel.scope_type == "global") & (
+                EmojiScopeStateModel.canonical_space_id.is_(None)
+            )
+            if space_id is not None:
                 scope_filter = or_(
                     scope_filter,
                     (EmojiScopeStateModel.scope_type == "group")
-                    & (EmojiScopeStateModel.scope_id == group_id),
+                    & (EmojiScopeStateModel.canonical_space_id == space_id),
                 )
             statement = (
                 select(func.count())
@@ -622,7 +553,7 @@ class EmojiRepository:
                     scope_filter,
                 )
             )
-            if complete_v2 and space_id is not None:
+            if space_id is not None:
                 disabled = await session.scalar(
                     select(func.count())
                     .select_from(EmojiScopeStateModel)
@@ -630,19 +561,6 @@ class EmojiRepository:
                         EmojiScopeStateModel.emoji_id == emoji_id,
                         EmojiScopeStateModel.scope_type == "group",
                         EmojiScopeStateModel.canonical_space_id == space_id,
-                        EmojiScopeStateModel.enabled.is_(False),
-                    )
-                )
-                if disabled:
-                    return False
-            elif group_id is not None:
-                disabled = await session.scalar(
-                    select(func.count())
-                    .select_from(EmojiScopeStateModel)
-                    .where(
-                        EmojiScopeStateModel.emoji_id == emoji_id,
-                        EmojiScopeStateModel.scope_type == "group",
-                        EmojiScopeStateModel.scope_id == group_id,
                         EmojiScopeStateModel.enabled.is_(False),
                     )
                 )
@@ -664,17 +582,11 @@ class EmojiRepository:
                 EmojiLifecycleStatus.REJECTED.value,
             }:
                 raise ValueError("emoji is not eligible for a group scope")
-            complete_v2 = await identity_runtime_is_complete_v2(session)
-            storage_scope_id = group_id
-            space_id = None
-            if complete_v2:
-                space_id, storage_scope_id = await self._canonical_group_storage(
-                    session, emoji_id=emoji_id, group_id=group_id
-                )
+            space_id = await resolve_live_space_id(session, group_id)
             statement = insert(EmojiScopeStateModel).values(
                 emoji_id=emoji_id,
                 scope_type="group",
-                scope_id=storage_scope_id,
+                canonical_space_id=space_id,
                 enabled=enabled,
                 weight=1.0,
                 adopted_at=now,
@@ -684,36 +596,12 @@ class EmojiRepository:
                 statement.on_conflict_do_update(
                     index_elements=[
                         EmojiScopeStateModel.emoji_id,
-                        EmojiScopeStateModel.scope_type,
-                        EmojiScopeStateModel.scope_id,
+                        EmojiScopeStateModel.canonical_space_id,
                     ],
+                    index_where=EmojiScopeStateModel.scope_type == "group",
                     set_={"enabled": enabled, "updated_at": now},
                 )
             )
-            row = await session.scalar(
-                select(EmojiScopeStateModel).where(
-                    EmojiScopeStateModel.emoji_id == emoji_id,
-                    EmojiScopeStateModel.scope_type == "group",
-                    EmojiScopeStateModel.scope_id == storage_scope_id,
-                )
-            )
-            if row is not None and complete_v2:
-                await stamp_v2_person_space(
-                    row,
-                    person_attr=None,
-                    space_attr="canonical_space_id",
-                    person_id=None,
-                    space_id=space_id,
-                )
-            elif row is not None:
-                await fill_person_space_shadows(
-                    session,
-                    row,
-                    person_attr=None,
-                    space_attr="canonical_space_id",
-                    user_id=None,
-                    group_id=group_id,
-                )
             if enabled and asset.status == EmojiLifecycleStatus.RECOGNIZED.value:
                 asset.status = EmojiLifecycleStatus.ADOPTED.value
                 asset.updated_at = now
@@ -724,8 +612,9 @@ class EmojiRepository:
         scope_type: Literal["global", "group"],
         scope_id: str,
     ) -> tuple[EmojiAsset, ...]:
+        self._validate_scope(scope_type, scope_id)
         async with self._database.sessions() as session:
-            if await identity_runtime_is_complete_v2(session) and scope_type == "group":
+            if scope_type == "group":
                 space_id = await resolve_live_space_id(session, scope_id)
                 statement = (
                     select(EmojiAssetModel)
@@ -752,7 +641,7 @@ class EmojiRepository:
                     )
                     .where(
                         EmojiScopeStateModel.scope_type == scope_type,
-                        EmojiScopeStateModel.scope_id == scope_id,
+                        EmojiScopeStateModel.canonical_space_id.is_(None),
                         EmojiAssetModel.pinned.is_(False),
                     )
                     .order_by(
@@ -898,27 +787,17 @@ class EmojiRepository:
             )
             session.add(usage)
             await session.flush()
-            if await identity_runtime_is_complete_v2(session):
-                person_id = (
-                    await resolve_live_person_id(session, actor_user_id) if actor_user_id else None
-                )
-                space_id = await resolve_live_space_id(session, group_id) if group_id else None
-                await stamp_v2_person_space(
-                    usage,
-                    person_attr="canonical_actor_person_id",
-                    space_attr="canonical_space_id",
-                    person_id=person_id,
-                    space_id=space_id,
-                )
-            else:
-                await fill_person_space_shadows(
-                    session,
-                    usage,
-                    person_attr="canonical_actor_person_id",
-                    space_attr="canonical_space_id",
-                    user_id=actor_user_id,
-                    group_id=group_id,
-                )
+            person_id = (
+                await resolve_live_person_id(session, actor_user_id) if actor_user_id else None
+            )
+            space_id = await resolve_live_space_id(session, group_id) if group_id else None
+            stamp_canonical_owners(
+                usage,
+                person_attr="canonical_actor_person_id",
+                space_attr="canonical_space_id",
+                person_id=person_id,
+                space_id=space_id,
+            )
 
     async def counts(self) -> dict[str, int]:
         async with self._database.sessions() as session:
@@ -965,28 +844,6 @@ class EmojiRepository:
             )
             return bool(_rowcount(result))
 
-    async def _canonical_group_storage(
-        self,
-        session: AsyncSession,
-        *,
-        emoji_id: str,
-        group_id: str,
-    ) -> tuple[str, str]:
-        space_id = await resolve_live_space_id(session, group_id)
-        rows = list(
-            await session.scalars(
-                select(EmojiScopeStateModel).where(
-                    EmojiScopeStateModel.emoji_id == emoji_id,
-                    EmojiScopeStateModel.scope_type == "group",
-                    EmojiScopeStateModel.canonical_space_id == space_id,
-                )
-            )
-        )
-        storage_ids = {row.scope_id for row in rows}
-        if len(storage_ids) > 1:
-            raise IdentityDualWriteError("canonical_owner_mismatch")
-        return space_id, next(iter(storage_ids), space_id)
-
     @staticmethod
     def _asset(row: EmojiAssetModel) -> EmojiAsset:
         return EmojiAsset(
@@ -1024,11 +881,37 @@ class EmojiRepository:
         )
 
     @staticmethod
-    def _scope(row: EmojiScopeStateModel) -> EmojiScopeState:
+    def _validate_scope(scope_type: Literal["global", "group"], scope_id: str) -> None:
+        if scope_type == "global" and scope_id:
+            raise ValueError("global emoji scope_id must be empty")
+        if scope_type == "group" and not scope_id:
+            raise ValueError("group emoji scope_id is required")
+
+    @staticmethod
+    async def _scope(session: AsyncSession, row: EmojiScopeStateModel) -> EmojiScopeState:
+        scope_id = ""
+        if row.scope_type == "group":
+            if row.canonical_space_id is None:
+                raise CanonicalIdentityError("missing_canonical_owner")
+            external = await session.scalar(
+                select(SpaceBindingModel.external_space_id)
+                .where(
+                    SpaceBindingModel.space_id == row.canonical_space_id,
+                    SpaceBindingModel.platform == IDENTITY_PLATFORM,
+                    SpaceBindingModel.status == "active",
+                )
+                .order_by(SpaceBindingModel.created_at, SpaceBindingModel.id)
+                .limit(1)
+            )
+            if external is None:
+                raise CanonicalIdentityError("missing_canonical_owner")
+            scope_id = str(external)
+        elif row.canonical_space_id is not None:
+            raise CanonicalIdentityError("canonical_owner_mismatch")
         return EmojiScopeState(
             emoji_id=row.emoji_id,
             scope_type=row.scope_type,  # type: ignore[arg-type]
-            scope_id=row.scope_id,
+            scope_id=scope_id,
             enabled=row.enabled,
             weight=row.weight,
             adopted_at=row.adopted_at,

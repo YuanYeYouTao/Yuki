@@ -27,7 +27,6 @@ class OperationStatus(StrEnum):
 
 @final
 class StateEpoch(StrEnum):
-    V1 = "v1"
     V2 = "v2"
 
 
@@ -45,7 +44,7 @@ def _sanitize_error_category(value: object) -> str:
 @final
 @dataclass(frozen=True, slots=True)
 class OperationRef:
-    """Projection of an existing backfill/rebuild/dream/automation run."""
+    """Projection of an existing rebuild/dream/automation run."""
 
     operation_id: str
     status: OperationStatus

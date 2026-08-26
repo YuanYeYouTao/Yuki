@@ -5,10 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from qq_ai_bot.identity.canonical_projections import resolve_canonical_speech_preference
-from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
-from qq_ai_bot.identity.shadows import fill_person_space_shadows
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.services.canonical_owners import resolve_live_person_id
 from qq_ai_bot.speech.db_models import PersonSpeechPreferenceModel
 from qq_ai_bot.speech.models import VoicePreferenceMode
 
@@ -30,14 +28,8 @@ class VoicePreferenceRepository:
 
     async def get(self, user_id: str) -> PersonSpeechPreference | None:
         async with self._database.sessions() as session:
-            if await identity_runtime_is_complete_v2(session):
-                row = await resolve_canonical_speech_preference(
-                    session,
-                    user_id,
-                    create=False,
-                )
-            else:
-                row = await session.get(PersonSpeechPreferenceModel, user_id)
+            person_id = await resolve_live_person_id(session, user_id)
+            row = await session.get(PersonSpeechPreferenceModel, person_id)
             return self._record(row, user_id=user_id) if row is not None else None
 
     async def set(
@@ -50,49 +42,28 @@ class VoicePreferenceRepository:
     ) -> PersonSpeechPreference:
         timestamp = _aware_utc(now or datetime.now(UTC))
         async with self._database.sessions() as session, session.begin():
-            if await identity_runtime_is_complete_v2(session):
-                row = await resolve_canonical_speech_preference(
-                    session,
-                    user_id,
-                    create=True,
-                    mode=mode.value,
-                    source_message_id=source_message_id,
-                    now=timestamp,
-                )
-                if row is None:
-                    raise RuntimeError("speech preference was not persisted")
-                return self._record(row, user_id=user_id)
-            row = await session.get(PersonSpeechPreferenceModel, user_id)
+            person_id = await resolve_live_person_id(session, user_id)
+            row = await session.get(PersonSpeechPreferenceModel, person_id)
             if row is None:
                 row = PersonSpeechPreferenceModel(
-                    user_id=user_id,
+                    canonical_person_id=person_id,
+                    mode=mode.value,
+                    source_message_id=source_message_id[:128],
                     created_at=timestamp,
+                    updated_at=timestamp,
                 )
                 session.add(row)
-            row.mode = mode.value
-            row.source_message_id = source_message_id[:128]
-            row.updated_at = timestamp
-            await fill_person_space_shadows(
-                session,
-                row,
-                person_attr="canonical_person_id",
-                space_attr=None,
-                user_id=user_id,
-                group_id=None,
-            )
+            else:
+                row.mode = mode.value
+                row.source_message_id = source_message_id[:128]
+                row.updated_at = timestamp
             await session.flush()
             return self._record(row, user_id=user_id)
 
     async def delete(self, user_id: str) -> bool:
         async with self._database.sessions() as session, session.begin():
-            if await identity_runtime_is_complete_v2(session):
-                row = await resolve_canonical_speech_preference(
-                    session,
-                    user_id,
-                    create=False,
-                )
-            else:
-                row = await session.get(PersonSpeechPreferenceModel, user_id)
+            person_id = await resolve_live_person_id(session, user_id)
+            row = await session.get(PersonSpeechPreferenceModel, person_id)
             if row is None:
                 return False
             await session.delete(row)
@@ -105,7 +76,7 @@ class VoicePreferenceRepository:
         user_id: str | None = None,
     ) -> PersonSpeechPreference:
         return PersonSpeechPreference(
-            user_id=user_id or row.user_id,
+            user_id=user_id or row.canonical_person_id,
             mode=VoicePreferenceMode(row.mode),
             source_message_id=row.source_message_id,
             created_at=_aware_utc(row.created_at),

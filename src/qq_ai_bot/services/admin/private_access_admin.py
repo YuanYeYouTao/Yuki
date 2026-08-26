@@ -10,7 +10,7 @@ from qq_ai_bot.admin.models import ControlAuditRef
 from qq_ai_bot.control_plane.principal import ControlPrincipal, PrincipalSource
 from qq_ai_bot.control_plane.targets import PersonControlTarget
 from qq_ai_bot.domain.control import DecisionContext
-from qq_ai_bot.identity.errors import IdentityDualWriteError
+from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.persistence.repositories import (
     PrivateUserSetting,
     PrivateUserSettingsRepository,
@@ -72,7 +72,7 @@ class PrivateAccessAdminService:
         if self._runtime_config is not None:
             try:
                 runtime = await self._runtime_config.snapshot(user_id=target_user_id)
-            except IdentityDualWriteError as exc:
+            except CanonicalIdentityError as exc:
                 if not enabled or exc.category != _CANONICAL_OWNER_DISABLED:
                     raise
                 runtime = await self._runtime_config.snapshot()

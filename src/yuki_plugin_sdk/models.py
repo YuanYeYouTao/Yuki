@@ -104,7 +104,7 @@ class AdmissionSignal(StrictModel):
 
 
 class CanonicalIdentityProjection(StrictModel):
-    """Optional complete-v2 identity. Host-stamped only; absent in v1 payloads."""
+    """Canonical identity projection stamped by the host when applicable."""
 
     person_id: str | None = Field(default=None, max_length=36)
     space_id: str | None = Field(default=None, max_length=36)

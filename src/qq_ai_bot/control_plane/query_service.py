@@ -10,8 +10,6 @@ from qq_ai_bot.control_plane.query_port import ControlQueryPort
 from qq_ai_bot.control_plane.query_types import (
     AuditEventView,
     AutomationView,
-    BackfillConflictView,
-    BackfillOperationView,
     ConfigOverrideView,
     ConfigSpecView,
     ControlQueryError,
@@ -157,20 +155,6 @@ class ControlQueryService:
         authorized = _require_context(context)
         _require_capability(authorized, "control.audit.read")
         return await self._port.list_audit_events(request)
-
-    async def list_backfill_operations(
-        self, context: object, request: PageRequest
-    ) -> Page[BackfillOperationView]:
-        authorized = _require_context(context)
-        _require_capability(authorized, "control.operation.read")
-        return await self._port.list_backfill_operations(request)
-
-    async def list_backfill_conflicts(
-        self, context: object, request: PageRequest
-    ) -> Page[BackfillConflictView]:
-        authorized = _require_context(context)
-        _require_capability(authorized, "control.operation.read")
-        return await self._port.list_backfill_conflicts(request)
 
     async def list_config_specs(
         self, context: object, request: PageRequest

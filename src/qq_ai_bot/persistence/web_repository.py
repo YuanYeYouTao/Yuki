@@ -8,7 +8,7 @@ from typing import Any, cast
 from sqlalchemy import delete, func, select
 from sqlalchemy.engine import CursorResult
 
-from qq_ai_bot.identity.c24_conversation import (
+from qq_ai_bot.conversation.correlation import (
     require_live_conversation,
     resolve_conversation_id_for_chat_event,
     stamp_conversation_correlation,
@@ -32,9 +32,9 @@ class WebSearchSourceRepository:
         self,
         canonical_conversation_id: str | None,
     ) -> None:
-        """Fail-closed live Conversation check. v1/None is a no-op.
+        """Fail closed when a supplied canonical Conversation is not live.
 
-        Uses the same complete-v2 kind/existence helpers as
+        Uses the same canonical kind/existence helpers as
         ``stamp_conversation_correlation`` (``require_live_conversation``).
         The short read-only session is closed before the caller may search.
         A provided id that is the wrong kind, a Presence/Person/Space id, or a

@@ -1,7 +1,7 @@
-"""Single transport-neutral Memory partition helper.
+"""Single transport-neutral canonical Memory partition helper.
 
-v1 keeps private:{qq} / group:{群号}. complete-v2 is only person:{UUID4} or
-space:{UUID4} resolved from an active IdentityBinding / SpaceBinding.
+Partitions are only person:{UUID4} or space:{UUID4}, resolved from an active
+IdentityBinding / SpaceBinding.
 Conversation UUID, ConversationScope bot:* keys, and Presence QQ are never
 partition values.
 """
@@ -17,16 +17,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+from qq_ai_bot.identity.canonical_repository import IDENTITY_PLATFORM, optional_external_id
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
     IdentityBindingModel,
     SpaceBindingModel,
 )
-from qq_ai_bot.identity.inventory import IDENTITY_PLATFORM
-from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
-from qq_ai_bot.identity.sanitize import normalize_external_id
-from qq_ai_bot.runtime.keys import ResolvedMemoryScope
 
 PERSON_PREFIX = "person:"
 SPACE_PREFIX = "space:"
@@ -112,21 +109,8 @@ def require_xor_scope_owner(
     return group_id, private_peer_user_id
 
 
-def format_legacy_memory_partition(
-    *, group_id: str | None, private_peer_user_id: str | None
-) -> str:
-    group_id, private_peer_user_id = require_xor_scope_owner(
-        group_id=group_id,
-        private_peer_user_id=private_peer_user_id,
-    )
-    if group_id:
-        return ResolvedMemoryScope.for_group(group_id).partition_key
-    assert private_peer_user_id is not None
-    return ResolvedMemoryScope.for_private(private_peer_user_id).partition_key
-
-
 async def resolve_active_person_id(session: AsyncSession, user_id: str | None) -> str:
-    external = normalize_external_id(str(user_id)) if user_id else None
+    external = optional_external_id(user_id)
     if external is None:
         raise MemoryPartitionResolutionError("missing_owner")
     bindings = list(
@@ -150,7 +134,7 @@ async def resolve_active_person_id(session: AsyncSession, user_id: str | None) -
 
 
 async def resolve_active_space_id(session: AsyncSession, group_id: str | None) -> str:
-    external = normalize_external_id(str(group_id)) if group_id else None
+    external = optional_external_id(group_id)
     if external is None:
         raise MemoryPartitionResolutionError("missing_owner")
     bindings = list(
@@ -221,19 +205,11 @@ async def resolve_canonical_memory_partition_for_event(
     )
 
 
-def resolve_legacy_memory_partition_for_event(event: Any) -> MemoryPartition:
-    group_id, peer = _event_scope_owners(event)
-    value = format_legacy_memory_partition(group_id=group_id, private_peer_user_id=peer)
-    return MemoryPartition(value=value, person_id=None, space_id=None)
-
-
 async def resolve_memory_partition_for_event(
     session: AsyncSession,
     event: Any,
 ) -> MemoryPartition:
-    if await identity_runtime_is_complete_v2(session):
-        return await resolve_canonical_memory_partition_for_event(session, event)
-    return resolve_legacy_memory_partition_for_event(event)
+    return await resolve_canonical_memory_partition_for_event(session, event)
 
 
 async def resolve_canonical_memory_partition_from_scope(
@@ -269,20 +245,10 @@ async def resolve_memory_partition_from_scope(
     group_id: str | None,
     private_peer_user_id: str | None,
 ) -> MemoryPartition:
-    require_xor_scope_owner(group_id=group_id, private_peer_user_id=private_peer_user_id)
-    if await identity_runtime_is_complete_v2(session):
-        return await resolve_canonical_memory_partition_from_scope(
-            session,
-            group_id=group_id,
-            private_peer_user_id=private_peer_user_id,
-        )
-    return MemoryPartition(
-        value=format_legacy_memory_partition(
-            group_id=group_id,
-            private_peer_user_id=private_peer_user_id,
-        ),
-        person_id=None,
-        space_id=None,
+    return await resolve_canonical_memory_partition_from_scope(
+        session,
+        group_id=group_id,
+        private_peer_user_id=private_peer_user_id,
     )
 
 

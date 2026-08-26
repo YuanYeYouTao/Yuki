@@ -11,23 +11,23 @@ from typing import Any, cast
 
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.repository_helpers import _ensure_person
 from qq_ai_bot.plugin_host.db_models import (
     PluginAgentMessageModel,
     PluginAgentSessionModel,
 )
 from qq_ai_bot.plugin_host.ownership import (
     actor_matches_session,
-    apply_inherited_sender,
     inherit_message_sender_person,
+    project_person_external_id,
+    project_space_external_id,
     require_live_actor,
-    require_v2_session_readable,
+    require_session_readable,
     resolve_active_space_id,
     resolve_human_person_id,
-    stamp_session_owners,
+    resolve_session_owners,
 )
 
 _SESSION_ROLES = frozenset({"user", "assistant", "tool"})
@@ -118,36 +118,38 @@ class PluginAgentSessionRepository:
         if context_profile not in {"none", "current_user", "current_group"}:
             raise ValueError("unsupported plugin Agent context profile")
         capabilities = _capabilities(allowed_capabilities)
-        row = PluginAgentSessionModel(
-            session_id=str(uuid.uuid4()),
-            plugin_id=plugin_id[:128],
-            owner_user_id=owner_user_id,
-            scope_type=scope_type,
-            scope_id=scope_id,
-            name=name[:128],
-            model=model[:128],
-            instructions=instructions,
-            persistence=persistence,
-            context_profile=context_profile,
-            allowed_capabilities_json=json.dumps(
-                capabilities, ensure_ascii=False, separators=(",", ":")
-            ),
-            status="active",
-            next_sequence=1,
-            turn_count=0,
-            created_at=timestamp,
-            updated_at=timestamp,
-            last_active_at=timestamp,
-            expires_at=expiry,
-        )
         async with self._database.sessions() as session, session.begin():
-            complete_v2 = await identity_runtime_is_complete_v2(session)
-            if owner_user_id and not complete_v2:
-                await _ensure_person(session, owner_user_id, now=timestamp)
+            person_id, space_id = await resolve_session_owners(
+                session,
+                scope_type=scope_type,
+                owner_user_id=owner_user_id,
+                scope_id=scope_id,
+            )
+            row = PluginAgentSessionModel(
+                session_id=str(uuid.uuid4()),
+                plugin_id=plugin_id[:128],
+                scope_type=scope_type,
+                name=name[:128],
+                model=model[:128],
+                instructions=instructions,
+                persistence=persistence,
+                context_profile=context_profile,
+                allowed_capabilities_json=json.dumps(
+                    capabilities, ensure_ascii=False, separators=(",", ":")
+                ),
+                status="active",
+                next_sequence=1,
+                turn_count=0,
+                created_at=timestamp,
+                updated_at=timestamp,
+                last_active_at=timestamp,
+                expires_at=expiry,
+                canonical_owner_person_id=person_id,
+                canonical_space_id=space_id,
+            )
             session.add(row)
             await session.flush()
-            await stamp_session_owners(session, row, complete_v2=complete_v2)
-            return _session_record(row)
+            return await _session_record(session, row)
 
     async def get(
         self,
@@ -173,9 +175,8 @@ class PluginAgentSessionRepository:
             row = await session.scalar(statement)
             if row is None:
                 return None
-            if await identity_runtime_is_complete_v2(session):
-                await require_v2_session_readable(session, row)
-            return _session_record(row)
+            await require_session_readable(session, row)
+            return await _session_record(session, row)
 
     async def get_for_actor(
         self,
@@ -209,24 +210,21 @@ class PluginAgentSessionRepository:
             row = await session.scalar(statement)
             if row is None:
                 return None
-            complete_v2 = await identity_runtime_is_complete_v2(session)
             if not await actor_matches_session(
                 session,
                 row,
                 actor_user_id=actor_user_id,
                 current_group_id=current_group_id,
-                complete_v2=complete_v2,
             ):
                 return None
-            if complete_v2:
-                await require_v2_session_readable(session, row)
-                await require_live_actor(
-                    session,
-                    row,
-                    actor_user_id=actor_user_id,
-                    current_group_id=current_group_id,
-                )
-            return _session_record(row)
+            await require_session_readable(session, row)
+            await require_live_actor(
+                session,
+                row,
+                actor_user_id=actor_user_id,
+                current_group_id=current_group_id,
+            )
+            return await _session_record(session, row)
 
     async def list_scope(
         self,
@@ -242,7 +240,6 @@ class PluginAgentSessionRepository:
             raise ValueError("unsupported plugin Agent session scope")
         timestamp = _aware_utc(now or datetime.now(UTC))
         async with self._database.sessions() as session:
-            complete_v2 = await identity_runtime_is_complete_v2(session)
             statement = select(PluginAgentSessionModel).where(
                 PluginAgentSessionModel.plugin_id == plugin_id,
                 PluginAgentSessionModel.scope_type == scope_type,
@@ -251,21 +248,25 @@ class PluginAgentSessionRepository:
                     PluginAgentSessionModel.expires_at > timestamp,
                 ),
             )
-            if complete_v2 and scope_type == "user":
+            if scope_type == "user":
                 person_id = await resolve_human_person_id(
                     session,
                     scope_id,
-                    complete_v2=True,
                     missing_message="session owner has no Person",
                 )
                 statement = statement.where(
                     PluginAgentSessionModel.canonical_owner_person_id == person_id
                 )
-            elif complete_v2 and scope_type == "group":
-                space_id = await resolve_active_space_id(session, scope_id, complete_v2=True)
+            elif scope_type == "group":
+                space_id = await resolve_active_space_id(session, scope_id)
                 statement = statement.where(PluginAgentSessionModel.canonical_space_id == space_id)
             else:
-                statement = statement.where(PluginAgentSessionModel.scope_id == scope_id)
+                if scope_id:
+                    raise ValueError("plugin-scoped sessions use an empty scope_id")
+                statement = statement.where(
+                    PluginAgentSessionModel.canonical_owner_person_id.is_(None),
+                    PluginAgentSessionModel.canonical_space_id.is_(None),
+                )
             if not include_closed:
                 statement = statement.where(PluginAgentSessionModel.status == "active")
             statement = statement.order_by(
@@ -273,10 +274,9 @@ class PluginAgentSessionRepository:
                 PluginAgentSessionModel.session_id,
             ).limit(max(1, min(limit, 1_000)))
             rows = (await session.scalars(statement)).all()
-            if complete_v2:
-                for row in rows:
-                    await require_v2_session_readable(session, row)
-            return tuple(_session_record(row) for row in rows)
+            for row in rows:
+                await require_session_readable(session, row)
+            return tuple([await _session_record(session, row) for row in rows])
 
     async def append_message(
         self,
@@ -305,9 +305,6 @@ class PluginAgentSessionRepository:
             separators=(",", ":"),
         )
         async with self._database.sessions() as session, session.begin():
-            complete_v2 = await identity_runtime_is_complete_v2(session)
-            if sender_user_id and not complete_v2:
-                await _ensure_person(session, sender_user_id, now=timestamp)
             values: dict[str, object] = {
                 "next_sequence": PluginAgentSessionModel.next_sequence + 1,
                 "updated_at": timestamp,
@@ -340,7 +337,6 @@ class PluginAgentSessionRepository:
                 parent,
                 role=role,
                 sender_user_id=sender_user_id,
-                complete_v2=complete_v2,
             )
             row = PluginAgentMessageModel(
                 session_id=session_id,
@@ -350,8 +346,8 @@ class PluginAgentSessionRepository:
                 content=content,
                 metadata_json=metadata_json,
                 created_at=timestamp,
+                canonical_sender_person_id=sender_person,
             )
-            apply_inherited_sender(row, sender_person)
             session.add(row)
             await session.flush()
             return _message_record(row)
@@ -373,8 +369,7 @@ class PluginAgentSessionRepository:
             )
             if parent is None:
                 return ()
-            if await identity_runtime_is_complete_v2(session):
-                await require_v2_session_readable(session, parent)
+            await require_session_readable(session, parent)
             rows = list(
                 (
                     await session.scalars(
@@ -385,8 +380,8 @@ class PluginAgentSessionRepository:
                     )
                 ).all()
             )
-        rows.reverse()
-        return tuple(_message_record(row) for row in rows)
+            rows.reverse()
+            return tuple(_message_record(row) for row in rows)
 
     async def close(
         self,
@@ -434,8 +429,7 @@ class PluginAgentSessionRepository:
             )
             if row is None:
                 return None
-            if await identity_runtime_is_complete_v2(session):
-                await require_v2_session_readable(session, row)
+            await require_session_readable(session, row)
             await session.execute(
                 delete(PluginAgentMessageModel).where(
                     PluginAgentMessageModel.session_id == session_id
@@ -446,7 +440,7 @@ class PluginAgentSessionRepository:
             row.updated_at = timestamp
             row.last_active_at = timestamp
             await session.flush()
-            return _session_record(row)
+            return await _session_record(session, row)
 
     async def delete(self, *, plugin_id: str, session_id: str) -> bool:
         async with self._database.sessions() as session, session.begin():
@@ -484,13 +478,25 @@ class PluginAgentSessionRepository:
             return int(cast(CursorResult[Any], result).rowcount or 0)
 
 
-def _session_record(row: PluginAgentSessionModel) -> PluginAgentSessionRecord:
+async def _session_record(
+    session: AsyncSession,
+    row: PluginAgentSessionModel,
+) -> PluginAgentSessionRecord:
+    owner_user_id: str | None = None
+    scope_id = ""
+    if row.scope_type == "user":
+        owner_user_id = await project_person_external_id(session, row.canonical_owner_person_id)
+        scope_id = owner_user_id
+    elif row.scope_type == "group":
+        if row.canonical_owner_person_id:
+            owner_user_id = await project_person_external_id(session, row.canonical_owner_person_id)
+        scope_id = await project_space_external_id(session, row.canonical_space_id)
     return PluginAgentSessionRecord(
         session_id=row.session_id,
         plugin_id=row.plugin_id,
-        owner_user_id=row.owner_user_id,
+        owner_user_id=owner_user_id,
         scope_type=row.scope_type,
-        scope_id=row.scope_id,
+        scope_id=scope_id,
         name=row.name,
         model=row.model,
         instructions=row.instructions,

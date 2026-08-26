@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Iterable
+from functools import lru_cache
 
+from qq_ai_bot.adapters.onebot.normalizer import (
+    SegmentProjectionError,
+    project_serialized_segments,
+)
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage, sanitize_display_name
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.services.renderer import strip_internal_history_markers
@@ -15,6 +21,17 @@ _LEGACY_HISTORY_PREFIX = re.compile(
     r"(?:[01]\d|2[0-3]):[0-5]\d(?: QQ [1-9]\d{4,19})?\]\s*"
 )
 _MEDIA_DESCRIPTION = re.compile(r"\[(?:表情|语音)：[\s\S]*\]")
+_SAFE_SEGMENT_ERROR_CATEGORIES = frozenset(
+    {"segment_not_object", "segment_type_invalid", "segment_data_invalid"}
+)
+logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=8)
+def _log_segment_projection_fallback(category: str) -> None:
+    """Rate-limit content-free diagnostics for malformed historical segments."""
+
+    logger.warning("historical_segment_projection_fallback category=%s", category)
 
 
 class ChatEventPromptRenderer:
@@ -26,10 +43,21 @@ class ChatEventPromptRenderer:
         *,
         bot_display_name: str = "Yuki",
         timezone: str = "Asia/Shanghai",
+        yuki_account_ids: frozenset[str] = frozenset(),
     ) -> None:
         rows = tuple(events)
         self._bot_display_name = bot_display_name
         self._timezone = timezone
+        inferred_yuki_ids = {
+            value
+            for row in rows
+            for value in (
+                row.bot_user_id,
+                row.sender_user_id if row.author_is_yuki() else "",
+            )
+            if value
+        }
+        self._yuki_account_ids = frozenset({*yuki_account_ids, *inferred_yuki_ids})
         self._events_by_message_id = {
             row.platform_message_id: row for row in rows if row.platform_message_id
         }
@@ -127,7 +155,12 @@ class ChatEventPromptRenderer:
     ) -> str:
         """Render content plus immutable sender, reply, and mention relationships."""
 
-        content = self.event_content(row, current_message_id, current_content)
+        content = self.event_content(
+            row,
+            current_message_id,
+            current_content,
+            yuki_account_ids=self._yuki_account_ids,
+        )
         if not content:
             return ""
         if row.event_kind == "external_event":
@@ -148,7 +181,12 @@ class ChatEventPromptRenderer:
     ) -> str:
         """Render one main-Agent event with a stable local event reference."""
 
-        content = self.event_content(row, current_message_id, current_content)
+        content = self.event_content(
+            row,
+            current_message_id,
+            current_content,
+            yuki_account_ids=self._yuki_account_ids,
+        )
         if not content:
             return ""
         if row.event_kind == "external_event":
@@ -227,6 +265,8 @@ class ChatEventPromptRenderer:
         row: EventRecord,
         current_message_id: str,
         current_content: str,
+        *,
+        yuki_account_ids: frozenset[str] = frozenset(),
     ) -> str:
         """Return clean visible event content without internal transport markers."""
 
@@ -253,6 +293,20 @@ class ChatEventPromptRenderer:
             return ""
         base = _LEGACY_HISTORY_PREFIX.sub("", row.content, count=1)
         base = strip_internal_history_markers(base).strip()
+        if row.direction == "inbound" and row.event_kind == "message" and row.segments:
+            try:
+                projection = project_serialized_segments(
+                    row.segments,
+                    yuki_account_ids=frozenset({row.bot_user_id, *yuki_account_ids}),
+                )
+            except SegmentProjectionError as exc:
+                category = str(exc)
+                if category not in _SAFE_SEGMENT_ERROR_CATEGORIES:
+                    category = "invalid_segment"
+                _log_segment_projection_fallback(category)
+            else:
+                if projection.ordered_mentions:
+                    base = projection.text
         if row.direction == "outbound" and _MEDIA_DESCRIPTION.fullmatch(base):
             return ""
         if not row.visual_summary:
@@ -296,7 +350,7 @@ class ChatEventPromptRenderer:
         if not user_id:
             return "未知发送者"
         name = self._display_names_by_user_id.get(user_id)
-        if not name and user_id == bot_user_id:
+        if not name and (user_id == bot_user_id or user_id in self._yuki_account_ids):
             name = self._bot_display_name
         if not name:
             return f"QQ {user_id}"

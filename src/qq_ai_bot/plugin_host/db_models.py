@@ -14,6 +14,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -60,28 +61,47 @@ class PluginConfigValueModel(Base):
 
     __tablename__ = "plugin_config_values"
     __table_args__ = (
-        UniqueConstraint(
+        Index(
+            "uq_plugin_config_values_global_key",
             "plugin_id",
-            "scope_type",
-            "scope_id",
             "key",
-            name="uq_plugin_config_values_scope_key",
+            unique=True,
+            sqlite_where=text("scope_type = 'global'"),
+        ),
+        Index(
+            "uq_plugin_config_values_person_key",
+            "plugin_id",
+            "canonical_person_id",
+            "key",
+            unique=True,
+            sqlite_where=text("scope_type = 'user'"),
+        ),
+        Index(
+            "uq_plugin_config_values_space_key",
+            "plugin_id",
+            "canonical_space_id",
+            "key",
+            unique=True,
+            sqlite_where=text("scope_type = 'group'"),
         ),
         CheckConstraint(
             "scope_type IN ('global', 'group', 'user')",
             name="ck_plugin_config_values_scope_type",
         ),
         CheckConstraint(
-            "(scope_type = 'global' AND scope_id = '') OR "
-            "(scope_type IN ('group', 'user') AND scope_id <> '')",
-            name="ck_plugin_config_values_scope_id",
+            "(scope_type = 'global' AND canonical_person_id IS NULL "
+            "AND canonical_space_id IS NULL) OR "
+            "(scope_type = 'user' AND canonical_person_id IS NOT NULL "
+            "AND canonical_space_id IS NULL) OR "
+            "(scope_type = 'group' AND canonical_person_id IS NULL "
+            "AND canonical_space_id IS NOT NULL)",
+            name="ck_plugin_config_values_scope_owner",
         ),
         CheckConstraint("version >= 1", name="ck_plugin_config_values_version"),
         Index(
             "ix_plugin_config_values_plugin_scope",
             "plugin_id",
             "scope_type",
-            "scope_id",
         ),
         Index("ix_plugin_config_values_canonical_person_id", "canonical_person_id"),
         Index("ix_plugin_config_values_canonical_space_id", "canonical_space_id"),
@@ -92,7 +112,6 @@ class PluginConfigValueModel(Base):
         ForeignKey("plugin_installations.plugin_id", ondelete="CASCADE"), nullable=False
     )
     scope_type: Mapped[str] = mapped_column(String(16), nullable=False)
-    scope_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     key: Mapped[str] = mapped_column(String(128), nullable=False)
     value_json: Mapped[str] = mapped_column(Text, nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -118,7 +137,6 @@ class PluginStateModel(Base):
         CheckConstraint("version >= 1", name="ck_plugin_state_version"),
         Index("ix_plugin_state_plugin_namespace", "plugin_id", "namespace"),
         Index("ix_plugin_state_expires", "expires_at"),
-        Index("ix_plugin_state_subject", "subject_user_id"),
         Index("ix_plugin_state_canonical_person_id", "canonical_person_id"),
     )
 
@@ -130,7 +148,6 @@ class PluginStateModel(Base):
     key: Mapped[str] = mapped_column(String(128), nullable=False)
     value_json: Mapped[str] = mapped_column(Text, nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    subject_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     canonical_person_id: Mapped[str | None] = mapped_column(
@@ -170,9 +187,12 @@ class PluginAgentSessionModel(Base):
             name="ck_plugin_agent_sessions_scope_type",
         ),
         CheckConstraint(
-            "(scope_type = 'plugin' AND scope_id = '') OR "
-            "(scope_type IN ('user', 'group') AND scope_id <> '')",
-            name="ck_plugin_agent_sessions_scope_id",
+            "(scope_type = 'plugin' AND canonical_owner_person_id IS NULL "
+            "AND canonical_space_id IS NULL) OR "
+            "(scope_type = 'user' AND canonical_owner_person_id IS NOT NULL "
+            "AND canonical_space_id IS NULL) OR "
+            "(scope_type = 'group' AND canonical_space_id IS NOT NULL)",
+            name="ck_plugin_agent_sessions_scope_owner",
         ),
         CheckConstraint(
             "status IN ('active', 'closed', 'expired', 'blocked')",
@@ -196,13 +216,6 @@ class PluginAgentSessionModel(Base):
             "ix_plugin_agent_sessions_plugin_scope",
             "plugin_id",
             "scope_type",
-            "scope_id",
-        ),
-        Index(
-            "ix_plugin_agent_sessions_owner_active",
-            "owner_user_id",
-            "status",
-            "last_active_at",
         ),
         Index("ix_plugin_agent_sessions_expires", "expires_at"),
         Index("ix_plugin_agent_sessions_canonical_owner_person_id", "canonical_owner_person_id"),
@@ -213,9 +226,7 @@ class PluginAgentSessionModel(Base):
     plugin_id: Mapped[str] = mapped_column(
         ForeignKey("plugin_installations.plugin_id", ondelete="CASCADE"), nullable=False
     )
-    owner_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     scope_type: Mapped[str] = mapped_column(String(16), nullable=False)
-    scope_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     name: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     model: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     instructions: Mapped[str] = mapped_column(Text, nullable=False)
@@ -254,6 +265,10 @@ class PluginAgentMessageModel(Base):
             name="ck_plugin_agent_messages_role",
         ),
         CheckConstraint("sequence >= 1", name="ck_plugin_agent_messages_sequence"),
+        CheckConstraint(
+            "canonical_sender_person_id IS NULL OR role = 'user'",
+            name="ck_plugin_agent_messages_sender",
+        ),
         Index("ix_plugin_agent_messages_session_created", "session_id", "created_at"),
         Index("ix_plugin_agent_messages_sender", "sender_user_id"),
         Index("ix_plugin_agent_messages_canonical_sender_person_id", "canonical_sender_person_id"),
@@ -281,12 +296,38 @@ class PluginBackgroundTargetGrantModel(Base):
 
     __tablename__ = "plugin_background_target_grants"
     __table_args__ = (
-        UniqueConstraint(
-            "plugin_id", "target_type", "target_id", name="uq_plugin_background_target"
+        Index(
+            "uq_plugin_background_target_person",
+            "plugin_id",
+            "canonical_target_person_id",
+            unique=True,
+            sqlite_where=text("target_type = 'private'"),
+        ),
+        Index(
+            "uq_plugin_background_target_space",
+            "plugin_id",
+            "canonical_target_space_id",
+            unique=True,
+            sqlite_where=text("target_type = 'group'"),
         ),
         CheckConstraint(
             "target_type IN ('group', 'private')",
             name="ck_plugin_background_target_type",
+        ),
+        CheckConstraint(
+            "NOT (canonical_target_person_id IS NOT NULL "
+            "AND canonical_target_space_id IS NOT NULL) "
+            "AND (canonical_target_person_id IS NULL OR target_type = 'private') "
+            "AND (canonical_target_space_id IS NULL OR target_type = 'group') "
+            "AND (enabled = 0 OR (canonical_created_by_person_id IS NOT NULL "
+            "AND canonical_presence_id IS NOT NULL "
+            "AND ((target_type = 'private' "
+            "AND canonical_target_person_id IS NOT NULL "
+            "AND canonical_target_space_id IS NULL) OR "
+            "(target_type = 'group' "
+            "AND canonical_target_person_id IS NULL "
+            "AND canonical_target_space_id IS NOT NULL))))",
+            name="ck_plugin_background_target_owner",
         ),
         Index("ix_plugin_background_target_enabled", "plugin_id", "enabled"),
         Index(
@@ -369,6 +410,22 @@ class PluginNotificationOutboxModel(Base):
         CheckConstraint(
             "target_type IN ('group', 'private')",
             name="ck_plugin_outbox_target_type",
+        ),
+        CheckConstraint(
+            "NOT (canonical_target_person_id IS NOT NULL "
+            "AND canonical_target_space_id IS NOT NULL) "
+            "AND (canonical_target_person_id IS NULL OR target_type = 'private') "
+            "AND (canonical_target_space_id IS NULL OR target_type = 'group') "
+            "AND (status NOT IN ('pending', 'processing') OR "
+            "(canonical_conversation_id IS NOT NULL "
+            "AND canonical_presence_id IS NOT NULL "
+            "AND ((target_type = 'private' "
+            "AND canonical_target_person_id IS NOT NULL "
+            "AND canonical_target_space_id IS NULL) OR "
+            "(target_type = 'group' "
+            "AND canonical_target_person_id IS NULL "
+            "AND canonical_target_space_id IS NOT NULL))))",
+            name="ck_plugin_outbox_target_owner",
         ),
         CheckConstraint(
             "part_type IN ('text', 'media', 'agent_reply')",
@@ -455,6 +512,22 @@ class PluginBackgroundTurnJobModel(Base):
         CheckConstraint(
             "target_type IN ('group', 'private')",
             name="ck_plugin_turn_target_type",
+        ),
+        CheckConstraint(
+            "NOT (canonical_target_person_id IS NOT NULL "
+            "AND canonical_target_space_id IS NOT NULL) "
+            "AND (canonical_target_person_id IS NULL OR target_type = 'private') "
+            "AND (canonical_target_space_id IS NULL OR target_type = 'group') "
+            "AND (status NOT IN ('pending', 'processing') OR "
+            "(canonical_conversation_id IS NOT NULL "
+            "AND canonical_presence_id IS NOT NULL "
+            "AND ((target_type = 'private' "
+            "AND canonical_target_person_id IS NOT NULL "
+            "AND canonical_target_space_id IS NULL) OR "
+            "(target_type = 'group' "
+            "AND canonical_target_person_id IS NULL "
+            "AND canonical_target_space_id IS NOT NULL))))",
+            name="ck_plugin_turn_target_owner",
         ),
         CheckConstraint(
             "status IN ('pending', 'processing', 'completed', 'failed', 'cancelled')",

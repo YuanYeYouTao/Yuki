@@ -10,10 +10,13 @@ from pathlib import Path
 from typing import Any, cast
 
 from sqlalchemy import delete, or_, select
-from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.admin.audit import AdminAuditService, AuditSubject, add_audit_event, event_from_model
+from qq_ai_bot.admin.config_owners import (
+    resolve_group_config_scope,
+    resolve_user_config_scope,
+)
 from qq_ai_bot.admin.config_registry import ConfigRegistry
 from qq_ai_bot.admin.models import (
     AdminOperationEvent,
@@ -41,19 +44,14 @@ from qq_ai_bot.admin.models import (
     WebRuntimeConfig,
 )
 from qq_ai_bot.config import Settings, _csv_tuple
-from qq_ai_bot.identity.c24_scopes import (
-    resolve_c24_group_config_scope,
-    resolve_c24_user_config_scope,
-    resolve_live_person_id,
-    resolve_live_space_id,
-    stamp_v2_person_space,
-)
-from qq_ai_bot.identity.errors import IdentityDualWriteError
-from qq_ai_bot.identity.runtime import identity_runtime_is_complete_v2
-from qq_ai_bot.identity.shadows import fill_person_space_shadows
+from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import RuntimeConfigOverrideModel
 from qq_ai_bot.persistence.unit_of_work import optional_session
+from qq_ai_bot.services.canonical_owners import (
+    resolve_live_person_id,
+    resolve_live_space_id,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,7 +82,7 @@ def _record(row: RuntimeConfigOverrideModel) -> RuntimeConfigOverrideRecord:
         id=row.id,
         config_key=row.config_key,
         scope_type=ConfigScopeType(row.scope_type),
-        scope_id=row.scope_id,
+        scope_id=row.canonical_person_id or row.canonical_space_id or "",
         value=decoded,
         value_type=row.value_type,
         apply_mode=ConfigApplyMode(row.apply_mode),
@@ -127,30 +125,18 @@ class RuntimeConfigRepository:
             RuntimeConfigOverrideModel.scope_type == ConfigScopeType.GLOBAL.value
         ]
         async with optional_session(self._database, session, write=False) as active:
-            if await identity_runtime_is_complete_v2(active):
-                if user_id:
-                    person_id = await resolve_live_person_id(active, user_id)
-                    conditions.append(
-                        (RuntimeConfigOverrideModel.scope_type == ConfigScopeType.USER.value)
-                        & (RuntimeConfigOverrideModel.canonical_person_id == person_id)
-                    )
-                if group_id:
-                    space_id = await resolve_live_space_id(active, group_id)
-                    conditions.append(
-                        (RuntimeConfigOverrideModel.scope_type == ConfigScopeType.GROUP.value)
-                        & (RuntimeConfigOverrideModel.canonical_space_id == space_id)
-                    )
-            else:
-                if group_id:
-                    conditions.append(
-                        (RuntimeConfigOverrideModel.scope_type == ConfigScopeType.GROUP.value)
-                        & (RuntimeConfigOverrideModel.scope_id == group_id)
-                    )
-                if user_id:
-                    conditions.append(
-                        (RuntimeConfigOverrideModel.scope_type == ConfigScopeType.USER.value)
-                        & (RuntimeConfigOverrideModel.scope_id == user_id)
-                    )
+            if user_id:
+                person_id = await resolve_live_person_id(active, user_id)
+                conditions.append(
+                    (RuntimeConfigOverrideModel.scope_type == ConfigScopeType.USER.value)
+                    & (RuntimeConfigOverrideModel.canonical_person_id == person_id)
+                )
+            if group_id:
+                space_id = await resolve_live_space_id(active, group_id)
+                conditions.append(
+                    (RuntimeConfigOverrideModel.scope_type == ConfigScopeType.GROUP.value)
+                    & (RuntimeConfigOverrideModel.canonical_space_id == space_id)
+                )
             rows = (
                 await active.scalars(
                     select(RuntimeConfigOverrideModel)
@@ -173,54 +159,42 @@ class RuntimeConfigRepository:
         session: AsyncSession | None = None,
     ) -> RuntimeConfigOverrideRecord | None:
         async with optional_session(self._database, session, write=False) as active:
-            if await identity_runtime_is_complete_v2(active):
-                if scope_type is ConfigScopeType.USER:
-                    person_id = (await resolve_c24_user_config_scope(active, scope_id)).person_id
-                    matches = list(
-                        await active.scalars(
-                            select(RuntimeConfigOverrideModel).where(
-                                RuntimeConfigOverrideModel.config_key == key,
-                                RuntimeConfigOverrideModel.scope_type == scope_type.value,
-                                RuntimeConfigOverrideModel.canonical_person_id == person_id,
-                            )
+            if scope_type is ConfigScopeType.USER:
+                person_id = (await resolve_user_config_scope(active, scope_id)).person_id
+                matches = list(
+                    await active.scalars(
+                        select(RuntimeConfigOverrideModel).where(
+                            RuntimeConfigOverrideModel.config_key == key,
+                            RuntimeConfigOverrideModel.scope_type == scope_type.value,
+                            RuntimeConfigOverrideModel.canonical_person_id == person_id,
                         )
                     )
-                elif scope_type is ConfigScopeType.GROUP:
-                    space_id = (await resolve_c24_group_config_scope(active, scope_id)).space_id
-                    matches = list(
-                        await active.scalars(
-                            select(RuntimeConfigOverrideModel).where(
-                                RuntimeConfigOverrideModel.config_key == key,
-                                RuntimeConfigOverrideModel.scope_type == scope_type.value,
-                                RuntimeConfigOverrideModel.canonical_space_id == space_id,
-                            )
-                        )
-                    )
-                else:
-                    matches = list(
-                        await active.scalars(
-                            select(RuntimeConfigOverrideModel).where(
-                                RuntimeConfigOverrideModel.config_key == key,
-                                RuntimeConfigOverrideModel.scope_type == scope_type.value,
-                                RuntimeConfigOverrideModel.canonical_person_id.is_(None),
-                                RuntimeConfigOverrideModel.canonical_space_id.is_(None),
-                            )
-                        )
-                    )
-                    if len(matches) > 1:
-                        raise IdentityDualWriteError("canonical_owner_mismatch")
-                    return _record(matches[0]) if matches else None
-                if len(matches) > 1:
-                    raise IdentityDualWriteError("canonical_owner_mismatch")
-                return _record(matches[0]) if matches else None
-            row = await active.scalar(
-                select(RuntimeConfigOverrideModel).where(
-                    RuntimeConfigOverrideModel.config_key == key,
-                    RuntimeConfigOverrideModel.scope_type == scope_type.value,
-                    RuntimeConfigOverrideModel.scope_id == scope_id,
                 )
-            )
-            return _record(row) if row is not None else None
+            elif scope_type is ConfigScopeType.GROUP:
+                space_id = (await resolve_group_config_scope(active, scope_id)).space_id
+                matches = list(
+                    await active.scalars(
+                        select(RuntimeConfigOverrideModel).where(
+                            RuntimeConfigOverrideModel.config_key == key,
+                            RuntimeConfigOverrideModel.scope_type == scope_type.value,
+                            RuntimeConfigOverrideModel.canonical_space_id == space_id,
+                        )
+                    )
+                )
+            else:
+                matches = list(
+                    await active.scalars(
+                        select(RuntimeConfigOverrideModel).where(
+                            RuntimeConfigOverrideModel.config_key == key,
+                            RuntimeConfigOverrideModel.scope_type == scope_type.value,
+                            RuntimeConfigOverrideModel.canonical_person_id.is_(None),
+                            RuntimeConfigOverrideModel.canonical_space_id.is_(None),
+                        )
+                    )
+                )
+            if len(matches) > 1:
+                raise CanonicalIdentityError("canonical_owner_mismatch")
+            return _record(matches[0]) if matches else None
 
     async def save_with_audit(
         self,
@@ -234,101 +208,46 @@ class RuntimeConfigRepository:
         started: float,
         initial_version: int = 1,
         operation: str = "set_override",
-        shadow_user_id: str | None = None,
         person_id: str | None = None,
         space_id: str | None = None,
         session: AsyncSession | None = None,
     ) -> tuple[RuntimeConfigOverrideRecord, AdminOperationEvent]:
         now = datetime.now(UTC)
-        statement = (
-            insert(RuntimeConfigOverrideModel)
-            .values(
-                config_key=spec.key,
-                scope_type=scope_type.value,
-                scope_id=scope_id,
-                value_json=json.dumps(value, ensure_ascii=False),
-                value_type=spec.value_type,
-                apply_mode=spec.apply_mode.value,
-                version=max(1, initial_version),
-                created_at=now,
-                updated_at=now,
-                updated_by=actor.user_id,
-            )
-            .on_conflict_do_update(
-                index_elements=[
-                    RuntimeConfigOverrideModel.config_key,
-                    RuntimeConfigOverrideModel.scope_type,
-                    RuntimeConfigOverrideModel.scope_id,
-                ],
-                set_={
-                    "value_json": json.dumps(value, ensure_ascii=False),
-                    "value_type": spec.value_type,
-                    "apply_mode": spec.apply_mode.value,
-                    "version": RuntimeConfigOverrideModel.version + 1,
-                    "updated_at": now,
-                    "updated_by": actor.user_id,
-                },
-            )
-        )
         async with optional_session(self._database, session, write=True) as active:
-            await active.execute(statement)
+            owner_clause = _config_owner_clause(
+                scope_type,
+                person_id=person_id,
+                space_id=space_id,
+            )
             row = await active.scalar(
                 select(RuntimeConfigOverrideModel).where(
                     RuntimeConfigOverrideModel.config_key == spec.key,
-                    RuntimeConfigOverrideModel.scope_type == scope_type.value,
-                    RuntimeConfigOverrideModel.scope_id == scope_id,
+                    owner_clause,
                 )
             )
             if row is None:
-                raise RuntimeError("runtime override was not persisted")
-            if await identity_runtime_is_complete_v2(active):
-                if scope_type is ConfigScopeType.USER:
-                    if not person_id:
-                        raise IdentityDualWriteError("missing_canonical_owner")
-                    if row.canonical_space_id is not None:
-                        raise IdentityDualWriteError("canonical_owner_mismatch")
-                    await stamp_v2_person_space(
-                        row,
-                        person_attr="canonical_person_id",
-                        space_attr="canonical_space_id",
-                        person_id=person_id,
-                        space_id=None,
-                    )
-                elif scope_type is ConfigScopeType.GROUP:
-                    if not space_id:
-                        raise IdentityDualWriteError("missing_canonical_owner")
-                    if row.canonical_person_id is not None:
-                        raise IdentityDualWriteError("canonical_owner_mismatch")
-                    await stamp_v2_person_space(
-                        row,
-                        person_attr="canonical_person_id",
-                        space_attr="canonical_space_id",
-                        person_id=None,
-                        space_id=space_id,
-                    )
-                elif row.canonical_person_id or row.canonical_space_id:
-                    raise IdentityDualWriteError("canonical_owner_mismatch")
-            else:
-                await fill_person_space_shadows(
-                    active,
-                    row,
-                    person_attr="canonical_person_id",
-                    space_attr="canonical_space_id",
-                    user_id=(
-                        shadow_user_id
-                        if shadow_user_id is not None
-                        else (scope_id if scope_type is ConfigScopeType.USER else None)
-                    ),
-                    group_id=scope_id if scope_type is ConfigScopeType.GROUP else None,
+                row = RuntimeConfigOverrideModel(
+                    config_key=spec.key,
+                    scope_type=scope_type.value,
+                    value_json=json.dumps(value, ensure_ascii=False),
+                    value_type=spec.value_type,
+                    apply_mode=spec.apply_mode.value,
+                    version=max(1, initial_version),
+                    created_at=now,
+                    updated_at=now,
+                    updated_by=actor.user_id,
+                    canonical_person_id=person_id,
+                    canonical_space_id=space_id,
                 )
-                if person_id is not None:
-                    await stamp_v2_person_space(
-                        row,
-                        person_attr="canonical_person_id",
-                        space_attr=None,
-                        person_id=person_id,
-                        space_id=None,
-                    )
+                active.add(row)
+            else:
+                row.value_json = json.dumps(value, ensure_ascii=False)
+                row.value_type = spec.value_type
+                row.apply_mode = spec.apply_mode.value
+                row.version += 1
+                row.updated_at = now
+                row.updated_by = actor.user_id
+            await active.flush()
             after_state = _override_state(
                 _record(row),
                 public_scope_id=_public_owner_scope_id(
@@ -367,11 +286,16 @@ class RuntimeConfigRepository:
     ) -> AdminOperationEvent:
         exposed_scope_id = scope_id if public_scope_id is None else public_scope_id
         async with optional_session(self._database, session, write=True) as active:
+            person_id = scope_id if scope_type is ConfigScopeType.USER else None
+            space_id = scope_id if scope_type is ConfigScopeType.GROUP else None
             await active.execute(
                 delete(RuntimeConfigOverrideModel).where(
                     RuntimeConfigOverrideModel.config_key == spec.key,
-                    RuntimeConfigOverrideModel.scope_type == scope_type.value,
-                    RuntimeConfigOverrideModel.scope_id == scope_id,
+                    _config_owner_clause(
+                        scope_type,
+                        person_id=person_id,
+                        space_id=space_id,
+                    ),
                 )
             )
             audit = await add_audit_event(
@@ -396,9 +320,40 @@ def _public_owner_scope_id(
     space_id: str | None,
     storage_scope_id: str,
 ) -> str:
-    """Public owner id. complete-v2 uses Person/Space; storage UNIQUE may stay raw."""
+    """Public owner id for a canonical config scope."""
 
     return person_id or space_id or storage_scope_id
+
+
+def _config_owner_clause(
+    scope_type: ConfigScopeType,
+    *,
+    person_id: str | None,
+    space_id: str | None,
+) -> Any:
+    if scope_type is ConfigScopeType.USER:
+        if not person_id or space_id is not None:
+            raise CanonicalIdentityError("missing_canonical_owner")
+        return (
+            (RuntimeConfigOverrideModel.scope_type == scope_type.value)
+            & (RuntimeConfigOverrideModel.canonical_person_id == person_id)
+            & RuntimeConfigOverrideModel.canonical_space_id.is_(None)
+        )
+    if scope_type is ConfigScopeType.GROUP:
+        if not space_id or person_id is not None:
+            raise CanonicalIdentityError("missing_canonical_owner")
+        return (
+            (RuntimeConfigOverrideModel.scope_type == scope_type.value)
+            & RuntimeConfigOverrideModel.canonical_person_id.is_(None)
+            & (RuntimeConfigOverrideModel.canonical_space_id == space_id)
+        )
+    if person_id is not None or space_id is not None:
+        raise CanonicalIdentityError("canonical_owner_mismatch")
+    return (
+        (RuntimeConfigOverrideModel.scope_type == scope_type.value)
+        & RuntimeConfigOverrideModel.canonical_person_id.is_(None)
+        & RuntimeConfigOverrideModel.canonical_space_id.is_(None)
+    )
 
 
 def _missing_override_state(
@@ -546,7 +501,7 @@ class RuntimeConfigService:
             group_id=group_id,
             session=session,
         )
-        canonical_match, person_id, space_id = await self._owner_match(
+        person_id, space_id = await self._owner_match(
             user_id=user_id,
             group_id=group_id,
             session=session,
@@ -556,7 +511,6 @@ class RuntimeConfigService:
             records,
             user_id=user_id,
             group_id=group_id,
-            canonical_match=canonical_match,
             person_id=person_id,
             space_id=space_id,
         )
@@ -671,7 +625,6 @@ class RuntimeConfigService:
                         else _missing_override_state(spec.key, scope, public_scope_id)
                     ),
                     started=started,
-                    shadow_user_id=(normalized_scope_id if scope is ConfigScopeType.USER else None),
                     person_id=person_id,
                     space_id=space_id,
                     session=session,
@@ -842,7 +795,7 @@ class RuntimeConfigService:
                     group_id=normalized_scope_id if scope is ConfigScopeType.GROUP else None,
                     session=session,
                 )
-                canonical_match, person_id, space_id = await self._owner_match(
+                person_id, space_id = await self._owner_match(
                     user_id=normalized_scope_id if scope is ConfigScopeType.USER else None,
                     group_id=normalized_scope_id if scope is ConfigScopeType.GROUP else None,
                     session=session,
@@ -853,7 +806,6 @@ class RuntimeConfigService:
                     user_id=normalized_scope_id if scope is ConfigScopeType.USER else None,
                     group_id=normalized_scope_id if scope is ConfigScopeType.GROUP else None,
                     honor_restart_activation=False,
-                    canonical_match=canonical_match,
                     person_id=person_id,
                     space_id=space_id,
                 )
@@ -1234,7 +1186,7 @@ class RuntimeConfigService:
                 group_id=scope_id if scope is ConfigScopeType.GROUP else None,
                 session=session,
             )
-            canonical_match, person_id, space_id = await self._owner_match(
+            person_id, space_id = await self._owner_match(
                 user_id=scope_id if scope is ConfigScopeType.USER else None,
                 group_id=scope_id if scope is ConfigScopeType.GROUP else None,
                 session=session,
@@ -1245,7 +1197,6 @@ class RuntimeConfigService:
                 user_id=scope_id if scope is ConfigScopeType.USER else None,
                 group_id=scope_id if scope is ConfigScopeType.GROUP else None,
                 honor_restart_activation=False,
-                canonical_match=canonical_match,
                 person_id=person_id,
                 space_id=space_id,
             )
@@ -1308,7 +1259,7 @@ class RuntimeConfigService:
             user_id=user_id,
             group_id=group_id,
         )
-        canonical_match, person_id, space_id = await self._owner_match(
+        person_id, space_id = await self._owner_match(
             user_id=user_id,
             group_id=group_id,
         )
@@ -1320,7 +1271,6 @@ class RuntimeConfigService:
                 records,
                 user_id=user_id,
                 group_id=group_id,
-                canonical_match=canonical_match,
                 person_id=person_id,
                 space_id=space_id,
             ).value
@@ -1701,7 +1651,6 @@ class RuntimeConfigService:
         user_id: str | None,
         group_id: str | None,
         honor_restart_activation: bool = True,
-        canonical_match: bool = False,
         person_id: str | None = None,
         space_id: str | None = None,
     ) -> EffectiveConfigValue:
@@ -1713,7 +1662,6 @@ class RuntimeConfigService:
             for row in selected_records
             if row.config_key == spec.key and self._valid_stored_record(row)
         ]
-        by_scope = {(row.config_key, row.scope_type, row.scope_id): row for row in valid_rows}
         candidates = (
             (
                 ConfigScopeType.USER,
@@ -1731,21 +1679,17 @@ class RuntimeConfigService:
         for scope, scope_id in candidates:
             if scope_id is None or scope not in spec.allowed_scopes:
                 continue
-            if canonical_match:
-                row = self._canonical_row(
-                    valid_rows,
-                    scope=scope,
-                    person_id=person_id,
-                    space_id=space_id,
-                )
-                exposed_scope_id = ""
-                if row is not None and scope is ConfigScopeType.USER:
-                    exposed_scope_id = row.canonical_person_id or ""
-                elif row is not None and scope is ConfigScopeType.GROUP:
-                    exposed_scope_id = row.canonical_space_id or ""
-            else:
-                row = by_scope.get((spec.key, scope, scope_id))
-                exposed_scope_id = row.scope_id if row is not None else ""
+            row = self._canonical_row(
+                valid_rows,
+                scope=scope,
+                person_id=person_id,
+                space_id=space_id,
+            )
+            exposed_scope_id = ""
+            if row is not None and scope is ConfigScopeType.USER:
+                exposed_scope_id = row.canonical_person_id or ""
+            elif row is not None and scope is ConfigScopeType.GROUP:
+                exposed_scope_id = row.canonical_space_id or ""
             if row is not None:
                 # Pending is computed process-wide by pending_restart_count; an activated
                 # row itself is never pending for the value returned here.
@@ -1816,7 +1760,7 @@ class RuntimeConfigService:
                 and row.canonical_space_id is None
             ]
         if len(matched) > 1:
-            raise IdentityDualWriteError("canonical_owner_mismatch")
+            raise CanonicalIdentityError("canonical_owner_mismatch")
         return matched[0] if matched else None
 
     async def _owner_match(
@@ -1825,13 +1769,11 @@ class RuntimeConfigService:
         user_id: str | None,
         group_id: str | None,
         session: AsyncSession | None = None,
-    ) -> tuple[bool, str | None, str | None]:
+    ) -> tuple[str | None, str | None]:
         async with optional_session(self._database, session, write=False) as active:
-            if not await identity_runtime_is_complete_v2(active):
-                return False, None, None
             person_id = await resolve_live_person_id(active, user_id) if user_id else None
             space_id = await resolve_live_space_id(active, group_id) if group_id else None
-            return True, person_id, space_id
+            return person_id, space_id
 
     async def _bind_write_scope(
         self,
@@ -1843,12 +1785,10 @@ class RuntimeConfigService:
         if scope is ConfigScopeType.GLOBAL:
             return "", None, None
         async with optional_session(self._database, session, write=False) as active:
-            if not await identity_runtime_is_complete_v2(active):
-                return scope_id, None, None
             if scope is ConfigScopeType.USER:
-                resolved = await resolve_c24_user_config_scope(active, scope_id)
+                resolved = await resolve_user_config_scope(active, scope_id)
                 return resolved.storage_scope_id, resolved.person_id, None
-            resolved_group = await resolve_c24_group_config_scope(active, scope_id)
+            resolved_group = await resolve_group_config_scope(active, scope_id)
             return resolved_group.storage_scope_id, None, resolved_group.space_id
 
     def _validate_write(

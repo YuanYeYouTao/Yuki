@@ -44,8 +44,6 @@ from qq_ai_bot.control_plane.query_service import ControlQueryService
 from qq_ai_bot.control_plane.query_types import (
     AuditEventView,
     AutomationView,
-    BackfillConflictView,
-    BackfillOperationView,
     ConfigSpecView,
     ControlQueryError,
     ConversationView,
@@ -95,8 +93,6 @@ __all__ = [
     "MAX_PAGE_LIMIT",
     "AuditEventView",
     "AutomationView",
-    "BackfillConflictView",
-    "BackfillOperationView",
     "CapabilityFamily",
     "CapabilitySensitivity",
     "CatalogCapabilityView",
