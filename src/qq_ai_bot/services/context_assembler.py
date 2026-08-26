@@ -11,6 +11,7 @@ from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
 from qq_ai_bot.conversation.rollup.models import ConversationRollupState
+from qq_ai_bot.conversation.rollup.prompt_accounting import prompt_visible_event_count
 from qq_ai_bot.conversation.rollup.repository import ConversationRollupRepository
 from qq_ai_bot.conversation.rollup.service import ConversationRollupService
 from qq_ai_bot.conversation.scope import (
@@ -26,7 +27,14 @@ from qq_ai_bot.domain.messages import (
 )
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.domain.relationships import RelationshipSnapshot
-from qq_ai_bot.event_prompt import ChatEventPromptRenderer
+from qq_ai_bot.event_prompt import (
+    EXTERNAL_EVENT_CONTENT_TRUST,
+    ChatEventPromptRenderer,
+    external_event_digest_appended_growth,
+    external_event_digest_data,
+    external_event_digest_metadata_item,
+    recent_external_event_digest,
+)
 from qq_ai_bot.memory.attribution import MemoryExposure, MemoryExposureSource
 from qq_ai_bot.memory.context import (
     MemoryContextService,
@@ -111,6 +119,7 @@ class _HistoryPromptWindow:
     revision: int
     rollup: ConversationRollupState | None
     rollup_mode: str | None
+    starts_after_event_id: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,7 +195,6 @@ class ContextAssembler:
             before_event_id=current_event.id,
         )
         recent = snapshot.recent
-        external_events = self._external_event_context(recent)
         if memory_retrieval is not None:
             retrieval = memory_retrieval
         else:
@@ -248,8 +256,6 @@ class ContextAssembler:
                 "group_card": profile.group_card,
             },
         }
-        if external_events:
-            context["recent_external_events"] = list(external_events)
         self_hits = hits_by_role.get(MemoryTargetRole.CURRENT_SELF, ())
         if self_hits:
             context["current_self"] = {
@@ -357,7 +363,8 @@ class ContextAssembler:
             separators=(",", ":"),
             default=str,
         )
-        remainder = max(0, total_budget - len(metadata_json))
+        digest_reserve = self._external_digest_reserve(recent, exclude_event_id=current_event.id)
+        remainder = max(0, total_budget - len(metadata_json) - digest_reserve)
         snapshot, recent, rollup_text, shifted = await self._ensure_uncovered_fits_budget(
             snapshot=snapshot,
             recent=recent,
@@ -368,6 +375,17 @@ class ContextAssembler:
             identity=identity,
             current_event=current_event,
             turn=turn,
+        )
+        external_events = self._external_event_context(
+            recent,
+            exclude_event_id=current_event.id,
+        )
+        metadata_payload = self._with_external_digest(metadata_payload, external_events)
+        metadata_json = json.dumps(
+            metadata_payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
         )
         bounded_messages = self._bounded_history(
             recent,
@@ -381,8 +399,8 @@ class ContextAssembler:
         history_messages = bounded_messages.history_messages
         current_message = bounded_messages.current_message
         history_characters = sum(len(message.content or "") for message in history_messages)
-        uncovered_events = len(
-            tuple(row for row in recent if row.platform_message_id != inbound.message_id)
+        uncovered_events = prompt_visible_event_count(
+            tuple(row for row in recent if row.id != current_event.id)
         )
         over_budget = int(
             history_characters
@@ -487,6 +505,7 @@ class ContextAssembler:
             turn=turn,
             before_event_id=event.id,
         )
+        self._require_uncovered_external_trigger(event, snapshot)
         recent = snapshot.recent
         retrieval = await self._memory_context.retrieve_for_turn(
             inbound=inbound,
@@ -533,9 +552,6 @@ class ContextAssembler:
                     for hit in self_hits
                 ]
             }
-        external_events = self._external_event_context(recent)
-        if external_events:
-            context["recent_external_events"] = list(external_events)
         metadata_payload, _selected_fact_ids = self._fit_metadata(
             context,
             max(
@@ -547,7 +563,10 @@ class ContextAssembler:
             ),
         )
         metadata_json = json.dumps(metadata_payload, ensure_ascii=False, separators=(",", ":"))
-        remainder = max(0, self._settings.max_context_characters - len(metadata_json))
+        digest_reserve = self._external_digest_reserve(recent, exclude_event_id=event.id)
+        remainder = max(
+            0, self._settings.max_context_characters - len(metadata_json) - digest_reserve
+        )
         snapshot, recent, rollup_text, shifted = await self._ensure_uncovered_fits_budget(
             snapshot=snapshot,
             recent=recent,
@@ -559,6 +578,9 @@ class ContextAssembler:
             current_event=event,
             turn=turn,
         )
+        external_events = self._external_event_context(recent, exclude_event_id=event.id)
+        metadata_payload = self._with_external_digest(metadata_payload, external_events)
+        metadata_json = json.dumps(metadata_payload, ensure_ascii=False, separators=(",", ":"))
         bounded_messages = self._bounded_history(
             recent,
             inbound=inbound,
@@ -854,7 +876,7 @@ class ContextAssembler:
                     "id": "recent_external_events",
                     "data": {
                         "events": external_events,
-                        "content_trust": "external_untrusted",
+                        "content_trust": EXTERNAL_EVENT_CONTENT_TRUST,
                     },
                 }
             )
@@ -1005,12 +1027,18 @@ class ContextAssembler:
                     fact,
                     fallback_priority=57,
                 )
-        for index, event in enumerate(context.get("recent_external_events", ())):
-            add(
-                f"recent_external_event.{index}",
-                event,
-                priority=75 + index,
-                relevance=0.9,
+        events = context.get("recent_external_events")
+        if isinstance(events, (list, tuple)) and events:
+            payload = external_event_digest_data(events)
+            items.append(
+                ContextContribution(
+                    id="recent_external_events",
+                    priority=75,
+                    relevance=0.9,
+                    cost=external_event_digest_appended_growth(events),
+                    payload=payload,
+                    required=True,
+                )
             )
         return tuple(items)
 
@@ -1093,8 +1121,8 @@ class ContextAssembler:
         event_limit: int,
         character_budget: int,
     ) -> bool:
-        return len(view.history_rows) <= event_limit and view.rendered_characters <= max(
-            0, character_budget - view.current_characters
+        return prompt_visible_event_count(view.history_rows) <= event_limit and (
+            view.rendered_characters <= max(0, character_budget - view.current_characters)
         )
 
     @staticmethod
@@ -1144,7 +1172,22 @@ class ContextAssembler:
             revision=rollup.revision if rollup is not None else 0,
             rollup=rollup,
             rollup_mode=rollup.summary_kind.value if rollup is not None else None,
+            starts_after_event_id=loaded.scope.starts_after_event_id,
         )
+
+    @staticmethod
+    def _require_uncovered_external_trigger(
+        event: EventRecord,
+        snapshot: _HistoryPromptWindow,
+    ) -> None:
+        """Fail closed when the current external source is already projected.
+
+        Effective coverage is the valid overlay, else semantic, else the
+        generation fence. This C1 boundary does not replace C2 job freshness.
+        """
+
+        if event.id <= snapshot.coverage_end or event.id <= snapshot.starts_after_event_id:
+            raise ConversationCoverageError("external trigger is already covered")
 
     def _uncovered_prompt_view(
         self,
@@ -1302,54 +1345,27 @@ class ContextAssembler:
         *,
         event_limit: int,
     ) -> None:
-        """Bound raw backlog from counters before loading any event bodies."""
+        """Check generation before loading bodies. Do not compact from stored count.
 
+        Stored durable uncovered characters are a <=admit diagnostic only.
+        Foreground compact/fail is decided by hydrated grouped visible history
+        in ``_ensure_uncovered_fits_budget``.
+        """
+
+        del event_limit
         if not self._settings.conversation_rollup_enabled:
             return
-        event_admit = self._prompt_event_admit(event_limit=event_limit, coverage_end=1)
-        event_target = self._prompt_event_target(event_limit=event_limit, coverage_end=1)
-        character_admit = (
-            self._settings.conversation_rollup_raw_tail_characters
-            + self._settings.conversation_rollup_trigger_characters
-        )
-        character_target = (
-            self._settings.conversation_rollup_raw_tail_characters
-            + self._settings.conversation_rollup_stop_characters
-        )
-        compact_to_stop = False
-        for _ in range(self._settings.conversation_rollup_foreground_max_batches + 1):
-            state, _rollup, _job = await self._rollups.status(scope)
-            if state is None:
-                raise ConversationCoverageError("conversation scope does not exist")
-            if not turn_matches_hydrated_scope(
-                turn,
-                scope_id=state.id,
-                generation=state.generation,
-                transport_key=scope.key,
-                runtime_key=state.runtime_scope_key,
-            ):
-                raise ConversationCoverageError("turn generation changed before prompt snapshot")
-            event_cap = event_target if compact_to_stop else event_admit
-            character_cap = character_target if compact_to_stop else character_admit
-            if (
-                state.uncovered_event_count <= event_cap
-                and state.uncovered_character_count <= character_cap
-            ):
-                return
-            compact_to_stop = True
-            committed = await self._rollup_service.ensure_extractive_coverage(
-                repository=self._rollups,
-                scope=scope,
-                lease_seconds=self._settings.conversation_rollup_lease_seconds,
-                max_batches=1,
-            )
-            if not committed:
-                raise ConversationCoverageError(
-                    "raw backlog is unbounded but no continuous prefix is compressible"
-                )
-        raise ConversationCoverageError(
-            "foreground coverage limit exhausted before loading prompt history"
-        )
+        state, _rollup, _job = await self._rollups.status(scope)
+        if state is None:
+            raise ConversationCoverageError("conversation scope does not exist")
+        if not turn_matches_hydrated_scope(
+            turn,
+            scope_id=state.id,
+            generation=state.generation,
+            transport_key=scope.key,
+            runtime_key=state.runtime_scope_key,
+        ):
+            raise ConversationCoverageError("turn generation changed before prompt snapshot")
 
     @staticmethod
     def _bounded_history(
@@ -1406,37 +1422,46 @@ class ContextAssembler:
             ),
         )
 
+    def _external_digest_reserve(
+        self,
+        recent: tuple[EventRecord, ...],
+        *,
+        exclude_event_id: int | None = None,
+    ) -> int:
+        if not any(
+            row.event_kind == "external_event"
+            and (exclude_event_id is None or row.id != exclude_event_id)
+            for row in recent
+        ):
+            return 0
+        return self._settings.plugin_external_event_context_characters
+
+    @staticmethod
+    def _with_external_digest(
+        metadata_payload: dict[str, object],
+        external_events: tuple[dict[str, object], ...],
+    ) -> dict[str, object]:
+        raw_items = metadata_payload.get("items", ())
+        items = [
+            item
+            for item in (raw_items if isinstance(raw_items, list) else [])
+            if not (isinstance(item, dict) and item.get("id") == "recent_external_events")
+        ]
+        if external_events:
+            items.append(external_event_digest_metadata_item(external_events))
+        return {**metadata_payload, "items": items}
+
     def _external_event_context(
         self,
         recent: tuple[EventRecord, ...],
+        *,
+        exclude_event_id: int | None = None,
     ) -> tuple[dict[str, object], ...]:
-        limit = self._settings.plugin_external_event_context_limit
-        character_limit = self._settings.plugin_external_event_context_characters
-        selected: list[dict[str, object]] = []
-        used = 0
-        for row in reversed(recent):
-            if row.event_kind != "external_event":
-                continue
-            payload = row.external_payload or {}
-            item: dict[str, object] = {
-                "source": row.external_source or "external",
-                "source_plugin_id": row.source_plugin_id or "",
-                "event_type": row.external_event_type or "event",
-                "summary": row.content[:4_000],
-                "occurred_at": local_iso(row.occurred_at, self._settings.default_timezone),
-                "payload": payload,
-                "content_trust": "external_untrusted",
-            }
-            encoded = json.dumps(item, ensure_ascii=False, separators=(",", ":"), default=str)
-            if len(encoded) > character_limit:
-                item["payload"] = {}
-                item["summary"] = row.content[: max(1, character_limit // 2)]
-                encoded = json.dumps(item, ensure_ascii=False, separators=(",", ":"))
-            if used + len(encoded) > character_limit:
-                continue
-            selected.append(item)
-            used += len(encoded)
-            if len(selected) >= limit:
-                break
-        selected.reverse()
-        return tuple(selected)
+        return recent_external_event_digest(
+            recent,
+            timezone=self._settings.default_timezone,
+            exclude_event_id=exclude_event_id,
+            limit=self._settings.plugin_external_event_context_limit,
+            character_limit=self._settings.plugin_external_event_context_characters,
+            summary_max_characters=self._settings.plugin_external_event_summary_characters,
+        )

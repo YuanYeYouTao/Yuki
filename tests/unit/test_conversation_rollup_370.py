@@ -34,7 +34,11 @@ from qq_ai_bot.conversation.rollup.models import (
     RollupKind,
     RollupPolicyConfig,
 )
-from qq_ai_bot.conversation.rollup.prompt_accounting import prompt_accounting_characters
+from qq_ai_bot.conversation.rollup.prompt_accounting import (
+    durable_uncovered_characters,
+    prompt_accounting_characters,
+    prompt_visible_event_count,
+)
 from qq_ai_bot.conversation.rollup.renderer import (
     projection_characters,
     rollup_source_projection,
@@ -852,6 +856,11 @@ async def test_lightweight_backlog_triggers_on_prompt_ruler_not_projection(
         bot_display_name=policy.bot_display_name,
         timezone=policy.timezone,
     )
+    durable = durable_uncovered_characters(
+        snapshot.raw_events,
+        bot_display_name=policy.bot_display_name,
+        timezone=policy.timezone,
+    )
     remaining_prompt = prompt_accounting_characters(
         snapshot.raw_events[-2:],
         bot_display_name=policy.bot_display_name,
@@ -868,10 +877,10 @@ async def test_lightweight_backlog_triggers_on_prompt_ruler_not_projection(
         assert row is not None
         row.uncovered_character_count = projection
         recounted = await recount_canonical_uncovered(session, row, policy)
-    assert recounted[1] == prompt
+    assert recounted[1] == durable
     seeded, seeded_rollup, _job = await repository.status(scope)
     assert seeded is not None
-    assert seeded.uncovered_character_count == prompt
+    assert seeded.uncovered_character_count == durable
     assert seeded_rollup is None
     committed = await service.ensure_extractive_coverage(
         repository=repository,
@@ -927,9 +936,10 @@ def test_long_messages_raise_character_index_and_keep_eligible_prefix() -> None:
         summary_max_characters=2_000,
     )
     events = _counted_events(6, body="z" * 500)
-    count_index = max(0, len(events) - policy.raw_tail_events)
     start = protected_tail_start(events, policy)
-    assert start > count_index
+    protected = events[start:]
+    assert prompt_visible_event_count(protected) == policy.raw_tail_events
+    assert tuple(event.id for event in protected) == (3, 4, 5, 6)
     eligible = eligible_prefix(events, policy)
     assert eligible
     assert eligible[-1].id < events[start].id
@@ -1328,7 +1338,7 @@ async def test_v2_visual_summary_and_append_use_prompt_accounting(
 ) -> None:
     from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
     from qq_ai_bot.conversation.rollup.prompt_accounting import (
-        prompt_accounting_event_characters,
+        durable_uncovered_event_characters,
     )
     from qq_ai_bot.conversation.rollup.repository import recount_canonical_uncovered
     from qq_ai_bot.persistence.models import ChatEventModel
@@ -1344,9 +1354,8 @@ async def test_v2_visual_summary_and_append_use_prompt_accounting(
         direction="inbound",
         content="plain",
     )
-    expected_append = prompt_accounting_event_characters(
+    expected_append = durable_uncovered_event_characters(
         appended.event,
-        events=(appended.event,),
         bot_display_name=policy.bot_display_name,
         timezone=policy.timezone,
     )
@@ -1356,9 +1365,8 @@ async def test_v2_visual_summary_and_append_use_prompt_accounting(
     state, _rollup, _job = await repository.status(scope)
     assert state is not None
     refreshed = await repository.load_prompt_snapshot(scope)
-    expected_visual = prompt_accounting_event_characters(
+    expected_visual = durable_uncovered_event_characters(
         refreshed.raw_events[0],
-        events=refreshed.raw_events,
         bot_display_name=policy.bot_display_name,
         timezone=policy.timezone,
     )

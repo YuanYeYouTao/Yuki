@@ -388,6 +388,7 @@ class Settings(BaseSettings):
     plugin_ai_session_max_history_messages: int = 200
     plugin_external_event_context_limit: int = 10
     plugin_external_event_context_characters: int = 6000
+    plugin_external_event_summary_characters: int = 800
 
     relationship_enabled: bool = True
     relationship_initial_affection: int = 50

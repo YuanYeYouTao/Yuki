@@ -22,6 +22,7 @@ from qq_ai_bot.conversation.hydrate import (
     touch_canonical_watermarks,
 )
 from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
+from qq_ai_bot.conversation.rollup.prompt_accounting import durable_uncovered_event_characters
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.domain.messages import InboundMessage
@@ -194,7 +195,11 @@ class CanonicalIngressUnitOfWork:
                 session,
                 admitted.conversation_id,
                 event_id=row.id,
-                characters=len(message.text),
+                characters=durable_uncovered_event_characters(
+                    event,
+                    bot_display_name=self._config.bot_display_name,
+                    timezone=self._config.timezone,
+                ),
             )
             if new_generation:
                 await bump_canonical_generation(

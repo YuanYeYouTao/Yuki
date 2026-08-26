@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections.abc import Iterable
@@ -16,6 +17,10 @@ from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.services.renderer import strip_internal_history_markers
 from qq_ai_bot.time.formatting import local_iso
 
+EXTERNAL_EVENT_DIGEST_SUMMARY_MAX_CHARACTERS = 800
+EXTERNAL_EVENT_CONTENT_TRUST = "external_untrusted"
+_EXTERNAL_EVENT_DIGEST_METADATA_ID = "recent_external_events"
+
 _LEGACY_HISTORY_PREFIX = re.compile(
     r"^\[(?:(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]) )?"
     r"(?:[01]\d|2[0-3]):[0-5]\d(?: QQ [1-9]\d{4,19})?\]\s*"
@@ -25,6 +30,120 @@ _SAFE_SEGMENT_ERROR_CATEGORIES = frozenset(
     {"segment_not_object", "segment_type_invalid", "segment_data_invalid"}
 )
 logger = logging.getLogger(__name__)
+
+
+def external_event_digest_item(
+    row: EventRecord,
+    *,
+    timezone: str,
+    summary_max_characters: int = EXTERNAL_EVENT_DIGEST_SUMMARY_MAX_CHARACTERS,
+) -> dict[str, object]:
+    """Return one coverage-tail digest object. Never includes payload."""
+
+    return {
+        "source": row.external_source or "external",
+        "source_plugin_id": row.source_plugin_id or "",
+        "event_type": row.external_event_type or "event",
+        "occurred_at": local_iso(row.occurred_at, timezone),
+        "summary": row.content[: max(0, summary_max_characters)],
+        "content_trust": EXTERNAL_EVENT_CONTENT_TRUST,
+    }
+
+
+def external_event_digest_data(
+    events: Iterable[dict[str, object]],
+) -> dict[str, object]:
+    """Return the stable digest payload attached under the metadata wrapper."""
+
+    return {
+        "events": list(events),
+        "content_trust": EXTERNAL_EVENT_CONTENT_TRUST,
+    }
+
+
+def external_event_digest_metadata_item(
+    events: Iterable[dict[str, object]],
+) -> dict[str, object]:
+    """Return the serialized metadata item appended after ordinary context fit."""
+
+    return {
+        "id": _EXTERNAL_EVENT_DIGEST_METADATA_ID,
+        "data": external_event_digest_data(events),
+    }
+
+
+def external_event_digest_encoded_characters(events: Iterable[dict[str, object]]) -> int:
+    """Return the encoded size of the full appended digest metadata item."""
+
+    return len(
+        json.dumps(
+            external_event_digest_metadata_item(events),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        )
+    )
+
+
+EXTERNAL_EVENT_DIGEST_ITEMS_SEPARATOR_CHARACTERS = 1
+
+
+def external_event_digest_appended_growth(
+    events: Iterable[dict[str, object]],
+    *,
+    parent_items_nonempty: bool = True,
+) -> int:
+    """Return metadata growth when the digest item is inserted into ``items``.
+
+    Production fit always leaves at least ``scene`` in ``items``. Insertion
+    into a nonempty JSON array adds a one-character comma separator. Selection
+    and reserve must keep this complete growth within the digest character cap.
+    """
+
+    items = tuple(events)
+    if not items:
+        return 0
+    encoded = external_event_digest_encoded_characters(items)
+    extra = EXTERNAL_EVENT_DIGEST_ITEMS_SEPARATOR_CHARACTERS if parent_items_nonempty else 0
+    return encoded + extra
+
+
+def recent_external_event_digest(
+    rows: Iterable[EventRecord],
+    *,
+    timezone: str,
+    exclude_event_id: int | None = None,
+    limit: int,
+    character_limit: int,
+    summary_max_characters: int = EXTERNAL_EVENT_DIGEST_SUMMARY_MAX_CHARACTERS,
+) -> tuple[dict[str, object], ...]:
+    """Select bounded digest items from a final uncovered raw tail.
+
+    Newest-first. The complete appended growth into a nonempty ``items``
+    array, including the metadata wrapper, ``content_trust``, and the JSON
+    comma separator, must fit ``character_limit``. If even the newest bounded
+    item cannot fit, the digest is empty.
+    """
+
+    selected: list[dict[str, object]] = []
+    for row in reversed(tuple(rows)):
+        if row.event_kind != "external_event":
+            continue
+        if exclude_event_id is not None and row.id == exclude_event_id:
+            continue
+        item = external_event_digest_item(
+            row,
+            timezone=timezone,
+            summary_max_characters=summary_max_characters,
+        )
+        candidate = (*selected, item)
+        if external_event_digest_appended_growth(candidate) > character_limit:
+            break
+        selected.append(item)
+        if len(selected) >= limit:
+            break
+    selected.reverse()
+    return tuple(selected)
 
 
 @lru_cache(maxsize=8)
@@ -75,11 +194,7 @@ class ChatEventPromptRenderer:
         """Return the provider-neutral message produced by the shared event projection."""
 
         return ChatMessage(
-            role=(
-                "system"
-                if row.event_kind == "external_event"
-                else ("assistant" if row.direction == "outbound" else "user")
-            ),
+            role="assistant" if row.direction == "outbound" else "user",
             content=self.render_event(
                 row,
                 current_message_id=current_message_id,
@@ -97,11 +212,7 @@ class ChatEventPromptRenderer:
         """Return the compact stable-event projection used by conversational models."""
 
         return ChatMessage(
-            role=(
-                "system"
-                if row.event_kind == "external_event"
-                else ("assistant" if row.direction == "outbound" else "user")
-            ),
+            role="assistant" if row.direction == "outbound" else "user",
             content=self.render_reference_event(
                 row,
                 current_message_id=current_message_id,
@@ -117,15 +228,13 @@ class ChatEventPromptRenderer:
 
         grouped: list[tuple[int, tuple[int, ...], ChatMessage, tuple[str, str, str] | None]] = []
         for row in rows:
+            if row.event_kind == "external_event":
+                continue
             message = self.reference_message(row)
             rendered = (message.content or "").strip()
             if not rendered:
                 continue
-            group_key = (
-                None
-                if row.event_kind == "external_event"
-                else (message.role, row.sender_user_id, self._row_display_name(row))
-            )
+            group_key = (message.role, row.sender_user_id, self._row_display_name(row))
             if grouped and group_key is not None and grouped[-1][3] == group_key:
                 previous_id, event_ids, previous, _ = grouped[-1]
                 _, separator, event_line = rendered.partition("\n")

@@ -7,8 +7,11 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
+from tests.conftest import make_settings
 from tests.support.gateway import napcat_registry
 
+from qq_ai_bot.container import ApplicationContainer
+from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
@@ -89,6 +92,8 @@ def _message(
 
 async def _stack(
     database: Database,
+    *,
+    config: RollupPolicyConfig | None = None,
 ) -> tuple[GatewayConnectionRegistry, CanonicalIngressResolver, CanonicalIngressUnitOfWork]:
     configure_identity_write_settings(
         IdentityWriteSettings(superusers=frozenset({"9000"}), ignored_bot_users=frozenset({"7777"}))
@@ -102,7 +107,7 @@ async def _stack(
     return (
         registry,
         CanonicalIngressResolver(database, registry, router),
-        CanonicalIngressUnitOfWork(database, router),
+        CanonicalIngressUnitOfWork(database, router, config=config),
     )
 
 
@@ -686,3 +691,192 @@ async def test_canonical_reply_ambiguous_or_duplicate_only(
     assert ambiguous.message.canonical_reply_author_kind == "ambiguous"
     assert suppressed is not None
     assert suppressed.message.canonical_reply_to_yuki is None
+
+
+@pytest.mark.asyncio
+async def test_canonical_ingress_durable_characters_match_recount(database: Database) -> None:
+    from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+    from qq_ai_bot.conversation.rollup.prompt_accounting import (
+        durable_uncovered_characters,
+        durable_uncovered_event_characters,
+        prompt_accounting_characters,
+    )
+    from qq_ai_bot.conversation.rollup.repository import recount_canonical_uncovered
+    from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+
+    registry, resolver, ingress = await _stack(database)
+    bot = _Bot("8000")
+    async with database.sessions() as session, session.begin():
+        presence = await ensure_v2_presence(session, "8000")
+    registry.connect(bot)
+    registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
+    first_admit = await resolver.pre_admit(
+        bot, _message(message_id="dur-c1", user_id="1001", text="hello")
+    )
+    second_admit = await resolver.pre_admit(
+        bot, _message(message_id="dur-c2", user_id="1001", text="again")
+    )
+    assert first_admit is not None and second_admit is not None
+    first = await ingress.append_inbound(first_admit.message, first_admit)
+    second = await ingress.append_inbound(second_admit.message, second_admit)
+    kwargs = {
+        "bot_display_name": ingress._config.bot_display_name,
+        "timezone": ingress._config.timezone,
+    }
+    expected = durable_uncovered_event_characters(
+        first.event, **kwargs
+    ) + durable_uncovered_event_characters(second.event, **kwargs)
+    grouped = prompt_accounting_characters((first.event, second.event), **kwargs)
+    assert second.scope.uncovered_character_count == expected
+    assert expected != grouped
+    assert expected != len("hello") + len("again")
+    async with database.immediate_session() as session:
+        conversation = await session.get(
+            CanonicalConversationModel, first.event.canonical_conversation_id
+        )
+        assert conversation is not None
+        recounted = await recount_canonical_uncovered(session, conversation, ingress._config)
+    assert recounted == (2, expected)
+
+    scoped = ScopedEventLedgerUnitOfWork(database, config=ingress._config)
+    from qq_ai_bot.domain.conversations import ConversationScope
+
+    scope = ConversationScope.private("8000", "1001")
+    third = await scoped.append(
+        scope=scope,
+        platform_message_id="dur-c3",
+        sender_user_id="1001",
+        direction="inbound",
+        content="after-recount",
+        occurred_at=_NOW,
+    )
+    live_events = (first.event, second.event, third.event)
+    after = durable_uncovered_characters(live_events, **kwargs)
+    assert third.scope.uncovered_character_count == after
+    async with database.immediate_session() as session:
+        conversation = await session.get(
+            CanonicalConversationModel, first.event.canonical_conversation_id
+        )
+        assert conversation is not None
+        recounted_again = await recount_canonical_uncovered(session, conversation, ingress._config)
+    snapshot_total = recounted_again[1]
+    assert snapshot_total == third.scope.uncovered_character_count
+    assert recounted_again[0] == 3
+
+
+def test_production_container_wires_canonical_uow_from_rollup_repository(
+    database: Database,
+    tmp_path,
+) -> None:
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    settings = make_settings(
+        database.url,
+        plugin_directory=plugin_dir,
+        plugin_system_enabled=False,
+        bot_display_name="远野",
+        default_timezone="America/New_York",
+    )
+    container = ApplicationContainer(settings, database=database)
+    assert container.canonical_uow._config is container.conversation_rollups.config
+    assert container.canonical_uow._config.bot_display_name == "远野"
+    assert container.canonical_uow._config.timezone == "America/New_York"
+
+
+@pytest.mark.asyncio
+async def test_custom_policy_live_append_matches_recount_without_reading_ingress_config(
+    database: Database,
+) -> None:
+    from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+    from qq_ai_bot.conversation.rollup.prompt_accounting import durable_uncovered_characters
+    from qq_ai_bot.conversation.rollup.repository import (
+        ConversationRollupRepository,
+        recount_canonical_uncovered,
+    )
+    from qq_ai_bot.domain.conversations import ConversationScope
+    from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+
+    bot_display_name = "远野"
+    timezone = "America/New_York"
+    policy = RollupPolicyConfig(
+        bot_display_name=bot_display_name,
+        timezone=timezone,
+    )
+    kwargs = {"bot_display_name": bot_display_name, "timezone": timezone}
+    registry, resolver, ingress = await _stack(database, config=policy)
+    bot = _Bot("8000")
+    async with database.sessions() as session, session.begin():
+        presence = await ensure_v2_presence(session, "8000")
+    registry.connect(bot)
+    registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
+    first_admit = await resolver.pre_admit(
+        bot, _message(message_id="pol-1", user_id="1001", text="hello")
+    )
+    assert first_admit is not None
+    first = await ingress.append_inbound(first_admit.message, first_admit)
+    scoped = ScopedEventLedgerUnitOfWork(database, config=policy)
+    scope = ConversationScope.private("8000", "1001")
+    await scoped.append(
+        scope=scope,
+        platform_message_id="pol-out",
+        sender_user_id="8000",
+        direction="outbound",
+        content="yuki reply",
+        occurred_at=_NOW,
+        sender_is_bot=True,
+        origin="agent_reply",
+    )
+    reply_admit = await resolver.pre_admit(
+        bot,
+        _message(
+            message_id="pol-2",
+            user_id="1001",
+            text="replying",
+            reply_to_message_id="pol-out",
+            reply_sender_user_id="8000",
+        ),
+    )
+    assert reply_admit is not None
+    await ingress.append_inbound(reply_admit.message, reply_admit)
+    await scoped.set_visual_summary(first.event.id, "a visual caption")
+    async with database.immediate_session() as session:
+        conversation = await session.get(
+            CanonicalConversationModel, first.event.canonical_conversation_id
+        )
+        assert conversation is not None
+        recounted = await recount_canonical_uncovered(session, conversation, policy)
+    state, _rollup, _job = await ConversationRollupRepository(database, policy).status(scope)
+    assert state is not None
+    assert recounted == (state.uncovered_event_count, state.uncovered_character_count)
+    snapshot = await ConversationRollupRepository(database, policy).load_prompt_snapshot(scope)
+    expected = durable_uncovered_characters(snapshot.raw_events, **kwargs)
+    assert (
+        expected
+        != durable_uncovered_characters(
+            snapshot.raw_events,
+            bot_display_name="Yuki",
+            timezone="Asia/Shanghai",
+        )
+        or bot_display_name == "Yuki"
+    )
+    assert state.uncovered_character_count == expected
+    third = await scoped.append(
+        scope=scope,
+        platform_message_id="pol-3",
+        sender_user_id="1001",
+        direction="inbound",
+        content="after-recount",
+        occurred_at=_NOW,
+    )
+    after_snapshot = await ConversationRollupRepository(database, policy).load_prompt_snapshot(
+        scope
+    )
+    after_expected = durable_uncovered_characters(after_snapshot.raw_events, **kwargs)
+    assert third.scope.uncovered_character_count == after_expected
+    async with database.immediate_session() as session:
+        conversation = await session.get(
+            CanonicalConversationModel, first.event.canonical_conversation_id
+        )
+        assert conversation is not None
+        recounted_after = await recount_canonical_uncovered(session, conversation, policy)
+    assert recounted_after == (len(after_snapshot.raw_events), after_expected)

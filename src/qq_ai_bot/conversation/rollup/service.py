@@ -8,7 +8,7 @@ import uuid
 from qq_ai_bot.conversation.rollup.metrics import ConversationRollupMetrics
 from qq_ai_bot.conversation.rollup.models import RollupCandidate, RollupKind, RollupPolicyConfig
 from qq_ai_bot.conversation.rollup.renderer import (
-    rollup_source_projection,
+    bound_compaction_source_events,
     truncate_conversation_tail,
 )
 from qq_ai_bot.conversation.rollup.repository import ConversationRollupRepository
@@ -72,7 +72,11 @@ class ConversationRollupService:
         if self._models is None:
             raise RuntimeError("conversation rollup model is unavailable")
         previous = candidate.previous_summary.strip() or "(none)"
-        source = "\n".join(rollup_source_projection(event) for event in candidate.events)
+        source = bound_compaction_source_events(
+            candidate.events,
+            timezone=self._config.timezone,
+            max_characters=self._config.batch_max_characters,
+        )
         limit = self._config.summary_max_characters
         request = ChatRequest(
             messages=(

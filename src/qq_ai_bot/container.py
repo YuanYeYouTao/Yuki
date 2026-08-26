@@ -481,7 +481,11 @@ class ApplicationContainer:
             self.gateway_registry,
             self.presence_router,
         )
-        self.canonical_uow = CanonicalIngressUnitOfWork(self.database, self.presence_router)
+        self.canonical_uow = CanonicalIngressUnitOfWork(
+            self.database,
+            self.presence_router,
+            config=self.conversation_rollups.config,
+        )
         self.processor = MessageProcessor(
             settings=settings,
             ledger=self.ledger,
