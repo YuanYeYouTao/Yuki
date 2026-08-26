@@ -34,9 +34,14 @@ class AttachmentKind(StrEnum):
 
 
 class ReasoningEffort(StrEnum):
-    """Provider-neutral reasoning depth supported by DeepSeek V4."""
+    """Provider-neutral reasoning effort values used by Responses APIs."""
 
+    NONE = "none"
+    MINIMAL = "minimal"
+    LOW = "low"
+    MEDIUM = "medium"
     HIGH = "high"
+    XHIGH = "xhigh"
     MAX = "max"
 
 
