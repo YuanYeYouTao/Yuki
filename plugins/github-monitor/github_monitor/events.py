@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
@@ -29,12 +31,16 @@ SUPPORTED_EVENT_TYPES = frozenset(
 )
 
 
+class GitHubEventIdentityError(ValueError):
+    """The upstream event stream cannot be advanced safely."""
+
+
 def normalize_event(repository: str, raw: object) -> NormalizedGitHubEvent | None:
     item = as_mapping(raw)
+    event_id = numeric_event_id(item.get("id"))
     event_type = _text(item.get("type"), 128)
     if event_type not in SUPPORTED_EVENT_TYPES:
         return None
-    event_id = _text(item.get("id"), 128)
     actor_row = as_mapping(item.get("actor"))
     actor = _text(actor_row.get("login"), 128) or "unknown"
     created_at = datetime.fromisoformat(_text(item.get("created_at"), 64).replace("Z", "+00:00"))
@@ -126,7 +132,8 @@ def _extract(
     elif event_type in {"CreateEvent", "DeleteEvent"}:
         branch = _text(payload.get("ref"), 255)
         safe_payload.update({"ref": branch, "ref_type": _text(payload.get("ref_type"), 32)})
-    event_key = stable_event_key(repository, event_type, business_id, action)
+    old_event_key = legacy_event_key(repository, event_type, business_id, action)
+    event_key = singleton_event_key(repository, event_id)
     summary = _basic_summary(repository, event_type, action, number, title, branch, safe_payload)
     safe_payload.update({"event_type": event_type, "action": action})
     return NormalizedGitHubEvent(
@@ -147,15 +154,80 @@ def _extract(
         push_before=before,
         push_head=head,
         push_deleted=deleted,
+        legacy_event_key=old_event_key,
     )
 
 
 def stable_event_key(repository: str, event_type: str, identity: str, action: str = "") -> str:
+    """Compatibility name for the pre-C4 business-object key."""
+
+    return legacy_event_key(repository, event_type, identity, action)
+
+
+def legacy_event_key(repository: str, event_type: str, identity: str, action: str = "") -> str:
     raw = f"github:{repository}:{event_type}:{identity}:{action}".rstrip(":")
     if len(raw) <= 255:
         return raw
     digest = hashlib.sha256(raw.encode()).hexdigest()
     return f"{raw[:190]}:{digest}"
+
+
+def singleton_event_key(repository: str, github_event_id: str) -> str:
+    event_id = numeric_event_id(github_event_id)
+    key = f"github:{repository}:event:{event_id}"
+    if len(key) > 255:
+        raise GitHubEventIdentityError("github_event_key_too_long")
+    return key
+
+
+def event_key_for_boundary(event: NormalizedGitHubEvent, legacy_boundary: str) -> str:
+    if legacy_boundary:
+        boundary = numeric_event_id(legacy_boundary)
+        if int(event.github_event_id) <= int(boundary):
+            if not event.legacy_event_key:
+                raise GitHubEventIdentityError("legacy_event_key_missing")
+            return event.legacy_event_key
+    return singleton_event_key(event.repository, event.github_event_id)
+
+
+def numeric_event_id(value: object) -> str:
+    event_id = _text(value, 128)
+    if not event_id or not event_id.isdecimal():
+        raise GitHubEventIdentityError("github_event_id_not_numeric")
+    if str(int(event_id)) != event_id:
+        raise GitHubEventIdentityError("github_event_id_not_canonical")
+    return event_id
+
+
+def raw_event_fingerprint(raw: object) -> str:
+    item = as_mapping(raw)
+    numeric_event_id(item.get("id"))
+    try:
+        encoded = json.dumps(
+            item,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise GitHubEventIdentityError("github_event_payload_invalid") from exc
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def deduplicate_raw_events(raw_events: Sequence[object]) -> tuple[dict[str, Any], ...]:
+    """Collapse page overlap and fail closed when one source id changes payload."""
+
+    by_id: dict[str, tuple[str, dict[str, Any]]] = {}
+    for raw in raw_events:
+        item = as_mapping(raw)
+        event_id = numeric_event_id(item.get("id"))
+        fingerprint = raw_event_fingerprint(item)
+        existing = by_id.get(event_id)
+        if existing is not None and existing[0] != fingerprint:
+            raise GitHubEventIdentityError("github_event_payload_conflict")
+        by_id[event_id] = (fingerprint, item)
+    return tuple(by_id[event_id][1] for event_id in sorted(by_id, key=int))
 
 
 def _basic_summary(

@@ -1,7 +1,16 @@
 from __future__ import annotations
 
+import pytest
 from github_monitor.config import NotificationTargetConfig, RepositorySubscription
-from github_monitor.events import event_allowed, normalize_event, stable_event_key
+from github_monitor.events import (
+    GitHubEventIdentityError,
+    deduplicate_raw_events,
+    event_allowed,
+    event_key_for_boundary,
+    normalize_event,
+    raw_event_fingerprint,
+    singleton_event_key,
+)
 from github_monitor.formatter import apply_compare
 
 
@@ -23,7 +32,7 @@ def test_push_event_is_bounded_stable_and_enriched() -> None:
     event = normalize_event("owner/repo", raw)
     assert event is not None
     assert event.branch == "main"
-    assert event.event_key == stable_event_key("owner/repo", "PushEvent", "b" * 40)
+    assert event.event_key == singleton_event_key("owner/repo", "123")
     enriched = apply_compare(
         event,
         {
@@ -62,7 +71,7 @@ def test_release_event_preserves_bounded_card_details() -> None:
     event = normalize_event(
         "owner/repo",
         {
-            "id": "release-1",
+            "id": "124",
             "type": "ReleaseEvent",
             "actor": {"login": "alice", "type": "User"},
             "created_at": "2026-08-05T10:30:00Z",
@@ -90,3 +99,59 @@ def test_release_event_preserves_bounded_card_details() -> None:
     assert event.payload["assets_count"] == 2
     assert event.payload["prerelease"] is False
     assert event.payload["excerpt"] == "新增 Release 通知卡片。"
+
+
+def test_comment_events_use_distinct_raw_source_ids() -> None:
+    base = {
+        "type": "IssueCommentEvent",
+        "actor": {"login": "alice", "type": "User"},
+        "created_at": "2026-08-05T10:30:00Z",
+        "payload": {
+            "action": "created",
+            "issue": {"id": 42, "number": 7, "title": "same issue"},
+        },
+    }
+    first = normalize_event("owner/repo", {**base, "id": "200"})
+    second = normalize_event("owner/repo", {**base, "id": "201"})
+    assert first is not None and second is not None
+    assert first.legacy_event_key == second.legacy_event_key
+    assert first.event_key == "github:owner/repo:event:200"
+    assert second.event_key == "github:owner/repo:event:201"
+
+
+def test_raw_ids_are_numeric_and_page_overlap_is_fingerprint_checked() -> None:
+    event_99 = {"id": "99", "type": "WatchEvent", "payload": {"action": "started"}}
+    event_100 = {"id": "100", "type": "WatchEvent", "payload": {"action": "started"}}
+    rows = deduplicate_raw_events([event_100, event_99, dict(event_100)])
+    assert [row["id"] for row in rows] == ["99", "100"]
+    assert raw_event_fingerprint(event_100) == raw_event_fingerprint(dict(event_100))
+    with pytest.raises(GitHubEventIdentityError, match="not_numeric"):
+        deduplicate_raw_events([{"id": "release-1"}])
+    with pytest.raises(GitHubEventIdentityError, match="payload_conflict"):
+        deduplicate_raw_events([event_100, {**event_100, "payload": {"action": "stopped"}}])
+
+
+def test_legacy_boundary_is_permanent() -> None:
+    old = normalize_event(
+        "owner/repo",
+        {
+            "id": "300",
+            "type": "WatchEvent",
+            "actor": {"login": "alice", "type": "User"},
+            "created_at": "2026-08-05T10:30:00Z",
+            "payload": {"action": "started"},
+        },
+    )
+    new = normalize_event(
+        "owner/repo",
+        {
+            "id": "301",
+            "type": "WatchEvent",
+            "actor": {"login": "bob", "type": "User"},
+            "created_at": "2026-08-05T10:31:00Z",
+            "payload": {"action": "started"},
+        },
+    )
+    assert old is not None and new is not None
+    assert event_key_for_boundary(old, "300") == old.legacy_event_key
+    assert event_key_for_boundary(new, "300") == new.event_key

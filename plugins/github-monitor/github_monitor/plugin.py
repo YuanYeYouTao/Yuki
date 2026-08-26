@@ -21,6 +21,7 @@ from .polling import GitHubPoller
 
 class _ContextHolder:
     context: PluginContext | None = None
+    poller: GitHubPoller | None = None
 
 
 class GitHubMonitorPlugin:
@@ -62,13 +63,15 @@ class GitHubMonitorPlugin:
         context.features.require("http.credential.v1")
         self._stop.clear()
         self._holder.context = context
+        self._holder.poller = GitHubPoller(context, self._stop)
 
     async def stop(self) -> None:
         self._stop.set()
+        self._holder.poller = None
         self._holder.context = None
 
     async def run(self) -> None:
-        context = self._holder.context
-        if context is None:
+        poller = self._holder.poller
+        if poller is None:
             raise RuntimeError("GitHub Monitor started without a PluginContext")
-        await GitHubPoller(context, self._stop).run()
+        await poller.run()
