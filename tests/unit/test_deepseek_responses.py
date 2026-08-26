@@ -121,7 +121,7 @@ async def test_non_thinking_request_omits_unsupported_tool_choice() -> None:
         payload = json.loads(request.content)
         assert "tool_choice" not in payload
         assert "temperature" not in payload
-        assert payload["reasoning"] == {"effort": "none"}
+        assert "reasoning" not in payload
         return httpx.Response(200, request=request, json=_fixture("text_completed.json"))
 
     async with httpx.AsyncClient(
@@ -153,7 +153,7 @@ async def test_non_thinking_request_omits_unsupported_tool_choice() -> None:
     ("thinking_enabled", "reasoning_effort", "expected_reasoning"),
     [
         (True, ReasoningEffort.HIGH, {"effort": "high"}),
-        (False, None, {"effort": "none"}),
+        (False, None, None),
         (None, None, None),
     ],
 )
