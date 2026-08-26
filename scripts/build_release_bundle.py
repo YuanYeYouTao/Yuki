@@ -67,14 +67,16 @@ def tracked_files(root: Path) -> set[str]:
 def select_bundle_files(files: Iterable[str], version: str) -> dict[str, str]:
     tracked = set(files)
     release_note = f"docs/releases/v{version}.md"
+    upgrade_guide = f"docs/upgrade-{version}.md"
     snowluma_guide = "docs/deployment/snowluma.md"
-    required = _ROOT_FILES | _CONFIG_FILES | {release_note, snowluma_guide}
+    required = _ROOT_FILES | _CONFIG_FILES | {release_note, upgrade_guide, snowluma_guide}
     missing = sorted(required - tracked)
     if missing:
         raise BundleBuildError(f"required tracked deployment files are missing: {missing}")
 
-    selected = {path: path for path in required - {release_note, snowluma_guide}}
-    selected[release_note] = f"Yuki-{version}-Upgrade.md"
+    selected = {path: path for path in required - {release_note, upgrade_guide, snowluma_guide}}
+    selected[release_note] = f"Yuki-{version}-Release-Notes.md"
+    selected[upgrade_guide] = f"Yuki-{version}-Upgrade.md"
     selected[snowluma_guide] = "SnowLuma.md"
     for path in sorted(tracked):
         pure = PurePosixPath(path)
@@ -139,7 +141,7 @@ def build_release_bundle(
     powershell_installer = output_directory / "install.ps1"
     shutil.copyfile(root / "docker-compose.yml", compose_asset)
     shutil.copyfile(root / ".env.example", env_asset)
-    shutil.copyfile(root / f"docs/releases/v{version}.md", upgrade_asset)
+    shutil.copyfile(root / f"docs/upgrade-{version}.md", upgrade_asset)
     shutil.copyfile(root / "install.sh", shell_installer)
     shutil.copyfile(root / "install.ps1", powershell_installer)
     shell_installer.chmod(0o755)

@@ -105,19 +105,6 @@ source="$temporary/yuki-$VERSION-deploy"
 
 if [ "$existing" = false ]; then
     cp -R "$source/." "$INSTALL_DIR/"
-else
-    stamp=$(date -u +%Y%m%dT%H%M%SZ)
-    managed_backup="$INSTALL_DIR/.yuki/backups/installer-$stamp"
-    for relative in docker-compose.yml .env.example install.sh install.ps1 SnowLuma.md "Yuki-$VERSION-Upgrade.md"; do
-        [ -f "$source/$relative" ] || fail "release bundle is missing $relative"
-        if [ -f "$INSTALL_DIR/$relative" ]; then
-            mkdir -p "$managed_backup/$(dirname "$relative")"
-            cp "$INSTALL_DIR/$relative" "$managed_backup/$relative"
-        fi
-        cp "$source/$relative" "$INSTALL_DIR/$relative.yuki-new"
-        mv -f "$INSTALL_DIR/$relative.yuki-new" "$INSTALL_DIR/$relative"
-    done
-    printf '%s\n' "Updated release-managed deployment files; mutable data and configuration were preserved."
 fi
 
 image="$BOT_IMAGE:$VERSION"
@@ -126,6 +113,15 @@ docker pull "$image"
 
 if [ "$existing" = true ]; then
     cd "$INSTALL_DIR"
+    old_container=$(docker compose ps --all -q bot 2>/dev/null | sed -n '1p')
+    source_image_json=null
+    source_image_id=""
+    source_digest=""
+    if [ -n "$old_container" ]; then
+        source_image_json=$(docker inspect --format '{{json .Config.Image}}' "$old_container")
+        source_image_id=$(docker inspect --format '{{.Image}}' "$old_container")
+        source_digest=$(docker image inspect --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' "$source_image_id" 2>/dev/null || true)
+    fi
     old_running=$(docker compose ps -q bot 2>/dev/null || true)
     if [ -n "$old_running" ]; then
         docker compose stop bot || fail "unable to stop the old Bot container"
@@ -150,8 +146,7 @@ if [ "$existing" = true ]; then
     copy_upgrade_file "$INSTALL_DIR/data/qq_ai_bot.db" "$snap/data/qq_ai_bot.db"
     copy_upgrade_file "$INSTALL_DIR/data/qq_ai_bot.db-wal" "$snap/data/qq_ai_bot.db-wal"
     copy_upgrade_file "$INSTALL_DIR/data/qq_ai_bot.db-shm" "$snap/data/qq_ai_bot.db-shm"
-    digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image" 2>/dev/null || true)
-    printf '%s\n' "{\"version\":\"$VERSION\",\"image\":\"$image\",\"digest\":\"$digest\",\"created_at\":\"$stamp\"}" > "$snap/manifest.json" \
+    printf '%s\n' "{\"source_image\":$source_image_json,\"source_image_id\":\"$source_image_id\",\"source_digest\":\"$source_digest\",\"target_version\":\"$VERSION\",\"created_at\":\"$stamp\"}" > "$snap/manifest.json" \
         || fail "unable to write the upgrade snapshot manifest"
     verify_snapshot='
 import hashlib, pathlib, sqlite3
@@ -180,6 +175,18 @@ if db.is_file():
         --volume "$snap:/snapshot" \
         "$image" -c "$verify_snapshot" \
         || fail "upgrade snapshot checksum or database verification failed"
+
+    managed_backup="$INSTALL_DIR/.yuki/backups/installer-$stamp"
+    for relative in docker-compose.yml .env.example install.sh install.ps1 SnowLuma.md "Yuki-$VERSION-Upgrade.md"; do
+        [ -f "$source/$relative" ] || fail "release bundle is missing $relative"
+        if [ -f "$INSTALL_DIR/$relative" ]; then
+            mkdir -p "$managed_backup/$(dirname "$relative")"
+            cp "$INSTALL_DIR/$relative" "$managed_backup/$relative"
+        fi
+        cp "$source/$relative" "$INSTALL_DIR/$relative.yuki-new"
+        mv -f "$INSTALL_DIR/$relative.yuki-new" "$INSTALL_DIR/$relative"
+    done
+    printf '%s\n' "Updated release-managed deployment files; mutable data and configuration were preserved."
 fi
 
 [ -t 0 ] && [ -t 1 ] || fail "guided setup requires an interactive terminal"

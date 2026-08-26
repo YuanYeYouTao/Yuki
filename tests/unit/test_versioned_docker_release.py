@@ -108,6 +108,8 @@ def test_bundle_contains_only_deployment_files_and_expected_assets(tmp_path: Pat
     assert f"{prefix}snowluma-qq-data/" in names
     assert f"{prefix}snowluma-extra-accounts/" in names
     assert f"{prefix}SnowLuma.md" in names
+    assert f"{prefix}Yuki-3.8.0-Release-Notes.md" in names
+    assert f"{prefix}Yuki-3.8.0-Upgrade.md" in names
     assert f"{prefix}install.sh" in names
     assert f"{prefix}install.ps1" in names
     assert shell_mode & 0o111
@@ -127,6 +129,12 @@ def test_bundle_contains_only_deployment_files_and_expected_assets(tmp_path: Pat
     assert len(checksums) == 7
     for name, expected in checksums.items():
         assert sha256((tmp_path / name).read_bytes()).hexdigest() == expected
+    assert (tmp_path / "Yuki-3.8.0-Upgrade.md").read_bytes() == (
+        ROOT / "docs/upgrade-3.8.0.md"
+    ).read_bytes()
+    assert (tmp_path / "Yuki-3.8.0-Upgrade.md").read_bytes() != (
+        ROOT / "docs/releases/v3.8.0.md"
+    ).read_bytes()
 
 
 def test_production_and_development_compose_are_separated() -> None:
@@ -446,6 +454,17 @@ def test_installers_are_fixed_orchestrators_without_a_docker_socket_mount() -> N
     assert powershell.index('Invoke-WebRequest -Uri "$Base/$ArchiveName"') < powershell.index(
         "if (-not $Existing)"
     )
+    assert shell.index('copy_upgrade_file "$INSTALL_DIR/docker-compose.yml"') < shell.index(
+        'cp "$source/$relative" "$INSTALL_DIR/$relative.yuki-new"'
+    )
+    assert powershell.index('@{ Source = (Join-Path $InstallDir "docker-compose.yml")') < (
+        powershell.index("Copy-Item -LiteralPath $SourceFile -Destination $TemporaryTarget")
+    )
+    for installer in (shell, powershell):
+        assert "source_image" in installer
+        assert "source_image_id" in installer
+        assert "source_digest" in installer
+        assert "target_version" in installer
 
 
 def _git(root: Path, *arguments: str) -> None:

@@ -91,24 +91,6 @@ try {
         Get-ChildItem -LiteralPath $Source -Force | Where-Object Name -Like '.*' | ForEach-Object {
             Copy-Item -LiteralPath $_.FullName -Destination $InstallDir -Recurse -Force
         }
-    } else {
-        $Stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ')
-        $ManagedBackup = Join-Path $InstallDir ".yuki\backups\installer-$Stamp"
-        foreach ($Relative in @('docker-compose.yml', '.env.example', 'install.sh', 'install.ps1', 'SnowLuma.md', "Yuki-$Version-Upgrade.md")) {
-            $SourceFile = Join-Path $Source $Relative
-            if (-not (Test-Path -LiteralPath $SourceFile -PathType Leaf)) {
-                Fail "Release bundle is missing $Relative."
-            }
-            $TargetFile = Join-Path $InstallDir $Relative
-            if (Test-Path -LiteralPath $TargetFile -PathType Leaf) {
-                [System.IO.Directory]::CreateDirectory($ManagedBackup) | Out-Null
-                Copy-Item -LiteralPath $TargetFile -Destination (Join-Path $ManagedBackup $Relative) -Force
-            }
-            $TemporaryTarget = "$TargetFile.yuki-new"
-            Copy-Item -LiteralPath $SourceFile -Destination $TemporaryTarget -Force
-            Move-Item -LiteralPath $TemporaryTarget -Destination $TargetFile -Force
-        }
-        Write-Host "Updated release-managed deployment files; mutable data and configuration were preserved." -ForegroundColor Green
     }
 
     $Image = "${BotImage}:$Version"
@@ -119,6 +101,19 @@ try {
     if ($Existing) {
         Push-Location $InstallDir
         try {
+            $OldContainer = ((& docker compose ps --all -q bot 2>$null) | Select-Object -First 1)
+            $SourceImage = ""
+            $SourceImageId = ""
+            $SourceDigest = ""
+            if ($OldContainer) {
+                $SourceImage = (& docker inspect --format '{{.Config.Image}}' $OldContainer).Trim()
+                $SourceImageId = (& docker inspect --format '{{.Image}}' $OldContainer).Trim()
+                try {
+                    $SourceDigest = (& docker image inspect --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' $SourceImageId).Trim()
+                } catch {
+                    $SourceDigest = ""
+                }
+            }
             $OldRunning = (& docker compose ps -q bot 2>$null)
             if ($OldRunning) {
                 & docker compose stop bot
@@ -154,13 +149,13 @@ try {
                 }
             }
         }
-        $Digest = ""
-        try {
-            $Digest = (& docker image inspect --format '{{index .RepoDigests 0}}' $Image).Trim()
-        } catch {
-            $Digest = ""
-        }
-        $Manifest = @{ version = $Version; image = $Image; digest = $Digest; created_at = $Stamp } | ConvertTo-Json -Compress
+        $Manifest = @{
+            source_image = $SourceImage
+            source_image_id = $SourceImageId
+            source_digest = $SourceDigest
+            target_version = $Version
+            created_at = $Stamp
+        } | ConvertTo-Json -Compress
         [System.IO.File]::WriteAllText((Join-Path $Snap "manifest.json"), $Manifest)
         $VerifySnapshot = @'
 import hashlib, pathlib, sqlite3
@@ -188,6 +183,23 @@ if db.is_file():
             --volume "${Snap}:/snapshot" `
             $Image -c $VerifySnapshot
         if ($LASTEXITCODE -ne 0) { Fail "Upgrade snapshot checksum or database verification failed." }
+
+        $ManagedBackup = Join-Path $InstallDir ".yuki\backups\installer-$Stamp"
+        foreach ($Relative in @('docker-compose.yml', '.env.example', 'install.sh', 'install.ps1', 'SnowLuma.md', "Yuki-$Version-Upgrade.md")) {
+            $SourceFile = Join-Path $Source $Relative
+            if (-not (Test-Path -LiteralPath $SourceFile -PathType Leaf)) {
+                Fail "Release bundle is missing $Relative."
+            }
+            $TargetFile = Join-Path $InstallDir $Relative
+            if (Test-Path -LiteralPath $TargetFile -PathType Leaf) {
+                [System.IO.Directory]::CreateDirectory($ManagedBackup) | Out-Null
+                Copy-Item -LiteralPath $TargetFile -Destination (Join-Path $ManagedBackup $Relative) -Force
+            }
+            $TemporaryTarget = "$TargetFile.yuki-new"
+            Copy-Item -LiteralPath $SourceFile -Destination $TemporaryTarget -Force
+            Move-Item -LiteralPath $TemporaryTarget -Destination $TargetFile -Force
+        }
+        Write-Host "Updated release-managed deployment files; mutable data and configuration were preserved." -ForegroundColor Green
     }
 
     & docker run --rm -it `

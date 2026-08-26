@@ -100,7 +100,7 @@ jobs:
         run: uv run ruff check .
       - name: Mypy
         run: uv run mypy src
-      - name: Enforce test budget
+      - name: Enforce test budget and required safety gates
         shell: bash
         run: |
           set -euo pipefail
@@ -112,6 +112,16 @@ jobs:
             echo "test budget exceeded: $count collected (maximum 800)" >&2
             exit 1
           fi
+          required_tests=(
+            "tests/unit/test_event_prompt_mentions.py::test_history_reprojects_ordered_mentions_from_persisted_segments"
+            "tests/unit/test_event_prompt_mentions.py::test_history_segment_fallback_log_never_contains_content_or_ids"
+          )
+          for required_test in "${required_tests[@]}"; do
+            if ! grep -Fqx "$required_test" <<<"$output"; then
+              echo "required safety gate is missing: $required_test" >&2
+              exit 1
+            fi
+          done
       - name: Installer syntax
         shell: bash
         run: |
