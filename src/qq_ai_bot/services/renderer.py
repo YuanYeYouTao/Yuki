@@ -22,7 +22,7 @@ _EVENT_IDENTITY_MARKER = re.compile(
 _MAIN_AGENT_IDENTITY_MARKER = re.compile(
     r"\[[^\]\r\n]{1,128}\|QQ:[1-9]\d{4,19}\][ \t]*(?:\n[ \t]*)?"
 )
-_MAIN_AGENT_EVENT_PREFIX = re.compile(r"(?m)^[ \t]*#\d{1,19}(?:\|[^>\r\n]{1,768})?>[ \t]*")
+_MAIN_AGENT_EVENT_PREFIX = re.compile(r"(?m)^[ \t]*#\d{1,19}(?:\|[^>\r\n]{1,768})?>?[ \t]*")
 _BLOCKQUOTE_PREFIX = re.compile(r"(?m)^[ \t]*>[ \t]+")
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[。！？!?；;])")
 
