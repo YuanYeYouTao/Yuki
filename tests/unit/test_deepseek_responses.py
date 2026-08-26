@@ -152,7 +152,13 @@ async def test_non_thinking_request_omits_unsupported_tool_choice() -> None:
 @pytest.mark.parametrize(
     ("thinking_enabled", "reasoning_effort", "expected_reasoning"),
     [
+        (True, ReasoningEffort.NONE, {"effort": "none"}),
+        (True, ReasoningEffort.MINIMAL, {"effort": "minimal"}),
+        (True, ReasoningEffort.LOW, {"effort": "low"}),
+        (True, ReasoningEffort.MEDIUM, {"effort": "medium"}),
         (True, ReasoningEffort.HIGH, {"effort": "high"}),
+        (True, ReasoningEffort.XHIGH, {"effort": "xhigh"}),
+        (True, ReasoningEffort.MAX, {"effort": "max"}),
         (False, None, None),
         (None, None, None),
     ],

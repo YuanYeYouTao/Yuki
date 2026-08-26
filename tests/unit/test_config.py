@@ -11,11 +11,12 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.messages import ReasoningEffort
 
 
-def test_deepseek_reasoning_effort_accepts_max() -> None:
-    settings = Settings(_env_file=None, llm_reasoning_effort="max")
+@pytest.mark.parametrize("effort", list(ReasoningEffort))
+def test_deepseek_reasoning_effort_accepts_supported_values(effort: ReasoningEffort) -> None:
+    settings = Settings(_env_file=None, llm_reasoning_effort=effort.value)
 
-    assert settings.llm_reasoning_effort is ReasoningEffort.MAX
-    assert settings.model_runtime.llm_reasoning_effort is ReasoningEffort.MAX
+    assert settings.llm_reasoning_effort is effort
+    assert settings.model_runtime.llm_reasoning_effort is effort
 
 
 @pytest.mark.parametrize(
