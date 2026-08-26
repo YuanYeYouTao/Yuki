@@ -25,7 +25,7 @@ from qq_ai_bot.conversation.hydrate import (
 from qq_ai_bot.conversation.rollup.metrics import ConversationRollupMetrics
 from qq_ai_bot.conversation.rollup.models import ConversationScopeState, RollupPolicyConfig
 from qq_ai_bot.conversation.rollup.prompt_accounting import (
-    prompt_accounting_event_characters,
+    durable_uncovered_event_characters,
 )
 from qq_ai_bot.conversation.rollup.repository import recount_canonical_uncovered
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
@@ -303,9 +303,8 @@ class ScopedEventLedgerUnitOfWork:
             if row is None:
                 return False
             old = _event_record(row)
-            old_characters = prompt_accounting_event_characters(
+            old_characters = durable_uncovered_event_characters(
                 old,
-                events=(old,),
                 bot_display_name=self._config.bot_display_name,
                 timezone=self._config.timezone,
             )
@@ -327,9 +326,8 @@ class ScopedEventLedgerUnitOfWork:
                     )
                     if row.id > coverage:
                         next_characters = conversation.uncovered_character_count + (
-                            prompt_accounting_event_characters(
+                            durable_uncovered_event_characters(
                                 new,
-                                events=(new,),
                                 bot_display_name=self._config.bot_display_name,
                                 timezone=self._config.timezone,
                             )
@@ -887,9 +885,8 @@ class ScopedEventLedgerUnitOfWork:
             session,
             hydrated.conversation_id,
             event_id=row.id,
-            characters=prompt_accounting_event_characters(
+            characters=durable_uncovered_event_characters(
                 event,
-                events=(event,),
                 bot_display_name=self._config.bot_display_name,
                 timezone=self._config.timezone,
             ),
@@ -900,7 +897,7 @@ class ScopedEventLedgerUnitOfWork:
         from qq_ai_bot.conversation.canonical_rollup import signal_canonical_rollup_if_needed
 
         signalled = await signal_canonical_rollup_if_needed(
-            session, conversation, self._config, force_existing=True
+            session, conversation, self._config, force_existing=not plugin_external
         )
         return ScopedAppendResult(
             event=_event_record(row),

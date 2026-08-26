@@ -543,6 +543,7 @@ class MemoryRebuildService:
                     source_event.scope,
                     before_event_id=source_event.id,
                     limit=self.settings.memory_rebuild_context_event_limit,
+                    message_only=True,
                 )
                 task = asyncio.current_task()
                 if task is not None:

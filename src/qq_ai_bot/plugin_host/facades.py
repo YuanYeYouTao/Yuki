@@ -806,7 +806,11 @@ class _MessageFacade:
             bot_user_id=invocation.bot_user_id,
             platform_message_id=inbound.reply_to_message_id,
         )
-        return _record_message(record) if record is not None else None
+        return (
+            _record_message(record)
+            if record is not None and record.event_kind == "message"
+            else None
+        )
 
     async def get_recent(self, limit: int = 20) -> tuple[CurrentMessage, ...]:
         invocation = self._host._require(PluginPermission.MESSAGE_HISTORY_READ)
@@ -820,6 +824,7 @@ class _MessageFacade:
         rows = await ledger.list_scope_recent(
             scope,
             limit=_bounded_limit(limit),
+            message_only=True,
         )
         return tuple(_record_message(row) for row in rows)
 
@@ -837,6 +842,7 @@ class _MessageFacade:
             limit=_bounded_limit(limit),
             user_id=(invocation.actor_user_id if invocation.current_group_id is None else None),
             group_id=invocation.current_group_id,
+            message_only=True,
         )
         return tuple(_record_message(row) for row in rows)
 

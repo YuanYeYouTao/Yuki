@@ -17,11 +17,16 @@ from qq_ai_bot.identity.routing import PresenceRouter, ResolvedSend, RouteSendEr
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.plugin_host.media_artifacts import PluginMediaArtifactStore
 from qq_ai_bot.plugin_host.notification_repository import (
+    BackgroundTurnFenceError,
     OutboxRecord,
     PluginNotificationRepository,
     queued_work_error_category,
 )
 from qq_ai_bot.plugin_host.ownership import PluginOwnershipError
+from qq_ai_bot.services.effect_gate import (
+    ConversationEffectGate,
+    EffectGateTimeoutError,
+)
 from yuki_plugin_sdk.errors import PluginPermissionError
 
 logger = logging.getLogger(__name__)
@@ -195,11 +200,15 @@ class PluginNotificationOutboxWorker:
         artifacts: PluginMediaArtifactStore,
         ledger: EventLedgerRepository,
         transport: NotificationTransport | None = None,
+        effect_gate: ConversationEffectGate,
+        effect_gate_timeout_seconds: float = 5.0,
     ) -> None:
         self._repository = repository
         self._artifacts = artifacts
         self._ledger = ledger
         self._transport = transport or OneBotNotificationTransport()
+        self._effect_gate = effect_gate
+        self._effect_gate_timeout_seconds = effect_gate_timeout_seconds
         self._stop = asyncio.Event()
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -234,9 +243,12 @@ class PluginNotificationOutboxWorker:
     async def _deliver(self, item: OutboxRecord) -> None:
         try:
             await self._repository.require_outbox_ready(item)
+        except BackgroundTurnFenceError:
+            return
         except PluginOwnershipError as exc:
             await self._repository.finish_outbox(
                 item.id,
+                attempt=item.attempts,
                 status="failed",
                 error_category=queued_work_error_category(exc, item),
             )
@@ -250,11 +262,50 @@ class PluginNotificationOutboxWorker:
             is None
         ):
             await self._repository.finish_outbox(
-                item.id, status="cancelled", error_category="target_grant_revoked"
+                item.id,
+                attempt=item.attempts,
+                status="cancelled",
+                error_category="target_grant_revoked",
             )
             return
         try:
             person_id, space_id = await self._canonical_delivery_target(item)
+        except PluginPermanentDeliveryError as exc:
+            await self._repository.finish_outbox(
+                item.id,
+                attempt=item.attempts,
+                status="failed",
+                error_category=exc.category,
+            )
+            return
+        if item.part_type != "agent_reply":
+            await self._deliver_ready(item, person_id=person_id, space_id=space_id)
+            return
+        try:
+            scope_key = await self._repository.require_agent_reply_ready(item)
+            async with self._effect_gate.hold(
+                scope_key,
+                timeout_seconds=self._effect_gate_timeout_seconds,
+            ):
+                await self._repository.require_agent_reply_ready(item)
+                await self._deliver_ready(item, person_id=person_id, space_id=space_id)
+        except BackgroundTurnFenceError:
+            return
+        except EffectGateTimeoutError:
+            await self._repository.retry_outbox(
+                item.id,
+                attempt=item.attempts,
+                error_category="effect_gate_timeout",
+            )
+
+    async def _deliver_ready(
+        self,
+        item: OutboxRecord,
+        *,
+        person_id: str | None,
+        space_id: str | None,
+    ) -> None:
+        try:
             if item.part_type == "media":
                 if item.media_handle_id is None:
                     raise PluginPermanentDeliveryError("media_handle_missing")
@@ -279,17 +330,27 @@ class PluginNotificationOutboxWorker:
             category = (
                 exc.category if isinstance(exc, PluginPermanentDeliveryError) else "media_invalid"
             )
-            await self._repository.finish_outbox(item.id, status="failed", error_category=category)
+            await self._repository.finish_outbox(
+                item.id,
+                attempt=item.attempts,
+                status="failed",
+                error_category=category,
+            )
             return
         except ProactiveGatewayError as exc:
             if exc.uncertain:
                 await self._repository.finish_outbox(
                     item.id,
+                    attempt=item.attempts,
                     status="uncertain",
                     error_category=exc.category,
                 )
             else:
-                await self._repository.retry_outbox(item.id, error_category=exc.category)
+                await self._repository.retry_outbox(
+                    item.id,
+                    attempt=item.attempts,
+                    error_category=exc.category,
+                )
             return
         except Exception as exc:
             logger.warning(
@@ -298,15 +359,35 @@ class PluginNotificationOutboxWorker:
                 item.part_type,
                 type(exc).__name__,
             )
-            await self._repository.retry_outbox(item.id, error_category=type(exc).__name__)
+            await self._repository.retry_outbox(
+                item.id,
+                attempt=item.attempts,
+                error_category=type(exc).__name__,
+            )
             return
-        try:
+        if not isinstance(receipt, NotificationDeliveryReceipt) or not receipt.message_id.strip():
             await self._repository.finish_outbox(
                 item.id,
+                attempt=item.attempts,
+                status="uncertain",
+                error_category="delivery_receipt_invalid",
+            )
+            return
+        try:
+            await self._record_outbound(item, receipt)
+            completed = await self._repository.finish_outbox(
+                item.id,
+                attempt=item.attempts,
                 status="sent",
                 platform_message_id=receipt.message_id,
             )
-            await self._record_outbound(item, receipt)
+            if not completed:
+                logger.error(
+                    "notification_post_send_attempt_reclaimed plugin_id=%s part_type=%s",
+                    item.plugin_id,
+                    item.part_type,
+                )
+                return
         except Exception as exc:
             logger.exception(
                 "notification_post_send_record_failed plugin_id=%s error_category=%s",
@@ -315,6 +396,7 @@ class PluginNotificationOutboxWorker:
             )
             await self._repository.finish_outbox(
                 item.id,
+                attempt=item.attempts,
                 status="uncertain",
                 platform_message_id=receipt.message_id,
                 error_category="post_send_persistence_failed",
@@ -362,9 +444,6 @@ class PluginNotificationOutboxWorker:
         target = receipt.external_target_id
         if not sender or not target or not receipt.presence_id:
             raise PluginPermanentDeliveryError("none")
-        before = None
-        if item.canonical_conversation_id:
-            before = await self._repository.conversation_watermark(item.canonical_conversation_id)
         appended = await self._ledger.append(
             bot_user_id=sender,
             platform_message_id=receipt.message_id,
@@ -392,12 +471,6 @@ class PluginNotificationOutboxWorker:
             and event.canonical_conversation_id != item.canonical_conversation_id
         ):
             raise PluginPermanentDeliveryError("canonical_owner_mismatch")
-        if before is not None:
-            after = await self._repository.conversation_watermark(
-                item.canonical_conversation_id or ""
-            )
-            if after != before:
-                raise PluginPermanentDeliveryError("canonical_owner_mismatch")
 
 
 class PluginPermanentDeliveryError(RuntimeError):

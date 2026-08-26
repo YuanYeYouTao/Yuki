@@ -345,6 +345,10 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
     assert not settings.plugin_system_enabled
     assert settings.plugin_api_version == "2.0"
     assert settings.plugin_ai_session_max_history_messages == 200
+    assert settings.plugin_external_event_context_limit == 10
+    assert settings.plugin_external_event_context_characters == 6000
+    assert settings.plugin_external_event_summary_characters == 800
+    assert settings.plugins.plugin_external_event_summary_characters == 800
 
     assert Settings.model_validate({"conversation_autonomous_admission_threshold": 101})
     with pytest.raises(ValidationError, match="greater than or equal to 0"):
@@ -361,6 +365,18 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
                 "plugin_max_total_prompt_characters": 2000,
             }
         )
+
+
+def test_plugin_external_event_summary_characters_default_and_override() -> None:
+    settings = Settings(_env_file=None)
+    assert settings.plugin_external_event_summary_characters == 800
+    overridden = Settings.model_validate({"plugin_external_event_summary_characters": 120})
+    assert overridden.plugin_external_event_summary_characters == 120
+    assert overridden.plugins.plugin_external_event_summary_characters == 120
+    with pytest.raises(ValidationError, match="greater than 0"):
+        Settings.model_validate({"plugin_external_event_summary_characters": 0})
+    with pytest.raises(ValidationError, match="less than or equal to 8000"):
+        Settings.model_validate({"plugin_external_event_summary_characters": 8_001})
 
 
 def test_memory_limits_are_configurable_positive_values() -> None:

@@ -71,6 +71,7 @@ class GitHubMonitorConfig(StrictModel):
     replay_recent_limit: int = Field(default=5, ge=1, le=20)
     events_per_repository: int = Field(default=100, ge=1, le=100)
     max_events_per_poll: int = Field(default=50, ge=1, le=200)
+    coalesce: bool = True
     request_timeout_seconds: int = Field(default=20, ge=3, le=60)
     repositories: tuple[RepositorySubscription, ...] = ()
 

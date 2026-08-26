@@ -23,6 +23,10 @@ from qq_ai_bot.conversation.hydrate import (
     hydrate_scope_state_from_canonical,
     synthetic_scope_id,
 )
+from qq_ai_bot.conversation.rollup.coverage import (
+    session_effective_coverage,
+    valid_same_generation_overlay,
+)
 from qq_ai_bot.conversation.rollup.errors import (
     ConversationCoverageError,
     RollupLeaseLostError,
@@ -46,9 +50,16 @@ from qq_ai_bot.conversation.rollup.models import (
     RollupPolicyConfig,
 )
 from qq_ai_bot.conversation.rollup.prompt_accounting import (
+    durable_uncovered_characters,
+    is_prompt_visible_message,
     prompt_accounting_characters,
+    prompt_visible_event_count,
+    source_accounting_characters,
 )
-from qq_ai_bot.conversation.rollup.renderer import source_fingerprint
+from qq_ai_bot.conversation.rollup.renderer import (
+    serialize_compaction_source_events,
+    source_fingerprint,
+)
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
@@ -141,13 +152,12 @@ def _valid_same_generation_overlay(
     last_event_id: int,
     semantic_revision: int,
 ) -> bool:
-    if overlay is None:
-        return False
-    return (
-        overlay.generation == generation
-        and overlay.base_semantic_revision == semantic_revision
-        and starts_after <= overlay.covered_through_event_id <= last_event_id
-        and bool(overlay.summary_text.strip())
+    return valid_same_generation_overlay(
+        overlay,
+        generation=generation,
+        starts_after=starts_after,
+        last_event_id=last_event_id,
+        semantic_revision=semantic_revision,
     )
 
 
@@ -331,12 +341,13 @@ async def _compose_detailed_status(
     ):
         assert overlay_row is not None
         overlay = _checkpoint_status_from_overlay(overlay_row)
-    if overlay is not None:
-        effective_coverage = overlay.covered_through_event_id
-    elif semantic is not None:
-        effective_coverage = semantic.covered_through_event_id
-    else:
-        effective_coverage = state.starts_after_event_id
+    effective_coverage = session_effective_coverage(
+        generation=state.generation,
+        starts_after=state.starts_after_event_id,
+        last_event_id=state.last_event_id,
+        overlay=overlay_row,
+        semantic=semantic_row,
+    )
     tail_events = 0
     tail_characters = 0
     if state.starts_after_event_id <= effective_coverage <= state.last_event_id:
@@ -347,7 +358,7 @@ async def _compose_detailed_status(
             last_event_id=state.last_event_id,
             conversation_id=conversation_id,
         )
-        tail_events = len(events)
+        tail_events = prompt_visible_event_count(events, **_prompt_kwargs(config))
         tail_characters = prompt_accounting_characters(events, **_prompt_kwargs(config))
     return ConversationRollupDetailedStatus(
         scope=state,
@@ -363,33 +374,25 @@ async def _compose_detailed_status(
     )
 
 
-def _suffix_prompt_characters(
-    events: tuple[EventRecord, ...],
-    start: int,
-    config: RollupPolicyConfig,
-) -> int:
-    return prompt_accounting_characters(events[start:], **_prompt_kwargs(config))
-
-
 def protected_tail_start(events: tuple[EventRecord, ...], config: RollupPolicyConfig) -> int:
-    """Return the first protected event index using the later of both boundaries."""
+    """Return the start of the raw suffix that holds the last N visible messages.
+
+    N is ``raw_tail_events``. Interleaved external rows ride with that
+    contiguous suffix and do not occupy a visible-message slot.
+    ``raw_tail_characters`` is not part of this boundary.
+    """
 
     if not events:
         return 0
-    count_index = max(0, len(events) - config.raw_tail_events)
-    if _suffix_prompt_characters(events, 0, config) < config.raw_tail_characters:
-        character_index = 0
-    else:
-        low = 0
-        high = len(events) - 1
-        while low < high:
-            mid = (low + high + 1) // 2
-            if _suffix_prompt_characters(events, mid, config) >= config.raw_tail_characters:
-                low = mid
-            else:
-                high = mid - 1
-        character_index = low
-    return max(count_index, character_index)
+    remaining_visible = config.raw_tail_events
+    start = len(events)
+    for index in range(len(events) - 1, -1, -1):
+        if is_prompt_visible_message(events[index], **_prompt_kwargs(config)):
+            start = index
+            remaining_visible -= 1
+            if remaining_visible == 0:
+                break
+    return start
 
 
 def eligible_prefix(
@@ -414,14 +417,16 @@ def take_batch(
     events: tuple[EventRecord, ...], config: RollupPolicyConfig
 ) -> tuple[EventRecord, ...]:
     selected: list[EventRecord] = []
+    timezone = config.timezone
+    cap = config.batch_max_characters
     for event in events:
-        candidate = (*selected, event)
-        size = prompt_accounting_characters(candidate, **_prompt_kwargs(config))
-        if selected and (
-            len(selected) >= config.batch_max_events or size > config.batch_max_characters
-        ):
+        trial = (*selected, event)
+        unbounded = len(serialize_compaction_source_events(trial, timezone=timezone))
+        if selected and (len(selected) >= config.batch_max_events or unbounded > cap):
             break
         selected.append(event)
+        if len(selected) >= config.batch_max_events or unbounded > cap:
+            break
     return tuple(selected)
 
 
@@ -831,7 +836,11 @@ class ConversationRollupRepository:
         )
         job = await session.get(CanonicalConversationRollupJobModel, conversation.id)
         semantic_revision = rollup_row.revision if rollup_row is not None else 0
-        effective = self._canonical_rollup_state(rollup_row) if rollup_row is not None else None
+        effective = (
+            self._canonical_rollup_state(rollup_row)
+            if rollup_row is not None and rollup_row.generation == conversation.generation
+            else None
+        )
         if _valid_same_generation_overlay(
             overlay_row,
             generation=conversation.generation,
@@ -896,14 +905,12 @@ class ConversationRollupRepository:
         ):
             assert overlay_row is not None
             overlay_state = _canonical_overlay_state(overlay_row, state.id)
-        coverage = (
-            overlay_state.covered_through_event_id
-            if overlay_state is not None
-            else (
-                rollup_row.covered_through_event_id
-                if rollup_row is not None
-                else conversation.starts_after_event_id
-            )
+        coverage = session_effective_coverage(
+            generation=conversation.generation,
+            starts_after=conversation.starts_after_event_id,
+            last_event_id=conversation.last_event_id,
+            overlay=overlay_row,
+            semantic=rollup_row,
         )
         events = await _load_prompt_tail_events(
             session,
@@ -1040,7 +1047,11 @@ class ConversationRollupRepository:
         batch = take_batch(eligible_prefix(all_events, self.config), self.config)
         if not batch:
             return None
-        characters = prompt_accounting_characters(batch, **_prompt_kwargs(self.config))
+        characters = source_accounting_characters(
+            batch,
+            timezone=self.config.timezone,
+            max_characters=self.config.batch_max_characters,
+        )
         fingerprint = source_fingerprint(
             scope_id=claim.scope_id,
             generation=claim.generation,
@@ -1172,7 +1183,7 @@ class ConversationRollupRepository:
             current_rollup.revision = revision + 1
             current_rollup.updated_at = now
         conversation.uncovered_event_count = len(remaining)
-        conversation.uncovered_character_count = prompt_accounting_characters(
+        conversation.uncovered_character_count = durable_uncovered_characters(
             remaining, **_prompt_kwargs(self.config)
         )
         conversation.covered_through_event_id = covered_through
@@ -1401,6 +1412,23 @@ async def recount_canonical_uncovered(
 ) -> tuple[int, int]:
     """Repair canonical uncovered counters for live keeper events."""
 
+    event_count, character_count = await calculate_canonical_uncovered(
+        session,
+        conversation,
+        config,
+    )
+    conversation.uncovered_event_count = event_count
+    conversation.uncovered_character_count = character_count
+    return event_count, character_count
+
+
+async def calculate_canonical_uncovered(
+    session: AsyncSession,
+    conversation: CanonicalConversationModel,
+    config: RollupPolicyConfig | None = None,
+) -> tuple[int, int]:
+    """Calculate the durable keeper/message rulers without mutating the conversation."""
+
     rollup = await session.get(CanonicalConversationRollupModel, conversation.id)
     if rollup is not None and rollup.generation != conversation.generation:
         raise ConversationCoverageError("cannot recount across rollup generations")
@@ -1421,9 +1449,8 @@ async def recount_canonical_uncovered(
     )
     events = tuple(_event_record(row) for row in rows)
     policy = config or RollupPolicyConfig()
-    conversation.uncovered_event_count = len(events)
-    conversation.uncovered_character_count = prompt_accounting_characters(
+    character_count = durable_uncovered_characters(
         events,
         **_prompt_kwargs(policy),
     )
-    return conversation.uncovered_event_count, conversation.uncovered_character_count
+    return len(events), character_count

@@ -143,6 +143,10 @@ jobs:
         run: uv run pytest -q
       - name: Example plugin contract
         run: uv run pytest -q examples/plugins/com.example.echo/tests
+      - name: GitHub Monitor plugin contract and behavior
+        run: |
+          uv run pytest -q plugins/github-monitor/tests
+          uv run qq-ai-bot-cli plugin test plugins/github-monitor
       - name: Alembic fresh install
         env:
           DATABASE_URL: sqlite+aiosqlite:///./data/ci.db

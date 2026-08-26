@@ -383,6 +383,8 @@ class ApplicationContainer:
                 self.gateway_registry,
                 router=self.presence_router,
             ),
+            effect_gate=self.conversation_effect_gate,
+            effect_gate_timeout_seconds=settings.conversation_effect_gate_timeout_seconds,
         )
         self.plugin_background_turns = PluginBackgroundTurnWorker(
             repository=self.plugin_notification_repository,
@@ -481,7 +483,11 @@ class ApplicationContainer:
             self.gateway_registry,
             self.presence_router,
         )
-        self.canonical_uow = CanonicalIngressUnitOfWork(self.database, self.presence_router)
+        self.canonical_uow = CanonicalIngressUnitOfWork(
+            self.database,
+            self.presence_router,
+            config=self.conversation_rollups.config,
+        )
         self.processor = MessageProcessor(
             settings=settings,
             ledger=self.ledger,

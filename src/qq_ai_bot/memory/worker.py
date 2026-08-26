@@ -194,6 +194,7 @@ class MemoryWorker:
                 first_event.scope,
                 before_event_id=first_event.id,
                 limit=8,
+                message_only=True,
             )
             extracted = await self.extractor.extract_batch(
                 tuple(job.event for job in jobs),

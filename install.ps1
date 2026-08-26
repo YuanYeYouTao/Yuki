@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$InstallDir = "",
-    [string]$Version = "3.8.0"
+    [string]$Version = "3.8.1"
 )
 
 $ErrorActionPreference = "Stop"
@@ -149,6 +149,14 @@ try {
                 }
             }
         }
+        $PluginArtifacts = Join-Path $InstallDir "data\plugin_artifacts"
+        if (Test-Path -LiteralPath $PluginArtifacts -PathType Container) {
+            try {
+                Copy-Item -LiteralPath $PluginArtifacts -Destination (Join-Path $Snap "data\plugin_artifacts") -Recurse -Force -ErrorAction Stop
+            } catch {
+                Fail "Unable to snapshot plugin media artifacts."
+            }
+        }
         $Manifest = @{
             source_image = $SourceImage
             source_image_id = $SourceImageId
@@ -199,6 +207,34 @@ if db.is_file():
             Copy-Item -LiteralPath $SourceFile -Destination $TemporaryTarget -Force
             Move-Item -LiteralPath $TemporaryTarget -Destination $TargetFile -Force
         }
+        $SourcePlugins = Join-Path $Source "plugins"
+        $TargetPlugins = Join-Path $InstallDir "plugins"
+        $PluginBackup = Join-Path $ManagedBackup "plugins"
+        [System.IO.Directory]::CreateDirectory($TargetPlugins) | Out-Null
+        [System.IO.Directory]::CreateDirectory($PluginBackup) | Out-Null
+        foreach ($PluginSource in Get-ChildItem -LiteralPath $SourcePlugins -Directory) {
+            if (-not (Test-Path -LiteralPath (Join-Path $PluginSource.FullName "plugin.toml") -PathType Leaf)) {
+                Fail "Release bundle contains an invalid plugin."
+            }
+            $PluginTarget = Join-Path $TargetPlugins $PluginSource.Name
+            $PluginStaged = Join-Path $TargetPlugins ("." + $PluginSource.Name + ".yuki-new-" + $Stamp)
+            if (Test-Path -LiteralPath $PluginStaged) {
+                Fail "Staged plugin path already exists."
+            }
+            Copy-Item -LiteralPath $PluginSource.FullName -Destination $PluginStaged -Recurse -Force
+            $PluginBackupTarget = Join-Path $PluginBackup $PluginSource.Name
+            if (Test-Path -LiteralPath $PluginTarget) {
+                Move-Item -LiteralPath $PluginTarget -Destination $PluginBackupTarget
+            }
+            try {
+                Move-Item -LiteralPath $PluginStaged -Destination $PluginTarget
+            } catch {
+                if (Test-Path -LiteralPath $PluginBackupTarget) {
+                    Move-Item -LiteralPath $PluginBackupTarget -Destination $PluginTarget
+                }
+                Fail "Unable to install built-in plugin $($PluginSource.Name)."
+            }
+        }
         Write-Host "Updated release-managed deployment files; mutable data and configuration were preserved." -ForegroundColor Green
     }
 
@@ -232,15 +268,32 @@ if db.is_file():
     }
 
     Push-Location $InstallDir
+    $PreviousYukiVersion = $env:YUKI_VERSION
+    $env:YUKI_VERSION = $Version
     try {
         & docker compose config --quiet
         if ($LASTEXITCODE -ne 0) { Fail "docker compose config failed." }
-        & docker compose pull
+        if ($Existing) {
+            & docker compose pull bot
+        } else {
+            & docker compose pull
+        }
         if ($LASTEXITCODE -ne 0) { Fail "docker compose pull failed." }
-        $OldBot = (& docker compose ps -q bot).Trim()
+        $OldBot = ((@(& docker compose ps --all -q bot) -join "`n").Trim())
+
+        Write-Host "Running stopped-database upgrade gates with Yuki $Version" -ForegroundColor Cyan
+        & docker compose run --rm --no-deps --entrypoint qq-ai-bot-cli bot init-db
+        if ($LASTEXITCODE -ne 0) { Fail "Target database initialization failed; Bot remains stopped." }
+        & docker compose run --rm --no-deps --entrypoint qq-ai-bot-cli bot conversation recount-uncovered
+        if ($LASTEXITCODE -ne 0) { Fail "Conversation recount failed; Bot remains stopped." }
+        & docker compose run --rm --no-deps --entrypoint qq-ai-bot-cli bot conversation recount-uncovered --check
+        if ($LASTEXITCODE -ne 0) { Fail "Conversation coverage check failed; Bot remains stopped." }
+        & docker compose run --rm --no-deps --entrypoint python bot /app/plugins/github-monitor/doctor.py --apply-legacy-import
+        if ($LASTEXITCODE -ne 0) { Fail "GitHub Monitor queue preflight failed; Bot remains stopped." }
 
         $GatewayActionPath = "data/setup/gateway-action.json"
         $GatewayTargets = @()
+        $GatewayAdded = @()
         if (Test-Path -LiteralPath $GatewayActionPath) {
             try {
                 $GatewayAction = Get-Content -LiteralPath $GatewayActionPath -Raw | ConvertFrom-Json
@@ -267,23 +320,33 @@ if db.is_file():
                 Fail "Pending QQ Gateway action contains duplicate Providers."
             }
             $GatewayRemoved = @($GatewayPrevious | Where-Object { $_ -notin $GatewayTargets })
+            $GatewayAdded = @($GatewayTargets | Where-Object { $_ -notin $GatewayPrevious })
             foreach ($Service in $GatewayRemoved) {
                 & docker compose --profile napcat --profile snowluma stop $Service
                 if ($LASTEXITCODE -ne 0) { Fail "Unable to stop old QQ Gateway Provider." }
                 & docker compose --profile napcat --profile snowluma rm -f $Service
                 if ($LASTEXITCODE -ne 0) { Fail "Unable to remove old QQ Gateway Provider." }
-                $Remaining = (& docker compose --profile napcat --profile snowluma ps --all --quiet $Service).Trim()
+                $Remaining = ((@(& docker compose --profile napcat --profile snowluma ps --all --quiet $Service) -join "`n").Trim())
                 if ($Remaining) { Fail "Old QQ Gateway Provider is still present." }
             }
         }
 
-        & docker compose up -d
-        if ($LASTEXITCODE -ne 0) { Fail "docker compose up failed." }
+        if ($Existing) {
+            & docker compose up -d --no-deps --no-build --force-recreate bot
+            if ($LASTEXITCODE -ne 0) { Fail "Bot replacement failed." }
+            foreach ($Service in $GatewayAdded) {
+                & docker compose --profile napcat --profile snowluma up -d --no-deps $Service
+                if ($LASTEXITCODE -ne 0) { Fail "Unable to start new QQ Gateway Provider." }
+            }
+        } else {
+            & docker compose up -d
+            if ($LASTEXITCODE -ne 0) { Fail "docker compose up failed." }
+        }
 
         function Wait-ForBot {
             $Deadline = [DateTime]::UtcNow.AddSeconds(180)
             while ([DateTime]::UtcNow -lt $Deadline) {
-                $Container = (& docker compose ps -q bot).Trim()
+                $Container = ((@(& docker compose ps -q bot) -join "`n").Trim())
                 if ($Container) {
                     $Status = (& docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' $Container).Trim()
                     if ($Status -eq 'healthy') { return $true }
@@ -297,7 +360,7 @@ if db.is_file():
         function Wait-ForService([string]$Service) {
             $Deadline = [DateTime]::UtcNow.AddSeconds(180)
             while ([DateTime]::UtcNow -lt $Deadline) {
-                $Container = (& docker compose --profile speech ps -q $Service).Trim()
+                $Container = ((@(& docker compose --profile speech ps -q $Service) -join "`n").Trim())
                 if ($Container) {
                     $Status = (& docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' $Container).Trim()
                     if ($Status -eq 'healthy') { return $true }
@@ -311,7 +374,7 @@ if db.is_file():
         function Wait-ForGateway([string]$Service) {
             $Deadline = [DateTime]::UtcNow.AddSeconds(180)
             while ([DateTime]::UtcNow -lt $Deadline) {
-                $Container = (& docker compose --profile napcat --profile snowluma ps -q $Service).Trim()
+                $Container = ((@(& docker compose --profile napcat --profile snowluma ps -q $Service) -join "`n").Trim())
                 if ($Container) {
                     $Status = (& docker inspect --format '{{.State.Status}}' $Container).Trim()
                     if ($Status -eq 'running') { return $true }
@@ -331,7 +394,7 @@ if db.is_file():
             }
             Remove-Item -LiteralPath $GatewayActionPath -Force
         }
-        $NewBot = (& docker compose ps -q bot).Trim()
+        $NewBot = ((@(& docker compose ps -q bot) -join "`n").Trim())
         if ((Test-Path -LiteralPath "data/setup/restart-required") -and ($OldBot -ne $NewBot)) {
             Remove-Item -LiteralPath "data/setup/restart-required" -Force
         }
@@ -365,6 +428,11 @@ if db.is_file():
         & docker compose exec -T bot qq-ai-bot-cli setup verify --deployment-root /app --no-color
         if ($LASTEXITCODE -ne 0) { Fail "Final health verification failed." }
     } finally {
+        if ($null -eq $PreviousYukiVersion) {
+            Remove-Item Env:YUKI_VERSION -ErrorAction SilentlyContinue
+        } else {
+            $env:YUKI_VERSION = $PreviousYukiVersion
+        }
         Pop-Location
     }
 } finally {

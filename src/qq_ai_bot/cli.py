@@ -17,6 +17,12 @@ from alembic.config import Config
 from qq_ai_bot import __version__
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.config import Settings
+from qq_ai_bot.conversation.offline_recount import (
+    UncoveredRecountError,
+    rollup_policy_from_settings,
+    run_offline_uncovered_check,
+    run_stopped_offline_uncovered_recount,
+)
 from qq_ai_bot.deployment_setup import add_setup_parser, run_setup_command
 from qq_ai_bot.domain.messages import ChatMessage, ChatTool
 from qq_ai_bot.gateway.compatibility import provider_doctor_payload
@@ -253,6 +259,25 @@ def _add_diagnostics_parsers(
     search.add_argument("query")
     search.add_argument("--limit", type=int, default=8)
     runtime_commands.add_parser("memory-session")
+
+
+def _add_conversation_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    conversation = subparsers.add_parser(
+        "conversation",
+        help="停写会话维护：按 Prompt 尺子重算未覆盖字符",
+    )
+    commands = conversation.add_subparsers(dest="conversation_command", required=True)
+    recount = commands.add_parser(
+        "recount-uncovered",
+        help="在停写副本上重算全部会话 uncovered_character_count，只输出计数",
+    )
+    recount.add_argument(
+        "--check",
+        action="store_true",
+        help="只读检查存储计数与当前尺子是否一致",
+    )
 
 
 def _add_memory_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -839,6 +864,30 @@ async def _plugin_command(settings: Settings, args: argparse.Namespace) -> int:
         await database.close()
 
 
+async def _conversation_command(settings: Settings, args: argparse.Namespace) -> int:
+    if args.conversation_command != "recount-uncovered":
+        return 1
+    try:
+        config = rollup_policy_from_settings(settings)
+        checking = bool(getattr(args, "check", False))
+        if checking:
+            checked = await run_offline_uncovered_check(settings.database_url, config)
+            ok = checked.mismatch_count == 0
+            report_counts = checked.as_counts()
+        else:
+            recounted = await run_stopped_offline_uncovered_recount(settings.database_url, config)
+            ok = True
+            report_counts = recounted.as_counts()
+    except UncoveredRecountError as exc:
+        print(json.dumps({"ok": False, "error": exc.category}, ensure_ascii=False))
+        return 1
+    except Exception:
+        print(json.dumps({"ok": False, "error": "recount failed"}, ensure_ascii=False))
+        return 1
+    print(json.dumps({"ok": ok, **report_counts}, ensure_ascii=False))
+    return 0 if ok else 1
+
+
 def _quality_paths(root: Path) -> tuple[Path, Path, Path, Path]:
     return (
         root / "tests/fixtures/memory_quality/v1",
@@ -1027,6 +1076,7 @@ def main() -> None:
     _add_plugin_parser(subparsers)
     _add_speech_parser(subparsers)
     _add_diagnostics_parsers(subparsers)
+    _add_conversation_parser(subparsers)
     _add_memory_parser(subparsers)
     args = parser.parse_args()
     if args.command == "setup":
@@ -1073,6 +1123,8 @@ def main() -> None:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     elif args.command == "runtime":
         raise SystemExit(asyncio.run(_runtime_diagnostics(settings, args)))
+    elif args.command == "conversation":
+        raise SystemExit(asyncio.run(_conversation_command(settings, args)))
     elif args.command == "memory":
         raise SystemExit(asyncio.run(_memory_command(settings, args)))
 

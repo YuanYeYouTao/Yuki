@@ -105,7 +105,16 @@ notifications.list_grants() -> tuple[BackgroundTargetGrantView, ...]
 notifications.status() -> Mapping[str, int]
 ```
 
-后台发布不需要伪造当前用户调用，但只能投向 Host 已授权目标。外部事件先进入目标主会话 EventLedger；文字、媒体和可选主 Agent 回复由持久 Outbox 独立发送。Grant 的增删仍要求真实 `SUPERUSERS` 调用上下文。
+后台发布不需要伪造当前用户调用，但只能投向 Host 已授权目标。外部事件以 canonical
+`external_event` 进入 EventLedger，不作为普通 user/assistant/system history；文字、媒体和可选
+Agent turn 由持久 Outbox 独立发送。当前通知只在其后台 turn 的不可信 current input 出现一次，
+常规会话最多看到有界的 recent-event digest。Grant 的增删仍要求真实 `SUPERUSERS` 调用上下文。
+
+`plugin_id + event_key + target` 只负责定位，Host 还会校验完整请求身份：`external_source`、
+`event_type`、时间、payload、summary、text、`ask_agent`、intent 与按顺序排列的媒体
+handle/SHA/expiry。完全相同的重试返回原 receipt；任一字段不同返回 `receipt_conflict`。已存在路径
+只读复用，不能给旧通知补 text、media 或 Agent job。插件必须在第一次 attempt 前确定请求；结果
+未知时只能重试字节等价请求。
 
 ## Automation
 

@@ -115,4 +115,4 @@ QQ 消息证明伪造成 Web 请求。分页使用 opaque cursor；mutation 使�
 - secret 永不回读；日志与错误不输出 token、Cookie、完整外部 ID、消息正文或本地敏感路径。
 
 部署与数据升级分别见 [SnowLuma Provider 部署与切换](../deployment/snowluma.md) 和
-[Yuki 3.8 升级指南](../upgrade-3.8.0.md)。
+[Yuki 3.8.1 升级指南](../upgrade-3.8.1.md)。

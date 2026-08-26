@@ -13,12 +13,14 @@ GitHub Monitor 是 Yuki 的只读 GitHub 仓库管家。它定时读取一个或
 - Release 使用同风格 PNG 卡片，展示版本、类型、目标分支、附件数量和发布说明。
 - 中文事件描述、稳定事件去重、条件请求、Rate Limit 感知和失败退避。
 - 首次启用默认只建立当前基线，不补发历史事件。
-- 通知先进入持久 Outbox；只有全部目标成功入库后才推进仓库 cursor。
+- 原始 GitHub event ID 进入 CAS/WAL 队列；每个目标完成或明确跳过后才推进 committed cursor。
+- 相邻的 Create/Delete 与 Watch/Fork 可安全合批；Push、Release、PR、Issue、评论和 Review
+  始终保持单例。
 - 可以让 Yuki 根据当前主会话关系自然点评，也可以只发送确定性文本和卡片。
 
 ## 运行要求
 
-- Yuki `>=3.4.1,<4.0`
+- Yuki `>=3.8.1,<4.0`
 - Plugin API `2.0`
 - Bot 可以访问 `https://api.github.com`
 - 私有仓库必须提供可读取目标仓库的 GitHub Token
@@ -122,6 +124,8 @@ docker compose exec -u 10001:10001 bot qq-ai-bot-cli plugin enable github-monito
 | `/github outbox` | 查看通知 Outbox 与后台点评任务状态 |
 
 `sync replay_recent` 会产生真实通知，排障时优先使用 `test`，不要用回放代替普通测试。
+`pause` 同时停止 ingest 与 drain；`sync` 在 pending/inflight 未排空、存在 gap 或 rebaseline 进行中时
+失败关闭，不会删除队列追赶最新事件。
 
 ## 默认配置
 
@@ -132,6 +136,7 @@ docker compose exec -u 10001:10001 bot qq-ai-bot-cli plugin enable github-monito
 | `replay_recent_limit` | `5` | 回放最近 1–20 条事件 |
 | `events_per_repository` | `100` | GitHub 每页读取 1–100 条 |
 | `max_events_per_poll` | `50` | 单仓库单轮最多发布 1–200 条 |
+| `coalesce` | `true` | 是否合并尚未 seal 的安全相邻事件；关闭后按单例排空 |
 | `request_timeout_seconds` | `20` | 单次请求 3–60 秒 |
 
 每个仓库订阅还支持以下过滤项：
@@ -156,19 +161,57 @@ Push 通知包含：
 - 使用容器内开源中文字体渲染的本地 PNG，不加载远程图片或字体。
 
 Release 通知包含仓库、发布者、版本标签、正式版/预发布状态、目标分支、附件数量和最多三行发布
-说明。其他事件发送中文文本摘要。启用 `ask_agent` 后，外部事件先作为有界、不可信上下文进入主会话，
-Yuki 可以根据当前关系补充一句自然反应；外部文本不能给 Agent 授权，也不能要求它修改记忆、
+说明。其他事件发送中文文本摘要。启用 `ask_agent` 后，Host 为该通知建立独立、有 generation 与
+授权 freshness 围栏的后台 turn；通知不会伪装成普通会话 system 消息。常规聊天只可能看到有界的
+`external_untrusted` recent-event digest。外部文本不能给 Agent 授权，也不能要求它修改记忆、
 自动化、配置或调用其他工具。
+
+合批只发生在 pending FIFO 的相邻前缀：Create/Delete 还要求 actor、`ref_type` 和目标策略快照
+完全兼容；Watch/Fork 要求类型与目标快照一致。批次不生成卡片，payload 保留全部 source event ID
+并在 seal 前验证 Host 32 KiB 上限。`coalesce=false` 不会改写已经 seal 的批次。
 
 ## 可靠性与安全边界
 
 - GitHub 客户端只允许访问 `api.github.com`，只发起读取请求。
 - Token 由 Host 在 HTTP 请求阶段注入，插件拿不到可枚举的 Secret 集合。
-- `plugin + event_key + target` 是通知幂等键；同一事件不会因轮询重复而反复推送。
-- 首次基线、事件 cursor、ETag、Last-Modified、失败次数和 Rate Limit 会持久保存。
+- Host 对完整请求做幂等校验；同一 key 下 target、payload、text、Agent intent 或媒体身份不一致会
+  失败关闭，而不是复用旧结果。
+- 首次基线、accepted/committed cursor、payload fingerprint、pending/inflight、目标快照、ETag、
+  Last-Modified、失败次数和 Rate Limit 会持久保存。
+- 消费严格 oldest-first；cursor 缺口、同 ID 不同 payload、非数字 ID 和媒体过期进入 doctor gap，
+  不会跳过旧事件追赶最新事件。
+- 多目标请求在首次 attempt 前可以因当前配置收紧而 skipped；attempting 后只允许字节等价重试，
+  已成功目标不会再次发送。
+- 从旧 cursor 导入时固化 legacy key boundary；边界以内已发布事件继续使用旧 key，新事件使用
+  `github:<repo>:event:<id>`，不会改写 Host 中已有幂等身份。
 - 401 会记为 Token 无效；403/429 会按权限或限流分类并退避；低额度时会主动暂停。
 - Outbox 发送结果不确定时标记为 `uncertain`，不会冒险自动重复发送。
 - 删除最后一个 QQ 目标时，会同步撤销该目标授权并取消尚未发送的关联任务。
+
+## 停写队列 doctor
+
+版本升级或故障预演时，先停止 Bot 和所有写库 worker，再在 Compose 挂载的真实插件
+目录上执行：
+
+```bash
+YUKI_VERSION=3.8.1 docker compose run --rm --no-deps --entrypoint python bot \
+  /app/plugins/github-monitor/doctor.py
+```
+
+它不启动插件、不访问 GitHub、不发通知，只输出无正文计数。若从 1.1.0 队列首次升级，
+可在同样的停写条件下显式导入：
+
+```bash
+YUKI_VERSION=3.8.1 docker compose run --rm --no-deps --entrypoint python bot \
+  /app/plugins/github-monitor/doctor.py --apply-legacy-import
+```
+
+导入只会在新 queue 不存在时以一个 `BEGIN IMMEDIATE` 事务写入确定性状态；不删除
+legacy 行、不推进 cursor、不 rebaseline。只读检查使用 SQLite `mode=ro`，不会因误配路径创建空库。
+任一 invalid/legacy-shadow state、未完成 activation、pending/inflight、gap、CAS/receipt conflict、
+活动诊断、媒体过期或 Host pending 都会返回非零，禁止恢复流量。普通
+`qq-ai-bot-cli plugin doctor github-monitor` 只检查安装与 Manifest，不能替代这个队列
+doctor。
 
 ## 端到端测试
 
@@ -198,11 +241,6 @@ Yuki 可以根据当前关系补充一句自然反应；外部文本不能给 Ag
 
 确认 `.env` 中 `PLUGIN_SYSTEM_ENABLED=true`，再只重建 Bot。
 
-### 添加仓库返回 TypeError
-
-Yuki 3.4.1 已修复包含 Pydantic Model、`set` 和 `frozenset` 的插件配置 JSON 序列化。升级并重建
-Bot 后重试即可。
-
 ### 添加成功，但没有补发旧事件
 
 这是 `baseline` 的预期行为。使用 `/github test owner/repo` 测试投递；只有明确需要回放时才用
@@ -216,8 +254,7 @@ Bot 后重试即可。
 
 ### 卡片中文显示为方框
 
-3.4.1 的 Bot 镜像已安装文泉驿微米黑。执行
-`docker compose up -d --build --no-deps bot`，不要只重启旧镜像。
+当前 Bot 镜像已安装文泉驿微米黑。按版本部署文档替换 Bot 镜像，不要只重启旧镜像。
 
 ### 通知失败或重复
 

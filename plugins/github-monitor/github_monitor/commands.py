@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shlex
 from datetime import UTC, datetime
+from typing import cast
 
 from pydantic import BaseModel, Field
 
@@ -21,7 +22,7 @@ from .config import (
 from .events import stable_event_key
 from .models import NormalizedGitHubEvent
 from .polling import GitHubPoller
-from .state import delete_repository_state, load_repository_state
+from .state import load_queue_state, load_repository_state
 
 
 class GitHubCommandArguments(StrictModel):
@@ -85,11 +86,14 @@ class GitHubCommands:
         counts = await context.notifications.status()
         lines = [f"GitHub Monitor：运行中，仓库 {len(config.repositories)} 个"]
         for subscription in config.repositories:
-            state = await load_repository_state(context, subscription.repository)
+            state = (await load_queue_state(context, subscription.repository)).state
             lines.append(
                 f"- {subscription.repository}：{'启用' if subscription.enabled else '暂停'}；"
                 f"上次成功 {state.last_success_at.isoformat() if state.last_success_at else '无'}；"
-                f"连续失败 {state.consecutive_failures}；Rate {state.rate_limit_remaining}"
+                f"连续失败 {state.consecutive_failures}；Rate {state.rate_limit_remaining}；"
+                f"cursor {state.committed_cursor or '-'}→{state.accepted_cursor or '-'}；"
+                f"pending {len(state.pending)}；inflight {'有' if state.inflight else '无'}；"
+                f"gap {state.gap_reason or '无'}"
             )
         lines.append(
             "Outbox pending={outbox_pending} failed={outbox_failed} uncertain={outbox_uncertain}；"
@@ -125,32 +129,34 @@ class GitHubCommands:
         repository: str,
         raw_target: str,
     ) -> CommandResult:
-        target = _parse_target(raw_target)
-        candidate = RepositorySubscription(repository=repository, targets=(target,))
-        rows = list(config.repositories)
-        index = next(
-            (
-                i
-                for i, item in enumerate(rows)
-                if item.repository.casefold() == repository.casefold()
-            ),
-            None,
-        )
-        if index is None:
-            rows.append(candidate)
-        else:
-            existing = rows[index]
-            if any(
-                item.target_type == target.target_type and item.target_id == target.target_id
-                for item in existing.targets
-            ):
-                return CommandResult(text="该仓库目标已经存在。")
-            rows[index] = existing.model_copy(update={"targets": (*existing.targets, target)})
-        await context.notifications.grant_target(
-            NotificationTarget(target_type=target.target_type, target_id=target.target_id),
-            bot_user_id="",
-        )
-        await save_repositories(context, tuple(rows))
+        async with self._poller().configuration_guard(repository):
+            config = await load_config(context)
+            target = _parse_target(raw_target)
+            candidate = RepositorySubscription(repository=repository, targets=(target,))
+            rows = list(config.repositories)
+            index = next(
+                (
+                    i
+                    for i, item in enumerate(rows)
+                    if item.repository.casefold() == repository.casefold()
+                ),
+                None,
+            )
+            if index is None:
+                rows.append(candidate)
+            else:
+                existing = rows[index]
+                if any(
+                    item.target_type == target.target_type and item.target_id == target.target_id
+                    for item in existing.targets
+                ):
+                    return CommandResult(text="该仓库目标已经存在。")
+                rows[index] = existing.model_copy(update={"targets": (*existing.targets, target)})
+            await context.notifications.grant_target(
+                NotificationTarget(target_type=target.target_type, target_id=target.target_id),
+                bot_user_id="",
+            )
+            await save_repositories(context, tuple(rows))
         return CommandResult(
             text=f"已添加 {candidate.repository} → {raw_target}；首次同步默认只建立基线。"
         )
@@ -162,33 +168,44 @@ class GitHubCommands:
         repository: str,
         raw_target: str,
     ) -> CommandResult:
-        target = _parse_target(raw_target)
-        rows: list[RepositorySubscription] = []
-        removed = False
-        for item in config.repositories:
-            if item.repository.casefold() != repository.casefold():
-                rows.append(item)
-                continue
-            targets = tuple(
-                value
+        async with self._poller().configuration_guard(repository):
+            config = await load_config(context)
+            target = _parse_target(raw_target)
+            rows: list[RepositorySubscription] = []
+            removed = False
+            for item in config.repositories:
+                if item.repository.casefold() != repository.casefold():
+                    rows.append(item)
+                    continue
+                targets = tuple(
+                    value
+                    for value in item.targets
+                    if (value.target_type, value.target_id)
+                    != (target.target_type, target.target_id)
+                )
+                removed = len(targets) != len(item.targets)
+                if removed:
+                    await self._poller().retire_target_locked(
+                        item,
+                        target,
+                        last_target=not targets,
+                        coalesce=config.coalesce,
+                        max_batch_members=config.max_events_per_poll,
+                    )
+                if targets:
+                    rows.append(item.model_copy(update={"targets": targets}))
+            if not removed:
+                return _error("github.not_found", "没有找到该仓库目标。")
+            await save_repositories(context, tuple(rows))
+            still_used = any(
+                value.target_type == target.target_type and value.target_id == target.target_id
+                for item in rows
                 for value in item.targets
-                if (value.target_type, value.target_id) != (target.target_type, target.target_id)
             )
-            removed = len(targets) != len(item.targets)
-            if targets:
-                rows.append(item.model_copy(update={"targets": targets}))
-        if not removed:
-            return _error("github.not_found", "没有找到该仓库目标。")
-        await save_repositories(context, tuple(rows))
-        still_used = any(
-            value.target_type == target.target_type and value.target_id == target.target_id
-            for item in rows
-            for value in item.targets
-        )
-        if not still_used:
-            await context.notifications.revoke_target(
-                NotificationTarget(target_type=target.target_type, target_id=target.target_id)
-            )
+            if not still_used:
+                await context.notifications.revoke_target(
+                    NotificationTarget(target_type=target.target_type, target_id=target.target_id)
+                )
         return CommandResult(text=f"已移除 {repository} → {raw_target}。")
 
     async def _toggle(
@@ -198,16 +215,18 @@ class GitHubCommands:
         repository: str,
         enabled: bool,
     ) -> CommandResult:
-        found = False
-        rows = []
-        for item in config.repositories:
-            if item.repository.casefold() == repository.casefold():
-                item = item.model_copy(update={"enabled": enabled})
-                found = True
-            rows.append(item)
-        if not found:
-            return _error("github.not_found", "没有找到该仓库。")
-        await save_repositories(context, tuple(rows))
+        async with self._poller().configuration_guard(repository):
+            config = await load_config(context)
+            found = False
+            rows = []
+            for item in config.repositories:
+                if item.repository.casefold() == repository.casefold():
+                    item = item.model_copy(update={"enabled": enabled})
+                    found = True
+                rows.append(item)
+            if not found:
+                return _error("github.not_found", "没有找到该仓库。")
+            await save_repositories(context, tuple(rows))
         return CommandResult(text=f"已{'恢复' if enabled else '暂停'} {repository}。")
 
     async def _sync(
@@ -220,9 +239,7 @@ class GitHubCommands:
         if mode not in {"baseline", "replay_recent"}:
             return _error("github.invalid_arguments", "同步模式只能是 baseline 或 replay_recent。")
         subscription = _find(config, repository)
-        await delete_repository_state(context, repository)
-        effective = config.model_copy(update={"initial_sync_mode": mode})
-        await GitHubPoller(context, self._stop).poll_repository(subscription, effective)
+        await self._poller().rebaseline(subscription, config, mode)
         return CommandResult(text=f"已按 {mode} 重新同步 {repository}。")
 
     async def _test(
@@ -259,7 +276,7 @@ class GitHubCommands:
                 str(int(now.timestamp() * 1000)),
             ),
         )
-        await GitHubPoller(context, self._stop).publish_event(subscription, event)
+        await self._poller().publish_event(subscription, event)
         return CommandResult(text="测试事件已写入 Host；未修改真实 GitHub cursor。")
 
     @staticmethod
@@ -294,6 +311,12 @@ class GitHubCommands:
         value = getattr(self._context_getter, "context", None)
         if value is None:
             raise RuntimeError("plugin is not running")
+        return cast(PluginContext, value)
+
+    def _poller(self) -> GitHubPoller:
+        value = getattr(self._context_getter, "poller", None)
+        if not isinstance(value, GitHubPoller):
+            raise RuntimeError("github poller is not running")
         return value
 
 

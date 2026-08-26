@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -163,6 +164,7 @@ class ToolRuntime:
     memory_intent: MemoryQueryIntent | None = None
     memory_session: object | None = None
     prompt_diagnostics: PromptRequestDiagnostics | None = None
+    before_model_request: Callable[[], Awaitable[None]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1408,6 +1410,7 @@ class AgentToolService:
             after=after,
             before=before,
             limit=self._bounded_int(arguments.get("limit"), default=20, maximum=100),
+            message_only=True,
         )
         return self._result(data={"events": [self._event_json(row) for row in rows]})
 
@@ -1451,6 +1454,7 @@ class AgentToolService:
             platform_message_id=platform_message_id,
             before=before,
             after=after,
+            message_only=True,
         )
         if center is None:
             return self._result(error="not_found", detail="当前会话找不到这条消息")
@@ -2745,6 +2749,10 @@ class AgentToolService:
             display_name = self._settings.bot_display_name
         return {
             "id": row.id,
+            "event_kind": row.event_kind,
+            "author_kind": row.author_kind,
+            "source": row.origin,
+            "content_trust": "untrusted_conversation_message",
             "sender_user_id": row.sender_user_id,
             "sender_nickname": row.sender_nickname,
             "sender_group_card": row.sender_group_card,

@@ -166,6 +166,7 @@ class PluginSettings(DomainSettings):
     plugin_ai_session_max_history_messages: int = Field(gt=0)
     plugin_external_event_context_limit: int = Field(gt=0, le=100)
     plugin_external_event_context_characters: int = Field(gt=0, le=32_000)
+    plugin_external_event_summary_characters: int = Field(gt=0, le=8_000)
 
     @field_validator("plugin_direct_command_bindings")
     @classmethod

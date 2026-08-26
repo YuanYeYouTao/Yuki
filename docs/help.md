@@ -19,7 +19,7 @@ Windows PowerShell：
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-两个安装器默认安装 `3.8.0`。引导配置会询问主模型、可选 Flash/Embedding/Web/Vision、QQ
+两个安装器默认安装 `3.8.1`。引导配置会询问主模型、可选 Flash/Embedding/Web/Vision、QQ
 Provider、MCP、Plugin、Automation 与 Speech。密钥输入不回显，程序不会在线试用 API key。
 
 日常运维：
@@ -183,9 +183,12 @@ Control Plane、Capability 或 Gateway Registry。
 - `qq_ai_bot.db-wal`
 - `qq_ai_bot.db-shm`
 - 配置、Compose 文件、镜像 digest 和 Provider 登录目录
+- `plugins/github-monitor/` 与 `data/plugin_artifacts/`
 
 `0049` 不提供 downgrade。失败时只能恢复完整快照，不能手工 stamp revision、git revert 数据
-或只恢复主 DB。详见 [3.8 升级指南](upgrade-3.8.0.md)。
+或只恢复主 DB。3.8.0 升级时还必须在停写状态运行会话 uncovered recount/check、
+受控替换 GitHub Monitor 并通过离线 queue doctor，详见
+[3.8.1 升级指南](upgrade-3.8.1.md)。
 
 ## 故障排查
 
@@ -227,5 +230,5 @@ historical 0048 bridge。pre-3.8 数据库不能通过关闭检查强行启动�
 ## 发布与版本
 
 发布流程见 [版本化 Docker Release](operations/versioned-docker-release.md)，3.8 说明见
-[发布说明](releases/v3.8.0.md)。正式镜像与 Release 只能由通过 Quality、迁移矩阵、release
+[发布说明](releases/v3.8.1.md)。正式镜像与 Release 只能由通过 Quality、迁移矩阵、release
 smoke 和匿名拉取验证的 tag 生成。
