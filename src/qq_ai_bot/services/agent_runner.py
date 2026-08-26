@@ -259,13 +259,13 @@ class AgentRunner:
             if no_progress_recovery and continuation is None:
                 definitions = ()
                 native_definitions = ()
-            if tools is not None:
-                confirm_exposure = getattr(tools, "confirm_memory_prompt_exposure", None)
-                if callable(confirm_exposure):
-                    await confirm_exposure()
             try:
                 if runtime.before_model_request is not None:
                     await runtime.before_model_request()
+                if tools is not None:
+                    confirm_exposure = getattr(tools, "confirm_memory_prompt_exposure", None)
+                    if callable(confirm_exposure):
+                        await confirm_exposure()
                 diagnostics = runtime.prompt_diagnostics
                 request = ChatRequest(
                     messages=tuple(messages),

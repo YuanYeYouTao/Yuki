@@ -383,6 +383,8 @@ class ApplicationContainer:
                 self.gateway_registry,
                 router=self.presence_router,
             ),
+            effect_gate=self.conversation_effect_gate,
+            effect_gate_timeout_seconds=settings.conversation_effect_gate_timeout_seconds,
         )
         self.plugin_background_turns = PluginBackgroundTurnWorker(
             repository=self.plugin_notification_repository,

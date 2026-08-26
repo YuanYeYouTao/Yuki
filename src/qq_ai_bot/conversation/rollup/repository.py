@@ -23,6 +23,10 @@ from qq_ai_bot.conversation.hydrate import (
     hydrate_scope_state_from_canonical,
     synthetic_scope_id,
 )
+from qq_ai_bot.conversation.rollup.coverage import (
+    session_effective_coverage,
+    valid_same_generation_overlay,
+)
 from qq_ai_bot.conversation.rollup.errors import (
     ConversationCoverageError,
     RollupLeaseLostError,
@@ -148,13 +152,12 @@ def _valid_same_generation_overlay(
     last_event_id: int,
     semantic_revision: int,
 ) -> bool:
-    if overlay is None:
-        return False
-    return (
-        overlay.generation == generation
-        and overlay.base_semantic_revision == semantic_revision
-        and starts_after <= overlay.covered_through_event_id <= last_event_id
-        and bool(overlay.summary_text.strip())
+    return valid_same_generation_overlay(
+        overlay,
+        generation=generation,
+        starts_after=starts_after,
+        last_event_id=last_event_id,
+        semantic_revision=semantic_revision,
     )
 
 
@@ -338,12 +341,13 @@ async def _compose_detailed_status(
     ):
         assert overlay_row is not None
         overlay = _checkpoint_status_from_overlay(overlay_row)
-    if overlay is not None:
-        effective_coverage = overlay.covered_through_event_id
-    elif semantic is not None:
-        effective_coverage = semantic.covered_through_event_id
-    else:
-        effective_coverage = state.starts_after_event_id
+    effective_coverage = session_effective_coverage(
+        generation=state.generation,
+        starts_after=state.starts_after_event_id,
+        last_event_id=state.last_event_id,
+        overlay=overlay_row,
+        semantic=semantic_row,
+    )
     tail_events = 0
     tail_characters = 0
     if state.starts_after_event_id <= effective_coverage <= state.last_event_id:
@@ -832,7 +836,11 @@ class ConversationRollupRepository:
         )
         job = await session.get(CanonicalConversationRollupJobModel, conversation.id)
         semantic_revision = rollup_row.revision if rollup_row is not None else 0
-        effective = self._canonical_rollup_state(rollup_row) if rollup_row is not None else None
+        effective = (
+            self._canonical_rollup_state(rollup_row)
+            if rollup_row is not None and rollup_row.generation == conversation.generation
+            else None
+        )
         if _valid_same_generation_overlay(
             overlay_row,
             generation=conversation.generation,
@@ -897,14 +905,12 @@ class ConversationRollupRepository:
         ):
             assert overlay_row is not None
             overlay_state = _canonical_overlay_state(overlay_row, state.id)
-        coverage = (
-            overlay_state.covered_through_event_id
-            if overlay_state is not None
-            else (
-                rollup_row.covered_through_event_id
-                if rollup_row is not None
-                else conversation.starts_after_event_id
-            )
+        coverage = session_effective_coverage(
+            generation=conversation.generation,
+            starts_after=conversation.starts_after_event_id,
+            last_event_id=conversation.last_event_id,
+            overlay=overlay_row,
+            semantic=rollup_row,
         )
         events = await _load_prompt_tail_events(
             session,

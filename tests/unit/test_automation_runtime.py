@@ -194,6 +194,44 @@ def test_create_tool_exposes_high_level_task_spec(database) -> None:
     }
 
 
+@pytest.mark.asyncio
+async def test_generation_keeps_dynamic_automation_data_out_of_system_messages(database) -> None:
+    handlers = object.__new__(AutomationCapabilityHandlers)
+    handlers._settings = make_settings(database.url, automation_enabled=True)
+    context = CapabilityExecutionContext(
+        authority=AuthorityContext(
+            origin=TurnOrigin.SCHEDULED_AUTOMATION,
+            actor_user_id="10001",
+            actor_is_superuser=False,
+            bot_user_id="7777",
+        ),
+        automation_id=1,
+        automation_run_id=2,
+        step_id="generate",
+        creator_user_id="10001",
+        bot_user_id="7777",
+        current_group_id=None,
+        scheduled_for=datetime(2026, 8, 26, 9, tzinfo=UTC),
+        actual_started_at=datetime(2026, 8, 26, 9, 0, 1, tzinfo=UTC),
+        local_time=datetime(2026, 8, 26, 17, 0, 1, tzinfo=UTC),
+        timezone="Asia/Shanghai",
+        automation_context=AutomationContext(scene="none"),
+        conversation_key="private:7777:10001",
+    )
+    instruction = "dynamic instruction must stay untrusted"
+    messages = await handlers._generation_messages(
+        {"instruction": instruction, "context_profile": "none"},
+        context,
+    )
+    assert [message.role for message in messages] == ["system", "system", "user"]
+    assert all(
+        instruction not in message.content for message in messages if message.role == "system"
+    )
+    payload = json.loads(messages[-1].content)
+    assert payload["instruction"] == instruction
+    assert payload["content_trust"] == "untrusted_automation_input"
+
+
 def test_create_tool_description_does_not_embed_capability_catalog(database) -> None:
     from pydantic import BaseModel, ConfigDict
 

@@ -317,6 +317,7 @@ class EventLedgerRepository:
         *,
         after_event_id: int = 0,
         limit: int,
+        message_only: bool = False,
     ) -> tuple[EventRecord, ...]:
         """Read the newest events from the canonical Conversation behind an alias."""
 
@@ -329,6 +330,8 @@ class EventLedgerRepository:
                 keeper_event_clause(),
                 ChatEventModel.id > max(0, after_event_id),
             )
+            if message_only:
+                query = query.where(ChatEventModel.event_kind == "message")
             rows = list(
                 (await session.scalars(query.order_by(ChatEventModel.id.desc()).limit(limit))).all()
             )
@@ -340,6 +343,7 @@ class EventLedgerRepository:
         conversation_id: str,
         *,
         limit: int,
+        message_only: bool = False,
     ) -> tuple[EventRecord, ...]:
         """Newest keeper or legacy-null events. Non-live statuses never participate."""
 
@@ -347,6 +351,8 @@ class EventLedgerRepository:
             ChatEventModel.canonical_conversation_id == conversation_id,
             keeper_event_clause(),
         )
+        if message_only:
+            query = query.where(ChatEventModel.event_kind == "message")
         async with self._database.sessions() as session:
             rows = list(
                 (await session.scalars(query.order_by(ChatEventModel.id.desc()).limit(limit))).all()
@@ -360,6 +366,7 @@ class EventLedgerRepository:
         *,
         before_event_id: int,
         limit: int,
+        message_only: bool = False,
     ) -> tuple[EventRecord, ...]:
         """Return the bounded scope prefix preceding one ledger event id."""
 
@@ -372,6 +379,8 @@ class EventLedgerRepository:
                 keeper_event_clause(),
                 ChatEventModel.id < before_event_id,
             )
+            if message_only:
+                query = query.where(ChatEventModel.event_kind == "message")
             rows = list(
                 (
                     await session.scalars(
@@ -389,6 +398,7 @@ class EventLedgerRepository:
         after_event_id: int,
         through_event_id: int | None = None,
         limit: int,
+        message_only: bool = False,
     ) -> tuple[EventRecord, ...]:
         async with self._database.sessions() as session:
             conversation_id = await _conversation_id_for_scope(session, scope)
@@ -399,6 +409,8 @@ class EventLedgerRepository:
                 keeper_event_clause(),
                 ChatEventModel.id > after_event_id,
             )
+            if message_only:
+                query = query.where(ChatEventModel.event_kind == "message")
             if through_event_id is not None:
                 query = query.where(ChatEventModel.id <= through_event_id)
             rows = list(
@@ -456,6 +468,7 @@ class EventLedgerRepository:
         platform_message_id: str | None,
         before: int,
         after: int,
+        message_only: bool = False,
     ) -> tuple[EventRecord | None, tuple[EventRecord, ...], tuple[EventRecord, ...]]:
         """Read nearby events strictly inside the current scope generation."""
 
@@ -469,6 +482,8 @@ class EventLedgerRepository:
             )
         if center is None:
             return None, (), ()
+        if message_only and center.event_kind != "message":
+            return None, (), ()
         async with self._database.sessions() as session:
             conversation_id = await _conversation_id_for_scope(session, scope)
             if conversation_id is None or center.canonical_conversation_id != conversation_id:
@@ -480,7 +495,10 @@ class EventLedgerRepository:
             tuple(
                 row
                 for row in await self.list_scope_before(
-                    scope, before_event_id=center.id, limit=before
+                    scope,
+                    before_event_id=center.id,
+                    limit=before,
+                    message_only=message_only,
                 )
                 if row.id > boundary
             )
@@ -492,6 +510,7 @@ class EventLedgerRepository:
                 scope,
                 after_event_id=center.id,
                 limit=after,
+                message_only=message_only,
             )
             if after > 0
             else ()
@@ -573,12 +592,16 @@ class EventLedgerRepository:
         group_id: str | None = None,
         after: datetime | None = None,
         before: datetime | None = None,
+        message_only: bool = False,
     ) -> tuple[EventRecord, ...]:
         """Search with trigram FTS, falling back to bounded LIKE for short terms."""
 
         bounded_limit = max(1, min(limit, 100))
         conditions: list[str] = []
         params: dict[str, Any] = {"limit": bounded_limit}
+        has_search_bound = bool(user_id or group_id or after or before)
+        if message_only:
+            conditions.append("ce.event_kind = 'message'")
         if user_id:
             conditions.append(
                 "(ce.sender_user_id = :user_id OR ce.private_peer_user_id = :user_id)"
@@ -607,7 +630,7 @@ class EventLedgerRepository:
             )
             params["keyword"] = '"' + stripped.replace('"', '""') + '"'
         else:
-            if not conditions:
+            if not has_search_bound:
                 raise ValueError("short history searches require a QQ, group, or time bound")
             sql = text(
                 "SELECT ce.* FROM chat_events AS ce WHERE ce.content LIKE :pattern"

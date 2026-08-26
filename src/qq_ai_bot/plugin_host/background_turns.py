@@ -7,12 +7,14 @@ import logging
 import time
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
+from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
 from qq_ai_bot.conversation.rollup.repository import ConversationScopeRepository
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.identity.routing import PresenceRouter, RouteSendError
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.plugin_host.notification_repository import (
+    BackgroundTurnFenceError,
     BackgroundTurnJobRecord,
     PluginNotificationRepository,
     queued_work_error_category,
@@ -158,12 +160,24 @@ class PluginBackgroundTurnWorker:
 
         try:
             context = await self._repository.load_background_context(job)
+        except BackgroundTurnFenceError:
+            return
         except PluginOwnershipError as exc:
             await self._repository.fail_turn(
                 job.id,
+                attempt=job.attempts,
                 error_category=queued_work_error_category(exc, job),
             )
             return
+        if context.generation != job.generation:
+            try:
+                await self._repository.validate_turn_attempt(
+                    job.id,
+                    attempt=job.attempts,
+                    generation=job.generation,
+                )
+            except BackgroundTurnFenceError:
+                return
         event = await self._ledger.get_event(job.source_event_id)
         if (
             event is None
@@ -171,10 +185,18 @@ class PluginBackgroundTurnWorker:
             or event.source_plugin_id != job.plugin_id
             or event.canonical_conversation_id != context.conversation_id
         ):
-            await self._repository.fail_turn(job.id, error_category="source_event_invalid")
+            await self._repository.fail_turn(
+                job.id,
+                attempt=job.attempts,
+                error_category="source_event_invalid",
+            )
             return
         if self._router is None:
-            await self._repository.fail_turn(job.id, error_category="none")
+            await self._repository.fail_turn(
+                job.id,
+                attempt=job.attempts,
+                error_category="none",
+            )
             return
         try:
             if context.person_id and context.space_id:
@@ -186,7 +208,11 @@ class PluginBackgroundTurnWorker:
             else:
                 raise RouteSendError("none")
         except RouteSendError as exc:
-            await self._repository.fail_turn(job.id, error_category=exc.category)
+            await self._repository.fail_turn(
+                job.id,
+                attempt=job.attempts,
+                error_category=exc.category,
+            )
             return
         if job.target_type == "group":
             transport = ConversationScope.group(
@@ -204,6 +230,7 @@ class PluginBackgroundTurnWorker:
         except PluginOwnershipError as exc:
             await self._repository.fail_turn(
                 job.id,
+                attempt=job.attempts,
                 error_category=queued_work_error_category(exc, job),
             )
             return
@@ -212,11 +239,20 @@ class PluginBackgroundTurnWorker:
             resolved_key[0] = conversation_key
         token = await self._turns.begin_background(conversation_key)
         if token is None:
+            try:
+                await self._repository.validate_turn_attempt(
+                    job.id,
+                    attempt=job.attempts,
+                    generation=job.generation,
+                )
+            except BackgroundTurnFenceError:
+                return
             await self._repository.defer_turn(
                 job.id,
+                attempt=job.attempts,
                 error_category="conversation_busy",
                 delay_seconds=3,
-                preserve_attempt=True,
+                preserve_budget=True,
             )
             return
         runtime = await self._runtime_config.snapshot(
@@ -233,7 +269,7 @@ class PluginBackgroundTurnWorker:
         turn_snapshot = ConversationTurnSnapshot(
             scope_id=context.scope_id,
             scope_key=conversation_key,
-            generation=context.generation,
+            generation=job.generation,
             trigger_event_id=event.id,
             coordinator_version=token.version,
             transport_scope_key=transport.key,
@@ -251,13 +287,22 @@ class PluginBackgroundTurnWorker:
                     space_id=context.space_id,
                     presence_id=resolved.presence_id,
                     conversation_id=context.conversation_id,
+                    before_model_request=lambda: self._repository.validate_turn_attempt(
+                        job.id,
+                        attempt=job.attempts,
+                        generation=job.generation,
+                    ),
                 )
-            await self._repository.finish_turn(
+            completed = await self._repository.finish_turn(
                 job.id,
+                attempt=job.attempts,
+                generation=job.generation,
                 text=result.text,
                 tool_calls_used=result.tool_calls_used,
                 model_requests=result.model_requests,
             )
+            if not completed:
+                return
             logger.info(
                 "plugin_background_turn_completed plugin_id=%s event_id=%d "
                 "reply=%s model_requests=%d",
@@ -270,23 +315,50 @@ class PluginBackgroundTurnWorker:
             TurnInterruptedError,
             TurnSupersededError,
         ):
+            try:
+                await self._repository.validate_turn_attempt(
+                    job.id,
+                    attempt=job.attempts,
+                    generation=job.generation,
+                )
+            except BackgroundTurnFenceError:
+                return
             if job.attempts >= 2:
                 await self._repository.abandon_turn(
                     job.id,
+                    attempt=job.attempts,
                     error_category="interrupted_twice",
                 )
             else:
                 await self._repository.defer_turn(
                     job.id,
+                    attempt=job.attempts,
                     error_category="interrupted_by_user",
                     delay_seconds=5,
                 )
+        except BackgroundTurnFenceError:
+            return
+        except ConversationCoverageError as exc:
+            try:
+                await self._repository.validate_turn_attempt(
+                    job.id,
+                    attempt=job.attempts,
+                    generation=job.generation,
+                )
+            except BackgroundTurnFenceError:
+                return
+            await self._repository.fail_turn(
+                job.id,
+                attempt=job.attempts,
+                error_category=type(exc).__name__,
+            )
         except asyncio.CancelledError:
             await self._repository.defer_turn(
                 job.id,
+                attempt=job.attempts,
                 error_category="worker_stopped",
                 delay_seconds=5,
-                preserve_attempt=True,
+                preserve_budget=True,
             )
             raise
         except Exception as exc:
@@ -298,5 +370,6 @@ class PluginBackgroundTurnWorker:
             )
             await self._repository.fail_turn(
                 job.id,
+                attempt=job.attempts,
                 error_category=type(exc).__name__,
             )

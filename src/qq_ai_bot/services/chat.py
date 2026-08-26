@@ -2901,12 +2901,10 @@ class ChatService:
         runtime = await self._prepare_tool_candidates(runtime)
         current_time = await self._time.current(runtime.inbound.sender.user_id)
         backend = _ChatAgentBackend(self, runtime)
-        if runtime.turn_snapshot is not None and not await self._validate_turn_snapshot(
-            runtime.turn_snapshot
-        ):
-            raise TurnSupersededError("turn generation changed before model invocation")
 
         async def before_model_request() -> None:
+            if runtime.before_model_request is not None:
+                await runtime.before_model_request()
             snapshot = runtime.turn_snapshot
             if snapshot is not None and not await self._validate_turn_snapshot(snapshot):
                 raise TurnSupersededError("turn generation changed before model invocation")
@@ -3017,6 +3015,7 @@ class ChatService:
         space_id: str | None = None,
         presence_id: str | None = None,
         conversation_id: str | None = None,
+        before_model_request: Callable[[], Awaitable[None]] | None = None,
     ) -> AgentRunResult:
         """Generate one tool-free reply for a persisted external event.
 
@@ -3093,6 +3092,7 @@ class ChatService:
                 prompt_snapshot_fingerprint=(composition.metrics.prompt_snapshot_fingerprint),
                 static_prompt_revision=composition.metrics.stable_prefix_hash,
             ),
+            before_model_request=before_model_request,
         )
         completed = await self._run_agent(conversation_key, composition.messages, tool_runtime)
         result = completed.result
