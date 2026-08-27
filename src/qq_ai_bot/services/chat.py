@@ -1478,7 +1478,6 @@ class ChatService:
             raise TypeError("memory_partition_lookup must provide callable resolve_from_scope")
         self._memory_partition_lookup = memory_partition_lookup
         self._settings = settings
-        self._ledger_origin = TurnOrigin.USER_MESSAGE.value
         models = require_model_executor(
             model_executor,
             provider=provider,
@@ -1849,9 +1848,7 @@ class ChatService:
     ) -> int:
         """Run one ordered Agent turn and return the sent message count."""
 
-        self._ledger_origin = (
-            TurnOrigin.AUTONOMOUS_GROUP.value if autonomous else TurnOrigin.USER_MESSAGE.value
-        )
+        turn_origin = TurnOrigin.AUTONOMOUS_GROUP if autonomous else TurnOrigin.USER_MESSAGE
         conversation_key = runtime_conversation_key(
             identity=identity,
             turn=turn_snapshot,
@@ -1875,12 +1872,11 @@ class ChatService:
                     sender,
                     OutboundMessage(text=reply),
                     turn_snapshot,
+                    origin=turn_origin.value,
                 )
                 return 1
 
             source_display_requested = self._source_policy.requested(content)
-            turn_origin = TurnOrigin.AUTONOMOUS_GROUP if autonomous else TurnOrigin.USER_MESSAGE
-            self._ledger_origin = turn_origin.value
             memory_session = self._open_memory_session(
                 inbound,
                 identity,
@@ -2227,7 +2223,12 @@ class ChatService:
                             message,
                             source="reply_effect",
                         )
-                    recorded = await self._record_outbound_message(inbound, message, receipt)
+                    recorded = await self._record_outbound_message(
+                        inbound,
+                        message,
+                        receipt,
+                        origin=turn_origin.value,
+                    )
                     if message.media and self._emoji_effects is not None:
                         await self._emoji_effects.record_success(
                             message,
@@ -2526,7 +2527,12 @@ class ChatService:
                         if not isinstance(fallback_receipt, OutboundSendReceipt):
                             raise TypeError("outbound sender returned no delivery receipt") from exc
                         sent_count += 1
-                        await self._record_outbound_message(inbound, fallback, fallback_receipt)
+                        await self._record_outbound_message(
+                            inbound,
+                            fallback,
+                            fallback_receipt,
+                            origin=turn_origin.value,
+                        )
                         await publish_notification(
                             self._event_publisher,
                             EventName.EMOJI_FALLBACK_TEXT_SENT,
@@ -2545,7 +2551,12 @@ class ChatService:
                         outbound,
                         source="reply_effect",
                     )
-                recorded = await self._record_outbound_message(inbound, outbound, receipt)
+                recorded = await self._record_outbound_message(
+                    inbound,
+                    outbound,
+                    receipt,
+                    origin=turn_origin.value,
+                )
                 if outbound.media and self._emoji_effects is not None:
                     await self._emoji_effects.record_success(
                         outbound,
@@ -2564,7 +2575,12 @@ class ChatService:
                         OutboundMessage(text=source_text),
                         turn_snapshot,
                     )
-                    await self._record_outbound(inbound, source_text, receipt)
+                    await self._record_outbound(
+                        inbound,
+                        source_text,
+                        receipt,
+                        origin=turn_origin.value,
+                    )
                     sent_count += 1
             await self._finish_memory_turn(
                 memory_session,
@@ -2990,12 +3006,14 @@ class ChatService:
         sender: OutboundSender,
         message: OutboundMessage,
         snapshot: ConversationTurnSnapshot | None,
+        *,
+        origin: str,
     ) -> OutboundSendReceipt:
         async def deliver() -> OutboundSendReceipt:
             receipt = await sender.send(message)
             if not isinstance(receipt, OutboundSendReceipt):
                 raise TypeError("outbound sender returned no delivery receipt")
-            await self._record_outbound_message(inbound, message, receipt)
+            await self._record_outbound_message(inbound, message, receipt, origin=origin)
             return receipt
 
         return await self._run_effect(snapshot, deliver)
@@ -3018,7 +3036,6 @@ class ChatService:
     ) -> AgentRunResult:
         """Wake the normal Main Agent without inventing a message or Person actor."""
 
-        self._ledger_origin = TurnOrigin.PLUGIN_BACKGROUND.value
         conversation_key = runtime_conversation_key(
             identity=identity,
             turn=turn_snapshot,
@@ -3139,11 +3156,13 @@ class ChatService:
         receipt: OutboundSendReceipt,
         *,
         reply_to_message_id: str | None = None,
+        origin: str = TurnOrigin.USER_MESSAGE.value,
     ) -> bool:
         return await self._record_outbound_message(
             inbound,
             OutboundMessage(text=content, reply_to_message_id=reply_to_message_id),
             receipt,
+            origin=origin,
         )
 
     async def _record_outbound_message(
@@ -3151,6 +3170,8 @@ class ChatService:
         inbound: InboundMessage,
         message: OutboundMessage,
         receipt: OutboundSendReceipt,
+        *,
+        origin: str = TurnOrigin.USER_MESSAGE.value,
     ) -> bool:
         """Persist text and ledger-safe media metadata after confirmed delivery."""
 
@@ -3183,7 +3204,7 @@ class ChatService:
                 ),
                 reply_to_message_id=message.reply_to_message_id,
                 sender_is_bot=True,
-                origin=self._ledger_origin,
+                origin=origin,
             )
             recorded = True
         except asyncio.CancelledError:

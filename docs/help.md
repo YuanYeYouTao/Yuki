@@ -1,6 +1,6 @@
 # Yuki 3.8 使用与运维帮助
 
-Yuki 3.8 只支持 canonical runtime，Alembic head 为 `0049`，Plugin API 为 `2.0`。永久 Yuki、
+Yuki 3.8 只支持 canonical runtime，当前源码 Alembic head 为 `0050`，Plugin API 为 `2.0`。永久 Yuki、
 Person、Binding、Space、Presence 和 canonical Conversation 的关系见
 [当前架构](architecture/canonical-runtime.md)。
 
@@ -156,6 +156,14 @@ Principal、会话和运行配置为准。
 person、space、conversation 和 presence ID。插件不能自报超级管理员，也不能绕过
 Control Plane、Capability 或 Gateway Registry。
 
+插件发布的主动事件继续以独立 `external_event` 落账，不伪装成真人聊天。插件若请求 Yuki
+点评，只会创建可靠 WakeupRequest；Worker 加载该 canonical Conversation 与普通聊天完全相同的
+Rollup、raw history、Memory、Prompt compiler、工具 schema 和模型 profile，再把当前事件摘要作为
+唯一的临时 user 尾部。这个提醒不写入 history；成功发送的 Yuki 主动消息会用
+`caused_by_event_id` 指向来源事件。pending/processing 唤醒任务会阻止 Rollup 提前覆盖来源，任务
+终态后自动解除。没有真实用户事件证明时，管理员与 mutation 能力继续失败关闭，当前目标允许的
+Web、Memory read 和 history read 仍可使用。
+
 开发入口：
 
 - [Plugin 开发索引](plugin-development/index.md)
@@ -174,7 +182,8 @@ Control Plane、Capability 或 Gateway Registry。
 
 ## 数据与升级
 
-全新 3.8 数据库执行 `0048 -> 0049`。历史 bridge 只接受已经完成 canonical v2 的旧 `0048`。
+全新 3.8 数据库执行 `0048 -> 0049 -> 0050`。历史 bridge 只接受已经完成 canonical v2 的旧
+`0048`；已有 canonical `0049` 直接升级到 `0050`。
 更早数据库和 v1/backfill/cutover 中间态不支持。
 
 升级前停止所有写入，并按同一时点备份：
@@ -185,7 +194,8 @@ Control Plane、Capability 或 Gateway Registry。
 - 配置、Compose 文件、镜像 digest 和 Provider 登录目录
 - `plugins/github-monitor/` 与 `data/plugin_artifacts/`
 
-`0049` 不提供 downgrade。失败时只能恢复完整快照，不能手工 stamp revision、git revert 数据
+`0049` 不提供 downgrade；`0050` 是追加式因果迁移。生产失败时仍应恢复完整快照，不能手工
+stamp revision、git revert 数据
 或只恢复主 DB。3.8.0 升级时还必须在停写状态运行会话 uncovered recount/check、
 受控替换 GitHub Monitor 并通过离线 queue doctor，详见
 [3.8.1 升级指南](upgrade-3.8.1.md)。

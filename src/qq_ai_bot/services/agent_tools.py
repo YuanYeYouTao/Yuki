@@ -23,7 +23,7 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.delivery import ReplyControlState, ReplySequenceSpec
 from qq_ai_bot.conversation.reply import ReplyEffect
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
-from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import ChatTool, InboundMessage, PromptRequestDiagnostics
 from qq_ai_bot.emoji.models import (
     EmojiPlacement,
@@ -203,6 +203,20 @@ class ToolRuntime:
         if self.inbound is None:
             raise RuntimeError("tool requires a direct message actor")
         return self.inbound
+
+    def conversation_scope(self) -> ConversationScope:
+        """Resolve the authenticated conversation without inventing a message actor."""
+
+        if self.inbound is not None:
+            return self.inbound.scope()
+        bot_user_id = (self.bot_user_id or "").strip()
+        target_id = (self.external_target_id or "").strip()
+        if not bot_user_id or not target_id:
+            raise RuntimeError("tool runtime conversation is unavailable")
+        if self.effective_scope_type is ScopeType.GROUP:
+            group_id = (self.current_group_id or target_id).strip()
+            return ConversationScope.group(bot_user_id, group_id)
+        return ConversationScope.private(bot_user_id, target_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1230,27 +1244,30 @@ class AgentToolService:
     async def _recent_history(self, runtime: ToolRuntime) -> str:
         if runtime.gateway is None:
             return self._result(error="onebot_unavailable", detail="当前没有 OneBot 连接")
-        inbound = runtime.require_inbound()
+        scope = runtime.conversation_scope()
         limit = self._settings.recent_history_tool_limit
-        if inbound.scope_type is ScopeType.GROUP:
-            if inbound.group_id is None:
+        if scope.scope_type is ScopeType.GROUP:
+            if scope.group_id is None:
                 return self._result(error="missing_group", detail="当前群号缺失")
             action = "get_group_msg_history"
-            params: dict[str, Any] = {"group_id": inbound.group_id, "count": limit}
+            params: dict[str, Any] = {"group_id": scope.group_id, "count": limit}
         else:
             action = "get_friend_msg_history"
-            params = {"user_id": inbound.sender.user_id, "count": limit}
+            if scope.private_peer_user_id is None:
+                return self._result(error="missing_user", detail="当前私聊目标缺失")
+            params = {"user_id": scope.private_peer_user_id, "count": limit}
         payload = await runtime.gateway.call_api(action, params)
         raw_messages = self._history_messages(payload)[-limit:]
         stored = 0
-        for item in raw_messages:
-            if await self._store_history_item(item, inbound):
-                stored += 1
+        if runtime.inbound is not None:
+            for item in raw_messages:
+                if await self._store_history_item(item, runtime.inbound):
+                    stored += 1
         messages = [self._history_item_for_model(item) for item in raw_messages]
         return self._result(
             data={
                 "source": self._gateway_provider_id(runtime.gateway),
-                "scope": inbound.scope_type.value,
+                "scope": scope.scope_type.value,
                 "count": len(messages),
                 "newly_recorded": stored,
                 "messages": messages,
@@ -1426,6 +1443,13 @@ class AgentToolService:
         before = self._parse_time(arguments.get("before"))
         user_id = self._optional_string(arguments.get("user_id"))
         group_id = self._optional_string(arguments.get("group_id"))
+        if runtime.inbound is None:
+            if runtime.effective_scope_type is ScopeType.GROUP:
+                group_id = runtime.current_group_id
+                user_id = None
+            else:
+                user_id = runtime.external_target_id
+                group_id = None
         if (
             len(keyword.strip()) < 3
             and not user_id
@@ -1436,7 +1460,7 @@ class AgentToolService:
             if runtime.current_group_id:
                 group_id = runtime.current_group_id
             else:
-                user_id = runtime.actor_user_id
+                user_id = runtime.actor_user_id or runtime.external_target_id
         rows = await self._ledger.search(
             keyword=keyword,
             user_id=user_id,
@@ -1462,8 +1486,7 @@ class AgentToolService:
                 error="missing_target",
                 detail="必须提供 event_id 或 platform_message_id",
             )
-        inbound = runtime.require_inbound()
-        scope = inbound.scope()
+        scope = runtime.conversation_scope()
         max_before = self._settings.conversation_history_around_before
         max_after = self._settings.conversation_history_around_after
         total_limit = self._settings.conversation_history_around_limit
@@ -1629,6 +1652,11 @@ class AgentToolService:
         arguments: dict[str, Any],
         runtime: ToolRuntime,
     ) -> str:
+        if runtime.inbound is None:
+            return self._result(
+                error="permission_denied",
+                detail="关系查询需要绑定真实消息发送者",
+            )
         selection = await self._resolve_relationship_selection(arguments, runtime)
         if isinstance(selection, _ToolFailure):
             return self._result(error=selection.code, detail=selection.detail)
@@ -1707,7 +1735,7 @@ class AgentToolService:
             if not isinstance(candidate, str) or not candidate.strip().isdigit():
                 return _ToolFailure("invalid_user_id", "user_id 必须是数字 QQ 号字符串")
             user_id = candidate.strip()
-        if not await self._is_person_tool_target(user_id, runtime.require_inbound()):
+        if not await self._is_person_tool_target(user_id, runtime):
             return _ToolFailure(
                 "person_not_found",
                 f"{self._settings.bot_display_name} 自己不使用人物好感度记录",
@@ -1838,11 +1866,14 @@ class AgentToolService:
             bot_user_id=inbound.bot_user_id,
         )
 
-    async def _is_person_tool_target(self, user_id: str, inbound: InboundMessage) -> bool:
+    async def _is_person_tool_target(self, user_id: str, runtime: ToolRuntime) -> bool:
+        bot_user_id = runtime.effective_bot_user_id
+        if not bot_user_id:
+            return False
         targets = await self._people.person_reference_ids(
             (user_id,),
             speaker_user_id="",
-            bot_user_id=inbound.bot_user_id,
+            bot_user_id=bot_user_id,
         )
         return user_id in targets
 
@@ -1854,13 +1885,13 @@ class AgentToolService:
         resolved_by: str,
         subject_ref: str | None = None,
     ) -> _PersonMemorySelection | _ToolFailure:
-        inbound = runtime.require_inbound()
-        if not await self._is_person_tool_target(user_id, inbound):
+        inbound = runtime.inbound
+        if not await self._is_person_tool_target(user_id, runtime):
             return _ToolFailure(
                 "permission_denied",
                 f"不能读取 {self._settings.bot_display_name} 身份的个人记忆",
             )
-        if user_id == inbound.sender.user_id:
+        if inbound is not None and user_id == inbound.sender.user_id:
             targets = await self._memory_context.resolve_targets(inbound, self._runtime())
             own_targets = tuple(
                 target
@@ -1875,7 +1906,25 @@ class AgentToolService:
                 subject_ref=subject_ref,
             )
 
-        group_id = inbound.group_id
+        if (
+            inbound is None
+            and runtime.effective_scope_type is ScopeType.PRIVATE
+            and user_id == runtime.external_target_id
+        ):
+            target = MemoryEntityTarget(
+                role=MemoryTargetRole.CURRENT_PERSON,
+                scope_type=MemoryScopeType.PERSON,
+                subject_user_id=user_id,
+                block_id="current_person",
+            )
+            return _PersonMemorySelection(
+                user_id=user_id,
+                targets=(target,),
+                resolved_by=resolved_by,
+                subject_ref=subject_ref,
+            )
+
+        group_id = inbound.group_id if inbound is not None else runtime.current_group_id
         if group_id is None:
             return _ToolFailure(
                 "permission_denied",
@@ -1912,17 +1961,27 @@ class AgentToolService:
             return self._result(error="invalid_group_id", detail="group_id 必须是字符串")
         limit = self._memory_list_limit(arguments)
         query, mode = self._memory_query(arguments)
-        targets = await self._memory_context.resolve_targets(
-            runtime.require_inbound(), self._runtime()
-        )
-        target = next(
-            (
-                item
-                for item in targets
-                if item.scope_type is MemoryScopeType.GROUP and item.group_id == group_id
-            ),
-            None,
-        )
+        if runtime.inbound is not None:
+            targets = await self._memory_context.resolve_targets(runtime.inbound, self._runtime())
+            target = next(
+                (
+                    item
+                    for item in targets
+                    if item.scope_type is MemoryScopeType.GROUP and item.group_id == group_id
+                ),
+                None,
+            )
+        elif (
+            runtime.effective_scope_type is ScopeType.GROUP and runtime.current_group_id == group_id
+        ):
+            target = MemoryEntityTarget(
+                role=MemoryTargetRole.CURRENT_GROUP,
+                scope_type=MemoryScopeType.GROUP,
+                group_id=group_id,
+                block_id="current_group",
+            )
+        else:
+            target = None
         if target is None:
             return self._result(error="permission_denied", detail="只能读取当前群的共同记忆")
         if query is None and mode is None:
@@ -1956,20 +2015,39 @@ class AgentToolService:
         if not self._settings.self_memory_enabled:
             return self._result(error="self_memory_unavailable", detail="自我记忆功能未启用")
         query, _mode = self._memory_query(arguments)
-        targets = await self._memory_context.resolve_targets(
-            runtime.require_inbound(),
-            self._runtime(),
-            self_recall=True,
-        )
-        target = next(
-            (
-                item
-                for item in targets
-                if item.role is MemoryTargetRole.CURRENT_SELF
-                and item.scope_type is MemoryScopeType.SELF
-            ),
-            None,
-        )
+        if runtime.inbound is not None:
+            targets = await self._memory_context.resolve_targets(
+                runtime.inbound,
+                self._runtime(),
+                self_recall=True,
+            )
+            target = next(
+                (
+                    item
+                    for item in targets
+                    if item.role is MemoryTargetRole.CURRENT_SELF
+                    and item.scope_type is MemoryScopeType.SELF
+                ),
+                None,
+            )
+        elif runtime.effective_scope_type is ScopeType.GROUP and runtime.current_group_id:
+            target = MemoryEntityTarget(
+                role=MemoryTargetRole.CURRENT_SELF,
+                scope_type=MemoryScopeType.SELF,
+                visibility_type=SelfMemoryVisibility.GROUP,
+                visibility_group_id=runtime.current_group_id,
+                block_id="current_self",
+            )
+        elif runtime.effective_scope_type is ScopeType.PRIVATE and runtime.external_target_id:
+            target = MemoryEntityTarget(
+                role=MemoryTargetRole.CURRENT_SELF,
+                scope_type=MemoryScopeType.SELF,
+                visibility_type=SelfMemoryVisibility.PRIVATE,
+                visibility_user_id=runtime.external_target_id,
+                block_id="current_self",
+            )
+        else:
+            target = None
         if target is None:
             return self._result(error="self_memory_unavailable", detail="当前会话不能读取自我记忆")
         result = await self._read_memories(
@@ -2289,9 +2367,12 @@ class AgentToolService:
             resolve_active_space_id,
         )
 
+        person_external_id = runtime.actor_user_id
+        if not person_external_id and runtime.effective_scope_type is ScopeType.PRIVATE:
+            person_external_id = runtime.external_target_id or ""
         async with self._memories.repository.database.sessions() as session:
             try:
-                person_id = await resolve_active_person_id(session, runtime.actor_user_id)
+                person_id = await resolve_active_person_id(session, person_external_id)
             except MemoryPartitionResolutionError:
                 person_id = None
             space_id = None

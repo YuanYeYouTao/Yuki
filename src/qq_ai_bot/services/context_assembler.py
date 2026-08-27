@@ -528,15 +528,52 @@ class ContextAssembler:
         hits_by_role = {
             block.target.role: block.hits
             for block in retrieval.blocks
-            if block.target.role in {MemoryTargetRole.CURRENT_SELF, MemoryTargetRole.CURRENT_GROUP}
+            if block.target.role
+            in {
+                MemoryTargetRole.CURRENT_PERSON,
+                MemoryTargetRole.CURRENT_SELF,
+                MemoryTargetRole.CURRENT_GROUP,
+            }
         }
         context: dict[str, Any] = {
             "scene": {
                 "type": event.scope_type.value,
                 "group_id": event.group_id,
                 "trigger": "external_event",
+                "current_actor": None,
             }
         }
+        current_relationship = None
+        if event.group_id is None:
+            profile = await self._people.get(user_id=trigger.target_id)
+            if profile is None:
+                raise ConversationCoverageError("external private target profile is unavailable")
+            aliases = await self._people.aliases(trigger.target_id)
+            current_relationship = (
+                await self._relationships.get(trigger.target_id)
+                if self._settings.relationship_enabled
+                else None
+            )
+            context["conversation_target_person"] = {
+                "user_id": trigger.target_id,
+                "nickname": profile.nickname,
+                "display_name": profile.display_name,
+                "aliases": list(aliases),
+                "not_current_speaker": True,
+                "facts": [
+                    retrieval_fact_context(
+                        hit,
+                        self._settings.default_timezone,
+                        include_budget_metadata=True,
+                    )
+                    for hit in hits_by_role.get(MemoryTargetRole.CURRENT_PERSON, ())
+                ],
+                **(
+                    {"relationship": self.relationship_json(current_relationship)}
+                    if current_relationship is not None
+                    else {}
+                ),
+            }
         group_hits = hits_by_role.get(MemoryTargetRole.CURRENT_GROUP, ())
         if event.group_id is not None:
             context["current_group"] = {
@@ -606,14 +643,18 @@ class ContextAssembler:
         )
         history = bounded_messages.history_messages
         current_message = bounded_messages.current_message
-        current_time = self._time.current_default()
+        current_time = (
+            await self._time.current(trigger.target_id)
+            if event.group_id is None
+            else self._time.current_default()
+        )
         return AssembledContext(
             metadata_payload=metadata_payload,
             history_messages=history,
             current_message=current_message,
             recent_delivery=self._recent_delivery(recent, self._settings.default_timezone),
             current_time=current_time,
-            current_relationship=None,
+            current_relationship=current_relationship,
             metrics=ContextMetrics(
                 metadata_characters=len(metadata_json),
                 history_characters=sum(len(item.content or "") for item in history),
@@ -655,7 +696,16 @@ class ContextAssembler:
                 block_id="current_self",
             )
         ]
-        if event.group_id is not None:
+        if event.group_id is None:
+            targets.append(
+                MemoryEntityTarget(
+                    role=MemoryTargetRole.CURRENT_PERSON,
+                    scope_type=MemoryScopeType.PERSON,
+                    subject_user_id=trigger.target_id,
+                    block_id="conversation_target_person",
+                )
+            )
+        else:
             targets.append(
                 MemoryEntityTarget(
                     role=MemoryTargetRole.CURRENT_GROUP,
@@ -1048,6 +1098,18 @@ class ContextAssembler:
                 add(f"current_alias.{index}", alias, priority=45, relevance=0.7)
             for index, memory in enumerate(current.get("facts", ())):
                 add_memory(f"person_memory.{index}", memory, fallback_priority=60)
+        target_person = context.get("conversation_target_person")
+        if isinstance(target_person, dict):
+            base = {
+                key: value
+                for key, value in target_person.items()
+                if key not in {"aliases", "facts"}
+            }
+            add("conversation_target_person", base, priority=100, relevance=1, required=True)
+            for index, alias in enumerate(target_person.get("aliases", ())):
+                add(f"conversation_target_alias.{index}", alias, priority=45, relevance=0.7)
+            for index, memory in enumerate(target_person.get("facts", ())):
+                add_memory(f"conversation_target_memory.{index}", memory, fallback_priority=60)
         add("scene", context.get("scene", {}), priority=100, relevance=1, required=True)
         current_self = context.get("current_self")
         if isinstance(current_self, dict):

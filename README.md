@@ -8,7 +8,7 @@
 
 <p>
   <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.1"><img src="https://img.shields.io/badge/Release-3.8.1-blue" alt="Yuki 3.8.1 release"></a>
-  <img src="https://img.shields.io/badge/Schema-0049-blue" alt="Alembic head 0049">
+  <img src="https://img.shields.io/badge/Schema-0050-blue" alt="Alembic head 0050">
   <img src="https://img.shields.io/badge/Plugin%20API-2.0-8A2BE2" alt="Plugin API 2.0">
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
@@ -22,7 +22,8 @@ Yuki 不是给 QQ 套一层模型回复的问答机器人。它把 Conversation�
 Automation、Plugin 与 QQ 登录账号和 Gateway 连接分开，让同一个长期角色能够换账号、换
 Provider，并在权限边界内持续记住人与共同经历。
 
-当前版本为 **3.8.1**。3.8 只运行 canonical schema；Alembic head 仍为 `0049`。
+最新已发布版本为 **3.8.1**。当前源码包含 3.8.1 之后的插件唤醒修复；3.8 只运行
+canonical schema，Alembic head 为 `0050`。
 
 ## 3.8 核心合同
 
@@ -76,6 +77,9 @@ action 或宿主机；工具调用由后端进行权限、预算、幂等和审�
 - 有界 Agent 工具循环、联网搜索、MCP、自动化与 Plugin API 2.0。
 - 插件外部事件使用独立账本类型与有界不可信 digest，不进入普通历史，也不会把稳定前缀改写成
   动态 system 消息。
+- 插件主动事件只负责唤醒正常 Main Agent：复用同一 Conversation snapshot、Rollup、历史、
+  Memory、工具 schema 和模型 profile；事件提醒只作为不落账的当前 user 尾部，主动回复通过
+  `caused_by_event_id` 保存因果。
 - 可选图片理解、表情资产管理和本地 Genie-TTS 语音。
 - NapCat/SnowLuma 多 Provider、多 Presence、确定性路由与连接健康投影。
 - transport-neutral Control Plane；3.8 本身不开放管理 HTTP API，也不包含 WebUI。
@@ -141,10 +145,11 @@ docker compose up -d
 
 3.8 的数据库合同：
 
-- fresh install：无父 revision 的 `0048` canonical baseline，随后升级到 `0049`。
+- fresh install：无父 revision 的 `0048` canonical baseline，随后升级到 `0049 -> 0050`。
 - historical bridge：只接受已完成 canonical v2 的旧 `0048` 数据库。
 - pre-3.8、v1、dual-write、backfill/cutover 中间态数据库不受支持，启动时失败关闭。
-- `0049` 不提供 downgrade；唯一数据回退方式是恢复升级前同一时点的 DB/WAL/SHM 快照。
+- `0049` 仍是不提供 downgrade 的 canonical bridge；`0050` 只增加主动回复因果列和索引。
+  生产数据的可靠回退方式仍是恢复升级前同一时点的 DB/WAL/SHM 快照。
 
 升级前必须停止 Bot 与 Provider，并把以下文件作为一组保存：
 
@@ -200,7 +205,7 @@ uv run mypy src
 uv run pytest
 ```
 
-涉及 schema 或发布时还要验证 fresh `0048 -> 0049`、populated `0048 -> 0049`、SQLite
+涉及 schema 或发布时还要验证 fresh `0048 -> 0049 -> 0050`、populated `0049 -> 0050`、SQLite
 `foreign_key_check`、FTS/trigger、release smoke 和 Docker Compose 配置。
 
 ## 文档
@@ -208,6 +213,7 @@ uv run pytest
 - [使用与运维帮助](docs/help.md)
 - [3.8 canonical runtime](docs/architecture/canonical-runtime.md)
 - [Conversation Rollup](docs/architecture/conversation-rollup.md)
+- [插件唤醒 Main Agent 与主动回复因果合同](docs/architecture/Yuki-插件唤醒Main-Agent与主动回复因果修复任务书.md)
 - [Memory V2](docs/architecture/memory-v2.md)
 - [Memory 变更合同](docs/architecture/memory-change.md)
 - [Plugin API 2.0](docs/plugin-development/index.md)

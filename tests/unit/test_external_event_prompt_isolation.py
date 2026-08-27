@@ -16,7 +16,8 @@ from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
 from qq_ai_bot.conversation.rollup.renderer import rollup_source_projection
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import ChatMessage, InboundMessage, SenderIdentity
+from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, InboundMessage, SenderIdentity
+from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.event_prompt import (
     EXTERNAL_EVENT_CONTENT_TRUST,
     EXTERNAL_EVENT_DIGEST_SUMMARY_MAX_CHARACTERS,
@@ -27,6 +28,8 @@ from qq_ai_bot.event_prompt import (
 )
 from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
+from qq_ai_bot.memory.enums import MemoryTargetRole
+from qq_ai_bot.model_runtime.executor import provider_cache_shape_diagnostics
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.prompting import ContextBudgeter
@@ -272,6 +275,26 @@ def test_bounded_history_keeps_current_external_out_of_main_history() -> None:
     assert all("abc" not in (item.content or "") for item in bounded.history_messages)
 
 
+def test_private_wakeup_memory_targets_include_person_without_an_actor() -> None:
+    current = _external(3, "current trigger")
+    trigger = ExternalEventTurnTrigger(
+        plugin_id="github-monitor",
+        source_event_id=current.id,
+        target_type="private",
+        target_id="1001",
+        agent_intent="comment briefly",
+    )
+
+    targets = ContextAssembler._actorless_memory_targets(current, trigger)
+
+    assert {target.role for target in targets} == {
+        MemoryTargetRole.CURRENT_SELF,
+        MemoryTargetRole.CURRENT_PERSON,
+    }
+    person = next(target for target in targets if target.role is MemoryTargetRole.CURRENT_PERSON)
+    assert person.subject_user_id == "1001"
+
+
 def test_digest_has_host_fields_only_excludes_current_and_caps_summary() -> None:
     huge = "x" * 2_000
     rows = (
@@ -423,6 +446,140 @@ def test_assembler_attaches_digest_from_final_uncovered_tail() -> None:
     assert [item["summary"] for item in final_events if isinstance(item, dict)] == [
         "still uncovered"
     ]
+
+
+@pytest.mark.asyncio
+async def test_external_wakeup_assembles_the_same_stable_conversation_window() -> None:
+    """The wakeup path may replace only the current turn, never the stable history."""
+
+    early_marker = "EARLY-STABLE-CONTEXT-MARKER"
+    recent = (
+        _message(6, early_marker),
+        replace(
+            _message(7, "ordinary Yuki history", sender="8000", direction="outbound"),
+            author_kind="yuki",
+        ),
+    )
+    snapshot = _HistoryPromptWindow(
+        recent=recent,
+        rollup_text="stable rollup before both current turns",
+        coverage_end=5,
+        revision=9,
+        rollup=None,
+        rollup_mode="llm",
+        starts_after_event_id=0,
+    )
+    runtime = MagicMock()
+    runtime.context.local_event_limit = 2_048
+    empty_retrieval = MagicMock(blocks=(), hits=())
+
+    ordinary_event = replace(
+        _message(10, "ordinary current turn"),
+        canonical_conversation_id="conv-stable",
+    )
+    ordinary = _assembler(relationship_enabled=False)
+    ordinary._ensure_lightweight_backlog = AsyncMock()  # type: ignore[method-assign]
+    ordinary._load_history_snapshot = AsyncMock(  # type: ignore[method-assign]
+        return_value=snapshot
+    )
+    ordinary._ledger.get_event = AsyncMock(return_value=ordinary_event)
+    ordinary._memory_context.retrieve_for_turn = AsyncMock(return_value=empty_retrieval)
+    ordinary._people.aliases = AsyncMock(return_value=())
+    ordinary._time.current = AsyncMock(return_value=_time())
+    ordinary_identity = ordinary_event.scope
+    turn = ConversationTurnSnapshot(
+        scope_id=1,
+        scope_key=ordinary_identity.key,
+        generation=1,
+        trigger_event_id=ordinary_event.id,
+        coordinator_version=1,
+        transport_scope_key=ordinary_identity.key,
+    )
+    ordinary_context = await ordinary.assemble(
+        inbound=InboundMessage(
+            message_id=ordinary_event.platform_message_id,
+            event_type="message",
+            scope_type=ScopeType.PRIVATE,
+            sender=SenderIdentity(user_id="1001"),
+            text=ordinary_event.content,
+            bot_user_id="8000",
+        ),
+        profile=UserProfileSnapshot(
+            user_id="1001",
+            scope_type=ScopeType.PRIVATE,
+            nickname="Ada",
+        ),
+        identity=ordinary_identity,
+        turn=turn,
+        content=ordinary_event.content,
+        runtime=runtime,
+        persist_memory_exposure=False,
+    )
+
+    external_event = replace(
+        _external(10, "external current turn"),
+        canonical_conversation_id="conv-stable",
+    )
+    wakeup = _assembler(relationship_enabled=False)
+    wakeup._ensure_lightweight_backlog = AsyncMock()  # type: ignore[method-assign]
+    wakeup._load_history_snapshot = AsyncMock(  # type: ignore[method-assign]
+        return_value=snapshot
+    )
+    wakeup._memory_context.retrieve_for_targets = AsyncMock(return_value=empty_retrieval)
+    wakeup._people.get = AsyncMock(
+        return_value=UserProfileSnapshot(
+            user_id="1001",
+            scope_type=ScopeType.PRIVATE,
+            nickname="Ada",
+        )
+    )
+    wakeup._people.aliases = AsyncMock(return_value=())
+    wakeup._time.current = AsyncMock(return_value=_time())
+    wakeup_context = await wakeup.assemble(
+        inbound=None,
+        profile=None,
+        identity=external_event.scope,
+        turn=turn,
+        content=external_event.content,
+        runtime=runtime,
+        external_event=external_event,
+        external_trigger=ExternalEventTurnTrigger(
+            plugin_id="github-monitor",
+            source_event_id=external_event.id,
+            target_type="private",
+            target_id="1001",
+            agent_intent="comment if useful",
+        ),
+    )
+
+    assert wakeup_context.history_messages == ordinary_context.history_messages
+    assert early_marker in "\n".join(
+        message.content or "" for message in wakeup_context.history_messages
+    )
+    assert wakeup_context.rollup_text == ordinary_context.rollup_text == snapshot.rollup_text
+    assert wakeup_context.prompt_scope_id == ordinary_context.prompt_scope_id == turn.scope_id
+    assert wakeup_context.prompt_scope_key == ordinary_context.prompt_scope_key == turn.scope_key
+    assert wakeup_context.prompt_generation == ordinary_context.prompt_generation == turn.generation
+    assert (
+        wakeup_context.prompt_effective_coverage == ordinary_context.prompt_effective_coverage == 5
+    )
+    assert wakeup_context.prompt_rollup_revision == ordinary_context.prompt_rollup_revision == 9
+    assert wakeup_context.prompt_raw_tail_end_event_id == (
+        ordinary_context.prompt_raw_tail_end_event_id
+    )
+    target_person = next(
+        item
+        for item in wakeup_context.metadata_payload["items"]  # type: ignore[index]
+        if isinstance(item, dict) and item.get("id") == "conversation_target_person"
+    )
+    assert target_person["data"] == {
+        "user_id": "1001",
+        "nickname": "Ada",
+        "display_name": "Ada",
+        "not_current_speaker": True,
+    }
+    assert wakeup_context.current_message != ordinary_context.current_message
+    assert "external_event_wakeup" in (wakeup_context.current_message.content or "")
 
 
 def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
@@ -606,6 +763,78 @@ async def test_external_wakeup_and_ordinary_turn_send_the_same_provider_shape(
     assert ordinary_request.response_format == wakeup_request.response_format
     assert ordinary_request.structured_output == wakeup_request.structured_output
     assert ordinary_request.request_shape_hash == wakeup_request.request_shape_hash
+    ordinary_shape = provider_cache_shape_diagnostics(
+        ordinary_request,
+        provider="fake",
+        model=ordinary_request.model,
+        profile_id="legacy",
+        protocol="chat_completions",
+    )
+    wakeup_shape = provider_cache_shape_diagnostics(
+        wakeup_request,
+        provider="fake",
+        model=wakeup_request.model,
+        profile_id="legacy",
+        protocol="chat_completions",
+    )
+    assert ordinary_shape == wakeup_shape
+    assert all(
+        len(value) == 64
+        for value in (
+            ordinary_shape.provider_shape_hash,
+            ordinary_shape.instructions_hash,
+            ordinary_shape.tools_hash,
+            ordinary_shape.input_prefix_hash,
+        )
+    )
+
+
+def test_provider_cache_shape_excludes_only_the_current_user_tail() -> None:
+    base = ChatRequest(
+        messages=(
+            ChatMessage(role="system", content="stable instructions"),
+            ChatMessage(role="user", content="stable history"),
+            ChatMessage(role="assistant", content="stable reply"),
+            ChatMessage(role="user", content="ordinary current tail"),
+        ),
+        model="deepseek-v4-flash",
+        temperature=None,
+        max_output_tokens=2_000,
+        thinking_enabled=True,
+    )
+
+    def diagnostics(request: ChatRequest):
+        return provider_cache_shape_diagnostics(
+            request,
+            provider="deepseek",
+            model=request.model,
+            profile_id="main",
+            protocol="responses",
+        )
+
+    baseline = diagnostics(base)
+    other_tail = diagnostics(
+        replace(
+            base,
+            messages=(*base.messages[:-1], ChatMessage(role="user", content="external wakeup")),
+        )
+    )
+    changed_history = diagnostics(
+        replace(
+            base,
+            messages=(
+                base.messages[0],
+                ChatMessage(role="user", content="different stable history"),
+                *base.messages[2:],
+            ),
+        )
+    )
+    changed_limits = diagnostics(replace(base, max_output_tokens=4_000))
+
+    assert baseline == other_tail
+    assert baseline.input_prefix_hash != changed_history.input_prefix_hash
+    assert baseline.provider_shape_hash != changed_history.provider_shape_hash
+    assert baseline.provider_shape_hash != changed_limits.provider_shape_hash
 
 
 @pytest.mark.asyncio
@@ -648,6 +877,83 @@ async def test_plugin_wakeup_can_decline_without_creating_a_fake_reply(
     )
     assert result["ok"] is True
     assert control.declined is True
+
+
+@pytest.mark.asyncio
+async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_actor(
+    database: Database,
+) -> None:
+    harness = build_harness(database, make_settings(database.url))
+    tools = harness.processor._chat._tools
+    runtime_config = await harness.processor._chat._runtime_config.snapshot(
+        user_id="1001",
+        group_id=None,
+    )
+    gateway = MagicMock()
+    gateway.provider_id = "snowluma"
+    gateway.call_api = AsyncMock(return_value={"messages": []})
+    group_runtime = ToolRuntime(
+        inbound=None,
+        gateway=gateway,
+        allow_generic_onebot=False,
+        conversation_key="canonical:space-100:generation:1",
+        trigger_message_id="external-current",
+        actor_user_id="",
+        runtime_config=runtime_config,
+        origin=TurnOrigin.PLUGIN_BACKGROUND,
+        scope_type=ScopeType.GROUP,
+        bot_user_id="8000",
+        conversation_id="space-100",
+        presence_id="presence-stable",
+        space_id="space-100",
+        current_group_id="group-100",
+        external_target_id="group-100",
+    )
+    tools._memories.list_group = AsyncMock(return_value=())  # type: ignore[method-assign]
+    tools._ledger.search = AsyncMock(return_value=())  # type: ignore[method-assign]
+    recent = json.loads(await tools.execute("get_recent_chat_history", "{}", group_runtime))
+    group_memory = json.loads(
+        await tools.execute(
+            "get_group_memories",
+            '{"group_id":"group-100"}',
+            group_runtime,
+        )
+    )
+    around = json.loads(
+        await tools.execute("get_chat_history_around", '{"event_id":999}', group_runtime)
+    )
+    scoped_search = json.loads(
+        await tools.execute(
+            "search_chat_history",
+            '{"keyword":"release","user_id":"9999","group_id":"other-group"}',
+            group_runtime,
+        )
+    )
+    relationship = json.loads(
+        await tools.execute(
+            "get_relationship",
+            '{"user_id":"1001"}',
+            group_runtime,
+        )
+    )
+
+    assert recent["ok"] is True
+    assert recent["data"]["source"] == "snowluma"
+    assert recent["data"]["newly_recorded"] == 0
+    assert group_memory == {
+        "ok": True,
+        "data": {"group_id": "group-100", "memories": []},
+    }
+    assert around["error"] == "not_found"
+    assert scoped_search == {"ok": True, "data": {"events": []}}
+    assert relationship["error"] == "permission_denied"
+    gateway.call_api.assert_awaited_once_with(
+        "get_group_msg_history",
+        {"group_id": "group-100", "count": tools._settings.recent_history_tool_limit},
+    )
+    assert tools._ledger.search.await_args.kwargs["group_id"] == "group-100"
+    assert tools._ledger.search.await_args.kwargs["user_id"] is None
+    assert "memory_change" not in {tool.name for tool in tools.definitions(group_runtime)}
 
 
 def _pad_external_to_encoded_size(event_id: int, target: int) -> EventRecord:

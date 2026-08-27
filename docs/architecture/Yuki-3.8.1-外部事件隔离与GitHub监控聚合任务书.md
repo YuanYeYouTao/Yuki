@@ -1,5 +1,11 @@
 # Yuki 3.8.1 泛用外部事件隔离与 GitHub Monitor 安全合批任务书
 
+> **历史合同提示：** 本任务书的 external event 隔离、GitHub WAL、幂等和合批边界继续有效；
+> 其中“独立后台 Agent turn”生成层已被后续任务书取代。当前实现不得使用专用短上下文或
+> tool-free/read-only Agent，而应只用临时 current user 尾部唤醒完整正常 Main Agent，并保存主动
+> 回复因果。见
+> [Yuki 插件唤醒 Main Agent 与主动回复因果修复任务书](Yuki-插件唤醒Main-Agent与主动回复因果修复任务书.md)。
+
 ## 0. 文档信息
 
 - **任务性质**：在冻结的 3.8.0 canonical 运行时上修补外部事件投影、后台 freshness、Host 通知幂等，以及 GitHub Monitor 插件内的连续性队列与安全合批。

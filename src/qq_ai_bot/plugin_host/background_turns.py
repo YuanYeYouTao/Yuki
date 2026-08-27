@@ -257,7 +257,7 @@ class PluginBackgroundTurnWorker:
             )
             return
         runtime = await self._runtime_config.snapshot(
-            user_id=context.creator_person_id,
+            user_id=context.person_id,
             group_id=context.space_id,
         )
         self._chat.configure_runtime_controls(runtime)

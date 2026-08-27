@@ -312,7 +312,7 @@ class AutomationToolService:
             return _result(
                 error="permission_context_mismatch", detail="自动化工具未绑定当前真实消息"
             )
-        inbound = runtime.inbound
+        inbound = runtime.require_inbound()
         try:
             arguments = json.loads(arguments_json)
             if not isinstance(arguments, dict):
@@ -479,7 +479,8 @@ class AutomationToolService:
     def _valid_runtime(runtime: ToolRuntime) -> bool:
         inbound = runtime.inbound
         return bool(
-            runtime.allow_automation
+            inbound is not None
+            and runtime.allow_automation
             and runtime.actor_user_id == inbound.sender.user_id
             and runtime.trigger_message_id == inbound.message_id
             and runtime.current_group_id == inbound.group_id
