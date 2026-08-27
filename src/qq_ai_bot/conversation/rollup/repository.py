@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
@@ -32,6 +33,7 @@ from qq_ai_bot.conversation.rollup.errors import (
     RollupLeaseLostError,
     RollupSourceChangedError,
 )
+from qq_ai_bot.conversation.rollup.holds import RollupCoverageHoldQuery
 from qq_ai_bot.conversation.rollup.metrics import ConversationRollupMetrics
 from qq_ai_bot.conversation.rollup.models import (
     LLM_ORIGIN_INELIGIBLE,
@@ -65,6 +67,7 @@ from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.repository_helpers import _event_record, keeper_event_clause
 from qq_ai_bot.persistence.repository_records import EventRecord
+from qq_ai_bot.persistence.rollup_holds import PersistentRollupCoverageHoldQuery
 
 
 def _utcnow() -> datetime:
@@ -316,7 +319,54 @@ async def _load_prompt_tail_events(
     if before_event_id is not None:
         query = query.where(ChatEventModel.id < before_event_id)
     rows = tuple((await session.scalars(query.order_by(ChatEventModel.id.asc()))).all())
-    return tuple(_event_record(row) for row in rows)
+    return await _with_proactive_cause_metadata(
+        session,
+        tuple(_event_record(row) for row in rows),
+    )
+
+
+async def _with_proactive_cause_metadata(
+    session: AsyncSession,
+    events: tuple[EventRecord, ...],
+) -> tuple[EventRecord, ...]:
+    """Bulk-hydrate source/type for causal model projections without N+1 reads."""
+
+    cause_ids = tuple(
+        dict.fromkeys(
+            event.caused_by_event_id
+            for event in events
+            if event.origin == "plugin_background" and event.caused_by_event_id is not None
+        )
+    )
+    if not cause_ids:
+        return events
+    rows = tuple(
+        (
+            await session.scalars(
+                select(ChatEventModel).where(
+                    ChatEventModel.id.in_(cause_ids),
+                    ChatEventModel.event_kind == "external_event",
+                    ChatEventModel.direction == "external",
+                    keeper_event_clause(),
+                )
+            )
+        ).all()
+    )
+    causes = {row.id: _event_record(row) for row in rows}
+    enriched: list[EventRecord] = []
+    for event in events:
+        cause = causes.get(event.caused_by_event_id or 0)
+        if cause is None or cause.canonical_conversation_id != event.canonical_conversation_id:
+            enriched.append(event)
+            continue
+        enriched.append(
+            replace(
+                event,
+                caused_by_external_source=cause.external_source,
+                caused_by_external_event_type=cause.external_event_type,
+            )
+        )
+    return tuple(enriched)
 
 
 async def _compose_detailed_status(
@@ -476,10 +526,12 @@ class ConversationRollupRepository:
         database: Database,
         config: RollupPolicyConfig,
         metrics: ConversationRollupMetrics | None = None,
+        coverage_holds: RollupCoverageHoldQuery | None = None,
     ) -> None:
         self._database = database
         self.config = config
         self.metrics = metrics or ConversationRollupMetrics()
+        self._coverage_holds = coverage_holds or PersistentRollupCoverageHoldQuery()
 
     async def health_snapshot(self) -> dict[str, object]:
         """Return content-free, low-cardinality process health for all scopes."""
@@ -588,6 +640,26 @@ class ConversationRollupRepository:
         if not claim.conversation_id:
             raise RollupLeaseLostError("canonical rollup claim has no conversation")
         async with self._database.sessions() as session, session.begin():
+            coverage_hold = await self._coverage_holds.earliest_source_event_id(
+                session,
+                canonical_conversation_id=claim.conversation_id,
+            )
+            if coverage_hold is not None:
+                result = await session.execute(
+                    update(CanonicalConversationRollupJobModel)
+                    .where(*self._canonical_lease_conditions(claim, now=now))
+                    .values(
+                        status="pending",
+                        lease_owner=None,
+                        lease_token=None,
+                        lease_until=None,
+                        next_attempt_at=now + timedelta(seconds=15),
+                        updated_at=now,
+                    )
+                )
+                if not cast(CursorResult[object], result).rowcount:
+                    raise RollupLeaseLostError("rollup hold parking lost its lease")
+                return False
             result = await session.execute(
                 delete(CanonicalConversationRollupJobModel).where(
                     *self._canonical_lease_conditions(claim, now=now),
@@ -1043,8 +1115,18 @@ class ConversationRollupRepository:
                 )
             ).all()
         )
-        all_events = tuple(_event_record(row) for row in rows)
-        batch = take_batch(eligible_prefix(all_events, self.config), self.config)
+        all_events = await _with_proactive_cause_metadata(
+            session,
+            tuple(_event_record(row) for row in rows),
+        )
+        eligible = eligible_prefix(all_events, self.config)
+        coverage_hold = await self._coverage_holds.earliest_source_event_id(
+            session,
+            canonical_conversation_id=conversation.id,
+        )
+        if coverage_hold is not None:
+            eligible = tuple(event for event in eligible if event.id < coverage_hold)
+        batch = take_batch(eligible, self.config)
         if not batch:
             return None
         characters = source_accounting_characters(
@@ -1105,6 +1187,12 @@ class ConversationRollupRepository:
         previous = current_rollup.summary_text if current_rollup is not None else ""
         if coverage != candidate.source_coverage or revision != candidate.source_rollup_revision:
             raise RollupSourceChangedError("rollup checkpoint changed")
+        coverage_hold = await self._coverage_holds.earliest_source_event_id(
+            session,
+            canonical_conversation_id=conversation.id,
+        )
+        if coverage_hold is not None and candidate.events[-1].id >= coverage_hold:
+            raise RollupSourceChangedError("rollup coverage hold changed")
         rows = tuple(
             (
                 await session.scalars(
@@ -1119,7 +1207,10 @@ class ConversationRollupRepository:
                 )
             ).all()
         )
-        events = tuple(_event_record(row) for row in rows)
+        events = await _with_proactive_cause_metadata(
+            session,
+            tuple(_event_record(row) for row in rows),
+        )
         fingerprint = source_fingerprint(
             scope_id=candidate.scope_id,
             generation=candidate.generation,
@@ -1148,7 +1239,10 @@ class ConversationRollupRepository:
                 )
             ).all()
         )
-        remaining = tuple(_event_record(row) for row in remaining_rows)
+        remaining = await _with_proactive_cause_metadata(
+            session,
+            tuple(_event_record(row) for row in remaining_rows),
+        )
         statement = insert(CanonicalConversationRollupModel).values(
             conversation_id=claim.conversation_id,
             generation=candidate.generation,
@@ -1256,6 +1350,12 @@ class ConversationRollupRepository:
         )
         if coverage != candidate.source_coverage or revision != candidate.source_rollup_revision:
             raise RollupSourceChangedError("rollup checkpoint changed")
+        coverage_hold = await self._coverage_holds.earliest_source_event_id(
+            session,
+            canonical_conversation_id=conversation.id,
+        )
+        if coverage_hold is not None and candidate.events[-1].id >= coverage_hold:
+            raise RollupSourceChangedError("rollup coverage hold changed")
         rows = tuple(
             (
                 await session.scalars(
@@ -1270,7 +1370,10 @@ class ConversationRollupRepository:
                 )
             ).all()
         )
-        events = tuple(_event_record(row) for row in rows)
+        events = await _with_proactive_cause_metadata(
+            session,
+            tuple(_event_record(row) for row in rows),
+        )
         fingerprint = source_fingerprint(
             scope_id=candidate.scope_id,
             generation=candidate.generation,

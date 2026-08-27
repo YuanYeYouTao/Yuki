@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 from qq_ai_bot.conversation.rollup.models import ConversationRollupDetailedStatus
 from qq_ai_bot.domain.messages import ChatMessage
+from qq_ai_bot.event_prompt import proactive_message_label
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.time.formatting import local_datetime
 
@@ -33,6 +34,9 @@ def rollup_source_projection(
         body = f"{body}\n[Visual summary: {event.visual_summary.strip()}]".strip()
     if event.event_kind == "external_event":
         body = EXTERNAL_ENVELOPE + body
+    proactive = proactive_message_label(event)
+    if proactive is not None:
+        body = f"{proactive}\n{body}"
     return f"[{timestamp}] {sender}: {body}"
 
 

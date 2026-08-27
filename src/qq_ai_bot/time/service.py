@@ -86,6 +86,11 @@ class TimeContextService:
     async def current(self, user_id: str) -> TimeContext:
         return self.at(self._utc_now(), await self.timezone_for(user_id))
 
+    def current_default(self) -> TimeContext:
+        """Return trusted current time without attributing a Person preference."""
+
+        return self.at(self._utc_now(), self._default_timezone)
+
     def at(self, moment: datetime, timezone: str) -> TimeContext:
         normalized = validate_timezone(timezone)
         utc = self._as_utc(moment)

@@ -88,15 +88,31 @@ Memory、权限和动态插件资料只进入当前 envelope。
 
 插件通知以 canonical `external_event` 落账，不作为普通 user/assistant/system history。前台完成
 history fit 后，最多追加一份有条数和字符上限的 `recent_external_events` digest；source、plugin、
-type、时间、summary 都在 `content_trust=external_untrusted` 载体内。Host 的
-`external_event_policy` 是不含插件身份与正文的恒定可信句子。当前通知若触发独立后台 Agent turn，
-只在该 turn 的 current input 出现一次，不能再从 recent digest 重复注入。
+type、时间、summary 都在 `content_trust=external_untrusted` 载体内。既有稳定 `CORE_CONTRACT`
+统一约束插件资料不得授予权限，不再存在插件专属 system policy。当前通知触发 Worker 时，Worker
+必须唤醒正常 Main Agent，而不是建立独立短上下文或特殊 Agent。它复用与普通聊天相同的
+Conversation snapshot、有效 Rollup、canonical raw history、Memory、工具 schema、模型 profile
+和 Prompt compiler；当前 external event 只在最后一条临时 user input 出现一次，不能再从 recent
+digest 重复注入，也不写回 history。
+
+插件主动回复以普通 outbound message 保存，并用 `caused_by_event_id` 指向来源 external event。
+历史分组键包含 origin class 与 cause ID，因此主动消息不会被并入上一条普通 Yuki 回复，不同事件
+触发的主动消息也不会互相串联；同一事件的多个发送 part 可以组成同一 episode。模型历史与
+`rollup_source_projection` 使用有界因果标签，平台实际正文保持不变。
 
 external append 的前台 Prompt 字符增量为零，也不以字符阈值 `force_existing` 唤醒已有后台 job；
 但 keeper 事件计数仍推进。digest 必须在最终 coverage/raw-tail 确定后重新选取，不能从切窗前的
 过期 tail 复用。压缩输入只包含有界 summary 与来源元数据，不包含 external payload。
 
-缓存诊断只能记录不含正文的 prefix/request-shape/snapshot hash。这些 hash 不发送给模型，不作为
+pending/processing WakeupRequest 对其 `source_event_id` 建立 coverage hold：Rollup 的提交水位必须
+严格小于同一 Conversation 最早活动 source ID。候选选择和最终事务提交都要复核该 hold；模型调用
+期间出现新任务时，旧候选必须回滚。completed、silent、cancelled、abandoned 或 terminal failed
+会解除 hold，保留的 signal job 随后继续推进。该机制不改变 generation，也不改变普通聊天的
+protected-tail 规则。
+
+缓存诊断只能记录不含正文的 prefix/request-shape/snapshot hash，以及归一化 Provider 请求的
+instructions、tools/native tools、input-without-current-tail 与完整 cache-shape hash。这些 hash
+覆盖实际 model/profile/protocol、reasoning、output limit 和 response format；不发送给模型，不作为
 业务身份，也不进入高基数 metrics label。
 
 ## generation 与效果围栏
@@ -120,5 +136,5 @@ Rollup 健康应区分 backlog、processing lease、model failure、policy-ineli
 source mismatch，不输出正文。重建或维护命令必须默认 dry-run，并受 Control Plane capability
 和审计约束。
 
-Rollup schema 属于 3.8 canonical database。`0049` 不提供 downgrade；数据库问题必须停止所有
-写入并恢复升级前同一时点 DB/WAL/SHM 快照。
+Rollup schema 属于 3.8 canonical database，当前 head 为 `0050`。`0049` 不提供 downgrade；
+数据库问题必须停止所有写入并恢复升级前同一时点 DB/WAL/SHM 快照。

@@ -8,7 +8,7 @@ import json
 import logging
 import time
 from collections import OrderedDict
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 from qq_ai_bot.domain.messages import ChatRequest, ChatResponse
@@ -24,6 +24,112 @@ from qq_ai_bot.model_runtime.repository import ModelInvocationRepository
 from qq_ai_bot.model_runtime.routes import ModelRouter
 
 logger = logging.getLogger(__name__)
+
+
+def _json_hash(value: object) -> str:
+    serialized = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderCacheShapeDiagnostics:
+    """Content-free hashes of the actual normalized cache-relevant request."""
+
+    provider_shape_hash: str
+    instructions_hash: str
+    tools_hash: str
+    input_prefix_hash: str
+
+
+def _diagnostic_message(message: object) -> dict[str, object]:
+    role = str(getattr(message, "role", ""))
+    content = getattr(message, "content", None)
+    tool_calls = getattr(message, "tool_calls", ())
+    return {
+        "role": role,
+        "content_hash": _json_hash(content),
+        "tool_calls": [
+            {
+                "id_hash": _json_hash(getattr(call, "id", "")),
+                "type": str(getattr(call, "type", "")),
+                "name": str(getattr(getattr(call, "function", None), "name", "")),
+                "arguments_hash": _json_hash(
+                    getattr(getattr(call, "function", None), "arguments", "")
+                ),
+            }
+            for call in tool_calls
+        ],
+        "tool_call_id_hash": _json_hash(getattr(message, "tool_call_id", None)),
+        "reasoning_hash": _json_hash(getattr(message, "reasoning_content", None)),
+    }
+
+
+def provider_cache_shape_diagnostics(
+    request: ChatRequest,
+    *,
+    provider: str,
+    model: str,
+    profile_id: str,
+    protocol: str,
+) -> ProviderCacheShapeDiagnostics:
+    """Hash the normalized provider request while excluding the current user tail."""
+
+    instructions = [
+        _diagnostic_message(message) for message in request.messages if message.role == "system"
+    ]
+    inputs = [message for message in request.messages if message.role != "system"]
+    current_tail_index = next(
+        (index for index in range(len(inputs) - 1, -1, -1) if inputs[index].role == "user"),
+        None,
+    )
+    prefix_inputs = [
+        _diagnostic_message(message)
+        for message in (inputs if current_tail_index is None else inputs[:current_tail_index])
+    ]
+    tools = [
+        {
+            "name": tool.name,
+            "description_hash": _json_hash(tool.description),
+            "parameters_hash": _json_hash(tool.parameters),
+        }
+        for tool in request.tools
+    ]
+    native_tools = [tool.type.value for tool in request.native_tools]
+    instructions_hash = _json_hash(instructions)
+    tools_hash = _json_hash({"function": tools, "native": native_tools})
+    input_prefix_hash = _json_hash(prefix_inputs)
+    provider_shape_hash = _json_hash(
+        {
+            "provider": provider,
+            "model": model,
+            "profile_id": profile_id,
+            "protocol": protocol,
+            "instructions_hash": instructions_hash,
+            "tools_hash": tools_hash,
+            "input_prefix_hash": input_prefix_hash,
+            "temperature": request.temperature,
+            "max_output_tokens": request.max_output_tokens,
+            "thinking_enabled": request.thinking_enabled,
+            "reasoning_effort": (
+                request.reasoning_effort.value if request.reasoning_effort is not None else None
+            ),
+            "tool_choice": request.tool_choice,
+            "response_format": request.response_format,
+            "structured_output": request.structured_output,
+        }
+    )
+    return ProviderCacheShapeDiagnostics(
+        provider_shape_hash=provider_shape_hash,
+        instructions_hash=instructions_hash,
+        tools_hash=tools_hash,
+        input_prefix_hash=input_prefix_hash,
+    )
 
 
 def request_shape_hash(
@@ -254,14 +360,30 @@ class TaskModelExecutor:
             prompt_snapshot_fingerprint=request.prompt_snapshot_fingerprint,
             static_prompt_revision=request.static_prompt_revision,
         )
+        provider_cache_shape = provider_cache_shape_diagnostics(
+            normalized,
+            provider=profile.provider,
+            model=profile.model,
+            profile_id=profile.id,
+            protocol=profile.protocol.value,
+        )
         if normalized.conversation_prefix_hash:
-            self._observe_prompt_shape(normalized)
+            self._observe_prompt_shape(
+                normalized,
+                provider_shape_hash=provider_cache_shape.provider_shape_hash,
+            )
             logger.info(
                 "prompt_request_diagnostics task=%s conversation_prefix_hash=%s "
-                "request_shape_hash=%s prompt_snapshot_fingerprint=%s",
+                "request_shape_hash=%s provider_cache_shape_hash=%s "
+                "provider_instructions_hash=%s provider_tools_hash=%s "
+                "provider_input_prefix_hash=%s prompt_snapshot_fingerprint=%s",
                 task.value,
                 normalized.conversation_prefix_hash,
                 normalized.request_shape_hash,
+                provider_cache_shape.provider_shape_hash,
+                provider_cache_shape.instructions_hash,
+                provider_cache_shape.tools_hash,
+                provider_cache_shape.input_prefix_hash,
                 normalized.prompt_snapshot_fingerprint,
             )
         if profile.protocol is ModelProtocol.RESPONSES:
@@ -347,11 +469,16 @@ class TaskModelExecutor:
             "conversation_prefix_shape_split_total": self._prefix_shape_split_total,
         }
 
-    def _observe_prompt_shape(self, request: ChatRequest) -> None:
+    def _observe_prompt_shape(
+        self,
+        request: ChatRequest,
+        *,
+        provider_shape_hash: str,
+    ) -> None:
         fingerprint = request.prompt_snapshot_fingerprint
         if not fingerprint:
             return
-        observed = (request.conversation_prefix_hash, request.request_shape_hash)
+        observed = (request.conversation_prefix_hash, provider_shape_hash)
         previous = self._prompt_shapes.get(fingerprint)
         if previous is not None:
             if previous == observed:

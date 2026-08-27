@@ -1,7 +1,7 @@
 # Yuki 3.8 canonical runtime
 
 本文描述 Yuki 3.8 的现行架构合同，不是迁移任务书。3.8 运行时只支持 canonical schema，
-Alembic head 为 `0049`。
+Alembic head 为 `0050`。
 
 ## 永久主体与身份
 
@@ -35,6 +35,13 @@ generation。
 Rollup 是 Conversation 的可重建提示投影：原始 `chat_events` 始终是证据源，摘要不进入
 Memory，也不被当作可信指令。热尾同时受事件数和实际 Prompt 字符预算约束；后台模型不可用时
 可以使用 emergency overlay，但不会覆盖语义检查点。
+
+插件外部事件保持 `external_event` 独立账本类型，不伪装为 Person 发言。插件的主动触发只是一个
+可靠 WakeupRequest：它加载同一 canonical Conversation 下普通聊天使用的完整稳定 snapshot、
+Rollup、raw history、Memory、Prompt compiler、工具 schema 和模型 profile，事件摘要只作为本轮
+最后一条临时 user input，既不落入聊天历史，也不形成插件专属短上下文。Yuki 成功发送的主动消息
+仍是普通 outbound `message`，并通过 `caused_by_event_id` 永久指向来源 external event。模型历史与
+Rollup source projection 会显示有界因果标签，平台正文不被改写。
 
 ## 三类持久路由
 
@@ -107,10 +114,11 @@ QQ 消息证明伪造成 Web 请求。分页使用 opaque cursor；mutation 使�
 
 ## 数据库与安全边界
 
-- 新数据库从无父 revision 的 `0048` canonical baseline 创建最终表，再升级到 head `0049`。
+- 新数据库从无父 revision 的 `0048` canonical baseline 创建最终表，再升级到 `0049 -> 0050`。
 - 历史桥接只接受已经完成 canonical v2 的旧 `0048` 数据库；更早或过渡态数据库失败关闭。
 - 运行时没有 v1、dual-write、backfill 或 cutover 分支。
-- 0049 不提供 downgrade。生产回退必须停止写入并恢复升级前同一时点的 DB/WAL/SHM 快照。
+- `0049` 不提供 downgrade；`0050` 追加 `chat_events.caused_by_event_id` 及其索引。生产回退仍须
+  停止写入并恢复升级前同一时点的 DB/WAL/SHM 快照。
 - `/healthz` 保持公开瘦载荷；管理健康和连接详情只能通过授权后的控制面查询。
 - secret 永不回读；日志与错误不输出 token、Cookie、完整外部 ID、消息正文或本地敏感路径。
 

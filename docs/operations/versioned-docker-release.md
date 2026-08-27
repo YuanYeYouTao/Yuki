@@ -1,5 +1,10 @@
 # Versioned Docker Release 运维说明
 
+> **历史发行流程：** 本文冻结已发布的 3.8.1/`0049` Release 流程。当前源码包含尚未发布的
+> `0050` 插件主动回复因果修复；在为该源码确定新版本并更新全部不可变产物前，不得复用
+> `v3.8.1` tag、镜像或 Release。当前实现合同见
+> [插件唤醒 Main Agent 与主动回复因果修复任务书](../architecture/Yuki-插件唤醒Main-Agent与主动回复因果修复任务书.md)。
+
 Yuki 3.8.1 正式产物只由 `.github/workflows/release.yml` 发布，目标平台为 `linux/amd64`。
 本地开发镜像不属于发布合同。
 

@@ -252,6 +252,7 @@ class EventLedgerRepository:
         origin: str = "user_message",
         automation_id: int | None = None,
         automation_run_id: int | None = None,
+        caused_by_event_id: int | None = None,
     ) -> tuple[EventRecord, bool]:
         """Insert idempotently and return the existing row on duplicate."""
 
@@ -275,6 +276,7 @@ class EventLedgerRepository:
             origin=origin,
             automation_id=automation_id,
             automation_run_id=automation_run_id,
+            caused_by_event_id=caused_by_event_id,
         )
         return result.event, result.created
 

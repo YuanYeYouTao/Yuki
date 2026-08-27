@@ -1,5 +1,22 @@
 # 更新日志
 
+## Unreleased
+
+### Plugin wakeup causality and stable Main Agent context
+
+- 插件 `external_event` 继续独立落账；需要主动点评时只创建可靠 WakeupRequest，并唤醒与普通聊天
+  完全相同的 Main Agent 生成路径。Conversation snapshot、Rollup、raw history、Memory、工具
+  schema、模型 profile、reasoning 与输出限制不因 `PLUGIN_BACKGROUND` 改变，当前事件只作为不
+  落账的最后一条临时 user input。
+- 删除 external 专用 composer/context/generator、tool-free/read-only Agent、伪工具对齐和插件专属
+  模型循环限制。没有真实用户事件证明的 mutation/admin 能力继续失败关闭，canonical target
+  允许的 Web、Memory read 与 history read 保持可用。
+- Alembic `0050` 为 `chat_events` 增加可空自引用 `caused_by_event_id`。插件主动回复以真实 outbound
+  message 保存；模型历史和 Rollup source projection 使用有界因果标签，平台正文不变。
+- pending/processing 唤醒任务持有 Rollup coverage fence，阻止来源事件在生成完成前被覆盖；终态
+  自动释放。Provider 诊断新增实际归一化请求的无正文 instructions/tools/input-prefix/cache-shape
+  哈希，用于确认插件唤醒不会主动制造早期缓存分叉。
+
 ## 3.8.1 - 2026-08-27
 
 ### External event isolation

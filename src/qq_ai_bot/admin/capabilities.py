@@ -484,7 +484,7 @@ class AdminCapabilityService:
         return result.model_dump(mode="json")
 
     def _actor(self, runtime: ToolRuntime) -> AdminActor:
-        inbound = runtime.inbound
+        inbound = runtime.require_inbound()
         if (
             not runtime.actor_is_superuser
             or runtime.actor_user_id != inbound.sender.user_id
@@ -514,10 +514,11 @@ class AdminCapabilityService:
         runtime: ToolRuntime,
     ) -> dict[str, Any]:
         mode, category, query = _capability_options(arguments)
-        if actor.user_id != runtime.inbound.sender.user_id:
+        inbound = runtime.require_inbound()
+        if actor.user_id != inbound.sender.user_id:
             raise PermissionError("权限目录没有绑定到当前真实发送者")
         return self._permission_catalog.report_for_message(
-            runtime.inbound,
+            inbound,
             category=category,
             query=query,
         ).to_model_dict(mode)

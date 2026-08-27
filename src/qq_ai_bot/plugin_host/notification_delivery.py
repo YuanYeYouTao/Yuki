@@ -456,6 +456,7 @@ class PluginNotificationOutboxWorker:
             private_peer_user_id=target if scope is ScopeType.PRIVATE else None,
             sender_is_bot=True,
             origin="plugin_background",
+            caused_by_event_id=item.source_event_id,
         )
         event = appended[0] if isinstance(appended, tuple) else None
         if event is None:

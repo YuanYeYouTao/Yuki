@@ -205,7 +205,6 @@ async def test_autonomous_outbound_records_autonomous_group_origin() -> None:
 
     service = object.__new__(ChatService)
     service._ledger = Ledger()
-    service._ledger_origin = TurnOrigin.AUTONOMOUS_GROUP.value
     service._event_publisher = None
     inbound = InboundMessage(
         message_id="in-1",
@@ -220,6 +219,7 @@ async def test_autonomous_outbound_records_autonomous_group_origin() -> None:
         inbound,
         OutboundMessage(text="reply"),
         OutboundSendReceipt(platform_message_id="out-1"),
+        origin=TurnOrigin.AUTONOMOUS_GROUP.value,
     )
     assert captured["origin"] == "autonomous_group"
     assert captured["direction"] == "outbound"

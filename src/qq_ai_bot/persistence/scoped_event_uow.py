@@ -171,6 +171,7 @@ class ScopedEventLedgerUnitOfWork:
         external_event_type: str | None = None,
         external_payload: dict[str, Any] | None = None,
         external_target_id: str | None = None,
+        caused_by_event_id: int | None = None,
         session: AsyncSession | None = None,
     ) -> ScopedAppendResult:
         timestamp = occurred_at or datetime.now(UTC)
@@ -200,6 +201,7 @@ class ScopedEventLedgerUnitOfWork:
                 external_event_type=external_event_type,
                 external_payload=external_payload,
                 external_target_id=external_target_id,
+                caused_by_event_id=caused_by_event_id,
             )
         async with self._database.immediate_session() as session:
             result = await self._append_canonical(
@@ -226,6 +228,7 @@ class ScopedEventLedgerUnitOfWork:
                 external_event_type=external_event_type,
                 external_payload=external_payload,
                 external_target_id=external_target_id,
+                caused_by_event_id=caused_by_event_id,
             )
         self._notify_after_commit(result.job_signalled)
         return result
@@ -264,6 +267,7 @@ class ScopedEventLedgerUnitOfWork:
                 external_event_type=None,
                 external_payload=None,
                 external_target_id=None,
+                caused_by_event_id=None,
             )
             event_row = await session.get(ChatEventModel, appended.event.id)
             conversation_id = None if event_row is None else event_row.canonical_conversation_id
@@ -447,6 +451,38 @@ class ScopedEventLedgerUnitOfWork:
         claimed = await load_claimed_keeper(session, receipt.canonical_event_id)
         return receipt, require_claimed_event(receipt, claimed)
 
+    async def _require_causal_source(
+        self,
+        session: AsyncSession,
+        *,
+        conversation_id: str,
+        caused_by_event_id: int | None,
+        direction: str,
+        event_kind: str,
+        origin: str,
+    ) -> None:
+        """Validate durable causality before appending a proactive plugin reply."""
+
+        plugin_outbound = (
+            origin == "plugin_background" and direction == "outbound" and event_kind == "message"
+        )
+        if plugin_outbound and caused_by_event_id is None:
+            raise CanonicalIdentityError("causal_source_required")
+        if caused_by_event_id is None:
+            return
+        if not plugin_outbound:
+            raise CanonicalIdentityError("causal_source_not_allowed")
+        source = await session.get(ChatEventModel, caused_by_event_id)
+        if (
+            source is None
+            or source.canonical_conversation_id != conversation_id
+            or source.event_kind != "external_event"
+            or source.direction != "external"
+            or source.origin != "plugin_background"
+            or source.suppression_status != "keeper"
+        ):
+            raise CanonicalIdentityError("causal_source_invalid")
+
     async def _expected_author(
         self,
         session: AsyncSession,
@@ -496,6 +532,7 @@ class ScopedEventLedgerUnitOfWork:
         external_event_key: str | None = None,
         external_target_id: str | None = None,
         external_payload: dict[str, Any] | None = None,
+        caused_by_event_id: int | None = None,
     ) -> None:
         require_compatible_v2_live(
             existing,
@@ -515,6 +552,8 @@ class ScopedEventLedgerUnitOfWork:
             receipt=receipt,
             external_event_type=external_event_type,
         )
+        if existing.caused_by_event_id != caused_by_event_id:
+            raise CanonicalIdentityError("receipt_conflict")
         if event_kind != "external_event":
             return
         incoming_payload = (
@@ -553,6 +592,7 @@ class ScopedEventLedgerUnitOfWork:
         external_event_key: str | None = None,
         external_target_id: str | None = None,
         external_payload: dict[str, Any] | None = None,
+        caused_by_event_id: int | None = None,
     ) -> ScopedAppendResult:
         author_kind, author_person_id, author_presence_id = await self._expected_author(
             session,
@@ -584,6 +624,7 @@ class ScopedEventLedgerUnitOfWork:
             external_event_key=external_event_key,
             external_target_id=external_target_id,
             external_payload=external_payload,
+            caused_by_event_id=caused_by_event_id,
         )
         return ScopedAppendResult(
             event=_event_record(existing),
@@ -618,6 +659,7 @@ class ScopedEventLedgerUnitOfWork:
         external_event_type: str | None,
         external_payload: dict[str, Any] | None,
         external_target_id: str | None,
+        caused_by_event_id: int | None,
     ) -> ScopedAppendResult:
         return await self._append_canonical(
             session,
@@ -643,6 +685,7 @@ class ScopedEventLedgerUnitOfWork:
             external_event_type=external_event_type,
             external_payload=external_payload,
             external_target_id=external_target_id,
+            caused_by_event_id=caused_by_event_id,
         )
 
     async def _append_canonical(
@@ -671,6 +714,7 @@ class ScopedEventLedgerUnitOfWork:
         external_event_type: str | None,
         external_payload: dict[str, Any] | None,
         external_target_id: str | None,
+        caused_by_event_id: int | None,
     ) -> ScopedAppendResult:
         from uuid import uuid4
 
@@ -729,6 +773,14 @@ class ScopedEventLedgerUnitOfWork:
         conversation = await session.get(CanonicalConversationModel, hydrated.conversation_id)
         if conversation is None:
             raise CanonicalIdentityError("unclassified")
+        await self._require_causal_source(
+            session,
+            conversation_id=conversation.id,
+            caused_by_event_id=caused_by_event_id,
+            direction=direction,
+            event_kind=event_kind,
+            origin=origin,
+        )
         if existing is not None:
             return await self._reuse_identical_live(
                 session,
@@ -750,6 +802,7 @@ class ScopedEventLedgerUnitOfWork:
                 external_event_key=external_event_key,
                 external_target_id=external_target_id,
                 external_payload=external_payload,
+                caused_by_event_id=caused_by_event_id,
             )
         canonical_event_id = str(uuid4())
         plugin_external = (
@@ -802,6 +855,7 @@ class ScopedEventLedgerUnitOfWork:
                     external_event_key=external_event_key,
                     external_target_id=external_target_id,
                     external_payload=external_payload,
+                    caused_by_event_id=caused_by_event_id,
                 )
         row = ChatEventModel(
             bot_user_id=scope.bot_user_id,
@@ -831,6 +885,7 @@ class ScopedEventLedgerUnitOfWork:
             origin=origin[:32],
             automation_id=automation_id,
             automation_run_id=automation_run_id,
+            caused_by_event_id=caused_by_event_id,
             occurred_at=timestamp,
             observed_at=observed_at,
         )
@@ -879,6 +934,7 @@ class ScopedEventLedgerUnitOfWork:
                 external_event_key=external_event_key,
                 external_target_id=external_target_id,
                 external_payload=external_payload,
+                caused_by_event_id=caused_by_event_id,
             )
         event = _event_record(row)
         await touch_canonical_watermarks(

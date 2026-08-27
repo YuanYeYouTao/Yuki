@@ -787,8 +787,10 @@ def test_lightweight_backlog_ignores_stored_raw_event_count() -> None:
     storm = (*tuple(_external(index) for index in range(1, 20)), _message(20))
     view = assembler._uncovered_prompt_view(
         storm,
-        inbound=inbound,
+        current_message_id=inbound.message_id,
         content="now",
+        yuki_account_ids=inbound.yuki_account_ids,
+        current_message_override=None,
         current_event=current,
     )
     assert view is not None

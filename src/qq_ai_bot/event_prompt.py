@@ -26,10 +26,46 @@ _LEGACY_HISTORY_PREFIX = re.compile(
     r"(?:[01]\d|2[0-3]):[0-5]\d(?: QQ [1-9]\d{4,19})?\]\s*"
 )
 _MEDIA_DESCRIPTION = re.compile(r"\[(?:表情|语音)：[\s\S]*\]")
+_CAUSAL_TOKEN_UNSAFE = re.compile(r"[^\w.:-]+", re.UNICODE)
 _SAFE_SEGMENT_ERROR_CATEGORIES = frozenset(
     {"segment_not_object", "segment_type_invalid", "segment_data_invalid"}
 )
 logger = logging.getLogger(__name__)
+
+
+def _causal_token(value: str | None, *, fallback: str) -> str:
+    normalized = _CAUSAL_TOKEN_UNSAFE.sub("_", (value or "").strip())[:64].strip("_")
+    return normalized or fallback
+
+
+def proactive_message_label(
+    row: EventRecord,
+    *,
+    cause: EventRecord | None = None,
+) -> str | None:
+    """Return a model-only label for one genuine Yuki proactive message."""
+
+    if row.direction != "outbound" or row.origin != "plugin_background":
+        return None
+    if row.caused_by_event_id is None:
+        return "[Yuki主动消息｜历史来源未知]"
+    source = row.caused_by_external_source or (cause.external_source if cause is not None else None)
+    event_type = row.caused_by_external_event_type or (
+        cause.external_event_type if cause is not None else None
+    )
+    return (
+        f"[Yuki主动消息｜由外部事件 #{row.caused_by_event_id} 触发｜"
+        f"source={_causal_token(source, fallback='external')}｜"
+        f"type={_causal_token(event_type, fallback='event')}]"
+    )
+
+
+def prompt_origin_class(row: EventRecord) -> str:
+    """Return the stable history grouping class for one event."""
+
+    if row.direction == "outbound" and row.origin == "plugin_background":
+        return "plugin_proactive"
+    return "ordinary"
 
 
 def external_event_digest_item(
@@ -180,6 +216,7 @@ class ChatEventPromptRenderer:
         self._events_by_message_id = {
             row.platform_message_id: row for row in rows if row.platform_message_id
         }
+        self._events_by_id = {row.id: row for row in rows}
         self._display_names_by_user_id: dict[str, str] = {}
         for row in rows:
             self._display_names_by_user_id[row.sender_user_id] = self._row_display_name(row)
@@ -226,7 +263,9 @@ class ChatEventPromptRenderer:
     ) -> tuple[tuple[int, tuple[int, ...], ChatMessage], ...]:
         """Group adjacent visible events from one immutable sender identity."""
 
-        grouped: list[tuple[int, tuple[int, ...], ChatMessage, tuple[str, str, str] | None]] = []
+        grouped: list[
+            tuple[int, tuple[int, ...], ChatMessage, tuple[str, str, str, str, int | None] | None]
+        ] = []
         for row in rows:
             if row.event_kind == "external_event":
                 continue
@@ -234,7 +273,13 @@ class ChatEventPromptRenderer:
             rendered = (message.content or "").strip()
             if not rendered:
                 continue
-            group_key = (message.role, row.sender_user_id, self._row_display_name(row))
+            group_key = (
+                message.role,
+                row.sender_user_id,
+                self._row_display_name(row),
+                prompt_origin_class(row),
+                row.caused_by_event_id,
+            )
             if grouped and group_key is not None and grouped[-1][3] == group_key:
                 previous_id, event_ids, previous, _ = grouped[-1]
                 _, separator, event_line = rendered.partition("\n")
@@ -304,6 +349,14 @@ class ChatEventPromptRenderer:
                 current_message_id=current_message_id,
                 current_content=current_content,
             )
+        proactive_label = proactive_message_label(
+            row,
+            cause=(
+                self._events_by_id.get(row.caused_by_event_id)
+                if row.caused_by_event_id is not None
+                else None
+            ),
+        )
         fields = [f"#{row.id}"]
         if row.reply_to_message_id:
             target = self._events_by_message_id.get(row.reply_to_message_id)
@@ -323,9 +376,10 @@ class ChatEventPromptRenderer:
         )
         if mention_field:
             fields.append(mention_field)
-        return (
-            f"[{self._row_display_name(row)}|QQ:{row.sender_user_id}]\n{'|'.join(fields)}>{content}"
-        )
+        envelope = f"[{self._row_display_name(row)}|QQ:{row.sender_user_id}]"
+        if proactive_label is not None:
+            envelope = proactive_label
+        return f"{envelope}\n{'|'.join(fields)}>{content}"
 
     def render_inbound(self, inbound: InboundMessage, content: str) -> str:
         """Render an inbound message that has not been recovered from the ledger."""

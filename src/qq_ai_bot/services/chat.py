@@ -68,7 +68,6 @@ from qq_ai_bot.domain.messages import (
     OutboundMessage,
     OutboundSendReceipt,
     PromptRequestDiagnostics,
-    SenderIdentity,
     ToolCall,
     ToolFunction,
 )
@@ -117,6 +116,7 @@ from qq_ai_bot.runtime.contracts import DeliverySummary
 from qq_ai_bot.runtime.delivery import DeliveryStatus
 from qq_ai_bot.runtime.observability import identifier_hash
 from qq_ai_bot.runtime.origin import TurnOrigin as RuntimeTurnOrigin
+from qq_ai_bot.runtime.trigger import ExternalEventTurnTrigger
 from qq_ai_bot.services.agent_runner import (
     AgentRunner,
     AgentRunResult,
@@ -496,12 +496,7 @@ class _ChatAgentBackend(AgentToolBackend):
     def _prompt_tools_closed(self) -> bool:
         if self._tools_closed:
             return True
-        return self._runtime.tools_closed and not self._runtime.align_conversation_prefix_tools
-
-    def _prefix_policy_origin(self) -> TurnOrigin:
-        if self._runtime.align_conversation_prefix_tools:
-            return TurnOrigin.USER_MESSAGE
-        return self._runtime.origin
+        return self._runtime.tools_closed
 
     def definitions(self, runtime: AgentRuntime, *, web_was_used: bool) -> tuple[ChatTool, ...]:
         del runtime
@@ -552,7 +547,11 @@ class _ChatAgentBackend(AgentToolBackend):
             text=self._runtime.selection_query,
             origin=RuntimeTurnOrigin(self._runtime.origin.value),
             limit=8,
-            reply_excerpt=(self._runtime.inbound.reply_text or "")[:500],
+            reply_excerpt=(
+                (self._runtime.inbound.reply_text or "")[:500]
+                if self._runtime.inbound is not None
+                else ""
+            ),
             priority_capability_ids=self._host_priority_capability_ids(),
         )
 
@@ -574,19 +573,16 @@ class _ChatAgentBackend(AgentToolBackend):
         session = self._memory()
         memory_view = session.capability_view() if session is not None else None
         reply_target = self._runtime.reply_target_control
-        align_prefix = self._runtime.align_conversation_prefix_tools
         policy_context = CapabilityPolicyContext(
             authority=AuthorityContext(
                 actor_user_id=self._runtime.actor_user_id,
                 is_superuser=self._runtime.actor_is_superuser,
             ),
-            origin=self._prefix_policy_origin(),
-            contains_images=bool(
-                self._runtime.inbound.attachments or self._runtime.inbound.reply_attachments
-            ),
+            origin=self._runtime.origin,
+            contains_images=self._runtime.image_present,
             web_was_used=self._web_was_used,
-            tools_closed=False if align_prefix else self._runtime.tools_closed,
-            read_only=False if align_prefix else self._runtime.read_only,
+            tools_closed=self._runtime.tools_closed,
+            read_only=self._runtime.read_only,
             memory_view=memory_view,
             artifact_available=self._service._tool_artifacts is not None,
             reply_target_available=bool(
@@ -605,7 +601,7 @@ class _ChatAgentBackend(AgentToolBackend):
 
         authority = TurnAuthority(
             actor_user_id=self._runtime.actor_user_id or "unknown",
-            bot_user_id=self._runtime.inbound.bot_user_id or "bot",
+            bot_user_id=self._runtime.effective_bot_user_id or "bot",
             origin=RuntimeTurnOrigin(self._runtime.origin.value),
             permission_ceiling=frozenset({"superuser"} if self._runtime.actor_is_superuser else ()),
             delegated_authority=None,
@@ -682,23 +678,27 @@ class _ChatAgentBackend(AgentToolBackend):
         from qq_ai_bot.runtime.authority import TurnSceneFacts
 
         inbound = self._runtime.inbound
-        scope = inbound.scope_type
+        scope = self._runtime.effective_scope_type
         if scope is DomainScopeType.GROUP:
             return TurnSceneFacts(
                 scope_type=scope,
-                group_id=inbound.group_id,
-                image_present=bool(inbound.attachments or inbound.reply_attachments),
-                mentions_bot=inbound.mentions_bot,
-                replies_to_bot=replies_to_bot(inbound),
-                reply_present=bool(inbound.reply_text or inbound.reply_sender_user_id),
+                group_id=self._runtime.current_group_id,
+                image_present=self._runtime.image_present,
+                mentions_bot=inbound.mentions_bot if inbound is not None else False,
+                replies_to_bot=replies_to_bot(inbound) if inbound is not None else False,
+                reply_present=bool(
+                    inbound is not None and (inbound.reply_text or inbound.reply_sender_user_id)
+                ),
             )
         return TurnSceneFacts(
             scope_type=scope,
             group_id=None,
-            image_present=bool(inbound.attachments or inbound.reply_attachments),
-            mentions_bot=inbound.mentions_bot,
-            replies_to_bot=replies_to_bot(inbound),
-            reply_present=bool(inbound.reply_text or inbound.reply_sender_user_id),
+            image_present=self._runtime.image_present,
+            mentions_bot=inbound.mentions_bot if inbound is not None else False,
+            replies_to_bot=replies_to_bot(inbound) if inbound is not None else False,
+            reply_present=bool(
+                inbound is not None and (inbound.reply_text or inbound.reply_sender_user_id)
+            ),
         )
 
     def _log_tool_exposure(
@@ -775,7 +775,7 @@ class _ChatAgentBackend(AgentToolBackend):
                     {"ok": False, "error": "tool_batch_state_mismatch"}, ensure_ascii=False
                 )
             call = self._batch.pop(call_index)
-        if name == _SET_REPLY_TARGET_NAME and not self._runtime.align_conversation_prefix_tools:
+        if name == _SET_REPLY_TARGET_NAME:
             return self._set_reply_target(arguments_json)
         if self._runtime.tools_closed:
             return json.dumps(
@@ -935,10 +935,7 @@ class _ChatAgentBackend(AgentToolBackend):
                                 actor_user_id=execution_runtime.actor_user_id,
                                 trigger_message_id=execution_runtime.trigger_message_id,
                                 provider_metadata={
-                                    "contains_images": bool(
-                                        self._runtime.inbound.attachments
-                                        or self._runtime.inbound.reply_attachments
-                                    ),
+                                    "contains_images": bool(self._runtime.image_present),
                                     "web_was_used": self._web_was_used,
                                 },
                             ),
@@ -1275,11 +1272,6 @@ class _ChatAgentBackend(AgentToolBackend):
         return call.function.name, normalized
 
     def _response_control_definitions(self) -> tuple[ChatTool, ...]:
-        if self._prefix_policy_origin() not in {
-            TurnOrigin.USER_MESSAGE,
-            TurnOrigin.AUTONOMOUS_GROUP,
-        }:
-            return ()
         if self._runtime.reply_target_control is not None:
             return (_SET_REPLY_TARGET_TOOL,)
         return ()
@@ -1486,7 +1478,6 @@ class ChatService:
             raise TypeError("memory_partition_lookup must provide callable resolve_from_scope")
         self._memory_partition_lookup = memory_partition_lookup
         self._settings = settings
-        self._ledger_origin = TurnOrigin.USER_MESSAGE.value
         models = require_model_executor(
             model_executor,
             provider=provider,
@@ -1857,9 +1848,7 @@ class ChatService:
     ) -> int:
         """Run one ordered Agent turn and return the sent message count."""
 
-        self._ledger_origin = (
-            TurnOrigin.AUTONOMOUS_GROUP.value if autonomous else TurnOrigin.USER_MESSAGE.value
-        )
+        turn_origin = TurnOrigin.AUTONOMOUS_GROUP if autonomous else TurnOrigin.USER_MESSAGE
         conversation_key = runtime_conversation_key(
             identity=identity,
             turn=turn_snapshot,
@@ -1883,12 +1872,11 @@ class ChatService:
                     sender,
                     OutboundMessage(text=reply),
                     turn_snapshot,
+                    origin=turn_origin.value,
                 )
                 return 1
 
             source_display_requested = self._source_policy.requested(content)
-            turn_origin = TurnOrigin.AUTONOMOUS_GROUP if autonomous else TurnOrigin.USER_MESSAGE
-            self._ledger_origin = turn_origin.value
             memory_session = self._open_memory_session(
                 inbound,
                 identity,
@@ -2235,7 +2223,12 @@ class ChatService:
                             message,
                             source="reply_effect",
                         )
-                    recorded = await self._record_outbound_message(inbound, message, receipt)
+                    recorded = await self._record_outbound_message(
+                        inbound,
+                        message,
+                        receipt,
+                        origin=turn_origin.value,
+                    )
                     if message.media and self._emoji_effects is not None:
                         await self._emoji_effects.record_success(
                             message,
@@ -2534,7 +2527,12 @@ class ChatService:
                         if not isinstance(fallback_receipt, OutboundSendReceipt):
                             raise TypeError("outbound sender returned no delivery receipt") from exc
                         sent_count += 1
-                        await self._record_outbound_message(inbound, fallback, fallback_receipt)
+                        await self._record_outbound_message(
+                            inbound,
+                            fallback,
+                            fallback_receipt,
+                            origin=turn_origin.value,
+                        )
                         await publish_notification(
                             self._event_publisher,
                             EventName.EMOJI_FALLBACK_TEXT_SENT,
@@ -2553,7 +2551,12 @@ class ChatService:
                         outbound,
                         source="reply_effect",
                     )
-                recorded = await self._record_outbound_message(inbound, outbound, receipt)
+                recorded = await self._record_outbound_message(
+                    inbound,
+                    outbound,
+                    receipt,
+                    origin=turn_origin.value,
+                )
                 if outbound.media and self._emoji_effects is not None:
                     await self._emoji_effects.record_success(
                         outbound,
@@ -2572,7 +2575,12 @@ class ChatService:
                         OutboundMessage(text=source_text),
                         turn_snapshot,
                     )
-                    await self._record_outbound(inbound, source_text, receipt)
+                    await self._record_outbound(
+                        inbound,
+                        source_text,
+                        receipt,
+                        origin=turn_origin.value,
+                    )
                     sent_count += 1
             await self._finish_memory_turn(
                 memory_session,
@@ -2710,10 +2718,10 @@ class ChatService:
             artifact_created=artifact_created,
             error_category=error_category,
             trigger_message_id=runtime.trigger_message_id,
-            bot_user_id=runtime.inbound.bot_user_id,
+            bot_user_id=runtime.effective_bot_user_id or "bot",
             result_excerpt=result_excerpt,
-            canonical_conversation_id=runtime.inbound.conversation_id,
-            ingress_presence_id=runtime.inbound.presence_id,
+            canonical_conversation_id=runtime.effective_conversation_id,
+            ingress_presence_id=runtime.effective_presence_id,
         )
 
     async def _record_reply_effects(
@@ -2891,6 +2899,8 @@ class ChatService:
     ) -> _CompletedAgentRun:
         config = runtime.runtime_config
         if config is None:
+            if runtime.inbound is None:
+                raise RuntimeError("actorless Main Agent turn requires a runtime snapshot")
             config = await self._runtime_config.snapshot(
                 user_id=runtime.inbound.sender.user_id,
                 group_id=runtime.inbound.group_id,
@@ -2899,7 +2909,11 @@ class ChatService:
         exposure_registry = MemoryExposureRegistry(runtime.memory_exposures)
         runtime = replace(runtime, memory_exposure_registry=exposure_registry)
         runtime = await self._prepare_tool_candidates(runtime)
-        current_time = await self._time.current(runtime.inbound.sender.user_id)
+        current_time = (
+            await self._time.current(runtime.inbound.sender.user_id)
+            if runtime.inbound is not None
+            else self._time.current_default()
+        )
         backend = _ChatAgentBackend(self, runtime)
 
         async def before_model_request() -> None:
@@ -2918,7 +2932,7 @@ class ChatService:
                 delegated_authority=None,
                 conversation_key=conversation_key,
                 current_group_id=runtime.current_group_id,
-                bot_user_id=runtime.inbound.bot_user_id,
+                bot_user_id=runtime.effective_bot_user_id or "bot",
                 gateway=runtime.gateway,
                 runtime_config=config,
                 current_time=current_time,
@@ -2936,7 +2950,7 @@ class ChatService:
                 before_model_request=before_model_request,
                 force_tavily_fallback=runtime.native_web_fallback,
                 web_route=runtime.web_route,
-                canonical_conversation_id=runtime.inbound.conversation_id,
+                canonical_conversation_id=runtime.effective_conversation_id,
             ),
             backend,
         )
@@ -2992,107 +3006,97 @@ class ChatService:
         sender: OutboundSender,
         message: OutboundMessage,
         snapshot: ConversationTurnSnapshot | None,
+        *,
+        origin: str,
     ) -> OutboundSendReceipt:
         async def deliver() -> OutboundSendReceipt:
             receipt = await sender.send(message)
             if not isinstance(receipt, OutboundSendReceipt):
                 raise TypeError("outbound sender returned no delivery receipt")
-            await self._record_outbound_message(inbound, message, receipt)
+            await self._record_outbound_message(inbound, message, receipt, origin=origin)
             return receipt
 
         return await self._run_effect(snapshot, deliver)
 
-    async def generate_external_reply(
+    async def generate_main_agent_wakeup(
         self,
         *,
         event: EventRecord,
-        authorization_user_id: str,
+        trigger: ExternalEventTurnTrigger,
+        identity: ConversationScope,
         runtime: RuntimeConfigSnapshot,
-        agent_intent: str,
         turn_token: TurnToken,
         turn_snapshot: ConversationTurnSnapshot,
+        gateway: object | None,
         person_id: str | None = None,
         space_id: str | None = None,
         presence_id: str | None = None,
         conversation_id: str | None = None,
         before_model_request: Callable[[], Awaitable[None]] | None = None,
     ) -> AgentRunResult:
-        """Generate one tool-free reply for a persisted external event.
+        """Wake the normal Main Agent without inventing a message or Person actor."""
 
-        The synthetic envelope below is authority metadata only.  It is never
-        appended to the ledger and the prompt identifies the trigger as an
-        untrusted external event rather than a QQ user message.
-        """
-
-        self._ledger_origin = TurnOrigin.PLUGIN_BACKGROUND.value
         conversation_key = runtime_conversation_key(
-            identity=event.scope,
+            identity=identity,
             turn=turn_snapshot,
         )
         if not conversation_id or conversation_id != event.canonical_conversation_id:
             raise TurnSupersededError("external turn snapshot scope mismatch")
-        context = await self._context_assembler.assemble_external(
-            event=event,
+        context = await self._context_assembler.assemble(
+            inbound=None,
+            profile=None,
+            identity=identity,
             turn=turn_snapshot,
-            authorization_user_id=authorization_user_id,
+            content=event.content,
             runtime=runtime,
-            agent_intent=agent_intent,
-            person_id=person_id,
-            space_id=space_id,
-            presence_id=presence_id,
-            conversation_id=conversation_id,
+            external_event=event,
+            external_trigger=trigger,
         )
-        composition = self._prompt_composer.compose_external(
+        composition = self._prompt_composer.compose(
+            inbound=None,
             context=context,
             runtime=runtime,
-            source_plugin_id=event.source_plugin_id or "",
-            external_source=event.external_source or "external",
-            event_type=event.external_event_type or "event",
-            agent_intent=agent_intent,
-        )
-        inbound = InboundMessage(
-            message_id=event.platform_message_id,
-            event_type="external_event",
+            visual_observation=None,
+            visual_failure=False,
             scope_type=event.scope_type,
-            sender=SenderIdentity(user_id=authorization_user_id),
-            text=event.content,
-            bot_user_id=event.bot_user_id,
-            group_id=event.group_id,
-            received_at=event.occurred_at,
-            legacy_conversation_key=conversation_key,
-            person_id=person_id,
-            space_id=space_id,
-            conversation_id=conversation_id or event.canonical_conversation_id,
-            presence_id=presence_id or event.ingress_presence_id,
         )
         tool_runtime = ToolRuntime(
-            inbound=inbound,
-            gateway=None,
+            inbound=None,
+            gateway=(
+                cast(OneBotToolGateway, gateway)
+                if callable(getattr(gateway, "call_api", None))
+                else None
+            ),
             allow_generic_onebot=False,
             allow_admin_actions=False,
-            allow_automation=False,
+            allow_automation=True,
             conversation_key=conversation_key,
             trigger_message_id=event.platform_message_id,
-            actor_user_id=authorization_user_id,
+            actor_user_id="",
             actor_is_superuser=False,
             current_group_id=event.group_id,
             runtime_config=runtime,
             origin=TurnOrigin.PLUGIN_BACKGROUND,
-            tools_closed=True,
-            read_only=True,
-            align_conversation_prefix_tools=True,
+            tools_closed=False,
+            read_only=False,
             turn_token=turn_token,
             turn_snapshot=turn_snapshot,
             reply_target_control=ReplyTargetControl(visible_event_ids=context.visible_event_ids),
-            selection_query=event.content,
+            selection_query=f"{event.content}\n{trigger.agent_intent}".strip(),
             web_route=self._web_router.deployment_route(runtime.web.mode),
-            max_model_requests_override=min(2, runtime.agent.max_model_requests),
             prompt_diagnostics=PromptRequestDiagnostics(
                 conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
                 prompt_snapshot_fingerprint=(composition.metrics.prompt_snapshot_fingerprint),
                 static_prompt_revision=composition.metrics.stable_prefix_hash,
             ),
             before_model_request=before_model_request,
+            scope_type=event.scope_type,
+            bot_user_id=event.bot_user_id,
+            conversation_id=conversation_id,
+            presence_id=presence_id,
+            person_id=person_id,
+            space_id=space_id,
+            external_target_id=trigger.target_id,
         )
         completed = await self._run_agent(conversation_key, composition.messages, tool_runtime)
         result = completed.result
@@ -3152,11 +3156,13 @@ class ChatService:
         receipt: OutboundSendReceipt,
         *,
         reply_to_message_id: str | None = None,
+        origin: str = TurnOrigin.USER_MESSAGE.value,
     ) -> bool:
         return await self._record_outbound_message(
             inbound,
             OutboundMessage(text=content, reply_to_message_id=reply_to_message_id),
             receipt,
+            origin=origin,
         )
 
     async def _record_outbound_message(
@@ -3164,6 +3170,8 @@ class ChatService:
         inbound: InboundMessage,
         message: OutboundMessage,
         receipt: OutboundSendReceipt,
+        *,
+        origin: str = TurnOrigin.USER_MESSAGE.value,
     ) -> bool:
         """Persist text and ledger-safe media metadata after confirmed delivery."""
 
@@ -3196,7 +3204,7 @@ class ChatService:
                 ),
                 reply_to_message_id=message.reply_to_message_id,
                 sender_is_bot=True,
-                origin=self._ledger_origin,
+                origin=origin,
             )
             recorded = True
         except asyncio.CancelledError:

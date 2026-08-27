@@ -176,7 +176,10 @@ class PluginCapabilityAdapter:
             return False
         if runtime.read_only and metadata.risk is not RiskClass.READ:
             return False
-        visual = bool(runtime.inbound.attachments or runtime.inbound.reply_attachments)
+        visual = bool(
+            runtime.inbound is not None
+            and (runtime.inbound.attachments or runtime.inbound.reply_attachments)
+        )
         if visual and metadata.risk in {RiskClass.SEND, RiskClass.MUTATE, RiskClass.DESTRUCTIVE}:
             return False
         return True

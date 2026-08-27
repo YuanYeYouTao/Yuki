@@ -29,6 +29,7 @@ from qq_ai_bot.runtime.observability import (
     record_observation_safely,
 )
 from qq_ai_bot.runtime.origin import TurnOrigin
+from qq_ai_bot.runtime.trigger import ExternalEventTurnTrigger
 from qq_ai_bot.services.chat import ChatService
 from qq_ai_bot.services.turn_coordinator import (
     ConversationTurnCoordinator,
@@ -53,7 +54,7 @@ def _authoritative_plugin_observation_refs(
 
 
 class PluginBackgroundTurnWorker:
-    """Generate tool-free Yuki replies in the target's normal conversation."""
+    """Wake the normal Main Agent from a durable plugin event job."""
 
     def __init__(
         self,
@@ -256,7 +257,7 @@ class PluginBackgroundTurnWorker:
             )
             return
         runtime = await self._runtime_config.snapshot(
-            user_id=context.creator_person_id,
+            user_id=context.person_id,
             group_id=context.space_id,
         )
         self._chat.configure_runtime_controls(runtime)
@@ -276,13 +277,24 @@ class PluginBackgroundTurnWorker:
         )
         try:
             async with self._turns.track(token, "generation"):
-                result = await self._chat.generate_external_reply(
+                result = await self._chat.generate_main_agent_wakeup(
                     event=event,
-                    authorization_user_id=context.creator_person_id,
+                    trigger=ExternalEventTurnTrigger(
+                        plugin_id=job.plugin_id,
+                        source_event_id=event.id,
+                        target_type=job.target_type,
+                        target_id=resolved.external_target_id,
+                        agent_intent=job.agent_intent,
+                    ),
+                    identity=transport,
                     runtime=runtime,
-                    agent_intent=job.agent_intent,
                     turn_token=token,
                     turn_snapshot=turn_snapshot,
+                    gateway=(
+                        resolved.connection.bot
+                        if callable(getattr(resolved.connection.bot, "call_api", None))
+                        else None
+                    ),
                     person_id=context.person_id,
                     space_id=context.space_id,
                     presence_id=resolved.presence_id,

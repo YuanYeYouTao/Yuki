@@ -156,8 +156,10 @@ def test_prompt_accounting_matches_assembler_and_outweighs_projection() -> None:
     )
     view = assembler._uncovered_prompt_view(
         events,
-        inbound=inbound,
+        current_message_id=inbound.message_id,
         content="now",
+        yuki_account_ids=inbound.yuki_account_ids,
+        current_message_override=None,
         current_event=dummy_current,
     )
     assert view is not None
@@ -1016,8 +1018,10 @@ async def test_event_floor_between_character_target_and_admit_skips_extractive()
     )
     view = assembler._uncovered_prompt_view(
         history,
-        inbound=inbound,
+        current_message_id=inbound.message_id,
         content="now",
+        yuki_account_ids=inbound.yuki_account_ids,
+        current_message_override=None,
         current_event=dummy_current,
     )
     assert view is not None
@@ -1036,8 +1040,10 @@ async def test_event_floor_between_character_target_and_admit_skips_extractive()
     await assembler._ensure_uncovered_fits_budget(
         snapshot=snapshot,
         recent=history,
-        inbound=inbound,
+        current_message_id=inbound.message_id,
         content="now",
+        yuki_account_ids=inbound.yuki_account_ids,
+        current_message_override=None,
         remainder=1_000_000,
         event_limit=settings.local_context_event_limit,
         identity=ConversationScope.group("bot-floor", "group-floor"),
