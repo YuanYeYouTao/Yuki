@@ -80,6 +80,8 @@ class EventRecord:
     ingress_presence_id: str | None = None
     suppression_status: str | None = None
     caused_by_event_id: int | None = None
+    caused_by_external_source: str | None = None
+    caused_by_external_event_type: str | None = None
 
     @property
     def scope(self) -> ConversationScope:

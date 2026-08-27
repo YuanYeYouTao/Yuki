@@ -6,10 +6,14 @@ from datetime import UTC, datetime
 
 import pytest
 
+from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationRollupModel
 from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
+from qq_ai_bot.conversation.rollup.repository import ConversationRollupRepository
 from qq_ai_bot.domain.conversations import ConversationScope
+from qq_ai_bot.event_prompt import ChatEventPromptRenderer
 from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
 
@@ -96,3 +100,52 @@ async def test_plugin_outbound_rejects_cross_conversation_cause(database: Databa
         )
 
     assert exc.value.category == "causal_source_invalid"
+
+
+@pytest.mark.asyncio
+async def test_raw_reply_hydrates_cause_metadata_after_source_is_covered(
+    database: Database,
+) -> None:
+    writer = _writer(database)
+    source_event_id = await _external_event(writer, key="covered-source")
+    async with database.immediate_session() as session:
+        source = await session.get(ChatEventModel, source_event_id)
+        assert source is not None and source.canonical_conversation_id is not None
+        conversation_id = source.canonical_conversation_id
+        session.add(
+            CanonicalConversationRollupModel(
+                conversation_id=conversation_id,
+                generation=1,
+                covered_through_event_id=source_event_id,
+                summary_text="covered external source",
+                summary_kind="model",
+                source_fingerprint="c" * 64,
+                revision=1,
+                created_at=datetime(2026, 8, 28, tzinfo=UTC),
+                updated_at=datetime(2026, 8, 28, tzinfo=UTC),
+            )
+        )
+    await writer.append(
+        scope=ConversationScope.private("8000", "1001"),
+        platform_message_id="reply-after-covered-source",
+        sender_user_id="8000",
+        direction="outbound",
+        content="proactive after coverage",
+        sender_is_bot=True,
+        origin="plugin_background",
+        caused_by_event_id=source_event_id,
+    )
+
+    snapshot = await ConversationRollupRepository(
+        database,
+        RollupPolicyConfig(),
+    ).load_prompt_snapshot(ConversationScope.private("8000", "1001"))
+
+    assert len(snapshot.raw_events) == 1
+    reply = snapshot.raw_events[0]
+    assert reply.caused_by_event_id == source_event_id
+    assert reply.caused_by_external_source == "fixture"
+    assert reply.caused_by_external_event_type == "fixture.created"
+    projected = ChatEventPromptRenderer(snapshot.raw_events).main_agent_history(snapshot.raw_events)
+    assert "source=fixture" in (projected[0][2].content or "")
+    assert "type=fixture.created" in (projected[0][2].content or "")

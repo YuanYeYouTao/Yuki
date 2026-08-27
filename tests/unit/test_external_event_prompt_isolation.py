@@ -13,6 +13,7 @@ from tests.conftest import build_harness, make_settings
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.conversation.delivery import ReplyControlState, default_reply_spec
 from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
+from qq_ai_bot.conversation.rollup.renderer import rollup_source_projection
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage, SenderIdentity
@@ -158,6 +159,80 @@ def test_main_history_omits_external_source_rows_and_does_not_use_system_role() 
     assert all("opened a pull request" not in text for text in contents)
     assert "system" not in roles
     assert all(role in {"user", "assistant"} for role in roles)
+
+
+def test_proactive_history_groups_by_origin_and_cause_without_changing_body() -> None:
+    ordinary = replace(
+        _message(1, "ordinary yuki reply", sender="8000", direction="outbound"),
+        author_kind="yuki",
+    )
+    first_cause = _external(2, "first source", event_type="PullRequestEvent")
+    first_part = replace(
+        _message(3, "first proactive part", sender="8000", direction="outbound"),
+        author_kind="yuki",
+        origin="plugin_background",
+        caused_by_event_id=2,
+    )
+    second_part = replace(
+        _message(4, "second proactive part", sender="8000", direction="outbound"),
+        author_kind="yuki",
+        origin="plugin_background",
+        caused_by_event_id=2,
+    )
+    second_cause = _external(5, "second source", event_type="IssueEvent")
+    other_episode = replace(
+        _message(6, "other proactive episode", sender="8000", direction="outbound"),
+        author_kind="yuki",
+        origin="plugin_background",
+        caused_by_event_id=5,
+    )
+    legacy = replace(
+        _message(7, "legacy proactive body", sender="8000", direction="outbound"),
+        author_kind="yuki",
+        origin="plugin_background",
+    )
+    renderer = ChatEventPromptRenderer(
+        (ordinary, first_cause, first_part, second_part, second_cause, other_episode, legacy)
+    )
+
+    rendered = renderer.main_agent_history(
+        (ordinary, first_cause, first_part, second_part, second_cause, other_episode, legacy)
+    )
+
+    assert [event_ids for _anchor, event_ids, _message in rendered] == [
+        (1,),
+        (3, 4),
+        (6,),
+        (7,),
+    ]
+    first_episode = rendered[1][2].content or ""
+    assert "[Yuki主动消息｜由外部事件 #2 触发｜source=github｜type=PullRequestEvent]" in (
+        first_episode
+    )
+    assert "first proactive part" in first_episode
+    assert "second proactive part" in first_episode
+    assert (rendered[2][2].content or "").count("由外部事件 #5 触发") == 1
+    assert "历史来源未知" in (rendered[3][2].content or "")
+    assert first_part.content == "first proactive part"
+    assert second_part.content == "second proactive part"
+
+
+def test_rollup_source_projection_preserves_proactive_cause_label() -> None:
+    event = replace(
+        _message(9, "release note", sender="8000", direction="outbound"),
+        author_kind="yuki",
+        origin="plugin_background",
+        caused_by_event_id=8,
+        caused_by_external_source="github",
+        caused_by_external_event_type="ReleaseEvent",
+    )
+
+    projected = rollup_source_projection(event)
+
+    assert "由外部事件 #8 触发" in projected
+    assert "source=github" in projected
+    assert "type=ReleaseEvent" in projected
+    assert "release note" in projected
 
 
 def test_current_external_carrier_is_untrusted_user_once() -> None:

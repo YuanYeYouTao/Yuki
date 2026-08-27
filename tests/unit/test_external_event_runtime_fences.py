@@ -7,13 +7,18 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
     CanonicalConversationRollupEmergencyOverlayModel,
+    CanonicalConversationRollupJobModel,
     CanonicalConversationRollupModel,
 )
 from qq_ai_bot.conversation.rollup.coverage import session_effective_coverage
+from qq_ai_bot.conversation.rollup.errors import RollupSourceChangedError
+from qq_ai_bot.conversation.rollup.models import RollupKind, RollupPolicyConfig
+from qq_ai_bot.conversation.rollup.repository import ConversationRollupRepository
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
@@ -48,6 +53,20 @@ class _Overlay:
     base_semantic_revision: int
     covered_through_event_id: int
     summary_text: str
+
+
+@dataclass
+class _MutableCoverageHold:
+    source_event_id: int | None = None
+
+    async def earliest_source_event_id(
+        self,
+        session: AsyncSession,
+        *,
+        canonical_conversation_id: str,
+    ) -> int | None:
+        del session, canonical_conversation_id
+        return self.source_event_id
 
 
 async def _seed_job(
@@ -301,3 +320,168 @@ async def test_finish_rechecks_coverage_before_enqueuing_agent_reply(database: D
             )
         )
         assert reply is None
+
+
+@pytest.mark.asyncio
+async def test_active_wakeup_holds_rollup_until_a_silent_terminal_finish(
+    database: Database,
+) -> None:
+    notifications, source_id, conversation_id = await _seed_job(database)
+    ledger = EventLedgerRepository(database)
+    trailing, _created = await ledger.append(
+        bot_user_id="8000",
+        platform_message_id="yuki-after-external",
+        scope_type=ScopeType.PRIVATE,
+        sender_user_id="8000",
+        private_peer_user_id="1001",
+        direction="outbound",
+        content="later yuki message",
+    )
+    now = datetime.now(UTC)
+    async with database.immediate_session() as session:
+        session.add(
+            CanonicalConversationRollupJobModel(
+                conversation_id=conversation_id,
+                generation=1,
+                signal_revision=1,
+                status="pending",
+                failure_count=0,
+                lease_owner=None,
+                lease_token=None,
+                lease_until=None,
+                next_attempt_at=now,
+                last_error_category=None,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    rollups = ConversationRollupRepository(
+        database,
+        RollupPolicyConfig(
+            raw_tail_events=1,
+            raw_tail_characters=1_000,
+            trigger_events=2,
+            trigger_characters=1_000,
+            stop_events=0,
+            stop_characters=0,
+            batch_max_events=20,
+            batch_max_characters=10_000,
+            summary_max_characters=1_000,
+        ),
+    )
+
+    first_claim = await rollups.claim_next_job(lease_owner="hold-test", lease_seconds=30)
+    assert first_claim is not None
+    first_candidate = await rollups.candidate_for_claim(first_claim)
+    assert first_candidate is not None
+    assert first_candidate.events[-1].id < source_id
+    await rollups.commit_candidate(
+        first_claim,
+        first_candidate,
+        summary_text="before external source",
+        summary_kind=RollupKind.EXTRACTIVE,
+    )
+
+    held_claim = await rollups.claim_next_job(lease_owner="hold-test", lease_seconds=30)
+    assert held_claim is not None
+    assert await rollups.candidate_for_claim(held_claim) is None
+    assert not await rollups.finish_without_candidate(held_claim)
+    async with database.sessions() as session:
+        checkpoint = await session.get(CanonicalConversationRollupModel, conversation_id)
+        parked = await session.get(CanonicalConversationRollupJobModel, conversation_id)
+        assert checkpoint is not None and checkpoint.covered_through_event_id < source_id
+        assert parked is not None and parked.status == "pending"
+
+    wakeup = await notifications.claim_turn()
+    assert wakeup is not None and wakeup.source_event_id == source_id
+    assert await notifications.finish_turn(
+        wakeup.id,
+        attempt=wakeup.attempts,
+        generation=wakeup.generation,
+        text="",
+        tool_calls_used=1,
+        model_requests=1,
+    )
+    async with database.immediate_session() as session:
+        parked = await session.get(CanonicalConversationRollupJobModel, conversation_id)
+        assert parked is not None
+        parked.next_attempt_at = datetime.now(UTC)
+    released_claim = await rollups.claim_next_job(lease_owner="hold-test", lease_seconds=30)
+    assert released_claim is not None
+    released_candidate = await rollups.candidate_for_claim(released_claim)
+    assert released_candidate is not None
+    assert source_id in {event.id for event in released_candidate.events}
+    assert released_candidate.events[-1].id < trailing.id
+    async with database.sessions() as session:
+        reply = await session.scalar(
+            select(PluginNotificationOutboxModel).where(
+                PluginNotificationOutboxModel.part_key == "agent_reply"
+            )
+        )
+        assert reply is None
+
+
+@pytest.mark.asyncio
+async def test_rollup_commit_rechecks_a_hold_created_after_candidate_read(
+    database: Database,
+) -> None:
+    _notifications, source_id, conversation_id = await _seed_job(database)
+    ledger = EventLedgerRepository(database)
+    await ledger.append(
+        bot_user_id="8000",
+        platform_message_id="yuki-after-race-source",
+        scope_type=ScopeType.PRIVATE,
+        sender_user_id="8000",
+        private_peer_user_id="1001",
+        direction="outbound",
+        content="protected tail",
+    )
+    now = datetime.now(UTC)
+    async with database.immediate_session() as session:
+        session.add(
+            CanonicalConversationRollupJobModel(
+                conversation_id=conversation_id,
+                generation=1,
+                signal_revision=1,
+                status="pending",
+                failure_count=0,
+                lease_owner=None,
+                lease_token=None,
+                lease_until=None,
+                next_attempt_at=now,
+                last_error_category=None,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    hold = _MutableCoverageHold()
+    rollups = ConversationRollupRepository(
+        database,
+        RollupPolicyConfig(
+            raw_tail_events=1,
+            raw_tail_characters=1_000,
+            trigger_events=2,
+            trigger_characters=1_000,
+            stop_events=0,
+            stop_characters=0,
+            batch_max_events=20,
+            batch_max_characters=10_000,
+            summary_max_characters=1_000,
+        ),
+        coverage_holds=hold,
+    )
+    claim = await rollups.claim_next_job(lease_owner="hold-race", lease_seconds=30)
+    assert claim is not None
+    candidate = await rollups.candidate_for_claim(claim)
+    assert candidate is not None and source_id in {event.id for event in candidate.events}
+
+    hold.source_event_id = source_id
+    with pytest.raises(RollupSourceChangedError, match="coverage hold changed"):
+        await rollups.commit_candidate(
+            claim,
+            candidate,
+            summary_text="must roll back",
+            summary_kind=RollupKind.EXTRACTIVE,
+        )
+    async with database.sessions() as session:
+        assert await session.get(CanonicalConversationRollupModel, conversation_id) is None
