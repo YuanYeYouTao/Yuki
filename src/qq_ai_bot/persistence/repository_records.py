@@ -79,6 +79,7 @@ class EventRecord:
     author_presence_id: str | None = None
     ingress_presence_id: str | None = None
     suppression_status: str | None = None
+    caused_by_event_id: int | None = None
 
     @property
     def scope(self) -> ConversationScope:

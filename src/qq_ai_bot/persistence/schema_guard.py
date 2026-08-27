@@ -8,7 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-CANONICAL_SCHEMA_REVISION = "0049"
+CANONICAL_SCHEMA_REVISION = "0050"
 
 _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
     "persons": frozenset({"id", "enabled", "revision"}),
@@ -36,7 +36,14 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
     "presences": frozenset({"id", "platform", "external_account_id", "enabled"}),
     "canonical_conversations": frozenset({"id", "kind", "generation"}),
     "conversation_legacy_aliases": frozenset({"id", "conversation_id", "scope_key", "is_primary"}),
-    "chat_events": frozenset({"canonical_event_id", "canonical_conversation_id", "author_kind"}),
+    "chat_events": frozenset(
+        {
+            "canonical_event_id",
+            "canonical_conversation_id",
+            "author_kind",
+            "caused_by_event_id",
+        }
+    ),
     "memory_facts": frozenset(
         {
             "canonical_subject_person_id",
@@ -83,7 +90,7 @@ async def require_canonical_schema(database_url: str) -> None:
             tables = {str(row[0]) for row in table_rows}
             if "alembic_version" not in tables:
                 raise CanonicalSchemaError(
-                    "database is not initialized; upgrade it to canonical revision 0049"
+                    "database is not initialized; upgrade it to canonical revision 0050"
                 )
             revision_rows = await connection.execute(
                 text("SELECT version_num FROM alembic_version")
@@ -91,7 +98,7 @@ async def require_canonical_schema(database_url: str) -> None:
             revisions = tuple(str(row[0]) for row in revision_rows)
             if revisions != (CANONICAL_SCHEMA_REVISION,):
                 raise CanonicalSchemaError(
-                    "database migration head is unsupported; expected canonical revision 0049"
+                    "database migration head is unsupported; expected canonical revision 0050"
                 )
 
             forbidden = sorted(tables & _FORBIDDEN_TABLES)

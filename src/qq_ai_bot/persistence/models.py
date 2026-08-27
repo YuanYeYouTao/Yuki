@@ -126,6 +126,7 @@ class ChatEventModel(Base):
         ),
         Index("ix_chat_events_canonical_event_id", "canonical_event_id"),
         Index("ix_chat_events_canonical_conversation_id", "canonical_conversation_id"),
+        Index("ix_chat_events_caused_by_event_id", "caused_by_event_id"),
         Index(
             "uq_chat_events_canonical_event_keeper",
             "canonical_event_id",
@@ -236,6 +237,10 @@ class ChatEventModel(Base):
     suppression_status: Mapped[str] = mapped_column(String(16), nullable=False)
     ingress_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
     ingress_gateway_instance_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    caused_by_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chat_events.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
 
 class MediaAnalysisModel(Base):

@@ -203,6 +203,7 @@ def _event_record(row: ChatEventModel | Mapping[str, Any]) -> EventRecord:
         author_presence_id=_row_value(row, "author_presence_id"),
         ingress_presence_id=_row_value(row, "ingress_presence_id"),
         suppression_status=_row_value(row, "suppression_status"),
+        caused_by_event_id=_row_value(row, "caused_by_event_id"),
     )
 
 
