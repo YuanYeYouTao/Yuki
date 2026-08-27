@@ -23,10 +23,10 @@ from qq_ai_bot.domain.messages import ChatTool
 
 _ALL_ORIGINS = frozenset(TurnOrigin)
 _DIRECT_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP})
-_AUTONOMOUS_ORIGIN = frozenset({TurnOrigin.AUTONOMOUS_GROUP})
+_DECLINE_REPLY_ORIGINS = frozenset({TurnOrigin.AUTONOMOUS_GROUP, TurnOrigin.PLUGIN_BACKGROUND})
 _REPLY_LAYOUT_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP})
 _ORIGIN_OVERRIDES: dict[str, frozenset[TurnOrigin]] = {
-    "decline_reply": _AUTONOMOUS_ORIGIN,
+    "decline_reply": _DECLINE_REPLY_ORIGINS,
     "set_voice_preference": _DIRECT_ORIGINS,
     "set_reply_layout": _REPLY_LAYOUT_ORIGINS,
     "send_voice": _REPLY_LAYOUT_ORIGINS,

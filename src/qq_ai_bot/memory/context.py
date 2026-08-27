@@ -276,6 +276,41 @@ class MemoryContextService:
             )
         )
 
+    async def retrieve_for_targets(
+        self,
+        *,
+        content: str,
+        targets: tuple[MemoryEntityTarget, ...],
+        runtime: RuntimeConfigSnapshot,
+        memory_mode: MemoryContextMode = MemoryContextMode.LEXICAL,
+    ) -> MemoryRetrievalResult:
+        """Retrieve host-resolved targets without inventing a message actor."""
+
+        if memory_mode is MemoryContextMode.NONE:
+            normalized = normalize_query_text(content)
+            return MemoryRetrievalResult(
+                blocks=(),
+                hits=(),
+                candidate_count=0,
+                selected_count=0,
+                query_hash=hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+                mode=MemoryRetrievalMode.RELEVANT,
+                semantic_status="skipped",
+            )
+        query = self._queries.for_targets(
+            text=content,
+            mode=MemoryRetrievalMode.RELEVANT,
+            targets=targets,
+            runtime=runtime,
+        )
+        if memory_mode is MemoryContextMode.LEXICAL:
+            query = query.model_copy(update={"semantic_enabled": False})
+        return await self._retriever.retrieve(
+            query,
+            lexical_enabled=runtime.memory.retrieval_enabled,
+            diversify=True,
+        )
+
     @staticmethod
     def _limit_automatic_result(
         result: MemoryRetrievalResult,

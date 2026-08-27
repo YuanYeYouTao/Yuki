@@ -1,4 +1,4 @@
-"""C1 external-event prompt isolation: history, carrier, digest, and trusted policy."""
+"""External-event isolation with stable Main-Agent prompt composition."""
 
 from __future__ import annotations
 
@@ -8,8 +8,10 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from tests.conftest import make_settings
+from tests.conftest import build_harness, make_settings
 
+from qq_ai_bot.automation.models import TurnOrigin
+from qq_ai_bot.conversation.delivery import ReplyControlState, default_reply_spec
 from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ScopeType
@@ -23,15 +25,20 @@ from qq_ai_bot.event_prompt import (
     recent_external_event_digest,
 )
 from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
+from qq_ai_bot.llm.fake import FakeLLMProvider
+from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.prompting import ContextBudgeter
+from qq_ai_bot.runtime.trigger import ExternalEventTurnTrigger
+from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.context_assembler import (
     AssembledContext,
     ContextAssembler,
     ContextMetrics,
     _HistoryPromptWindow,
 )
-from qq_ai_bot.services.prompt_composer import EXTERNAL_EVENT_HOST_POLICY, PromptComposer
+from qq_ai_bot.services.prompt_composer import PromptComposer
+from qq_ai_bot.services.reply_target import ReplyTargetControl
 from qq_ai_bot.time.models import TimeContext
 
 _OCCURRED = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
@@ -167,18 +174,19 @@ def test_current_external_carrier_is_untrusted_user_once() -> None:
 def test_bounded_history_keeps_current_external_out_of_main_history() -> None:
     history_rows = (_message(1, "hello"), _external(2, "earlier notice"))
     current = _external(3, "current trigger", payload={"token": "abc"})
-    inbound = InboundMessage(
-        message_id=current.platform_message_id,
-        event_type="external_event",
-        scope_type=ScopeType.PRIVATE,
-        sender=SenderIdentity(user_id="1001"),
-        text=current.content,
-        bot_user_id="8000",
+    trigger = ExternalEventTurnTrigger(
+        plugin_id="github-monitor",
+        source_event_id=current.id,
+        target_type="private",
+        target_id="1001",
+        agent_intent="comment briefly",
     )
     bounded = ContextAssembler._bounded_history(
         history_rows,
-        inbound=inbound,
+        current_message_id=current.platform_message_id,
         content=current.content,
+        yuki_account_ids=frozenset({"8000"}),
+        current_message_override=ContextAssembler._external_wakeup_message(current, trigger),
         current_event=current,
     )
     assert bounded.current_message.role == "user"
@@ -342,7 +350,7 @@ def test_assembler_attaches_digest_from_final_uncovered_tail() -> None:
     ]
 
 
-def test_trusted_external_policy_is_host_text_only() -> None:
+def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
     settings = make_settings("sqlite+aiosqlite:///:memory:")
     composer = PromptComposer(settings)
     current = ChatMessage(role="user", content="[external] current summary")
@@ -371,20 +379,36 @@ def test_trusted_external_policy_is_host_text_only() -> None:
     )
     runtime = MagicMock()
     runtime.plugins.max_total_prompt_characters = 8_000
-    composed = composer.compose_external(
+    composed = composer.compose(
+        inbound=None,
         context=context,
         runtime=runtime,
-        source_plugin_id="github-monitor",
-        external_source="github",
-        event_type="PushEvent",
-        agent_intent="comment on the pull request",
+        visual_observation=None,
+        visual_failure=False,
+        scope_type=ScopeType.PRIVATE,
+    )
+    ordinary = composer.compose(
+        inbound=InboundMessage(
+            message_id="ordinary",
+            event_type="message",
+            scope_type=ScopeType.PRIVATE,
+            sender=SenderIdentity(user_id="1001"),
+            text="ordinary",
+            bot_user_id="8000",
+        ),
+        context=context,
+        runtime=runtime,
+        visual_observation=None,
+        visual_failure=False,
     )
     system_text = "\n".join(
         item.content or "" for item in composed.messages if item.role == "system"
     )
-    assert EXTERNAL_EVENT_HOST_POLICY in system_text
     assert "github-monitor" not in system_text
     assert "PushEvent" not in system_text
+    assert tuple(item.content for item in composed.messages if item.role == "system") == tuple(
+        item.content for item in ordinary.messages if item.role == "system"
+    )
     user_messages = tuple(item for item in composed.messages if item.role == "user")
     assert len(user_messages) == 2
     assert current.content in (user_messages[-1].content or "")
@@ -394,20 +418,19 @@ def test_trusted_external_policy_is_host_text_only() -> None:
     assert history_blob.count("current summary") == 1
     assert composed.metrics.conversation_prefix_hash
     assert "hello from a person" not in composed.metrics.conversation_prefix_hash
-    repeat = composer.compose_external(
+    repeat = composer.compose(
+        inbound=None,
         context=context,
         runtime=runtime,
-        source_plugin_id="github-monitor",
-        external_source="github",
-        event_type="PushEvent",
-        agent_intent="comment on the pull request",
+        visual_observation=None,
+        visual_failure=False,
+        scope_type=ScopeType.PRIVATE,
     )
     assert tuple((item.role, item.content) for item in repeat.messages) == tuple(
         (item.role, item.content) for item in composed.messages
     )
     assert repeat.metrics.conversation_prefix_hash == composed.metrics.conversation_prefix_hash
     instructions, inputs = DeepSeekResponsesProvider._convert_messages(composed.messages)
-    assert EXTERNAL_EVENT_HOST_POLICY in instructions
     assert "github-monitor" not in instructions
     assert all(item["role"] in {"user", "assistant"} for item in inputs)
     assert inputs[-1]["role"] == "user"
@@ -420,6 +443,136 @@ def test_trusted_external_policy_is_host_text_only() -> None:
         item["role"] != "system" or "current summary" not in str(item["content"])
         for item in chat_payload
     )
+
+
+@pytest.mark.asyncio
+async def test_external_wakeup_and_ordinary_turn_send_the_same_provider_shape(
+    database: Database,
+) -> None:
+    provider = FakeLLMProvider(lambda _request: "ok")
+    harness = build_harness(database, make_settings(database.url), provider)
+    chat = harness.processor._chat
+    runtime_config = await chat._runtime_config.snapshot(user_id="1001", group_id=None)
+    stable_prefix = (
+        ChatMessage(role="system", content="stable instructions"),
+        ChatMessage(role="user", content="old user marker"),
+        ChatMessage(role="assistant", content="old assistant marker"),
+    )
+    ordinary_inbound = InboundMessage(
+        message_id="ordinary-current",
+        event_type="message",
+        scope_type=ScopeType.PRIVATE,
+        sender=SenderIdentity(user_id="1001"),
+        text="ordinary current",
+        bot_user_id="8000",
+        conversation_id="conv-stable",
+        presence_id="presence-stable",
+        yuki_account_ids=frozenset({"8000"}),
+    )
+    shared = {
+        "gateway": None,
+        "allow_generic_onebot": False,
+        "allow_admin_actions": False,
+        "allow_automation": True,
+        "conversation_key": "canonical:conv-stable:generation:1",
+        "actor_is_superuser": False,
+        "current_group_id": None,
+        "runtime_config": runtime_config,
+        "tools_closed": False,
+        "read_only": False,
+        "reply_target_control": ReplyTargetControl(visible_event_ids=frozenset({1, 2})),
+        "selection_query": "same capability-neutral query",
+        "scope_type": ScopeType.PRIVATE,
+        "bot_user_id": "8000",
+        "conversation_id": "conv-stable",
+        "presence_id": "presence-stable",
+        "person_id": "person-stable",
+        "external_target_id": "1001",
+    }
+    ordinary_runtime = ToolRuntime(
+        inbound=ordinary_inbound,
+        trigger_message_id="ordinary-current",
+        actor_user_id="1001",
+        origin=TurnOrigin.USER_MESSAGE,
+        **shared,
+    )
+    wakeup_runtime = ToolRuntime(
+        inbound=None,
+        trigger_message_id="external-current",
+        actor_user_id="",
+        origin=TurnOrigin.PLUGIN_BACKGROUND,
+        **shared,
+    )
+
+    await chat._run_agent(
+        str(shared["conversation_key"]),
+        (*stable_prefix, ChatMessage(role="user", content="ordinary current")),
+        ordinary_runtime,
+    )
+    await chat._run_agent(
+        str(shared["conversation_key"]),
+        (*stable_prefix, ChatMessage(role="user", content="external current")),
+        wakeup_runtime,
+    )
+
+    assert len(provider.requests) == 2
+    ordinary_request, wakeup_request = provider.requests
+    assert ordinary_request.messages[:-1] == wakeup_request.messages[:-1] == stable_prefix
+    assert ordinary_request.messages[-1].role == wakeup_request.messages[-1].role == "user"
+    assert ordinary_request.messages[-1].content != wakeup_request.messages[-1].content
+    assert ordinary_request.tools == wakeup_request.tools
+    assert ordinary_request.native_tools == wakeup_request.native_tools
+    assert ordinary_request.tool_choice == wakeup_request.tool_choice
+    assert ordinary_request.model == wakeup_request.model
+    assert ordinary_request.temperature == wakeup_request.temperature
+    assert ordinary_request.max_output_tokens == wakeup_request.max_output_tokens
+    assert ordinary_request.thinking_enabled == wakeup_request.thinking_enabled
+    assert ordinary_request.reasoning_effort == wakeup_request.reasoning_effort
+    assert ordinary_request.response_format == wakeup_request.response_format
+    assert ordinary_request.structured_output == wakeup_request.structured_output
+    assert ordinary_request.request_shape_hash == wakeup_request.request_shape_hash
+
+
+@pytest.mark.asyncio
+async def test_plugin_wakeup_can_decline_without_creating_a_fake_reply(
+    database: Database,
+) -> None:
+    harness = build_harness(database, make_settings(database.url))
+    chat = harness.processor._chat
+    runtime_config = await chat._runtime_config.snapshot(user_id="1001", group_id=None)
+    control = ReplyControlState(
+        spec=default_reply_spec(hard_max_messages=runtime_config.reply.hard_max_messages)
+    )
+    runtime = ToolRuntime(
+        inbound=None,
+        gateway=None,
+        allow_generic_onebot=False,
+        allow_admin_actions=False,
+        allow_automation=True,
+        conversation_key="canonical:conv-stable:generation:1",
+        trigger_message_id="external-current",
+        runtime_config=runtime_config,
+        origin=TurnOrigin.PLUGIN_BACKGROUND,
+        reply_control=control,
+        scope_type=ScopeType.PRIVATE,
+        bot_user_id="8000",
+        conversation_id="conv-stable",
+        presence_id="presence-stable",
+        person_id="person-stable",
+        external_target_id="1001",
+    )
+
+    definitions = chat._tools.definitions(runtime)
+    assert "decline_reply" in {tool.name for tool in definitions}
+    result = json.loads(
+        await chat._tools.execute(
+            "decline_reply",
+            '{"reason_code":"not_relevant"}',
+            runtime,
+        )
+    )
+    assert result["ok"] is True
+    assert control.declined is True
 
 
 def _pad_external_to_encoded_size(event_id: int, target: int) -> EventRecord:
@@ -506,7 +659,7 @@ def _covered_external_turn(
             starts_after_event_id=starts_after_event_id,
         )
     )
-    assembler._memory_context.retrieve_for_turn = AsyncMock()
+    assembler._memory_context.retrieve_for_targets = AsyncMock()
     turn = ConversationTurnSnapshot(
         scope_id=1,
         scope_key="bot:8000:private:1001",
@@ -528,7 +681,7 @@ def _covered_external_turn(
         (12, "emergency"),
     ),
 )
-async def test_assemble_external_fails_closed_when_current_source_is_covered(
+async def test_actorless_main_context_fails_closed_when_current_source_is_covered(
     coverage_end: int,
     rollup_mode: str,
 ) -> None:
@@ -539,19 +692,27 @@ async def test_assemble_external_fails_closed_when_current_source_is_covered(
         marker=marker,
     )
     with pytest.raises(ConversationCoverageError) as exc:
-        await assembler.assemble_external(
-            event=event,
+        await assembler.assemble(
+            inbound=None,
+            profile=None,
+            identity=event.scope,
             turn=turn,
-            authorization_user_id="1001",
+            content=event.content,
             runtime=runtime,
-            agent_intent="comment",
-            conversation_id="conv-covered",
+            external_event=event,
+            external_trigger=ExternalEventTurnTrigger(
+                plugin_id="github-monitor",
+                source_event_id=event.id,
+                target_type="private",
+                target_id="1001",
+                agent_intent="comment",
+            ),
         )
     assert str(exc.value) == "external trigger is already covered"
     assert marker not in str(exc.value)
     assert str(event.id) not in str(exc.value)
-    assembler._memory_context.retrieve_for_turn.assert_not_called()
+    assembler._memory_context.retrieve_for_targets.assert_not_called()
     # The covered rollup text and the isolated current carrier would both show
-    # the marker if compose_external ran. Assemble must not return a prompt.
+    # the marker if prompt composition ran. Assemble must not return a prompt.
     isolated_current = ChatEventPromptRenderer((event,)).render_reference_event(event)
     assert marker in isolated_current
