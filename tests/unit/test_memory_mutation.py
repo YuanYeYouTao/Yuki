@@ -19,6 +19,7 @@ from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.identity.canonical_repository import active_space_id_for
+from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.memory.candidates import MemoryConflictCandidateResolver
 from qq_ai_bot.memory.claim_processor import MemoryClaimProcessor, MemoryProcessingContext
 from qq_ai_bot.memory.classifier import (
@@ -40,6 +41,7 @@ from qq_ai_bot.memory.enums import (
     SelfMemoryVisibility,
 )
 from qq_ai_bot.memory.extraction import MemoryClaim
+from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.models import (
     CandidateRelation,
     MemoryCandidate,
@@ -62,9 +64,11 @@ from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.resolution import MemoryResolutionPolicy
 from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
+from qq_ai_bot.memory.self_reflection.service import SelfReflectionService
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import ResolvedSubject
 from qq_ai_bot.memory.validation import ValidatedMemoryClaim
+from qq_ai_bot.model_runtime.executor import LegacyTaskModelExecutor
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import MemoryMutationReceiptModel, MemoryToolReceiptModel
 from qq_ai_bot.persistence.repositories import (
@@ -75,6 +79,7 @@ from qq_ai_bot.persistence.repositories import (
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
 from qq_ai_bot.services.agent_tools import AgentToolService, ToolRuntime
+from qq_ai_bot.services.concurrency import ConcurrencyManager
 
 
 def _service(
@@ -285,6 +290,7 @@ async def _event(
     mentioned_user_ids: tuple[str, ...] = (),
     direction: str = "inbound",
     sender_is_bot: bool = False,
+    bot_user_id: str = "8000",
 ) -> EventRecord:
     segments = (
         {
@@ -296,7 +302,7 @@ async def _event(
         },
     )
     event, _ = await ledger.append(
-        bot_user_id="8000",
+        bot_user_id=bot_user_id,
         platform_message_id=message_id,
         scope_type=ScopeType.GROUP if group_id else ScopeType.PRIVATE,
         sender_user_id=sender_user_id,
@@ -1084,6 +1090,195 @@ async def test_self_reflection_episode_commits_full_window_in_one_receipt(
     async with database.sessions() as session:
         receipts = await session.scalar(select(func.count(MemoryMutationReceiptModel.id)))
     assert receipts == 1
+
+
+@pytest.mark.asyncio
+async def test_self_reflection_batch_survives_presence_switch(database: Database) -> None:
+    mutation_service, facts, ledger, _processor = _service(
+        database,
+        self_memory_enabled=True,
+    )
+    repository = SelfReflectionRepository(database)
+    await repository.scan_new_events()
+    old_event = await _event(
+        ledger,
+        message_id="reflection-before-presence-switch",
+        sender_user_id="1001",
+        content="切换账号前，我们约好以后遇到故障要留下可验证的记录。",
+        group_id="3001",
+        bot_user_id="8000",
+    )
+    new_event = await _event(
+        ledger,
+        message_id="reflection-after-presence-switch",
+        sender_user_id="8001",
+        content="",
+        group_id="3001",
+        direction="outbound",
+        sender_is_bot=True,
+        bot_user_id="8001",
+    )
+    assert await ledger.set_visual_summary(
+        new_event.id,
+        "切换账号后，Yuki 用一张图片确认既有约定仍然有效。",
+    )
+    refreshed = await ledger.get_event(new_event.id)
+    assert refreshed is not None
+    new_event = refreshed
+    assert old_event.canonical_conversation_id == new_event.canonical_conversation_id
+    assert old_event.bot_user_id != new_event.bot_user_id
+    assert new_event.author_is_yuki()
+    assert not new_event.content and new_event.visual_summary
+    await repository.scan_new_events()
+    batches = await repository.claim_due(
+        scheduled_slot="2026-09-02:m:test:r01",
+        local_date="2026-09-02",
+        event_threshold=1,
+        character_threshold=1,
+        max_wait_seconds=1,
+        max_sessions=1,
+        max_daily_calls=10,
+        max_events=20,
+        max_characters=10_000,
+        force=True,
+    )
+    assert len(batches) == 1
+    batch = batches[0]
+    assert batch.state.bot_user_id == "8000"
+    assert batch.events[-1].bot_user_id == "8001"
+
+    provider = FakeLLMProvider(
+        lambda _request: json.dumps(
+            {
+                "proposals": [
+                    {
+                        "operation": "create",
+                        "evidence_refs": ["event_2"],
+                        "visibility": "current_scope",
+                        "category": "self_preference",
+                        "kind": "preference",
+                        "memory_key": "principle:presence_switch_continuity",
+                        "content": "账号切换不会改变我对既有约定的重视。",
+                        "reason": "新 Presence 下的 Yuki 明确延续了既有约定",
+                    }
+                ],
+                "episodes": [
+                    {
+                        "content": (
+                            "2026年9月2日，我们在账号切换前后确认：可验证的约定仍属于同一个 Yuki。"
+                        ),
+                        "importance": 4,
+                        "evidence_refs": ["event_2", "event_1"],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        )
+    )
+    reflection = SelfReflectionService(
+        settings=make_settings(
+            "sqlite+aiosqlite:///:memory:",
+            self_memory_enabled=True,
+        ),
+        repository=repository,
+        facts=facts,
+        mutations=mutation_service,
+        models=LegacyTaskModelExecutor(provider),
+        concurrency=ConcurrencyManager(1),
+        metrics=MemoryLifecycleMetrics(),
+    )
+    proposed, committed = await reflection.reflect(batch)
+    await repository.complete(batch, proposals=proposed, committed=committed)
+
+    assert (proposed, committed) == (2, 2)
+    async with database.sessions() as session:
+        receipts = tuple(
+            await session.scalars(
+                select(MemoryMutationReceiptModel).order_by(MemoryMutationReceiptModel.id.asc())
+            )
+        )
+    assert len(receipts) == 2
+    assert {receipt.executed_by_bot_user_id for receipt in receipts} == {"8001"}
+    fact_ids = [receipt.new_fact_id for receipt in receipts if receipt.new_fact_id is not None]
+    reflected_facts = [await facts.get_fact(fact_id) for fact_id in fact_ids]
+    episode = next(
+        fact for fact in reflected_facts if fact is not None and fact.kind is MemoryKind.EPISODE
+    )
+    evidence = await facts.list_evidence(episode.id, limit=10)
+    assert {item.event_id for item in evidence if item.event_id is not None} == {
+        old_event.id,
+        new_event.id,
+    }
+
+
+@pytest.mark.asyncio
+async def test_self_reflection_evidence_still_rejects_another_canonical_conversation(
+    database: Database,
+) -> None:
+    service, _facts, ledger, _processor = _service(database, self_memory_enabled=True)
+    evidence_event = await _event(
+        ledger,
+        message_id="reflection-other-conversation",
+        sender_user_id="1001",
+        content="这是另一个群里的内容。",
+        group_id="3002",
+        bot_user_id="8000",
+    )
+    anchor = await _event(
+        ledger,
+        message_id="reflection-current-conversation",
+        sender_user_id="8001",
+        content="这是当前群里的回应。",
+        group_id="3001",
+        direction="outbound",
+        sender_is_bot=True,
+        bot_user_id="8001",
+    )
+
+    result = await service.mutate_resolved(
+        MemoryMutationRequest(
+            operation=MemoryMutationOperation.CREATE,
+            target=MemoryMutationTarget(subject_ref="self", scope_type=MemoryScopeType.SELF),
+            visibility=SelfMemoryVisibilityMode.CURRENT_SCOPE,
+            new_content="我不会把另一个会话的证据混入当前经历。",
+            memory_key="self_episode:cross-conversation-guard",
+            category="self_episode",
+            kind=MemoryKind.EPISODE,
+            reason="self_reflection_episode",
+            evidence_quote=anchor.content,
+        ),
+        MemoryMutationContext(
+            event=anchor,
+            conversation_key="group:3001:self-reflection",
+            turn_origin="memory_self_reflection",
+            delegation_mode=f"self_episode:{evidence_event.id}:{anchor.id}",
+            trigger_actor_user_id=anchor.sender_user_id,
+            decision_actor_type=MemoryDecisionActorType.REFLECTION,
+            decision_actor_id="yuki_self_reflection",
+            executed_by_bot_user_id=anchor.bot_user_id,
+        ),
+        target=ResolvedSubject(
+            MemoryScopeType.SELF,
+            None,
+            None,
+            SelfMemoryVisibility.GROUP,
+            None,
+            "3001",
+        ),
+        additional_evidence=(
+            MemoryEvidenceCreate(
+                event_id=evidence_event.id,
+                source_speaker_user_id=evidence_event.sender_user_id,
+                relation=MemoryEvidenceRelation.AGENT_REFLECTION,
+                confidence=0.9,
+                authority=MemoryAuthority.AGENT_REFLECTION,
+                excerpt=evidence_event.content,
+            ),
+        ),
+    )
+
+    assert not result.ok
+    assert result.reason_code == "cross_conversation_evidence"
 
 
 @pytest.mark.asyncio

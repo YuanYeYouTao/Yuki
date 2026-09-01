@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.event_prompt import ChatEventPromptRenderer
 from qq_ai_bot.memory.claim_processor import (
     MemoryClaimProcessor,
     MemoryClaimResolution,
@@ -1137,9 +1138,21 @@ class MemoryMutationService:
             if item.event_id is None:
                 continue
             event = await self._ledger.get_event(item.event_id)
-            if event is None or event.bot_user_id != anchor.bot_user_id:
+            if event is None:
                 return False
             if event.scope_type is not anchor.scope_type:
+                return False
+            event_conversation_id = (event.canonical_conversation_id or "").strip()
+            anchor_conversation_id = (anchor.canonical_conversation_id or "").strip()
+            if event_conversation_id or anchor_conversation_id:
+                if (
+                    not event_conversation_id
+                    or not anchor_conversation_id
+                    or event_conversation_id != anchor_conversation_id
+                ):
+                    return False
+                continue
+            if event.bot_user_id != anchor.bot_user_id:
                 return False
             if anchor.scope_type is ScopeType.GROUP:
                 if event.group_id != anchor.group_id:
@@ -1437,11 +1450,12 @@ class MemoryMutationService:
             context,
             actor_person_id=actor_person_id,
         )
-        quote = (
-            normalize_memory_text(request.evidence_quote or "", maximum=500)
-            if trusted_self_reflection and context.evidence_tool_receipt_id is not None
-            else self._evidence_quote(request, event.content)
-        )
+        if trusted_self_reflection and context.evidence_tool_receipt_id is not None:
+            quote = normalize_memory_text(request.evidence_quote or "", maximum=500)
+        elif trusted_self_reflection:
+            quote = self._self_reflection_evidence_quote(request, event)
+        else:
+            quote = self._evidence_quote(request, event.content)
         if not quote:
             raise MemoryMutationRejected("memory_evidence_quote_required")
         authority, source_type = self._provenance(
@@ -2260,6 +2274,22 @@ class MemoryMutationService:
                 raise MemoryMutationRejected("evidence_quote_required_for_long_event")
             return source
         quote = normalize_memory_text(request.evidence_quote, maximum=500)
+        if not quote or quote not in source:
+            raise MemoryMutationRejected("evidence_quote_not_in_current_event")
+        return quote
+
+    @staticmethod
+    def _self_reflection_evidence_quote(
+        request: MemoryMutationRequest,
+        event: EventRecord,
+    ) -> str:
+        source = normalize_memory_text(
+            ChatEventPromptRenderer.event_content(event, "", ""),
+            maximum=4000,
+        )
+        if not source:
+            raise MemoryMutationRejected("empty_trigger_event")
+        quote = normalize_memory_text(request.evidence_quote or "", maximum=500)
         if not quote or quote not in source:
             raise MemoryMutationRejected("evidence_quote_not_in_current_event")
         return quote
