@@ -32,6 +32,7 @@ from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
     MemoryEvidenceModel,
+    MemorySelfReflectionResultModel,
     MemorySelfReflectionRunModel,
     MemorySelfReflectionRuntimeModel,
     MemorySelfReflectionStateModel,
@@ -168,8 +169,105 @@ class SelfReflectionRepository:
                 row.canonical_person_id,
                 row.canonical_space_id,
             ),
+            ChatEventModel.canonical_event_id.is_not(None),
+            ChatEventModel.id > CanonicalConversationModel.starts_after_event_id,
+            ChatEventModel.id > CanonicalConversationModel.last_generation_change_event_id,
             keeper_event_clause(),
         )
+
+    async def _advance_state(
+        self,
+        session: AsyncSession,
+        state: MemorySelfReflectionStateModel,
+        *,
+        through_event_id: int,
+        now: datetime,
+    ) -> None:
+        """Advance one owner cursor and rebuild pending counters from live events only."""
+
+        processed_last_event_id = max(
+            int(state.last_event_id),
+            min(int(through_event_id), int(state.latest_event_id)),
+        )
+        remaining_query = self._apply_event_scope(
+            select(ChatEventModel).where(
+                ChatEventModel.id > processed_last_event_id,
+                ChatEventModel.id <= state.latest_event_id,
+                ChatEventModel.event_kind == "message",
+            ),
+            state,
+        )
+        remaining = list(
+            (await session.scalars(remaining_query.order_by(ChatEventModel.id.asc()))).all()
+        )
+        nonempty = [item for item in remaining if item.content.strip()]
+        receipt_filter = self._owner_receipt_filter(
+            state.canonical_person_id, state.canonical_space_id
+        )
+        has_tool = bool(
+            await session.scalar(
+                select(MemoryToolReceiptModel.id).where(
+                    receipt_filter,
+                    MemoryToolReceiptModel.trigger_event_id > processed_last_event_id,
+                    MemoryToolReceiptModel.trigger_event_id <= state.latest_event_id,
+                    MemoryToolReceiptModel.expires_at > now,
+                )
+            )
+        )
+        state.last_event_id = processed_last_event_id
+        state.pending_events = len(nonempty)
+        state.pending_characters = sum(len(item.content) for item in nonempty)
+        state.pending_since = nonempty[0].occurred_at if nonempty else None
+        state.has_yuki_reply = any(
+            item.direction == "outbound" and event_author_is_yuki(author_kind=item.author_kind)
+            for item in remaining
+        )
+        state.has_tool_result = has_tool
+        state.high_value_signal = False
+        state.updated_at = now
+
+    async def _reconcile_generation_boundary(
+        self,
+        session: AsyncSession,
+        state: MemorySelfReflectionStateModel,
+        *,
+        now: datetime,
+    ) -> None:
+        """Discard the no-longer-live prefix left behind by an explicit conversation reset."""
+
+        person_id, space_id = require_xor_memory_owner(
+            state.canonical_person_id,
+            state.canonical_space_id,
+        )
+        owner_filter = (
+            and_(
+                CanonicalConversationModel.kind == "space",
+                CanonicalConversationModel.space_id == space_id,
+                CanonicalConversationModel.person_id.is_(None),
+            )
+            if space_id
+            else and_(
+                CanonicalConversationModel.kind == "private",
+                CanonicalConversationModel.person_id == person_id,
+                CanonicalConversationModel.space_id.is_(None),
+            )
+        )
+        conversation = await session.scalar(
+            select(CanonicalConversationModel).where(owner_filter).limit(1)
+        )
+        if conversation is None:
+            return
+        live_boundary = max(
+            int(conversation.starts_after_event_id),
+            int(conversation.last_generation_change_event_id),
+        )
+        if live_boundary > int(state.last_event_id):
+            await self._advance_state(
+                session,
+                state,
+                through_event_id=live_boundary,
+                now=now,
+            )
 
     async def scan_new_events(self, *, limit: int = 5000) -> int:
         """Accumulate only post-deployment events; first startup establishes a baseline."""
@@ -336,6 +434,9 @@ class SelfReflectionRepository:
             ).all()
             claimed: list[SelfReflectionBatch] = []
             for row in states:
+                await self._reconcile_generation_boundary(session, row, now=now)
+                if row.pending_events <= 0:
+                    continue
                 receipt_filter = self._owner_receipt_filter(
                     row.canonical_person_id, row.canonical_space_id
                 )
@@ -394,6 +495,14 @@ class SelfReflectionRepository:
                         natural_gap_seconds=natural_gap_seconds,
                     )
                 if not event_rows:
+                    # Suppression or a repaired canonical chain may invalidate every
+                    # remaining row after it was counted. Do not spin on that dead tail.
+                    await self._advance_state(
+                        session,
+                        row,
+                        through_event_id=row.latest_event_id,
+                        now=now,
+                    )
                     continue
                 context_query = self._apply_event_scope(
                     select(ChatEventModel).where(
@@ -587,60 +696,118 @@ class SelfReflectionRepository:
         async with self._database.sessions() as session, session.begin():
             await session.execute(
                 update(MemorySelfReflectionRunModel)
-                .where(MemorySelfReflectionRunModel.id == batch.run_id)
+                .where(
+                    MemorySelfReflectionRunModel.id == batch.run_id,
+                    MemorySelfReflectionRunModel.status == "processing",
+                )
                 .values(
                     status="completed",
                     proposal_count=proposals,
                     committed_count=committed,
+                    error_category=None,
                     completed_at=now,
                 )
             )
             state = await session.get(MemorySelfReflectionStateModel, batch.state.id)
             if state is None:
                 raise RuntimeError("self-reflection state disappeared during completion")
-            processed_last_event_id = batch.events[-1].id
-            remaining_query = self._apply_event_scope(
-                select(ChatEventModel).where(
-                    ChatEventModel.id > processed_last_event_id,
-                    ChatEventModel.id <= state.latest_event_id,
-                    ChatEventModel.event_kind == "message",
-                ),
+            await self._advance_state(
+                session,
                 state,
+                through_event_id=batch.events[-1].id,
+                now=now,
             )
-            remaining = list(
-                (await session.scalars(remaining_query.order_by(ChatEventModel.id.asc()))).all()
+
+    async def recover_interrupted(self, run_id: int, error_category: str) -> str | None:
+        """Finalize one interrupted run without replaying already committed effects."""
+
+        async with self._database.sessions() as session, session.begin():
+            run = await session.get(MemorySelfReflectionRunModel, run_id)
+            if run is None or run.status != "processing":
+                return None
+            return await self._recover_processing_run(
+                session,
+                run,
+                error_category=error_category,
+                now=datetime.now(UTC),
             )
-            nonempty = [item for item in remaining if item.content.strip()]
-            receipt_filter = self._owner_receipt_filter(
-                state.canonical_person_id, state.canonical_space_id
-            )
-            has_tool = bool(
-                await session.scalar(
-                    select(MemoryToolReceiptModel.id).where(
-                        receipt_filter,
-                        MemoryToolReceiptModel.trigger_event_id > processed_last_event_id,
-                        MemoryToolReceiptModel.trigger_event_id <= state.latest_event_id,
-                        MemoryToolReceiptModel.expires_at > now,
+
+    async def recover_stale_runs(self, *, started_before: datetime) -> int:
+        """Recover abandoned processing rows left by a crash or hard process stop."""
+
+        now = datetime.now(UTC)
+        async with self._database.sessions() as session, session.begin():
+            rows = (
+                await session.scalars(
+                    select(MemorySelfReflectionRunModel).where(
+                        MemorySelfReflectionRunModel.status == "processing",
+                        MemorySelfReflectionRunModel.started_at <= started_before,
                     )
                 )
+            ).all()
+            for run in rows:
+                await self._recover_processing_run(
+                    session,
+                    run,
+                    error_category="stale_processing",
+                    now=now,
+                )
+            return len(rows)
+
+    async def _recover_processing_run(
+        self,
+        session: AsyncSession,
+        run: MemorySelfReflectionRunModel,
+        *,
+        error_category: str,
+        now: datetime,
+    ) -> str:
+        """Use atomic result mappings as the commit checkpoint for recovery."""
+
+        committed = int(
+            await session.scalar(
+                select(func.count(MemorySelfReflectionResultModel.id)).where(
+                    MemorySelfReflectionResultModel.run_id == run.id
+                )
             )
-            state.last_event_id = processed_last_event_id
-            state.pending_events = len(nonempty)
-            state.pending_characters = sum(len(item.content) for item in nonempty)
-            state.pending_since = nonempty[0].occurred_at if nonempty else None
-            state.has_yuki_reply = any(
-                item.direction == "outbound" and event_author_is_yuki(author_kind=item.author_kind)
-                for item in remaining
+            or 0
+        )
+        if committed:
+            state = await session.scalar(
+                select(MemorySelfReflectionStateModel).where(
+                    self._owner_state_filter(run.canonical_person_id, run.canonical_space_id)
+                )
             )
-            state.has_tool_result = has_tool
-            state.high_value_signal = False
-            state.updated_at = now
+            if state is None:
+                run.status = "failed"
+                run.error_category = "recovery_state_missing"
+                run.completed_at = now
+                return "failed"
+            await self._advance_state(
+                session,
+                state,
+                through_event_id=run.last_event_id,
+                now=now,
+            )
+            run.status = "completed"
+            run.proposal_count = max(int(run.proposal_count), committed)
+            run.committed_count = max(int(run.committed_count), committed)
+            run.error_category = f"recovered:{error_category}"[:64]
+            run.completed_at = now
+            return "completed"
+        run.status = "failed"
+        run.error_category = error_category[:64]
+        run.completed_at = now
+        return "failed"
 
     async def fail(self, run_id: int, error_category: str) -> None:
         async with self._database.sessions() as session, session.begin():
             await session.execute(
                 update(MemorySelfReflectionRunModel)
-                .where(MemorySelfReflectionRunModel.id == run_id)
+                .where(
+                    MemorySelfReflectionRunModel.id == run_id,
+                    MemorySelfReflectionRunModel.status == "processing",
+                )
                 .values(
                     status="failed",
                     error_category=error_category[:64],

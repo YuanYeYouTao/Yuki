@@ -7,15 +7,18 @@ import hashlib
 import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import cast
+from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from tests.conftest import make_settings
 
 from qq_ai_bot.admin.audit import AdminAuditService
 from qq_ai_bot.admin.models import AdminActor
 from qq_ai_bot.automation.models import TurnOrigin
+from qq_ai_bot.conversation.hydrate import bump_canonical_generation
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.identity.canonical_repository import active_space_id_for
@@ -65,12 +68,18 @@ from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.resolution import MemoryResolutionPolicy
 from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
 from qq_ai_bot.memory.self_reflection.service import SelfReflectionService
+from qq_ai_bot.memory.self_reflection.worker import SelfReflectionWorker
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import ResolvedSubject
 from qq_ai_bot.memory.validation import ValidatedMemoryClaim
 from qq_ai_bot.model_runtime.executor import LegacyTaskModelExecutor
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import MemoryMutationReceiptModel, MemoryToolReceiptModel
+from qq_ai_bot.persistence.models import (
+    MemoryMutationReceiptModel,
+    MemorySelfReflectionRunModel,
+    MemorySelfReflectionStateModel,
+    MemoryToolReceiptModel,
+)
 from qq_ai_bot.persistence.repositories import (
     AgentActionRepository,
     EventLedgerRepository,
@@ -1209,6 +1218,245 @@ async def test_self_reflection_batch_survives_presence_switch(database: Database
         old_event.id,
         new_event.id,
     }
+
+
+@pytest.mark.asyncio
+async def test_self_reflection_skips_reset_prefix_and_recovers_committed_batch(
+    database: Database,
+) -> None:
+    mutation_service, facts, ledger, _processor = _service(
+        database,
+        self_memory_enabled=True,
+    )
+    repository = SelfReflectionRepository(database)
+    await repository.scan_new_events()
+    await _event(
+        ledger,
+        message_id="reflection-before-reset-user",
+        sender_user_id="1001",
+        content="这一段属于旧会话。",
+        group_id="3001",
+    )
+    old_reply = await _event(
+        ledger,
+        message_id="reflection-before-reset-yuki",
+        sender_user_id="8000",
+        content="旧会话中的回复。",
+        group_id="3001",
+        direction="outbound",
+        sender_is_bot=True,
+    )
+    await repository.scan_new_events()
+    assert old_reply.canonical_conversation_id is not None
+    async with database.sessions() as session, session.begin():
+        await bump_canonical_generation(
+            session,
+            old_reply.canonical_conversation_id,
+            event_id=old_reply.id,
+        )
+    assert not await repository.claim_due(
+        scheduled_slot="2026-09-03:m:reset:r00",
+        local_date="2026-09-03",
+        event_threshold=1,
+        character_threshold=1,
+        max_wait_seconds=1,
+        max_sessions=1,
+        max_daily_calls=10,
+        max_events=2,
+        max_characters=10_000,
+        force=True,
+    )
+    async with database.sessions() as session:
+        cleared_state = await session.scalar(select(MemorySelfReflectionStateModel))
+    assert cleared_state is not None
+    assert cleared_state.last_event_id == old_reply.id
+    assert cleared_state.pending_events == 0
+
+    new_event = await _event(
+        ledger,
+        message_id="reflection-after-reset-user",
+        sender_user_id="1001",
+        content="新会话里我们确认以后只处理 generation 内的消息。",
+        group_id="3001",
+    )
+    new_reply = await _event(
+        ledger,
+        message_id="reflection-after-reset-yuki",
+        sender_user_id="8000",
+        content="我会把这个新约定作为当前经历。",
+        group_id="3001",
+        direction="outbound",
+        sender_is_bot=True,
+    )
+    await repository.scan_new_events()
+    batches = await repository.claim_due(
+        scheduled_slot="2026-09-03:m:reset:r01",
+        local_date="2026-09-03",
+        event_threshold=1,
+        character_threshold=1,
+        max_wait_seconds=1,
+        max_sessions=1,
+        max_daily_calls=10,
+        max_events=2,
+        max_characters=10_000,
+        force=True,
+    )
+    assert len(batches) == 1
+    batch = batches[0]
+    assert [event.id for event in batch.events] == [new_event.id, new_reply.id]
+
+    provider = FakeLLMProvider(
+        lambda _request: json.dumps(
+            {
+                "proposals": [],
+                "episodes": [
+                    {
+                        "content": "2026年9月3日，我们确认反思只处理当前会话代际中的消息。",
+                        "importance": 4,
+                        "evidence_refs": ["event_1", "event_2"],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        )
+    )
+    reflection = SelfReflectionService(
+        settings=make_settings(
+            "sqlite+aiosqlite:///:memory:",
+            self_memory_enabled=True,
+        ),
+        repository=repository,
+        facts=facts,
+        mutations=mutation_service,
+        models=LegacyTaskModelExecutor(provider),
+        concurrency=ConcurrencyManager(1),
+        metrics=MemoryLifecycleMetrics(),
+    )
+    assert await reflection.reflect(batch) == (1, 1)
+
+    assert await repository.recover_interrupted(batch.run_id, "cancelled") == "completed"
+    async with database.sessions() as session:
+        run = await session.get(MemorySelfReflectionRunModel, batch.run_id)
+        state = await session.get(MemorySelfReflectionStateModel, batch.state.id)
+    assert run is not None
+    assert run.status == "completed"
+    assert run.committed_count == 1
+    assert run.error_category == "recovered:cancelled"
+    assert state is not None
+    assert state.last_event_id == new_reply.id
+    assert state.pending_events == 0
+    assert not await repository.claim_due(
+        scheduled_slot="2026-09-03:m:reset:r02",
+        local_date="2026-09-03",
+        event_threshold=1,
+        character_threshold=1,
+        max_wait_seconds=1,
+        max_sessions=1,
+        max_daily_calls=10,
+        max_events=2,
+        max_characters=10_000,
+        force=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_self_reflection_stale_run_without_results_is_retryable(database: Database) -> None:
+    _mutation_service, _facts, ledger, _processor = _service(
+        database,
+        self_memory_enabled=True,
+    )
+    repository = SelfReflectionRepository(database)
+    await repository.scan_new_events()
+    first = await _event(
+        ledger,
+        message_id="reflection-stale-user",
+        sender_user_id="1001",
+        content="这个窗口第一次执行时会在写入前中断。",
+        group_id="3001",
+    )
+    last = await _event(
+        ledger,
+        message_id="reflection-stale-yuki",
+        sender_user_id="8000",
+        content="没有持久结果时应该允许安全重试。",
+        group_id="3001",
+        direction="outbound",
+        sender_is_bot=True,
+    )
+    await repository.scan_new_events()
+    batches = await repository.claim_due(
+        scheduled_slot="2026-09-03:m:stale:r01",
+        local_date="2026-09-03",
+        event_threshold=1,
+        character_threshold=1,
+        max_wait_seconds=1,
+        max_sessions=1,
+        max_daily_calls=10,
+        max_events=10,
+        max_characters=10_000,
+        force=True,
+    )
+    assert len(batches) == 1
+    run_id = batches[0].run_id
+    stale_started_at = datetime.now(UTC) - timedelta(hours=2)
+    async with database.sessions() as session, session.begin():
+        await session.execute(
+            update(MemorySelfReflectionRunModel)
+            .where(MemorySelfReflectionRunModel.id == run_id)
+            .values(started_at=stale_started_at)
+        )
+
+    assert (
+        await repository.recover_stale_runs(started_before=datetime.now(UTC) - timedelta(hours=1))
+        == 1
+    )
+    async with database.sessions() as session:
+        run = await session.get(MemorySelfReflectionRunModel, run_id)
+    assert run is not None
+    assert run.status == "failed"
+    assert run.error_category == "stale_processing"
+
+    retried = await repository.claim_due(
+        scheduled_slot="2026-09-03:m:stale:r02",
+        local_date="2026-09-03",
+        event_threshold=1,
+        character_threshold=1,
+        max_wait_seconds=1,
+        max_sessions=1,
+        max_daily_calls=10,
+        max_events=10,
+        max_characters=10_000,
+        force=True,
+    )
+    assert len(retried) == 1
+    assert [event.id for event in retried[0].events] == [first.id, last.id]
+
+
+@pytest.mark.asyncio
+async def test_self_reflection_worker_recovers_cancelled_batch() -> None:
+    batch = SimpleNamespace(run_id=42)
+    repository = SimpleNamespace(
+        recover_stale_runs=AsyncMock(return_value=0),
+        scan_new_events=AsyncMock(return_value=0),
+        claim_due=AsyncMock(return_value=(batch,)),
+        recover_interrupted=AsyncMock(return_value="completed"),
+        cleanup_receipts=AsyncMock(return_value=0),
+    )
+    service = SimpleNamespace(reflect=AsyncMock(side_effect=asyncio.CancelledError))
+    worker = SelfReflectionWorker(
+        settings=make_settings(
+            "sqlite+aiosqlite:///:memory:",
+            memory_self_reflection_enabled=True,
+        ),
+        repository=cast(SelfReflectionRepository, repository),
+        service=cast(SelfReflectionService, service),
+        metrics=MemoryLifecycleMetrics(),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await worker.process_once(force=True)
+
+    repository.recover_interrupted.assert_awaited_once_with(42, "cancelled")
 
 
 @pytest.mark.asyncio

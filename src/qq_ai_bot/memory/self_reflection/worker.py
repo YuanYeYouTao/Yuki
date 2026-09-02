@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from qq_ai_bot.config import Settings
@@ -18,6 +18,8 @@ from qq_ai_bot.memory.self_reflection.service import SelfReflectionService
 from qq_ai_bot.model_runtime.structured import StructuredTaskError
 
 logger = logging.getLogger(__name__)
+
+_MINIMUM_STALE_RUN_SECONDS = 3600.0
 
 
 class SelfReflectionWorker:
@@ -90,6 +92,15 @@ class SelfReflectionWorker:
         now: datetime | None,
         force: bool,
     ) -> SelfReflectionCycleResult:
+        stale_seconds = max(
+            _MINIMUM_STALE_RUN_SECONDS,
+            float(self._settings.llm_timeout_seconds) * 4,
+        )
+        recovered = await self._repository.recover_stale_runs(
+            started_before=datetime.now(UTC) - timedelta(seconds=stale_seconds)
+        )
+        if recovered:
+            logger.warning("memory_self_reflection_stale_runs_recovered count=%d", recovered)
         await self._repository.scan_new_events()
         local = (now or datetime.now(UTC)).astimezone(self._timezone)
         if not force and local.hour not in self._hours:
@@ -154,6 +165,23 @@ class SelfReflectionWorker:
                         committed,
                     )
                 except asyncio.CancelledError:
+                    try:
+                        outcome = await self._repository.recover_interrupted(
+                            batch.run_id,
+                            "cancelled",
+                        )
+                        logger.info(
+                            "memory_self_reflection_cancelled run_id=%d recovery=%s",
+                            batch.run_id,
+                            outcome or "already_finalized",
+                        )
+                    except (OSError, RuntimeError, ValueError) as recovery_exc:
+                        logger.error(
+                            "memory_self_reflection_cancel_recovery_failed "
+                            "run_id=%d error_category=%s",
+                            batch.run_id,
+                            type(recovery_exc).__name__,
+                        )
                     raise
                 except (OSError, RuntimeError, ValueError) as exc:
                     error_category = _error_category(exc)
