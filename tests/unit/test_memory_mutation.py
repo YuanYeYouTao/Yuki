@@ -2743,12 +2743,13 @@ async def test_merge_metadata_contest_invalidate_and_restore_operations(
 
 
 @pytest.mark.asyncio
-async def test_mentioned_member_read_is_limited_to_current_group_person_group(
+async def test_historical_social_read_policy_is_consistent_without_evidence_expansion(
     database: Database,
 ) -> None:
     service, facts, ledger, _processor = _service(database)
     del service
     people = PeopleRepository(database)
+    await people.observe(user_id="1001", nickname="请求者", group_id="3001")
     await people.observe(
         user_id="2002",
         nickname="Diana",
@@ -2762,6 +2763,12 @@ async def test_mentioned_member_read_is_limited_to_current_group_person_group(
         content="我喜欢天文",
         group_id="3001",
     )
+    private_source = await _event(
+        ledger,
+        message_id="member-private-fact",
+        sender_user_id="2002",
+        content="跨群私人事实",
+    )
     global_fact = await facts.remember(
         MemoryFactCreate(
             scope_type=MemoryScopeType.PERSON,
@@ -2774,7 +2781,15 @@ async def test_mentioned_member_read_is_limited_to_current_group_person_group(
             confidence=1,
             source_type=MemorySourceType.EXPLICIT,
             authority=MemoryAuthority.EXPLICIT,
-        )
+        ),
+        evidence=MemoryEvidenceCreate(
+            event_id=private_source.id,
+            source_speaker_user_id="2002",
+            relation=MemoryEvidenceRelation.SELF_STATEMENT,
+            confidence=1,
+            authority=MemoryAuthority.SELF_REPORT,
+            excerpt="跨群私人事实",
+        ),
     )
     group_fact = await facts.remember(
         MemoryFactCreate(
@@ -2886,13 +2901,12 @@ async def test_mentioned_member_read_is_limited_to_current_group_person_group(
     assert by_reference["data"]["subject_ref"] == "mentioned_user_1"
     assert group_fact.id in reference_ids
     assert projected_fact.id in reference_ids
-    assert global_fact.id not in reference_ids
-    assert other_group_fact.id not in reference_ids
+    assert global_fact.id in reference_ids
+    assert other_group_fact.id in reference_ids
     projected_row = next(
         row for row in by_reference["data"]["memories"] if row["fact_id"] == projected_fact.id
     )
-    assert projected_row["access_scope"] == "same_group_evidence_projection"
-    assert projected_row["read_only"] is True
+    assert "access_scope" not in projected_row  # No old evidence-only projection.
 
     listed = json.loads(
         await tools.execute(
@@ -2904,8 +2918,8 @@ async def test_mentioned_member_read_is_limited_to_current_group_person_group(
     visible_ids = {row["fact_id"] for row in listed["data"]["memories"]}
     assert group_fact.id in visible_ids
     assert projected_fact.id in visible_ids
-    assert global_fact.id not in visible_ids
-    assert other_group_fact.id not in visible_ids
+    assert global_fact.id in visible_ids
+    assert other_group_fact.id in visible_ids
     queried = json.loads(
         await tools.execute(
             "get_person_memories",
@@ -2936,8 +2950,73 @@ async def test_mentioned_member_read_is_limited_to_current_group_person_group(
         )
     )
     assert group_lookup["ok"]
-    assert not global_lookup["ok"]
-    assert not projected_lookup["ok"]
+    assert global_lookup["ok"]
+    assert projected_lookup["ok"]
+
+    # The same direct historical relation works privately and from another group,
+    # even after a Presence change. It never grants evidence or transitive access.
+    private_runtime = replace(
+        runtime,
+        inbound=replace(inbound, scope_type=ScopeType.PRIVATE, group_id=None, bot_user_id="8001"),
+        current_group_id=None,
+    )
+    private_list = json.loads(
+        await tools.execute("get_person_memories", json.dumps({"user_id": "2002"}), private_runtime)
+    )
+    assert {row["fact_id"] for row in private_list["data"]["memories"]} == visible_ids
+    evidence = json.loads(
+        await tools.execute(
+            "get_memory_evidence", json.dumps({"fact_id": projected_fact.id}), private_runtime
+        )
+    )
+    assert not evidence["ok"]
+    background = json.loads(
+        await tools.execute(
+            "get_person_memories",
+            json.dumps({"user_id": "2002"}),
+            replace(private_runtime, origin=TurnOrigin.PLUGIN_BACKGROUND),
+        )
+    )
+    assert not background["ok"]
+    await people.observe(user_id="2003", nickname="间接关系", group_id="3002")
+    indirect = json.loads(
+        await tools.execute("get_person_memories", json.dumps({"user_id": "2003"}), private_runtime)
+    )
+    assert not indirect["ok"] and indirect["retryable"] is False
+    unrelated_group = json.loads(
+        await tools.execute("get_group_memories", json.dumps({"group_id": "3002"}), private_runtime)
+    )
+    assert not unrelated_group["ok"]
+    historical_group = json.loads(
+        await tools.execute("get_group_memories", json.dumps({"group_id": "3001"}), private_runtime)
+    )
+    assert historical_group["ok"] and historical_group["data"]["memories"] == []
+    from qq_ai_bot.identity.db_models import CanonicalSpaceModel
+
+    async with database.sessions() as session, session.begin():
+        old_space = await active_space_id_for(session, "3001")
+        await session.execute(
+            update(CanonicalSpaceModel)
+            .where(CanonicalSpaceModel.id == old_space)
+            .values(enabled=False)
+        )
+    cross_group = replace(
+        runtime, inbound=replace(inbound, group_id="3002"), current_group_id="3002"
+    )
+    assert json.loads(
+        await tools.execute("get_memory_fact", json.dumps({"fact_id": group_fact.id}), cross_group)
+    )["ok"]
+    private_runtime = replace(
+        private_runtime,
+        runtime_config=await tools._runtime_config.snapshot(user_id="1001", group_id=None),
+    )
+    assert await people.delete_person("1001")
+    forgotten = json.loads(
+        await tools.execute(
+            "get_memory_fact", json.dumps({"fact_id": global_fact.id}), private_runtime
+        )
+    )
+    assert not forgotten["ok"]
 
 
 @pytest.mark.asyncio
@@ -2946,6 +3025,7 @@ async def test_manual_qq_and_exact_name_lookup_stay_inside_current_group(
 ) -> None:
     _service_unused, facts, ledger, _processor = _service(database)
     people = PeopleRepository(database)
+    await people.observe(user_id="1001", nickname="请求者", group_id="3001")
     await people.observe(
         user_id="2002",
         nickname="查无此人",

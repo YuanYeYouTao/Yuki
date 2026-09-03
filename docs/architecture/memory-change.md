@@ -17,7 +17,8 @@
   退避重试并恢复超时任务，实际更改仍只能经 `MemoryMutationService` 提交。
 - 普通成员可影响本人 `person/person_group`、当前 `group` 和当前群他人的 `person_group`；
   第三方来源始终记录为 `third_party`，高权威冲突可以实际落为 `contest`，不会冒充本人。
-- 读取本轮提及群友时只开放当前群 `person_group`，不再投影对方跨群 `person` 事实。
+- 结构化读取使用[历史共同群政策](memory-v2.md)：Person 可读范围包含私聊来源事实，
+  PersonGroup 限双方历史共同群。此读取授权不得用于 mutation 或 evidence；下文写入隔离不变。
 - 普通变更是版本化/状态化操作，不做物理删除；`forgetme` 仍沿用独立隐私删除路径。
 - 普通对话中的创建、纠正、撤回和恢复由 Main Agent 调用 `memory_change`；Memory Runtime 只在
   真实 `user_message` 轮开放写事务。该路径跳过自动召回，首轮依据 capability metadata 只开放

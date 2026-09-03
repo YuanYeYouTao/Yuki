@@ -212,6 +212,11 @@ class PeopleRepository:
         self._initial_trust = initial_trust
         self._memory_rebuilds = memory_rebuilds
 
+    @property
+    def database(self) -> Database:
+        """Canonical storage for host-owned identity read policies."""
+        return self._database
+
     async def affected_conversation_scopes(
         self,
         user_id: str,

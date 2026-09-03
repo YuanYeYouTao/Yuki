@@ -55,6 +55,7 @@ from qq_ai_bot.memory.mutation.models import (
 )
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.query import MemoryQueryBuilder
+from qq_ai_bot.memory.read_scope import MemoryReadScopeResolver
 from qq_ai_bot.memory.retrieval import MemoryRetriever
 from qq_ai_bot.memory.runtime.query_plane import (
     MemoryQueryPlane,
@@ -225,7 +226,6 @@ class _PersonMemorySelection:
     targets: tuple[MemoryEntityTarget, ...]
     resolved_by: str
     subject_ref: str | None = None
-    same_group_projection_group_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,6 +284,7 @@ class AgentToolService:
         self._memories = memories
         self._memory_repository = memories.repository
         self._people = PeopleRepository(ledger._database)
+        self._memory_reads = MemoryReadScopeResolver(memories.repository.database)
         if memory_context is None:
             memory_context = MemoryContextService(
                 query_builder=MemoryQueryBuilder(MemoryTargetResolver(self._people)),
@@ -417,9 +418,9 @@ class AgentToolService:
             ChatTool(
                 name="get_person_memories",
                 description=(
-                    "读取本人结构记忆，或当前群友的本群 person_group 结构记忆；还会只读投影"
-                    "该群友由本人在当前群 evidence 支持的 person 事实，但不暴露 evidence、"
-                    "其他群的 person_group 或没有本群本人 evidence 的跨群 person 记忆。"
+                    "读取本人，或与真实请求者有历史共同群关系的人物结构记忆。"
+                    "包含获准人物的完整 Person 事实及共同群 PersonGroup；"
+                    "不返回原始聊天或 evidence。"
                     "真实 @ 或回复"
                     "目标时必须使用 subject_ref，不要把昵称、[提及成员1] 等占位符填入 user_id；"
                     "手输昵称/群名片使用 display_name，手输 QQ 号使用兼容字段 user_id。"
@@ -450,7 +451,7 @@ class AgentToolService:
                         },
                         "user_id": {
                             "type": "string",
-                            "description": "兼容字段；用户手输的 QQ 号，必须是当前群成员",
+                            "description": "兼容字段；用户手输的 QQ 号，后台验证历史关系权限",
                         },
                         "query": {"type": "string", "maxLength": 400},
                         "mode": {
@@ -464,7 +465,7 @@ class AgentToolService:
             ),
             ChatTool(
                 name="get_group_memories",
-                description="读取当前群的共同结构记忆，可按自然语言查询。",
+                description="读取请求者历史参与群的共同结构记忆，可按自然语言查询。",
                 parameters=_object_schema(
                     {
                         "group_id": {"type": "string"},
@@ -1546,116 +1547,27 @@ class AgentToolService:
         selection = await self._resolve_person_memory_selection(arguments, runtime)
         if isinstance(selection, _ToolFailure):
             return self._result(error=selection.code, detail=selection.detail)
-        user_id = selection.user_id
-        limit = self._memory_list_limit(arguments)
-        query, mode = self._memory_query(arguments)
-        person_targets = selection.targets
-        projected_rows = (
-            await self._memory_repository.list_person_facts_projected_to_group(
-                user_id,
-                selection.same_group_projection_group_id,
-                limit=100,
-            )
-            if selection.same_group_projection_group_id is not None
-            else ()
+        query, _mode = self._memory_query(arguments)
+        result = await self._read_memories(
+            arguments,
+            text=query or "",
+            targets=selection.targets,
+            requested_limit=self._memory_requested_limit(arguments),
+            default_overview=query is None,
         )
-        projected_ids = {row.id for row in projected_rows}
-        if query is None and mode is None:
-            rows: list[tuple[Any, bool]] = []
-            for target in person_targets:
-                if target.scope_type is MemoryScopeType.PERSON:
-                    rows.extend(
-                        (row, False)
-                        for row in await self._memories.list_person(user_id, limit=limit)
-                    )
-                elif target.group_id is not None:
-                    rows.extend(
-                        (row, False)
-                        for row in await self._memories.list_person_group(
-                            user_id, target.group_id, limit=limit
-                        )
-                    )
-            existing_ids = {row.id for row, _projected in rows}
-            rows.extend((row, True) for row in projected_rows if row.id not in existing_ids)
-            rows.sort(
-                key=lambda item: (
-                    item[0].importance,
-                    item[0].confidence,
-                    item[0].updated_at,
-                    -item[0].id,
-                ),
-                reverse=True,
-            )
-            memories = [
-                self._memory_json(
-                    row,
-                    retrieval_reason=(
-                        "same_group_evidence_projection" if projected else "deterministic_list"
-                    ),
-                    same_group_evidence_projection=projected,
-                )
-                for row, projected in rows[:limit]
-            ]
-        else:
-            search_targets = person_targets
-            if selection.same_group_projection_group_id is not None and projected_rows:
-                search_targets = (
-                    *search_targets,
-                    MemoryEntityTarget(
-                        role=MemoryTargetRole.REFERENCED_PERSON,
-                        scope_type=MemoryScopeType.PERSON,
-                        subject_user_id=user_id,
-                        group_id=None,
-                        block_id=f"tool_person_projection:{user_id}",
-                    ),
-                )
-            result = await self._read_memories(
-                arguments,
-                text=query or "",
-                targets=search_targets,
-                requested_limit=100 if projected_rows else self._memory_requested_limit(arguments),
-            )
-            visible_hits = [
-                hit
-                for hit in result.hits
-                if hit.fact.scope_type is not MemoryScopeType.PERSON
-                or selection.same_group_projection_group_id is None
-                or hit.fact.id in projected_ids
-            ]
-            if selection.same_group_projection_group_id is not None:
-                visible_hits.sort(
-                    key=lambda hit: (
-                        hit.exact_match,
-                        hit.fusion_score,
-                        hit.fact.importance,
-                        hit.fact.confidence,
-                        -hit.rank,
-                    ),
-                    reverse=True,
-                )
-                visible_hits = visible_hits[:limit]
-            memories = [
-                self._memory_json(
-                    hit.fact,
-                    retrieval_reason=(
-                        "same_group_evidence_projection"
-                        if hit.fact.id in projected_ids
-                        else hit.selection_reason
-                    ),
-                    same_group_evidence_projection=hit.fact.id in projected_ids,
-                )
-                for hit in visible_hits
-            ]
         return self._result(
             data={
-                "user_id": user_id,
+                "user_id": selection.user_id,
                 "resolved_by": selection.resolved_by,
                 **(
                     {"subject_ref": selection.subject_ref}
                     if selection.subject_ref is not None
                     else {}
                 ),
-                "memories": memories,
+                "memories": [
+                    self._memory_json(hit.fact, retrieval_reason=hit.selection_reason)
+                    for hit in result.hits
+                ],
             }
         )
 
@@ -1903,17 +1815,16 @@ class AgentToolService:
                 "permission_denied",
                 f"不能读取 {self._settings.bot_display_name} 身份的个人记忆",
             )
-        if inbound is not None and user_id == inbound.sender.user_id:
-            targets = await self._memory_context.resolve_targets(inbound, self._runtime())
-            own_targets = tuple(
-                target
-                for target in targets
-                if target.subject_user_id == user_id
-                and target.scope_type in {MemoryScopeType.PERSON, MemoryScopeType.PERSON_GROUP}
+        if self._social_requester(runtime) is not None:
+            scope = await self._memory_reads.person(
+                runtime.require_inbound().sender.user_id,
+                user_id,
             )
+            if not scope.targets:
+                return _ToolFailure("permission_denied", "没有本人或历史共同群关系授权")
             return _PersonMemorySelection(
                 user_id=user_id,
-                targets=own_targets,
+                targets=scope.targets,
                 resolved_by=resolved_by,
                 subject_ref=subject_ref,
             )
@@ -1960,7 +1871,6 @@ class AgentToolService:
             targets=(target,),
             resolved_by=resolved_by,
             subject_ref=subject_ref,
-            same_group_projection_group_id=group_id,
         )
 
     async def _group_memories(
@@ -1971,51 +1881,39 @@ class AgentToolService:
         group_id = arguments.get("group_id")
         if not isinstance(group_id, str) or not group_id:
             return self._result(error="invalid_group_id", detail="group_id 必须是字符串")
-        limit = self._memory_list_limit(arguments)
-        query, mode = self._memory_query(arguments)
-        if runtime.inbound is not None:
-            targets = await self._memory_context.resolve_targets(runtime.inbound, self._runtime())
-            target = next(
-                (
-                    item
-                    for item in targets
-                    if item.scope_type is MemoryScopeType.GROUP and item.group_id == group_id
-                ),
-                None,
-            )
+        query, _mode = self._memory_query(arguments)
+        requester = self._social_requester(runtime)
+        if requester is not None:
+            targets = (await self._memory_reads.group(requester, group_id)).targets
         elif (
             runtime.effective_scope_type is ScopeType.GROUP and runtime.current_group_id == group_id
         ):
-            target = MemoryEntityTarget(
-                role=MemoryTargetRole.CURRENT_GROUP,
-                scope_type=MemoryScopeType.GROUP,
-                group_id=group_id,
-                block_id="current_group",
+            targets = (
+                MemoryEntityTarget(
+                    role=MemoryTargetRole.CURRENT_GROUP,
+                    scope_type=MemoryScopeType.GROUP,
+                    group_id=group_id,
+                    block_id="current_group",
+                ),
             )
         else:
-            target = None
-        if target is None:
-            return self._result(error="permission_denied", detail="只能读取当前群的共同记忆")
-        if query is None and mode is None:
-            rows = await self._memories.list_group(group_id, limit=limit)
-            memories = [
-                self._memory_json(row, retrieval_reason="deterministic_list") for row in rows
-            ]
-        else:
-            result = await self._read_memories(
-                arguments,
-                text=query or "",
-                targets=(target,),
-                requested_limit=self._memory_requested_limit(arguments),
-            )
-            memories = [
-                self._memory_json(hit.fact, retrieval_reason=hit.selection_reason)
-                for hit in result.hits
-            ]
+            targets = ()
+        if not targets:
+            return self._result(error="permission_denied", detail="没有该群的历史成员关系授权")
+        result = await self._read_memories(
+            arguments,
+            text=query or "",
+            targets=targets,
+            requested_limit=self._memory_requested_limit(arguments),
+            default_overview=query is None,
+        )
         return self._result(
             data={
                 "group_id": group_id,
-                "memories": memories,
+                "memories": [
+                    self._memory_json(hit.fact, retrieval_reason=hit.selection_reason)
+                    for hit in result.hits
+                ],
             }
         )
 
@@ -2395,7 +2293,17 @@ class AgentToolService:
                     space_id = None
         return person_id, space_id
 
+    @staticmethod
+    def _social_requester(runtime: ToolRuntime) -> str | None:
+        # An origin or arbitrary actor_user_id is not proof of a real user.
+        if runtime.inbound is not None and runtime.origin in _MEMORY_CHANGE_ORIGINS:
+            return runtime.inbound.sender.user_id
+        return None
+
     async def _can_read_fact(self, fact: Any, runtime: ToolRuntime) -> bool:
+        requester = self._social_requester(runtime)
+        if requester is not None and fact.scope_type is not MemoryScopeType.SELF:
+            return await self._memory_reads.allows_fact(requester, fact)
         owners = await self._runtime_canonical_owners(runtime)
         return self._can_read_canonical_fact(fact, runtime, *owners)
 
@@ -2472,7 +2380,6 @@ class AgentToolService:
         row: Any,
         *,
         retrieval_reason: str,
-        same_group_evidence_projection: bool = False,
     ) -> dict[str, Any]:
         payload = {
             "fact_id": row.id,
@@ -2497,13 +2404,6 @@ class AgentToolService:
             "retrieval_reason": retrieval_reason,
         }
         payload["occurred_at"] = row.valid_from.isoformat() if row.valid_from is not None else None
-        if same_group_evidence_projection:
-            payload.update(
-                {
-                    "access_scope": "same_group_evidence_projection",
-                    "read_only": True,
-                }
-            )
         return payload
 
     @staticmethod
