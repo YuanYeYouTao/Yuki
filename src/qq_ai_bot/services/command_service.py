@@ -551,7 +551,7 @@ class CommandService:
             "/ai voice status|profiles|show|use|styles|test|reload|cache cleanup\n"
             "/ai model stats（超级管理员）\n"
             "/ai mcp list|show|status|tools|search|refresh|reconnect|enable|disable|doctor\n"
-            "/ai on|off（超级管理员，当前群）\n"
+            "/ai on|off（超级管理员，当前群；on 可恢复暂停的群路由）\n"
             "/ai group <群号> on|off（超级管理员）\n"
             "/ai private <QQ号> on|off（超级管理员；阻止/恢复私聊）\n"
             "超级管理员可在 memory/preference 操作名后加 user <QQ号>。"

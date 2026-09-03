@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from sqlalchemy.exc import SQLAlchemyError
 
 from qq_ai_bot import __version__
+from qq_ai_bot.adapters.onebot.group_recovery import QQGroupRecovery
 from qq_ai_bot.admin.action_service import ActionRegistry
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
@@ -504,6 +505,9 @@ class ApplicationContainer:
             concurrency=self.concurrency,
             onebot_connected=self.onebot_connected,
             canonical_ingress=self.canonical_ingress,
+            group_recovery=QQGroupRecovery(
+                settings, self.database, self.gateway_registry, self.presence_router
+            ),
             canonical_uow=self.canonical_uow,
             people=self.people,
             memories=self.memories,

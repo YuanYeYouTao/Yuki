@@ -119,6 +119,16 @@ logger = logging.getLogger(__name__)
 _UNRESOLVED_ADMISSION = object()
 
 
+class GroupRecoveryHandler(Protocol):
+    """Adapter-proven control requests, separate from canonical chat admission."""
+
+    def is_enable_request(self, message: InboundMessage) -> bool: ...
+
+    async def enable(self, bot: object, message: InboundMessage) -> str | None: ...
+
+    async def hint(self, bot: object, message: InboundMessage, reason: str) -> str | None: ...
+
+
 def _observation_canonical_refs(
     message: InboundMessage,
     admitted: IngressPreAdmit | None,
@@ -307,6 +317,7 @@ class MessageProcessor:
         voice_preferences: VoicePreferenceService | None = None,
         turn_observations: TurnObservationRecorder | None = None,
         canonical_ingress: CanonicalIngressResolver | None = None,
+        group_recovery: GroupRecoveryHandler | None = None,
         canonical_uow: CanonicalIngressUnitOfWork | None = None,
     ) -> None:
         database = ledger._database
@@ -426,6 +437,7 @@ class MessageProcessor:
         self._emoji_collector = emoji_collector
         self._emoji_worker = emoji_worker
         self._canonical_ingress = canonical_ingress
+        self._group_recovery = group_recovery
         self._canonical_uow = canonical_uow
         if event_publisher is not None:
             self.set_event_publisher(event_publisher)
@@ -462,19 +474,31 @@ class MessageProcessor:
         admitted: IngressPreAdmit | None = None
         with bind_runtime_turn(correlation):
             try:
+                if self._group_recovery is not None and self._group_recovery.is_enable_request(
+                    message
+                ):
+                    limited = await self._rate_limiter.check(
+                        user_id=message.sender.user_id,
+                        group_id=message.group_id,
+                        category="command",
+                    )
+                    if not limited.allowed:
+                        result = ProcessResult(False, reason="rate_limited")
+                        return result
+                    response = await self._group_recovery.enable(
+                        getattr(sender, "bot", None), message
+                    )
+                    if response is not None:
+                        await sender.send(OutboundMessage(text=response))
+                        result = ProcessResult(True, sent_messages=1, reason="group_recovery")
+                        return result
                 if self._canonical_ingress is not None:
                     admitted = await self._canonical_ingress.pre_admit(
                         getattr(sender, "bot", None),
                         message,
                     )
                     if admitted is not None and admitted.dropped:
-                        await self._rate_limiter.check(
-                            user_id=message.sender.user_id,
-                            group_id=message.group_id,
-                            category="ingress_drop",
-                        )
-                        logger.info("canonical_ingress_dropped reason=%s", admitted.reason)
-                        result = ProcessResult(False, reason=admitted.reason)
+                        result = await self._handle_ingress_drop(message, sender, admitted.reason)
                         return result
                     if admitted is not None:
                         working = admitted.message
@@ -532,13 +556,7 @@ class MessageProcessor:
                     message,
                 )
                 if admitted is not None and admitted.dropped:
-                    await self._rate_limiter.check(
-                        user_id=message.sender.user_id,
-                        group_id=message.group_id,
-                        category="ingress_drop",
-                    )
-                    logger.info("canonical_ingress_dropped reason=%s", admitted.reason)
-                    return ProcessResult(False, reason=admitted.reason)
+                    return await self._handle_ingress_drop(message, sender, admitted.reason)
                 if admitted is not None:
                     message = admitted.message
         admitted = cast(IngressPreAdmit | None, admitted)
@@ -1144,6 +1162,21 @@ class MessageProcessor:
             return None
         async with self._ledger._database.sessions() as session:
             return await canonical_private_policy(session, message.sender.user_id)
+
+    async def _handle_ingress_drop(
+        self, message: InboundMessage, sender: OutboundSender, reason: str
+    ) -> ProcessResult:
+        limited = await self._rate_limiter.check(
+            user_id=message.sender.user_id, group_id=message.group_id, category="ingress_drop"
+        )
+        if limited.allowed and self._group_recovery is not None:
+            hint = await self._group_recovery.hint(getattr(sender, "bot", None), message, reason)
+            if hint is not None:
+                await sender.send(OutboundMessage(text=hint))
+                return ProcessResult(True, sent_messages=1, reason="group_route_paused")
+        if limited.allowed:
+            logger.info("canonical_ingress_dropped reason=%s", reason)
+        return ProcessResult(False, reason=reason)
 
     async def _handle_command(
         self,

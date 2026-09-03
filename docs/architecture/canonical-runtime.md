@@ -54,6 +54,12 @@ Rollup source projection 会显示有界因果标签，平台正文不被改写�
 路由变化只增加 RouteGeneration。路由暂停时失败关闭；群 ingest 不匹配的事件在策略、账本正文、
 Agent 和 Memory 之前丢弃。事件触发的即时回复优先复用本次 ingress 连接，主动发送才读取持久路由。
 
+群内超管的精确 `/ai on` 使用独立的确定性控制入口，不是绕过 ingest 的聊天事件：QQ adapter
+验证真实事件连接与管理员 Binding，恢复服务保留健康接入 pin，否则仅接受唯一通过实时成员
+探针的候选。群启用、必要的两张群路由变更、审计和幂等回执在同一个 `BEGIN IMMEDIATE` 中提交；
+重验身份、路由 revision 与连接快照，冲突整笔退出。命令及回执不进聊天账本、模型、Memory 或
+Relationship，不修改 ConversationGeneration。普通消息、插件和其他管理命令仍受原围栏限制。
+
 ## Gateway Registry 与正式 Provider
 
 GatewayConnection 只存在于进程内 Registry。Registry 保存 Provider、Presence、连接句柄、能力、
