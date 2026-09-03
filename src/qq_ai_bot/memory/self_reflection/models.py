@@ -136,6 +136,8 @@ class SelfReflectionProposal(_Contract):
         if not self.evidence_refs:
             raise ValueError("self-reflection mutations require trusted evidence aliases")
         if self.operation is SelfReflectionOperation.CREATE:
+            if "importance" not in self.model_fields_set:
+                raise ValueError("create requires an explicit importance assessment")
             if self.fact_ref or self.merge_fact_ref:
                 raise ValueError("create cannot reference an existing fact")
             if not all((self.category, self.kind, self.memory_key, self.content)):
@@ -149,7 +151,8 @@ class SelfReflectionProposal(_Contract):
 
 class SelfEpisodeProposal(_Contract):
     content: str = Field(min_length=1, max_length=4000)
-    importance: int = Field(default=3, ge=1, le=5)
+    importance: int = Field(ge=1, le=5)
+    value_reason: str = Field(min_length=1, max_length=240)
     evidence_refs: tuple[str, ...] = Field(min_length=1, max_length=8)
 
     @model_validator(mode="after")

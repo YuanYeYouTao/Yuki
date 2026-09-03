@@ -1,5 +1,15 @@
 # Memory V2 质量与治理架构
 
+## 自动首次收录的现行合同
+
+自动提取采用必填价值声明（retention、source_style、importance、confidence、
+value_reason），与内部 mutation DTO 分开，避免让删除/纠正多出无意义字段。语义由
+已有提取模型判断，不加正则或新 Agent。importance 1–2 不自动长期保存，>=3 的稳定
+事实和有意义单次经历可收录；低价值直接跳过，不能转移为候选积压。后台不能自封 explicit。
+
+self-reflection 新增同样执行价值门槛，正常跳过推进水位；已有事实维护不强制重新收录。
+提取最长等待一小时，数量/字符仍可提前触发。这不是 Rollup/反思的间隔，不影响即时工具。
+
 Memory V2 正式版用四层机制防止“把人记串”：
 
 1. 版本化合成 fixture 描述事件、Fake Model 输出、预期事实、证据、检索、上下文与 rebuild。

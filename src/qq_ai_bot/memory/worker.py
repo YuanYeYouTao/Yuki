@@ -14,12 +14,18 @@ from qq_ai_bot.memory.candidates import MemoryConflictCandidateResolver
 from qq_ai_bot.memory.claim_candidates import MemoryClaimCandidateRepository
 from qq_ai_bot.memory.claim_processor import MemoryClaimProcessor, MemoryProcessingContext
 from qq_ai_bot.memory.classifier import MemoryRelationClassifier
-from qq_ai_bot.memory.enums import MemoryProcessingSource, MemoryRebuildJobOutcome
+from qq_ai_bot.memory.enums import (
+    MemoryClaimOperation,
+    MemoryProcessingSource,
+    MemoryRebuildJobOutcome,
+    MemorySourceType,
+)
 from qq_ai_bot.memory.event_extractor import MemoryEventExtractor
 from qq_ai_bot.memory.extraction import MemoryClaim
 from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.models import MemoryJob
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
+from qq_ai_bot.memory.quality_policy import AutomaticValuePolicy, RetentionPolicy
 from qq_ai_bot.memory.repository import MemoryJobRepository
 from qq_ai_bot.memory.resolution import MemoryResolutionPolicy
 from qq_ai_bot.memory.service import MemoryFactService
@@ -132,7 +138,6 @@ class MemoryWorker:
         self._wake = asyncio.Event()
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
-        self._queued_by_conversation: dict[str, tuple[int, int]] = {}
 
     async def start(self) -> None:
         if self._task is None:
@@ -151,17 +156,12 @@ class MemoryWorker:
         *,
         content_characters: int = 0,
     ) -> bool:
-        created, batch_key = await self._jobs.enqueue_resolved(event_id, conversation_key)
+        del content_characters
+        created, _batch_key = await self._jobs.enqueue_resolved(event_id, conversation_key)
         if created:
-            count, characters = self._queued_by_conversation.get(batch_key, (0, 0))
-            pending = (count + 1, characters + max(0, content_characters))
-            self._queued_by_conversation[batch_key] = pending
-            if (
-                pending[0] >= self._settings.memory_batch_trigger_count
-                or pending[1] >= self._settings.memory_batch_max_characters
-            ):
-                self._queued_by_conversation.pop(batch_key, None)
-                self._wake.set()
+            # A wake is only a DB readiness check, not a model call. No process-local
+            # counters can survive an age-triggered batch and spuriously keep waking.
+            self._wake.set()
         return created
 
     async def _run(self) -> None:
@@ -181,7 +181,7 @@ class MemoryWorker:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    logger.exception(
+                    logger.error(
                         "memory_v2_worker_iteration_failed exception_category=%s",
                         type(exc).__name__,
                     )
@@ -203,13 +203,7 @@ class MemoryWorker:
         characters = sum(len(job.event.content) for job in jobs)
         oldest = min(job.created_at for job in jobs)
         age = max(0, int((datetime.now(UTC) - oldest.replace(tzinfo=UTC)).total_seconds()))
-        trigger = (
-            "count"
-            if len(jobs) >= self._settings.memory_batch_trigger_count
-            else "characters"
-            if characters >= self._settings.memory_batch_max_characters
-            else "age_or_character_boundary"
-        )
+        trigger = jobs[0].batch_trigger or "manual"
         self.metrics.increment("memory_extraction_batches")
         self.metrics.increment("memory_extraction_events", len(jobs))
         logger.info(
@@ -237,7 +231,7 @@ class MemoryWorker:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.exception(
+            logger.error(
                 "memory_v2_batch_failed first_job_id=%d job_count=%d exception_category=%s",
                 jobs[0].id,
                 len(jobs),
@@ -278,7 +272,7 @@ class MemoryWorker:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.exception(
+                logger.error(
                     "memory_v2_job_failed job_id=%d event_id=%d exception_category=%s",
                     job.id,
                     job.event_id,
@@ -287,7 +281,15 @@ class MemoryWorker:
                 await self._fail_job(job, exc)
                 continue
             if result.outcome is MemoryRebuildJobOutcome.ALL_REJECTED:
-                logger.warning(
+                log_rejection = (
+                    logger.info
+                    if all(
+                        reason in {"low_long_term_value", "transient_not_long_term"}
+                        for reason, _count in result.rejection_reasons
+                    )
+                    else logger.warning
+                )
+                log_rejection(
                     "memory_v2_job_all_rejected job_id=%d event_id=%d extracted=%d "
                     "validated=%d applied=%d rejection_reasons=%s",
                     job.id,
@@ -316,7 +318,7 @@ class MemoryWorker:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.exception(
+                logger.error(
                     "memory_v2_job_completion_failed job_id=%d event_id=%d exception_category=%s",
                     job.id,
                     job.event_id,
@@ -349,6 +351,19 @@ class MemoryWorker:
         rejection_reasons: Counter[str] = Counter()
         for claim in claims:
             self.metrics.increment("claims_extracted")
+            claim = claim.model_copy(update={"source_type": MemorySourceType.AUTOMATIC})
+            if claim.operation is MemoryClaimOperation.ASSERT:
+                value = AutomaticValuePolicy.evaluate(
+                    importance=claim.importance,
+                    retention=claim.retention,
+                    value_reason=claim.value_reason,
+                )
+                if value.accepted:
+                    value = RetentionPolicy.evaluate(claim, job.event, explicit_request=False)
+                if not value.accepted:
+                    rejection_reasons[value.reason_code] += 1
+                    self.metrics.increment(f"claims_rejected_{value.reason_code}")
+                    continue
             validation = self.processor.validate_result(
                 claim,
                 job.event,
@@ -433,7 +448,7 @@ class MemoryWorker:
         except asyncio.CancelledError:
             raise
         except Exception as fail_exc:
-            logger.exception(
+            logger.error(
                 "memory_v2_job_failure_record_failed job_id=%d exception_category=%s",
                 job.id,
                 type(fail_exc).__name__,

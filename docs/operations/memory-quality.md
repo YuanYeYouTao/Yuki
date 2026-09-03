@@ -1,5 +1,14 @@
 # Memory V2 质量运维
 
+普通自动提取最多等待一小时（3600 秒）；达到 12 条或 8000 字符仍可提前领取，
+30 秒轮询不是 30 秒模型调用。未到期且无失败的 pending 是正常聚合，不是阻塞。
+processing lease、重试、即时 memory_change、Rollup、自省间隔不受此窗口影响。
+
+自动首次写入采用精选事实与共同经历：明确声明 retention/source_style/importance/
+confidence/value_reason，importance 至少 3；有意义的一次性经历也可为 3。低值正常
+跳过，不进候选队列；空结果仍推进水位。后台来源由后端固定，不能自报 explicit。
+维护、纠正、删除不受首次收录门槛限制，旧事实不会因此被删或无法读取。
+
 完整操作手册见 [Memory V2 质量、审计与显式治理](memory-v2-quality.md)。本文件提供正式版
 稳定入口，避免运维脚本依赖旧文件名。
 

@@ -59,6 +59,14 @@ from qq_ai_bot.time.formatting import local_datetime, utc_iso
 
 logger = logging.getLogger(__name__)
 
+_VALUE_INSTRUCTION = """\
+精选长期事实与共同经历，不凑产出。create proposal 必须明确 importance，reason 简述未来价值；
+episode 必须提供 value_reason 简述未来回忆价值（不放进 content）。importance 1–2 是临时
+琐碎、无持续意义，不能自动保存；3 是值得未来理解或回忆；4–5 是重要承诺、变化或里程碑。
+有意义的一次性经历可为 3，不需重复发生。普通问候、无进展的调侃或前一经历的简单重复不记，
+输出 noop/空数组即可。已有记忆的纠错、撤回、合并不是首次收录，不需抬高其重要性。
+"""
+
 _EPISODE_EVIDENCE_INSTRUCTION = """\
 Each episode must describe exactly one central experience. If the window contains several
 topics, keep only the experience most worth remembering. Select 1-8 evidence_refs from the
@@ -130,6 +138,7 @@ class SelfReflectionService:
                     f"{_INSTRUCTION.format(bot_name=self._settings.bot_display_name)}\n"
                     f"{_EPISODE_INSTRUCTION.format(timezone=self._settings.memory_self_reflection_timezone)}\n\n"
                     f"{_EPISODE_EVIDENCE_INSTRUCTION}\n"
+                    f"{_VALUE_INSTRUCTION}\n"
                     f"【{self._settings.bot_display_name} 共享核心人格】\n"
                     f"{self._settings.bot_persona}"
                 ),
@@ -156,7 +165,22 @@ class SelfReflectionService:
         committed = 0
         requested_mutations = 0
         successful_mutations = 0
+        from qq_ai_bot.memory.enums import MemoryRetention
+        from qq_ai_bot.memory.quality_policy import AutomaticValuePolicy
+
         for proposal_index, proposal in enumerate(output.proposals, start=1):
+            if proposal.operation is SelfReflectionOperation.CREATE:
+                value = AutomaticValuePolicy.evaluate(
+                    importance=proposal.importance,
+                    retention=MemoryRetention.DURABLE,
+                    value_reason=proposal.reason,
+                )
+                if not value.accepted:
+                    self._metrics.increment(f"self_reflection_skipped_{value.reason_code}")
+                    candidate = candidate_map.get(proposal.candidate_ref or "")
+                    if candidate is not None:
+                        await self._candidates.set_status(candidate.id, "rejected")
+                    continue
             is_mutation = proposal.operation is not SelfReflectionOperation.NOOP
             requested_mutations += int(is_mutation)
             try:
@@ -181,7 +205,17 @@ class SelfReflectionService:
                 )
                 self._metrics.increment("self_reflection_rejected")
         episode_committed = 0
+        episode_attempted = 0
         for index, episode in enumerate(output.episodes, start=1):
+            value = AutomaticValuePolicy.evaluate(
+                importance=episode.importance,
+                retention=MemoryRetention.MEANINGFUL_EPISODE,
+                value_reason=episode.value_reason,
+            )
+            if not value.accepted:
+                self._metrics.increment(f"self_reflection_skipped_{value.reason_code}")
+                continue
+            episode_attempted += 1
             try:
                 changed = await self._apply_episode(
                     batch,
@@ -202,7 +236,7 @@ class SelfReflectionService:
                 continue
             episode_committed += int(changed)
             committed += int(changed)
-        if output.episodes and not episode_committed:
+        if episode_attempted and not episode_committed:
             raise RuntimeError("all self-reflection episodes failed to commit")
         if requested_mutations and not successful_mutations and not episode_committed:
             raise RuntimeError("all self-reflection mutations failed to commit")

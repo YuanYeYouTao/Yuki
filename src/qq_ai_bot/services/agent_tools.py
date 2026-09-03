@@ -679,9 +679,21 @@ class AgentToolService:
                                 "type": "string",
                                 "enum": ["fact", "preference", "episode"],
                             },
-                            "reason": {"type": "string", "maxLength": 500},
+                            "reason": {
+                                "type": "string",
+                                "maxLength": 500,
+                                "description": "自主 create 必填：简述未来记忆价值，不写思考过程。",
+                            },
                             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                            "importance": {"type": "integer", "minimum": 1, "maximum": 5},
+                            "importance": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 5,
+                                "description": (
+                                    "自主 create 必须明确且至少为 3；1–2 是临时琐事，3 是未来有用的"
+                                    "事实或有意义的单次经历，4–5 是重要变化/承诺/里程碑。"
+                                ),
+                            },
                             "evidence_refs": {
                                 "type": "array",
                                 "items": {"type": "string", "enum": ["current_event"]},

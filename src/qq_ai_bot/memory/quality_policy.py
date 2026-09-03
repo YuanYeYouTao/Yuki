@@ -134,3 +134,19 @@ class RetentionPolicy:
         if event.direction != "inbound":
             return MemoryPolicyDecision.reject("generated_result_not_self_report")
         return MemoryPolicyDecision.accept()
+
+
+class AutomaticValuePolicy:
+    """One structured admission gate, never a second semantic classifier."""
+
+    @staticmethod
+    def evaluate(
+        *, importance: int, retention: MemoryRetention, value_reason: str
+    ) -> MemoryPolicyDecision:
+        if retention is MemoryRetention.TRANSIENT:
+            return MemoryPolicyDecision.reject("transient_not_long_term")
+        if importance < 3:
+            return MemoryPolicyDecision.reject("low_long_term_value")
+        if not value_reason.strip():
+            return MemoryPolicyDecision.reject("automatic_value_reason_required")
+        return MemoryPolicyDecision.accept()

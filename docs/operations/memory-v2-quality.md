@@ -1,5 +1,21 @@
 # Memory V2 质量、审计与治理操作
 
+## 当前自动写入合同
+
+普通提取每 30 秒检查数据库；同一 canonical 所有者累计 12 条、8,000 字符或最老事件等待
+3,600 秒即可领取（单批最多 12 条/8,000 字符）。一小时不是重试、lease、Rollup 或反思间隔；
+未到期且无错误的 pending 属于正常聚合。明确的 `memory_change` 仍即时执行。
+
+自动新内容须声明 retention、source_style、importance、confidence、value_reason，并通过
+主体、来源与证据校验。长期价值最低为 3；有意义的单次经历可以达标，日常问候和无进展调侃
+应正常跳过。Worker、重建和反思不能自报 explicit 获得用户权威；低价值结果不进入候选队列。
+空提取和反思 noop 都应推进批次水位。已有事实的纠正、撤回、合并及证据维护不受首次写入门槛
+阻挡。语义质量仍由模型任务判断，后端数值校验不是语义质量保证。
+
+统计时区分事件 job、提取 batch 和实际模型 request（含重试）；详见
+[指标口径](../architecture/memory-v2-quality-metrics.md)及
+[P1 合同](../architecture/Yuki-Memory-P1治理任务书.md)。
+
 ## 离线质量套件
 
 ```bash

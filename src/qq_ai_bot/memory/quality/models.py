@@ -57,6 +57,7 @@ class QualityClaim(_QualityModel):
     subject_basis: str = "omitted_self"
     retention: str = "durable"
     source_style: str = "natural_statement"
+    value_reason: str = "Synthetic fixture declares a stable fact useful for future recall."
     temporal_mode: str = "persistent"
     valid_from: str | None = None
     valid_until: str | None = None

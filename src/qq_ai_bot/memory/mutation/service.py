@@ -1799,6 +1799,29 @@ class MemoryMutationService:
         )
         if not content or not key or not category:
             raise MemoryMutationRejected("memory_content_key_and_category_required")
+        automatic_creation = request.operation is MemoryMutationOperation.CREATE and (
+            request.request_basis is MemoryMutationRequestBasis.AGENT_INITIATED
+            or context.decision_actor_type
+            in {
+                MemoryDecisionActorType.WORKER,
+                MemoryDecisionActorType.REFLECTION,
+                MemoryDecisionActorType.SYSTEM,
+            }
+            or context.turn_origin in {"plugin_background", "scheduled_automation"}
+        )
+        if automatic_creation:
+            from qq_ai_bot.memory.enums import MemoryRetention
+            from qq_ai_bot.memory.quality_policy import AutomaticValuePolicy
+
+            value = AutomaticValuePolicy.evaluate(
+                importance=request.importance or 0,
+                retention=MemoryRetention.DURABLE,
+                value_reason=(
+                    request.reason if request.reason != "agent_requested_memory_change" else ""
+                ),
+            )
+            if not value.accepted:
+                raise MemoryMutationRejected(value.reason_code)
         quote = evidence.excerpt
         claim = MemoryClaim(
             operation=(
@@ -1825,6 +1848,7 @@ class MemoryMutationService:
                 if subject_ref.startswith("mentioned_")
                 else MemorySubjectBasis.OMITTED_SELF
             ),
+            value_reason=request.reason,
             temporal_mode=(
                 MemoryTemporalMode.TEMPORARY
                 if request.valid_until is not None
@@ -2310,7 +2334,12 @@ class MemoryMutationService:
             return MemoryAuthority.GROUP_REPORT, MemorySourceType.AUTOMATIC
         if (
             context.decision_actor_type
-            not in {MemoryDecisionActorType.REFLECTION, MemoryDecisionActorType.SYSTEM}
+            not in {
+                MemoryDecisionActorType.REFLECTION,
+                MemoryDecisionActorType.SYSTEM,
+                MemoryDecisionActorType.WORKER,
+            }
+            and context.turn_origin not in {"plugin_background", "scheduled_automation"}
             and request.request_basis is MemoryMutationRequestBasis.USER_REQUESTED
         ):
             return MemoryAuthority.EXPLICIT, MemorySourceType.EXPLICIT

@@ -163,7 +163,7 @@ class Settings(BaseSettings):
     memory_batch_trigger_count: int = Field(default=12, gt=0)
     memory_batch_max_events: int = Field(default=12, gt=0)
     memory_batch_max_characters: int = Field(default=8000, gt=0)
-    memory_batch_max_wait_seconds: float = Field(default=300.0, ge=0)
+    memory_batch_max_wait_seconds: float = Field(default=3600.0, ge=0)
     memory_batch_max_output_tokens: int = Field(default=4096, gt=0)
     memory_retrieval_enabled: bool = True
     self_memory_enabled: bool = True

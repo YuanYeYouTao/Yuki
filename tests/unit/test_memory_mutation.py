@@ -873,6 +873,7 @@ async def test_self_reflection_can_commit_tool_receipt_evidence(database: Databa
             category="self_principle",
             kind=MemoryKind.PREFERENCE,
             reason="self_reflection_verified_tool_result",
+            importance=3,
             evidence_quote="修复后检查成功",
         ),
         MemoryMutationContext(
@@ -1169,6 +1170,7 @@ async def test_self_reflection_batch_survives_presence_switch(database: Database
                         "memory_key": "principle:presence_switch_continuity",
                         "content": "账号切换不会改变我对既有约定的重视。",
                         "reason": "新 Presence 下的 Yuki 明确延续了既有约定",
+                        "importance": 4,
                     }
                 ],
                 "episodes": [
@@ -1176,6 +1178,7 @@ async def test_self_reflection_batch_survives_presence_switch(database: Database
                         "content": (
                             "2026年9月2日，我们在账号切换前后确认：可验证的约定仍属于同一个 Yuki。"
                         ),
+                        "value_reason": "账号切换后的承诺是值得记住的一次共同经历。",
                         "importance": 4,
                         "evidence_refs": ["event_2", "event_1"],
                     }
@@ -1312,6 +1315,7 @@ async def test_self_reflection_skips_reset_prefix_and_recovers_committed_batch(
                 "episodes": [
                     {
                         "content": "2026年9月3日，我们确认反思只处理当前会话代际中的消息。",
+                        "value_reason": "约定了可持续使用的共同规则。",
                         "importance": 4,
                         "evidence_refs": ["event_1", "event_2"],
                     }

@@ -577,8 +577,24 @@ class MemoryRebuildService:
                 staged: list[tuple[MemoryClaim, Any, str]] = []
                 for raw_claim in extracted.output.claims:
                     claim = raw_claim
-                    if claim.source_type is not MemorySourceType.EXPLICIT:
-                        claim = claim.model_copy(update={"source_type": MemorySourceType.REBUILD})
+                    claim = claim.model_copy(update={"source_type": MemorySourceType.REBUILD})
+                    from qq_ai_bot.memory.enums import MemoryClaimOperation
+                    from qq_ai_bot.memory.quality_policy import (
+                        AutomaticValuePolicy,
+                        RetentionPolicy,
+                    )
+
+                    if claim.operation is MemoryClaimOperation.ASSERT:
+                        value = AutomaticValuePolicy.evaluate(
+                            importance=claim.importance,
+                            retention=claim.retention,
+                            value_reason=claim.value_reason,
+                        )
+                        if value.accepted:
+                            value = RetentionPolicy.evaluate(claim, event, explicit_request=False)
+                        if not value.accepted:
+                            self.metrics.increment(f"claims_rejected_{value.reason_code}")
+                            continue
                     validated = self.processor.validate(
                         claim,
                         event,
