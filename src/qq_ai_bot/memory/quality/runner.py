@@ -231,6 +231,9 @@ class MemoryQualityRunner:
         symbols = self._suite.manifest.symbolic_identities
         reverse_symbols = {value: key for key, value in symbols.items()}
         await self._seed_canonical_identities(database, symbols)
+        people = PeopleRepository(database)
+        for person, group in case.historical_memberships:
+            await people.observe(user_id=symbols[person], nickname=person, group_id=symbols[group])
         repository = MemoryFactRepository(database)
         facts = MemoryFactService(repository)
         ledger = EventLedgerRepository(database)
@@ -439,11 +442,33 @@ class MemoryQualityRunner:
         context_characters = 0
         for query in case.queries:
             entity_target = self._target(query, symbols)
+            targets: tuple[MemoryEntityTarget, ...] = (entity_target,)
+            if query.requester is not None:
+                from qq_ai_bot.memory.read_scope import MemoryReadScopeResolver
+
+                resolver = MemoryReadScopeResolver(database)
+                requester = symbols[query.requester]
+                if query.scope_type == "group" and query.group is not None:
+                    targets = (await resolver.group(requester, symbols[query.group])).targets
+                elif query.subject is not None:
+                    targets = (
+                        await resolver.person(
+                            requester,
+                            symbols[query.subject],
+                            group_id=symbols[query.group] if query.group is not None else None,
+                            include_person_groups=query.scope_type == "person_group",
+                        )
+                    ).targets
+                    targets = tuple(
+                        target for target in targets if target.scope_type.value == query.scope_type
+                    )
+                else:
+                    targets = ()
             retrieval_started = time.perf_counter()
             result = await context_service.search(
                 text=query.text,
                 mode=MemoryRetrievalMode.RELEVANT,
-                targets=(entity_target,),
+                targets=targets,
                 runtime=runtime,
                 limit=query.limit,
             )

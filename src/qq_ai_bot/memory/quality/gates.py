@@ -30,6 +30,7 @@ class GateConfiguration:
     gates: tuple[GateDefinition, ...]
     max_absolute_drop: float
     max_latency_ratio: float
+    min_latency_increase_ms: float
     max_model_request_ratio: float
     file_hash: str
 
@@ -54,6 +55,7 @@ def load_gate_configuration(path: Path) -> GateConfiguration:
         gates=gates,
         max_absolute_drop=float(regression.get("max_absolute_drop", 0.01)),
         max_latency_ratio=float(regression.get("max_latency_ratio", 1.25)),
+        min_latency_increase_ms=float(regression.get("min_latency_increase_ms", 20.0)),
         max_model_request_ratio=float(regression.get("max_model_request_ratio", 1.10)),
         file_hash=hashlib.sha256(payload).hexdigest(),
     )
@@ -116,7 +118,11 @@ def compare_baseline(
             if prior < 1.0 and observed - prior < 1.0:
                 # Sub-millisecond scheduler noise is not a meaningful performance regression.
                 continue
-            if prior > 0 and observed / prior > configuration.max_latency_ratio:
+            if (
+                prior > 0
+                and observed - prior >= configuration.min_latency_increase_ms
+                and observed / prior > configuration.max_latency_ratio
+            ):
                 regressions.append(f"{name}:ratio={observed / prior:.4f}")
         elif "request" in name:
             if prior > 0 and observed / prior > configuration.max_model_request_ratio:

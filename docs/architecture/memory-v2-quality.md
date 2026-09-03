@@ -13,7 +13,7 @@ self-reflection 新增同样执行价值门槛，正常跳过推进水位；已�
 Memory V2 正式版用四层机制防止“把人记串”：
 
 1. 版本化合成 fixture 描述事件、Fake Model 输出、预期事实、证据、检索、上下文与 rebuild。
-2. `MemoryQualityRunner` 为每个 case 复制一个已迁移到 Alembic `0024` 的独立临时 SQLite，
+2. `MemoryQualityRunner` 为每个 case 建立一个已迁移到 Alembic `0051` 的独立临时 SQLite，
    复用生产 EventExtractor、ClaimProcessor、FactService、FTS、Fake Embedding、Retriever、
    ContextService 和 rebuild 状态机。
 3. Evaluator 只做 symbolic stable key 精确比较；Metrics 按固定分母聚合；外部 TOML 门禁与
@@ -24,20 +24,22 @@ Memory V2 正式版用四层机制防止“把人记串”：
 合成数据不会包含真实 QQ、群号、聊天、向量、Secret 或临时路径。确定性 CI 只使用
 `memory-quality-fake-model-v1` 与 `fake-embedding/local-test/v1`，不调用 DeepSeek、Qwen 或网络。
 
+质量数据集 `memory-v2-quality-v2` 还冻结历史共同群读取：直接共同群可读 Person、Group 与
+PersonGroup；无直接关系和传递关系拒绝。它不以合成 fixture 中的目标字段替代后端授权。
+
 正式契约由 `config/memory_contracts.toml` 和
-`tests/contracts/memory_v2/contracts.json` 冻结。Plugin API 保持 `1.0`，插件只能通过受作用域
+`tests/contracts/memory_v2/contracts.json` 冻结。Plugin API 保持 `2.0`，插件只能通过受作用域
 限制的 MemoryFacade list/search/add/update/delete；不能访问向量、rebuild、全局 audit、其他人物
 证据、质量数据集或 Provider Secret。
 
 ## 性能基准
 
-`memory quality performance` 使用独立临时库建立固定的 100 用户、每人 100 facts、10 个群和
-100,000 条事件场景；其中包含 person/person_group、contested facts、FTS 和 Fake Embedding。
-它测量 rebuild plan、keyset 扫描、混合检索、上下文投影、峰值内存和请求计数。性能报告只保存
-场景数量、机器类别和数值，不保存合成正文、ID、向量或临时路径。
-
-大场景结果由显式 `--update-baseline` 保存。CI 的合并门禁继续使用 deterministic suite 的宽松
-延迟比例，不拿某台机器的绝对毫秒值约束另一类 runner，也不自动刷新性能 baseline。
+baseline 保留旧版固定 100 用户、10,000 facts、10 个群和 100,000 条事件的数值快照，仅用于
+证明发布合同没有丢失。依赖 pre-3.8 carrier 表的生成器已随 canonical-only 收口退役，当前 CLI
+不提供 `memory quality performance`。不能为了重跑旧数值恢复 `people/groups` 等旧表；未来的
+大规模 runner 必须直接生成 canonical 身份、会话和事件。当前 CI 使用完整确定性套件的质量、
+请求数及宽松延迟门禁，跨硬件不设绝对毫秒 SLA。微基准延迟只有同时超过相对比例与 20ms
+绝对增量才构成回归，避免把 SQLite/调度抖动误报为性能问题；质量、污染和请求数门禁不受影响。
 
 运行和故障处理参见 [Memory V2 质量运维](../operations/memory-quality.md)，指标定义参见
 [质量指标与分母](memory-v2-quality-metrics.md)。

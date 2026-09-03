@@ -1,3 +1,7 @@
+> **历史设计/非现行合同。** 本文保留当时的方案或实测口径，不用于当前授权、调度或使用率判断。
+> 当前实现以 [Memory 架构](../memory-v2.md)、[检索合同](../memory-v2-retrieval.md)
+> 和 [P1 治理任务书](../Yuki-Memory-P1治理任务书.md) 为准；本文不在当前实施导航内。
+
 # Codex 任务：Yuki Memory V2 第六阶段——质量评测、治理收敛与 3.0.0 正式发布
 
 你是一名资深 Python、SQLAlchemy、SQLite、异步 Agent、RAG 评测、数据质量、回归基准、隐私治理、CI/CD、发布工程和对话记忆架构工程师。

@@ -104,7 +104,7 @@ run completed 也不表示异步向量已经生成完毕。
 receipt 保留。cancel 只停止后续处理，不回滚已提交事实。
 
 Tool Kernel 还提供十个 `admin_memory_rebuild_*` 工具，共用同一服务和真实事件权限绑定；工具不能
-跳过 review。Plugin API 保持 1.0，未暴露 rebuild。
+跳过 review。Plugin API 保持 2.0，未暴露 rebuild。
 
 ## 配置
 
@@ -132,5 +132,5 @@ selection 中删除精确 QQ；已提交人物事实继续按现有 forgetme 规
 - `rebuild_capacity_preserved`：当前 active 容量已满；调整容量、清理事实或拒绝 proposal 后重试。
 - `historical_claim_expired`：selection 使用默认 skip，过期历史不会成为 active。
 
-升级前备份 `data/`。降级只允许所有 run 已终态；`0024 → 0023` 删除 staging 和 receipt 新列，
-不删除事实、证据、关系、状态事件、FTS 或 Embedding。
+升级前必须停止写入并同步备份 DB/WAL/SHM。当前 canonical head 为 `0051`；`0049` 不提供
+downgrade，生产回退只能恢复升级前同一时点的完整快照，不能依赖旧施工期 revision 的降级语义。

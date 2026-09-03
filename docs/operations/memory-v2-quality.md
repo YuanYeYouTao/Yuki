@@ -16,6 +16,18 @@
 [指标口径](../architecture/memory-v2-quality-metrics.md)及
 [P1 合同](../architecture/Yuki-Memory-P1治理任务书.md)。
 
+生产诊断使用只读、内容无关的统计入口：
+
+```bash
+uv run qq-ai-bot-cli memory stats \
+  --database-url sqlite+aiosqlite:///./data/qq_ai_bot.db \
+  --hours 24
+```
+
+它报告正常等待与 ready owner、失败类别、零注入、归因覆盖、已评估使用率，以及主动读取的
+成功/空结果/歧义/权限拒绝/重复/基础设施失败。重复读取复用同轮结果，duplicate 可与其最终
+success/empty 同时出现。未绑定普通聊天 recall receipt 的 Plugin/Admin 查询不会为统计造轮次。
+
 ## 离线质量套件
 
 ```bash
@@ -41,23 +53,13 @@ Embedding，再设置 `MEMORY_QUALITY_REAL_EMBEDDING_ENABLED=true`。它仍只�
 结果写入 `artifacts/memory-quality-real/`，不会覆盖 deterministic report/baseline，也不进入 CI
 或发布 merge gate。不要在包含真实数据库内容的自定义 fixture 上启用。
 
-## 合成性能场景
+## 历史性能基线
 
-完整场景不会读取配置中的数据库：
-
-```bash
-uv run qq-ai-bot-cli memory quality performance
-```
-
-默认建立 100 用户、每人 100 facts、10 个群、100,000 条事件和 Fake Embedding，结果写入
-`artifacts/memory-quality/performance.json`。只有确认结果可接受时才显式更新 baseline：
-
-```bash
-uv run qq-ai-bot-cli memory quality performance --update-baseline
-```
-
-这是本机类别下的回归参考，不是跨硬件 SLA。命令只使用临时 SQLite，结束即清理；不会调用
-DeepSeek/Qwen，也不会读取 `DATABASE_URL`、真实聊天或真实人物资料。
+baseline 仍保存 100 用户、10,000 facts、10 个群和 100,000 条事件的既有合成性能快照，
+供 release-check 确认规模合同没有丢失。3.8 canonical-only 收口时，依赖已删除 carrier 表的旧
+`memory quality performance` 生成器已一并退役，不能再把文档中的旧命令当成现役入口。
+当前变更使用完整 `quality run --suite full`、全量测试和 release smoke 作为执行门；未来若恢复
+大规模性能命令，必须先以 canonical Person/Space/Conversation 重写生成器，不能复活旧表。
 
 ## 生产审计
 
@@ -114,10 +116,11 @@ uv run qq-ai-bot-cli memory release-check
 ## 故障排查与发布清单
 
 - `dataset hash mismatch`：不要改 expected 掩盖失败；审阅 fixture 后重新计算 manifest hash。
-- `baseline regression`：先重复运行排除调度噪声；确认实现变化后显式 `update-baseline`，禁止
-  降低绝对污染门禁。
+- `baseline regression`：延迟必须同时超过配置的相对比例和 20ms 绝对增量才阻断；仍应先重复
+  运行排除调度噪声。确认数据集或实现变化后才可显式 `update-baseline`，禁止降低污染、权限或
+  行为门禁。
 - `contract snapshot changed`：审阅领域/Pydantic/Plugin API 差异后显式刷新快照；Plugin API
-  主版本必须仍为 `1.0`。
+  主版本必须仍为 `2.0`。
 - `fingerprint changed`：数据库在 scan 后已变化，重新 scan 和人工审阅，不要复用旧 fingerprint。
 - `production audit` 失败：先备份数据库，只对确定可治理项执行 hygiene；其余保留为人工问题。
 

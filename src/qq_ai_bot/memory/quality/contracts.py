@@ -1,4 +1,4 @@
-"""Frozen Memory V2 and Plugin API 1.0 contract catalog."""
+"""Frozen Memory V2 and Plugin API compatibility contract catalog."""
 
 from __future__ import annotations
 

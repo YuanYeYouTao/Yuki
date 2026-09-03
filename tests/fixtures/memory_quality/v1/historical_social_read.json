@@ -1,0 +1,26 @@
+{
+  "schema_version": "1",
+  "case_id": "historical_social_read",
+  "category": "privacy",
+  "description": "Direct historical membership allows full Person facts, not transitive or unrelated groups.",
+  "historical_memberships": [["person_a", "group_a"], ["person_b", "group_a"], ["person_b", "group_b"], ["person_c", "group_b"]],
+  "initial_facts": [
+    {"fact_ref": "fact_person", "scope_type": "person", "subject": "person_b", "memory_key": "interest", "content": "持续研究星空摄影"},
+    {"fact_ref": "fact_indirect", "scope_type": "person", "subject": "person_c", "memory_key": "interest", "content": "持续研究星空摄影"},
+    {"fact_ref": "fact_shared", "scope_type": "person_group", "subject": "person_b", "group": "group_a", "memory_key": "role", "content": "本群负责星空摄影"},
+    {"fact_ref": "fact_unshared", "scope_type": "group", "group": "group_b", "memory_key": "project", "content": "准备星空摄影"}
+  ],
+  "queries": [
+    {"query_ref": "query_person", "requester": "person_a", "text": "星空摄影", "scope_type": "person", "subject": "person_b", "expected_fact_refs": ["fact_person"], "forbidden_fact_refs": ["fact_indirect"]},
+    {"query_ref": "query_shared", "requester": "person_a", "text": "星空摄影", "scope_type": "person_group", "subject": "person_b", "group": "group_a", "expected_fact_refs": ["fact_shared"]},
+    {"query_ref": "query_indirect", "requester": "person_a", "text": "星空摄影", "scope_type": "person", "subject": "person_c", "forbidden_fact_refs": ["fact_indirect", "fact_person"]},
+    {"query_ref": "query_unshared", "requester": "person_a", "text": "星空摄影", "scope_type": "group", "group": "group_b", "forbidden_fact_refs": ["fact_unshared"]}
+  ],
+  "expected_facts": [
+    {"fact_ref": "fact_person", "scope_type": "person", "subject": "person_b", "memory_key": "interest", "content": "持续研究星空摄影"},
+    {"fact_ref": "fact_indirect", "scope_type": "person", "subject": "person_c", "memory_key": "interest", "content": "持续研究星空摄影"},
+    {"fact_ref": "fact_shared", "scope_type": "person_group", "subject": "person_b", "group": "group_a", "memory_key": "role", "content": "本群负责星空摄影"},
+    {"fact_ref": "fact_unshared", "scope_type": "group", "group": "group_b", "memory_key": "project", "content": "准备星空摄影"}
+  ],
+  "tags": ["cross_person", "cross_group"]
+}

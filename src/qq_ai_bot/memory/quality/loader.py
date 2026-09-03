@@ -87,6 +87,9 @@ def _validate_references(
         raise ValueError(f"quality suite categories are incomplete: {missing}")
     secret_pattern = re.compile(r"(?:sk-[A-Za-z0-9_.-]{12,}|api[_-]?key|bearer\s+\S+)", re.I)
     for case in cases:
+        for person, group in case.historical_memberships:
+            if person not in symbols or group not in symbols:
+                raise ValueError(f"{case.case_id}: membership reference is unresolved")
         event_refs = {item.event_ref for item in case.events}
         fact_refs = {item.fact_ref for item in (*case.initial_facts, *case.expected_facts)}
         if len(fact_refs) != len((*case.initial_facts, *case.expected_facts)):
@@ -116,6 +119,8 @@ def _validate_references(
             ):
                 raise ValueError(f"{case.case_id}: relation reference is unresolved")
         for query in case.queries:
+            if query.requester is not None and query.requester not in symbols:
+                raise ValueError(f"{case.case_id}: requester is unresolved")
             if query.subject is not None and query.subject not in symbols:
                 raise ValueError(f"{case.case_id}: query subject is unresolved")
             if query.group is not None and query.group not in symbols:

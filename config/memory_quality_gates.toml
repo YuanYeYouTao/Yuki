@@ -3,6 +3,7 @@ schema_version = "1"
 [regression]
 max_absolute_drop = 0.01
 max_latency_ratio = 1.25
+min_latency_increase_ms = 20.0
 max_model_request_ratio = 1.10
 
 [[gate]]

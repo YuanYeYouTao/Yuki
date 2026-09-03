@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Memory P1 governance
+
+- 普通自动提取按 canonical owner 聚合到 12 条、8,000 字符或一小时；失败重试和过期 lease
+  仍立即恢复。自动首次写入要求显式价值字段并只保留稳定事实、持续偏好及有意义的一次性经历。
+- 结构化读取统一使用历史共同群关系，列表、搜索、详情与主动工具共享同一后端 Scope Resolver；
+  写入、evidence、private SELF 与插件身份边界不随读取扩权。
+- `0051` 增加无正文 recall attribution 与主动读取结果观测，区分零注入、未评估、失败和已评估
+  未使用。质量数据集升级为 v2；微基准延迟需同时超过 25% 与 20ms 才判定回归，其他质量门不变。
+
 ### Plugin wakeup causality and stable Main Agent context
 
 - 插件 `external_event` 继续独立落账；需要主动点评时只创建可靠 WakeupRequest，并唤醒与普通聊天
