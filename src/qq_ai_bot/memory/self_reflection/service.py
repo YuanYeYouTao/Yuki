@@ -228,7 +228,8 @@ class SelfReflectionService:
             bot_display_name=self._settings.bot_display_name,
             timezone=self._settings.memory_self_reflection_timezone,
         )
-        event_map = {f"event_{index}": event for index, event in enumerate(batch.events, 1)}
+        evidence_events = tuple(event for event in batch.events if self._event_evidence_text(event))
+        event_map = {f"event_{index}": event for index, event in enumerate(evidence_events, 1)}
         rendered_events: list[SelfReflectionEvent] = []
         remaining = batch.max_input_characters
         for ref, event in event_map.items():
@@ -457,7 +458,11 @@ class SelfReflectionService:
             reason=proposal.reason,
             confidence=proposal.confidence,
             importance=proposal.importance,
-            evidence_quote=(tool.result_excerpt[:500] if tool is not None else event.content[:500]),
+            evidence_quote=(
+                tool.result_excerpt[:500]
+                if tool is not None
+                else self._event_evidence_text(event)[:500]
+            ),
         )
         result = await self._mutations.mutate_resolved(
             request,
@@ -469,7 +474,7 @@ class SelfReflectionService:
                 trigger_actor_user_id=event.sender_user_id,
                 decision_actor_type=MemoryDecisionActorType.REFLECTION,
                 decision_actor_id="yuki_self_reflection",
-                executed_by_bot_user_id=batch.state.bot_user_id,
+                executed_by_bot_user_id=event.bot_user_id,
                 evidence_tool_receipt_id=tool_receipt_id,
             ),
             target=(
@@ -486,6 +491,14 @@ class SelfReflectionService:
             ),
             self_reflection_result=(batch.run_id, "proposal", result_index),
         )
+        if not result.ok:
+            logger.warning(
+                "memory_self_reflection_mutation_rejected run_id=%d result_kind=proposal "
+                "result_index=%d reason_code=%s",
+                batch.run_id,
+                result_index,
+                result.reason_code or "unknown",
+            )
         if result.ok and candidate is not None:
             await self._candidates.set_status(candidate.id, "accepted")
         return result.ok
@@ -538,21 +551,30 @@ class SelfReflectionService:
                     relation=MemoryEvidenceRelation.AGENT_REFLECTION,
                     confidence=0.9,
                     authority=MemoryAuthority.AGENT_REFLECTION,
-                    excerpt=event.content[:500],
+                    excerpt=self._event_evidence_text(event)[:500],
                 )
             )
-        additional.extend(
-            MemoryEvidenceCreate(
-                tool_receipt_id=receipt.id,
-                source_speaker_user_id=batch.state.bot_user_id,
-                relation=MemoryEvidenceRelation.AGENT_REFLECTION,
-                confidence=0.9,
-                authority=MemoryAuthority.AGENT_REFLECTION,
-                excerpt=receipt.result_excerpt[:500],
+        for receipt in selected_tools:
+            if primary_tool is not None and receipt.id == primary_tool.id:
+                continue
+            trigger_event = next(
+                (event for event in batch.events if event.id == receipt.trigger_event_id),
+                None,
             )
-            for receipt in selected_tools
-            if primary_tool is None or receipt.id != primary_tool.id
-        )
+            additional.append(
+                MemoryEvidenceCreate(
+                    tool_receipt_id=receipt.id,
+                    source_speaker_user_id=(
+                        trigger_event.bot_user_id
+                        if trigger_event is not None
+                        else anchor.bot_user_id
+                    ),
+                    relation=MemoryEvidenceRelation.AGENT_REFLECTION,
+                    confidence=0.9,
+                    authority=MemoryAuthority.AGENT_REFLECTION,
+                    excerpt=receipt.result_excerpt[:500],
+                )
+            )
         result = await self._mutations.mutate_resolved(
             MemoryMutationRequest(
                 operation=MemoryMutationOperation.CREATE,
@@ -568,7 +590,11 @@ class SelfReflectionService:
                 reason="self_reflection_episode",
                 confidence=0.9,
                 importance=proposal.importance,
-                evidence_quote=anchor.content[:500],
+                evidence_quote=(
+                    primary_tool.result_excerpt[:500]
+                    if primary_tool is not None
+                    else self._event_evidence_text(anchor)[:500]
+                ),
                 valid_from=utc_iso(batch.events[0].occurred_at),
             ),
             MemoryMutationContext(
@@ -579,14 +605,26 @@ class SelfReflectionService:
                 trigger_actor_user_id=anchor.sender_user_id,
                 decision_actor_type=MemoryDecisionActorType.REFLECTION,
                 decision_actor_id="yuki_self_reflection",
-                executed_by_bot_user_id=batch.state.bot_user_id,
+                executed_by_bot_user_id=anchor.bot_user_id,
                 evidence_tool_receipt_id=(primary_tool.id if primary_tool is not None else None),
             ),
             target=target,
             additional_evidence=tuple(additional),
             self_reflection_result=(batch.run_id, "episode", index),
         )
+        if not result.ok:
+            logger.warning(
+                "memory_self_reflection_mutation_rejected run_id=%d result_kind=episode "
+                "result_index=%d reason_code=%s",
+                batch.run_id,
+                index,
+                result.reason_code or "unknown",
+            )
         return result.ok
+
+    @staticmethod
+    def _event_evidence_text(event: EventRecord) -> str:
+        return ChatEventPromptRenderer.event_content(event, "", "").strip()
 
     @staticmethod
     def _target(

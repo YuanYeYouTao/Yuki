@@ -63,7 +63,7 @@ class EffectivePrivatePolicy:
     enabled: bool
 
 
-def _command_and_content(text: str, ai_prefix: str) -> tuple[CommandName | None, str, bool]:
+def parse_command(text: str, ai_prefix: str) -> tuple[CommandName | None, str, bool]:
     stripped = text.strip()
     lower = stripped.casefold()
     triggered = False
@@ -110,7 +110,7 @@ def evaluate_message(
     if message.is_self_message or message.sender.is_bot:
         return PolicyDecision(False, reason="bot_message")
 
-    command, content, prefix_triggered = _command_and_content(message.text, settings.ai_prefix)
+    command, content, prefix_triggered = parse_command(message.text, settings.ai_prefix)
     is_superuser = message.sender.user_id in settings.superusers
 
     if message.scope_type is ScopeType.PRIVATE:

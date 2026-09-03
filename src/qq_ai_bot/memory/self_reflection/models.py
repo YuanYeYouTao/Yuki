@@ -180,6 +180,7 @@ class SelfReflectionOutput(_Contract):
 class SelfReflectionState:
     id: int
     conversation_key_hash: str
+    # Creation-time transport provenance only; never use as Yuki's execution identity.
     bot_user_id: str
     canonical_person_id: str | None
     canonical_space_id: str | None

@@ -339,6 +339,36 @@ class PresenceRouter:
     async def reconcile_space(self, space_id: str) -> str:
         return await self.cas_takeover_space(space_id)
 
+    async def group_recovery_candidate(self, space_binding_id: str) -> RouteCandidate:
+        """Plan an explicit recovery without changing a route or overriding a live pin."""
+
+        async with self._database.sessions() as session:
+            binding = await session.get(SpaceBindingModel, space_binding_id)
+            route = await session.get(SpaceBindingIngestRouteModel, space_binding_id)
+        if binding is None or binding.status != "active":
+            raise RouteSendError("none")
+        if route is not None and await self._ingest_pin_healthy(route, binding):
+            return RouteCandidate(
+                route.ingest_presence_id, binding.id, binding.platform, binding.external_space_id
+            )
+        candidates = [
+            candidate
+            for candidate in _unique_candidates(
+                await self._space_candidates(binding.space_id, ingest=True)
+            )
+            if candidate.binding_id == binding.id
+        ]
+        if len(candidates) != 1:
+            raise RouteSendError("ambiguous" if candidates else "none")
+        return candidates[0]
+
+    async def space_send_pin_healthy(self, space_id: str) -> bool:
+        """Whether explicit group recovery should preserve the existing send route."""
+
+        async with self._database.sessions() as session:
+            route = await session.get(SpaceActiveRouteModel, space_id)
+        return route is not None and not route.paused and await self._space_pin_healthy(route)
+
     async def reconcile_all(self) -> tuple[int, int]:
         async with self._database.sessions() as session:
             people = list(await session.scalars(select(PersonActiveRouteModel.person_id)))

@@ -177,30 +177,23 @@ def test_bot_persona_does_not_modify_prompt_without_legacy_placeholder(
     assert settings.system_prompt == original_prompt
 
 
-def test_example_system_prompt_preserves_yuki_persona_and_short_style() -> None:
+def test_example_system_prompt_is_complete_and_preserves_mode_boundaries() -> None:
     prompt_path = Path(__file__).parents[2] / "config" / "system_prompt.example.md"
-    persona_path = Path(__file__).parents[2] / "config" / "persona.md"
-    template = prompt_path.read_text(encoding="utf-8")
-    persona = persona_path.read_text(encoding="utf-8")
-    assert template.count("{{YUKI_PERSONA_CORE}}") == 1
-    prompt = template.replace("{{YUKI_PERSONA_CORE}}", persona)
+    prompt = prompt_path.read_text(encoding="utf-8")
+    assert "{{YUKI_PERSONA_CORE}}" not in prompt
 
     required_fragments = (
-        "生日是 7 月 23 日",
+        "18 岁成年女性",
         "银白色长发",
         "蓝色兔耳形发带",
         "雪花发饰",
-        "白色水手服",
-        "默认只说一句",
-        "通常控制在 50 个中文字符以内",
-        "日常聊天使用短句和常用词",
-        "普通短回复不使用中文句号“。”收尾",
-        "日常聊天不使用括号动作、场景描写、心理旁白",
-        "必须由用户明确提出这种表达方式",
-        "不使用 Unicode Emoji",
-        "不使用颜文字、ASCII 表情",
-        "这些只是反应方向，不是固定台词",
-        "作为自己名字或自称出现的英文 Yuki 写成平假名“ゆき”",
+        "每句话不得超过 10 个汉字",
+        "一条消息只能发送一句话或一个短语",
+        "只有用户明确进入角色场景、约会场景、成人场景或要求动作描写时",
+        "Yuki 始终都是 Yuki",
+        "正经工作模式不受每句 10 字和每条一句的限制",
+        "优先保证事实准确、内容完整、步骤可执行和结果可验证",
+        "任务完成或话题回到闲聊后，立即恢复日常对话格式",
     )
     assert all(fragment in prompt for fragment in required_fragments)
 
