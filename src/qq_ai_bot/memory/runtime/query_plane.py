@@ -8,12 +8,17 @@ only ``AUTOMATIC_CONTEXT`` / ``AGENT_TOOL`` may later ``publish_exposure``.
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Protocol
+from typing import Protocol, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
-from qq_ai_bot.memory.enums import MemoryContextMode, MemoryRecallPurpose, MemoryRetrievalMode
+from qq_ai_bot.memory.enums import (
+    MemoryContextMode,
+    MemoryRecallPurpose,
+    MemoryRetrievalMode,
+    MemorySubjectRole,
+)
 from qq_ai_bot.memory.models import (
     MemoryEntityTarget,
     MemoryQueryIntent,
@@ -33,6 +38,12 @@ class MemoryReadConsumer(StrEnum):
     ADMIN = "admin"
 
 
+class _AutomaticSearchOptions(TypedDict, total=False):
+    automatic: bool
+    automatic_self_target: MemoryEntityTarget | None
+    neutral_ordering: bool
+
+
 class ResolvedReadScope(BaseModel):
     """Host-resolved targets.  Models never submit raw QQ or group ids here."""
 
@@ -50,6 +61,9 @@ class MemoryReadRequest(BaseModel):
     intent: MemoryQueryIntent | None = None
     requested_limit: int | None = Field(default=None, ge=1, le=100)
     resolved_scope: ResolvedReadScope
+    # Backend-only automatic projection options, never exposed in a tool schema.
+    automatic_self_target: MemoryEntityTarget | None = None
+    neutral_ordering: bool = False
 
 
 _EXPOSURE_CONSUMERS = frozenset(
@@ -69,6 +83,9 @@ class MemoryQueryKernel(Protocol):
         runtime: RuntimeConfigSnapshot,
         limit: int | None = None,
         intent: MemoryQueryIntent | None = None,
+        automatic: bool = False,
+        automatic_self_target: MemoryEntityTarget | None = None,
+        neutral_ordering: bool = False,
     ) -> MemoryRetrievalResult: ...
 
     async def mark_injected(
@@ -108,11 +125,15 @@ def resolve_read_limit(
 
     memory = runtime.memory
     if consumer is MemoryReadConsumer.AUTOMATIC_CONTEXT:
+        if request.intent is not None and request.intent.mode is MemoryContextMode.OVERVIEW:
+            return memory.automatic_recall_overview_limit
         purpose = (
             request.intent.purpose if request.intent is not None else MemoryRecallPurpose.BACKGROUND
         )
         if purpose is MemoryRecallPurpose.CONTINUATION:
             return memory.automatic_recall_continuation_limit
+        if purpose is not MemoryRecallPurpose.BACKGROUND:
+            return memory.automatic_recall_focused_limit
         return memory.automatic_recall_background_limit
     if request.requested_limit is not None:
         return request.requested_limit
@@ -172,15 +193,36 @@ class MemoryQueryPlane:
             if consumer in {MemoryReadConsumer.PLUGIN, MemoryReadConsumer.ADMIN}
             else (request.intent)
         )
+        if intent is not None:
+            subjects = tuple(
+                dict.fromkeys(
+                    MemorySubjectRole(target.role.value.removesuffix("_group"))
+                    if target.role.value in {"current_person_group", "referenced_person_group"}
+                    else MemorySubjectRole(target.role.value)
+                    for target in request.resolved_scope.targets
+                )
+            )
+            intent = intent.model_copy(update={"subjects": subjects})
+        automatic = consumer is MemoryReadConsumer.AUTOMATIC_CONTEXT
+        options: _AutomaticSearchOptions = {}
+        if automatic:
+            options = {
+                "automatic": True,
+                "automatic_self_target": request.automatic_self_target,
+                "neutral_ordering": request.neutral_ordering,
+            }
         result = await self._kernel.search(
             text=request.text,
             mode=retrieval_mode_for_request(request),
             targets=request.resolved_scope.targets,
             runtime=runtime,
-            limit=resolve_read_limit(consumer, request, runtime),
+            limit=None
+            if request.neutral_ordering
+            else resolve_read_limit(consumer, request, runtime),
             intent=intent,
+            **options,
         )
-        if consumer is MemoryReadConsumer.PLUGIN or consumer is MemoryReadConsumer.ADMIN:
+        if automatic or consumer in {MemoryReadConsumer.PLUGIN, MemoryReadConsumer.ADMIN}:
             return result
         return apply_total_hit_limit(result, resolve_read_limit(consumer, request, runtime))
 

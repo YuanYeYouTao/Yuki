@@ -8,7 +8,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any, Literal, Protocol, cast
 
@@ -116,6 +116,9 @@ _RUNTIME_SNAPSHOT: ContextVar[RuntimeConfigSnapshot | None] = ContextVar(
     "agent_tool_runtime_snapshot",
     default=None,
 )
+_MEMORY_READ_CACHE: ContextVar[dict[str, Any] | None] = ContextVar(
+    "memory_read_cache", default=None
+)
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +175,7 @@ class ToolRuntime:
     person_id: str | None = None
     space_id: str | None = None
     external_target_id: str | None = None
+    memory_read_cache: dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
 
     @property
     def effective_scope_type(self) -> ScopeType:
@@ -239,6 +243,7 @@ class _RelationshipSelection:
 class _ToolFailure:
     code: str
     detail: str
+    data: Any = None
 
 
 def _object_schema(
@@ -447,11 +452,17 @@ class AgentToolService:
                         "display_name": {
                             "type": "string",
                             "maxLength": 128,
-                            "description": "用户手输的本群昵称或群名片，必须精确且唯一",
+                            "description": "历史关系范围内的昵称、群名片或别名，必须精确且唯一",
                         },
                         "user_id": {
                             "type": "string",
                             "description": "兼容字段；用户手输的 QQ 号，后台验证历史关系权限",
+                        },
+                        "group_id": {"type": "string", "description": "可选，限定某个历史共同群"},
+                        "group_name": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "description": "可选，精确且唯一的历史共同群名，与 group_id 二选一",
                         },
                         "query": {"type": "string", "maxLength": 400},
                         "mode": {
@@ -465,10 +476,14 @@ class AgentToolService:
             ),
             ChatTool(
                 name="get_group_memories",
-                description="读取请求者历史参与群的共同结构记忆，可按自然语言查询。",
+                description=(
+                    "读取请求者历史参与群的共同结构记忆。群聊省略目标时为当前群；"
+                    "私聊须指定 group_name 或 group_id。空结果表示没有匹配事实。"
+                ),
                 parameters=_object_schema(
                     {
                         "group_id": {"type": "string"},
+                        "group_name": {"type": "string", "maxLength": 128},
                         "query": {"type": "string", "maxLength": 400},
                         "mode": {
                             "type": "string",
@@ -477,7 +492,6 @@ class AgentToolService:
                         "limit": {"type": "integer", "minimum": 1, "maximum": 100},
                         **_MEMORY_INTENT_PROPERTIES,
                     },
-                    required=("group_id",),
                 ),
             ),
             ChatTool(
@@ -931,6 +945,7 @@ class AgentToolService:
             group_id=runtime.current_group_id,
         )
         token = _RUNTIME_SNAPSHOT.set(snapshot)
+        cache_token = _MEMORY_READ_CACHE.set(runtime.memory_read_cache)
         try:
             try:
                 arguments = json.loads(arguments_json)
@@ -964,6 +979,7 @@ class AgentToolService:
                 if name == "get_memory_evidence":
                     return await self._memory_evidence(arguments, runtime)
                 if name == "memory_change":
+                    runtime.memory_read_cache.clear()
                     return await self._memory_change(arguments, runtime)
                 if name == "web_search":
                     return await self._web_search(arguments, runtime)
@@ -985,12 +1001,17 @@ class AgentToolService:
             except WebSearchError as exc:
                 return self._web_result(error=exc.code, detail=exc.detail)
             except MemoryRetrievalError as exc:
-                return self._result(error=exc.code, detail="记忆检索失败")
+                await self._record_memory_tool_outcome(runtime, "infrastructure_failure")
+                return self._result(error=exc.code, detail="记忆检索失败", retryable=True)
             except SQLAlchemyError:
-                return self._result(error="database_failure", detail="数据库事务未提交")
+                await self._record_memory_tool_outcome(runtime, "infrastructure_failure")
+                return self._result(
+                    error="database_failure", detail="数据库事务未提交", retryable=True
+                )
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 return self._result(error=type(exc).__name__, detail="工具执行失败")
         finally:
+            _MEMORY_READ_CACHE.reset(cache_token)
             _RUNTIME_SNAPSHOT.reset(token)
 
     @staticmethod
@@ -1546,12 +1567,29 @@ class AgentToolService:
     ) -> str:
         selection = await self._resolve_person_memory_selection(arguments, runtime)
         if isinstance(selection, _ToolFailure):
-            return self._result(error=selection.code, detail=selection.detail)
+            return self._result(error=selection.code, detail=selection.detail, data=selection.data)
+        group_id = await self._read_group_selector(arguments, runtime, default_current=False)
+        if isinstance(group_id, _ToolFailure):
+            return self._result(error=group_id.code, detail=group_id.detail, data=group_id.data)
+        targets = selection.targets
+        if group_id is not None:
+            requester = self._social_requester(runtime)
+            if requester is not None:
+                targets = (
+                    await self._memory_reads.person(requester, selection.user_id, group_id=group_id)
+                ).targets
+            else:
+                targets = tuple(target for target in targets if target.group_id == group_id)
+            if not targets:
+                return self._result(
+                    error="permission_denied", detail="没有双方在该群的历史关系授权"
+                )
         query, _mode = self._memory_query(arguments)
         result = await self._read_memories(
             arguments,
+            runtime=runtime,
             text=query or "",
-            targets=selection.targets,
+            targets=targets,
             requested_limit=self._memory_requested_limit(arguments),
             default_overview=query is None,
         )
@@ -1706,22 +1744,25 @@ class AgentToolService:
                 return _ToolFailure("invalid_display_name", "display_name 必须是非空字符串")
             if len(display_name) > 128:
                 return _ToolFailure("invalid_display_name", "display_name 不能超过 128 个字符")
-            group_id = runtime.current_group_id
-            if group_id is None:
-                return _ToolFailure(
-                    "person_not_found",
-                    "私聊中不能按昵称查找其他人，请提供本人目标",
+            requester = self._social_requester(runtime)
+            if requester is not None:
+                matches = await self._memory_reads.people_named(requester, display_name)
+            elif runtime.current_group_id is not None:
+                matches = await self._people.find_group_members_by_exact_name(
+                    display_name, runtime.current_group_id
                 )
-            matches = await self._people.find_group_members_by_exact_name(display_name, group_id)
+            else:
+                matches = ()
             if not matches:
-                return _ToolFailure(
-                    "person_not_found",
-                    "当前群没有精确匹配该昵称、群名片或别名的成员",
-                )
+                return _ToolFailure("person_not_found", "授权范围内没有精确匹配的昵称或别名")
             if len(matches) > 1:
                 return _ToolFailure(
                     "ambiguous_person",
-                    "当前群有多个同名成员，请真正 @ 对方后再查询",
+                    "存在多个同名人物，请澄清目标或提供真实 @/兼容 ID",
+                    {
+                        "candidates": [{"user_id": item} for item in matches[:5]],
+                        "has_more": len(matches) > 5,
+                    },
                 )
             return await self._person_memory_selection_for_user(
                 matches[0],
@@ -1873,14 +1914,51 @@ class AgentToolService:
             subject_ref=subject_ref,
         )
 
+    async def _read_group_selector(
+        self,
+        arguments: dict[str, Any],
+        runtime: ToolRuntime,
+        *,
+        default_current: bool,
+    ) -> str | None | _ToolFailure:
+        selectors = [key for key in ("group_id", "group_name") if arguments.get(key) is not None]
+        if not selectors:
+            return runtime.current_group_id if default_current else None
+        if len(selectors) != 1:
+            return _ToolFailure("invalid_group_selector", "group_id 与 group_name 只能提供一个")
+        key = selectors[0]
+        value = arguments[key]
+        if not isinstance(value, str) or not value.strip() or len(value) > 128:
+            return _ToolFailure("invalid_group_selector", "群目标必须是 1～128 字符的字符串")
+        if key == "group_id":
+            return value.strip()
+        requester = self._social_requester(runtime)
+        if requester is None:
+            return _ToolFailure("permission_denied", "历史群名查询需要真实用户主体")
+        matches = await self._memory_reads.groups_named(requester, value)
+        if not matches:
+            return _ToolFailure("group_not_found", "授权历史群中没有精确匹配的群名")
+        if len(matches) > 1:
+            return _ToolFailure(
+                "ambiguous_group",
+                "存在多个同名群，请澄清目标",
+                {
+                    "candidates": [{"group_id": item} for item in matches[:5]],
+                    "has_more": len(matches) > 5,
+                },
+            )
+        return matches[0]
+
     async def _group_memories(
         self,
         arguments: dict[str, Any],
         runtime: ToolRuntime,
     ) -> str:
-        group_id = arguments.get("group_id")
-        if not isinstance(group_id, str) or not group_id:
-            return self._result(error="invalid_group_id", detail="group_id 必须是字符串")
+        group_id = await self._read_group_selector(arguments, runtime, default_current=True)
+        if isinstance(group_id, _ToolFailure):
+            return self._result(error=group_id.code, detail=group_id.detail, data=group_id.data)
+        if group_id is None:
+            return self._result(error="group_required", detail="私聊查询群记忆请指定群名或群号")
         query, _mode = self._memory_query(arguments)
         requester = self._social_requester(runtime)
         if requester is not None:
@@ -1902,6 +1980,7 @@ class AgentToolService:
             return self._result(error="permission_denied", detail="没有该群的历史成员关系授权")
         result = await self._read_memories(
             arguments,
+            runtime=runtime,
             text=query or "",
             targets=targets,
             requested_limit=self._memory_requested_limit(arguments),
@@ -1962,6 +2041,7 @@ class AgentToolService:
             return self._result(error="self_memory_unavailable", detail="当前会话不能读取自我记忆")
         result = await self._read_memories(
             arguments,
+            runtime=runtime,
             text=query or "",
             targets=(target,),
             requested_limit=self._memory_requested_limit(arguments),
@@ -2001,22 +2081,35 @@ class AgentToolService:
         self,
         arguments: dict[str, Any],
         *,
+        runtime: ToolRuntime,
         text: str,
         targets: tuple[MemoryEntityTarget, ...],
         requested_limit: int | None,
         default_overview: bool = False,
     ) -> Any:
         intent = self._memory_tool_intent(arguments, default_overview=default_overview)
-        return await MemoryQueryPlane(self._memory_context).read(
-            MemoryReadConsumer.AGENT_TOOL,
-            MemoryReadRequest(
-                text=text,
-                intent=intent,
-                requested_limit=requested_limit,
-                resolved_scope=ResolvedReadScope(targets=targets),
-            ),
-            runtime=self._runtime(),
+        request = MemoryReadRequest(
+            text=text,
+            intent=intent,
+            requested_limit=requested_limit,
+            resolved_scope=ResolvedReadScope(targets=targets),
         )
+        # Scope resolution above always rechecks historical relationships; only
+        # the expensive retrieval is reused, never an enduring permission grant.
+        cache = _MEMORY_READ_CACHE.get()
+        runtime_config = self._runtime()
+        key = "query:" + request.model_dump_json() + repr(runtime_config.memory)
+        if cache is not None and key in cache:
+            await self._record_memory_tool_outcome(runtime, "duplicate")
+            return cache[key]
+        result = await MemoryQueryPlane(self._memory_context).read(
+            MemoryReadConsumer.AGENT_TOOL,
+            request,
+            runtime=runtime_config,
+        )
+        if cache is not None:
+            cache[key] = result
+        return result
 
     @staticmethod
     def _memory_tool_intent(
@@ -2030,7 +2123,9 @@ class AgentToolService:
             for name in ("purpose", "entities", "preferred_kinds", "start_at", "end_at")
         )
         if raw_mode is None and not has_structured and not default_overview:
-            return None
+            return MemoryQueryIntent(
+                mode=MemoryContextMode.HYBRID, purpose=MemoryRecallPurpose.RECALL
+            )
         mode = (
             MemoryContextMode.OVERVIEW
             if default_overview and raw_mode is None
@@ -2076,7 +2171,13 @@ class AgentToolService:
         fact_id = arguments.get("fact_id")
         if isinstance(fact_id, bool) or not isinstance(fact_id, int) or fact_id <= 0:
             raise ValueError("fact_id 必须是正整数")
-        fact = await self._memories.get_fact(fact_id)
+        key = f"fact:{fact_id}"
+        if key in runtime.memory_read_cache:
+            await self._record_memory_tool_outcome(runtime, "duplicate")
+            fact = runtime.memory_read_cache[key]
+        else:
+            fact = await self._memories.get_fact(fact_id)
+            runtime.memory_read_cache[key] = fact
         if fact is None or not await self._can_read_fact(fact, runtime):
             return self._result(error="memory_not_found", detail="没有找到可查看的事实")
         return self._result(data={"memory": self._memory_json(fact, retrieval_reason="fact_id")})
@@ -2454,6 +2555,15 @@ class AgentToolService:
 
         visit(payload)
         unique_ids = tuple(dict.fromkeys(fact_ids))
+        if payload.get("ok"):
+            outcome = "success" if unique_ids else "empty"
+        elif payload.get("error") in {"ambiguous_person", "ambiguous_subject", "ambiguous_group"}:
+            outcome = "ambiguous"
+        elif payload.get("error") == "permission_denied":
+            outcome = "permission_denied"
+        else:
+            outcome = "unavailable"
+        await self._record_memory_tool_outcome(runtime, outcome)
         if unique_ids:
             await self._memory_context.mark_tool_injected(runtime.memory_turn_id, unique_ids)
             if runtime.memory_exposure_registry is not None:
@@ -2462,6 +2572,17 @@ class AgentToolService:
                 payload["memory_grounding_policy"] = MEMORY_GROUNDING_RULE
                 return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         return result
+
+    async def _record_memory_tool_outcome(self, runtime: ToolRuntime, outcome: str) -> None:
+        self._memory_context.metrics.record_read_outcome(outcome)
+        if outcome == "unavailable":
+            return
+        try:
+            await self._memory_context.record_tool_read_outcome(runtime.memory_turn_id, outcome)
+        except SQLAlchemyError:
+            # Observability must not turn a successful read or a handled database
+            # failure into another user-visible tool failure.
+            logger.warning("memory_tool_outcome_persist_failed outcome=%s", outcome)
 
     async def _call_onebot(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
         if (

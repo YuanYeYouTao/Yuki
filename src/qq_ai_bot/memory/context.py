@@ -225,56 +225,44 @@ class MemoryContextService:
                     )
                 }
             )
-        if runtime.memory.retrieval_enabled:
-            result = await self._retriever.retrieve(
-                query,
-                diversify=query.mode is MemoryRetrievalMode.RELEVANT,
-            )
-            if (
-                query.mode is MemoryRetrievalMode.RELEVANT
-                and runtime.memory.self_enabled
-                and not query.intent.self_recall
-                if query.intent is not None
-                else False
-            ):
-                episode = await self._retrieve_current_self_episode(
-                    inbound=inbound,
-                    query=query,
-                    runtime=runtime,
-                )
-                result = self._merge_results(result, episode)
-            return (
-                result
-                if neutral_ordering
-                else self._limit_automatic_result(
-                    result, query.intent, runtime, requested_limit=requested_limit
-                )
-            )
-        current_targets = tuple(
-            target
-            for target in query.targets
-            if target.role
-            in {
-                MemoryTargetRole.CURRENT_PERSON,
-                MemoryTargetRole.CURRENT_SELF,
-                MemoryTargetRole.CURRENT_PERSON_GROUP,
-                MemoryTargetRole.CURRENT_GROUP,
-            }
+        from qq_ai_bot.memory.runtime.query_plane import (
+            MemoryQueryPlane,
+            MemoryReadConsumer,
+            MemoryReadRequest,
+            ResolvedReadScope,
         )
-        fallback = query.model_copy(
-            update={
-                "targets": current_targets,
-                "limit_per_target": runtime.memory.context_limit_per_entity,
-            }
+
+        self_target = None
+        if (
+            runtime.memory.self_enabled
+            and query.intent is not None
+            and not query.intent.self_recall
+            and query.mode is MemoryRetrievalMode.RELEVANT
+        ):
+            self_target = next(
+                (
+                    target
+                    for target in await self.resolve_targets(inbound, runtime, self_recall=True)
+                    if target.role is MemoryTargetRole.CURRENT_SELF
+                ),
+                None,
+            )
+        result = await MemoryQueryPlane(self).read(
+            MemoryReadConsumer.AUTOMATIC_CONTEXT,
+            MemoryReadRequest(
+                text=query.text,
+                intent=query.intent,
+                resolved_scope=ResolvedReadScope(targets=query.targets),
+                automatic_self_target=self_target,
+                neutral_ordering=neutral_ordering,
+            ),
+            runtime=runtime,
         )
-        result = await self._retriever.retrieve(fallback, lexical_enabled=False)
-        return (
-            result
-            if neutral_ordering
-            else self._limit_automatic_result(
+        if requested_limit is not None and query.mode is MemoryRetrievalMode.OVERVIEW:
+            return self._limit_automatic_result(
                 result, query.intent, runtime, requested_limit=requested_limit
             )
-        )
+        return result
 
     async def retrieve_for_targets(
         self,
@@ -388,14 +376,11 @@ class MemoryContextService:
     async def _retrieve_current_self_episode(
         self,
         *,
-        inbound: InboundMessage,
+        target: MemoryEntityTarget,
         query: MemoryQuery,
         runtime: RuntimeConfigSnapshot,
     ) -> MemoryRetrievalResult:
-        targets = await self.resolve_targets(inbound, runtime, self_recall=True)
-        self_targets = tuple(
-            target for target in targets if target.role is MemoryTargetRole.CURRENT_SELF
-        )
+        self_targets = (target,)
         episode_query = query.model_copy(
             update={
                 "targets": self_targets,
@@ -463,6 +448,9 @@ class MemoryContextService:
         runtime: RuntimeConfigSnapshot,
         limit: int | None = None,
         intent: MemoryQueryIntent | None = None,
+        automatic: bool = False,
+        automatic_self_target: MemoryEntityTarget | None = None,
+        neutral_ordering: bool = False,
     ) -> MemoryRetrievalResult:
         query = self._queries.for_targets(
             text=text,
@@ -472,7 +460,46 @@ class MemoryContextService:
             limit=limit,
             intent=intent,
         )
-        return await self._retriever.retrieve(query)
+        if not automatic:
+            return await self._retriever.retrieve(query)
+        if neutral_ordering:
+            query = query.model_copy(update={"semantic_enabled": False})
+        else:
+            query = query.model_copy(
+                update={
+                    "limit_per_target": min(
+                        query.limit_per_target, runtime.memory.automatic_recall_per_target_limit
+                    )
+                }
+            )
+        if runtime.memory.retrieval_enabled:
+            result = await self._retriever.retrieve(
+                query, diversify=query.mode is MemoryRetrievalMode.RELEVANT
+            )
+            if automatic_self_target is not None:
+                episode = await self._retrieve_current_self_episode(
+                    target=automatic_self_target, query=query, runtime=runtime
+                )
+                result = self._merge_results(result, episode)
+        else:
+            query = query.model_copy(
+                update={
+                    "targets": tuple(
+                        target
+                        for target in query.targets
+                        if target.role
+                        in {
+                            MemoryTargetRole.CURRENT_PERSON,
+                            MemoryTargetRole.CURRENT_SELF,
+                            MemoryTargetRole.CURRENT_PERSON_GROUP,
+                            MemoryTargetRole.CURRENT_GROUP,
+                        }
+                    ),
+                    "limit_per_target": runtime.memory.context_limit_per_entity,
+                }
+            )
+            result = await self._retriever.retrieve(query, lexical_enabled=False)
+        return result if neutral_ordering else self._limit_automatic_result(result, intent, runtime)
 
     async def mark_injected(
         self,

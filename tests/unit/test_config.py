@@ -310,6 +310,7 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
     assert settings.tooling_first_round_pin_ids == (
         "memory_change",
         "get_person_memories",
+        "get_group_memories",
         "search_chat_history",
         "get_relationship",
         "get_self_memories",

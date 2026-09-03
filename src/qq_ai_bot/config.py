@@ -45,6 +45,7 @@ def _csv_tuple(value: str) -> tuple[str, ...]:
 DEFAULT_FIRST_ROUND_PIN_IDS = (
     "memory_change",
     "get_person_memories",
+    "get_group_memories",
     "search_chat_history",
     "get_relationship",
     "get_self_memories",

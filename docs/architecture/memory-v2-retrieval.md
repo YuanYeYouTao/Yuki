@@ -31,6 +31,20 @@ SELF 维持 global/current-private/current-group 可见性。
 工具 schema 是部署级固定结构，不能用本轮昵称或群号改写。
 不可重试的歧义/无权限与基础设施故障分开处理，不强制结束正常对话。
 
+### 读取工具与选择器
+
+- get_person_memories：subject_ref（真实 mention/reply 优先）、display_name 或兼容 user_id
+  三选一；无群选择器时返回获准 Person 与相关 PersonGroup。可用 group_id 或 group_name
+  限定共同群；这些参数不代替后端授权。
+- get_group_memories：group_name 或 group_id；群聊省略目标默认当前群，私聊要求指定目标。
+- get_self_memories：只查现有 global/current-private/current-group，不能指定他人的私聊。
+- get_memory_fact：同一结构读取政策；get_memory_evidence 仍是更严格的证据接口。
+- 名称须在获准历史关系内精确唯一；歧义最多返回五个候选和 has_more，retryable=false。
+  不用全社会关系图作为每轮预取目标。
+- 默认固定首轮读取工具包含 Person、Group、SELF；用户显式 pin 配置保持原值。
+- 同轮相同已授权查询复用检索结果，减少数据库/embedding 工作；每次入口仍重验权限，
+  不缓存永久许可。记忆修改清除本轮读缓存；权限拒绝不做自动重试，不新增读取次数配额。
+
 ## 检索核
 
 - QueryBuilder 规范化文本、有界引用和结构化 intent；保留 FTS、短词 LIKE、

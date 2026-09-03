@@ -42,6 +42,17 @@ canonical schema，Alembic head 为 `0050`。
 
 完整结构见 [Yuki 3.8 canonical runtime](docs/architecture/canonical-runtime.md)。
 
+### 记忆读取与自动保存
+
+可以自然地询问本人或历史共同群友的记忆、指定旧群名查询群整体或某人在群里的记忆；
+同名时 Yuki 会要求澄清。权限取决于后端历史成员关系，不取决于当前登录的 Yuki 账号或旧群
+是否启用。**共同群关系可开放人物完整 Person 结构化事实（含私聊来源）**，但不开放原始
+私聊、他人 evidence/private SELF，也不改变写入权限。
+
+普通自动提取最长等待一小时聚合，优先保存稳定事实、持续偏好和有意义的单次经历；
+没有值得保存的内容时空提取是正常结果。明确的记住、纠正和删除仍立即处理。
+详见唯一现行 [Memory 合同](docs/architecture/memory-v2.md)。
+
 ## 消息主路径
 
 ```text

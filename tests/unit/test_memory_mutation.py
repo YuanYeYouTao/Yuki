@@ -3020,7 +3020,7 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
 
 
 @pytest.mark.asyncio
-async def test_manual_qq_and_exact_name_lookup_stay_inside_current_group(
+async def test_memory_tool_selectors_share_intent_reads_and_cache_with_historical_names(
     database: Database,
 ) -> None:
     _service_unused, facts, ledger, _processor = _service(database)
@@ -3089,6 +3089,74 @@ async def test_manual_qq_and_exact_name_lookup_stay_inside_current_group(
     assert {row["fact_id"] for row in by_qq["data"]["memories"]} == {group_fact.id}
     assert {row["fact_id"] for row in by_name["data"]["memories"]} == {group_fact.id}
 
+    private_runtime = replace(
+        runtime,
+        inbound=replace(inbound, scope_type=ScopeType.PRIVATE, group_id=None),
+        current_group_id=None,
+    )
+    private_name = json.loads(
+        await tools.execute(
+            "get_person_memories", json.dumps({"display_name": "摄影师"}), private_runtime
+        )
+    )
+    assert private_name["data"]["memories"] == by_name["data"]["memories"]
+    named_group = json.loads(
+        await tools.execute(
+            "get_group_memories", json.dumps({"group_name": "test-3001"}), private_runtime
+        )
+    )
+    assert named_group["ok"] and named_group["data"]["group_id"] == "3001"
+    no_default = json.loads(await tools.execute("get_group_memories", "{}", private_runtime))
+    assert not no_default["ok"] and no_default["error"] == "group_required"
+    current_default = json.loads(await tools.execute("get_group_memories", "{}", runtime))
+    assert current_default["ok"] and current_default["data"]["group_id"] == "3001"
+    named_person_group = json.loads(
+        await tools.execute(
+            "get_person_memories",
+            json.dumps({"display_name": "摄影师", "group_name": "test-3001"}),
+            private_runtime,
+        )
+    )
+    assert {row["fact_id"] for row in named_person_group["data"]["memories"]} == {group_fact.id}
+    from unittest.mock import patch
+
+    from qq_ai_bot.memory.enums import MemorySubjectRole
+
+    query_args = json.dumps(
+        {
+            "user_id": "2002",
+            "query": "摄影",
+            "purpose": "verify",
+            "entities": ["摄影"],
+            "preferred_kinds": ["fact"],
+            "start_at": "2026-01-01T00:00:00+00:00",
+        }
+    )
+    with (
+        patch.object(tools._memory_context, "search", wraps=tools._memory_context.search) as search,
+        patch.object(
+            tools._memory_context,
+            "record_tool_read_outcome",
+            wraps=tools._memory_context.record_tool_read_outcome,
+        ) as read_outcomes,
+    ):
+        first_read = await tools.execute("get_person_memories", query_args, private_runtime)
+        second_read = await tools.execute("get_person_memories", query_args, private_runtime)
+        assert first_read == second_read
+        assert search.await_count == 1
+        intent = search.call_args.kwargs["intent"]
+        assert intent.entities == ("摄影",) and intent.purpose.value == "verify"
+        assert intent.preferred_kinds == (MemoryKind.FACT,)
+        assert intent.subjects == (MemorySubjectRole.REFERENCED_PERSON,)
+        assert intent.temporal.start_at.year == 2026
+        assert any(call.args[1] == "duplicate" for call in read_outcomes.await_args_list)
+    assert tools._memory_context.metrics.count("memory_read_duplicate") >= 1
+    assert tools.definitions(runtime) == tools.definitions(
+        replace(
+            runtime, inbound=replace(inbound, text="完全不同的查询", mentioned_user_ids=("2003",))
+        )
+    )
+
     nonmember = json.loads(
         await tools.execute(
             "get_person_memories",
@@ -3112,6 +3180,8 @@ async def test_manual_qq_and_exact_name_lookup_stay_inside_current_group(
         )
     )
     assert not ambiguous["ok"] and ambiguous["error"] == "ambiguous_person"
+    assert ambiguous["retryable"] is False
+    assert {item["user_id"] for item in ambiguous["data"]["candidates"]} == {"2002", "2003"}
 
 
 @pytest.mark.asyncio

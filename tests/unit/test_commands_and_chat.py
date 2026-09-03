@@ -64,6 +64,12 @@ def inbound(
 
 
 def test_capability_view_owns_first_round_memory_scope() -> None:
+    from qq_ai_bot.config import Settings
+
+    defaults = make_settings("sqlite+aiosqlite:///:memory:")
+    assert "get_group_memories" in defaults.tooling_first_round_pin_ids
+    explicit = Settings(_env_file=None, tooling_first_round_pin_ids_csv="get_self_memories")
+    assert explicit.tooling_first_round_pin_ids == ("get_self_memories",)
     requested = frozenset({"memory", "memory.read", "web"})
     passive = MemoryCapabilityView(
         eager_namespaces=(),

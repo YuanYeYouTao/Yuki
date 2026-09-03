@@ -387,10 +387,21 @@ class TurnMemorySession:
             or not summary.delivered_text.strip()
             or not self._confirmed_exposures
         ):
+            if self._confirmed_exposures:
+                reason = (
+                    "disabled"
+                    if self._attribution is None
+                    or not self._runtime.memory.usage_attribution_enabled
+                    else "not_scheduled"
+                )
+                for handle in self._state.recall_handles():
+                    await self._memory_context.set_attribution_outcome(
+                        handle.receipt_turn_id, "skipped", reason
+                    )
             self._state.skip_attribution()
             return
         self._state.freeze_exposures()
-        exposures = tuple(self._confirmed_exposures)
+        exposures = tuple({item.fact_id: item for item in self._confirmed_exposures}.values())
         handles = self._state.recall_handles()
         if not handles and self._prefetch_intent is not None:
             await self._enqueue_job(

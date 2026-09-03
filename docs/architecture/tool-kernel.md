@@ -1,5 +1,10 @@
 # Tool Kernel
 
+当前 Memory 读工具合同见 [Memory 检索](memory-v2-retrieval.md)。默认固定首轮 pin 包含
+get_person_memories、get_group_memories、get_self_memories；用户显式配置不会被覆盖。
+工具 schema 不按当前人物、昵称、群号或查询内容变化。Memory Runtime 的已有读/写能力
+边界继续生效，不因为工具常驻而赋予权限。
+
 Yuki 2.1 把工具来源和执行方式分开。`ToolProvider` 只贡献
 `CapabilityDescriptor`，`ToolBinding` 才持有可执行实现；Capability Runtime 和 AgentRunner
 不知道工具来自 Python 服务、插件、MCP Session，还是未来的 RPC 进程。
