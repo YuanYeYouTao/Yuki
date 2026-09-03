@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from sqlalchemy import text
@@ -12,6 +13,13 @@ from tests.conftest import make_settings
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
+from qq_ai_bot.memory.attribution import (
+    MemoryAttributionJob,
+    MemoryAttributionOutput,
+    MemoryAttributionWorker,
+    MemoryExposure,
+    MemoryExposureSource,
+)
 from qq_ai_bot.memory.context import MemoryContextService
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
@@ -25,6 +33,7 @@ from qq_ai_bot.memory.enums import (
 )
 from qq_ai_bot.memory.errors import MemoryRetrievalError
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex, build_safe_lexical_query
+from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.models import (
     MemoryEntityTarget,
     MemoryFact,
@@ -32,15 +41,160 @@ from qq_ai_bot.memory.models import (
     MemoryLexicalCandidate,
     MemoryQuery,
     MemoryQueryIntent,
+    MemoryRetrievalResult,
 )
 from qq_ai_bot.memory.query import MemoryQueryBuilder
 from qq_ai_bot.memory.ranking import MemoryRanker
+from qq_ai_bot.memory.receipt import MemoryRecallRepository
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.retrieval import MemoryRetriever
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.targets import MemoryTargetResolver
+from qq_ai_bot.model_runtime.executor import ModelExecutor
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.people_repository import PeopleRepository
+
+
+async def test_attribution_worker_evaluates_no_use_but_not_failed_requests(database: Database):
+    runtime_config = RuntimeConfigService(settings=make_settings(database.url), database=database)
+    runtime = await runtime_config.snapshot(user_id="1001", group_id=None)
+    context = Mock(spec=MemoryContextService)
+    context.mark_attributed_used = AsyncMock(return_value=())
+    context.set_attribution_outcome = AsyncMock()
+    worker = MemoryAttributionWorker(
+        models=Mock(spec=ModelExecutor),
+        memory_context=context,
+        runtime_config=runtime_config,
+        metrics=MemoryLifecycleMetrics(),
+    )
+    worker._structured.run = AsyncMock(return_value=MemoryAttributionOutput())
+    job = MemoryAttributionJob(
+        turn_id="synthetic",
+        user_id="1001",
+        group_id=None,
+        user_question="synthetic",
+        final_response="synthetic",
+        intent=MemoryQueryIntent(),
+        runtime=runtime,
+        enqueued_at=datetime.now(UTC),
+        exposures=(
+            MemoryExposure(
+                memory_ref="M1",
+                fact_id=1,
+                kind="fact",
+                category="test",
+                content="synthetic",
+                target_role="current_person",
+                source=MemoryExposureSource.AUTOMATIC,
+            ),
+        ),
+    )
+    await worker._process(job)
+    context.mark_attributed_used.assert_awaited_once_with(
+        "synthetic",
+        (),
+        evaluated_fact_ids=(1,),
+    )
+    context.mark_attributed_used.reset_mock()
+    worker._structured.run = AsyncMock(side_effect=TimeoutError)
+    await worker._process(job)
+    context.mark_attributed_used.assert_not_awaited()
+    context.set_attribution_outcome.assert_awaited_once_with("synthetic", "failed", "timeout")
+    worker._structured.run = AsyncMock(return_value=MemoryAttributionOutput(used_refs=("M99",)))
+    await worker._process(job)
+    context.mark_attributed_used.assert_not_awaited()
+    context.set_attribution_outcome.assert_awaited_with("synthetic", "failed", "invalid")
+
+
+async def test_recall_receipt_tracks_zero_partial_evaluation_and_interruption(database: Database):
+    facts = MemoryFactService(MemoryFactRepository(database))
+    first = await _remember(facts, user_id="1001", memory_key="first", content="synthetic first")
+    second = await _remember(facts, user_id="1001", memory_key="second", content="synthetic second")
+    receipts = MemoryRecallRepository(database)
+    result = MemoryRetrievalResult(
+        blocks=(),
+        hits=(),
+        candidate_count=0,
+        selected_count=0,
+        query_hash="",
+        mode=MemoryRetrievalMode.RELEVANT,
+    )
+    turn = await receipts.record_initial(
+        conversation_key="synthetic",
+        trigger_message_id="synthetic",
+        origin="user_message",
+        intent=MemoryQueryIntent(),
+        result=result,
+        injected_fact_ids=(),
+        retention_days=30,
+    )
+    async with database.sessions() as session:
+        assert (
+            await session.execute(
+                text(
+                    "SELECT injected_count, attribution_status, attribution_reason "
+                    "FROM memory_recall_receipts"
+                )
+            )
+        ).one() == (0, "skipped", "no_memory")
+    await receipts.record_tool_injected(turn.turn_id, (first.id, second.id))
+    await receipts.record_tool_read_outcome(turn.turn_id, "success")
+    await receipts.record_tool_read_outcome(turn.turn_id, "duplicate")
+    await receipts.set_attribution_outcome(turn.turn_id, "pending", "queued")
+    await receipts.mark_attributed_used(turn.turn_id, (), evaluated_fact_ids=(first.id,))
+    await receipts.set_attribution_outcome(turn.turn_id, "failed", "interrupted")
+    async with database.sessions() as session:
+        assert (
+            await session.execute(
+                text(
+                    "SELECT attribution_status, attribution_reason, injected_count, used_count "
+                    "FROM memory_recall_receipts"
+                )
+            )
+        ).one() == ("succeeded", "no_used", 2, 0)
+        assert (
+            await session.execute(
+                text(
+                    "SELECT fact_id, attribution_evaluated, used "
+                    "FROM memory_recall_items ORDER BY fact_id"
+                )
+            )
+        ).all() == [(first.id, 1, 0), (second.id, 0, 0)]
+    pending = await receipts.record_initial(
+        conversation_key="synthetic",
+        trigger_message_id="next",
+        origin="user_message",
+        intent=MemoryQueryIntent(),
+        result=result,
+        injected_fact_ids=(),
+        retention_days=30,
+    )
+    await receipts.set_attribution_outcome(pending.turn_id, "pending", "queued")
+    await receipts.recover_pending_attribution()
+    async with database.sessions() as session:
+        assert (
+            await session.execute(
+                text(
+                    "SELECT attribution_status, attribution_reason FROM memory_recall_receipts "
+                    "WHERE turn_id=:turn"
+                ),
+                {"turn": pending.turn_id},
+            )
+        ).one() == ("failed", "interrupted")
+    with pytest.raises(ValueError, match="invalid attribution"):
+        await receipts.set_attribution_outcome(turn.turn_id, "failed", "secret exception payload")
+    report = await receipts.summarize(since=datetime(2020, 1, 1, tzinfo=UTC))
+    assert report["evaluated"] == 1
+    assert report["evaluated_use_rate"] == 0
+    assert report["evaluation_coverage"] == 0.5
+    assert report["tool_reads"] == {
+        "success": 1,
+        "empty": 0,
+        "ambiguous": 0,
+        "permission_denied": 0,
+        "duplicate": 1,
+        "infrastructure_failure": 0,
+    }
 
 
 def _target(

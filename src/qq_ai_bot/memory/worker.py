@@ -6,6 +6,7 @@ import asyncio
 import logging
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.config import Settings
@@ -27,6 +28,12 @@ from qq_ai_bot.memory.validation import MemoryClaimValidator
 from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
 from qq_ai_bot.persistence.people_repository import PeopleRepository
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
+from qq_ai_bot.runtime.observability import (
+    RuntimeTurnCorrelation,
+    bind_runtime_turn,
+    new_runtime_turn_id,
+)
+from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 
 logger = logging.getLogger(__name__)
@@ -188,6 +195,32 @@ class MemoryWorker:
         )
         if not jobs:
             return 0
+        correlation = RuntimeTurnCorrelation(new_runtime_turn_id(), TurnOrigin.SYSTEM_TASK)
+        with bind_runtime_turn(correlation):
+            return await self._process_jobs(jobs, correlation.turn_id)
+
+    async def _process_jobs(self, jobs: tuple[MemoryJob, ...], batch_id: str) -> int:
+        characters = sum(len(job.event.content) for job in jobs)
+        oldest = min(job.created_at for job in jobs)
+        age = max(0, int((datetime.now(UTC) - oldest.replace(tzinfo=UTC)).total_seconds()))
+        trigger = (
+            "count"
+            if len(jobs) >= self._settings.memory_batch_trigger_count
+            else "characters"
+            if characters >= self._settings.memory_batch_max_characters
+            else "age_or_character_boundary"
+        )
+        self.metrics.increment("memory_extraction_batches")
+        self.metrics.increment("memory_extraction_events", len(jobs))
+        logger.info(
+            "memory_extraction_batch_started batch_id=%s trigger=%s events=%d characters=%d "
+            "oldest_age_seconds=%d",
+            batch_id,
+            trigger,
+            len(jobs),
+            characters,
+            age,
+        )
         try:
             first_event = jobs[0].event
             context = await self._ledger.list_scope_before(
@@ -234,6 +267,7 @@ class MemoryWorker:
             )
 
         completed = 0
+        totals: Counter[str] = Counter()
         for job in jobs:
             try:
                 result = await self._process_claims(
@@ -263,6 +297,16 @@ class MemoryWorker:
                     result.applied,
                     dict(result.rejection_reasons),
                 )
+            totals.update(
+                {
+                    "extracted": result.extracted,
+                    "validated": result.validated,
+                    "applied": result.applied,
+                    "candidates": result.candidates,
+                    "rejected": sum(count for _, count in result.rejection_reasons),
+                    result.outcome.value: 1,
+                }
+            )
             try:
                 await self._jobs.complete(
                     job.id,
@@ -281,6 +325,12 @@ class MemoryWorker:
                 await self._fail_job(job, exc)
                 continue
             completed += 1
+        logger.info(
+            "memory_extraction_batch_completed batch_id=%s completed=%d counts=%s",
+            batch_id,
+            completed,
+            dict(totals),
+        )
         return completed
 
     async def _process_claims(

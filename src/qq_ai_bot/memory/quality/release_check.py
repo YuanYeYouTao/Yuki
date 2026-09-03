@@ -29,7 +29,7 @@ from qq_ai_bot.memory.quality.report import write_reports
 from qq_ai_bot.memory.quality.runner import MemoryQualityRunner
 from qq_ai_bot.persistence.database import Database
 
-_ALEMBIC_HEAD = "0050"
+_ALEMBIC_HEAD = "0051"
 _EXPECTED_RELEASE_VERSION = "3.8.1"
 
 
@@ -192,6 +192,7 @@ class MemoryReleaseCheck:
             "0048_canonical_3_8_baseline.py",
             "0049_canonical_only_bridge.py",
             "0050_plugin_reply_causality.py",
+            "0051_memory_recall_evaluation.py",
         }
         missing = sorted(required - versions)
         return self._item(

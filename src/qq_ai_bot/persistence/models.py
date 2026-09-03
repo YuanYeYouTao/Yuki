@@ -563,6 +563,9 @@ class MemoryRecallReceiptModel(Base):
         ),
         Index("ix_memory_recall_receipts_expires", "expires_at", "id"),
         Index("ix_memory_recall_receipts_runtime_turn", "runtime_turn_id"),
+        CheckConstraint(
+            "attribution_status IN ('unknown','pending','succeeded','failed','skipped')",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -581,6 +584,22 @@ class MemoryRecallReceiptModel(Base):
     injected_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     used_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     reinforced_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    attribution_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="unknown", server_default="unknown"
+    )
+    attribution_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    consumer: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="unknown", server_default="unknown"
+    )
+    attribution_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    tool_read_success_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    tool_read_empty_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    tool_read_ambiguous_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    tool_read_permission_denied_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    tool_read_duplicate_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    tool_read_infrastructure_failure_count: Mapped[int] = mapped_column(nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -605,6 +624,9 @@ class MemoryRecallItemModel(Base):
     selected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     injected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    attribution_evaluated: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
     reinforced: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     base_rank_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     subject_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)

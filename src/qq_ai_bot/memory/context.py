@@ -499,6 +499,7 @@ class MemoryContextService:
         result: MemoryRetrievalResult,
         injected_fact_ids: tuple[int, ...],
         runtime: RuntimeConfigSnapshot,
+        consumer: str = "automatic_context",
     ) -> MemoryRecallTurn | None:
         if intent is None:
             return None
@@ -518,20 +519,33 @@ class MemoryContextService:
             result=result,
             injected_fact_ids=injected_fact_ids,
             retention_days=runtime.memory.recall_receipt_retention_days,
+            consumer=consumer,
         )
 
     async def mark_attributed_used(
         self,
         turn_id: str,
         fact_ids: tuple[int, ...],
+        *,
+        evaluated_fact_ids: tuple[int, ...] | None = None,
     ) -> tuple[int, ...]:
         if self._receipts is None:
             self.metrics.record_recall_stage("used", len(fact_ids))
             return fact_ids
-        recorded = await self._receipts.mark_attributed_used(turn_id, fact_ids)
+        recorded = await self._receipts.mark_attributed_used(
+            turn_id, fact_ids, evaluated_fact_ids=evaluated_fact_ids
+        )
         used = fact_ids if recorded is None else recorded
         self.metrics.record_recall_stage("used", len(used))
         return used
+
+    async def set_attribution_outcome(self, turn_id: str, status: str, reason: str) -> None:
+        if self._receipts is not None:
+            await self._receipts.set_attribution_outcome(turn_id, status, reason)
+
+    async def recover_pending_attribution(self) -> None:
+        if self._receipts is not None:
+            await self._receipts.recover_pending_attribution()
 
     async def mark_tool_injected(
         self,
@@ -544,6 +558,10 @@ class MemoryContextService:
         if self._receipts is not None:
             await self._receipts.record_tool_injected(turn_id, unique_ids)
         return updated
+
+    async def record_tool_read_outcome(self, turn_id: str, outcome: str) -> None:
+        if self._receipts is not None:
+            await self._receipts.record_tool_read_outcome(turn_id, outcome)
 
     async def reinforce_usage(
         self,

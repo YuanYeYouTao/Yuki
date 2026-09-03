@@ -87,6 +87,7 @@ class MemoryQueryKernel(Protocol):
         result: MemoryRetrievalResult,
         injected_fact_ids: tuple[int, ...],
         runtime: RuntimeConfigSnapshot,
+        consumer: str = "automatic_context",
     ) -> MemoryRecallTurn | None: ...
 
 
@@ -210,4 +211,5 @@ class MemoryQueryPlane:
             result=result,
             injected_fact_ids=injected_fact_ids,
             runtime=runtime,
+            consumer=consumer.value,
         )

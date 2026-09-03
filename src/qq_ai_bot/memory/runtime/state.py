@@ -315,6 +315,18 @@ class RecallLedger:
     def snapshot(self) -> tuple[RecallHandle, ...]:
         return tuple(self._handles)
 
+    def extend_exposures(self, receipt_turn_id: str, fact_ids: tuple[int, ...]) -> None:
+        for index, handle in enumerate(self._handles):
+            if handle.receipt_turn_id == receipt_turn_id:
+                self._handles[index] = RecallHandle(
+                    runtime_turn_id=handle.runtime_turn_id,
+                    receipt_turn_id=handle.receipt_turn_id,
+                    purpose=handle.purpose,
+                    injected_fact_ids=tuple(dict.fromkeys((*handle.injected_fact_ids, *fact_ids))),
+                )
+                return
+        raise ValueError("recall receipt is not registered")
+
     def __len__(self) -> int:
         return len(self._handles)
 
@@ -496,6 +508,10 @@ class MemorySessionState:
     def record_recall(self, handle: RecallHandle) -> None:
         self._require_open()
         self._recalls.append(handle)
+
+    def extend_recall_exposures(self, receipt_turn_id: str, fact_ids: tuple[int, ...]) -> None:
+        self._require_open()
+        self._recalls.extend_exposures(receipt_turn_id, fact_ids)
 
     def freeze_exposures(self) -> None:
         self._require_open()

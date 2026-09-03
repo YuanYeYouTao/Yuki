@@ -1,5 +1,31 @@
 # Memory V2 质量指标与分母
 
+## 现行运行观测（schema 0051）
+
+正常预取即使注入为零，也记录 recall receipt；零注入不调用使用判定。receipt 的
+`attribution_status` 分为 unknown/pending/succeeded/failed/skipped，并保存完成时间及
+闭合原因类别。旧 used=false 是 unknown，不能视作确认未使用。只有实际提交给成功
+判定请求的 item 才设置 `attribution_evaluated`；被预算截掉的 item 仍未评估。
+
+实际使用率分母是 **已评估的注入 item**，不是全部注入。另报零注入比例、判定覆盖率、
+超时/抢占/队列满/禁用、同会话事实重复分布；零分母返回 null。成功无引用是 succeeded /
+no_used；异常不是无用。重启时遗留 pending 标为 failed/interrupted，不补跑旧请求。
+这些记录不参与召回抑制，不增加冷却或相关性阈值。
+
+主动读取按 success、empty、ambiguous、permission_denied、duplicate 和
+infrastructure_failure 记录无正文计数。duplicate 表示同一模型轮复用了完全相同读取的结果；
+它仍可能同时计入 success 或 empty，因此这些计数不是互斥分类。只有绑定正常聊天轮 recall
+receipt 的 Main Agent 查询才持久化；Plugin/Admin 的纯查询不会为了统计创建 receipt。
+
+提取观测区分 event job、batch 和真实 model request。每批绑定独立 opaque runtime
+correlation，模型调用记录（包括重试）可据此关联；开始/结束日志只记录 ID、触发类别、
+数量、字符数、等待年龄及接受/拒绝分类，不记录正文。不得用事件 no_claims 数替代空
+模型调用次数。
+
+`model_invocations` 统计执行器调用；Provider 内部的传输重试另外通过
+`model_transport_attempt` 的 correlation_id 与 attempt 计数，不能将一次执行器调用
+当成一次且仅一次 HTTP 尝试。两种协议均记录，无请求正文和连接凭据。
+
 本页是质量指标的权威定义。评测只比较版本化合成数据中的结构化 expected、observed 与
 forbidden 值，不使用 LLM 裁判或模糊相似度。分母为零时值必须是 JSON `null`；完整发布套件
 若某个受门禁指标没有分母，门禁失败。子套件会将无关指标标为 not applicable。
@@ -53,6 +79,16 @@ forbidden 值，不使用 LLM 裁判或模糊相似度。分母为零时值必�
 | `wrong_group_context_rate` | forbidden group fact 命中 | 实际 context facts |
 | `contested_context_leak_rate` | contested fact 泄漏 | contested 案例 |
 | `third_party_misattribution_rate` | 第三方归属失败 | third-party observed facts |
+
+生产统计使用：
+
+```bash
+uv run qq-ai-bot-cli memory stats --database-url <database-url> --hours 24
+```
+
+输出只含时间窗口、计数、比例、等待年龄和脱敏原因类别，不含查询、正文、QQ/群号、Secret
+或原始异常。`normal_waiting_is_blocked=false` 明确表示不足一小时的正常批次不是阻塞；失败重试
+到期和过期 processing lease 仍会立即成为 ready。
 
 ## Rebuild 与工程指标
 

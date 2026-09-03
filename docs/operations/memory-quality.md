@@ -3,13 +3,21 @@
 完整操作手册见 [Memory V2 质量、审计与显式治理](memory-v2-quality.md)。本文件提供正式版
 稳定入口，避免运维脚本依赖旧文件名。
 
+查看最近 24 小时的真实统计时必须显式指定数据库：
+
+```bash
+uv run qq-ai-bot-cli memory stats --database-url <database-url> --hours 24
+```
+
+结果区分正常等待、可领取 owner、失败/过期 lease、自动零注入、已评估使用率和主动读取结果。
+主动读取的 duplicate 可与 success/empty 同时计数；统计不输出消息、记忆正文或外部账号。
+
 发布前依次执行：
 
 ```bash
 uv run qq-ai-bot-cli memory quality validate-dataset
 uv run qq-ai-bot-cli memory quality run --suite full
 uv run qq-ai-bot-cli memory quality compare
-uv run qq-ai-bot-cli memory quality performance
 uv run qq-ai-bot-cli memory release-check
 ```
 

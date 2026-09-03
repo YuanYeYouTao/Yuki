@@ -43,6 +43,7 @@ OPERATIONAL_LIFECYCLE_COUNTERS = (
 
 ADAPTIVE_MEMORY_STAGES = ("candidate", "selected", "injected", "used", "reinforced")
 ADAPTIVE_ATTRIBUTION_OUTCOMES = (
+    "interrupted",
     "enqueue",
     "duplicate",
     "queue_full",

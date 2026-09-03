@@ -284,7 +284,6 @@ class TurnMemorySession:
             not self._prefetch_confirmed
             and self._prefetch_result is not None
             and self._prefetch_intent is not None
-            and self._staged_fact_ids
         ):
             recall = await self._query.publish_exposure(
                 MemoryReadConsumer.AUTOMATIC_CONTEXT,
@@ -312,6 +311,42 @@ class TurnMemorySession:
             self._confirmed_exposures.extend(self._staged_exposures)
             self._prefetch_confirmed = True
         if self._pending_tool_exposures:
+            fact_ids = tuple(dict.fromkeys(item.fact_id for item in self._pending_tool_exposures))
+            handles = self._state.recall_handles()
+            if not handles:
+                empty = MemoryRetrievalResult(
+                    blocks=(),
+                    hits=(),
+                    candidate_count=0,
+                    selected_count=0,
+                    query_hash="",
+                    mode=MemoryRetrievalMode.RELEVANT,
+                )
+                intent = self._prefetch_intent or MemoryQueryIntent()
+                recall = await self._query.publish_exposure(
+                    MemoryReadConsumer.AGENT_TOOL,
+                    conversation_key=await self._memory_partition_key(),
+                    trigger_message_id=self._inbound.message_id,
+                    origin=self._origin.value,
+                    intent=intent,
+                    result=empty,
+                    injected_fact_ids=(),
+                    runtime=self._runtime,
+                )
+                if recall is not None:
+                    self._state.record_recall(
+                        RecallHandle(
+                            runtime_turn_id=self._runtime_turn_id,
+                            receipt_turn_id=recall.turn_id,
+                            purpose=intent.purpose,
+                            injected_fact_ids=(),
+                        )
+                    )
+                    handles = self._state.recall_handles()
+            if handles:
+                current = handles[-1]
+                await self._memory_context.mark_tool_injected(current.receipt_turn_id, fact_ids)
+                self._state.extend_recall_exposures(current.receipt_turn_id, fact_ids)
             self._confirmed_exposures.extend(self._pending_tool_exposures)
             self._pending_tool_exposures = ()
         return handle
@@ -339,6 +374,10 @@ class TurnMemorySession:
         if self._state.closed:
             return
         if summary.status in {DeliveryStatus.CANCELLED, DeliveryStatus.FAILED}:
+            for handle in self._state.recall_handles():
+                await self._memory_context.set_attribution_outcome(
+                    handle.receipt_turn_id, "skipped", "delivery_failed"
+                )
             self._state.skip_attribution()
             return
         if (
@@ -354,12 +393,14 @@ class TurnMemorySession:
         exposures = tuple(self._confirmed_exposures)
         handles = self._state.recall_handles()
         if not handles and self._prefetch_intent is not None:
-            self._enqueue_job(self._runtime_turn_id, self._prefetch_intent, exposures, summary)
+            await self._enqueue_job(
+                self._runtime_turn_id, self._prefetch_intent, exposures, summary
+            )
         for handle in handles:
             matched = tuple(item for item in exposures if item.fact_id in handle.injected_fact_ids)
             if not matched:
                 continue
-            self._enqueue_job(
+            await self._enqueue_job(
                 handle.receipt_turn_id,
                 MemoryQueryIntent(purpose=handle.purpose),
                 matched,
@@ -415,7 +456,7 @@ class TurnMemorySession:
             self._state.complete_locator_read()
         del fact_ids
 
-    def _enqueue_job(
+    async def _enqueue_job(
         self,
         turn_id: str,
         intent: MemoryQueryIntent,
@@ -424,7 +465,7 @@ class TurnMemorySession:
     ) -> None:
         if self._attribution is None or not turn_id:
             return
-        self._attribution.enqueue(
+        await self._attribution.enqueue(
             MemoryAttributionJob(
                 turn_id=turn_id,
                 user_id=self._inbound.sender.user_id,

@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 from dataclasses import asdict
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 from uuid import uuid4
@@ -43,6 +44,8 @@ from qq_ai_bot.memory.quality.models import (
 from qq_ai_bot.memory.quality.release_check import MemoryReleaseCheck
 from qq_ai_bot.memory.quality.report import write_reports
 from qq_ai_bot.memory.quality.runner import MemoryQualityRunner
+from qq_ai_bot.memory.receipt import MemoryRecallRepository
+from qq_ai_bot.memory.repository import MemoryJobRepository
 from qq_ai_bot.model_runtime import (
     ModelClientPool,
     ModelInvocationRepository,
@@ -296,6 +299,9 @@ def _add_memory_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     update.add_argument("--output", type=Path, default=Path("artifacts/memory-quality"))
     audit = commands.add_parser("audit", help="只读、无内容的生产数据库检查")
     audit.add_argument("--database-url", required=True)
+    stats = commands.add_parser("stats", help="只读、无正文的提取与召回统计")
+    stats.add_argument("--database-url", required=True)
+    stats.add_argument("--hours", type=float, default=24)
     hygiene = commands.add_parser("hygiene", help="指纹保护的显式来源治理")
     hygiene_commands = hygiene.add_subparsers(dest="hygiene_command", required=True)
     scan = hygiene_commands.add_parser("scan")
@@ -1026,6 +1032,27 @@ async def _memory_command(settings: Settings, args: argparse.Namespace) -> int:
             audit_report = await MemoryProductionQualityAudit(database).run()
             print(audit_report.model_dump_json(indent=2))
             return int(audit_report.error_count > 0)
+        finally:
+            await database.close()
+    if action == "stats":
+        if not 0 < args.hours <= 24 * 90:
+            raise ValueError("hours must be within (0, 2160]")
+        database = Database(str(args.database_url))
+        try:
+            stats_report = {
+                "generated_at": datetime.now(UTC).isoformat(),
+                "window_hours": float(args.hours),
+                "recall": await MemoryRecallRepository(database).summarize(
+                    since=datetime.now(UTC) - timedelta(hours=float(args.hours))
+                ),
+                "extraction_queue": await MemoryJobRepository(database).batch_health(
+                    trigger_count=settings.memory_batch_trigger_count,
+                    max_characters=settings.memory_batch_max_characters,
+                    max_wait_seconds=settings.memory_batch_max_wait_seconds,
+                ),
+            }
+            print(json.dumps(stats_report, ensure_ascii=False, indent=2))
+            return 0
         finally:
             await database.close()
     if action == "hygiene":

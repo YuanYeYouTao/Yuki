@@ -726,7 +726,7 @@ def _assert_orm_shape(path: Path) -> None:
 
 def _assert_final_health(path: Path, *, populated: bool) -> None:
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0050",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0051",)
         tables = _tables(connection)
         assert not (_RETIRED_TABLES & tables)
         assert {
@@ -736,6 +736,15 @@ def _assert_final_health(path: Path, *, populated: bool) -> None:
             "canonical_conversations",
             "canonical_event_receipts",
         } <= tables
+        receipt_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info('memory_recall_receipts')")
+        }
+        assert {
+            "consumer",
+            "attribution_status",
+            "tool_read_success_count",
+            "tool_read_infrastructure_failure_count",
+        } <= receipt_columns
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert connection.execute("PRAGMA quick_check").fetchone() == ("ok",)
         triggers = {
@@ -810,12 +819,31 @@ def test_fresh_baseline_reaches_current_head_with_final_integrity(
     config = Config("alembic.ini")
     scripts = ScriptDirectory.from_config(config)
     assert scripts.get_bases() == ["0048"]
-    assert scripts.get_heads() == ["0050"]
+    assert scripts.get_heads() == ["0051"]
 
     path = tmp_path / "fresh.db"
     _upgrade(path, monkeypatch)
     _assert_final_health(path, populated=False)
     _assert_orm_shape(path)
+
+    old = tmp_path / "0050.db"
+    _upgrade(old, monkeypatch, "0050")
+    with sqlite3.connect(old) as connection:
+        connection.execute(
+            "INSERT INTO memory_recall_receipts "
+            "(turn_id,origin,mode,purpose,candidate_count,selected_count,injected_count,"
+            "used_count,reinforced_count,created_at,updated_at,expires_at) VALUES "
+            "('old','user_message','hybrid','background',0,0,0,0,0,"
+            "'2026-01-01','2026-01-01','2026-02-01')"
+        )
+    _upgrade(old, monkeypatch)
+    _assert_orm_shape(old)
+    with sqlite3.connect(old) as connection:
+        assert connection.execute(
+            "SELECT turn_id, attribution_status, attribution_completed_at "
+            "FROM memory_recall_receipts"
+        ).fetchone() == ("old", "unknown", None)
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
 @pytest.mark.parametrize(

@@ -7,7 +7,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, text, update
 
 from qq_ai_bot.memory.models import MemoryQueryIntent, MemoryRetrievalHit, MemoryRetrievalResult
 from qq_ai_bot.persistence.database import Database
@@ -41,6 +41,7 @@ class MemoryRecallRepository:
         result: MemoryRetrievalResult,
         injected_fact_ids: tuple[int, ...],
         retention_days: int,
+        consumer: str = "automatic_context",
     ) -> MemoryRecallTurn:
         turn_id = str(uuid.uuid4())
         now = datetime.now(UTC)
@@ -63,6 +64,10 @@ class MemoryRecallRepository:
                 injected_count=len(injected_ids),
                 used_count=0,
                 reinforced_count=0,
+                attribution_status="skipped",
+                consumer=consumer,
+                attribution_reason="not_scheduled" if injected_ids else "no_memory",
+                attribution_completed_at=now,
                 created_at=now,
                 updated_at=now,
                 expires_at=now + timedelta(days=retention_days),
@@ -99,9 +104,11 @@ class MemoryRecallRepository:
         self,
         turn_id: str,
         fact_ids: tuple[int, ...],
+        *,
+        evaluated_fact_ids: tuple[int, ...] | None = None,
     ) -> tuple[int, ...] | None:
         unique_ids = tuple(dict.fromkeys(fact_ids))
-        if not turn_id or not unique_ids:
+        if not turn_id or (not unique_ids and evaluated_fact_ids is None):
             return ()
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
@@ -121,8 +128,6 @@ class MemoryRecallRepository:
                     )
                 )
             )
-            if not allowed:
-                return ()
             await session.execute(
                 update(MemoryRecallItemModel)
                 .where(
@@ -131,6 +136,25 @@ class MemoryRecallRepository:
                 )
                 .values(used=True, used_at=now)
             )
+            if evaluated_fact_ids is not None:
+                await session.execute(
+                    update(MemoryRecallItemModel)
+                    .where(
+                        MemoryRecallItemModel.receipt_id == receipt_id,
+                        MemoryRecallItemModel.fact_id.in_(evaluated_fact_ids),
+                        MemoryRecallItemModel.injected.is_(True),
+                    )
+                    .values(attribution_evaluated=True)
+                )
+                await session.execute(
+                    update(MemoryRecallReceiptModel)
+                    .where(MemoryRecallReceiptModel.id == receipt_id)
+                    .values(
+                        attribution_status="succeeded",
+                        attribution_reason="used" if allowed else "no_used",
+                        attribution_completed_at=now,
+                    )
+                )
             used_count = int(
                 await session.scalar(
                     select(func.count())
@@ -148,6 +172,180 @@ class MemoryRecallRepository:
                 .values(used_count=used_count, updated_at=now)
             )
         return allowed
+
+    async def set_attribution_outcome(self, turn_id: str, status: str, reason: str) -> None:
+        """Only closed, content-free categories are persisted; never exception strings."""
+        if status not in {"pending", "failed", "skipped"} or reason not in {
+            "queued",
+            "queue_full",
+            "expired",
+            "disabled",
+            "invalid",
+            "preempted",
+            "timeout",
+            "model_error",
+            "interrupted",
+            "delivery_failed",
+            "not_scheduled",
+        }:
+            raise ValueError("invalid attribution outcome")
+        now = datetime.now(UTC)
+        async with self._database.sessions() as session, session.begin():
+            await session.execute(
+                update(MemoryRecallReceiptModel)
+                .where(
+                    MemoryRecallReceiptModel.turn_id == turn_id,
+                    MemoryRecallReceiptModel.attribution_status != "succeeded",
+                )
+                .values(
+                    attribution_status=status,
+                    attribution_reason=reason,
+                    attribution_completed_at=None if status == "pending" else now,
+                    updated_at=now,
+                )
+            )
+
+    async def recover_pending_attribution(self) -> None:
+        """The queue is process-local: pending receipts from a prior process cannot resume."""
+        now = datetime.now(UTC)
+        async with self._database.sessions() as session, session.begin():
+            await session.execute(
+                update(MemoryRecallReceiptModel)
+                .where(MemoryRecallReceiptModel.attribution_status == "pending")
+                .values(
+                    attribution_status="failed",
+                    attribution_reason="interrupted",
+                    attribution_completed_at=now,
+                    updated_at=now,
+                )
+            )
+
+    async def record_tool_read_outcome(self, turn_id: str, outcome: str) -> None:
+        allowed = {
+            "success",
+            "empty",
+            "ambiguous",
+            "permission_denied",
+            "duplicate",
+            "infrastructure_failure",
+        }
+        if outcome not in allowed:
+            raise ValueError("invalid tool read outcome")
+        if not turn_id:
+            return
+        column = getattr(MemoryRecallReceiptModel, f"tool_read_{outcome}_count")
+        async with self._database.sessions() as session, session.begin():
+            await session.execute(
+                update(MemoryRecallReceiptModel)
+                .where(MemoryRecallReceiptModel.turn_id == turn_id)
+                .values(
+                    {column: column + 1, MemoryRecallReceiptModel.updated_at: datetime.now(UTC)}
+                )
+            )
+
+    async def summarize(self, *, since: datetime) -> dict[str, object]:
+        """Aggregate diagnostic denominators without returning identities or content."""
+        parameters = {"since": since.replace(tzinfo=None)}
+        async with self._database.sessions() as session:
+            counts = (
+                (
+                    await session.execute(
+                        text(
+                            "SELECT count(*) AS recall_turns, "
+                            "coalesce(sum(consumer='automatic_context'),0) AS automatic_turns, "
+                            "coalesce(sum(consumer='automatic_context' AND injected_count=0),0) "
+                            "AS zero_turns, "
+                            "coalesce(sum(candidate_count),0) AS candidates, "
+                            "coalesce(sum(injected_count),0) AS injected "
+                            "FROM memory_recall_receipts WHERE created_at >= :since"
+                        ),
+                        parameters,
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            assessed = (
+                (
+                    await session.execute(
+                        text(
+                            "SELECT coalesce(sum(i.attribution_evaluated AND i.injected),0) "
+                            "AS evaluated, coalesce(sum(i.attribution_evaluated AND i.injected "
+                            "AND i.used),0) AS used FROM memory_recall_items i "
+                            "JOIN memory_recall_receipts r ON r.id=i.receipt_id "
+                            "WHERE r.created_at >= :since"
+                        ),
+                        parameters,
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            outcomes = (
+                (
+                    await session.execute(
+                        text(
+                            "SELECT attribution_status, attribution_reason, count(*) AS count "
+                            "FROM memory_recall_receipts WHERE created_at >= :since "
+                            "GROUP BY attribution_status, attribution_reason"
+                        ),
+                        parameters,
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            repetitions = (
+                await session.execute(
+                    text(
+                        "SELECT exposures, count(*) AS pairs FROM ("
+                        "SELECT count(*) AS exposures FROM memory_recall_items i "
+                        "JOIN memory_recall_receipts r ON r.id=i.receipt_id "
+                        "WHERE r.created_at >= :since AND i.injected=1 "
+                        "GROUP BY r.conversation_hash, i.fact_id) GROUP BY exposures"
+                    ),
+                    parameters,
+                )
+            ).all()
+            tool_reads = (
+                await session.execute(
+                    text(
+                        "SELECT coalesce(sum(tool_read_success_count),0), "
+                        "coalesce(sum(tool_read_empty_count),0), "
+                        "coalesce(sum(tool_read_ambiguous_count),0), "
+                        "coalesce(sum(tool_read_permission_denied_count),0), "
+                        "coalesce(sum(tool_read_duplicate_count),0), "
+                        "coalesce(sum(tool_read_infrastructure_failure_count),0) "
+                        "FROM memory_recall_receipts WHERE created_at >= :since"
+                    ),
+                    parameters,
+                )
+            ).one()
+        automatic, evaluated = int(counts["automatic_turns"]), int(assessed["evaluated"])
+        injected = int(counts["injected"])
+        return {
+            **dict(counts),
+            **dict(assessed),
+            "zero_injection_rate": int(counts["zero_turns"]) / automatic if automatic else None,
+            "evaluation_coverage": evaluated / injected if injected else None,
+            "evaluated_use_rate": int(assessed["used"]) / evaluated if evaluated else None,
+            "attribution_outcomes": [dict(row) for row in outcomes],
+            "repeated_exposure_histogram": {str(count): pairs for count, pairs in repetitions},
+            "tool_reads": dict(
+                zip(
+                    (
+                        "success",
+                        "empty",
+                        "ambiguous",
+                        "permission_denied",
+                        "duplicate",
+                        "infrastructure_failure",
+                    ),
+                    (int(value) for value in tool_reads),
+                    strict=True,
+                )
+            ),
+        }
 
     async def record_tool_injected(
         self,
@@ -332,6 +530,9 @@ class MemoryRecallRepository:
                 "selected": item.selected,
                 "injected": item.injected,
                 "used": item.used,
+                "attribution_evaluated": item.attribution_evaluated,
+                "attribution_status": receipt.attribution_status,
+                "attribution_reason": receipt.attribution_reason,
                 "reinforced": item.reinforced,
                 "rerank_score": item.rerank_score,
                 "created_at": receipt.created_at.isoformat(),
