@@ -74,6 +74,27 @@ attribution-r2 通过实际任务执行层发送 low/4096 请求，没有末端�
 
 ## 剩余硬门槛
 
+### 发布检查与冻结副本审计（后续离线检查）
+
+当前代码完整回归 800/800（213.44 秒）。显式提供 `YUKI_VERSION=3.8.1` 后 Compose
+config 校验通过，release identity、0051 schema/迁移合同、Plugin API 2.0、离线质量
+19/19 与 38/38 检查通过。正式 tag/main 归属没有验证，也没有创建 tag 或发布镜像。
+发布检查生成的报告留在私有验证目录，仓库内自动生成文件恢复原状，未改基线。
+
+在冻结数据库的隔离只读副本执行生产质量审计：SQLite integrity=ok、FK 违规为零，
+但现有审计规则报告 249 条 error 计数（不是 249 个已确认损坏对象，检查之间可重叠）：
+
+- `contested_state_invalid` 26；`superseded_without_chain` 162。
+- `evidence_source_event_missing` 1；`evidence_source_invalid` 53。
+- `evidence_excerpt_missing` 3；`contradiction_state_mismatch` 4。
+- 无 evidence 的 automatic/rebuild fact 1428 条属于 warning，不自动改成 error 或删事实。
+
+53 条来源检查失败全部关联 SELF/agent_reflection，其中 52 条为 Yuki outbound。
+现有检查统一要求 human inbound，与自省可使用 Yuki 输出的现役合同存在不匹配，必须
+按实际生产验证规则进一步核对；不能直接把所有失败降级、忽略或宣布修复。替代链与
+冲突状态检查也需核对 Dream/Mutation 的真实账本合同。本轮没有修库或改审计规则。
+这不是上线前的实时生产审计；在检查规则与真实异常分清前，发布审计门仍未通过。
+
 ### 样本选择偏差复核
 
 重新审计冻结副本的最近两个完整 Asia/Shanghai 自然日（2026-09-07、09-08）：
