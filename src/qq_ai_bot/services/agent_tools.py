@@ -40,6 +40,7 @@ from qq_ai_bot.memory.enums import (
 )
 from qq_ai_bot.memory.errors import MemoryRetrievalError
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
+from qq_ai_bot.memory.match_projection import match_projection
 from qq_ai_bot.memory.models import MemoryEntityTarget, MemoryQueryIntent
 from qq_ai_bot.memory.mutation.models import (
     SELF_MEMORY_CATEGORIES,
@@ -1640,7 +1641,10 @@ class AgentToolService:
                     else {}
                 ),
                 "memories": [
-                    self._memory_json(hit.fact, retrieval_reason=hit.selection_reason)
+                    {
+                        **self._memory_json(hit.fact, retrieval_reason=hit.selection_reason),
+                        "match": match_projection(hit, result, self._runtime()),
+                    }
                     for hit in result.hits
                 ],
             }
@@ -2028,7 +2032,10 @@ class AgentToolService:
                 "group_id": group_id,
                 "effective_query": effective_query_summary(parse_memory_tool_intent(arguments)),
                 "memories": [
-                    self._memory_json(hit.fact, retrieval_reason=hit.selection_reason)
+                    {
+                        **self._memory_json(hit.fact, retrieval_reason=hit.selection_reason),
+                        "match": match_projection(hit, result, self._runtime()),
+                    }
                     for hit in result.hits
                 ],
             }
@@ -2097,7 +2104,10 @@ class AgentToolService:
                     else "global_and_current_group"
                 ),
                 "memories": [
-                    self._self_memory_json(hit.fact, retrieval_reason=hit.selection_reason)
+                    {
+                        **self._self_memory_json(hit.fact, retrieval_reason=hit.selection_reason),
+                        "match": match_projection(hit, result, self._runtime()),
+                    }
                     for hit in visible_hits
                 ],
             }

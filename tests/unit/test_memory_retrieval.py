@@ -1226,6 +1226,17 @@ async def test_global_topics_precede_background_and_preserve_total_order(
     assert MemoryContextService._limit_automatic_result(no_topics, None, runtime).hits == ()
     uncalibrated = result.model_copy(update={"embedding_profile": "unknown"})
     assert MemoryContextService._limit_automatic_result(uncalibrated, None, runtime).hits == ()
+    from qq_ai_bot.memory.match_projection import match_projection
+
+    assert match_projection(hits[0], result, runtime) == {
+        "lexical_match": True,
+        "semantic_candidate": True,
+        "topic_admission": "not_passed",
+    }
+    assert match_projection(hits[1], result, runtime)["topic_admission"] == "passed"
+    assert match_projection(hits[1], uncalibrated, runtime)["topic_admission"] == "unknown"
+    overview = result.model_copy(update={"mode": MemoryRetrievalMode.OVERVIEW})
+    assert match_projection(hits[1], overview, runtime)["topic_admission"] == "unknown"
 
 
 @pytest.mark.asyncio

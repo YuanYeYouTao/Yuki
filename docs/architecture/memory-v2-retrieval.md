@@ -1,5 +1,10 @@
 # Memory 当前检索合同
 
+主动列表的每条候选包含固定 `match` 投影：`lexical_match`、`semantic_candidate`、
+`topic_admission=passed|not_passed|unknown`。准入采用该请求有效的已校准 profile 与主题阈值；
+未校准/故障为 unknown，overview 不套主题门槛。字段只解释候选，不过滤主动结果，
+passed 也不是语义真实性保证。尚未完成真实样本校准，不应以默认阈值替代验收。
+
 人物工具的群选择器只用于明确限定目标群，不用于提交权限证明；后端自行解析历史关系。
 事件 mention/reply 优先使用 subject_ref，姓名使用名称入口，兼容账号仍可使用。
 多个人物选择器一律返回 invalid_person_selector，不静默覆盖目标。
