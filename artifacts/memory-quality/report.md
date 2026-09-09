@@ -1,11 +1,11 @@
 # Memory V2 Quality Report
 
 - Suite: `memory-v2-quality-v2` / `full`
-- Commit: `cf236b92a7a52ebea988acf265df901b62605d57`
+- Commit: `c4b1422a048cef308b45725d0c066c622dec0abf`
 - Dataset: `5dfc20b7c1de038d985ce14d773ca0d73c1c731134366b039db55e5d89af71d4`
 - Cases: 19/19 passed
 - Failed IDs: none
-- Duration: 5.414s
+- Duration: 4.194s
 
 | Metric | Value | Numerator/denominator |
 |---|---:|---:|
@@ -20,8 +20,8 @@
 | `conflict_coactivation_rate` | 0.0 | 0/1 |
 | `conflict_resolution_accuracy` | 1.0 | 1/1 |
 | `contested_context_leak_rate` | 0.0 | 0/1 |
-| `context_latency_p50_ms` | 0.035400036722421646 | 0.0354/1 |
-| `context_latency_p95_ms` | 0.04850002005696297 | 0.0485/1 |
+| `context_latency_p50_ms` | 0.031899893656373024 | 0.0318999/1 |
+| `context_latency_p95_ms` | 0.041999854147434235 | 0.0419999/1 |
 | `context_precision` | 1.0 | 16/16 |
 | `context_recall` | 1.0 | 16/16 |
 | `correction_resolution_accuracy` | 1.0 | 1/1 |
@@ -31,7 +31,7 @@
 | `duplicate_evidence_rate` | 0.0 | 0/12 |
 | `empty_query_fact_leak_rate` | 0.0 | 0/1 |
 | `evidence_provenance_accuracy` | 1.0 | 12/12 |
-| `extraction_latency_p50_ms` | 19.322500098496675 | 19.3225/1 |
+| `extraction_latency_p50_ms` | 15.507200034335256 | 15.5072/1 |
 | `extraction_latency_p95_ms` | null | 0/0 |
 | `fact_accuracy` | 1.0 | 27/27 |
 | `fact_state_accuracy` | 1.0 | 27/27 |
@@ -43,7 +43,7 @@
 | `outbound_evidence_rate` | 0.0 | 0/1 |
 | `pipeline_error_rate` | 0.0 | 0/19 |
 | `precision_at_k` | 1.0 | 16/16 |
-| `quality_suite_total_ms` | 1177.5965001434088 | 1177.6/1 |
+| `quality_suite_total_ms` | 903.1281000934541 | 903.128/1 |
 | `rebuild_duplicate_commit_rate` | 0.0 | 0/1 |
 | `rebuild_historical_overwrite_rate` | 0.0 | 0/1 |
 | `rebuild_receipt_accuracy` | 1.0 | 1/1 |
@@ -51,8 +51,8 @@
 | `rebuild_review_bypass_rate` | 0.0 | 0/1 |
 | `recall_at_k` | 1.0 | 16/16 |
 | `retraction_resolution_accuracy` | null | 0/0 |
-| `retrieval_latency_p50_ms` | 15.56450012139976 | 15.5645/1 |
-| `retrieval_latency_p95_ms` | 33.654100028797984 | 33.6541/1 |
+| `retrieval_latency_p50_ms` | 12.54040002822876 | 12.5404/1 |
+| `retrieval_latency_p95_ms` | 17.94819999486208 | 17.9482/1 |
 | `scope_attribution_accuracy` | 1.0 | 12/12 |
 | `source_event_mismatch_rate` | 0.0 | 0/12 |
 | `subject_attribution_accuracy` | 1.0 | 12/12 |
