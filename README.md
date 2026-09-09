@@ -22,7 +22,8 @@ Yuki 不是给 QQ 套一层模型回复的问答机器人。它把 Conversation�
 Automation、Plugin 与 QQ 登录账号和 Gateway 连接分开，让同一个长期角色能够换账号、换
 Provider，并在权限边界内持续记住人与共同经历。
 
-最新已发布版本为 **3.8.1**。当前源码包含 3.8.1 之后的插件唤醒与 Memory P1 治理；3.8 只运行
+最新已发布版本为 **3.8.1**；当前源码基线为 **3.8.2（发布准备中）**，包含插件唤醒、Memory P1
+治理、意图读取与记忆可靠性修复。3.8 只运行
 canonical schema，Alembic head 为 `0051`。
 
 ## 3.8 核心合同
@@ -119,7 +120,8 @@ Invoke-WebRequest -Uri https://github.com/YuanYeYouTao/Yuki-QQbot/releases/downl
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-安装器默认版本为 `3.8.1`。它会校验 Release bundle、固定镜像版本、备份已有部署、受控更新
+上述下载命令仍指向已发布的 `3.8.1`；当前源码安装器默认 `3.8.2`，须等待对应 Release 资产
+发布后使用，不能将未发布版本视为可下载。安装器会校验 Release bundle、固定镜像版本、备份已有部署、受控更新
 内置插件，并在 Bot 启动前执行离线 recount/check 与队列 doctor。任一门禁失败都保持
 Bot 停止。密钥输入不回显，安装器不会在线试用 API key。
 
@@ -233,6 +235,8 @@ uv run pytest
 - [SnowLuma Provider](docs/deployment/snowluma.md)
 - [3.8.1 升级指南](docs/upgrade-3.8.1.md)
 - [3.8.1 发布说明](docs/releases/v3.8.1.md)
+- [3.8.2 发布准备说明](docs/releases/v3.8.2.md)
+- [3.8.2 升级指南](docs/upgrade-3.8.2.md)
 - [版本化 Docker Release](docs/operations/versioned-docker-release.md)
 - [CHANGELOG](CHANGELOG.md)
 
