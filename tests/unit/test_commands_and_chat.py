@@ -659,6 +659,13 @@ async def test_ordinary_chat_always_assembles_agent_context(database: Database) 
     assert result.reason == "chat"
     assert len(provider.requests) == 1
     assert sender.messages[0].text == "表情也要先走 Main Agent"
+    request = provider.requests[0]
+    assert "event_bound_memory_refs" in request.messages[-1].content
+    assert "available_memory_subjects" not in request.messages[-1].content
+    assert any(
+        message.role == "system" and "不是可查询人物名单或权限白名单" in (message.content or "")
+        for message in request.messages
+    )
 
 
 @pytest.mark.asyncio

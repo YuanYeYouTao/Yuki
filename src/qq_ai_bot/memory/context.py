@@ -116,6 +116,9 @@ def entity_block(block: MemoryContextBlock, timezone: str = "Asia/Shanghai") -> 
 
 
 _ENTITY_MEMORY_RULE_TEMPLATE = (
+    "event_bound_memory_refs 只列本条消息可用的 subject_ref，不是可查询人物名单或权限白名单。"
+    "没有列出的姓名仍可交给人物记忆工具的 display_name，由后端解析与鉴权；"
+    "不要仅因引用列表未列出就断言不能查，或在尝试名称查询前要求用户提供账号。"
     "每条长期事实只属于它所在的 entity block。不得把 current_group 或其他人物的"
     "信息归给 current_person；没有事实时不得猜测。third_party/reported 表示他人报告，"
     "不等于本人确认；contested=true 表示存在未解决冲突，不得当作确定事实。"

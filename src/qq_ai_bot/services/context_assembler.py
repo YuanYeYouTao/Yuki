@@ -291,7 +291,7 @@ class ContextAssembler:
                     for hit in self_hits
                 ]
             }
-        context["available_memory_subjects"] = await self._available_memory_subjects(
+        context["event_bound_memory_refs"] = await self._event_bound_memory_refs(
             inbound,
             profile,
         )
@@ -789,7 +789,7 @@ class ContextAssembler:
         delivered.reverse()
         return tuple(delivered)
 
-    async def _available_memory_subjects(
+    async def _event_bound_memory_refs(
         self,
         inbound: InboundMessage,
         current_profile: UserProfileSnapshot,
@@ -1115,10 +1115,10 @@ class ContextAssembler:
         if isinstance(current_self, dict):
             for index, memory in enumerate(current_self.get("facts", ())):
                 add_memory(f"current_self.fact.{index}", memory, fallback_priority=70)
-        memory_subjects = context.get("available_memory_subjects")
+        memory_subjects = context.get("event_bound_memory_refs")
         if isinstance(memory_subjects, list) and memory_subjects:
             add(
-                "available_memory_subjects",
+                "event_bound_memory_refs",
                 memory_subjects,
                 priority=100,
                 relevance=1,
