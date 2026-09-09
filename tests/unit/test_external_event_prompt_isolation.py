@@ -957,6 +957,9 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
         "data": {
             "group_id": "group-100",
             "memories": [],
+            "returned_count": 0,
+            "result_scope": "bounded_query",
+            "exhaustive": False,
             "effective_query": {
                 "mode": "overview",
                 "purpose": "recall",

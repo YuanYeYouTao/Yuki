@@ -35,6 +35,7 @@ class ToolExecutionResult:
     tool_name: str = ""
     metadata: dict[str, Any] | None = None
     evidence_state: dict[str, Any] | None = None
+    memory_grounding_policy: str | None = None
 
     def model_payload(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -192,6 +193,21 @@ def normalize_legacy_result(
         finalize_after_commit = None if finalize_value is None else bool(finalize_value)
         retryable = bool(raw.pop("retryable", False))
         evidence = raw.pop("evidence_state", None)
+        grounding = raw.pop("memory_grounding_policy", None)
+        trusted_grounding = (
+            grounding
+            if provider_id == "core"
+            and tool_name
+            in {
+                "get_person_memories",
+                "get_group_memories",
+                "get_self_memories",
+                "get_memory_fact",
+                "get_memory_evidence",
+            }
+            and isinstance(grounding, str)
+            else None
+        )
         trusted_evidence = (
             evidence
             if provider_id == "core"
@@ -220,6 +236,7 @@ def normalize_legacy_result(
             provider_id=provider_id,
             tool_name=tool_name,
             evidence_state=trusted_evidence,
+            memory_grounding_policy=trusted_grounding,
         )
     return ToolExecutionResult(
         ok=True,

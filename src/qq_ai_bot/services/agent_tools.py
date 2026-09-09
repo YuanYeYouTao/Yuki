@@ -19,6 +19,7 @@ from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.admin.permission_catalog import CapabilityReport, PermissionCatalogService
 from qq_ai_bot.automation.models import TurnOrigin
+from qq_ai_bot.capabilities.results import normalize_legacy_result
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.delivery import ReplyControlState, ReplySequenceSpec
 from qq_ai_bot.conversation.reply import ReplyEffect
@@ -2129,7 +2130,13 @@ class AgentToolService:
     def _memory_list_result(self, *, data: dict[str, Any]) -> str:
         """Fit ranked whole facts into the existing response budget, never fake an empty search."""
         remaining = list(data["memories"])
-        payload = {**data, "memories": remaining}
+        payload = {
+            **data,
+            "memories": remaining,
+            "returned_count": len(remaining),
+            "result_scope": "bounded_query",
+            "exhaustive": False,
+        }
         limit = self._runtime().agent.tool_result_max_characters
         while True:
             wire = {"ok": True, "data": payload}
@@ -2137,7 +2144,21 @@ class AgentToolService:
             if remaining:
                 # _capture_memory_tool_result appends this after rendering.
                 wire["memory_grounding_policy"] = MEMORY_GROUNDING_RULE
-            if len(json.dumps(wire, ensure_ascii=False, default=str)) <= limit:
+            # Account for the normalized envelope as well as the service payload.
+            # Otherwise preserving the grounding rule can overflow downstream and
+            # turn complete facts into an artifact/summary after this prefix fits.
+            model_wire = normalize_legacy_result(
+                {**wire, "mutation_committed": False},
+                provider_id="core",
+                tool_name=_MEMORY_READ_TOOL.get() or "get_person_memories",
+            ).model_payload()
+            if (
+                max(
+                    len(json.dumps(wire, ensure_ascii=False, default=str)),
+                    len(json.dumps(model_wire, ensure_ascii=False, default=str)),
+                )
+                <= limit
+            ):
                 return self._result(data=payload)
             if len(remaining) <= 1:
                 return self._result(

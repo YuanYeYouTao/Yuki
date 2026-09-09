@@ -3238,6 +3238,21 @@ async def test_memory_tool_selectors_share_intent_reads_and_cache_with_historica
     assert by_name["evidence_state"]["source"] == "memory_tool"
     assert by_name["evidence_state"]["source_refs"] == [f"M{group_fact.id}"]
     assert by_name["evidence_state"]["delivery"] == "staged"
+    from qq_ai_bot.capabilities.results import ToolResultBudgeter, normalize_legacy_result
+    from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE
+
+    # Check the actual tool normalization/budget boundary, not only the raw
+    # service result: the model must receive the host's interpretation rule.
+    model_result = await ToolResultBudgeter(
+        max_characters=(
+            await tools._runtime_config.snapshot(user_id="1001", group_id="3001")
+        ).agent.tool_result_max_characters
+    ).render(normalize_legacy_result(by_name, provider_id="core", tool_name="get_person_memories"))
+    model_payload = json.loads(model_result.text)
+    assert model_payload["memory_grounding_policy"] == MEMORY_GROUNDING_RULE
+    assert model_payload["data"]["exhaustive"] is False
+    assert model_payload["data"]["result_scope"] == "bounded_query"
+    assert model_payload["data"]["returned_count"] == len(by_name["data"]["memories"])
     conflicting = json.loads(
         await tools.execute(
             "get_person_memories",
@@ -3403,6 +3418,14 @@ async def test_memory_tool_selectors_share_intent_reads_and_cache_with_historica
         assert rendered["data"]["effective_query"] == source["effective_query"]
         rendered["memory_grounding_policy"] = MEMORY_GROUNDING_RULE
         assert len(json.dumps(rendered, ensure_ascii=False)) <= 2000
+        normalized_prefix = normalize_legacy_result(
+            {**rendered, "mutation_committed": False},
+            provider_id="core",
+            tool_name="get_person_memories",
+        )
+        budgeted_prefix = await ToolResultBudgeter(max_characters=2000).render(normalized_prefix)
+        assert not budgeted_prefix.truncated
+        assert json.loads(budgeted_prefix.text)["data"]["memories"] == rows[:count]
         assert len(source["memories"]) == 10
         too_large = json.loads(
             tools._memory_list_result(data={"memories": [{"content": "x" * 4000}]})

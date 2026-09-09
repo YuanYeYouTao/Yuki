@@ -53,6 +53,10 @@ overview，purpose 默认 recall。非法枚举和无效区间返回 invalid_arg
 
 人物、群与 SELF 的无 query 总览使用 overview；有 query 使用 relevant/lexical/hybrid。
 主体分类不迁移、不复制事实。返回数量有界，空结果是正常成功，不是权限错误。
+三个列表工具始终标注 `result_scope=bounded_query`、`exhaustive=false` 和本次
+`returned_count`；没有发生字符裁剪也不代表数据库只有这些事实。`truncated` 只说明
+已知的结果裁剪，不能把 false 当作穷尽证明。核心记忆工具的固定 grounding 规则必须
+穿过统一工具结果转换和正常结果预算器到达模型；插件不能以同名字段声明可信规则。
 记忆列表超过原有工具字符预算时只保留排序靠前的完整事实，并返回 `truncated=true`、
 `returned_count`、`truncation_reason=response_character_budget`，不裁剪事实正文。
 这是输出预算，不是新增条数配额；不能把截断列表视为全部存档。连首条完整事实也放不下时

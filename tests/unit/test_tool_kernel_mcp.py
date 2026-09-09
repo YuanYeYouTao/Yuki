@@ -145,6 +145,18 @@ def test_conditional_mutation_result_preserves_explicit_commit_state() -> None:
     )
     assert core_read.evidence_state == evidence
     assert plugin_claim.evidence_state is None
+    for provider, tool, expected in (
+        ("core", "get_person_memories", "bounded read"),
+        ("plugin", "get_person_memories", None),
+        ("core", "web_search", None),
+    ):
+        normalized = normalize_legacy_result(
+            {"ok": True, "data": {}, "memory_grounding_policy": "bounded read"},
+            provider_id=provider,
+            tool_name=tool,
+        )
+        assert normalized.memory_grounding_policy == expected
+        assert normalized.model_payload().get("memory_grounding_policy") == expected
 
 
 def test_mutation_commit_resolution_uses_explicit_result_then_descriptor_effect() -> None:
