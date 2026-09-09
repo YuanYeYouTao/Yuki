@@ -66,6 +66,16 @@ episode 必须提供 value_reason 简述未来回忆价值（不放进 content�
 琐碎、无持续意义，不能自动保存；3 是值得未来理解或回忆；4–5 是重要承诺、变化或里程碑。
 有意义的一次性经历可为 3，不需重复发生。普通问候、无进展的调侃或前一经历的简单重复不记，
 输出 noop/空数组即可。已有记忆的纠错、撤回、合并不是首次收录，不需抬高其重要性。
+
+先区分持久自我认识与一次经历，再决定输出位置：create fact/preference 必须表达脱离当次
+日期和对话仍成立、且有来源支持的认识、偏好或原则。叙述“某天我教了什么、做了什么、
+和谁说了什么”是 Episode，不因改成 kind=fact 或 category=self_reflection 就成为稳定事实。
+不要从一次互动泛化出持续偏好或原则，也不要把同一段经历同时写进 proposals 和 episodes。
+一窗有多段值得记住的经历时，只选一段最有价值的进入 episodes；其余不借 proposals 保存。
+一个 Episode 应围绕同一目标、冲突或进展；“同一天/同一个群”不足以把无关话题合并。
+选择支持该核心经历的 evidence_refs，正文也仅写这些证据支持的经历，不写整窗流水账。
+人物主张、角色扮演与模型此前的推测应保持其来源性质；工具执行成功只能依据确认的回执，
+不能由聊天里“我完成了”的说法推导。reason/value_reason 说明价值，不代替证据。
 """
 
 _EPISODE_EVIDENCE_INSTRUCTION = """\
@@ -168,16 +178,18 @@ class SelfReflectionService:
                     f"{_INSTRUCTION.format(bot_name=self._settings.bot_display_name)}\n"
                     f"{_EPISODE_INSTRUCTION.format(timezone=self._settings.memory_self_reflection_timezone)}\n\n"
                     f"{_EPISODE_EVIDENCE_INSTRUCTION}\n"
-                    f"{_VALUE_INSTRUCTION}\n"
                     f"【{self._settings.bot_display_name} 共享核心人格】\n"
-                    f"{self._settings.bot_persona}"
+                    f"{self._settings.bot_persona}\n\n"
+                    f"【本次结构化记忆任务的归类与价值合同】\n{_VALUE_INSTRUCTION}"
                 ),
                 structured_input=payload,
                 output_model=SelfReflectionOutput,
                 temperature=0.1,
                 max_output_tokens=self._settings.memory_self_reflection_max_output_tokens,
                 allow_text_json=True,
-                compact_schema=True,
+                # Field-level semantic boundaries are needed at the emit_result call site.
+                # Compact schemas remove descriptions, losing the fact/episode distinction.
+                compact_schema=False,
                 validation_retries=1,
                 validate_output=validate_references,
                 validation_repair_hint=(

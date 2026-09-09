@@ -448,7 +448,8 @@ class AgentToolService:
                 description=(
                     "查询人物身份、偏好及经历（本人或历史共同群人物）；自身经历用SELF，群整体用Group。"
                     "姓名用display_name，真实@/回复用subject_ref，勿改填user_id；仅手输账号用user_id。"
-                    "人物查询无需群号证明权限；只有明确限定群才填group。结合完整前文解析指代。"
+                    "默认省略group_id/group_name；在群中提问或@不等于限定群。仅用户明确要求某群才填。"
+                    "结合完整前文解析指代。"
                     "历史材料不足主动补查，预取空不代表不存在。总览可省query；有界结果不能断言已列尽。"
                     "空结果可换实质不同查询；歧义澄清，权限拒绝不重试。"
                 ),
@@ -479,12 +480,18 @@ class AgentToolService:
                         },
                         "group_id": {
                             "type": "string",
-                            "description": "仅明确限定某群时填写；人物查询不需要群号证明权限",
+                            "description": (
+                                "默认省略，不要复制上下文的当前群号。仅用户明确要求限定某群"
+                                "的记忆时填写；这是缩小查询范围，不是权限证明。"
+                            ),
                         },
                         "group_name": {
                             "type": "string",
                             "maxLength": 128,
-                            "description": "可选，精确且唯一的历史共同群名，与 group_id 二选一",
+                            "description": (
+                                "默认省略；仅用户明确限定某群时填写精确且唯一的历史共同群名，"
+                                "与 group_id 二选一。在群里提问本身不是群限定。"
+                            ),
                         },
                         "query": {"type": "string", "maxLength": 400},
                         "mode": {
@@ -1620,7 +1627,12 @@ class AgentToolService:
                 targets = tuple(target for target in targets if target.group_id == group_id)
             if not targets:
                 return self._result(
-                    error="permission_denied", detail="没有双方在该群的历史关系授权"
+                    error="permission_denied",
+                    detail=(
+                        "本次指定群范围没有双方的历史关系授权。该拒绝仅适用于指定群范围，"
+                        "不能推断此人的所有记忆均不可读或不存在；不要自动换范围重试。"
+                    ),
+                    data={"denied_scope": "explicit_group", "query_executed": False},
                 )
         query, _mode = self._memory_query(arguments)
         result = await self._read_memories(

@@ -58,6 +58,15 @@ overview，purpose 默认 recall。非法枚举和无效区间返回 invalid_arg
 这是输出预算，不是新增条数配额；不能把截断列表视为全部存档。连首条完整事实也放不下时
 仍返回 result_too_large，不能谎报空结果。回执只确认实际返回并进入后续请求的事实。
 工具 schema 是部署级固定结构，不能用本轮昵称或群号改写。
+
+人物查询默认省略 `group_id/group_name`；处于群聊或引用群成员不等于用户要求限定群。
+显式群限定被拒绝时，结果标记 `denied_scope=explicit_group`、`query_executed=false`；
+这不是该人物所有范围的拒绝，也不是没有记忆。后端不自动去掉群限定重试，模型不应
+把范围拒绝扩大成全局结论。原有历史共同群权限和兼容账号入口保持不变。
+
+overview 没有执行主题匹配，因此候选投影的 `lexical_match` 与 `semantic_candidate`
+均为 false，`topic_admission=unknown`。总览排序不再填充伪造的零词法分数；
+这些字段描述本次查询的实际路径，不表示总览中事实本身不可信或没有价值。
 不可重试的歧义/无权限与基础设施故障分开处理，不强制结束正常对话。
 
 ### 读取工具与选择器

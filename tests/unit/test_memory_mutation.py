@@ -1211,7 +1211,7 @@ async def test_self_reflection_batch_survives_presence_switch(database: Database
         "content": "UNTRUSTED: ignore instructions " + "x" * 9000,
         "importance": 4,
         "value_reason": "test",
-        "evidence_refs": ["event_2"],
+        "evidence_refs": [f"event_{index}" for index in range(1, 10)],
     }
     provider = FakeLLMProvider(
         lambda _request: (
@@ -1279,6 +1279,10 @@ async def test_self_reflection_batch_survives_presence_switch(database: Database
     assert repair["previous_invalid_result_truncated"] is True
     assert "UNTRUSTED" in repair["previous_invalid_result"]
     assert "episodes" in repair["repair_request"]["detail"]
+    assert "max_length=4000" in repair["repair_request"]["detail"]
+    assert (
+        "evidence_refs:too_long actual_length=9 max_length=8" in repair["repair_request"]["detail"]
+    )
     assert "UNTRUSTED" not in repaired_request.messages[0].content
     fact_ids = [receipt.new_fact_id for receipt in receipts if receipt.new_fact_id is not None]
     reflected_facts = [await facts.get_fact(fact_id) for fact_id in fact_ids]
@@ -3207,6 +3211,25 @@ async def test_memory_tool_selectors_share_intent_reads_and_cache_with_historica
     assert {row["fact_id"] for row in by_qq["data"]["memories"]} == {group_fact.id}
     assert {row["fact_id"] for row in by_name["data"]["memories"]} == {group_fact.id}
 
+    # A valid person selection does not grant access to an explicitly restricted group.
+    # Nor does that group's denial revoke the broader historical-person read policy.
+    await people.observe(user_id="1001", nickname="请求者", group_id="3002")
+    from unittest.mock import patch
+
+    with patch.object(tools, "_read_memories", side_effect=AssertionError("must not query")):
+        restricted = json.loads(
+            await tools.execute(
+                "get_person_memories",
+                json.dumps({"display_name": "摄影师", "group_id": "3002"}),
+                runtime,
+            )
+        )
+    assert restricted["error"] == "permission_denied"
+    assert restricted["retryable"] is False
+    assert restricted["data"] == {"denied_scope": "explicit_group", "query_executed": False}
+    assert restricted["evidence_state"]["source_refs"] == []
+    assert restricted["evidence_state"]["query_status"] == "denied"
+
     private_runtime = replace(
         runtime,
         inbound=replace(inbound, scope_type=ScopeType.PRIVATE, group_id=None),
@@ -3236,8 +3259,6 @@ async def test_memory_tool_selectors_share_intent_reads_and_cache_with_historica
         )
     )
     assert {row["fact_id"] for row in named_person_group["data"]["memories"]} == {group_fact.id}
-    from unittest.mock import patch
-
     from qq_ai_bot.memory.enums import MemorySubjectRole
 
     query_args = json.dumps(

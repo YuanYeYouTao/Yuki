@@ -246,7 +246,6 @@ class MemoryRanker:
                 fact=fact,
                 target=target,
                 rank=rank,
-                lexical_score=0,
                 sources=(reason,),
                 selection_reason=reason,
             )

@@ -33,7 +33,11 @@ def match_projection(
                 "passed" if hit.semantic_score >= config.automatic_topic_threshold else "not_passed"
             )
     return {
-        "lexical_match": hit.lexical_score is not None,
-        "semantic_candidate": hit.semantic_score is not None,
+        "lexical_match": (
+            result.mode is not MemoryRetrievalMode.OVERVIEW and hit.lexical_score is not None
+        ),
+        "semantic_candidate": (
+            result.mode is not MemoryRetrievalMode.OVERVIEW and hit.semantic_score is not None
+        ),
         "topic_admission": admission,
     }

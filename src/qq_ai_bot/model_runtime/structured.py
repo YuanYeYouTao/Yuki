@@ -299,12 +299,20 @@ def _validation_error_detail(exc: ValidationError) -> str:
     details: list[str] = []
     for item in exc.errors(
         include_url=False,
-        include_context=False,
+        include_context=True,
         include_input=True,
     )[:8]:
         location = ".".join(str(part) for part in item.get("loc", ())) or "$"
         error_type = str(item.get("type", "validation_error"))
         detail = f"{location}:{error_type}"
+        # Only numeric constraint metadata is safe for repair diagnostics/logs.
+        # Do not serialize Pydantic's arbitrary context (including exception objects).
+        if error_type in {"too_long", "too_short", "string_too_long", "string_too_short"}:
+            context = item.get("ctx", {})
+            for key in ("actual_length", "min_length", "max_length"):
+                value = context.get(key)
+                if isinstance(value, int) and not isinstance(value, bool):
+                    detail += f" {key}={value}"
         invalid_value = item.get("input")
         if error_type == "literal_error" and isinstance(invalid_value, str):
             visible = " ".join(invalid_value.split())[:64]

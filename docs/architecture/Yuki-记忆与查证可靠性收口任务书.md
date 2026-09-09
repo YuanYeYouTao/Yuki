@@ -90,3 +90,6 @@ session 回执、严格日期、有界完整事实返回继续回归，不重新
 `sha256:29b3bfbc7ca3460b337d8f373e573b5eeaa23ffce7fcb606ea4771b957c938a3`。
 环境 WEB_MODE=native_with_tavily_fallback，不等于所有会话最终有效权限。
 当前容器仅启动约三小时，9 月 7–8 日容器日志无记录，不能解释成零调用。尚未完成 C1 验收。
+
+后续实现和真实复测详见 [验收进度](memory-evidence-acceptance-progress.md)。
+C1–C4 代码提交保留，但不等于真实效果通过；自省语义与相关性校准等硬门槛仍未通过，禁止部署。

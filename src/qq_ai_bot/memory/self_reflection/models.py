@@ -111,9 +111,23 @@ class SelfReflectionProposal(_Contract):
         ]
         | None
     ) = None
-    kind: Literal[MemoryKind.FACT, MemoryKind.PREFERENCE] | None = None
+    kind: Literal[MemoryKind.FACT, MemoryKind.PREFERENCE] | None = Field(
+        default=None,
+        description=(
+            "create 仅保存持续成立的自我事实或偏好；某次做了什么是经历，"
+            "必须放 episodes，不能填 fact 逃避一条 Episode 上限。"
+        ),
+    )
     memory_key: str | None = Field(default=None, max_length=128)
-    content: str | None = Field(default=None, max_length=4000)
+    content: str | None = Field(
+        default=None,
+        max_length=4000,
+        description=(
+            "create 的正文是有证据支持的持续自我认识，不是某天的事件摘要。"
+            "只想叙述某次聊天、辅导或任务执行时，不创建本条，改用 episodes。"
+            "不得由一次互动推断持久偏好；已有事实的纠错和撤回不受此首次写入要求限制。"
+        ),
+    )
     reason: str = Field(min_length=1, max_length=500)
     confidence: float = Field(default=0.85, ge=0, le=1)
     importance: int = Field(default=3, ge=1, le=5)
@@ -150,7 +164,15 @@ class SelfReflectionProposal(_Contract):
 
 
 class SelfEpisodeProposal(_Contract):
-    content: str = Field(min_length=1, max_length=4000)
+    content: str = Field(
+        min_length=1,
+        max_length=4000,
+        description=(
+            "只写一个核心经历及其直接进展，不是整窗摘要或当天日记。"
+            "话题无因果关联时选最有价值的一件，舍弃其余；"
+            "同一天、同一群或都是自己参与不足以合并。正文须由本条 evidence_refs 支持。"
+        ),
+    )
     importance: int = Field(ge=1, le=5)
     value_reason: str = Field(min_length=1, max_length=240)
     evidence_refs: tuple[str, ...] = Field(min_length=1, max_length=8)

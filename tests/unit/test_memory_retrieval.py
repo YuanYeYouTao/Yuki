@@ -1245,7 +1245,14 @@ async def test_global_topics_precede_background_and_preserve_total_order(
     assert match_projection(hits[1], result, runtime)["topic_admission"] == "passed"
     assert match_projection(hits[1], uncalibrated, runtime)["topic_admission"] == "unknown"
     overview = result.model_copy(update={"mode": MemoryRetrievalMode.OVERVIEW})
-    assert match_projection(hits[1], overview, runtime)["topic_admission"] == "unknown"
+    assert match_projection(hits[1], overview, runtime) == {
+        "lexical_match": False,
+        "semantic_candidate": False,
+        "topic_admission": "unknown",
+    }
+    overview_hits = MemoryRanker.rank_overview((hits[1].fact,), target=other, limit=4)
+    assert overview_hits[0].lexical_score is None
+    assert overview_hits[0].semantic_score is None
 
 
 @pytest.mark.asyncio
