@@ -813,6 +813,50 @@ async def test_dream_merge_is_atomic_audited_and_reversible(database: Database) 
         assert receipt.trigger_event_id is None
         assert receipt.trigger_source_type == "dream_operation"
 
+    unrelated = await _fact_with_evidence(
+        facts,
+        ledger,
+        message_id="outside-dream",
+        memory_key="outside:topic",
+        content="我喜欢散步",
+    )
+    unrelated_evidence = (await facts.list_evidence(unrelated.id, limit=10))[0]
+    async with facts.repository.transaction() as session:
+        assert await facts.repository.add_relation(
+            source_fact_id=unrelated.id,
+            target_fact_id=first.id,
+            relation_type=MemoryFactRelationType.SUPPORTS,
+            confidence=1.0,
+            source_event_id=None,
+            session=session,
+        )
+        unrelated_relation = await session.scalar(
+            select(MemoryFactRelationModel).where(
+                MemoryFactRelationModel.source_fact_id == unrelated.id,
+                MemoryFactRelationModel.target_fact_id == first.id,
+            )
+        )
+        assert unrelated_relation is not None
+    # A reused ID must not authorize deletion outside this operation. Each
+    # rejected attempt rolls back its tampered fixture and creates no receipt.
+    for field, stale_id, error in (
+        ("added_evidence_ids_json", unrelated_evidence.id, "Dream evidence reference"),
+        ("added_relation_ids_json", unrelated_relation.id, "Dream relation reference"),
+    ):
+        with pytest.raises(RuntimeError, match=error):
+            async with facts.repository.transaction() as session:
+                stored = await session.get(MemoryDreamOperationModel, operation.id)
+                assert stored is not None
+                setattr(stored, field, json.dumps([stale_id]))
+                await session.flush()
+                await mutations.rollback_dream_operation(
+                    public_id=operation.public_id,
+                    session=session,
+                )
+        assert (await facts.list_evidence(unrelated.id, limit=10))[0].id == unrelated_evidence.id
+        async with database.sessions() as session:
+            assert await session.get(MemoryFactRelationModel, unrelated_relation.id) is not None
+
     async with facts.repository.transaction() as session:
         affected = await mutations.rollback_dream_operation(
             public_id=operation.public_id,

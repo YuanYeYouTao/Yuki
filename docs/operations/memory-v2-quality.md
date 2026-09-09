@@ -46,6 +46,11 @@ Dream CONTEST 可保留两个 active 事实，并把双方 `conflict_state` 标�
 这是保留争议的合法状态，不是矛盾状态错误。active 矛盾关系中任一方未标记仍报错。
 缺失历史替代链必须单独调查；旧备份中存在链不代表可以直接覆盖现有数据库。
 
+Dream 回滚在删除新增证据／关系前，还会检查持久化编号所指记录的事实归属。
+证据必须属于该操作的来源或结果事实，关系两端也必须在该集合内；跨事实错指会
+拒绝回滚，而不是删除无关记录。这个检查不能替代恢复时的完整来源核验，尤其不能
+把已被复用的旧编号视为可信身份。
+
 ```bash
 uv run qq-ai-bot-cli memory quality validate-dataset
 uv run qq-ai-bot-cli memory quality run --suite full

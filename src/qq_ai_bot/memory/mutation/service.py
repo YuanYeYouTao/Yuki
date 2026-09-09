@@ -775,6 +775,33 @@ class MemoryMutationService:
         if dependencies:
             raise RuntimeError("Dream operation has later dependent operations")
 
+        added_evidence = tuple(int(item) for item in json.loads(operation.added_evidence_ids_json))
+        added_relations = tuple(int(item) for item in json.loads(operation.added_relation_ids_json))
+        # Persisted JSON IDs are not ownership proofs. Historical table rebuilds
+        # can reuse IDs; never delete another fact's evidence or relation.
+        if added_evidence:
+            foreign_evidence = await session.scalar(
+                select(MemoryEvidenceModel.id)
+                .where(
+                    MemoryEvidenceModel.id.in_(added_evidence),
+                    MemoryEvidenceModel.fact_id.not_in(affected_ids),
+                )
+                .limit(1)
+            )
+            if foreign_evidence is not None:
+                raise RuntimeError("Dream evidence reference belongs to an unrelated fact")
+        if added_relations:
+            relation_rows = await session.scalars(
+                select(MemoryFactRelationModel).where(
+                    MemoryFactRelationModel.id.in_(added_relations)
+                )
+            )
+            if any(
+                row.source_fact_id not in affected_ids or row.target_fact_id not in affected_ids
+                for row in relation_rows
+            ):
+                raise RuntimeError("Dream relation reference belongs to an unrelated fact")
+
         fingerprint = hashlib.sha256(f"dream-rollback:{operation.id}".encode()).hexdigest()
         receipt = await self._receipts.reserve_dream(
             mutation_id=str(uuid.uuid4()),
@@ -792,8 +819,6 @@ class MemoryMutationService:
             created_at=datetime.now(UTC),
             session=session,
         )
-        added_evidence = tuple(int(item) for item in json.loads(operation.added_evidence_ids_json))
-        added_relations = tuple(int(item) for item in json.loads(operation.added_relation_ids_json))
         if added_evidence:
             await session.execute(
                 delete(MemoryEvidenceModel).where(MemoryEvidenceModel.id.in_(added_evidence))
