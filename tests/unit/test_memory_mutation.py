@@ -1346,6 +1346,7 @@ async def test_self_reflection_skips_reset_prefix_and_recovers_committed_batch(
     assert run.status == "completed"
     assert run.committed_count == 1
     assert run.error_category == "recovered:cancelled"
+    assert await repository.result_counts(batch.run_id) == (1, 1)
     assert state is not None
     assert state.last_event_id == new_reply.id
     assert state.pending_events == 0
@@ -1438,7 +1439,7 @@ async def test_self_reflection_stale_run_without_results_is_retryable(database: 
 
 @pytest.mark.asyncio
 async def test_self_reflection_worker_recovers_cancelled_batch() -> None:
-    batch = SimpleNamespace(run_id=42)
+    batch = SimpleNamespace(run_id=42, trigger_reason="manual")
     repository = SimpleNamespace(
         recover_stale_runs=AsyncMock(return_value=0),
         scan_new_events=AsyncMock(return_value=0),
@@ -1461,6 +1462,41 @@ async def test_self_reflection_worker_recovers_cancelled_batch() -> None:
         await worker.process_once(force=True)
 
     repository.recover_interrupted.assert_awaited_once_with(42, "cancelled")
+
+    # Unexpected post-model errors must finalize the batch and keep the loop alive.
+    batch.state = SimpleNamespace(conversation_key_hash="scope")
+    repository.claim_due = AsyncMock(side_effect=[(batch,), ()])
+    repository.recover_interrupted.reset_mock()
+    repository.recover_interrupted.return_value = "failed"
+    service.reflect = AsyncMock(side_effect=TypeError("synthetic post-model failure"))
+    result = await worker.run_now()
+    assert result.failed_batches == 1
+    repository.recover_interrupted.assert_awaited_once_with(42, "TypeError")
+
+    repository.claim_due = AsyncMock(side_effect=[(batch,), ()])
+    repository.recover_interrupted.return_value = "completed"
+    repository.result_counts = AsyncMock(return_value=(2, 1))
+    result = await worker.run_now()
+    assert (result.completed_batches, result.failed_batches) == (1, 0)
+    assert (result.proposal_count, result.committed_count) == (2, 1)
+
+    # A failed scan must not terminate the scheduler, and start can replace a dead task.
+    worker.process_once = AsyncMock(side_effect=[AttributeError("scan"), None])
+    original_process = worker.process_once
+
+    async def one_cycle() -> None:
+        await original_process()
+        worker._stop.set()
+
+    worker.process_once = one_cycle
+    worker._settings.memory_self_reflection_poll_seconds = 0.01
+    await worker.start()
+    await asyncio.wait_for(worker._task, timeout=2)
+    assert original_process.await_count == 2
+    worker.process_once = AsyncMock(side_effect=worker._stop.set)
+    await worker.start()
+    await asyncio.wait_for(worker._task, timeout=2)
+    await worker.close()
 
 
 @pytest.mark.asyncio

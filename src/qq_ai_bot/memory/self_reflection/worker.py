@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import traceback
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -44,8 +45,13 @@ class SelfReflectionWorker:
         self._process_lock = asyncio.Lock()
 
     async def start(self) -> None:
-        if not self._settings.memory_self_reflection_enabled or self._task is not None:
+        if not self._settings.memory_self_reflection_enabled:
             return
+        if self._task is not None:
+            if not self._task.done():
+                return
+            # Retrieve any exception before replacing a terminated scheduler.
+            await asyncio.gather(self._task, return_exceptions=True)
         self._stop.clear()
         await self._repository.scan_new_events()
         self._task = asyncio.create_task(self._run(), name="memory-self-reflection-worker")
@@ -175,7 +181,7 @@ class SelfReflectionWorker:
                             batch.run_id,
                             outcome or "already_finalized",
                         )
-                    except (OSError, RuntimeError, ValueError) as recovery_exc:
+                    except Exception as recovery_exc:
                         logger.error(
                             "memory_self_reflection_cancel_recovery_failed "
                             "run_id=%d error_category=%s",
@@ -183,11 +189,21 @@ class SelfReflectionWorker:
                             type(recovery_exc).__name__,
                         )
                     raise
-                except (OSError, RuntimeError, ValueError) as exc:
+                except Exception as exc:
                     error_category = _error_category(exc)
-                    await self._repository.fail(batch.run_id, error_category)
+                    # A mutation may have committed before a later operation failed.
+                    # Recover from durable checkpoints instead of losing that progress.
+                    outcome = await self._repository.recover_interrupted(
+                        batch.run_id, error_category
+                    )
                     failed_conversation_keys.add(batch.state.conversation_key_hash)
-                    failed += 1
+                    if outcome == "completed":
+                        completed += 1
+                        proposals, committed = await self._repository.result_counts(batch.run_id)
+                        proposal_count += proposals
+                        committed_count += committed
+                    else:
+                        failed += 1
                     self._metrics.increment("self_reflection_failed")
                     logger.warning(
                         "memory_self_reflection_failed run_id=%d trigger=%s error_category=%s "
@@ -228,10 +244,11 @@ class SelfReflectionWorker:
                 await self.process_once()
             except asyncio.CancelledError:
                 raise
-            except (OSError, RuntimeError, ValueError) as exc:
+            except Exception as exc:
                 logger.warning(
-                    "memory_self_reflection_cycle_failed error_category=%s",
+                    "memory_self_reflection_cycle_failed error_category=%s error_detail=%s",
                     type(exc).__name__,
+                    _error_detail(exc),
                 )
             try:
                 await asyncio.wait_for(
@@ -252,4 +269,11 @@ def _error_detail(exc: BaseException) -> str:
     if isinstance(exc, StructuredTaskError):
         detail = exc.detail or "none"
         return f"attempts={exc.attempts} {detail}"[:600]
-    return "none"
+    # Do not log exception strings, source lines, locals, or absolute paths: database
+    # errors can embed memory contents. Function names and line numbers locate bugs.
+    return (
+        ",".join(
+            f"{frame.name}:{frame.lineno}" for frame in traceback.extract_tb(exc.__traceback__)[-6:]
+        )
+        or "none"
+    )

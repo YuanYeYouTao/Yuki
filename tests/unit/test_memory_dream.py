@@ -22,6 +22,7 @@ from qq_ai_bot.memory.dream.db_models import (
 )
 from qq_ai_bot.memory.dream.models import (
     DreamAction,
+    DreamClusterStatus,
     DreamInput,
     DreamMemoryInput,
     DreamOperationStatus,
@@ -1078,9 +1079,9 @@ async def test_dream_reserves_actual_model_calls_before_execution(database: Data
             missing_embeddings=0,
             ambiguous_bot_facts=0,
             partitions=1,
-            candidate_clusters=1,
+            candidate_clusters=2,
             isolated_facts=0,
-            estimated_model_calls=1,
+            estimated_model_calls=2,
         ),
         clusters=(
             (
@@ -1090,6 +1091,14 @@ async def test_dream_reserves_actual_model_calls_before_execution(database: Data
                 "fact",
                 tuple(item.id for item in source_facts),
                 "fp",
+            ),
+            (
+                "cluster-deferred",
+                "partition",
+                "8000",
+                "fact",
+                tuple(item.id for item in source_facts),
+                "fp-deferred",
             ),
         ),
         snapshot_max_fact_id=max(item.id for item in source_facts),
@@ -1112,6 +1121,19 @@ async def test_dream_reserves_actual_model_calls_before_execution(database: Data
     page = await dreams.run_page(run.public_id)
     assert refreshed is not None and refreshed.model_calls == 1
     assert page.clusters[0].model_calls == 1
+    await dreams.finish_cluster(cluster.id, status=DreamClusterStatus.COMPLETED, operation_count=0)
+    before = await dreams.checkpoint_map()
+    assert await dreams.defer_pending(run.public_id) == 1
+    assert await dreams.defer_pending(run.public_id) == 0
+    finished = await dreams.finalize_run(run.public_id)
+    assert finished is not None and finished.status is DreamRunStatus.COMPLETED
+    assert finished.failed_clusters == 0 and finished.completed_clusters == 1
+    assert finished.statistics.budget_deferred_clusters == 1
+    page = await dreams.run_page(run.public_id)
+    assert page.clusters[1].status is DreamClusterStatus.SKIPPED
+    assert page.clusters[1].error_category == "budget_deferred"
+    assert page.clusters[1].model_calls == 0
+    assert await dreams.checkpoint_map() == before
 
 
 @pytest.mark.asyncio

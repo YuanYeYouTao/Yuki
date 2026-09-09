@@ -21,6 +21,23 @@ uv run qq-ai-bot-cli memory stats --database-url <database-url> --hours 24
 结果区分正常等待、可领取 owner、失败/过期 lease、自动零注入、已评估使用率和主动读取结果。
 主动读取的 duplicate 可与 success/empty 同时计数；统计不输出消息、记忆正文或外部账号。
 
+## 自省与 Dream 的恢复边界
+
+自省的 `enabled=true` 不代表调度器仍存活，必须同时检查 `running`、最近 run 的终态和
+`committed_count`。后台批次遇到未预料的异常时按持久化 result checkpoint 恢复：已有提交
+保留并推进水位；没有提交则记录失败，后续周期可重试。异常不能杀死整个调度循环，取消仍
+正常传播。诊断只记录异常类别及函数/行号，不打印可能包含记忆正文的数据库异常。
+
+Dream 默认每轮最多 12 个 cluster、24 次模型请求，给每个 cluster 的一次格式修复留出预算。
+已有环境显式设置的 `MEMORY_DREAM_MAX_MODEL_CALLS_PER_RUN=12` 不会被默认值覆盖，需要
+操作者修改并重启 Bot。未开始便耗尽预算的 cluster 标记 `skipped/budget_deferred`，单独统计
+`budget_deferred_clusters`，不计执行失败、不推进事实 checkpoint，下次增量规划仍可选中。
+已执行但输出无效的 cluster 仍是失败；增加预算不能解决所有格式或语义问题。
+
+召回使用率只衡量记忆是否实质支持最终回复，不把改变语气或泛泛说“我记得”算作使用。
+应同时报告成功评估覆盖率、抢占/跳过与未评估数；不能把失败判定算作未使用，也不应为了
+提高百分比放松事实使用判定或强迫回复引用记忆。
+
 发布前依次执行：
 
 ```bash

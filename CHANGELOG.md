@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Memory worker recovery
+
+- 自省调度循环隔离意外异常，批次失败按持久化结果恢复，避免单次异常留下永久 processing
+  并停止后续周期；已结束的调度任务可以重新启动，错误日志不携带记忆正文。
+- Dream 默认请求预算增至 24，保留每轮 12 个 cluster。预算耗尽前尚未执行的工作记为
+  `budget_deferred` 并留待后续增量规划，不再冒充执行失败。
+
 ### Memory P1 governance
 
 - 普通自动提取按 canonical owner 聚合到 12 条、8,000 字符或一小时；失败重试和过期 lease

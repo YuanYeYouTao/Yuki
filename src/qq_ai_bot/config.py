@@ -239,7 +239,7 @@ class Settings(BaseSettings):
     memory_dream_timezone: str = "Asia/Shanghai"
     memory_dream_poll_seconds: float = Field(default=60.0, gt=0)
     memory_dream_max_clusters_per_run: int = Field(default=12, gt=0, le=100)
-    memory_dream_max_model_calls_per_run: int = Field(default=12, gt=0, le=200)
+    memory_dream_max_model_calls_per_run: int = Field(default=24, gt=0, le=200)
     memory_dream_similarity_threshold: float = Field(default=0.70, ge=-1, le=1)
     memory_dream_max_cluster_size: int = Field(default=6, ge=2, le=20)
     memory_dream_max_input_characters: int = Field(default=24_000, gt=0, le=100_000)

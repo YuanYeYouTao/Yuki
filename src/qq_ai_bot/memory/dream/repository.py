@@ -751,7 +751,8 @@ class DreamRepository:
             )
         return int(cast(CursorResult[Any], result).rowcount or 0)
 
-    async def fail_pending(self, public_id: str, *, error_category: str) -> int:
+    async def defer_pending(self, public_id: str) -> int:
+        """Skip this slot without checkpointing facts; the next plan selects them again."""
         now = datetime.now(UTC)
         async with self.database.sessions() as session, session.begin():
             run_id = await session.scalar(
@@ -766,16 +767,18 @@ class DreamRepository:
                     MemoryDreamClusterModel.status == DreamClusterStatus.PENDING.value,
                 )
                 .values(
-                    status=DreamClusterStatus.FAILED.value,
-                    error_category=error_category[:64],
+                    status=DreamClusterStatus.SKIPPED.value,
+                    error_category="budget_deferred",
+                    completed_at=now,
                     updated_at=now,
                 )
             )
             count = int(cast(CursorResult[Any], result).rowcount or 0)
             run = await session.get(MemoryDreamRunModel, run_id)
             if run is not None and count:
-                run.failed_clusters += count
-                run.error_category = error_category[:64]
+                statistics = json.loads(run.statistics_json)
+                statistics["budget_deferred_clusters"] = count
+                run.statistics_json = json.dumps(statistics)
                 run.updated_at = now
         return count
 
