@@ -111,3 +111,12 @@ p95 至少需要 20 个实际 observation；样本不足时按统一空分母规
 
 门禁来自 `config/memory_quality_gates.toml`，Python 不写死阈值。变更门禁必须评审配置、
 显式执行 `memory quality update-baseline` 并在 CHANGELOG 说明；普通测试不会更新 baseline。
+# 主动查询与请求暴露的分离
+
+普通 Main Agent 的主动读取结果由 TurnMemorySession 关联当前真实回执。
+没有预取回执时创建零暴露的 agent_tool 回执：查询成功不等于结果已进入模型请求，
+只有下一次正常请求确认暴露后才计为注入。取消前未确认的结果不得算已注入。
+同轮查询缓存命中仅记 duplicate，不重复记 success/empty。
+Plugin/Admin 纯查询不产生普通聊天使用或强化回执。
+生产诊断只记录工具名、关联 ID 和结果类别，不记录原始问题、实体名或正文。
+历史空回执 ID 导致的全零计数不可反推为“没有主动查询”；不得推测回填。

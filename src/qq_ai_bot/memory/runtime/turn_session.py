@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import uuid
@@ -16,7 +17,7 @@ from qq_ai_bot.memory.attribution import (
     MemoryExposure,
 )
 from qq_ai_bot.memory.context import MemoryContextService
-from qq_ai_bot.memory.enums import MemoryContextMode, MemoryRetrievalMode
+from qq_ai_bot.memory.enums import MemoryContextMode, MemoryRecallPurpose, MemoryRetrievalMode
 from qq_ai_bot.memory.models import MemoryQueryIntent, MemoryRetrievalResult
 from qq_ai_bot.memory.mutation.models import MemoryMutationResult
 from qq_ai_bot.memory.runtime.capability_view import build_capability_view
@@ -146,6 +147,7 @@ class TurnMemorySession:
         self._pending_tool_exposures: tuple[MemoryExposure, ...] = ()
         self._confirmed_exposures: list[MemoryExposure] = []
         self._prefetch_confirmed = False
+        self._read_receipt_lock = asyncio.Lock()
 
     @classmethod
     def open(
@@ -276,6 +278,54 @@ class TurnMemorySession:
             private_peer_user_id=(None if self._inbound.group_id else self._inbound.sender.user_id),
         )
 
+    async def _ensure_read_receipt(self) -> str | None:
+        """Associate execution statistics without claiming prompt exposure."""
+        async with self._read_receipt_lock:
+            handles = self._state.recall_handles()
+            if handles:
+                return handles[-1].receipt_turn_id
+            empty = MemoryRetrievalResult(
+                blocks=(),
+                hits=(),
+                candidate_count=0,
+                selected_count=0,
+                query_hash="",
+                mode=MemoryRetrievalMode.RELEVANT,
+            )
+            intent = self._prefetch_intent or MemoryQueryIntent(purpose=MemoryRecallPurpose.RECALL)
+            recall = await self._memory_context.record_recall(
+                conversation_key=await self._memory_partition_key(),
+                trigger_message_id=self._inbound.message_id,
+                origin=self._origin.value,
+                intent=intent,
+                result=empty,
+                injected_fact_ids=(),
+                runtime=self._runtime,
+                consumer="agent_tool",
+            )
+            if recall is None:
+                return None
+            self._state.record_recall(
+                RecallHandle(
+                    runtime_turn_id=self._runtime_turn_id,
+                    receipt_turn_id=recall.turn_id,
+                    purpose=intent.purpose,
+                    injected_fact_ids=(),
+                )
+            )
+            return recall.turn_id
+
+    async def record_read_outcome(self, outcome: str) -> None:
+        """A completed read is not necessarily injected into a model request."""
+        self._state.require_open()
+        if self._origin not in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}:
+            return
+        if self.contract.availability is MemoryAvailability.FORBIDDEN:
+            return
+        receipt_id = await self._ensure_read_receipt()
+        if receipt_id is not None:
+            await self._memory_context.record_tool_read_outcome(receipt_id, outcome)
+
     async def confirm_prompt_exposure(self, token: str | None = None) -> MemoryReceiptHandle | None:
         del token
         self._state.require_open()
@@ -312,41 +362,10 @@ class TurnMemorySession:
             self._prefetch_confirmed = True
         if self._pending_tool_exposures:
             fact_ids = tuple(dict.fromkeys(item.fact_id for item in self._pending_tool_exposures))
-            handles = self._state.recall_handles()
-            if not handles:
-                empty = MemoryRetrievalResult(
-                    blocks=(),
-                    hits=(),
-                    candidate_count=0,
-                    selected_count=0,
-                    query_hash="",
-                    mode=MemoryRetrievalMode.RELEVANT,
-                )
-                intent = self._prefetch_intent or MemoryQueryIntent()
-                recall = await self._query.publish_exposure(
-                    MemoryReadConsumer.AGENT_TOOL,
-                    conversation_key=await self._memory_partition_key(),
-                    trigger_message_id=self._inbound.message_id,
-                    origin=self._origin.value,
-                    intent=intent,
-                    result=empty,
-                    injected_fact_ids=(),
-                    runtime=self._runtime,
-                )
-                if recall is not None:
-                    self._state.record_recall(
-                        RecallHandle(
-                            runtime_turn_id=self._runtime_turn_id,
-                            receipt_turn_id=recall.turn_id,
-                            purpose=intent.purpose,
-                            injected_fact_ids=(),
-                        )
-                    )
-                    handles = self._state.recall_handles()
-            if handles:
-                current = handles[-1]
-                await self._memory_context.mark_tool_injected(current.receipt_turn_id, fact_ids)
-                self._state.extend_recall_exposures(current.receipt_turn_id, fact_ids)
+            receipt_id = await self._ensure_read_receipt()
+            if receipt_id is not None:
+                await self._memory_context.mark_tool_injected(receipt_id, fact_ids)
+                self._state.extend_recall_exposures(receipt_id, fact_ids)
             self._confirmed_exposures.extend(self._pending_tool_exposures)
             self._pending_tool_exposures = ()
         return handle

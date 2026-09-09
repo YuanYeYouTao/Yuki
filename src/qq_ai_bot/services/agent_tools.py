@@ -119,6 +119,16 @@ _RUNTIME_SNAPSHOT: ContextVar[RuntimeConfigSnapshot | None] = ContextVar(
 _MEMORY_READ_CACHE: ContextVar[dict[str, Any] | None] = ContextVar(
     "memory_read_cache", default=None
 )
+_MEMORY_READ_DUPLICATE: ContextVar[bool] = ContextVar("memory_read_duplicate", default=False)
+_MEMORY_READ_TOOL: ContextVar[str] = ContextVar("memory_read_tool", default="")
+_OBSERVED_MEMORY_READS = frozenset(
+    {
+        "get_person_memories",
+        "get_group_memories",
+        "get_self_memories",
+        "get_memory_fact",
+    }
+)
 
 logger = logging.getLogger(__name__)
 
@@ -948,6 +958,8 @@ class AgentToolService:
         )
         token = _RUNTIME_SNAPSHOT.set(snapshot)
         cache_token = _MEMORY_READ_CACHE.set(runtime.memory_read_cache)
+        duplicate_token = _MEMORY_READ_DUPLICATE.set(False)
+        read_tool_token = _MEMORY_READ_TOOL.set(name if name in _OBSERVED_MEMORY_READS else "")
         try:
             try:
                 arguments = json.loads(arguments_json)
@@ -1013,6 +1025,8 @@ class AgentToolService:
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 return self._result(error=type(exc).__name__, detail="工具执行失败")
         finally:
+            _MEMORY_READ_TOOL.reset(read_tool_token)
+            _MEMORY_READ_DUPLICATE.reset(duplicate_token)
             _MEMORY_READ_CACHE.reset(cache_token)
             _RUNTIME_SNAPSHOT.reset(token)
 
@@ -2102,7 +2116,7 @@ class AgentToolService:
         runtime_config = self._runtime()
         key = "query:" + request.model_dump_json() + repr(runtime_config.memory)
         if cache is not None and key in cache:
-            await self._record_memory_tool_outcome(runtime, "duplicate")
+            _MEMORY_READ_DUPLICATE.set(True)
             return cache[key]
         result = await MemoryQueryPlane(self._memory_context).read(
             MemoryReadConsumer.AGENT_TOOL,
@@ -2175,7 +2189,7 @@ class AgentToolService:
             raise ValueError("fact_id 必须是正整数")
         key = f"fact:{fact_id}"
         if key in runtime.memory_read_cache:
-            await self._record_memory_tool_outcome(runtime, "duplicate")
+            _MEMORY_READ_DUPLICATE.set(True)
             fact = runtime.memory_read_cache[key]
         else:
             fact = await self._memories.get_fact(fact_id)
@@ -2558,7 +2572,11 @@ class AgentToolService:
         visit(payload)
         unique_ids = tuple(dict.fromkeys(fact_ids))
         if payload.get("ok"):
-            outcome = "success" if unique_ids else "empty"
+            outcome = (
+                "duplicate"
+                if _MEMORY_READ_DUPLICATE.get()
+                else ("success" if unique_ids else "empty")
+            )
         elif payload.get("error") in {"ambiguous_person", "ambiguous_subject", "ambiguous_group"}:
             outcome = "ambiguous"
         elif payload.get("error") == "permission_denied":
@@ -2567,7 +2585,8 @@ class AgentToolService:
             outcome = "unavailable"
         await self._record_memory_tool_outcome(runtime, outcome)
         if unique_ids:
-            await self._memory_context.mark_tool_injected(runtime.memory_turn_id, unique_ids)
+            if runtime.memory_session is None and runtime.origin in _MEMORY_CHANGE_ORIGINS:
+                await self._memory_context.mark_tool_injected(runtime.memory_turn_id, unique_ids)
             if runtime.memory_exposure_registry is not None:
                 runtime.memory_exposure_registry.register_tool_payload(payload)
             if isinstance(payload, dict):
@@ -2576,11 +2595,27 @@ class AgentToolService:
         return result
 
     async def _record_memory_tool_outcome(self, runtime: ToolRuntime, outcome: str) -> None:
+        if not _MEMORY_READ_TOOL.get():
+            return
+        from qq_ai_bot.runtime.observability import current_runtime_turn_correlation
+
+        correlation = current_runtime_turn_correlation()
+        logger.info(
+            "memory_tool_read correlation_id=%s tool=%s outcome=%s",
+            correlation.turn_id if correlation else "unbound",
+            _MEMORY_READ_TOOL.get(),
+            outcome,
+        )
         self._memory_context.metrics.record_read_outcome(outcome)
         if outcome == "unavailable":
             return
         try:
-            await self._memory_context.record_tool_read_outcome(runtime.memory_turn_id, outcome)
+            from qq_ai_bot.memory.runtime.turn_session import TurnMemorySession
+
+            if isinstance(runtime.memory_session, TurnMemorySession):
+                await runtime.memory_session.record_read_outcome(outcome)
+            elif runtime.origin in _MEMORY_CHANGE_ORIGINS:
+                await self._memory_context.record_tool_read_outcome(runtime.memory_turn_id, outcome)
         except SQLAlchemyError:
             # Observability must not turn a successful read or a handled database
             # failure into another user-visible tool failure.

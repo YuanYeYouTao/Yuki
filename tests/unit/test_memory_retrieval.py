@@ -110,6 +110,13 @@ async def test_attribution_worker_evaluates_no_use_but_not_failed_requests(datab
 
 
 async def test_recall_receipt_tracks_zero_partial_evaluation_and_interruption(database: Database):
+    from qq_ai_bot.domain.conversations import ConversationScope
+    from qq_ai_bot.memory.receipt import MemoryRecallTurn
+    from qq_ai_bot.memory.runtime.partition_lookup import DatabaseMemoryPartitionLookup
+    from qq_ai_bot.memory.runtime.turn_session import TurnMemorySession
+    from qq_ai_bot.runtime.authority import TurnAuthority
+    from qq_ai_bot.runtime.origin import TurnOrigin
+
     facts = MemoryFactService(MemoryFactRepository(database))
     first = await _remember(facts, user_id="1001", memory_key="first", content="synthetic first")
     second = await _remember(facts, user_id="1001", memory_key="second", content="synthetic second")
@@ -122,15 +129,50 @@ async def test_recall_receipt_tracks_zero_partial_evaluation_and_interruption(da
         query_hash="",
         mode=MemoryRetrievalMode.RELEVANT,
     )
-    turn = await receipts.record_initial(
-        conversation_key="synthetic",
-        trigger_message_id="synthetic",
-        origin="user_message",
-        intent=MemoryQueryIntent(),
-        result=result,
-        injected_fact_ids=(),
-        retention_days=30,
+    context = MemoryContextService(
+        query_builder=MemoryQueryBuilder(MemoryTargetResolver(PeopleRepository(database))),
+        retriever=MemoryRetriever(
+            repository=facts.repository, lexical_index=SQLiteMemoryFTSIndex(database)
+        ),
+        facts=facts,
+        receipts=receipts,
     )
+    runtime = await RuntimeConfigService(
+        settings=make_settings(database.url), database=database
+    ).snapshot(user_id="1001")
+    memory_session = TurnMemorySession.open(
+        inbound=InboundMessage(
+            message_id="synthetic",
+            event_type="message:private:friend",
+            scope_type=ScopeType.PRIVATE,
+            sender=SenderIdentity(user_id="1001", nickname="test"),
+            text="synthetic",
+            bot_user_id="8000",
+        ),
+        identity=ConversationScope.private("8000", "1001"),
+        runtime=runtime,
+        memory_context=context,
+        partition_lookup=DatabaseMemoryPartitionLookup(database),
+        origin=TurnOrigin.USER_MESSAGE,
+        user_question="synthetic",
+        authority=TurnAuthority(
+            actor_user_id="1001",
+            bot_user_id="8000",
+            origin=TurnOrigin.USER_MESSAGE,
+            permission_ceiling=frozenset(),
+            delegated_authority=None,
+            authority_revision=1,
+        ),
+    )
+    # No prefetch or prompt exposure: execution creates only a zero-exposure receipt.
+    await memory_session.record_read_outcome("success")
+    async with database.sessions() as session:
+        turn = MemoryRecallTurn(
+            (
+                await session.execute(text("SELECT turn_id FROM memory_recall_receipts"))
+            ).scalar_one(),
+            (),
+        )
     async with database.sessions() as session:
         assert (
             await session.execute(
@@ -141,8 +183,7 @@ async def test_recall_receipt_tracks_zero_partial_evaluation_and_interruption(da
             )
         ).one() == (0, "skipped", "no_memory")
     await receipts.record_tool_injected(turn.turn_id, (first.id, second.id))
-    await receipts.record_tool_read_outcome(turn.turn_id, "success")
-    await receipts.record_tool_read_outcome(turn.turn_id, "duplicate")
+    await memory_session.record_read_outcome("duplicate")
     await receipts.set_attribution_outcome(turn.turn_id, "pending", "queued")
     await receipts.mark_attributed_used(turn.turn_id, (), evaluated_fact_ids=(first.id,))
     await receipts.set_attribution_outcome(turn.turn_id, "failed", "interrupted")
