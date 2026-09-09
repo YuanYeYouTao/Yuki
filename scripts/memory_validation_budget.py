@@ -13,6 +13,7 @@ from pathlib import Path
 import httpx
 
 REQUEST_LIMIT = 48
+MAIN_AGENT_REQUEST_LIMIT = 24
 PURPOSES = frozenset({"embedding", "reflection", "dream", "main_agent", "attribution"})
 
 
@@ -56,9 +57,9 @@ class RequestLedger:
                 and connection.execute(
                     "SELECT count(*) FROM requests WHERE purpose='main_agent'"
                 ).fetchone()[0]
-                >= 16
+                >= MAIN_AGENT_REQUEST_LIMIT
             ):
-                raise ValidationBudgetExhausted("16-request Main Agent validation budget exhausted")
+                raise ValidationBudgetExhausted("24-request Main Agent validation budget exhausted")
             cursor = connection.execute("INSERT INTO requests(purpose) VALUES (?)", (purpose,))
             assert cursor.lastrowid is not None
             return cursor.lastrowid

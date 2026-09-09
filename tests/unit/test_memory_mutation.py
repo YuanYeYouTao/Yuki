@@ -3312,6 +3312,32 @@ async def test_memory_tool_selectors_share_intent_reads_and_cache_with_historica
     assert ambiguous["retryable"] is False
     assert {item["user_id"] for item in ambiguous["data"]["candidates"]} == {"2002", "2003"}
 
+    # A large but valid overview should deliver complete ranked facts rather
+    # than force the model to repeatedly guess a smaller limit.
+    from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE
+
+    snapshot = await tools._runtime_config.snapshot(user_id="1001", group_id="3001")
+    bounded = replace(snapshot, agent=replace(snapshot.agent, tool_result_max_characters=2000))
+    rows = [{"memory_ref": f"M{index}", "content": "x" * 500} for index in range(1, 11)]
+    source = {"effective_query": {"mode": "overview"}, "memories": rows}
+    with patch.object(tools, "_runtime", return_value=bounded):
+        rendered = json.loads(tools._memory_list_result(data=source))
+        assert rendered["ok"] and rendered["data"]["truncated"]
+        count = rendered["data"]["returned_count"]
+        assert 0 < count < len(rows)
+        assert rendered["data"]["memories"] == rows[:count]
+        assert rendered["data"]["effective_query"] == source["effective_query"]
+        rendered["memory_grounding_policy"] = MEMORY_GROUNDING_RULE
+        assert len(json.dumps(rendered, ensure_ascii=False)) <= 2000
+        assert len(source["memories"]) == 10
+        too_large = json.loads(
+            tools._memory_list_result(data={"memories": [{"content": "x" * 4000}]})
+        )
+        assert too_large["error"] == "result_too_large"
+        assert (
+            json.loads(tools._memory_list_result(data={"memories": []}))["data"]["memories"] == []
+        )
+
 
 @pytest.mark.asyncio
 async def test_deterministic_memory_admin_uses_unified_mutation_receipt(

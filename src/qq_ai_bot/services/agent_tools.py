@@ -1626,7 +1626,7 @@ class AgentToolService:
             requested_limit=self._memory_requested_limit(arguments),
             default_overview=query is None,
         )
-        return self._result(
+        return self._memory_list_result(
             data={
                 "user_id": selection.user_id,
                 "resolved_by": selection.resolved_by,
@@ -2020,7 +2020,7 @@ class AgentToolService:
             requested_limit=self._memory_requested_limit(arguments),
             default_overview=query is None,
         )
-        return self._result(
+        return self._memory_list_result(
             data={
                 "group_id": group_id,
                 "effective_query": effective_query_summary(parse_memory_tool_intent(arguments)),
@@ -2085,7 +2085,7 @@ class AgentToolService:
         visible_hits = tuple(
             hit for hit in result.hits if hit.fact.scope_type is MemoryScopeType.SELF
         )
-        return self._result(
+        return self._memory_list_result(
             data={
                 "effective_query": effective_query_summary(parse_memory_tool_intent(arguments)),
                 "visible_scope": (
@@ -2099,6 +2099,28 @@ class AgentToolService:
                 ],
             }
         )
+
+    def _memory_list_result(self, *, data: dict[str, Any]) -> str:
+        """Fit ranked whole facts into the existing response budget, never fake an empty search."""
+        remaining = list(data["memories"])
+        payload = {**data, "memories": remaining}
+        limit = self._runtime().agent.tool_result_max_characters
+        while True:
+            wire = {"ok": True, "data": payload}
+            if remaining:
+                # _capture_memory_tool_result appends this after rendering.
+                wire["memory_grounding_policy"] = MEMORY_GROUNDING_RULE
+            if len(json.dumps(wire, ensure_ascii=False, default=str)) <= limit:
+                return self._result(data=payload)
+            if len(remaining) <= 1:
+                return self._result(
+                    error="result_too_large",
+                    detail="首条完整记忆超过本轮结果预算；不能把它裁成片段或报告为空",
+                )
+            remaining.pop()
+            payload["truncated"] = True
+            payload["returned_count"] = len(remaining)
+            payload["truncation_reason"] = "response_character_budget"
 
     @staticmethod
     def _memory_requested_limit(arguments: dict[str, Any]) -> int | None:

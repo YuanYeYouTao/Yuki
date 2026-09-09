@@ -42,6 +42,10 @@ overview，purpose 默认 recall。非法枚举和无效区间返回 invalid_arg
 
 人物、群与 SELF 的无 query 总览使用 overview；有 query 使用 relevant/lexical/hybrid。
 主体分类不迁移、不复制事实。返回数量有界，空结果是正常成功，不是权限错误。
+记忆列表超过原有工具字符预算时只保留排序靠前的完整事实，并返回 `truncated=true`、
+`returned_count`、`truncation_reason=response_character_budget`，不裁剪事实正文。
+这是输出预算，不是新增条数配额；不能把截断列表视为全部存档。连首条完整事实也放不下时
+仍返回 result_too_large，不能谎报空结果。回执只确认实际返回并进入后续请求的事实。
 工具 schema 是部署级固定结构，不能用本轮昵称或群号改写。
 不可重试的歧义/无权限与基础设施故障分开处理，不强制结束正常对话。
 
