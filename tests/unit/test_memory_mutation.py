@@ -3191,6 +3191,9 @@ async def test_memory_tool_selectors_share_intent_reads_and_cache_with_historica
     )
     assert by_qq["ok"] and by_qq["data"]["resolved_by"] == "user_id"
     assert by_name["ok"] and by_name["data"]["resolved_by"] == "display_name"
+    assert by_name["evidence_state"]["source"] == "memory_tool"
+    assert by_name["evidence_state"]["source_refs"] == [f"M{group_fact.id}"]
+    assert by_name["evidence_state"]["delivery"] == "staged"
     conflicting = json.loads(
         await tools.execute(
             "get_person_memories",

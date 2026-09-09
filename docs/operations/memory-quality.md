@@ -1,5 +1,10 @@
 # Memory V2 质量运维
 
+查证观测与当前验收进度见[查证可靠性执行记录](../architecture/evidence-seeking-validation.md)。
+`agent_evidence` 的 prepared、staged、response_received 是不同阶段；已执行不等于已确认暴露，
+已暴露不等于实际使用。用 runtime_turn_id 关联普通聊天/插件/自动化，不用函数名遗漏 native Web。
+证据状态是执行/结果元数据，不是事实真实性评分；没有来源核对时不得报告幻觉率改善。
+
 普通自动提取最多等待一小时（3600 秒）；达到 12 条或 8000 字符仍可提前领取，
 30 秒轮询不是 30 秒模型调用。未到期且无失败的 pending 是正常聚合，不是阻塞。
 processing lease、重试、即时 memory_change、Rollup、自省间隔不受此窗口影响。

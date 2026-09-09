@@ -265,10 +265,6 @@ class AgentRunner:
             try:
                 if runtime.before_model_request is not None:
                     await runtime.before_model_request()
-                if tools is not None:
-                    confirm_exposure = getattr(tools, "confirm_memory_prompt_exposure", None)
-                    if callable(confirm_exposure):
-                        await confirm_exposure()
                 diagnostics = runtime.prompt_diagnostics
                 request = ChatRequest(
                     messages=tuple(messages),
@@ -316,6 +312,18 @@ class AgentRunner:
                     runtime.conversation_key,
                     execute,
                 )
+                # A prepared request may be cancelled while waiting for the LLM
+                # slot or rejected by the transport budget before dispatch.
+                # Confirm conservatively only after a response was received.
+                if tools is not None:
+                    confirm_exposure = getattr(tools, "confirm_memory_prompt_exposure", None)
+                    if callable(confirm_exposure):
+                        try:
+                            await confirm_exposure()
+                        except Exception as exc:
+                            evidence_observation.emit(
+                                "exposure_confirmation_failed", category=type(exc).__name__
+                            )
                 evidence_observation.emit(
                     "response_received",
                     request_index=request_index + 1,

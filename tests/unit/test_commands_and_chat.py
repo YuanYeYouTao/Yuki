@@ -468,7 +468,12 @@ async def _wait_provider_requests(
 
 
 @pytest.mark.asyncio
-async def test_stop_cancels_only_current_task(database: Database) -> None:
+async def test_stop_cancels_only_current_task(
+    database: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    import json
+
+    caplog.set_level("INFO", logger="qq_ai_bot.services.evidence_observation")
     provider = FakeLLMProvider(delay_seconds=5)
     entered, started = _arm_provider_entry(provider)
     harness = build_harness(database, make_settings(database.url), provider)
@@ -509,6 +514,18 @@ async def test_stop_cancels_only_current_task(database: Database) -> None:
         assert other_result.sent_messages >= 1
         assert any("FakeLLM" in (message.text or "") for message in other_sender.messages)
         assert not harness.concurrency.is_processing(other_key)
+        observations = [
+            json.loads(record.getMessage().removeprefix("agent_evidence "))
+            for record in caplog.records
+            if record.name == "qq_ai_bot.services.evidence_observation"
+        ]
+        prepared = {
+            item["correlation_id"] for item in observations if item["phase"] == "request_prepared"
+        }
+        received = {
+            item["correlation_id"] for item in observations if item["phase"] == "response_received"
+        }
+        assert len(prepared) == 2 and len(received) == 1
     finally:
         leftover = [
             task for task in (chat_task, other_task) if task is not None and not task.done()

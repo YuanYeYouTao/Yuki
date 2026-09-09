@@ -638,6 +638,9 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
     )
     assert "github-monitor" not in system_text
     assert "PushEvent" not in system_text
+    assert "查证合同" in system_text
+    assert "普通闲聊、创作和表达感受不强制查询" in system_text
+    assert "不表示长期记忆不存在" in system_text
     assert tuple(item.content for item in composed.messages if item.role == "system") == tuple(
         item.content for item in ordinary.messages if item.role == "system"
     )
@@ -942,6 +945,15 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     assert recent["data"]["newly_recorded"] == 0
     assert group_memory == {
         "ok": True,
+        "evidence_state": {
+            "source": "memory_tool",
+            "query_status": "empty",
+            "returned_count": 0,
+            "truncated": False,
+            "partial_failure": False,
+            "source_refs": [],
+            "delivery": "staged",
+        },
         "data": {
             "group_id": "group-100",
             "memories": [],

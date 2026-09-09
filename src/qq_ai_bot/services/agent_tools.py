@@ -70,6 +70,7 @@ from qq_ai_bot.persistence.repositories import (
     RelationshipRepository,
     WebSearchSourceRepository,
 )
+from qq_ai_bot.services.evidence_state import evidence_state
 from qq_ai_bot.services.reply_target import ReplyTargetControl
 from qq_ai_bot.services.turn_coordinator import TurnToken
 from qq_ai_bot.speech.models import VoiceMode, VoicePreferenceMode
@@ -2120,6 +2121,7 @@ class AgentToolService:
         limit = self._runtime().agent.tool_result_max_characters
         while True:
             wire = {"ok": True, "data": payload}
+            wire["evidence_state"] = evidence_state(wire, "memory_tool")
             if remaining:
                 # _capture_memory_tool_result appends this after rendering.
                 wire["memory_grounding_policy"] = MEMORY_GROUNDING_RULE
@@ -2627,16 +2629,20 @@ class AgentToolService:
             outcome = "permission_denied"
         else:
             outcome = "unavailable"
+        payload["evidence_state"] = evidence_state(payload, "memory_tool")
+        if unique_ids:
+            payload["memory_grounding_policy"] = MEMORY_GROUNDING_RULE
+        rendered = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        if len(rendered) > self._runtime().agent.tool_result_max_characters:
+            await self._record_memory_tool_outcome(runtime, "unavailable", result_count=0)
+            return self._result(error="result_too_large", detail="完整结果与证据元数据超过本轮预算")
         await self._record_memory_tool_outcome(runtime, outcome, result_count=len(unique_ids))
         if unique_ids:
             if runtime.memory_session is None and runtime.origin in _MEMORY_CHANGE_ORIGINS:
                 await self._memory_context.mark_tool_injected(runtime.memory_turn_id, unique_ids)
             if runtime.memory_exposure_registry is not None:
                 runtime.memory_exposure_registry.register_tool_payload(payload)
-            if isinstance(payload, dict):
-                payload["memory_grounding_policy"] = MEMORY_GROUNDING_RULE
-                return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-        return result
+        return rendered
 
     async def _record_memory_tool_outcome(
         self, runtime: ToolRuntime, outcome: str, *, result_count: int = 0
@@ -3055,6 +3061,7 @@ class AgentToolService:
         payload: dict[str, Any] = (
             {"ok": False, "error": error, "detail": detail} if error else {"ok": True, "data": data}
         )
+        payload["evidence_state"] = evidence_state(payload, "web_tool")
         limit = self._runtime().web.tool_result_max_characters
         rendered = json.dumps(payload, ensure_ascii=False, default=str)
         if len(rendered) <= limit:
@@ -3068,20 +3075,25 @@ class AgentToolService:
                         continue
                     content = source.get("relevant_content")
                     if isinstance(content, str) and len(content) > 256:
+                        data["truncated"] = True
                         source["relevant_content"] = content[: max(256, len(content) // 2)]
                         changed = True
                     snippet = source.get("snippet")
                     if len(rendered) > limit and isinstance(snippet, str) and len(snippet) > 160:
+                        data["truncated"] = True
                         source["snippet"] = snippet[: max(160, len(snippet) // 2)]
                         changed = True
+                    payload["evidence_state"] = evidence_state(payload, "web_tool")
                     rendered = json.dumps(payload, ensure_ascii=False, default=str)
                     if len(rendered) <= limit:
                         break
                 if len(rendered) > limit and not changed:
                     if len(sources) > 1:
+                        data["truncated"] = True
                         sources.pop()
                     else:
                         break
+                payload["evidence_state"] = evidence_state(payload, "web_tool")
                 rendered = json.dumps(payload, ensure_ascii=False, default=str)
         if len(rendered) > limit:
             rendered = json.dumps(

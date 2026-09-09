@@ -123,6 +123,11 @@ class WebToolLLM(LLMProvider):
                 ),
             )
         result = json.loads(last.content or "{}")
+        if result.get("ok"):
+            assert result["evidence_state"]["source"] == "web_tool"
+            assert result["evidence_state"]["query_status"] == "success"
+            assert result["evidence_state"]["source_refs"] == ["source-1"]
+            assert result["evidence_state"]["delivery"] == "staged"
         if not result.get("ok"):
             return ChatResponse(content="联网查询暂时失败，请稍后再试。", latency_seconds=0)
         return ChatResponse(

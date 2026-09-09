@@ -34,6 +34,7 @@ class ToolExecutionResult:
     provider_id: str = ""
     tool_name: str = ""
     metadata: dict[str, Any] | None = None
+    evidence_state: dict[str, Any] | None = None
 
     def model_payload(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -104,6 +105,9 @@ class ToolResultBudgeter:
         character_overflow = self._max_characters is not None and len(text) > self._max_characters
         if not item_overflow and not character_overflow:
             return BudgetedToolResult(text=text)
+        # The summary/artifact is not the original evidence payload. Never
+        # advertise references to content which the following request cannot see.
+        payload.pop("evidence_state", None)
         artifact_id: str | None = None
         recursive_artifact_read = (
             result.provider_id == "artifacts" and result.tool_name == "read_tool_artifact"
@@ -187,6 +191,23 @@ def normalize_legacy_result(
         finalize_value = raw.pop("finalize_after_commit", None)
         finalize_after_commit = None if finalize_value is None else bool(finalize_value)
         retryable = bool(raw.pop("retryable", False))
+        evidence = raw.pop("evidence_state", None)
+        trusted_evidence = (
+            evidence
+            if provider_id == "core"
+            and tool_name
+            in {
+                "get_person_memories",
+                "get_group_memories",
+                "get_self_memories",
+                "get_memory_fact",
+                "get_memory_evidence",
+                "web_search",
+                "read_webpage",
+            }
+            and isinstance(evidence, dict)
+            else None
+        )
         data = raw.pop("data", raw if raw else None)
         return ToolExecutionResult(
             ok=ok,
@@ -198,6 +219,7 @@ def normalize_legacy_result(
             finalize_after_commit=finalize_after_commit if ok else None,
             provider_id=provider_id,
             tool_name=tool_name,
+            evidence_state=trusted_evidence,
         )
     return ToolExecutionResult(
         ok=True,

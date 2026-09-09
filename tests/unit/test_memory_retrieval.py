@@ -271,7 +271,16 @@ async def test_recall_receipt_tracks_zero_partial_evaluation_and_interruption(da
         ),
     ):
         success = json.loads(await tools.execute("get_person_memories", "{}", tool_runtime))
-    assert success == {"ok": True, "data": {}}
+    assert success["ok"] is True and success["data"] == {}
+    assert success["evidence_state"] == {
+        "source": "memory_tool",
+        "query_status": "empty",
+        "returned_count": 0,
+        "truncated": False,
+        "partial_failure": False,
+        "source_refs": [],
+        "delivery": "staged",
+    }
 
 
 def _target(

@@ -8,6 +8,7 @@ transport retries; provider retries, if enabled by a caller, reserve again.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import httpx
@@ -35,7 +36,7 @@ class RequestLedger:
         self.path = private_path(path)
         if not self.path.parent.is_dir():
             raise ValueError("create a restricted private directory before validation")
-        with sqlite3.connect(self.path) as connection:
+        with closing(sqlite3.connect(self.path)) as connection, connection:
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS requests ("
                 "id INTEGER PRIMARY KEY, purpose TEXT NOT NULL, "
@@ -46,7 +47,7 @@ class RequestLedger:
     def reserve(self, purpose: str) -> int:
         if purpose not in PURPOSES:
             raise ValueError("unknown validation purpose")
-        with sqlite3.connect(self.path, timeout=30) as connection:
+        with closing(sqlite3.connect(self.path, timeout=30)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             used = connection.execute("SELECT count(*) FROM requests").fetchone()[0]
             if used >= REQUEST_LIMIT:
@@ -58,11 +59,11 @@ class RequestLedger:
     def finish(self, request_id: int, status: str) -> None:
         if status not in {"response", "transport_error", "cancelled"}:
             raise ValueError("invalid content-free request outcome")
-        with sqlite3.connect(self.path) as connection:
+        with closing(sqlite3.connect(self.path)) as connection, connection:
             connection.execute("UPDATE requests SET status=? WHERE id=?", (status, request_id))
 
     def counts(self) -> dict[str, int]:
-        with sqlite3.connect(self.path) as connection:
+        with closing(sqlite3.connect(self.path)) as connection, connection:
             return dict(
                 connection.execute("SELECT purpose,count(*) FROM requests GROUP BY purpose")
             )
