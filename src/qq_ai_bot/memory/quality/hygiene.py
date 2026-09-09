@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import text
 
-from qq_ai_bot.memory.eligibility import sql_human_evidence_predicate
+from qq_ai_bot.memory.eligibility import sql_fact_event_evidence_predicate
 from qq_ai_bot.memory.embedding.text import EmbeddingDocumentBuilder
 from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.quality.audit import MemoryProductionQualityAudit
@@ -41,9 +41,7 @@ class MemoryProvenanceHygiene:
                             SELECT 1 FROM memory_evidence e
                             JOIN chat_events c ON c.id=e.event_id
                             WHERE e.fact_id=f.id
-                              AND c.direction='inbound'
-                              AND trim(c.content)!=''
-                              AND {sql_human_evidence_predicate("c")}
+                              AND {sql_fact_event_evidence_predicate()}
                               AND e.source_speaker_user_id=c.sender_user_id
                               AND trim(e.excerpt)!=''
                               AND instr(c.content,e.excerpt)>0

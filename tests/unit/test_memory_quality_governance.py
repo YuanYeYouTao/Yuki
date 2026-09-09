@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import text
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence
@@ -88,6 +89,67 @@ async def test_audit_detects_invalid_evidence_without_exposing_text(database: Da
     assert issue.sample_ids  # evidence row IDs are reported, never content
     assert report.error_count >= 1
     assert "synthetic outbound source" not in report.model_dump_json()
+
+    # SELF reflection can cite Yuki's own utterance, but this is not permission
+    # to promote outbound messages into ordinary Person evidence.
+    event, _ = await EventLedgerRepository(database).append(
+        bot_user_id="8000",
+        platform_message_id="self-reflection-source",
+        scope_type=ScopeType.PRIVATE,
+        sender_user_id="8000",
+        direction="outbound",
+        content="synthetic reflection source",
+        private_peer_user_id="1001",
+    )
+    assert event.author_is_yuki()
+    facts = MemoryFactService(MemoryFactRepository(database))
+    for scope, relation, expected_count in (
+        ("self", "agent_reflection", 1),
+        ("person", "self_statement", 2),
+        ("self", "self_statement", 3),
+    ):
+        stored = await facts.remember(
+            MemoryFactCreate(
+                scope_type=scope,
+                subject_user_id="1001" if scope == "person" else None,
+                visibility_type="global" if scope == "self" else None,
+                memory_key=f"source:{scope}:{relation}",
+                category="quality",
+                content="synthetic reflection fact",
+                authority="agent_reflection" if scope == "self" else "self_report",
+                source_type=MemorySourceType.AUTOMATIC,
+            ),
+            evidence=MemoryEvidenceCreate(
+                event_id=event.id,
+                source_speaker_user_id="8000",
+                relation=relation,
+                authority="agent_reflection" if relation == "agent_reflection" else "self_report",
+                excerpt="synthetic reflection source",
+            ),
+        )
+        checked = await MemoryProductionQualityAudit(database).run()
+        source_issue = next(
+            item for item in checked.issues if item.issue_code == "evidence_source_invalid"
+        )
+        assert source_issue.count == expected_count
+        assert "synthetic reflection source" not in checked.model_dump_json()
+        invalid_ids = (await MemoryProvenanceHygiene(database).scan()).invalid_fact_ids
+        assert (stored.id in invalid_ids) == (relation != "agent_reflection")
+
+    # Even trusted reflection cannot use a non-keeper source.
+    async with database.immediate_session() as session:
+        await session.execute(
+            text(
+                "UPDATE chat_events SET suppression_status='duplicate', "
+                "utterance_fingerprint='synthetic-duplicate' WHERE id=:id"
+            ),
+            {"id": event.id},
+        )
+    checked = await MemoryProductionQualityAudit(database).run()
+    assert (
+        next(item.count for item in checked.issues if item.issue_code == "evidence_source_invalid")
+        == 4
+    )
 
 
 @pytest.mark.asyncio

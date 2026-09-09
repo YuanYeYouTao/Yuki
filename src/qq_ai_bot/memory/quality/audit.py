@@ -9,7 +9,10 @@ from typing import Final
 from sqlalchemy import text
 from sqlalchemy.exc import DatabaseError
 
-from qq_ai_bot.memory.eligibility import sql_human_evidence_predicate
+from qq_ai_bot.memory.eligibility import (
+    sql_fact_event_evidence_predicate,
+    sql_human_evidence_predicate,
+)
 from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.quality.models import ProductionAuditIssue, ProductionAuditReport
 from qq_ai_bot.persistence.database import Database
@@ -199,9 +202,9 @@ class MemoryProductionQualityAudit:
                 "evidence_source_invalid",
                 "error",
                 _query(
-                    "memory_evidence e JOIN chat_events c ON c.id=e.event_id",
-                    "c.direction!='inbound' OR trim(c.content)='' "
-                    f"OR NOT ({sql_human_evidence_predicate('c')})",
+                    "memory_evidence e JOIN chat_events c ON c.id=e.event_id "
+                    "JOIN memory_facts f ON f.id=e.fact_id",
+                    f"NOT ({sql_fact_event_evidence_predicate()})",
                     id_expression="e.id",
                 ),
             ),

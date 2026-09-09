@@ -29,6 +29,22 @@ def sql_human_evidence_predicate(alias: str = "c") -> str:
     return f"{alias}.author_kind='person' AND {sql_keeper_event_predicate(alias)}"
 
 
+def sql_fact_event_evidence_predicate() -> str:
+    """Stored evidence audit policy; c/e/f are event/evidence/fact aliases.
+
+    Reflection may cite Yuki for SELF only. This does not change extraction
+    eligibility or grant a runtime caller reflection authority.
+    """
+    return (
+        "trim(c.content)!='' AND COALESCE(("
+        f"(c.direction='inbound' AND {sql_human_evidence_predicate('c')}) OR "
+        "(f.scope_type='self' AND e.relation='agent_reflection' "
+        "AND e.authority='agent_reflection' "
+        "AND c.direction='outbound' AND c.author_kind='yuki' "
+        f"AND {sql_keeper_event_predicate('c')})), 0)"
+    )
+
+
 class MemoryEventEligibilityPolicy:
     """Keep domain and SQL event eligibility intentionally equivalent."""
 
