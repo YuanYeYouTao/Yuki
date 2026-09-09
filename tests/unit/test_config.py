@@ -33,23 +33,17 @@ def test_removed_history_configuration_is_explicitly_rejected(removed_key: str) 
         Settings.model_validate({removed_key: 3})
 
 
-def test_memory_dream_hard_compression_ratio_cannot_be_below_target() -> None:
-    with pytest.raises(
-        ValidationError,
-        match="hard compression ratio cannot be below its target ratio",
-    ):
-        Settings(
-            _env_file=None,
-            memory_dream_episode_compression_ratio=0.70,
-            memory_dream_episode_hard_compression_ratio=0.45,
-        )
+def test_memory_dream_absolute_output_budget_cannot_exceed_contract() -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, memory_dream_episode_max_characters=801)
 
 
 def test_memory_dream_compression_defaults_keep_quality_headroom() -> None:
     settings = Settings(_env_file=None)
 
     assert settings.memory_dream_episode_compression_ratio == 0.45
-    assert settings.memory_dream_episode_hard_compression_ratio == 0.70
+    assert settings.memory_dream_max_output_tokens == 4096
+    assert settings.memory_dream_episode_max_characters == 800
 
 
 def test_system_prompt_file_overrides_inline_prompt(tmp_path: Path) -> None:

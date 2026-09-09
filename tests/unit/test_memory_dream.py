@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from math import cos, radians, sin
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ from sqlalchemy import func, select
 from tests.conftest import make_settings
 
 from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.memory.candidates import MemoryConflictCandidateResolver
 from qq_ai_bot.memory.claim_processor import MemoryClaimProcessor
 from qq_ai_bot.memory.classifier import MemoryRelationClassifier
@@ -61,6 +63,8 @@ from qq_ai_bot.memory.mutation.service import DreamRecomposePlan, MemoryMutation
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.resolution import MemoryResolutionPolicy
 from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.model_runtime.executor import LegacyTaskModelExecutor
+from qq_ai_bot.model_runtime.structured import StructuredTaskError, StructuredTaskRunner
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     MemoryEvidenceModel,
@@ -68,6 +72,7 @@ from qq_ai_bot.persistence.models import (
     MemoryMutationReceiptModel,
 )
 from qq_ai_bot.persistence.repositories import EventLedgerRepository, PeopleRepository
+from qq_ai_bot.services.concurrency import ConcurrencyManager
 
 
 def _services(
@@ -142,7 +147,6 @@ def test_dream_keep_can_explicitly_preserve_several_independent_sources() -> Non
         SimpleNamespace(
             memory_dream_episode_max_characters=800,
             memory_dream_episode_compression_ratio=0.45,
-            memory_dream_episode_hard_compression_ratio=0.70,
         ),
     )
     memories = tuple(
@@ -176,14 +180,14 @@ def test_dream_keep_can_explicitly_preserve_several_independent_sources() -> Non
     )
 
 
-def test_episode_recompose_rejects_an_uncompressed_long_output() -> None:
+def test_episode_recompose_accepts_meaning_without_hard_compression_ratio() -> None:
     service = object.__new__(DreamService)
     service._settings = cast(
         object,
         SimpleNamespace(
             memory_dream_episode_max_characters=800,
             memory_dream_episode_compression_ratio=0.45,
-            memory_dream_episode_hard_compression_ratio=0.70,
+            memory_dream_max_input_characters=5000,
         ),
     )
     payload = DreamInput(
@@ -222,8 +226,27 @@ def test_episode_recompose_rejects_an_uncompressed_long_output() -> None:
         )
     )
 
-    with pytest.raises(ValueError, match="did not compress"):
-        service._validate_output(payload, output)
+    service._validate_output(payload, output)
+    too_long = output.model_copy(
+        update={
+            "actions": (
+                output.actions[0].model_copy(
+                    update={
+                        "outputs": (
+                            output.actions[0].outputs[0].model_copy(update={"content": "乙" * 801}),
+                        )
+                    }
+                ),
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="at most 4 outputs"):
+        service._validate_output(payload, too_long)
+    assert service._fit_input(payload).memories[0].content == payload.memories[0].content
+    service._settings.memory_dream_max_input_characters = 500
+    with pytest.raises(ValueError, match="complete source facts"):
+        service._fit_input(payload)
+    assert len(payload.memories[0].content) == 1000
 
 
 def test_episode_recompose_enforces_cluster_wide_output_and_compression_limits() -> None:
@@ -282,7 +305,6 @@ def test_episode_recompose_enforces_cluster_wide_output_and_compression_limits()
         SimpleNamespace(
             memory_dream_episode_max_characters=800,
             memory_dream_episode_compression_ratio=0.45,
-            memory_dream_episode_hard_compression_ratio=0.70,
         ),
     )
     memories = tuple(
@@ -320,20 +342,18 @@ def test_episode_recompose_enforces_cluster_wide_output_and_compression_limits()
         )
     )
     service._validate_output(payload, output)
-    with pytest.raises(ValueError, match="did not compress"):
-        service._validate_compression_target(payload, output)
+    assert "软目标" in service._instruction(self_memory=False, payload=payload)
 
 
 @pytest.mark.asyncio
-async def test_episode_decision_keeps_first_hard_valid_proposal_when_repair_fails() -> None:
+async def test_episode_decision_does_not_retry_soft_compression_miss() -> None:
     service = object.__new__(DreamService)
     service._settings = cast(
         object,
         SimpleNamespace(
             memory_dream_episode_max_characters=800,
             memory_dream_episode_compression_ratio=0.45,
-            memory_dream_episode_hard_compression_ratio=0.70,
-            memory_dream_max_output_tokens=2400,
+            memory_dream_max_output_tokens=4096,
             bot_display_name="Yuki",
             bot_persona="测试人格",
         ),
@@ -386,7 +406,13 @@ async def test_episode_decision_keeps_first_hard_valid_proposal_when_repair_fail
             )
         }
     )
-    service._run_model = AsyncMock(side_effect=(first, repaired))  # type: ignore[method-assign]
+    provider = FakeLLMProvider(
+        lambda _: (
+            first.model_dump_json() if len(provider.requests) == 1 else repaired.model_dump_json()
+        )
+    )
+    service._structured = StructuredTaskRunner(LegacyTaskModelExecutor(provider))
+    service._concurrency = ConcurrencyManager(1)
     service._reserve_model_call = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
     result, calls = await service._decide(
@@ -397,19 +423,18 @@ async def test_episode_decision_keeps_first_hard_valid_proposal_when_repair_fail
     )
 
     assert result == first
-    assert calls == 2
+    assert calls == len(provider.requests) == 1
 
 
 @pytest.mark.asyncio
-async def test_episode_decision_prefers_shorter_hard_valid_repair() -> None:
+async def test_episode_decision_repairs_invalid_length_with_original_output() -> None:
     service = object.__new__(DreamService)
     service._settings = cast(
         object,
         SimpleNamespace(
             memory_dream_episode_max_characters=800,
             memory_dream_episode_compression_ratio=0.45,
-            memory_dream_episode_hard_compression_ratio=0.70,
-            memory_dream_max_output_tokens=2400,
+            memory_dream_max_output_tokens=4096,
             bot_display_name="Yuki",
             bot_persona="测试人格",
         ),
@@ -452,9 +477,15 @@ async def test_episode_decision_prefers_shorter_hard_valid_repair() -> None:
             )
         )
 
-    first = proposal("乙", 600)
+    first = proposal("乙", 801)
     repaired = proposal("丙", 500)
-    service._run_model = AsyncMock(side_effect=(first, repaired))  # type: ignore[method-assign]
+    provider = FakeLLMProvider(
+        lambda _: (
+            first.model_dump_json() if len(provider.requests) == 1 else repaired.model_dump_json()
+        )
+    )
+    service._structured = StructuredTaskRunner(LegacyTaskModelExecutor(provider))
+    service._concurrency = ConcurrencyManager(1)
     service._reserve_model_call = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
     result, calls = await service._decide(
@@ -466,6 +497,18 @@ async def test_episode_decision_prefers_shorter_hard_valid_repair() -> None:
 
     assert result == repaired
     assert calls == 2
+    assert len(provider.requests) == 2
+    assert provider.requests[0].messages == provider.requests[1].messages[:2]
+    repair = json.loads(provider.requests[1].messages[-1].content)
+    assert repair["repair_request"]["reason_code"] == "dream_output_too_long"
+    assert "乙" * 801 in repair["previous_invalid_result"]
+    # Invalid twice must remain a failure, not a fabricated KEEP success.
+    invalid_provider = FakeLLMProvider(lambda _: first.model_dump_json())
+    service._structured = StructuredTaskRunner(LegacyTaskModelExecutor(invalid_provider))
+    with pytest.raises(StructuredTaskError) as failed:
+        await service._preview_decide(payload, self_memory=False)
+    assert failed.value.attempts == len(invalid_provider.requests) == 2
+    assert failed.value.response is not None
 
 
 async def _fact_with_evidence(
@@ -819,7 +862,7 @@ async def test_episode_recompose_is_atomic_one_to_many_and_reversible(
     second_output = "晚上和群友集中聊了音乐，留下了几次有趣的推荐和争论。" * 12
     output_characters = len(first_output) + len(second_output)
     assert output_characters > int(len(source_content) * 0.45)
-    assert output_characters <= int(len(source_content) * 0.70)
+    assert output_characters <= 1600
     source = await _fact_with_evidence(
         facts,
         ledger,
@@ -1121,6 +1164,14 @@ async def test_dream_reserves_actual_model_calls_before_execution(database: Data
     page = await dreams.run_page(run.public_id)
     assert refreshed is not None and refreshed.model_calls == 1
     assert page.clusters[0].model_calls == 1
+    assert "fp" in await dreams.attempted_fingerprints()
+    assert "fp-deferred" not in await dreams.attempted_fingerprints()
+    assert await dreams.reserve_model_call(
+        run_public_id=run.public_id, cluster_id=cluster.id, maximum=24
+    )
+    assert not await dreams.reserve_model_call(
+        run_public_id=run.public_id, cluster_id=cluster.id, maximum=24
+    )
     await dreams.finish_cluster(cluster.id, status=DreamClusterStatus.COMPLETED, operation_count=0)
     before = await dreams.checkpoint_map()
     assert await dreams.defer_pending(run.public_id) == 1

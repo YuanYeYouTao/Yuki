@@ -238,6 +238,25 @@ class DreamRepository:
             ).all()
         return {int(row.fact_id): str(row.signature) for row in rows}
 
+    async def attempted_fingerprints(self) -> dict[str, datetime]:
+        """Only executed attempts affect retry priority, never budget-deferred rows."""
+        async with self.database.sessions() as session:
+            rows = await session.execute(
+                select(
+                    MemoryDreamClusterModel.fingerprint,
+                    func.max(MemoryDreamClusterModel.updated_at),
+                )
+                .where(
+                    MemoryDreamClusterModel.attempts > 0,
+                    (MemoryDreamClusterModel.error_category != "budget_deferred")
+                    | MemoryDreamClusterModel.error_category.is_(None),
+                )
+                .group_by(MemoryDreamClusterModel.fingerprint)
+            )
+            return {
+                fingerprint: attempted for fingerprint, attempted in rows if attempted is not None
+            }
+
     async def initialize_baseline(self, fact_signatures: tuple[tuple[int, str], ...]) -> bool:
         now = datetime.now(UTC)
         async with self.database.sessions() as session, session.begin():
@@ -621,7 +640,7 @@ class DreamRepository:
             if row is None:
                 return False
             run, cluster = row
-            if maximum is not None and run.model_calls >= maximum:
+            if cluster.model_calls >= 2 or (maximum is not None and run.model_calls >= maximum):
                 return False
             run.model_calls += 1
             run.updated_at = now
@@ -649,7 +668,13 @@ class DreamRepository:
             row.completed_at = now if status is not DreamClusterStatus.FAILED else None
             run = await session.get(MemoryDreamRunModel, row.run_id)
             if run is not None:
-                if status in {
+                if error_category == "budget_deferred":
+                    statistics = json.loads(run.statistics_json)
+                    statistics["budget_deferred_clusters"] = (
+                        int(statistics.get("budget_deferred_clusters", 0)) + 1
+                    )
+                    run.statistics_json = json.dumps(statistics)
+                elif status in {
                     DreamClusterStatus.COMPLETED,
                     DreamClusterStatus.SKIPPED,
                     DreamClusterStatus.STALE,
@@ -777,7 +802,9 @@ class DreamRepository:
             run = await session.get(MemoryDreamRunModel, run_id)
             if run is not None and count:
                 statistics = json.loads(run.statistics_json)
-                statistics["budget_deferred_clusters"] = count
+                statistics["budget_deferred_clusters"] = (
+                    int(statistics.get("budget_deferred_clusters", 0)) + count
+                )
                 run.statistics_json = json.dumps(statistics)
                 run.updated_at = now
         return count

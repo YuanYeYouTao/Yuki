@@ -33,7 +33,7 @@ from qq_ai_bot.memory.dream.models import (
     DreamOperationStatus,
     DreamOperationType,
 )
-from qq_ai_bot.memory.dream.quality import episode_compression_limit
+from qq_ai_bot.memory.dream.quality import validate_output_lengths
 from qq_ai_bot.memory.dream.repository import fact_signature
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
@@ -234,6 +234,8 @@ class MemoryMutationService:
 
         if not source_facts:
             raise ValueError("dream mutation requires source facts")
+        if content is not None:
+            validate_output_lengths((content,))
         current: list[MemoryFact] = []
         for snapshot in source_facts:
             fact = await self._facts.repository.get_fact(snapshot.id, session=session)
@@ -472,6 +474,10 @@ class MemoryMutationService:
                 for output in recompose_outputs
             ):
                 raise ValueError("dream recompose output has invalid sources")
+            validate_output_lengths(
+                tuple(output.content for output in recompose_outputs),
+                per_output=self._settings.memory_dream_episode_max_characters,
+            )
             normalized_outputs = tuple(
                 normalize_memory_text(output.content, maximum=4000) for output in recompose_outputs
             )
@@ -484,14 +490,6 @@ class MemoryMutationService:
                 for item in normalized_outputs
             ):
                 raise ValueError("dream recompose content exceeds the character limit")
-            source_characters = sum(len(item.content) for item in sources)
-            output_characters = sum(len(item) for item in normalized_outputs)
-            if output_characters > episode_compression_limit(
-                source_characters,
-                ratio=self._settings.memory_dream_episode_hard_compression_ratio,
-                maximum=self._settings.memory_dream_episode_max_characters,
-            ):
-                raise ValueError("dream recompose did not compress its source episodes")
             for source in sources:
                 await self._facts.repository.transition(
                     source.id,
