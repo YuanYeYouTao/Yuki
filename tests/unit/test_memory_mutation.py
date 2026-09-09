@@ -981,6 +981,46 @@ async def test_self_reflection_can_commit_tool_receipt_evidence(database: Databa
     )
     assert result.new_fact_id in (await MemoryProvenanceHygiene(database).scan()).invalid_fact_ids
 
+    async with database.immediate_session() as session:
+        await session.execute(
+            update(MemoryToolReceiptModel)
+            .where(MemoryToolReceiptModel.id == receipt_id)
+            .values(result_excerpt="修复后检查成功")
+        )
+    # Versioning must preserve a tool source, not reconstruct an empty event source.
+    replacement = await facts.version_fact(
+        result.new_fact_id,
+        replacement=MemoryFactCreate(
+            scope_type=MemoryScopeType.SELF,
+            visibility_type=SelfMemoryVisibility.GROUP,
+            visibility_group_id="3001",
+            kind=MemoryKind.PREFERENCE,
+            memory_key=fact.memory_key,
+            category="self_principle",
+            content="Yuki 会用实际检查回执确认修复结果",
+            source_type=MemorySourceType.AUTOMATIC,
+            authority=MemoryAuthority.AGENT_REFLECTION,
+        ),
+        evidence=MemoryEvidenceCreate(
+            tool_receipt_id=receipt_id,
+            source_speaker_user_id="8000",
+            relation=MemoryEvidenceRelation.AGENT_REFLECTION,
+            authority=MemoryAuthority.AGENT_REFLECTION,
+            excerpt="修复后检查成功",
+        ),
+        actor_user_id="8000",
+        reason_code="reflection_version_test",
+        limit=None,
+        copy_existing_evidence=True,
+        confirmed_at=now,
+    )
+    assert replacement is not None and replacement.supersedes_id == result.new_fact_id
+    retained = await facts.list_evidence(replacement.id)
+    assert len(retained) == 1
+    assert retained[0].tool_receipt_id == receipt_id and retained[0].event_id is None
+    old = await facts.get_fact(result.new_fact_id)
+    assert old is not None and old.status is MemoryStatus.SUPERSEDED
+
 
 @pytest.mark.asyncio
 async def test_self_episode_kind_and_category_must_match(database: Database) -> None:
