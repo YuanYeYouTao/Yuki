@@ -136,8 +136,9 @@ class MemoryProductionQualityAudit:
                 "error",
                 _query(
                     "memory_facts",
-                    "(status='contested' AND conflict_state!='contested') "
-                    "OR (status='active' AND conflict_state='contested')",
+                    # A challenged active fact stays active; its alternative has
+                    # status=contested. Both carry conflict_state=contested.
+                    "status='contested' AND conflict_state!='contested'",
                 ),
             ),
             (

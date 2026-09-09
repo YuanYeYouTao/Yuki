@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from tests.conftest import make_settings
 
 from qq_ai_bot.admin.audit import AdminAuditService
@@ -83,6 +84,7 @@ from qq_ai_bot.model_runtime.executor import LegacyTaskModelExecutor
 from qq_ai_bot.model_runtime.structured import StructuredTaskError
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
+    MemoryFactModel,
     MemoryMutationReceiptModel,
     MemorySelfReflectionRunModel,
     MemorySelfReflectionStateModel,
@@ -1827,6 +1829,26 @@ async def test_third_party_group_correction_commits_as_contested(database: Datab
     assert alternative is not None
     assert alternative.status is MemoryStatus.CONTESTED
     assert alternative.authority is MemoryAuthority.THIRD_PARTY
+
+    audited = await MemoryProductionQualityAudit(database).run()
+    assert (
+        next(item.count for item in audited.issues if item.issue_code == "contested_state_invalid")
+        == 0
+    )
+    # Lifecycle and conflict are separate axes, but a contested alternative
+    # without a conflict marker is still inconsistent.
+    with pytest.raises(IntegrityError, match="ck_memory_facts_contested_state"):
+        async with database.immediate_session() as session:
+            await session.execute(
+                update(MemoryFactModel)
+                .where(MemoryFactModel.id == alternative.id)
+                .values(conflict_state="clear")
+            )
+    audited = await MemoryProductionQualityAudit(database).run()
+    assert (
+        next(item.count for item in audited.issues if item.issue_code == "contested_state_invalid")
+        == 0
+    )
 
 
 @pytest.mark.asyncio

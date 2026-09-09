@@ -196,3 +196,16 @@ visibility、reflection authority/relation、来源账号和结果摘录。任�
 真实 mutation 集成回归覆盖工具证据提交、过期保留、审计/清理扫描认可，以及
 结果摘录不再匹配时拒绝。冻结副本错误计数进一步降至 196，工具来源检查为零；
 其余错误保持原样，FK 为零。没有执行任何清理或修改冻结数据，仍未通过完整发布验收。
+
+## 冲突状态两个维度
+
+真实第三方纠正流程保留原事实 status=active，同时将 conflict_state 设为 contested；
+新备选事实才使用 status=contested。读取投影保留 conflict_state，不能将 active 解释
+为不存在争议。旧审计把 active+contested 一律报错，与 resolver/service 合同相反。
+现仅删除这项错误判断；contested 状态必须带 contested 标记的检查与数据库约束保留。
+回归通过真实 mutation 产生双状态，并验证非法清除备选冲突标记仍被数据库拒绝。
+
+冻结副本因此减少 26 条误报，尚余 170 条审计错误计数。另四条 active 矛盾关系的双方
+均有 contested 标记，但本次未修改其规则。162 条无替代链记录也全部缺少状态事件，
+分属 Person 77、SELF 81、Group 3、PersonGroup 1；尚不能证明合法替代过程，
+不得补造链条或删除记录来通过审计。此次没有模型调用、数据修改或部署。
