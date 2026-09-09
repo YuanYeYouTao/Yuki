@@ -53,7 +53,7 @@ from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import ResolvedSubject
 from qq_ai_bot.model_runtime.executor import ModelExecutor
 from qq_ai_bot.model_runtime.models import ModelTask
-from qq_ai_bot.model_runtime.structured import StructuredTaskRunner
+from qq_ai_bot.model_runtime.structured import StructuredTaskError, StructuredTaskRunner
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.time.formatting import local_datetime, utc_iso
@@ -131,6 +131,35 @@ class SelfReflectionService:
 
     async def reflect(self, batch: SelfReflectionBatch) -> tuple[int, int]:
         payload, fact_map, candidate_map, event_map, tool_map = await self._input(batch)
+
+        def validate_references(output: SelfReflectionOutput) -> None:
+            allowed_evidence = set(event_map) | set(tool_map)
+            for index, proposal in enumerate(output.proposals):
+                if (
+                    any(ref not in allowed_evidence for ref in proposal.evidence_refs)
+                    or (proposal.fact_ref is not None and proposal.fact_ref not in fact_map)
+                    or (
+                        proposal.merge_fact_ref is not None
+                        and proposal.merge_fact_ref not in fact_map
+                    )
+                    or (
+                        proposal.candidate_ref is not None
+                        and proposal.candidate_ref not in candidate_map
+                    )
+                ):
+                    raise StructuredTaskError(
+                        "self-reflection referenced unavailable evidence or memory",
+                        reason_code="unknown_reference",
+                        detail=f"proposals.{index}",
+                    )
+            for index, episode in enumerate(output.episodes):
+                if any(ref not in allowed_evidence for ref in episode.evidence_refs):
+                    raise StructuredTaskError(
+                        "self-reflection episode referenced unavailable evidence",
+                        reason_code="unknown_reference",
+                        detail=f"episodes.{index}.evidence_refs",
+                    )
+
         output = await self._concurrency.run_llm(
             "memory-self-reflection",
             lambda: self._structured.run(
@@ -150,15 +179,18 @@ class SelfReflectionService:
                 allow_text_json=True,
                 compact_schema=True,
                 validation_retries=1,
+                validate_output=validate_references,
                 validation_repair_hint=(
-                    "A long experience must be moved to the top-level episodes array and contain "
-                    "content, importance, and 1-8 evidence_refs from event_N/tool_N. Never use "
+                    "Correct the reported field: proposals permits at most 8 entries; episodes "
+                    "permits at most 1. Choose the single most meaningful experience, or none. "
+                    "An episode requires content, importance, value_reason, and 1-8 unique "
+                    "evidence_refs from the supplied event_N/tool_N aliases. Unknown references "
+                    "must be replaced with real supporting aliases, never invented. Never use "
                     "context_N as evidence. Never use self_episode or episode as a proposal "
                     "category. A proposal category must be exactly one of self_fact, "
                     "self_preference, self_reflection, or self_principle, and every proposal must "
-                    "include reason. After moving a legacy episode-shaped item, do not leave a "
-                    "placeholder proposal for it; use an empty proposals array when no separate "
-                    "dynamic fact change remains."
+                    "include reason. Do not leave placeholder proposals after moving an episode. "
+                    "Use empty arrays when there is no valuable supported change."
                 ),
             ),
             translate_cancellation=False,

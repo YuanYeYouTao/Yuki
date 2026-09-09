@@ -167,16 +167,8 @@ class SelfEpisodeProposal(_Contract):
 
 
 class SelfReflectionOutput(_Contract):
-    proposals: tuple[SelfReflectionProposal, ...] = ()
-    episodes: tuple[SelfEpisodeProposal, ...] = ()
-
-    @model_validator(mode="after")
-    def _bounded(self) -> SelfReflectionOutput:
-        if len(self.proposals) > 8:
-            raise ValueError("one self-reflection batch may emit at most eight proposals")
-        if len(self.episodes) > 1:
-            raise ValueError("one self-reflection batch may emit at most one episode")
-        return self
+    proposals: tuple[SelfReflectionProposal, ...] = Field(default=(), max_length=8)
+    episodes: tuple[SelfEpisodeProposal, ...] = Field(default=(), max_length=1)
 
 
 @dataclass(frozen=True, slots=True)
