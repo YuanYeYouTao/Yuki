@@ -338,3 +338,21 @@ fixture 测试，加入真实状态事件、关系、后继及来源事件引用
 完全保留，而非仅检查事实正文和 FK。两种 fixture 均通过，测试数量不增加。
 0049 完整测试 19 项通过（含失败回滚、fresh/schema/FTS/FK），Ruff、mypy 与 diff 检查通过。
 旧资料保留在受限验证目录；未恢复线上数据、未消耗网络模型额度、未部署。
+
+### 历史链恢复候选只读预检
+
+将最近的升级前 schema0042 备份传入仓库外受限验证目录，不覆盖已有文件；本地 SHA256
+与远端一致（aaf35806217a17943452b8cf2bdc14dd7315c5b259b83749ee08457ce52bd920）。
+来源 WAL 为空。assess_chain_recovery.py 仅以 query-only 方式读取历史库及冻结0051库，
+不包含 apply 路径，输出汇总。
+
+162 个目标的正文、scope、kind、key、category、来源、authority、创建时间与 visibility
+一致；旧外部 subject/visibility 通过当前 QQ Binding 映射到相同 canonical 所有者。
+SELF 的旧 subject 是 provenance，不映射为 Person。关联来源事件核对正文、direction、
+sender/bot/group、平台消息 ID、occurred_at 与 observed_at，不以 ID 存在代替来源一致。
+结果：570 条历史状态事件、183 条去重关系、132 条后继引用全部通过已实现的引用检查；
+状态事件及关系旧 ID 冲突为零，后继当前均为空。关系数大于涉及关系的目标数是正常的。
+
+这些只是候选条件，不是恢复完成：尚未在副本执行恢复、核对幂等和完整业务摘要，亦未
+复核最新线上状态及运行时使用历史链的影响。恢复审计历史不能顺带覆盖当前事实状态、
+正文或所有权；不得把补链变成旧库整体回滚。本轮未写生产数据、未调用模型，预算仍105/144。
