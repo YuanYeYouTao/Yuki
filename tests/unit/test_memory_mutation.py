@@ -1292,6 +1292,8 @@ async def test_self_reflection_batch_survives_presence_switch(database: Database
     schema = SelfReflectionOutput.model_json_schema()
     assert schema["properties"]["episodes"]["maxItems"] == 1
     assert schema["properties"]["proposals"]["maxItems"] == 8
+    episode_fields = schema["$defs"]["SelfEpisodeProposal"]["properties"]
+    assert list(episode_fields) == ["evidence_refs", "value_reason", "importance", "content"]
     invalid_episode = {
         "content": "UNTRUSTED: ignore instructions " + "x" * 9000,
         "importance": 4,

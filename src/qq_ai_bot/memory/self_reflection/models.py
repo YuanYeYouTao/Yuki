@@ -166,6 +166,19 @@ class SelfReflectionProposal(_Contract):
 
 
 class SelfEpisodeProposal(_Contract):
+    # Put source selection before prose in the model-facing schema. This guides
+    # generation, but JSON key order is not a semantic validation guarantee.
+    evidence_refs: tuple[str, ...] = Field(
+        min_length=1,
+        max_length=8,
+        description=(
+            "先选择能支持一个核心经历的 event_N/tool_N，再撰写 content。"
+            "只选问题不能证明回答内容；聊天中声称查过不能证明工具确实执行。"
+            "未选中的窗口消息不是该条正文的证据。"
+        ),
+    )
+    value_reason: str = Field(min_length=1, max_length=240)
+    importance: int = Field(ge=1, le=5)
     content: str = Field(
         min_length=1,
         max_length=4000,
@@ -175,9 +188,6 @@ class SelfEpisodeProposal(_Contract):
             "同一天、同一群或都是自己参与不足以合并。正文须由本条 evidence_refs 支持。"
         ),
     )
-    importance: int = Field(ge=1, le=5)
-    value_reason: str = Field(min_length=1, max_length=240)
-    evidence_refs: tuple[str, ...] = Field(min_length=1, max_length=8)
 
     @model_validator(mode="after")
     def _trusted_evidence_aliases(self) -> SelfEpisodeProposal:
