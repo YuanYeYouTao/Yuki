@@ -103,13 +103,19 @@ overview 没有执行主题匹配，因此候选投影的 `lexical_match` 与 `s
 - preferred kinds、软时间和主体是排序信号，不能靠它们授予权限；strict 时间是候选准入条件。
 - active + contested conflict 可以带争议标记返回；superseded、invalidated、未采用的
   contested claim 不作为普通 active 事实。争议关系不跨 scope。
-- 主动查询在 embedding 故障时仍可退回词法；自动注入在故障或未校准 profile 下仅接受
-  memory_key/content 的确定精确匹配，否则零注入。日志只记脱敏类别，
+- 主动查询在 embedding 故障时仍可退回词法；自动注入优先保留 memory_key/content 精确匹配。
+  未校准或 embedding 故障且无精确匹配时，最多提供一个现有FTS候选，按词法分数选择，
+  标为 `lexical_fallback_uncalibrated`，不能把它当作已经校准的主题或补入人物背景。
+  无词法候选仍返回零条；Main Agent须判断与当前问题的关系，不相关则忽略/主动补查。
+  这是可用性降级，不是强相关验收通过；替代早期任务中的“未校准自动只允许精确匹配”。
+  日志只记脱敏类别，
   不记录查询、事实、QQ、群号、向量或 provider 原始错误。
 
 ## 暴露、回执与统计
 
 检索是纯读。只有真正进入 Main Agent 请求的结果才确认暴露；不是“检索到了”就算使用。
+工具暴露会清除初始 `no_memory` 原因；聊天退出时统一关闭Memory Session，即使被取消、
+发送围栏拒绝或其他异常打断，也记录 `interrupted`，不绕过发送围栏做强化。
 Plugin API 2.0 / 管理查询不写普通用户 recall 或 activation。
 零注入的正常预取轮仍记 receipt，且不触发 attribution。
 完成评估但未使用、尚未评估、失败、禁用、抢占/取消和队列满分别记录。

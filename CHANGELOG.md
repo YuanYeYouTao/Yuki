@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- 未校准的自动召回最多提供一条明确标记的词法候选，不再只能依赖全文精确匹配；纯语义候选仍不自动注入。
+- 主动工具实际暴露后清除错误的 `no_memory` 原因；取消或异常退出时关闭 Memory session 并标记未完成判定。
+- 自省修复提示明确按真实证据拆分超限片段，不放宽引用上限或丢弃证据。
+- 部署核对旧环境提取等待窗口与合并输出预算，分别恢复至 3600 秒和至少 4096 tokens。
+
 ## 3.8.2 - Release candidate
 
 ### Memory reliability and evidence-seeking

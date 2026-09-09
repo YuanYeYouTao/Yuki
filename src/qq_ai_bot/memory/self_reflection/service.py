@@ -210,18 +210,15 @@ class SelfReflectionService:
                 validation_retries=1,
                 validate_output=validate_references,
                 validation_repair_hint=(
-                    "Correct the reported field: proposals permits at most 8 entries; episodes "
-                    "permits at most 1. Choose the single most meaningful experience, or none. "
-                    "An episode requires passages, importance, and value_reason. Each of 1-8 "
-                    "passages requires nonblank content and unique evidence_refs; the complete "
-                    "episode uses at most 16 distinct aliases and 4000 joined characters. Use "
-                    "supplied event_N/tool_N aliases. Unknown references "
-                    "must be replaced with real supporting aliases, never invented. Never use "
-                    "context_N as evidence. Never use self_episode or episode as a proposal "
-                    "category. A proposal category must be exactly one of self_fact, "
-                    "self_preference, self_reflection, or self_principle, and every proposal must "
-                    "include reason. Do not leave placeholder proposals after moving an episode. "
-                    "Use empty arrays when there is no valuable supported change."
+                    "Fix the reported fields. Max 8 proposals and 1 episode. An episode requires "
+                    "passages, importance, value_reason; 1-8 passages each need nonblank content "
+                    "and 1-8 unique evidence_refs. For >8 references in one passage, split its "
+                    "content into supported passages; do not discard evidence or invent aliases "
+                    "to fit. Max 16 distinct references and 4000 joined characters per episode. "
+                    "Only supplied event_N/tool_N references are evidence, never context_N. "
+                    "Proposal categories: self_fact, self_preference, self_reflection, "
+                    "self_principle; each needs reason. Episodes are not proposals. Remove "
+                    "placeholders. Use empty arrays for no valuable supported change."
                 ),
             ),
             translate_cancellation=False,

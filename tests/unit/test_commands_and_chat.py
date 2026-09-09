@@ -469,9 +469,20 @@ async def _wait_provider_requests(
 
 @pytest.mark.asyncio
 async def test_stop_cancels_only_current_task(
-    database: Database, caplog: pytest.LogCaptureFixture
+    database: Database, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import json
+
+    from qq_ai_bot.memory.runtime.turn_session import TurnMemorySession
+
+    closed_sessions = []
+    original_close = TurnMemorySession.close
+
+    async def track_close(session: TurnMemorySession) -> None:
+        await original_close(session)
+        closed_sessions.append(session)
+
+    monkeypatch.setattr(TurnMemorySession, "close", track_close)
 
     caplog.set_level("INFO", logger="qq_ai_bot.services.evidence_observation")
     provider = FakeLLMProvider(delay_seconds=5)
@@ -502,6 +513,7 @@ async def test_stop_cancels_only_current_task(
         await harness.processor.handle(inbound("/ai stop", message_id="stop"), stop_sender)
         result = await chat_task
         assert result.reason == "cancelled"
+        assert any(s._inbound.message_id == "slow" and s._state.closed for s in closed_sessions)
         assert result.sent_messages == 0
         assert "已取消" in stop_sender.messages[0].text
         assert chat_sender.messages == []

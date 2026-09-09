@@ -8,6 +8,7 @@ import logging
 import random
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, replace
 from typing import Any, Protocol, TypedDict, TypeVar, cast
 
@@ -1855,7 +1856,10 @@ class ChatService:
             inbound=inbound,
         )
 
-        async with self._concurrency.conversation(conversation_key):
+        async with (
+            self._concurrency.conversation(conversation_key),
+            AsyncExitStack() as memory_cleanup,
+        ):
             runtime_config = runtime_snapshot or await self._runtime_config.snapshot(
                 user_id=inbound.sender.user_id,
                 group_id=inbound.group_id,
@@ -1886,6 +1890,8 @@ class ChatService:
                 visual_input_present=visual_input_present,
                 structured_command=structured_memory_command,
             )
+            if memory_session is not None:
+                memory_cleanup.push_async_callback(memory_session.close)
 
             async def build_messages() -> tuple[
                 tuple[ChatMessage, ...],
