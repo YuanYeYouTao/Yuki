@@ -231,8 +231,8 @@ class SelfEpisodeProposal(_Contract):
     def _bounded_episode(self) -> SelfEpisodeProposal:
         if len(self.content) > 4000:
             raise ValueError("joined episode content must not exceed 4000 characters")
-        if len(self.evidence_refs) > 8:
-            raise ValueError("episode must use at most 8 unique evidence aliases across passages")
+        if len(self.evidence_refs) > 16:
+            raise ValueError("episode must use at most 16 unique evidence aliases across passages")
         return self
 
 

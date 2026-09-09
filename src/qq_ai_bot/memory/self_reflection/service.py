@@ -89,10 +89,10 @@ reason/value_reason 说明价值，
 
 _EPISODE_EVIDENCE_INSTRUCTION = """\
 Each episode must describe exactly one central experience. If the window contains several
-topics, keep only the experience most worth remembering. Select 1-8 evidence_refs from the
-provided event_N and tool_N aliases across the episode. Bind each passage's evidence_refs
-to exactly its own content, then narrate that passage; do not attach one global source list
-to an otherwise free-form account. The backend joins passages in order. context_N and
+topics, keep only the experience most worth remembering. Select 1-8 evidence_refs per passage
+from the provided event_N and tool_N aliases. Bind each passage's evidence_refs to exactly
+its own content, using at most 16 distinct aliases across passages. Do not attach a global
+source list to an otherwise free-form account. The backend joins passages in order. context_N and
 previous_episode are context only and must never be cited as evidence. Do not treat the whole
 input window as direct evidence for every episode.
 """
@@ -214,7 +214,7 @@ class SelfReflectionService:
                     "permits at most 1. Choose the single most meaningful experience, or none. "
                     "An episode requires passages, importance, and value_reason. Each of 1-8 "
                     "passages requires nonblank content and unique evidence_refs; the complete "
-                    "episode uses at most 8 distinct aliases and 4000 joined characters. Use "
+                    "episode uses at most 16 distinct aliases and 4000 joined characters. Use "
                     "supplied event_N/tool_N aliases. Unknown references "
                     "must be replaced with real supporting aliases, never invented. Never use "
                     "context_N as evidence. Never use self_episode or episode as a proposal "

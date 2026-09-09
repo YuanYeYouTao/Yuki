@@ -1306,6 +1306,26 @@ async def test_self_reflection_batch_survives_presence_switch(database: Database
     assembled = SelfReflectionOutput.model_validate({"episodes": [grounded]}).episodes[0]
     assert assembled.content == "一起提出问题。\n随后讨论回答。"
     assert assembled.evidence_refs == ("event_1", "event_2")
+    supported = SelfReflectionOutput.model_validate(
+        {
+            "episodes": [
+                {
+                    **grounded,
+                    "passages": [
+                        {
+                            "content": "问题及回答。",
+                            "evidence_refs": [f"event_{i}" for i in range(1, 9)],
+                        },
+                        {
+                            "content": "后续工具结果。",
+                            "evidence_refs": [f"tool_{i}" for i in range(1, 9)],
+                        },
+                    ],
+                }
+            ]
+        }
+    ).episodes[0]
+    assert len(supported.evidence_refs) == 16
     for invalid_parts in (
         [{"content": "没有来源。", "evidence_refs": []}],
         [{"content": " ", "evidence_refs": ["event_1"]}],
@@ -1315,7 +1335,8 @@ async def test_self_reflection_batch_survives_presence_switch(database: Database
         ],
         [
             {"content": "第一段", "evidence_refs": [f"event_{i}" for i in range(1, 9)]},
-            {"content": "第二段", "evidence_refs": ["event_9"]},
+            {"content": "第二段", "evidence_refs": [f"event_{i}" for i in range(9, 17)]},
+            {"content": "第三段", "evidence_refs": ["event_17"]},
         ],
     ):
         with pytest.raises(ValueError):
