@@ -16,12 +16,16 @@ from sqlalchemy import func, select, update
 from tests.conftest import make_settings
 
 from qq_ai_bot.admin.audit import AdminAuditService
+from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import AdminActor
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.conversation.hydrate import bump_canonical_generation
 from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.memory_config import MemoryConfigScope
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.identity.canonical_repository import active_space_id_for
+from qq_ai_bot.identity.db_models import CanonicalSpaceModel
+from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.memory.candidates import MemoryConflictCandidateResolver
 from qq_ai_bot.memory.claim_processor import MemoryClaimProcessor, MemoryProcessingContext
@@ -79,6 +83,7 @@ from qq_ai_bot.persistence.models import (
     MemorySelfReflectionRunModel,
     MemorySelfReflectionStateModel,
     MemoryToolReceiptModel,
+    RuntimeConfigOverrideModel,
 )
 from qq_ai_bot.persistence.repositories import (
     AgentActionRepository,
@@ -110,6 +115,7 @@ def _service(
     ledger = EventLedgerRepository(database)
     processor = MemoryClaimProcessor(
         settings=settings,
+        runtime_config=RuntimeConfigService(settings=settings, database=database),
         facts=facts,
         candidate_resolver=MemoryConflictCandidateResolver(repository),
         relation_classifier=cast(MemoryRelationClassifier, object()),
@@ -1039,6 +1045,7 @@ async def test_self_reflection_episode_commits_full_window_in_one_receipt(
             conversation_key="group:3001:self-reflection",
             turn_origin="memory_self_reflection",
             delegation_mode=f"self_episode:{events[0].id}:{events[-1].id}",
+            config_scope=MemoryConfigScope(space_id=canonical_space_id),
             trigger_actor_user_id="8000",
             decision_actor_type=MemoryDecisionActorType.REFLECTION,
             decision_actor_id="yuki_self_reflection",
@@ -1156,6 +1163,45 @@ async def test_self_reflection_batch_survives_presence_switch(database: Database
     batch = batches[0]
     assert batch.state.bot_user_id == "8000"
     assert batch.events[-1].bot_user_id == "8001"
+
+    runtime_config = RuntimeConfigService(settings=make_settings(database.url), database=database)
+    now = datetime.now(UTC)
+    async with database.sessions() as session, session.begin():
+        session.add(
+            RuntimeConfigOverrideModel(
+                config_key="memory.consolidation_candidate_limit",
+                scope_type="group",
+                canonical_space_id=batch.state.canonical_space_id,
+                value_json="7",
+                value_type="integer",
+                apply_mode="hot",
+                version=1,
+                created_at=now,
+                updated_at=now,
+                updated_by="test",
+            )
+        )
+        # Historical config lookup is independent from current group admission.
+        await session.execute(
+            update(CanonicalSpaceModel)
+            .where(CanonicalSpaceModel.id == batch.state.canonical_space_id)
+            .values(enabled=False)
+        )
+    scope = MemoryConfigScope(space_id=batch.state.canonical_space_id)
+    snapshot = await runtime_config.snapshot(memory_scope=scope)
+    assert snapshot.memory.consolidation_candidate_limit == 7
+    with pytest.raises(CanonicalIdentityError):
+        await runtime_config.snapshot(
+            memory_scope=MemoryConfigScope(person_id=batch.state.canonical_space_id)
+        )
+    with pytest.raises(CanonicalIdentityError):
+        await runtime_config.snapshot(user_id="8001", group_id="3001")
+    async with database.sessions() as session, session.begin():
+        await session.execute(
+            update(CanonicalSpaceModel)
+            .where(CanonicalSpaceModel.id == batch.state.canonical_space_id)
+            .values(enabled=True)
+        )
 
     provider = FakeLLMProvider(
         lambda _request: json.dumps(

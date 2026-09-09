@@ -7,6 +7,7 @@ import logging
 
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.memory_config import MemoryConfigScope
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
 from qq_ai_bot.memory.claim_candidates import (
     MemoryClaimCandidate,
@@ -508,6 +509,10 @@ class SelfReflectionService:
                 trigger_actor_user_id=event.sender_user_id,
                 decision_actor_type=MemoryDecisionActorType.REFLECTION,
                 decision_actor_id="yuki_self_reflection",
+                config_scope=MemoryConfigScope(
+                    person_id=batch.state.canonical_person_id,
+                    space_id=batch.state.canonical_space_id,
+                ),
                 executed_by_bot_user_id=event.bot_user_id,
                 evidence_tool_receipt_id=tool_receipt_id,
             ),
@@ -639,6 +644,10 @@ class SelfReflectionService:
                 trigger_actor_user_id=anchor.sender_user_id,
                 decision_actor_type=MemoryDecisionActorType.REFLECTION,
                 decision_actor_id="yuki_self_reflection",
+                config_scope=MemoryConfigScope(
+                    person_id=batch.state.canonical_person_id,
+                    space_id=batch.state.canonical_space_id,
+                ),
                 executed_by_bot_user_id=anchor.bot_user_id,
                 evidence_tool_receipt_id=(primary_tool.id if primary_tool is not None else None),
             ),

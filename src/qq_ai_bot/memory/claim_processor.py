@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.config import Settings
+from qq_ai_bot.domain.memory_config import MemoryConfigScope
 from qq_ai_bot.llm.base import LLMError
 from qq_ai_bot.memory.candidates import MemoryConflictCandidateResolver
 from qq_ai_bot.memory.classifier import MemoryRelationClassifier
@@ -42,6 +43,7 @@ from qq_ai_bot.persistence.repository_records import EventRecord
 class MemoryProcessingContext:
     source: MemoryProcessingSource
     event: EventRecord
+    config_scope: MemoryConfigScope | None = None
     rebuild_run_id: str | None = None
     proposal_id: int | None = None
     preserve_capacity: bool = False
@@ -247,7 +249,9 @@ class MemoryClaimProcessor:
                 reason_code="historical_expired",
             )
         runtime = (
-            await self._runtime_config.snapshot(
+            await self._runtime_config.snapshot(memory_scope=context.config_scope)
+            if self._runtime_config is not None and context.config_scope is not None
+            else await self._runtime_config.snapshot(
                 user_id=context.event.sender_user_id,
                 group_id=context.event.group_id,
             )

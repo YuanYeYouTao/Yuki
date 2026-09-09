@@ -1036,6 +1036,7 @@ class MemoryMutationService:
                     MemoryProcessingContext(
                         source=MemoryProcessingSource.LIVE,
                         event=context.event,
+                        config_scope=context.config_scope,
                     ),
                 )
             try:
