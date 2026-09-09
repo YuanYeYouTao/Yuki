@@ -115,6 +115,11 @@ episodes 是创建 Episode 的唯一输出位置，用来记录你在当前群�
 时间和来源由后端确定，你只需输出自由的 content 和 importance。previous_episode 是当前范围内
 最近一条既有 Episode，只用于避免重复，不是本轮证据。如果当前窗口只是它的重复延续且没有
 重要新进展，保持 episodes 为空。不要把 context_events 或 previous_episode 重新总结进正文。
+
+self_facts 是已有的事实/偏好，existing_episodes 是历史经历，二者均只供核对已有记忆和去重，
+不是写作范例，也不是本次新内容的证据。历史存档可能沿用旧的流水账或混杂话题格式，
+不要模仿或继续这种格式；本次仍只选一个核心经历。两组的 fact_N 引用均可用于既有记忆变更，
+但不能代替本次 event_N/tool_N 证据。不得把存档类型不当的旧内容当作新内容的分类标准。
 """
 
 
@@ -329,6 +334,9 @@ class SelfReflectionService:
             if remaining <= 0:
                 break
         events = tuple(rendered_events)
+        # Only aliases actually shown to the model may become mutation evidence.
+        visible_event_refs = {event.ref for event in events}
+        event_map = {ref: event for ref, event in event_map.items() if ref in visible_event_refs}
         selected_context: list[tuple[EventRecord, str]] = []
         context_remaining = 2000
         for event in reversed(batch.context_events):
@@ -369,6 +377,7 @@ class SelfReflectionService:
         fact_rows = tuple(
             SelfReflectionFact(
                 ref=ref,
+                kind=fact.kind,
                 category=fact.category,
                 memory_key=fact.memory_key,
                 content=fact.content,
@@ -417,7 +426,8 @@ class SelfReflectionService:
                     if previous_episode is not None
                     else None
                 ),
-                self_facts=fact_rows,
+                self_facts=tuple(row for row in fact_rows if row.kind is not MemoryKind.EPISODE),
+                existing_episodes=tuple(row for row in fact_rows if row.kind is MemoryKind.EPISODE),
                 self_candidates=candidate_rows,
             ),
             fact_map,

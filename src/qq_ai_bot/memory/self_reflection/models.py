@@ -61,6 +61,7 @@ class SelfReflectionToolReceipt(_Contract):
 
 class SelfReflectionFact(_Contract):
     ref: str = Field(pattern=r"^(?:fact|candidate)_[1-9]\d*$")
+    kind: MemoryKind | None = None
     category: str = Field(max_length=64)
     memory_key: str = Field(max_length=128)
     content: str = Field(max_length=4000)
@@ -82,6 +83,7 @@ class SelfReflectionInput(_Contract):
     tool_receipts: tuple[SelfReflectionToolReceipt, ...] = ()
     previous_episode: SelfReflectionPreviousEpisode | None = None
     self_facts: tuple[SelfReflectionFact, ...] = ()
+    existing_episodes: tuple[SelfReflectionFact, ...] = ()
     self_candidates: tuple[SelfReflectionFact, ...] = ()
 
     @model_validator(mode="after")

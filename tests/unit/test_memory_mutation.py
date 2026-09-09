@@ -78,6 +78,7 @@ from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import ResolvedSubject
 from qq_ai_bot.memory.validation import ValidatedMemoryClaim
 from qq_ai_bot.model_runtime.executor import LegacyTaskModelExecutor
+from qq_ai_bot.model_runtime.structured import StructuredTaskError
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     MemoryMutationReceiptModel,
@@ -1260,6 +1261,34 @@ async def test_self_reflection_batch_survives_presence_switch(database: Database
         concurrency=ConcurrencyManager(1),
         metrics=MemoryLifecycleMetrics(),
     )
+    historical_episode = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.SELF,
+            visibility_type=SelfMemoryVisibility.GROUP,
+            visibility_group_id="3001",
+            kind=MemoryKind.EPISODE,
+            memory_key="self_episode:historical_input_contract",
+            category="self_episode",
+            content="此前我们一起完成一次设备检查。",
+            importance=3,
+            confidence=0.9,
+            source_type=MemorySourceType.AUTOMATIC,
+        )
+    )
+    projected, fact_map, _candidates, exposed_events, _tools = await reflection._input(batch)
+    episode_ref = next(ref for ref, fact in fact_map.items() if fact.id == historical_episode.id)
+    assert all(row.kind is not MemoryKind.EPISODE for row in projected.self_facts)
+    assert [(row.ref, row.kind, row.content) for row in projected.existing_episodes] == [
+        (episode_ref, MemoryKind.EPISODE, historical_episode.content)
+    ]
+    assert {row.ref for row in (*projected.self_facts, *projected.existing_episodes)} == set(
+        fact_map
+    )
+    assert set(exposed_events) == {row.ref for row in projected.events}
+    bounded, _facts, _candidates, bounded_events, _tools = await reflection._input(
+        replace(batch, max_input_characters=1)
+    )
+    assert set(bounded_events) == {row.ref for row in bounded.events} == {"event_1"}
     proposed, committed = await reflection.reflect(batch)
     await repository.complete(batch, proposals=proposed, committed=committed)
 
@@ -1294,6 +1323,17 @@ async def test_self_reflection_batch_survives_presence_switch(database: Database
         old_event.id,
         new_event.id,
     }
+    # Even an otherwise valid result cannot cite a budget-hidden event. The
+    # normal bounded repair runs once, then fails without another mutation.
+    with pytest.raises(StructuredTaskError) as hidden_reference:
+        await reflection.reflect(replace(batch, max_input_characters=1))
+    assert hidden_reference.value.reason_code == "unknown_reference"
+    assert hidden_reference.value.attempts == 2
+    assert len(provider.requests) == 4
+    async with database.sessions() as session:
+        assert tuple(await session.scalars(select(MemoryMutationReceiptModel.id))) == tuple(
+            receipt.id for receipt in receipts
+        )
 
 
 @pytest.mark.asyncio
