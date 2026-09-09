@@ -13,7 +13,8 @@ from pathlib import Path
 
 import httpx
 
-REQUEST_LIMIT = 96
+# User-authorized cumulative extension; existing reservations are never reset.
+REQUEST_LIMIT = 144
 PURPOSES = frozenset({"embedding", "reflection", "dream", "main_agent", "attribution", "web"})
 
 
@@ -51,7 +52,9 @@ class RequestLedger:
             connection.execute("BEGIN IMMEDIATE")
             used = connection.execute("SELECT count(*) FROM requests").fetchone()[0]
             if used >= REQUEST_LIMIT:
-                raise ValidationBudgetExhausted("96-request validation budget exhausted")
+                raise ValidationBudgetExhausted(
+                    f"{REQUEST_LIMIT}-request validation budget exhausted"
+                )
             cursor = connection.execute("INSERT INTO requests(purpose) VALUES (?)", (purpose,))
             assert cursor.lastrowid is not None
             return cursor.lastrowid
