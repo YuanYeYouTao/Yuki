@@ -42,6 +42,7 @@ from qq_ai_bot.llm.base import (
 from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
 from qq_ai_bot.model_runtime.models import ModelCapability, ModelProtocol, ModelTask
 from qq_ai_bot.services.concurrency import ConcurrencyManager
+from qq_ai_bot.services.evidence_observation import EVIDENCE_TOOLS, EvidenceObservation
 from qq_ai_bot.services.native_tool_binder import NativeToolBinder
 from qq_ai_bot.time.models import TimeContext
 from qq_ai_bot.web.models import (
@@ -144,6 +145,8 @@ class AgentRunner:
         tools: AgentToolBackend | None,
     ) -> AgentRunResult:
         messages = list(initial_messages)
+        evidence_observation = EvidenceObservation(runtime.origin.value)
+        staged_evidence_results = 0
         calls_used = 0
         web_was_used = False
         empty_retries = 0
@@ -292,6 +295,13 @@ class AgentRunner:
                         diagnostics.static_prompt_revision if diagnostics else ""
                     ),
                 )
+                evidence_observation.request(
+                    request_index + 1,
+                    definitions,
+                    native_definitions,
+                    finalization=finalization_only,
+                    route=web_route.provider.value if web_route is not None else "disabled",
+                )
                 execute = (
                     partial(
                         self._models.execute,
@@ -306,6 +316,19 @@ class AgentRunner:
                     runtime.conversation_key,
                     execute,
                 )
+                evidence_observation.emit(
+                    "response_received",
+                    request_index=request_index + 1,
+                    confirmed_prior_results=staged_evidence_results,
+                    native_completed=sum(
+                        event.status.value == "completed" for event in response.native_tool_events
+                    ),
+                    native_failed=sum(
+                        event.status.value == "failed" for event in response.native_tool_events
+                    ),
+                    source_count=len(response.citations),
+                )
+                staged_evidence_results = 0
             except (LLMTimeoutError, LLMUnavailableError) as exc:
                 recovered = self._recover_committed_mutation(
                     tools,
@@ -634,6 +657,15 @@ class AgentRunner:
                     outcome = json.loads(result)
                 except json.JSONDecodeError:
                     outcome = {}
+                if call.function.name in EVIDENCE_TOOLS:
+                    evidence_observation.emit(
+                        "tool_result_staged",
+                        request_index=request_index + 1,
+                        tool=call.function.name,
+                        reused=not _was_executed,
+                        ok=isinstance(outcome, dict) and outcome.get("ok") is True,
+                    )
+                    staged_evidence_results += 1
                 if (
                     isinstance(outcome, dict)
                     and outcome.get("ok") is True

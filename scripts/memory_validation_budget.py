@@ -12,9 +12,8 @@ from pathlib import Path
 
 import httpx
 
-REQUEST_LIMIT = 48
-MAIN_AGENT_REQUEST_LIMIT = 24
-PURPOSES = frozenset({"embedding", "reflection", "dream", "main_agent", "attribution"})
+REQUEST_LIMIT = 96
+PURPOSES = frozenset({"embedding", "reflection", "dream", "main_agent", "attribution", "web"})
 
 
 class ValidationBudgetExhausted(RuntimeError):
@@ -51,15 +50,7 @@ class RequestLedger:
             connection.execute("BEGIN IMMEDIATE")
             used = connection.execute("SELECT count(*) FROM requests").fetchone()[0]
             if used >= REQUEST_LIMIT:
-                raise ValidationBudgetExhausted("48-request validation budget exhausted")
-            if (
-                purpose == "main_agent"
-                and connection.execute(
-                    "SELECT count(*) FROM requests WHERE purpose='main_agent'"
-                ).fetchone()[0]
-                >= MAIN_AGENT_REQUEST_LIMIT
-            ):
-                raise ValidationBudgetExhausted("24-request Main Agent validation budget exhausted")
+                raise ValidationBudgetExhausted("96-request validation budget exhausted")
             cursor = connection.execute("INSERT INTO requests(purpose) VALUES (?)", (purpose,))
             assert cursor.lastrowid is not None
             return cursor.lastrowid

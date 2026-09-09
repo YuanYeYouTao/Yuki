@@ -563,7 +563,9 @@ async def test_chat_completions_url_read_uses_read_webpage(
 @pytest.mark.asyncio
 async def test_normal_web_answer_hides_sources_and_model_generated_links(
     database: Database,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    caplog.set_level("INFO", logger="qq_ai_bot.services.evidence_observation")
     llm = WebToolLLM()
     web = FakeWebSearchProvider(response=web_response())
     harness = build_harness(database, web_settings(database), llm, web_provider=web)
@@ -577,6 +579,23 @@ async def test_normal_web_answer_hides_sources_and_model_generated_links(
     assert result.reason == "chat"
     assert [message.text for message in sender.messages] == ["DeepSeek 最近更新了工具调用能力。"]
     assert web.search_requests[0].query == "最新 DeepSeek 更新"
+    observations = [
+        json.loads(record.getMessage().removeprefix("agent_evidence "))
+        for record in caplog.records
+        if record.name == "qq_ai_bot.services.evidence_observation"
+    ]
+    assert any(
+        item["phase"] == "tool_result_staged" and item["tool"] == "web_search" and item["ok"]
+        for item in observations
+    )
+    assert any(
+        item["phase"] == "response_received" and item["confirmed_prior_results"] == 1
+        for item in observations
+    )
+    assert len({item["correlation_id"] for item in observations}) == 1
+    serialized = json.dumps(observations, ensure_ascii=False)
+    assert "最新 DeepSeek 更新" not in serialized
+    assert "example.com" not in serialized
 
 
 @pytest.mark.asyncio
