@@ -166,9 +166,10 @@ timeout_seconds = 120.0
 max_retries = 0
 default_temperature = 0.0
 default_max_output_tokens = 512
-thinking_mode = "disabled"
+thinking_mode = "enabled"
+reasoning_effort = "low"
 structured_output_mode = "function_tool"
-capabilities = ["tools", "structured_output", "long_context"]
+capabilities = ["tools", "structured_output", "long_context", "reasoning"]
 
 [routes]
 """

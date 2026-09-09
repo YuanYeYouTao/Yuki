@@ -11,7 +11,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, replace
 from typing import Protocol
 
-from qq_ai_bot.domain.messages import ChatRequest, ChatResponse
+from qq_ai_bot.domain.messages import ChatRequest, ChatResponse, minimum_reasoning_effort
 from qq_ai_bot.model_runtime.models import (
     ModelCapability,
     ModelExecutionPriority,
@@ -218,6 +218,8 @@ class LegacyTaskModelExecutor:
         del task, priority, canonical_conversation_id
         normalized = replace(
             request,
+            thinking_enabled=True,
+            reasoning_effort=minimum_reasoning_effort(request.reasoning_effort),
             request_shape_hash=request_shape_hash(
                 request,
                 provider="fake",
@@ -303,13 +305,11 @@ class TaskModelExecutor:
         priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
         canonical_conversation_id: str | None = None,
     ) -> ChatResponse:
-        required: set[ModelCapability] = set()
+        required: set[ModelCapability] = {ModelCapability.REASONING}
         if request.tools and not request.structured_output:
             required.add(ModelCapability.TOOLS)
         if request.structured_output or request.response_format is not None:
             required.add(ModelCapability.STRUCTURED_OUTPUT)
-        if request.thinking_enabled or request.reasoning_effort is not None:
-            required.add(ModelCapability.REASONING)
         if request.native_tools:
             required.add(ModelCapability.NATIVE_WEB_SEARCH)
         _route, profile = self._router.route(task, required_capabilities=frozenset(required))
@@ -322,11 +322,6 @@ class TaskModelExecutor:
             ):
                 raise ValueError("continuation cannot be routed to a different model profile")
         provider = self._pool.get(profile)
-        thinking_enabled = (
-            profile.thinking_enabled
-            if request.thinking_enabled is None
-            else request.thinking_enabled
-        )
         normalized = ChatRequest(
             messages=request.messages,
             model=profile.model,
@@ -338,9 +333,9 @@ class TaskModelExecutor:
                 if request.max_output_tokens is None
                 else request.max_output_tokens
             ),
-            thinking_enabled=thinking_enabled,
-            reasoning_effort=(
-                (request.reasoning_effort or profile.reasoning_effort) if thinking_enabled else None
+            thinking_enabled=True,
+            reasoning_effort=minimum_reasoning_effort(
+                request.reasoning_effort, profile.reasoning_effort
             ),
             tools=request.tools,
             tool_choice=request.tool_choice,

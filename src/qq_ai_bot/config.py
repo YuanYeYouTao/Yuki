@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import AliasChoices, Field, PrivateAttr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from qq_ai_bot.domain.messages import ReasoningEffort
+from qq_ai_bot.domain.messages import ReasoningEffort, minimum_reasoning_effort
 from qq_ai_bot.settings_domains import (
     AppSettings,
     AutomationSettings,
@@ -112,8 +112,9 @@ class Settings(BaseSettings):
     llm_max_retries: int = 2
     llm_temperature: float = 0.7
     llm_max_output_tokens: int = 8192
-    llm_thinking_enabled: bool | None = None
-    llm_reasoning_effort: ReasoningEffort | None = None
+    llm_thinking_enabled: bool | None = True
+    llm_reasoning_effort: ReasoningEffort | None = ReasoningEffort.LOW
+
     llm_flash_base_url: str = ""
     llm_flash_api_key: str = Field(default="", repr=False)
     llm_flash_model: str = ""
@@ -189,7 +190,7 @@ class Settings(BaseSettings):
     memory_self_reflection_max_wait_seconds: float = 28800.0
     memory_self_reflection_max_events: int = 100
     memory_self_reflection_max_characters: int = 8000
-    memory_self_reflection_max_output_tokens: int = 2400
+    memory_self_reflection_max_output_tokens: int = 4096
     memory_self_reflection_tool_receipt_characters: int = 2000
     memory_self_reflection_tool_receipt_retention_days: int = 7
     memory_max_referenced_targets: int = 5
@@ -236,7 +237,7 @@ class Settings(BaseSettings):
     memory_consolidation_candidate_limit: int = 12
     memory_consolidation_min_relevance: float = 0.25
     memory_consolidation_model_task: str = "memory_consolidation"
-    memory_consolidation_max_output_tokens: int = 1200
+    memory_consolidation_max_output_tokens: int = 4096
     memory_dream_enabled: bool = True
     memory_dream_schedule_hour: int = Field(default=5, ge=0, le=23)
     memory_dream_timezone: str = "Asia/Shanghai"
@@ -440,7 +441,7 @@ class Settings(BaseSettings):
     vision_media_download_timeout_seconds: float = 120.0
     vision_allow_private_urls: bool = False
     vision_max_output_tokens: int = 8192
-    vision_thinking_enabled: bool = False
+    vision_thinking_enabled: bool = True
     vision_thinking_budget: int = 6144
     vision_low_confidence_retry_threshold: float = 0.65
     vision_max_images_per_turn: int = 5
@@ -524,6 +525,16 @@ class Settings(BaseSettings):
     automation_default_misfire_grace_seconds: int = 1800
     automation_max_consecutive_failures: int = 3
     automation_run_retention_days: int = 30
+
+    @field_validator("llm_thinking_enabled", "vision_thinking_enabled")
+    @classmethod
+    def _generation_thinking_required(cls, value: bool | None) -> bool:
+        return True
+
+    @field_validator("llm_reasoning_effort")
+    @classmethod
+    def _generation_reasoning_floor(cls, value: ReasoningEffort | None) -> ReasoningEffort:
+        return minimum_reasoning_effort(value)
 
     @field_validator("web_search_depth")
     @classmethod

@@ -101,7 +101,7 @@ class EmojiSelector:
                     prompt,
                     options=VisionAnalysisOptions(
                         analysis_mode="meme",
-                        thinking_enabled=False,
+                        thinking_enabled=True,
                         thinking_budget=vision_runtime.thinking_budget,
                         low_confidence_retry_threshold=0,
                     ),

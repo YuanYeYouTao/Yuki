@@ -45,6 +45,13 @@ class ReasoningEffort(StrEnum):
     MAX = "max"
 
 
+def minimum_reasoning_effort(*efforts: ReasoningEffort | None) -> ReasoningEffort:
+    """Enforce the low floor without lowering any explicit higher preference."""
+
+    order = tuple(ReasoningEffort)
+    return max((ReasoningEffort.LOW, *(e for e in efforts if e is not None)), key=order.index)
+
+
 class NativeToolType(StrEnum):
     """Provider-executed tools supported by the compatibility layer."""
 

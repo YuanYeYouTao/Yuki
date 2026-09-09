@@ -2,21 +2,49 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import get_args
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.messages import ReasoningEffort
+from qq_ai_bot.model_runtime.models import ModelProfile
+from qq_ai_bot.vision.models import (
+    PreparedFrame,
+    PreparedVisualInput,
+    VisionAnalysisMode,
+    VisionAnalysisOptions,
+)
+from qq_ai_bot.vision.qwen import QwenVisionProvider
 
 
 @pytest.mark.parametrize("effort", list(ReasoningEffort))
 def test_deepseek_reasoning_effort_accepts_supported_values(effort: ReasoningEffort) -> None:
     settings = Settings(_env_file=None, llm_reasoning_effort=effort.value)
 
-    assert settings.llm_reasoning_effort is effort
-    assert settings.model_runtime.llm_reasoning_effort is effort
+    expected = (
+        ReasoningEffort.LOW if effort in {ReasoningEffort.NONE, ReasoningEffort.MINIMAL} else effort
+    )
+    assert settings.llm_reasoning_effort is expected
+    assert settings.model_runtime.llm_reasoning_effort is expected
+    disabled = Settings(_env_file=None, llm_thinking_enabled=False, vision_thinking_enabled=False)
+    assert disabled.llm_thinking_enabled is True
+    assert disabled.vision_thinking_enabled is True
+    # Capability declarations must be explicit, not silently invented by the floor.
+    with pytest.raises(ValidationError, match="require the reasoning capability"):
+        ModelProfile(
+            id="unsupported",
+            provider="fake",
+            model="fake",
+            timeout_seconds=1,
+            max_retries=0,
+            default_temperature=0,
+            default_max_output_tokens=100,
+        )
 
 
 @pytest.mark.parametrize(
@@ -462,12 +490,12 @@ def test_relationship_configuration_is_validated() -> None:
         Settings.model_validate({"relationship_confidence_threshold": 1.1})
 
 
-def test_vision_defaults_are_safe_and_api_key_is_hidden() -> None:
-    settings = Settings.model_validate(
-        {
-            "vision_enabled": False,
-            "vision_api_key": "vision-sensitive-test-value",
-        }
+@pytest.mark.asyncio
+async def test_vision_defaults_are_safe_and_api_key_is_hidden() -> None:
+    settings = Settings(
+        _env_file=None,
+        vision_enabled=False,
+        vision_api_key="vision-sensitive-test-value",
     )
 
     assert not settings.vision_enabled
@@ -480,7 +508,7 @@ def test_vision_defaults_are_safe_and_api_key_is_hidden() -> None:
     assert settings.vision_queue_timeout_seconds == 120
     assert settings.vision_media_download_timeout_seconds == 120
     assert settings.vision_max_output_tokens == 8192
-    assert not settings.vision_thinking_enabled
+    assert settings.vision_thinking_enabled
     assert settings.vision_thinking_budget == 6144
     assert settings.vision_low_confidence_retry_threshold == 0.65
     assert settings.vision_max_images_per_turn == 5
@@ -493,6 +521,56 @@ def test_vision_defaults_are_safe_and_api_key_is_hidden() -> None:
     assert settings.vision_per_user_requests_per_minute == 20
     assert settings.vision_per_group_requests_per_minute == 60
     assert "vision-sensitive-test-value" not in repr(settings)
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        calls.append(payload)
+        assert payload["enable_thinking"] is True
+        assert payload["thinking_budget"] == 6144
+        assert "reasoning_effort" not in payload  # No invented cross-provider mapping.
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps({"items": [{"index": 1, "description": "test"}]})
+                        }
+                    }
+                ]
+            },
+        )
+
+    frame = PreparedFrame(
+        content_hash="test",
+        mime_type="image/png",
+        width=1,
+        height=1,
+        frame_index=0,
+        frame_count=1,
+        data_url="data:image/png;base64,AA==",
+    )
+    visual = PreparedVisualInput(
+        media_hash="test", frames=(frame,), animated=False, source="current"
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = QwenVisionProvider(
+            base_url="https://vision.example/v1",
+            api_key="test",
+            model="test",
+            timeout_seconds=1,
+            max_retries=0,
+            max_output_tokens=8192,
+            global_concurrency=1,
+            client=client,
+        )
+        for mode in get_args(VisionAnalysisMode):
+            options = VisionAnalysisOptions(analysis_mode=mode, thinking_enabled=False)
+            assert options.thinking_enabled is True
+            result = await provider.analyze((visual,), "test", options=options)
+            assert result.items[0].description == "test"
+    assert len(calls) == len(get_args(VisionAnalysisMode))  # No non-thinking first pass/review.
 
 
 def test_vision_enabled_requires_complete_provider_configuration() -> None:

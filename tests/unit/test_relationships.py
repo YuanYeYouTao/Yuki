@@ -379,7 +379,9 @@ async def test_llm_relationship_evaluator_disables_thinking_and_tools(
     assert result[claimed[0].job_id].affection_delta == 1
     assert provider.request is not None
     assert provider.request.temperature == 0.1
-    assert provider.request.thinking_enabled is False
+    assert provider.request.thinking_enabled is True
+    assert provider.request.reasoning_effort is not None
+    assert provider.request.reasoning_effort.value == "low"
     assert not provider.request.tools
 
 

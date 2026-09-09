@@ -81,7 +81,9 @@ doctor 是只读检查，不发送消息、不调用私有 action，也不输出
 
 - 不在聊天、日志、Issue 或 Git 中粘贴 API key。
 - Responses 请求默认不发送 `temperature`。
-- 模型不支持某个请求字段时，在 profile 中关闭该能力，不伪装成功。
+- 所有生成模型至少 low 思考，保留更高档位；后台任务不再关闭思考。
+  Profile 必须声明 reasoning 能力，不能靠禁用它绕过最低合同；不支持时显式失败。
+  视觉使用原生思考预算，详见 [最低思考合同](architecture/model-reasoning-policy.md)。
 - Web、Embedding、Vision 和 Speech 都是可选能力；不可用时应有界降级，不影响纯文本主路径。
 - secret 只能写入或查询“是否已配置”，不能通过控制面读回。
 

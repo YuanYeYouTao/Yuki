@@ -764,7 +764,7 @@ def hot_config_specs() -> tuple[ConfigSpec, ...]:
         _spec(
             "llm.thinking_enabled",
             "模型深度思考开关",
-            "是否为普通聊天请求显式启用深度思考。",
+            "兼容配置项；所有生成请求固定启用思考，false 不再降低 low 下限。",
             aliases=("深度思考", "思考模式"),
             value_type="boolean",
             scopes=_GGU,
@@ -983,7 +983,7 @@ def hot_config_specs() -> tuple[ConfigSpec, ...]:
         _spec(
             "vision.thinking_enabled",
             "视觉动态思考开关",
-            "角色、表情包和问题模式启用深度思考，普通低置信度结果可自动复核。",
+            "兼容配置项；所有视觉模式固定启用原生思考，false 不再关闭。",
             aliases=("识图思考", "视觉深度思考"),
             value_type="boolean",
             scopes=_GGU,
@@ -1009,7 +1009,7 @@ def hot_config_specs() -> tuple[ConfigSpec, ...]:
         _spec(
             "vision.low_confidence_retry_threshold",
             "视觉低置信度复核阈值",
-            "快速识别低于该平均置信度时，自动使用思考模式复核一次。",
+            "兼容配置项；所有视觉请求已开启思考，不再触发先快速识别、后思考的复核。",
             aliases=("识图复核阈值", "视觉置信度阈值"),
             value_type="number",
             minimum=0,

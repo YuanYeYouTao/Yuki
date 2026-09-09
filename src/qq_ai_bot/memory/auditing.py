@@ -120,7 +120,7 @@ class _BaseMemoryAuditor:
                 structured_input=payload,
                 output_model=AuditDecision,
                 temperature=0.0,
-                max_output_tokens=600,
+                max_output_tokens=4096,
                 allow_text_json=True,
                 compact_schema=True,
             ),

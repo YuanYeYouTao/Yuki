@@ -1486,7 +1486,8 @@ class RuntimeConfigService:
                 max_retries=int(cast(int, value("llm.max_retries"))),
                 temperature=float(cast(float | int, value("llm.temperature"))),
                 max_output_tokens=int(cast(int, value("llm.max_output_tokens"))),
-                thinking_enabled=cast(bool | None, value("llm.thinking_enabled")),
+                # Legacy persisted toggles cannot lower the generation floor.
+                thinking_enabled=True,
             ),
             agent=AgentRuntimeConfig(
                 max_tool_calls=int(cast(int, value("agent.max_tool_calls"))),
@@ -1585,7 +1586,7 @@ class RuntimeConfigService:
                 max_images_per_turn=int(cast(int, value("vision.max_images_per_turn"))),
                 max_frames_per_turn=int(cast(int, value("vision.max_frames_per_turn"))),
                 gif_max_frames=int(cast(int, value("vision.gif_max_frames"))),
-                thinking_enabled=bool(value("vision.thinking_enabled")),
+                thinking_enabled=True,
                 thinking_budget=int(cast(int, value("vision.thinking_budget"))),
                 low_confidence_retry_threshold=float(
                     cast(float | int, value("vision.low_confidence_retry_threshold"))

@@ -168,7 +168,6 @@ class StructuredTaskRunner:
                 model=self._models.model_name(task),
                 temperature=temperature,
                 max_output_tokens=max_output_tokens,
-                thinking_enabled=False,
                 tools=tools,
                 tool_choice=tool_choice,
                 response_format=response_format,

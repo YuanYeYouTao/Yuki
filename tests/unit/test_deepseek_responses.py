@@ -27,6 +27,11 @@ from qq_ai_bot.llm.base import (
     LLMUnavailableError,
 )
 from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
+from qq_ai_bot.model_runtime.executor import TaskModelExecutor
+from qq_ai_bot.model_runtime.models import ModelCapability, ModelProfile, ModelRoute, ModelTask
+from qq_ai_bot.model_runtime.pool import ModelClientPool
+from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
+from qq_ai_bot.model_runtime.routes import ModelRouter
 
 _FIXTURES = Path(__file__).parents[1] / "fixtures" / "deepseek_responses"
 
@@ -194,6 +199,53 @@ async def test_responses_reasoning_payload_matches_thinking_preference(
                 thinking_enabled=thinking_enabled,
                 reasoning_effort=reasoning_effort,
             )
+        )
+        # The wire adapter retains its raw protocol contract; application calls
+        # must enforce low before reaching either protocol adapter.
+        expected_effort = (
+            ReasoningEffort.LOW
+            if reasoning_effort in {None, ReasoningEffort.NONE, ReasoningEffort.MINIMAL}
+            else reasoning_effort
+        )
+        expected_reasoning = {"effort": expected_effort.value}
+        profile = ModelProfile(
+            id="test",
+            provider="fake",
+            model="test",
+            timeout_seconds=1,
+            max_retries=0,
+            default_temperature=0.7,
+            default_max_output_tokens=1000,
+            thinking_enabled=False,
+            reasoning_effort=None,
+            capabilities=frozenset(ModelCapability),
+        )
+        assert profile.thinking_enabled is True
+        assert profile.reasoning_effort is ReasoningEffort.LOW
+        catalog = ModelProfileCatalog(
+            profiles={"test": profile},
+            routes={task: ModelRoute(task=task, profile_id="test") for task in ModelTask},
+        )
+        executor = TaskModelExecutor(
+            router=ModelRouter(catalog),
+            pool=ModelClientPool(injected_profiles={"test": provider}),
+        )
+        await executor.execute(
+            ModelTask.MEMORY_SELF_REFLECTION,
+            _request(
+                thinking_enabled=thinking_enabled,
+                reasoning_effort=reasoning_effort,
+            ),
+        )
+        # A per-request low setting must not lower a higher configured profile.
+        higher = profile.model_copy(update={"reasoning_effort": ReasoningEffort.HIGH})
+        executor = TaskModelExecutor(
+            router=ModelRouter(catalog.model_copy(update={"profiles": {"test": higher}})),
+            pool=ModelClientPool(injected_profiles={"test": provider}),
+        )
+        expected_reasoning = {"effort": "high"}
+        await executor.execute(
+            ModelTask.MEMORY_DREAM, _request(reasoning_effort=ReasoningEffort.LOW)
         )
 
 

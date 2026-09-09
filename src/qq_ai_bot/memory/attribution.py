@@ -259,7 +259,8 @@ class MemoryAttributionWorker:
                     structured_input=payload,
                     output_model=MemoryAttributionOutput,
                     temperature=0,
-                    max_output_tokens=256,
+                    # Reasoning and the final structured result share the output budget.
+                    max_output_tokens=4096,
                     compact_schema=True,
                     validation_retries=0,
                     priority=ModelExecutionPriority.BEST_EFFORT_BACKGROUND,

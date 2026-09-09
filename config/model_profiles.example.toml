@@ -13,7 +13,8 @@ timeout_seconds = 120.0
 max_retries = 2
 default_temperature = 0.7
 default_max_output_tokens = 8192
-thinking_mode = "configurable"
+thinking_mode = "enabled"
+reasoning_effort = "low"
 reasoning_effort_env = "LLM_REASONING_EFFORT"
 structured_output_mode = "function_tool"
 capabilities = ["tools", "reasoning", "long_context", "native_web_search"]
@@ -27,10 +28,11 @@ model_env = "LLM_FLASH_MODEL"
 timeout_seconds = 30.0
 max_retries = 1
 default_temperature = 0.1
-default_max_output_tokens = 2048
-thinking_mode = "disabled"
+default_max_output_tokens = 4096
+thinking_mode = "enabled"
+reasoning_effort = "low"
 structured_output_mode = "function_tool"
-capabilities = ["structured_output"]
+capabilities = ["structured_output", "reasoning"]
 
 [routes]
 chat_agent = "pro"
