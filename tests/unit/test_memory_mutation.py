@@ -1376,6 +1376,11 @@ async def test_self_reflection_batch_survives_presence_switch(database: Database
     proposed, committed = await reflection.reflect(batch)
     await repository.complete(batch, proposals=proposed, committed=committed)
 
+    instruction = provider.requests[0].messages[0].content
+    assert "历史回复只证明当时说过这些话" in instruction
+    assert "创建任务成功不证明后续任务执行或查询结论正确" in instruction
+    assert "没有被选中证据支持的细节不要写" in instruction
+
     assert (proposed, committed) == (2, 2)
     async with database.sessions() as session:
         receipts = tuple(
