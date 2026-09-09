@@ -10,11 +10,11 @@ from sqlalchemy import text
 from sqlalchemy.exc import DatabaseError
 
 from qq_ai_bot.memory.eligibility import (
-    sql_fact_event_evidence_predicate,
     sql_fact_tool_evidence_predicate,
     sql_human_evidence_predicate,
 )
 from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
+from qq_ai_bot.memory.quality.event_evidence import audit_event_evidence
 from qq_ai_bot.memory.quality.models import ProductionAuditIssue, ProductionAuditReport
 from qq_ai_bot.persistence.database import Database
 
@@ -37,6 +37,14 @@ class MemoryProductionQualityAudit:
         checks = self._checks()
         issues: list[ProductionAuditIssue] = []
         async with self._database.sessions() as session:
+            try:
+                issues.extend(await audit_event_evidence(session))
+            except (DatabaseError, ValueError, TypeError):
+                issues.append(
+                    ProductionAuditIssue(
+                        issue_code="event_evidence_query_failed", severity="error", count=1
+                    )
+                )
             for code, severity, query in checks:
                 try:
                     rows = tuple((await session.execute(text(query))).all())
@@ -212,34 +220,6 @@ class MemoryProductionQualityAudit:
                     "JOIN canonical_conversations v ON v.id=c.canonical_conversation_id "
                     "WHERE t.id=e.tool_receipt_id "
                     f"AND {sql_fact_tool_evidence_predicate()})",
-                    id_expression="e.id",
-                ),
-            ),
-            (
-                "evidence_source_invalid",
-                "error",
-                _query(
-                    "memory_evidence e JOIN chat_events c ON c.id=e.event_id "
-                    "JOIN memory_facts f ON f.id=e.fact_id",
-                    f"NOT ({sql_fact_event_evidence_predicate()})",
-                    id_expression="e.id",
-                ),
-            ),
-            (
-                "evidence_speaker_mismatch",
-                "error",
-                _query(
-                    "memory_evidence e JOIN chat_events c ON c.id=e.event_id",
-                    "e.source_speaker_user_id!=c.sender_user_id",
-                    id_expression="e.id",
-                ),
-            ),
-            (
-                "evidence_excerpt_missing",
-                "error",
-                _query(
-                    "memory_evidence e JOIN chat_events c ON c.id=e.event_id",
-                    "trim(e.excerpt)='' OR instr(c.content,e.excerpt)=0",
                     id_expression="e.id",
                 ),
             ),

@@ -30,6 +30,18 @@ success/empty 同时出现。未绑定普通聊天 recall receipt 的 Plugin/Adm
 
 ## 离线质量套件
 
+### 证据审计口径
+
+普通事件证据仍要求人类入站来源。SELF 的 `agent_reflection` 证据可引用 Yuki 出站，
+但作者、非抑制状态、来源账号和摘录仍必须匹配。自省使用实际事件渲染文本（包含带有
+不可信标记的图片识别摘要），摘录按原文或写入时的空白规范化结果核对，不能直接只在
+原始正文列做 substring 判断。图片摘要不是用户原话，也不是独立事实核验。
+
+工具证据检查回执、触发事件、canonical 会话、SELF 可见范围及结果摘录；已被正式记忆
+引用的回执不会仅因过期而失效。审计与清理扫描复用相同证据规则，按有界批次检查，
+报告只含数量和有限内部 ID。清理预案仍须显式应用，扫描本身不修改事实。历史缺少
+证据或替代链时不得补造来源，更不能将审计误报修正解释为允许删除所有历史事实。
+
 ```bash
 uv run qq-ai-bot-cli memory quality validate-dataset
 uv run qq-ai-bot-cli memory quality run --suite full

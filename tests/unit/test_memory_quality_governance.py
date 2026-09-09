@@ -20,6 +20,7 @@ from qq_ai_bot.memory.enums import (
     MemoryStatus,
 )
 from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
+from qq_ai_bot.memory.quality import hygiene as hygiene_module
 from qq_ai_bot.memory.quality.audit import MemoryProductionQualityAudit
 from qq_ai_bot.memory.quality.hygiene import MemoryProvenanceHygiene
 from qq_ai_bot.memory.quality.release_check import MemoryReleaseCheck
@@ -81,7 +82,11 @@ async def _invalid_provenance_fact(database: Database, suffix: str) -> int:
 
 
 @pytest.mark.asyncio
-async def test_audit_detects_invalid_evidence_without_exposing_text(database: Database) -> None:
+async def test_audit_detects_invalid_evidence_without_exposing_text(
+    database: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Cross real page boundaries, including a page containing only valid SELF.
+    monkeypatch.setattr(hygiene_module, "_SCAN_PAGE_SIZE", 1)
     await _invalid_provenance_fact(database, "audit")
     report = await MemoryProductionQualityAudit(database).run()
     issue = next(item for item in report.issues if item.issue_code == "evidence_source_invalid")
