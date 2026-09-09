@@ -839,10 +839,10 @@ async def test_planner_memory_modes_control_semantic_retrieval(database: Databas
     assert hybrid.semantic_enabled is runtime.memory.semantic_enabled
     assert overview.mode is MemoryRetrievalMode.OVERVIEW
     assert overview.semantic_enabled is False
+    await _assert_none_memory_mode_returns_empty_result(database)
 
 
-@pytest.mark.asyncio
-async def test_none_memory_mode_returns_empty_result(database: Database) -> None:
+async def _assert_none_memory_mode_returns_empty_result(database: Database) -> None:
     people = PeopleRepository(database)
     repository = MemoryFactRepository(database)
     context = MemoryContextService(
@@ -876,6 +876,63 @@ async def test_none_memory_mode_returns_empty_result(database: Database) -> None
     assert result.hits == ()
     assert result.blocks == ()
     assert result.semantic_status == "skipped"
+
+
+async def test_strict_time_filters_before_candidate_limits(database: Database) -> None:
+    from qq_ai_bot.memory.tool_intent import parse_memory_tool_intent
+
+    facts, retriever = _retriever(database)
+    old = await _remember(facts, user_id="1001", memory_key="camera", content="camera old")
+    inside = await _remember(
+        facts, user_id="1001", memory_key="camera-inside", content="camera inside"
+    )
+    end = await _remember(facts, user_id="1001", memory_key="camera-end", content="camera end")
+    unknown = await _remember(
+        facts, user_id="1001", memory_key="camera-unknown", content="camera unknown"
+    )
+    async with database.sessions() as session, session.begin():
+        for fact, occurred in (
+            (old, "2026-08-01 00:00:00.000000"),
+            (inside, "2026-09-08 16:00:00.000000"),
+            (end, "2026-09-09 16:00:00.000000"),
+        ):
+            await session.execute(
+                text("UPDATE memory_facts SET valid_from=:time WHERE id=:id"),
+                {"time": occurred, "id": fact.id},
+            )
+        await session.execute(
+            text("UPDATE memory_facts SET importance=5 WHERE id=:id"), {"id": old.id}
+        )
+    intent = parse_memory_tool_intent(
+        {
+            "query": "camera",
+            "start_at": "2026-09-09T00:00:00+08:00",
+            "end_at": "2026-09-10T00:00:00+08:00",
+        }
+    )
+    query = _query("camera", _target("1001"), limit=1).model_copy(
+        update={"intent": intent, "candidate_limit": 1, "always_on_explicit_preference_limit": 0}
+    )
+    result = await retriever.retrieve(query)
+    assert [hit.fact.id for hit in result.hits] == [inside.id]
+    overview = await retriever.retrieve(
+        query.model_copy(update={"mode": MemoryRetrievalMode.OVERVIEW})
+    )
+    assert [hit.fact.id for hit in overview.hits] == [inside.id]
+    assert not {old.id, end.id, unknown.id} & {hit.fact.id for hit in result.hits}
+    assert parse_memory_tool_intent({}).mode.value == "overview"
+    assert parse_memory_tool_intent({"query": "camera"}).mode.value == "hybrid"
+    for invalid in (
+        {"purpose": "invented"},
+        {"preferred_kinds": ["invented"]},
+        {"entities": "camera"},
+        {"mode": "none"},
+        {"start_at": "2026-09-09"},
+        {"start_at": "invalid"},
+        {"start_at": "2026-09-10T00:00:00Z", "end_at": "2026-09-09T00:00:00Z"},
+    ):
+        with pytest.raises(ValueError):
+            parse_memory_tool_intent(invalid)
 
 
 @pytest.mark.asyncio

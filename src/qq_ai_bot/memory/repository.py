@@ -39,6 +39,7 @@ from qq_ai_bot.memory.models import (
     MemoryFactRelation,
     MemoryFactStateEvent,
     MemoryJob,
+    MemoryTemporalIntent,
 )
 from qq_ai_bot.memory.partition import (
     MemoryPartitionResolutionError,
@@ -48,6 +49,7 @@ from qq_ai_bot.memory.partition import (
     resolve_memory_partition_for_event,
 )
 from qq_ai_bot.memory.projections import project_memory_fact_rows
+from qq_ai_bot.memory.temporal_filter import strict_time_conditions
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
@@ -478,11 +480,13 @@ class MemoryFactRepository:
         target: MemoryEntityTarget,
         *,
         limit: int,
+        temporal: MemoryTemporalIntent | None = None,
     ) -> tuple[MemoryFact, ...]:
         async with self._database.sessions() as session:
             rows = await self._execute_facts_with_count(
                 session,
                 [
+                    *strict_time_conditions(temporal),
                     *(await self._async_target_conditions(session, target)),
                     MemoryFactModel.status == MemoryStatus.ACTIVE.value,
                     MemoryFactModel.review_state != "quarantined",
@@ -506,6 +510,7 @@ class MemoryFactRepository:
         target: MemoryEntityTarget,
         *,
         limit: int,
+        temporal: MemoryTemporalIntent | None = None,
     ) -> tuple[MemoryFact, ...]:
         if limit <= 0:
             return ()
@@ -513,6 +518,7 @@ class MemoryFactRepository:
             rows = await self._execute_facts_with_count(
                 session,
                 [
+                    *strict_time_conditions(temporal),
                     *(await self._async_target_conditions(session, target)),
                     MemoryFactModel.kind == "preference",
                     MemoryFactModel.source_type == "explicit",

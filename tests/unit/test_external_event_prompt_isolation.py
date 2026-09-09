@@ -942,7 +942,18 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     assert recent["data"]["newly_recorded"] == 0
     assert group_memory == {
         "ok": True,
-        "data": {"group_id": "group-100", "memories": []},
+        "data": {
+            "group_id": "group-100",
+            "memories": [],
+            "effective_query": {
+                "mode": "overview",
+                "purpose": "recall",
+                "start_at": None,
+                "end_at": None,
+                "temporal_constraint": None,
+                "interval": "start_inclusive_end_exclusive",
+            },
+        },
     }
     assert around["error"] == "not_found"
     assert scoped_search == {"ok": True, "data": {"events": []}}

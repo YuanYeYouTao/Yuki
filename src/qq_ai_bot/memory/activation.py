@@ -327,7 +327,7 @@ def apply_strict_temporal_constraint(
             continue
         if start_at is not None and occurred_at < start_at:
             continue
-        if end_at is not None and occurred_at > end_at:
+        if end_at is not None and occurred_at >= end_at:
             continue
         matched.append(hit)
     return tuple(hit.model_copy(update={"rank": rank}) for rank, hit in enumerate(matched, start=1))
@@ -380,6 +380,6 @@ def _temporal_score(
         return max(0.0, min(1.0, (age_days - 90.0) / (365.0 - 90.0)))
     if start_at is not None and occurred_at < start_at:
         return 0.0
-    if end_at is not None and occurred_at > end_at:
+    if end_at is not None and occurred_at >= end_at:
         return 0.0
     return 1.0

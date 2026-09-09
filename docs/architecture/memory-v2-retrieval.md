@@ -21,6 +21,19 @@ SELF 维持 global/current-private/current-group 可见性。
 
 ## 目标与意图
 
+Person、Group、SELF 工具共用严格参数解析：非空 query 默认 hybrid，空 query 默认
+overview，purpose 默认 recall。非法枚举和无效区间返回 invalid_arguments，不能静默丢弃。
+工具的 effective_query 摘要说明实际模式和时间约束，不包含未授权目标。
+
+指定日期默认 temporal_constraint=strict，范围为 `[start_at, end_at)`，严格边界必须带
+时区。事件时间未知或范围外不返回，允许空结果，不自动退回软排序。soft 只用于明确的
+宽泛偏好。时间使用 valid_from，不将创建时间或临时解析的正文日期冒充事件发生时间。
+关键词、向量和总览均在候选截断前筛选；无日期的总览与详情权限保持不变。
+
+自动预取为空不证明没有记忆；Main Agent 根据完整 History/Rollup 理解指代并主动补查，
+不另建短上下文或意图识别 Agent。姓名使用人物查询，SELF 不代替姓名解析；权限拒绝不
+重试，歧义先澄清，空结果只允许有实质区别的补查。生产只记录脱敏参数形状，不存完整入参。
+
 自动预取从当前人物、当前群、真实提及/引用出发，不遍历所有历史群和群友；
 维持 background/continuation 契约，默认总预算四条，单目标可占四条，不新增前置模型调用。
 主动工具由正常完整 Main Agent 提供 purpose、entities、preferred kinds、绝对时间范围；

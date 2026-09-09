@@ -18,12 +18,14 @@ from qq_ai_bot.memory.models import (
     MemoryEntityTarget,
     MemoryIndexHealth,
     MemoryLexicalCandidate,
+    MemoryTemporalIntent,
 )
 from qq_ai_bot.memory.partition import (
     MemoryPartitionResolutionError,
     resolve_fact_canonical_owners,
 )
 from qq_ai_bot.memory.query import normalize_query_text
+from qq_ai_bot.memory.temporal_filter import strict_time_sql
 from qq_ai_bot.persistence.database import Database
 
 _WORD = re.compile(r"[^\W_]+", re.UNICODE)
@@ -78,6 +80,7 @@ class MemoryLexicalIndex(Protocol):
         candidate_limit: int,
         kinds: tuple[MemoryKind, ...] = (),
         short_query_fallback_enabled: bool = True,
+        temporal: MemoryTemporalIntent | None = None,
     ) -> tuple[MemoryLexicalCandidate, ...]: ...
 
     async def rebuild(self) -> MemoryIndexHealth: ...
@@ -99,6 +102,7 @@ class SQLiteMemoryFTSIndex:
         candidate_limit: int,
         kinds: tuple[MemoryKind, ...] = (),
         short_query_fallback_enabled: bool = True,
+        temporal: MemoryTemporalIntent | None = None,
     ) -> tuple[MemoryLexicalCandidate, ...]:
         if not query.fts_expression and not (query.short_term and short_query_fallback_enabled):
             return ()
@@ -114,6 +118,8 @@ class SQLiteMemoryFTSIndex:
                         "limit": max(1, candidate_limit),
                     }
                 )
+                time_sql, time_params = strict_time_sql(temporal)
+                params.update(time_params)
                 kind_sql = ""
                 if kinds:
                     placeholders = []
@@ -141,6 +147,7 @@ class SQLiteMemoryFTSIndex:
                                       AND (mf.valid_until IS NULL OR mf.valid_until > :now)
                                     """
                                     + scope_sql
+                                    + time_sql
                                     + kind_sql
                                     + " ORDER BY fts_rank ASC, mf.id ASC LIMIT :limit"
                                 ),
@@ -170,6 +177,7 @@ class SQLiteMemoryFTSIndex:
                                       )
                                     """
                                     + scope_sql
+                                    + time_sql
                                     + kind_sql
                                     + " ORDER BY mf.id ASC LIMIT :limit"
                                 ),

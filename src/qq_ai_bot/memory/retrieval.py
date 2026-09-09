@@ -206,6 +206,7 @@ class MemoryRetriever:
                 facts = await self._repository.list_overview(
                     target,
                     limit=overview_pool_limit,
+                    temporal=query.intent.temporal if query.intent is not None else None,
                 )
                 candidate_count += len(facts)
                 hits = self._ranker.rank_overview(
@@ -220,6 +221,7 @@ class MemoryRetriever:
                     await self._repository.list_explicit_preferences(
                         target,
                         limit=query.always_on_explicit_preference_limit,
+                        temporal=query.intent.temporal if query.intent is not None else None,
                     )
                     if target.scope_type is MemoryScopeType.PERSON
                     and target.role is MemoryTargetRole.CURRENT_PERSON
@@ -237,6 +239,7 @@ class MemoryRetriever:
                     candidate_limit=query.candidate_limit,
                     kinds=query.kinds,
                     short_query_fallback_enabled=query.short_query_fallback_enabled,
+                    temporal=query.intent.temporal if query.intent is not None else None,
                 )
                 fts_latency += time.perf_counter() - search_started
                 short_fallback_used = short_fallback_used or bool(
@@ -256,6 +259,7 @@ class MemoryRetriever:
                             candidate_limit=query.semantic_candidate_limit,
                             kinds=query.kinds,
                             min_similarity=query.semantic_min_similarity,
+                            temporal=query.intent.temporal if query.intent is not None else None,
                         )
                     except ValueError:
                         semantic_degraded = True

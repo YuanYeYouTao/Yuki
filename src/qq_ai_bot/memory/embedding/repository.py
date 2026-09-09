@@ -14,11 +14,12 @@ from qq_ai_bot.memory.embedding.models import (
     MemoryEmbeddingProfileRecord,
 )
 from qq_ai_bot.memory.embedding.text import EmbeddingDocumentBuilder
-from qq_ai_bot.memory.models import MemoryEntityTarget
+from qq_ai_bot.memory.models import MemoryEntityTarget, MemoryTemporalIntent
 from qq_ai_bot.memory.partition import (
     MemoryPartitionResolutionError,
     resolve_fact_canonical_owners,
 )
+from qq_ai_bot.memory.temporal_filter import strict_time_conditions
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     MemoryEmbeddingJobModel,
@@ -82,8 +83,10 @@ class MemoryEmbeddingRepository:
         target: MemoryEntityTarget,
         profile_id: int,
         kinds: tuple[str, ...],
+        temporal: MemoryTemporalIntent | None = None,
     ) -> tuple[StoredTargetVector, ...]:
         conditions: list[Any] = [
+            *strict_time_conditions(temporal),
             MemoryEmbeddingModel.profile_id == profile_id,
             MemoryFactModel.status == "active",
             MemoryFactModel.review_state != "quarantined",

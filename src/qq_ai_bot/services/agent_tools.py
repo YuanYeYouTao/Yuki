@@ -33,19 +33,14 @@ from qq_ai_bot.emoji.models import (
 from qq_ai_bot.memory.attribution import MemoryExposure, MemoryExposureRegistry
 from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE, MemoryContextService
 from qq_ai_bot.memory.enums import (
-    MemoryContextMode,
-    MemoryKind,
-    MemoryRecallPurpose,
     MemoryRetrievalMode,
     MemoryScopeType,
     MemoryTargetRole,
-    MemoryTemporalConstraint,
-    MemoryTemporalIntentMode,
     SelfMemoryVisibility,
 )
 from qq_ai_bot.memory.errors import MemoryRetrievalError
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
-from qq_ai_bot.memory.models import MemoryEntityTarget, MemoryQueryIntent, MemoryTemporalIntent
+from qq_ai_bot.memory.models import MemoryEntityTarget, MemoryQueryIntent
 from qq_ai_bot.memory.mutation.models import (
     SELF_MEMORY_CATEGORIES,
     MemoryDecisionActorType,
@@ -66,6 +61,7 @@ from qq_ai_bot.memory.runtime.query_plane import (
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import ResolvedSubject
 from qq_ai_bot.memory.targets import MemoryTargetResolver
+from qq_ai_bot.memory.tool_intent import effective_query_summary, parse_memory_tool_intent
 from qq_ai_bot.persistence.people_repository import PeopleRepository
 from qq_ai_bot.persistence.repositories import (
     AgentActionRepository,
@@ -109,8 +105,19 @@ _MEMORY_INTENT_PROPERTIES = {
         "maxItems": 3,
         "items": {"type": "string", "enum": ["fact", "preference", "episode"]},
     },
-    "start_at": {"type": "string", "description": "ISO-8601 绝对时间范围起点"},
-    "end_at": {"type": "string", "description": "ISO-8601 绝对时间范围终点"},
+    "start_at": {
+        "type": "string",
+        "description": "带时区 ISO-8601 起点（包含）；今天/昨天按当前时间换算",
+    },
+    "end_at": {"type": "string", "description": "带时区 ISO-8601 终点（不包含），例如次日零点"},
+    "temporal_constraint": {
+        "type": "string",
+        "enum": ["strict", "soft"],
+        "description": (
+            "有时间边界默认 strict；明确日期必须严格，不混入旧经历或时间未知项。"
+            "soft 仅用于宽泛偏好，空结果不得自动放宽。"
+        ),
+    },
 }
 _RUNTIME_SNAPSHOT: ContextVar[RuntimeConfigSnapshot | None] = ContextVar(
     "agent_tool_runtime_snapshot",
@@ -434,6 +441,7 @@ class AgentToolService:
                 name="get_person_memories",
                 description=(
                     "自动预取为空不代表没有长期记忆；明确询问历史且材料不足时，结合完整前文主动补查。"
+                    "指代按完整前文确定目标，不默认当前发言者。空结果可换实质不同的查询；歧义先澄清，权限拒绝不重试。"
                     "读取本人，或与真实请求者有历史共同群关系的人物结构记忆。"
                     "包含获准人物的完整 Person 事实及共同群 PersonGroup；"
                     "不返回原始聊天或 evidence。"
@@ -491,6 +499,7 @@ class AgentToolService:
                     "自动预取为空不代表没有长期记忆；明确询问群历史且材料不足时可主动补查。"
                     "读取请求者历史参与群的共同结构记忆。群聊省略目标时为当前群；"
                     "私聊须指定 group_name 或 group_id。空结果表示没有匹配事实。"
+                    "群友个人经历用 Person 工具。歧义先澄清，权限拒绝不重试。"
                 ),
                 parameters=_object_schema(
                     {
@@ -531,12 +540,14 @@ class AgentToolService:
                 ChatTool(
                     name="get_self_memories",
                     description=(
+                        "自动预取为空不代表没有长期记忆；明确询问历史且材料不足时结合完整前文补查。"
                         f"读取 {bot_name} 自己在当前会话中有权回忆的长期记忆。"
                         f"用户询问 {bot_name} 的过去、经历、偏好、反思、原则，"
                         f"或要求展示 {bot_name} 自己的长期记忆时使用。"
                         "无 query 时默认总览；有 query 时默认相关检索。后端只返回全局记忆加当前"
                         "私聊用户或当前群可见的记忆，不得用 get_person_memories 代替，也不能指定"
                         "用户、群或其他会话的可见范围。"
+                        "询问其他人物身份使用 Person 工具，不用本工具代替姓名解析。"
                     ),
                     parameters=_object_schema(
                         {
@@ -968,6 +979,8 @@ class AgentToolService:
             if not isinstance(arguments, dict):
                 return self._result(error="invalid_arguments", detail="工具参数必须是对象")
             try:
+                if name in {"get_person_memories", "get_group_memories", "get_self_memories"}:
+                    parse_memory_tool_intent(arguments)
                 if name == "get_my_capabilities":
                     return self._my_capabilities(arguments, runtime)
                 if name == "get_recent_chat_history":
@@ -1022,7 +1035,15 @@ class AgentToolService:
                 return self._result(
                     error="database_failure", detail="数据库事务未提交", retryable=True
                 )
-            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            except (TypeError, ValueError) as exc:
+                if name in _OBSERVED_MEMORY_READS:
+                    return self._result(
+                        error="invalid_arguments",
+                        detail="记忆查询参数无效，请检查枚举及带时区日期区间",
+                        retryable=False,
+                    )
+                return self._result(error=type(exc).__name__, detail="工具执行失败")
+            except (OSError, RuntimeError) as exc:
                 return self._result(error=type(exc).__name__, detail="工具执行失败")
         finally:
             _MEMORY_READ_TOOL.reset(read_tool_token)
@@ -1613,6 +1634,7 @@ class AgentToolService:
             data={
                 "user_id": selection.user_id,
                 "resolved_by": selection.resolved_by,
+                "effective_query": effective_query_summary(parse_memory_tool_intent(arguments)),
                 **(
                     {"subject_ref": selection.subject_ref}
                     if selection.subject_ref is not None
@@ -2005,6 +2027,7 @@ class AgentToolService:
         return self._result(
             data={
                 "group_id": group_id,
+                "effective_query": effective_query_summary(parse_memory_tool_intent(arguments)),
                 "memories": [
                     self._memory_json(hit.fact, retrieval_reason=hit.selection_reason)
                     for hit in result.hits
@@ -2068,6 +2091,7 @@ class AgentToolService:
         )
         return self._result(
             data={
+                "effective_query": effective_query_summary(parse_memory_tool_intent(arguments)),
                 "visible_scope": (
                     "global_and_current_private"
                     if runtime.effective_scope_type is ScopeType.PRIVATE
@@ -2104,6 +2128,34 @@ class AgentToolService:
         default_overview: bool = False,
     ) -> Any:
         intent = self._memory_tool_intent(arguments, default_overview=default_overview)
+        from qq_ai_bot.runtime.observability import current_runtime_turn_correlation
+
+        correlation = current_runtime_turn_correlation()
+        logger.info(
+            "memory_read_intent correlation_id=%s tool=%s mode=%s purpose=%s "
+            "explicit_fields=%s entities_count=%d kinds_count=%d temporal_constraint=%s",
+            correlation.turn_id if correlation else "unbound",
+            _MEMORY_READ_TOOL.get(),
+            intent.mode.value,
+            intent.purpose.value,
+            ",".join(
+                name
+                for name in (
+                    "query",
+                    "mode",
+                    "purpose",
+                    "entities",
+                    "preferred_kinds",
+                    "start_at",
+                    "end_at",
+                    "temporal_constraint",
+                )
+                if name in arguments
+            ),
+            len(intent.entities),
+            len(intent.preferred_kinds),
+            intent.temporal.constraint.value,
+        )
         request = MemoryReadRequest(
             text=text,
             intent=intent,
@@ -2132,56 +2184,9 @@ class AgentToolService:
         arguments: dict[str, Any],
         *,
         default_overview: bool = False,
-    ) -> MemoryQueryIntent | None:
-        raw_mode = arguments.get("mode")
-        has_structured = any(
-            arguments.get(name) not in (None, "", ())
-            for name in ("purpose", "entities", "preferred_kinds", "start_at", "end_at")
-        )
-        if raw_mode is None and not has_structured and not default_overview:
-            return MemoryQueryIntent(
-                mode=MemoryContextMode.HYBRID, purpose=MemoryRecallPurpose.RECALL
-            )
-        mode = (
-            MemoryContextMode.OVERVIEW
-            if default_overview and raw_mode is None
-            else (
-                MemoryContextMode.OVERVIEW
-                if raw_mode == "overview"
-                else MemoryContextMode.LEXICAL
-                if raw_mode == "lexical"
-                else MemoryContextMode.HYBRID
-            )
-        )
-        purpose_raw = arguments.get("purpose")
-        purpose = (
-            MemoryRecallPurpose(purpose_raw)
-            if isinstance(purpose_raw, str) and purpose_raw in MemoryRecallPurpose
-            else MemoryRecallPurpose.RECALL
-        )
-        entities = arguments.get("entities")
-        kinds = arguments.get("preferred_kinds")
-        start_at = AgentToolService._parse_time(arguments.get("start_at"))
-        end_at = AgentToolService._parse_time(arguments.get("end_at"))
-        temporal = MemoryTemporalIntent()
-        if start_at is not None or end_at is not None:
-            temporal = MemoryTemporalIntent(
-                mode=MemoryTemporalIntentMode.RANGE,
-                constraint=MemoryTemporalConstraint.SOFT,
-                start_at=start_at,
-                end_at=end_at,
-            )
-        return MemoryQueryIntent(
-            mode=mode,
-            purpose=purpose,
-            entities=tuple(entities) if isinstance(entities, list) else (),
-            preferred_kinds=tuple(
-                MemoryKind(item) for item in kinds if item in {kind.value for kind in MemoryKind}
-            )
-            if isinstance(kinds, list)
-            else (),
-            temporal=temporal,
-        )
+    ) -> MemoryQueryIntent:
+        del default_overview
+        return parse_memory_tool_intent(arguments)
 
     async def _memory_fact(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
         fact_id = arguments.get("fact_id")
