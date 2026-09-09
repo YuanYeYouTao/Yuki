@@ -7,6 +7,7 @@ import logging
 
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.domain.memory_config import MemoryConfigScope
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
 from qq_ai_bot.memory.claim_candidates import (
@@ -79,7 +80,10 @@ episode 必须提供 value_reason 简述未来回忆价值（不放进 content�
 不证明其中的外部数据、推断、任务执行或自我评价正确。没有对应工具依据时，可记为
 “当时讨论/建议/声称”，不写成“核实了/讲透了/确认成功”；不必复录无独立依据的技术结论。
 工具回执仅支持其实际结果，例如创建任务成功不证明后续任务执行或查询结论正确。
-人物主张、角色扮演与模型此前的推测保持其来源性质；reason/value_reason 说明价值，
+author_kind=yuki 的消息是 Yuki 当时的发言，不是独立核验；旧事实的 authority、
+conflict_state、evidence_count 是后端来源元数据，active 不等于无争议或已证实，
+证据数量也不证明语义正确。人物主张、角色扮演与模型此前的推测保持其来源性质；
+reason/value_reason 说明价值，
 不代替证据。你的感受与反思可以保留，但应表达为主观理解，不能补造过去的动作和结果。
 """
 
@@ -332,6 +336,7 @@ class SelfReflectionService:
                             self._settings.memory_self_reflection_timezone,
                         ),
                         direction=event.direction,
+                        author_kind=AuthorKind(event.author_kind) if event.author_kind else None,
                         rendered=rendered,
                     )
                 )
@@ -361,6 +366,7 @@ class SelfReflectionService:
                     self._settings.memory_self_reflection_timezone,
                 ),
                 direction=event.direction,
+                author_kind=AuthorKind(event.author_kind) if event.author_kind else None,
                 rendered=rendered,
             )
             for index, (event, rendered) in enumerate(selected_context, start=1)
@@ -387,6 +393,9 @@ class SelfReflectionService:
                 memory_key=fact.memory_key,
                 content=fact.content,
                 status=fact.status.value,
+                authority=fact.authority,
+                conflict_state=fact.conflict_state,
+                evidence_count=fact.evidence_count,
             )
             for ref, fact in fact_map.items()
         )

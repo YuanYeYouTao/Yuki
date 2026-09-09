@@ -10,7 +10,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.memory.enums import MemoryKind
+from qq_ai_bot.domain.identity import AuthorKind
+from qq_ai_bot.memory.enums import MemoryAuthority, MemoryConflictState, MemoryKind
 from qq_ai_bot.persistence.repository_records import EventRecord
 
 
@@ -42,6 +43,7 @@ class SelfReflectionEvent(_Contract):
     ref: str = Field(pattern=r"^event_[1-9]\d*$")
     occurred_at: datetime
     direction: str = Field(pattern=r"^(?:inbound|outbound)$")
+    author_kind: AuthorKind | None = None
     rendered: str = Field(min_length=1, max_length=9000)
 
 
@@ -49,6 +51,7 @@ class SelfReflectionContextEvent(_Contract):
     ref: str = Field(pattern=r"^context_[1-9]\d*$")
     occurred_at: datetime
     direction: str = Field(pattern=r"^(?:inbound|outbound)$")
+    author_kind: AuthorKind | None = None
     rendered: str = Field(min_length=1, max_length=3000)
 
 
@@ -66,6 +69,9 @@ class SelfReflectionFact(_Contract):
     memory_key: str = Field(max_length=128)
     content: str = Field(max_length=4000)
     status: str = Field(max_length=32)
+    authority: MemoryAuthority | None = None
+    conflict_state: MemoryConflictState | None = None
+    evidence_count: int | None = Field(default=None, ge=0)
 
 
 class SelfReflectionPreviousEpisode(_Contract):

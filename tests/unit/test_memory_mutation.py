@@ -1371,6 +1371,15 @@ async def test_self_reflection_batch_survives_presence_switch(database: Database
         fact_map
     )
     assert set(exposed_events) == {row.ref for row in projected.events}
+    assert [row.author_kind.value for row in projected.events if row.author_kind] == [
+        "person",
+        "yuki",
+    ]
+    for row in (*projected.self_facts, *projected.existing_episodes):
+        stored_fact = fact_map[row.ref]
+        assert row.authority == stored_fact.authority
+        assert row.conflict_state == stored_fact.conflict_state
+        assert row.evidence_count == stored_fact.evidence_count
     bounded, _facts, _candidates, bounded_events, _tools = await reflection._input(
         replace(batch, max_input_characters=1)
     )
