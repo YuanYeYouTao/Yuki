@@ -446,8 +446,8 @@ class AgentToolService:
                 description=(
                     "查询人物身份、偏好及经历（本人或历史共同群人物）；自身经历用SELF，群整体用Group。"
                     "姓名用display_name，真实@/回复用subject_ref，勿改填user_id；仅手输账号用user_id。"
-                    "结合完整前文解析指代，不默认发言者。明确历史问题且材料不足时主动补查，"
-                    "自动预取为空不代表不存在。总览可省略query及高级参数；结果有数量上限，不能断言已列尽。"
+                    "人物查询无需群号证明权限；只有明确限定群才填group。结合完整前文解析指代。"
+                    "历史材料不足主动补查，预取空不代表不存在。总览可省query；有界结果不能断言已列尽。"
                     "空结果可换实质不同查询；歧义澄清，权限拒绝不重试。"
                 ),
                 parameters=_object_schema(
@@ -475,7 +475,10 @@ class AgentToolService:
                             "type": "string",
                             "description": "兼容字段；用户手输的 QQ 号，后台验证历史关系权限",
                         },
-                        "group_id": {"type": "string", "description": "可选，限定某个历史共同群"},
+                        "group_id": {
+                            "type": "string",
+                            "description": "仅明确限定某群时填写；人物查询不需要群号证明权限",
+                        },
                         "group_name": {
                             "type": "string",
                             "maxLength": 128,

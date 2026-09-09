@@ -3191,6 +3191,16 @@ async def test_memory_tool_selectors_share_intent_reads_and_cache_with_historica
     )
     assert by_qq["ok"] and by_qq["data"]["resolved_by"] == "user_id"
     assert by_name["ok"] and by_name["data"]["resolved_by"] == "display_name"
+    conflicting = json.loads(
+        await tools.execute(
+            "get_person_memories",
+            json.dumps({"subject_ref": "current_speaker", "user_id": "2002"}),
+            runtime,
+        )
+    )
+    assert conflicting["ok"] is False
+    assert conflicting["error"] == "invalid_person_selector"
+    assert conflicting["retryable"] is False
     assert {row["fact_id"] for row in by_qq["data"]["memories"]} == {group_fact.id}
     assert {row["fact_id"] for row in by_name["data"]["memories"]} == {group_fact.id}
 
