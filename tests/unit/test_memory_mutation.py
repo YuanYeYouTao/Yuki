@@ -3256,6 +3256,30 @@ async def test_memory_tool_selectors_share_intent_reads_and_cache_with_historica
         assert intent.temporal.start_at.year == 2026
         assert any(call.args[1] == "duplicate" for call in read_outcomes.await_args_list)
     assert tools._memory_context.metrics.count("memory_read_duplicate") >= 1
+    # All three entrypoints carry the same explicit intent through the real Query
+    # Plane; only the authorized target differs.
+    advanced = json.loads(query_args)
+    del advanced["user_id"]
+    advanced["mode"] = "lexical"
+    advanced["end_at"] = "2027-01-01T00:00:00+00:00"
+    for tool_name in ("get_group_memories", "get_self_memories"):
+        with patch.object(
+            tools._memory_context, "search", wraps=tools._memory_context.search
+        ) as search:
+            response = json.loads(await tools.execute(tool_name, json.dumps(advanced), runtime))
+        assert response["ok"] is True
+        intent = search.call_args.kwargs["intent"]
+        assert intent.mode.value == "lexical"
+        assert intent.purpose.value == "verify"
+        assert intent.entities == ("摄影",)
+        assert intent.preferred_kinds == (MemoryKind.FACT,)
+        assert intent.temporal.constraint.value == "strict"
+        assert intent.temporal.end_at.year == 2027
+        assert response["data"]["effective_query"]["temporal_constraint"] == "strict"
+    for tool in tools.definitions(runtime):
+        if tool.name in {"get_person_memories", "get_group_memories", "get_self_memories"}:
+            assert len(tool.description) <= 240  # The actual provider uses this compact window.
+            assert "不能断言已列尽" in tool.description
     assert tools.definitions(runtime) == tools.definitions(
         replace(
             runtime, inbound=replace(inbound, text="完全不同的查询", mentioned_user_ids=("2003",))

@@ -107,7 +107,11 @@ _MEMORY_INTENT_PROPERTIES = {
     },
     "start_at": {
         "type": "string",
-        "description": "带时区 ISO-8601 起点（包含）；今天/昨天按当前时间换算",
+        "description": (
+            "带时区 ISO-8601 起点（包含）。当地某一天从当地00:00开始；"
+            "例如+08:00的9月7日填2026-09-07T00:00:00+08:00，"
+            "不要先减8小时又保留+08:00。今天/昨天按当前时间上下文换算。"
+        ),
     },
     "end_at": {"type": "string", "description": "带时区 ISO-8601 终点（不包含），例如次日零点"},
     "temporal_constraint": {
@@ -440,17 +444,11 @@ class AgentToolService:
             ChatTool(
                 name="get_person_memories",
                 description=(
-                    "自动预取为空不代表没有长期记忆；明确询问历史且材料不足时，结合完整前文主动补查。"
-                    "指代按完整前文确定目标，不默认当前发言者。空结果可换实质不同的查询；歧义先澄清，权限拒绝不重试。"
-                    "读取本人，或与真实请求者有历史共同群关系的人物结构记忆。"
-                    "包含获准人物的完整 Person 事实及共同群 PersonGroup；"
-                    "不返回原始聊天或 evidence。"
-                    "真实 @ 或回复"
-                    "目标时必须使用 subject_ref，不要把昵称、[提及成员1] 等占位符填入 user_id；"
-                    "手输昵称/群名片使用 display_name，手输 QQ 号使用兼容字段 user_id。"
-                    "用户询问‘某人的群记忆’仍属于本工具；get_group_memories 只查询群整体事实。"
-                    f"本工具不能读取 {bot_name} 自己；读取 {bot_name} 的自我长期记忆必须使用"
-                    " get_self_memories。"
+                    "查询人物身份、偏好及经历（本人或历史共同群人物）；自身经历用SELF，群整体用Group。"
+                    "姓名用display_name，真实@/回复用subject_ref，勿改填user_id；仅手输账号用user_id。"
+                    "结合完整前文解析指代，不默认发言者。明确历史问题且材料不足时主动补查，"
+                    "自动预取为空不代表不存在。总览可省略query及高级参数；结果有数量上限，不能断言已列尽。"
+                    "空结果可换实质不同查询；歧义澄清，权限拒绝不重试。"
                 ),
                 parameters=_object_schema(
                     {
@@ -500,6 +498,7 @@ class AgentToolService:
                     "读取请求者历史参与群的共同结构记忆。群聊省略目标时为当前群；"
                     "私聊须指定 group_name 或 group_id。空结果表示没有匹配事实。"
                     "群友个人经历用 Person 工具。歧义先澄清，权限拒绝不重试。"
+                    "结果有数量上限，不能断言已列尽。"
                 ),
                 parameters=_object_schema(
                     {
@@ -540,14 +539,11 @@ class AgentToolService:
                 ChatTool(
                     name="get_self_memories",
                     description=(
-                        "自动预取为空不代表没有长期记忆；明确询问历史且材料不足时结合完整前文补查。"
-                        f"读取 {bot_name} 自己在当前会话中有权回忆的长期记忆。"
-                        f"用户询问 {bot_name} 的过去、经历、偏好、反思、原则，"
-                        f"或要求展示 {bot_name} 自己的长期记忆时使用。"
-                        "无 query 时默认总览；有 query 时默认相关检索。后端只返回全局记忆加当前"
-                        "私聊用户或当前群可见的记忆，不得用 get_person_memories 代替，也不能指定"
-                        "用户、群或其他会话的可见范围。"
-                        "询问其他人物身份使用 Person 工具，不用本工具代替姓名解析。"
+                        f"读取 {bot_name} 自己的经历、偏好、反思和原则；其他人物身份用Person工具，"
+                        "不能用SELF代替姓名解析。只返回全局加当前私聊/群可见记忆，不能指定其他会话。"
+                        "结合完整前文理解指代；明确历史问题且材料不足时主动补查，自动预取为空不代表不存在。"
+                        "无query默认总览，有query默认相关检索。结果有数量上限，不能断言已列尽。"
+                        "空结果可换实质不同查询，严格日期不得放宽；歧义先澄清，权限拒绝不重试。"
                     ),
                     parameters=_object_schema(
                         {
@@ -980,7 +976,7 @@ class AgentToolService:
                 return self._result(error="invalid_arguments", detail="工具参数必须是对象")
             try:
                 if name in {"get_person_memories", "get_group_memories", "get_self_memories"}:
-                    parse_memory_tool_intent(arguments)
+                    self._log_memory_read_intent(arguments, parse_memory_tool_intent(arguments))
                 if name == "get_my_capabilities":
                     return self._my_capabilities(arguments, runtime)
                 if name == "get_recent_chat_history":
@@ -2128,34 +2124,6 @@ class AgentToolService:
         default_overview: bool = False,
     ) -> Any:
         intent = self._memory_tool_intent(arguments, default_overview=default_overview)
-        from qq_ai_bot.runtime.observability import current_runtime_turn_correlation
-
-        correlation = current_runtime_turn_correlation()
-        logger.info(
-            "memory_read_intent correlation_id=%s tool=%s mode=%s purpose=%s "
-            "explicit_fields=%s entities_count=%d kinds_count=%d temporal_constraint=%s",
-            correlation.turn_id if correlation else "unbound",
-            _MEMORY_READ_TOOL.get(),
-            intent.mode.value,
-            intent.purpose.value,
-            ",".join(
-                name
-                for name in (
-                    "query",
-                    "mode",
-                    "purpose",
-                    "entities",
-                    "preferred_kinds",
-                    "start_at",
-                    "end_at",
-                    "temporal_constraint",
-                )
-                if name in arguments
-            ),
-            len(intent.entities),
-            len(intent.preferred_kinds),
-            intent.temporal.constraint.value,
-        )
         request = MemoryReadRequest(
             text=text,
             intent=intent,
@@ -2178,6 +2146,42 @@ class AgentToolService:
         if cache is not None:
             cache[key] = result
         return result
+
+    @staticmethod
+    def _log_memory_read_intent(arguments: dict[str, Any], intent: MemoryQueryIntent) -> None:
+        from qq_ai_bot.runtime.observability import current_runtime_turn_correlation
+
+        correlation = current_runtime_turn_correlation()
+        logger.info(
+            "memory_read_intent correlation_id=%s tool=%s mode=%s purpose=%s "
+            "explicit_fields=%s entities_count=%d kinds_count=%d temporal_constraint=%s",
+            correlation.turn_id if correlation else "unbound",
+            _MEMORY_READ_TOOL.get(),
+            intent.mode.value,
+            intent.purpose.value,
+            ",".join(
+                name
+                for name in (
+                    "query",
+                    "mode",
+                    "purpose",
+                    "entities",
+                    "preferred_kinds",
+                    "start_at",
+                    "end_at",
+                    "temporal_constraint",
+                    "subject_ref",
+                    "display_name",
+                    "user_id",
+                    "group_id",
+                    "group_name",
+                )
+                if name in arguments
+            ),
+            len(intent.entities),
+            len(intent.preferred_kinds),
+            intent.temporal.constraint.value,
+        )
 
     @staticmethod
     def _memory_tool_intent(
@@ -2588,7 +2592,7 @@ class AgentToolService:
             outcome = "permission_denied"
         else:
             outcome = "unavailable"
-        await self._record_memory_tool_outcome(runtime, outcome)
+        await self._record_memory_tool_outcome(runtime, outcome, result_count=len(unique_ids))
         if unique_ids:
             if runtime.memory_session is None and runtime.origin in _MEMORY_CHANGE_ORIGINS:
                 await self._memory_context.mark_tool_injected(runtime.memory_turn_id, unique_ids)
@@ -2599,17 +2603,20 @@ class AgentToolService:
                 return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         return result
 
-    async def _record_memory_tool_outcome(self, runtime: ToolRuntime, outcome: str) -> None:
+    async def _record_memory_tool_outcome(
+        self, runtime: ToolRuntime, outcome: str, *, result_count: int = 0
+    ) -> None:
         if not _MEMORY_READ_TOOL.get():
             return
         from qq_ai_bot.runtime.observability import current_runtime_turn_correlation
 
         correlation = current_runtime_turn_correlation()
         logger.info(
-            "memory_tool_read correlation_id=%s tool=%s outcome=%s",
+            "memory_tool_read correlation_id=%s tool=%s outcome=%s result_count=%d",
             correlation.turn_id if correlation else "unbound",
             _MEMORY_READ_TOOL.get(),
             outcome,
+            result_count,
         )
         self._memory_context.metrics.record_read_outcome(outcome)
         if outcome == "unavailable":
@@ -2621,10 +2628,17 @@ class AgentToolService:
                 await runtime.memory_session.record_read_outcome(outcome)
             elif runtime.origin in _MEMORY_CHANGE_ORIGINS:
                 await self._memory_context.record_tool_read_outcome(runtime.memory_turn_id, outcome)
-        except SQLAlchemyError:
+        except Exception as exc:
             # Observability must not turn a successful read or a handled database
             # failure into another user-visible tool failure.
-            logger.warning("memory_tool_outcome_persist_failed outcome=%s", outcome)
+            logger.warning(
+                "memory_tool_outcome_persist_failed correlation_id=%s tool=%s "
+                "outcome=%s category=%s",
+                correlation.turn_id if correlation else "unbound",
+                _MEMORY_READ_TOOL.get(),
+                outcome,
+                type(exc).__name__,
+            )
 
     async def _call_onebot(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
         if (

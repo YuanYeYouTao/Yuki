@@ -259,7 +259,14 @@ async def test_hygiene_rejects_stale_fingerprint(database: Database) -> None:
 
 @pytest.mark.asyncio
 async def test_release_check_is_read_only_and_requires_explicit_database(tmp_path: Path) -> None:
+    from qq_ai_bot.memory.quality.gates import load_gate_configuration
+
+    original = ROOT / "config/memory_quality_gates.toml"
+    windows = tmp_path / "windows-gates.toml"
+    windows.write_bytes(original.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+    assert load_gate_configuration(windows) == load_gate_configuration(original)
     report = await MemoryReleaseCheck(ROOT, artifact_directory=tmp_path).run()
+    assert next(item for item in report.items if item.code == "baseline").status == "pass"
     assert report.alembic_head == "0051"
     database = next(item for item in report.items if item.code == "production_database")
     assert database.status == "warn"

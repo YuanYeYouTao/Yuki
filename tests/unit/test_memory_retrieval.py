@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from sqlalchemy import text
@@ -110,12 +110,18 @@ async def test_attribution_worker_evaluates_no_use_but_not_failed_requests(datab
 
 
 async def test_recall_receipt_tracks_zero_partial_evaluation_and_interruption(database: Database):
+    import json
+
+    from sqlalchemy.exc import SQLAlchemyError
+    from tests.conftest import build_harness
+
     from qq_ai_bot.domain.conversations import ConversationScope
     from qq_ai_bot.memory.receipt import MemoryRecallTurn
     from qq_ai_bot.memory.runtime.partition_lookup import DatabaseMemoryPartitionLookup
     from qq_ai_bot.memory.runtime.turn_session import TurnMemorySession
     from qq_ai_bot.runtime.authority import TurnAuthority
     from qq_ai_bot.runtime.origin import TurnOrigin
+    from qq_ai_bot.services.agent_tools import ToolRuntime
 
     facts = MemoryFactService(MemoryFactRepository(database))
     first = await _remember(facts, user_id="1001", memory_key="first", content="synthetic first")
@@ -239,6 +245,33 @@ async def test_recall_receipt_tracks_zero_partial_evaluation_and_interruption(da
         "duplicate": 1,
         "infrastructure_failure": 0,
     }
+    # Exercise the actual tool boundary, including failed observability. A read
+    # failure must remain an infrastructure error, not turn into invalid arguments.
+    tools = build_harness(database, make_settings(database.url)).processor._chat._tools
+    tools._memory_context = context
+    tool_runtime = ToolRuntime(
+        inbound=memory_session._inbound,
+        gateway=None,
+        allow_generic_onebot=False,
+        runtime_config=runtime,
+        memory_session=memory_session,
+    )
+    with patch.object(tools, "_person_memories", AsyncMock(side_effect=SQLAlchemyError("secret"))):
+        failure = json.loads(await tools.execute("get_person_memories", "{}", tool_runtime))
+    assert failure["error"] == "database_failure"
+    assert failure["retryable"] is True
+    assert context.metrics.count("memory_read_infrastructure_failure") == 1
+    assert (await receipts.summarize(since=datetime(2020, 1, 1, tzinfo=UTC)))["tool_reads"][
+        "infrastructure_failure"
+    ] == 1
+    with (
+        patch.object(tools, "_person_memories", AsyncMock(return_value='{"ok":true,"data":{}}')),
+        patch.object(
+            context, "record_tool_read_outcome", AsyncMock(side_effect=RuntimeError("secret"))
+        ),
+    ):
+        success = json.loads(await tools.execute("get_person_memories", "{}", tool_runtime))
+    assert success == {"ok": True, "data": {}}
 
 
 def _target(
@@ -879,7 +912,13 @@ async def _assert_none_memory_mode_returns_empty_result(database: Database) -> N
 
 
 async def test_strict_time_filters_before_candidate_limits(database: Database) -> None:
+    from qq_ai_bot.memory.embedding.codec import Float32VectorCodec
+    from qq_ai_bot.memory.embedding.models import EmbeddingProviderProfile, EmbeddingVector
+    from qq_ai_bot.memory.embedding.repository import MemoryEmbeddingRepository
+    from qq_ai_bot.memory.embedding.semantic import MemorySemanticIndex
+    from qq_ai_bot.memory.embedding.text import EmbeddingDocumentBuilder
     from qq_ai_bot.memory.tool_intent import parse_memory_tool_intent
+    from qq_ai_bot.persistence.models import MemoryEmbeddingModel
 
     facts, retriever = _retriever(database)
     old = await _remember(facts, user_id="1001", memory_key="camera", content="camera old")
@@ -919,6 +958,50 @@ async def test_strict_time_filters_before_candidate_limits(database: Database) -
         query.model_copy(update={"mode": MemoryRetrievalMode.OVERVIEW})
     )
     assert [hit.fact.id for hit in overview.hits] == [inside.id]
+    short_query = await retriever.retrieve(
+        query.model_copy(update={"text": "c", "normalized_text": "c"})
+    )
+    assert [hit.fact.id for hit in short_query.hits] == [inside.id]
+    vectors = MemoryEmbeddingRepository(database)
+    profile = await vectors.ensure_profile(
+        EmbeddingProviderProfile(
+            provider_id="synthetic",
+            model_id="synthetic",
+            dimensions=2,
+            document_template_version=1,
+            endpoint_identity="synthetic",
+        )
+    )
+    documents = EmbeddingDocumentBuilder(template_version=1, max_characters=1000)
+    vector = EmbeddingVector(values=(1.0, 0.0), dimensions=2)
+    async with database.sessions() as session, session.begin():
+        for fact in (old, inside, end, unknown):
+            session.add(
+                MemoryEmbeddingModel(
+                    fact_id=fact.id,
+                    profile_id=profile.id,
+                    content_hash=documents.content_hash_fields(
+                        kind=fact.kind.value,
+                        category=fact.category,
+                        memory_key=fact.memory_key,
+                        content=fact.content,
+                    ),
+                    vector_blob=Float32VectorCodec().encode(vector),
+                    created_at=datetime.now(UTC),
+                    updated_at=datetime.now(UTC),
+                )
+            )
+    semantic = await MemorySemanticIndex(vectors, documents=documents).search(
+        target=_target("1001"),
+        query_vector=vector,
+        profile=profile.profile,
+        profile_id=profile.id,
+        candidate_limit=1,
+        kinds=(MemoryKind.FACT,),
+        min_similarity=0.0,
+        temporal=intent.temporal,
+    )
+    assert [item.fact_id for item in semantic] == [inside.id]
     assert not {old.id, end.id, unknown.id} & {hit.fact.id for hit in result.hits}
     assert parse_memory_tool_intent({}).mode.value == "overview"
     assert parse_memory_tool_intent({"query": "camera"}).mode.value == "hybrid"

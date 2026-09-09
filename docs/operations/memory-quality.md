@@ -19,7 +19,20 @@ uv run qq-ai-bot-cli memory stats --database-url <database-url> --hours 24
 ```
 
 结果区分正常等待、可领取 owner、失败/过期 lease、自动零注入、已评估使用率和主动读取结果。
-主动读取的 duplicate 可与 success/empty 同时计数；统计不输出消息、记忆正文或外部账号。
+同轮缓存命中只增加 duplicate，不再重复增加 success/empty，也不代表新数据库或 embedding 查询。
+统计不输出消息、记忆正文或外部账号。
+
+主动读取由当前 TurnMemorySession 关联回执，不再使用普通聊天路径中的旧空 memory_turn_id。
+没有预取回执时创建零暴露 agent_tool 回执；执行查询、进入下一次模型请求和 attribution
+必须分开看。查询成功不代表模型收到结果，收到结果也不代表最终使用。
+观测存储失败只记录关联 ID、工具名和异常类别，不把正常读取变成工具失败。
+memory_read_intent 在目标解析之前记录显式字段存在性、枚举和数量，拒绝/歧义也有参数形状；
+memory_tool_read 记录结果类别与数量，不保存原始参数。
+
+明确日期采用 valid_from 的严格半开区间 `[start_at,end_at)`；先检查模型的当地零点和时区
+是否正确，再检查后端传递与候选筛选。strict 返回空时不得自动放宽为 soft，也不能把
+自动回执的 purpose 当成模型填写率。当前补充验证状态见
+[意图使用审计](../architecture/memory-intent-usage-audit.md)。
 
 ## 自省与 Dream 的恢复边界
 

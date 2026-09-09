@@ -194,6 +194,7 @@ class MemoryLifecycleMetrics:
             "permission_denied",
             "duplicate",
             "unavailable",
+            "infrastructure_failure",
         }:
             raise ValueError("invalid memory read outcome")
         self.increment(f"memory_read_{outcome}")

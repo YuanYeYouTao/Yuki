@@ -36,7 +36,9 @@ class GateConfiguration:
 
 
 def load_gate_configuration(path: Path) -> GateConfiguration:
-    payload = path.read_bytes()
+    # Git's Windows checkout may use CRLF. Equivalent TOML must retain the
+    # committed LF fingerprint without changing thresholds or performance data.
+    payload = path.read_bytes().replace(b"\r\n", b"\n")
     raw = tomllib.loads(payload.decode("utf-8"))
     gates = tuple(
         GateDefinition(

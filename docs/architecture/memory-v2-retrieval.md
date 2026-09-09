@@ -69,7 +69,7 @@ overview，purpose 默认 recall。非法枚举和无效区间返回 invalid_arg
   不能先各取两条，也不能把每个目标的第一名当成同等相关。hits 的全局顺序不被分组展示打乱。
 - 原始语义相似度提供相关性档位；意图实体、时间、种类参与排序。活跃度/重要性不能让弱相关
   越过强主题。RRF/rank 不是相关性概率。
-- preferred kinds、时间和主体是排序信号，不能靠它们授予权限。
+- preferred kinds、软时间和主体是排序信号，不能靠它们授予权限；strict 时间是候选准入条件。
 - active + contested conflict 可以带争议标记返回；superseded、invalidated、未采用的
   contested claim 不作为普通 active 事实。争议关系不跨 scope。
 - 主动查询在 embedding 故障时仍可退回词法；自动注入在故障或未校准 profile 下仅接受
@@ -94,3 +94,8 @@ Main Agent 使用现有 History、Rollup、Memory 和工具协议，不另建短
 
 指标与排障见 [指标口径](memory-v2-quality-metrics.md)、
 [质量运维](../operations/memory-quality.md)。旧 phase/Adaptive 文档不是当前权限合同。
+
+固定读取说明须在 Provider 的 240 字 compact description 内保留完整目标选择合同；
+不能把姓名/真实引用规则追加在截断位置之后。列表有数量上限，不能因返回少量事实就宣称
+全部存档已列尽。日期说明明确当地零点与时区偏移，后端不猜测或纠正模型给出的合法日期。
+补充实施与验收边界见 [意图召回修正任务书](Yuki-意图召回修正任务书.md)。
