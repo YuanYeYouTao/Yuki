@@ -859,6 +859,30 @@ def test_populated_historical_0048_preserves_data_and_matches_fresh_schema(
     path = tmp_path / "historical.db"
     fresh = tmp_path / "fresh.db"
     restore_historical(path)
+    # Parent-table rebuilds must retain CASCADE children and SET NULL edges,
+    # not merely preserve fact bodies and pass foreign_key_check.
+    with sqlite3.connect(path) as connection:
+        columns = [row[1] for row in connection.execute("PRAGMA table_info(memory_facts)")]
+        projection = ", ".join(
+            "2" if column == "id" else "'k2'" if column == "memory_key" else f'"{column}"'
+            for column in columns
+        )
+        connection.execute(f"INSERT INTO memory_facts SELECT {projection} FROM memory_facts")
+        connection.execute("UPDATE memory_facts SET supersedes_id=1 WHERE id=2")
+        connection.execute(
+            "INSERT INTO memory_fact_state_events "
+            "(fact_id, action, reason_code, source_event_id, created_at) "
+            "VALUES (1, 'superseded', 'migration_regression', 1, '2026-08-26')"
+        )
+        connection.execute(
+            "INSERT INTO memory_fact_relations "
+            "(source_fact_id,target_fact_id,relation_type,confidence,source_event_id,created_at) "
+            "VALUES (2,1,'refines',1.0,1,'2026-08-26')"
+        )
+        retained_children = {
+            table: connection.execute(f'SELECT * FROM "{table}" ORDER BY id').fetchall()
+            for table in ("memory_fact_state_events", "memory_fact_relations")
+        }
     _upgrade(path, monkeypatch)
     _upgrade(fresh, monkeypatch)
 
@@ -874,7 +898,13 @@ def test_populated_historical_0048_preserves_data_and_matches_fresh_schema(
             "SELECT memory_key, content, canonical_subject_person_id FROM memory_facts ORDER BY id"
         ).fetchall() == [
             ("k", "c", "e8b15d59-3988-473e-a13c-d277ca77b5c1"),
+            ("k2", "c", "e8b15d59-3988-473e-a13c-d277ca77b5c1"),
         ]
+        assert connection.execute(
+            "SELECT supersedes_id FROM memory_facts WHERE id=2"
+        ).fetchone() == (1,)
+        for table, expected in retained_children.items():
+            assert connection.execute(f'SELECT * FROM "{table}" ORDER BY id').fetchall() == expected
         assert connection.execute(
             "SELECT enabled FROM persons WHERE id='e8b15d59-3988-473e-a13c-d277ca77b5c1'"
         ).fetchone() == (0,)
