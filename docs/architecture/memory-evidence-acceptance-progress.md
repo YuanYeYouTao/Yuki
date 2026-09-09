@@ -284,3 +284,21 @@ reflection 按真实 renderer 及写入规范化后的文本检查，保留作�
 通过实际 audit.run 对 query-only 冻结副本复核，摘录/来源误报清零，剩余审计错误
 166（替代链 162、active 矛盾关系 4）；schema0051、integrity/FK 正常。输出存入
 私有 release-check-r3，旧报告未覆盖。未调用模型，累计仍为 **105/144**；未部署。
+
+## 争议关系误报与历史链交叉核对
+
+核对正式 Dream CONTEST 写入路径：保留双方 active，分别设置 conflict_state=contested，
+再添加 contradicts 关系。因此审计接受双方已经标记的争议；任一方未标记仍报告异常。
+既有治理测试扩展为未标记、单侧标记、双侧标记及后续 supersede 生命周期矩阵，
+没有增加测试数量。Dream/治理 24 项通过，Ruff、mypy 与 diff 检查通过。
+实际 audit.run 对 query-only 冻结副本复核（release-check-r4），错误剩余 162 条
+superseded_without_chain；schema0051、integrity/FK 正常。没有执行清理或数据修复。
+
+只读检查服务器 8 月 23 日历史备份，确认 schema0042、1398 个事实、integrity 正常，
+WAL 为空后才使用 immutable 读取。当前 162 条缺链事实在该备份全部存在，ID、正文
+SHA256 和 scope 全部匹配；162 条当时都有状态事件，143 条有关联关系，95 条有后继，
+148 条当时已经 superseded。输出仅为汇总，不公开正文或账号，不复制旧记录到线上。
+这证明不能将当前缺链解释为“历史从未记录”；尚未定位丢失发生在哪次迁移或操作，
+也不能依据相同正文直接恢复当时的状态、所有权或关系。缺链检查继续阻断，不降级掩盖。
+线上当前容器标签仍为 memory-recovery-92483ab1，本次仅只读核对，不代表镜像内容完整验签。
+模型累计仍 **105/144**，剩余 39 次；真实语义与独立样本验收仍未完成，未部署。

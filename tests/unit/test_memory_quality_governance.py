@@ -158,7 +158,7 @@ async def test_audit_detects_invalid_evidence_without_exposing_text(
 
 
 @pytest.mark.asyncio
-async def test_audit_accepts_superseded_fact_with_semantic_relation_chain(
+async def test_audit_tracks_contested_and_superseded_relation_lifecycle(
     database: Database,
 ) -> None:
     repository = MemoryFactRepository(database)
@@ -184,6 +184,29 @@ async def test_audit_accepts_superseded_fact_with_semantic_relation_chain(
         )
     )
     async with repository.transaction() as session:
+        await repository.add_relation(
+            source_fact_id=newer.id,
+            target_fact_id=older.id,
+            relation_type=MemoryFactRelationType.CONTRADICTS,
+            confidence=1.0,
+            source_event_id=None,
+            session=session,
+        )
+    # Dream CONTEST preserves both active facts and marks both disputed.
+    # Before both markers exist the active contradiction must remain an error.
+    for fact_id, expected_errors in ((None, 1), (older.id, 1), (newer.id, 0)):
+        if fact_id is not None:
+            assert await service.contest_fact(fact_id, reason_code="dream_contest_test")
+        audited = await MemoryProductionQualityAudit(database).run()
+        assert (
+            next(
+                issue.count
+                for issue in audited.issues
+                if issue.issue_code == "contradiction_state_mismatch"
+            )
+            == expected_errors
+        )
+    async with repository.transaction() as session:
         await repository.transition(
             older.id,
             status=MemoryStatus.SUPERSEDED,
@@ -193,14 +216,6 @@ async def test_audit_accepts_superseded_fact_with_semantic_relation_chain(
             reason_code="quality_test_chain",
             source_event_id=None,
             actor_user_id=None,
-            session=session,
-        )
-        await repository.add_relation(
-            source_fact_id=newer.id,
-            target_fact_id=older.id,
-            relation_type=MemoryFactRelationType.CONTRADICTS,
-            confidence=1.0,
-            source_event_id=None,
             session=session,
         )
 

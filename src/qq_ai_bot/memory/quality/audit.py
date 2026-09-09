@@ -313,7 +313,8 @@ class MemoryProductionQualityAudit:
                 _query(
                     "memory_fact_relations r JOIN memory_facts s ON s.id=r.source_fact_id "
                     "JOIN memory_facts t ON t.id=r.target_fact_id",
-                    "r.relation_type='contradicts' AND s.status='active' AND t.status='active'",
+                    "r.relation_type='contradicts' AND s.status='active' AND t.status='active' "
+                    "AND (s.conflict_state!='contested' OR t.conflict_state!='contested')",
                     id_expression="r.id",
                 ),
             ),

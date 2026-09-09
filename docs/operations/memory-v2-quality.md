@@ -42,6 +42,10 @@ success/empty 同时出现。未绑定普通聊天 recall receipt 的 Plugin/Adm
 报告只含数量和有限内部 ID。清理预案仍须显式应用，扫描本身不修改事实。历史缺少
 证据或替代链时不得补造来源，更不能将审计误报修正解释为允许删除所有历史事实。
 
+Dream CONTEST 可保留两个 active 事实，并把双方 `conflict_state` 标记为 contested；
+这是保留争议的合法状态，不是矛盾状态错误。active 矛盾关系中任一方未标记仍报错。
+缺失历史替代链必须单独调查；旧备份中存在链不代表可以直接覆盖现有数据库。
+
 ```bash
 uv run qq-ai-bot-cli memory quality validate-dataset
 uv run qq-ai-bot-cli memory quality run --suite full
