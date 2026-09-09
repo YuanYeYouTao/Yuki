@@ -879,9 +879,16 @@ def test_populated_historical_0048_preserves_data_and_matches_fresh_schema(
             "(source_fact_id,target_fact_id,relation_type,confidence,source_event_id,created_at) "
             "VALUES (2,1,'refines',1.0,1,'2026-08-26')"
         )
+        connection.execute(
+            "INSERT INTO memory_evidence "
+            "(fact_id,event_id,source_speaker_user_id,relation,confidence,"
+            "authority,excerpt,created_at) "
+            "VALUES (2,1,'1001','self_statement',1.0,'self_report',"
+            "'historical group message','2026-08-26')"
+        )
         retained_children = {
             table: connection.execute(f'SELECT * FROM "{table}" ORDER BY id').fetchall()
-            for table in ("memory_fact_state_events", "memory_fact_relations")
+            for table in ("memory_fact_state_events", "memory_fact_relations", "memory_evidence")
         }
     _upgrade(path, monkeypatch)
     _upgrade(fresh, monkeypatch)
