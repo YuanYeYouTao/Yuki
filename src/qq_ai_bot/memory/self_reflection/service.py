@@ -90,7 +90,9 @@ reason/value_reason 说明价值，
 _EPISODE_EVIDENCE_INSTRUCTION = """\
 Each episode must describe exactly one central experience. If the window contains several
 topics, keep only the experience most worth remembering. Select 1-8 evidence_refs from the
-provided event_N and tool_N aliases that directly support that episode. context_N and
+provided event_N and tool_N aliases across the episode. Bind each passage's evidence_refs
+to exactly its own content, then narrate that passage; do not attach one global source list
+to an otherwise free-form account. The backend joins passages in order. context_N and
 previous_episode are context only and must never be cited as evidence. Do not treat the whole
 input window as direct evidence for every episode.
 """
@@ -121,7 +123,8 @@ system/permission/runtime 键。没有值得长期保留或修改的内容时输
 episodes 是创建 Episode 的唯一输出位置，用来记录你在当前群聊或私聊中真实参与过的长期经历，
 一次最多一条。context_events
 只帮助你理解主窗口；events 和 tool_receipts 是这次经历的完整来源窗口。Episode 的类别、范围、
-时间和来源由后端确定，你只需输出自由的 content 和 importance。previous_episode 是当前范围内
+时间和来源由后端确定。输出 passages，每段包含 evidence_refs 和 content；整条经历还需
+value_reason 和 importance。后端将片段按原顺序连接，不生成额外正文。previous_episode 是当前范围内
 最近一条既有 Episode，只用于避免重复，不是本轮证据。如果当前窗口只是它的重复延续且没有
 重要新进展，保持 episodes 为空。不要把 context_events 或 previous_episode 重新总结进正文。
 
@@ -209,8 +212,10 @@ class SelfReflectionService:
                 validation_repair_hint=(
                     "Correct the reported field: proposals permits at most 8 entries; episodes "
                     "permits at most 1. Choose the single most meaningful experience, or none. "
-                    "An episode requires content, importance, value_reason, and 1-8 unique "
-                    "evidence_refs from the supplied event_N/tool_N aliases. Unknown references "
+                    "An episode requires passages, importance, and value_reason. Each of 1-8 "
+                    "passages requires nonblank content and unique evidence_refs; the complete "
+                    "episode uses at most 8 distinct aliases and 4000 joined characters. Use "
+                    "supplied event_N/tool_N aliases. Unknown references "
                     "must be replaced with real supporting aliases, never invented. Never use "
                     "context_N as evidence. Never use self_episode or episode as a proposal "
                     "category. A proposal category must be exactly one of self_fact, "

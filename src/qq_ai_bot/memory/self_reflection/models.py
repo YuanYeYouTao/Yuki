@@ -171,9 +171,9 @@ class SelfReflectionProposal(_Contract):
         return self
 
 
-class SelfEpisodeProposal(_Contract):
-    # Put source selection before prose in the model-facing schema. This guides
-    # generation, but JSON key order is not a semantic validation guarantee.
+class SelfEpisodePassage(_Contract):
+    """One contiguous narrative passage with explicit source bindings."""
+
     evidence_refs: tuple[str, ...] = Field(
         min_length=1,
         max_length=8,
@@ -183,8 +183,6 @@ class SelfEpisodeProposal(_Contract):
             "未选中的窗口消息不是该条正文的证据。"
         ),
     )
-    value_reason: str = Field(min_length=1, max_length=240)
-    importance: int = Field(ge=1, le=5)
     content: str = Field(
         min_length=1,
         max_length=4000,
@@ -196,13 +194,45 @@ class SelfEpisodeProposal(_Contract):
     )
 
     @model_validator(mode="after")
-    def _trusted_evidence_aliases(self) -> SelfEpisodeProposal:
+    def _trusted_evidence_aliases(self) -> SelfEpisodePassage:
+        if not self.content.strip():
+            raise ValueError("episode passage content must not be blank")
         if len(set(self.evidence_refs)) != len(self.evidence_refs):
             raise ValueError("episode evidence aliases must be unique")
         if any(
             not (ref.startswith("event_") or ref.startswith("tool_")) for ref in self.evidence_refs
         ):
             raise ValueError("episode evidence may only reference event or tool aliases")
+        return self
+
+
+class SelfEpisodeProposal(_Contract):
+    passages: tuple[SelfEpisodePassage, ...] = Field(
+        min_length=1,
+        max_length=8,
+        description=(
+            "同一个核心经历的连续叙述片段；每段先绑定直接支持它的来源，再写正文。"
+            "提问与回答使用各自来源；旧回复中的外部说法须表述为当时的说法。"
+            "不是多个独立经历，不需要凑满片段。后端按顺序连接正文，不另写总述。"
+        ),
+    )
+    value_reason: str = Field(min_length=1, max_length=240)
+    importance: int = Field(ge=1, le=5)
+
+    @property
+    def content(self) -> str:
+        return "\n".join(passage.content for passage in self.passages)
+
+    @property
+    def evidence_refs(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(ref for part in self.passages for ref in part.evidence_refs))
+
+    @model_validator(mode="after")
+    def _bounded_episode(self) -> SelfEpisodeProposal:
+        if len(self.content) > 4000:
+            raise ValueError("joined episode content must not exceed 4000 characters")
+        if len(self.evidence_refs) > 8:
+            raise ValueError("episode must use at most 8 unique evidence aliases across passages")
         return self
 
 

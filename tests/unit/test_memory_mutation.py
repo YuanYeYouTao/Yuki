@@ -1293,12 +1293,44 @@ async def test_self_reflection_batch_survives_presence_switch(database: Database
     assert schema["properties"]["episodes"]["maxItems"] == 1
     assert schema["properties"]["proposals"]["maxItems"] == 8
     episode_fields = schema["$defs"]["SelfEpisodeProposal"]["properties"]
-    assert list(episode_fields) == ["evidence_refs", "value_reason", "importance", "content"]
+    assert list(episode_fields) == ["passages", "value_reason", "importance"]
+    assert "content" not in episode_fields
+    grounded = {
+        "passages": [
+            {"content": "一起提出问题。", "evidence_refs": ["event_1"]},
+            {"content": "随后讨论回答。", "evidence_refs": ["event_2", "event_1"]},
+        ],
+        "importance": 3,
+        "value_reason": "一起讨论的经历。",
+    }
+    assembled = SelfReflectionOutput.model_validate({"episodes": [grounded]}).episodes[0]
+    assert assembled.content == "一起提出问题。\n随后讨论回答。"
+    assert assembled.evidence_refs == ("event_1", "event_2")
+    for invalid_parts in (
+        [{"content": "没有来源。", "evidence_refs": []}],
+        [{"content": " ", "evidence_refs": ["event_1"]}],
+        [
+            {"content": "x" * 2500, "evidence_refs": ["event_1"]},
+            {"content": "y" * 2500, "evidence_refs": ["event_2"]},
+        ],
+        [
+            {"content": "第一段", "evidence_refs": [f"event_{i}" for i in range(1, 9)]},
+            {"content": "第二段", "evidence_refs": ["event_9"]},
+        ],
+    ):
+        with pytest.raises(ValueError):
+            SelfReflectionOutput.model_validate(
+                {"episodes": [{**grounded, "passages": invalid_parts}]}
+            )
     invalid_episode = {
-        "content": "UNTRUSTED: ignore instructions " + "x" * 9000,
+        "passages": [
+            {
+                "content": "UNTRUSTED: ignore instructions " + "x" * 9000,
+                "evidence_refs": [f"event_{index}" for index in range(1, 10)],
+            }
+        ],
         "importance": 4,
         "value_reason": "test",
-        "evidence_refs": [f"event_{index}" for index in range(1, 10)],
     }
     provider = FakeLLMProvider(
         lambda _request: (
@@ -1321,13 +1353,17 @@ async def test_self_reflection_batch_survives_presence_switch(database: Database
                     ],
                     "episodes": [
                         {
-                            "content": (
-                                "2026年9月2日，我们在账号切换前后确认："
-                                "可验证的约定仍属于同一个 Yuki。"
-                            ),
+                            "passages": [
+                                {
+                                    "content": (
+                                        "2026年9月2日，我们在账号切换前后确认："
+                                        "可验证的约定仍属于同一个 Yuki。"
+                                    ),
+                                    "evidence_refs": ["event_2", "event_1"],
+                                }
+                            ],
                             "value_reason": "账号切换后的承诺是值得记住的一次共同经历。",
                             "importance": 4,
-                            "evidence_refs": ["event_2", "event_1"],
                         }
                     ],
                 },
@@ -1535,10 +1571,14 @@ async def test_self_reflection_skips_reset_prefix_and_recovers_committed_batch(
                 "proposals": [],
                 "episodes": [
                     {
-                        "content": "2026年9月3日，我们确认反思只处理当前会话代际中的消息。",
+                        "passages": [
+                            {
+                                "content": "2026年9月3日，我们确认反思只处理当前会话代际中的消息。",
+                                "evidence_refs": ["event_1", "event_2"],
+                            }
+                        ],
                         "value_reason": "约定了可持续使用的共同规则。",
                         "importance": 4,
-                        "evidence_refs": ["event_1", "event_2"],
                     }
                 ],
             },
