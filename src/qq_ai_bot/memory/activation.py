@@ -292,11 +292,15 @@ class MemoryIntentRanker:
                     }
                 )
             )
+        from qq_ai_bot.memory.enums import MemoryRetrievalMode
+        from qq_ai_bot.memory.ranking import relevance_band
+
         ordered = sorted(
             scored,
             key=lambda hit: (
-                0 if hit.selection_reason.endswith("_exact") else 1,
-                -hit.rerank_score,
+                -relevance_band(hit) if query.mode is MemoryRetrievalMode.RELEVANT else 0,
+                -(hit.rerank_score - weights[-1] * hit.activation_score),
+                -hit.activation_score,
                 hit.rank,
                 hit.fact.id,
             ),

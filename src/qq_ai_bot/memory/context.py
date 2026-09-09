@@ -230,6 +230,7 @@ class MemoryContextService:
             MemoryReadConsumer,
             MemoryReadRequest,
             ResolvedReadScope,
+            apply_total_hit_limit,
         )
 
         self_target = None
@@ -259,9 +260,7 @@ class MemoryContextService:
             runtime=runtime,
         )
         if requested_limit is not None and query.mode is MemoryRetrievalMode.OVERVIEW:
-            return self._limit_automatic_result(
-                result, query.intent, runtime, requested_limit=requested_limit
-            )
+            return apply_total_hit_limit(result, requested_limit)
         return result
 
     async def retrieve_for_targets(
@@ -304,14 +303,11 @@ class MemoryContextService:
         result: MemoryRetrievalResult,
         intent: MemoryQueryIntent | None,
         runtime: RuntimeConfigSnapshot,
-        requested_limit: int | None = None,
     ) -> MemoryRetrievalResult:
         memory = runtime.memory
         purpose = intent.purpose if intent is not None else MemoryRecallPurpose.BACKGROUND
         if result.mode is MemoryRetrievalMode.OVERVIEW:
             total_limit = memory.automatic_recall_overview_limit
-            if requested_limit is not None:
-                total_limit = min(total_limit, requested_limit + 2)
         elif purpose is MemoryRecallPurpose.BACKGROUND:
             total_limit = memory.automatic_recall_background_limit
         elif purpose is MemoryRecallPurpose.CONTINUATION:
@@ -319,19 +315,37 @@ class MemoryContextService:
         else:
             total_limit = memory.automatic_recall_focused_limit
 
-        def ordering(hit: MemoryRetrievalHit) -> tuple[int, int, float, float, int, int]:
-            exact = hit.exact_match or hit.selection_reason.endswith("_exact")
-            preference = hit.selection_reason == "always_on_explicit_preference"
-            return (
-                0 if exact else 1,
-                0 if preference else 1,
-                -hit.rerank_score,
-                -hit.base_rank_score,
-                hit.rank,
-                hit.fact.id,
-            )
+        calibrated = bool(
+            memory.automatic_calibrated_profile
+            and memory.automatic_calibrated_profile == result.embedding_profile
+            and not result.semantic_degraded
+            and memory.automatic_topic_threshold >= memory.automatic_background_threshold
+        )
+        topics: list[MemoryRetrievalHit] = []
+        backgrounds: list[MemoryRetrievalHit] = []
+        decisions: dict[int, str] = {}
+        for hit in result.hits:
+            exact = hit.selection_reason in {"memory_key_exact", "content_exact"}
+            score = hit.semantic_score
+            if exact or (
+                calibrated and score is not None and score >= memory.automatic_topic_threshold
+            ):
+                topics.append(hit)
+                decisions[hit.fact.id] = "topic"
+            elif (
+                calibrated
+                and score is not None
+                and score >= memory.automatic_background_threshold
+                and hit.target.role is MemoryTargetRole.CURRENT_PERSON
+            ):
+                backgrounds.append(hit)
+                decisions[hit.fact.id] = "background"
+            else:
+                decisions[hit.fact.id] = (
+                    "rejected_relevance" if calibrated else "rejected_uncalibrated"
+                )
 
-        ordered = sorted(result.hits, key=ordering)
+        ordered = topics + (backgrounds[:1] if topics and len(topics) < total_limit else [])
         selected: list[MemoryRetrievalHit] = []
         per_target: dict[str, int] = {}
         selected_ids: set[int] = set()
@@ -343,7 +357,14 @@ class MemoryContextService:
             target_key = hit.target.block_id
             if per_target.get(target_key, 0) >= memory.automatic_recall_per_target_limit:
                 continue
-            selected.append(hit)
+            selected.append(
+                hit.model_copy(
+                    update={
+                        "selection_reason": decisions[hit.fact.id],
+                        "rank": len(selected) + 1,
+                    }
+                )
+            )
             selected_ids.add(hit.fact.id)
             per_target[target_key] = per_target.get(target_key, 0) + 1
 
@@ -351,91 +372,23 @@ class MemoryContextService:
         for hit in selected:
             by_target.setdefault(hit.target.block_id, []).append(hit)
         blocks = tuple(
-            block.model_copy(
-                update={
-                    "hits": tuple(
-                        item.model_copy(update={"rank": rank})
-                        for rank, item in enumerate(
-                            by_target.get(block.target.block_id, ()),
-                            start=1,
-                        )
-                    )
-                }
-            )
+            block.model_copy(update={"hits": tuple(by_target.get(block.target.block_id, ()))})
             for block in result.blocks
         )
-        final_hits = tuple(hit for block in blocks for hit in block.hits)
+        final_hits = tuple(selected)
         return result.model_copy(
             update={
                 "blocks": blocks,
                 "hits": final_hits,
                 "selected_count": len(final_hits),
-            }
-        )
-
-    async def _retrieve_current_self_episode(
-        self,
-        *,
-        target: MemoryEntityTarget,
-        query: MemoryQuery,
-        runtime: RuntimeConfigSnapshot,
-    ) -> MemoryRetrievalResult:
-        self_targets = (target,)
-        episode_query = query.model_copy(
-            update={
-                "targets": self_targets,
-                "kinds": (MemoryKind.EPISODE,),
-                "limit_per_target": query.candidate_limit,
-                "always_on_explicit_preference_limit": 0,
-            }
-        )
-        result = await self._retriever.retrieve(episode_query)
-        if not self_targets:
-            return result
-        target = self_targets[0]
-        selected = tuple(
-            hit
-            for hit in result.hits
-            if hit.target == target and hit.fact.visibility_type is target.visibility_type
-        )[:1]
-        selected_ids = {hit.fact.id for hit in selected}
-        blocks = tuple(
-            block.model_copy(
-                update={"hits": tuple(hit for hit in block.hits if hit.fact.id in selected_ids)}
-            )
-            for block in result.blocks
-        )
-        return result.model_copy(
-            update={
-                "blocks": blocks,
-                "hits": selected,
-                "selected_count": len(selected),
-            }
-        )
-
-    @staticmethod
-    def _merge_results(
-        primary: MemoryRetrievalResult,
-        additional: MemoryRetrievalResult,
-    ) -> MemoryRetrievalResult:
-        known = {hit.fact.id for hit in primary.hits}
-        new_hits = tuple(hit for hit in additional.hits if hit.fact.id not in known)
-        if not new_hits:
-            return primary
-        new_ids = {hit.fact.id for hit in new_hits}
-        blocks = list(primary.blocks)
-        for block in additional.blocks:
-            selected = tuple(hit for hit in block.hits if hit.fact.id in new_ids)
-            if selected:
-                blocks.append(block.model_copy(update={"hits": selected}))
-        return primary.model_copy(
-            update={
-                "blocks": tuple(blocks),
-                "hits": (*primary.hits, *new_hits),
-                "candidate_count": primary.candidate_count + additional.candidate_count,
-                "selected_count": primary.selected_count + len(new_hits),
-                "semantic_degraded": (primary.semantic_degraded or additional.semantic_degraded),
-                "trace_hits": (*primary.trace_hits, *additional.trace_hits),
+                "trace_hits": tuple(
+                    hit.model_copy(
+                        update={
+                            "selection_reason": decisions.get(hit.fact.id, "not_selected"),
+                        }
+                    )
+                    for hit in result.trace_hits
+                ),
             }
         )
 
@@ -467,20 +420,15 @@ class MemoryContextService:
         else:
             query = query.model_copy(
                 update={
-                    "limit_per_target": min(
-                        query.limit_per_target, runtime.memory.automatic_recall_per_target_limit
-                    )
+                    "limit_per_target": max(query.candidate_limit, query.semantic_candidate_limit),
+                    "always_on_explicit_preference_limit": 0,
+                    "targets": tuple(dict.fromkeys((*query.targets, automatic_self_target)))
+                    if automatic_self_target is not None
+                    else query.targets,
                 }
             )
         if runtime.memory.retrieval_enabled:
-            result = await self._retriever.retrieve(
-                query, diversify=query.mode is MemoryRetrievalMode.RELEVANT
-            )
-            if automatic_self_target is not None:
-                episode = await self._retrieve_current_self_episode(
-                    target=automatic_self_target, query=query, runtime=runtime
-                )
-                result = self._merge_results(result, episode)
+            result = await self._retriever.retrieve(query)
         else:
             query = query.model_copy(
                 update={

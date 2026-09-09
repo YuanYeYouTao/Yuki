@@ -196,9 +196,12 @@ class Settings(BaseSettings):
     memory_lexical_candidate_limit: int = 50
     memory_context_limit_per_entity: int = 4
     memory_overview_limit_per_entity: int = 10
-    memory_automatic_recall_per_target_limit: int = Field(default=2, gt=0, le=20)
-    memory_automatic_recall_background_limit: int = Field(default=2, gt=0, le=20)
-    memory_automatic_recall_continuation_limit: int = Field(default=2, gt=0, le=20)
+    memory_automatic_recall_per_target_limit: int = Field(default=4, gt=0, le=20)
+    memory_automatic_recall_background_limit: int = Field(default=4, gt=0, le=20)
+    memory_automatic_recall_continuation_limit: int = Field(default=4, gt=0, le=20)
+    memory_automatic_topic_threshold: float = Field(default=0.90, ge=0.35, le=0.90)
+    memory_automatic_background_threshold: float = Field(default=0.90, ge=0.35, le=0.90)
+    memory_automatic_calibrated_profile: str = ""
     memory_automatic_recall_focused_limit: int = Field(default=3, gt=0, le=20)
     memory_automatic_recall_overview_limit: int = Field(default=4, gt=0, le=20)
     memory_always_on_explicit_preference_limit: int = 3

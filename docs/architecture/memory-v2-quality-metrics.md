@@ -10,7 +10,10 @@
 实际使用率分母是 **已评估的注入 item**，不是全部注入。另报零注入比例、判定覆盖率、
 超时/抢占/队列满/禁用、同会话事实重复分布；零分母返回 null。成功无引用是 succeeded /
 no_used；异常不是无用。重启时遗留 pending 标为 failed/interrupted，不补跑旧请求。
-这些记录不参与召回抑制，不增加冷却或相关性阈值。
+这些记录不参与冷却或惩罚；相关性准入使用独立校准阈值，不能用 used=false 代替相关性标签。
+item 的 selection_reason 记录 topic/background/rejected_relevance/rejected_uncalibrated，
+并以 `;rank=N` 记录最终全局名次，0 表示未选入。选中事实即使不在有界 trace 头部，也必须
+持久化 item。此加法观测不增加表或迁移，不改变“实际使用”的定义。
 
 主动读取按 success、empty、ambiguous、permission_denied、duplicate 和
 infrastructure_failure 记录无正文计数。duplicate 表示同一模型轮复用了完全相同读取的结果；

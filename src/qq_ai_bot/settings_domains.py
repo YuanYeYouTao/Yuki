@@ -197,6 +197,9 @@ class MemorySettings(DomainSettings):
     memory_batch_max_wait_seconds: float = Field(ge=0)
     memory_batch_max_output_tokens: int = Field(gt=0)
     memory_retrieval_enabled: bool
+    memory_automatic_topic_threshold: float = Field(ge=0.35, le=0.90)
+    memory_automatic_background_threshold: float = Field(ge=0.35, le=0.90)
+    memory_automatic_calibrated_profile: str
     self_memory_enabled: bool
     memory_self_reflection_enabled: bool
     memory_self_reflection_schedule_hours: str
@@ -308,6 +311,8 @@ class MemorySettings(DomainSettings):
 
     @model_validator(mode="after")
     def _memory_batch_shape(self) -> MemorySettings:
+        if self.memory_automatic_topic_threshold < self.memory_automatic_background_threshold:
+            raise ValueError("automatic topic threshold cannot be below background threshold")
         if self.memory_batch_trigger_count > self.memory_batch_max_events:
             raise ValueError("memory batch trigger count cannot exceed batch event limit")
         hours = [item.strip() for item in self.memory_self_reflection_schedule_hours.split(",")]

@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 
 class MemoryRetriever:
-    """Retrieve each identity target independently and never widen its SQL scope."""
+    """SQL-filter each identity target, then compare its candidates in one pool."""
 
     def __init__(
         self,
@@ -214,14 +214,7 @@ class MemoryRetriever:
                     limit=overview_pool_limit,
                     reason=("overview" if lexical_enabled else "retrieval_disabled_fallback"),
                 )
-                if query.intent is not None and query.intent_rerank_enabled:
-                    rerank_started = time.perf_counter()
-                    states = await self._load_activation_states(hits)
-                    hits = self._intent_ranker.rerank(hits, query=query, states=states)
-                    rerank_latency += time.perf_counter() - rerank_started
                 hits = apply_strict_temporal_constraint(hits, query.intent)
-                trace_hits.extend(hits[: query.recall_trace_candidate_limit])
-                hits = hits[: query.limit_per_target]
             else:
                 preferences = (
                     await self._repository.list_explicit_preferences(
@@ -293,7 +286,6 @@ class MemoryRetriever:
                     preference_hits,
                     query.intent,
                 )
-                remaining = max(0, query.limit_per_target - len(preference_hits))
                 hybrid_started = time.perf_counter()
                 lexical_hits = self._ranker.rank_hybrid(
                     facts=candidate_facts,
@@ -304,61 +296,73 @@ class MemoryRetriever:
                     lexical_weight=query.hybrid_lexical_weight,
                     semantic_weight=query.hybrid_semantic_weight,
                     rrf_k=query.hybrid_rrf_k,
-                    limit=(
-                        max(
-                            remaining,
-                            self._mmr_candidate_pool_size,
-                            query.recall_trace_candidate_limit,
-                        )
-                        if (
-                            query.intent_rerank_enabled
-                            or (self._mmr_enabled and diversify and query_vector is not None)
-                        )
-                        else remaining
-                    ),
+                    limit=len(candidate_facts),
                 )
                 hybrid_latency += time.perf_counter() - hybrid_started
                 preference_ids = {hit.fact.id for hit in preference_hits}
                 deduplicated = tuple(
                     hit for hit in lexical_hits if hit.fact.id not in preference_ids
                 )
-                if query.intent is not None and query.intent_rerank_enabled:
-                    rerank_started = time.perf_counter()
-                    states = await self._load_activation_states(deduplicated)
-                    deduplicated = self._intent_ranker.rerank(
-                        deduplicated,
-                        query=query,
-                        states=states,
-                    )
-                    rerank_latency += time.perf_counter() - rerank_started
                 deduplicated = apply_strict_temporal_constraint(
                     deduplicated,
                     query.intent,
                 )
-                trace_hits.extend(
-                    (*preference_hits, *deduplicated)[: query.recall_trace_candidate_limit]
-                )
-                if (
-                    self._mmr_enabled
-                    and diversify
-                    and query_vector is not None
-                    and self._semantic_index is not None
-                    and self._embedding_profile is not None
-                    and remaining > 0
-                ):
-                    deduplicated = await self._diversify_mmr(
-                        deduplicated,
-                        query_vector=query_vector,
-                        valid_fact_ids=frozenset(item.fact_id for item in semantic_candidates),
-                        limit=remaining,
-                    )
-                combined = (*preference_hits, *deduplicated)[: query.limit_per_target]
+                combined = (*preference_hits, *deduplicated)
                 hits = tuple(
                     hit.model_copy(update={"rank": rank})
                     for rank, hit in enumerate(combined, start=1)
                 )
             blocks.append(MemoryRetrievalBlock(target=target, hits=hits))
             all_hits.extend(hits)
+
+        if query.mode is MemoryRetrievalMode.RELEVANT:
+            ranked = self._ranker.rank_global(tuple(all_hits), query)
+        else:
+            ranked = tuple(
+                hit.model_copy(update={"rank": rank})
+                for rank, hit in enumerate(
+                    sorted(
+                        all_hits,
+                        key=lambda hit: (
+                            -hit.fact.importance,
+                            -hit.fact.confidence,
+                            -hit.fact.updated_at.timestamp(),
+                            hit.fact.id,
+                        ),
+                    ),
+                    1,
+                )
+            )
+        if query.intent is not None and query.intent_rerank_enabled:
+            rerank_started = time.perf_counter()
+            ranked = self._intent_ranker.rerank(
+                ranked, query=query, states=await self._load_activation_states(ranked)
+            )
+            rerank_latency += time.perf_counter() - rerank_started
+        if self._mmr_enabled and diversify and query_vector is not None:
+            ranked = await self._diversify_mmr(
+                ranked,
+                query_vector=query_vector,
+                valid_fact_ids=frozenset(
+                    hit.fact.id for hit in ranked if hit.semantic_score is not None
+                ),
+                limit=len(ranked),
+            )
+        trace_hits = list(ranked[: query.recall_trace_candidate_limit])
+        all_hits = []
+        per_target: dict[str, int] = {}
+        for hit in ranked:
+            key = hit.target.block_id
+            if per_target.get(key, 0) >= query.limit_per_target:
+                continue
+            per_target[key] = per_target.get(key, 0) + 1
+            all_hits.append(hit.model_copy(update={"rank": len(all_hits) + 1}))
+        blocks = [
+            MemoryRetrievalBlock(
+                target=target, hits=tuple(hit for hit in all_hits if hit.target == target)
+            )
+            for target in query.targets
+        ]
 
         query_hash = hashlib.sha256(query.normalized_text.encode("utf-8")).hexdigest()
         result = MemoryRetrievalResult(

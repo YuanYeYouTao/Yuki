@@ -41,6 +41,8 @@ from qq_ai_bot.memory.models import (
     MemoryLexicalCandidate,
     MemoryQuery,
     MemoryQueryIntent,
+    MemoryRetrievalBlock,
+    MemoryRetrievalHit,
     MemoryRetrievalResult,
 )
 from qq_ai_bot.memory.query import MemoryQueryBuilder
@@ -48,6 +50,7 @@ from qq_ai_bot.memory.ranking import MemoryRanker
 from qq_ai_bot.memory.receipt import MemoryRecallRepository
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.retrieval import MemoryRetriever
+from qq_ai_bot.memory.runtime.query_plane import apply_total_hit_limit
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.targets import MemoryTargetResolver
 from qq_ai_bot.model_runtime.executor import ModelExecutor
@@ -405,7 +408,7 @@ async def test_query_builder_adds_self_target_only_for_enabled_explicit_recall(
 
 
 @pytest.mark.asyncio
-async def test_relevant_chat_adds_one_current_scope_self_episode_without_explicit_recall(
+async def test_self_episode_has_no_automatic_bypass_but_active_query_still_works(
     database: Database,
 ) -> None:
     people = PeopleRepository(database)
@@ -473,15 +476,13 @@ async def test_relevant_chat_adds_one_current_scope_self_episode_without_explici
         self_recall=False,
     )
     auto_self = [hit for hit in automatic.hits if hit.target.role is MemoryTargetRole.CURRENT_SELF]
-    assert len(auto_self) == 1
-    assert auto_self[0].fact.id in {first.id, second.id}
-    assert auto_self[0].fact.id != other_group.id
+    assert auto_self == []  # No calibrated profile, and no exact match.
 
-    explicit = await context.retrieve_for_turn(
-        inbound=inbound,
-        content=inbound.text,
+    explicit = await context.search(
+        text=inbound.text,
+        mode=MemoryRetrievalMode.RELEVANT,
+        targets=await context.resolve_targets(inbound, runtime, self_recall=True),
         runtime=runtime,
-        self_recall=True,
     )
     explicit_self_ids = {
         hit.fact.id for hit in explicit.hits if hit.target.role is MemoryTargetRole.CURRENT_SELF
@@ -837,7 +838,9 @@ async def test_none_memory_mode_returns_empty_result(database: Database) -> None
 
 
 @pytest.mark.asyncio
-async def test_disabled_retrieval_uses_bounded_current_entities_only(database: Database) -> None:
+async def test_disabled_retrieval_cannot_inject_unrelated_current_background(
+    database: Database,
+) -> None:
     people = PeopleRepository(database)
     await people.observe(user_id="1001", nickname="当前", group_id="2001")
     await people.observe(user_id="1002", nickname="被提及", group_id="2001")
@@ -876,7 +879,8 @@ async def test_disabled_retrieval_uses_bounded_current_entities_only(database: D
         runtime=runtime,
     )
 
-    assert current.id in {hit.fact.id for hit in result.hits}
+    assert result.hits == ()
+    assert current.id in {hit.fact.id for hit in result.trace_hits}
     assert all(
         block.target.role
         not in {
@@ -885,7 +889,7 @@ async def test_disabled_retrieval_uses_bounded_current_entities_only(database: D
         }
         for block in result.blocks
     )
-    assert {hit.fact.subject_user_id for hit in result.hits if hit.fact.subject_user_id} == {"1001"}
+    assert all(hit.selection_reason.startswith("rejected_") for hit in result.trace_hits)
 
 
 @pytest.mark.asyncio
@@ -968,6 +972,79 @@ def test_ranker_uses_exact_fields_then_stable_fact_id() -> None:
         limit=10,
     )
     assert [hit.fact.id for hit in stable] == [8, 6, 7, 9]
+
+
+@pytest.mark.asyncio
+async def test_global_topics_precede_background_and_preserve_total_order(
+    database: Database,
+) -> None:
+    memories, _ = _retriever(database)
+    current, other = _target("1001"), _target("1002", role=MemoryTargetRole.REFERENCED_PERSON)
+    specs = ((current, 0.68), (other, 0.86), (other, 0.84), (other, 0.82), (other, 0.80))
+    hits = []
+    for index, (target, score) in enumerate(specs):
+        fact = await _remember(
+            memories,
+            content=f"独立测试事实 {index}",
+            memory_key=f"test:{index}",
+            user_id=target.subject_user_id,
+        )
+        hits.append(
+            MemoryRetrievalHit(
+                fact=fact,
+                target=target,
+                rank=1,
+                lexical_score=1,
+                semantic_score=score,
+                selection_reason="hybrid_match",
+            )
+        )
+    query = _query("主题", current, other)
+    ranked = MemoryRanker.rank_global(tuple(hits), query)
+    assert [hit.fact.id for hit in ranked] == [hit.fact.id for hit in hits[1:]] + [hits[0].fact.id]
+    assert [hit.semantic_rank for hit in ranked] == [1, 2, 3, 4, 5]
+    profile = "a" * 64
+    result = MemoryRetrievalResult(
+        hits=ranked,
+        blocks=tuple(
+            MemoryRetrievalBlock(
+                target=target, hits=tuple(hit for hit in ranked if hit.target == target)
+            )
+            for target in (current, other)
+        ),
+        trace_hits=ranked,
+        candidate_count=5,
+        selected_count=5,
+        query_hash="synthetic",
+        mode=query.mode,
+        embedding_profile=profile,
+        semantic_status="ready",
+    )
+    runtime = await RuntimeConfigService(
+        settings=make_settings(database.url), database=database
+    ).snapshot()
+    runtime = replace(
+        runtime,
+        memory=replace(
+            runtime.memory,
+            automatic_calibrated_profile=profile,
+            automatic_topic_threshold=0.75,
+            automatic_background_threshold=0.60,
+        ),
+    )
+    topics = MemoryContextService._limit_automatic_result(result, None, runtime)
+    assert [hit.fact.id for hit in topics.hits] == [hit.fact.id for hit in ranked[:4]]
+    assert all(hit.target == other and hit.selection_reason == "topic" for hit in topics.hits)
+    runtime = replace(runtime, memory=replace(runtime.memory, automatic_topic_threshold=0.81))
+    mixed = MemoryContextService._limit_automatic_result(result, None, runtime)
+    assert [hit.selection_reason for hit in mixed.hits] == ["topic", "topic", "topic", "background"]
+    assert mixed.hits[-1].fact.id == hits[0].fact.id
+    capped = apply_total_hit_limit(mixed, 2)
+    assert capped.hits == mixed.hits[:2]
+    no_topics = result.model_copy(update={"hits": (hits[0],)})
+    assert MemoryContextService._limit_automatic_result(no_topics, None, runtime).hits == ()
+    uncalibrated = result.model_copy(update={"embedding_profile": "unknown"})
+    assert MemoryContextService._limit_automatic_result(uncalibrated, None, runtime).hits == ()
 
 
 @pytest.mark.asyncio

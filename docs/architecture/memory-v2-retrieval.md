@@ -22,9 +22,10 @@ SELF 维持 global/current-private/current-group 可见性。
 ## 目标与意图
 
 自动预取从当前人物、当前群、真实提及/引用出发，不遍历所有历史群和群友；
-维持 background/continuation 契约与最多两条的总预算，不新增前置模型调用。
+维持 background/continuation 契约，默认总预算四条，单目标可占四条，不新增前置模型调用。
 主动工具由正常完整 Main Agent 提供 purpose、entities、preferred kinds、绝对时间范围；
-后端解析好的目标用于排序，不能充当权限凭证。
+后端仅为主动查询明确目标补缺省重点，不覆盖已提供 subjects；自动查询没有明确重点时留空，
+不能将所有有权读取目标或当前发言者自动当成主题。意图不能充当权限凭证。
 
 人物、群与 SELF 的无 query 总览使用 overview；有 query 使用 relevant/lexical/hybrid。
 主体分类不迁移、不复制事实。返回数量有界，空结果是正常成功，不是权限错误。
@@ -51,12 +52,15 @@ SELF 维持 global/current-private/current-group 可见性。
   embedding 与现有 rerank。
 - 非空且启用语义检索时生成 query embedding；overview、lexical 不调用 embedding。
 - 词法/语义候选都先按 canonical scope、active、有效期、kind/profile 做 SQL 筛选。
-- RRF 融合各来源 rank，再按精确命中、authority、conflict、importance、confidence、
-  updated_at/fact_id 等规则稳定排序。RRF/rank 不是跨模型的相关性概率。
+- 各目标给出有界候选，按 fact ID 合并去重后重算全局 lexical/semantic rank，再做 RRF；
+  不能先各取两条，也不能把每个目标的第一名当成同等相关。hits 的全局顺序不被分组展示打乱。
+- 原始语义相似度提供相关性档位；意图实体、时间、种类参与排序。活跃度/重要性不能让弱相关
+  越过强主题。RRF/rank 不是相关性概率。
 - preferred kinds、时间和主体是排序信号，不能靠它们授予权限。
 - active + contested conflict 可以带争议标记返回；superseded、invalidated、未采用的
   contested claim 不作为普通 active 事实。争议关系不跨 scope。
-- 部分 embedding 覆盖仍由 FTS 补足；provider 故障退回词法，日志只记脱敏类别，
+- 主动查询在 embedding 故障时仍可退回词法；自动注入在故障或未校准 profile 下仅接受
+  memory_key/content 的确定精确匹配，否则零注入。日志只记脱敏类别，
   不记录查询、事实、QQ、群号、向量或 provider 原始错误。
 
 ## 暴露、回执与统计
@@ -69,7 +73,11 @@ Plugin API 2.0 / 管理查询不写普通用户 recall 或 activation。
 
 Main Agent 使用现有 History、Rollup、Memory 和工具协议，不另建短上下文。
 固定前缀与工具结构保持稳定；尾部召回内容仍可能变化，不能承诺固定缓存命中率。
-本轮不新增冷却或抑制阈值，也不以强迫回复引用记忆提高使用率。
+自动主题须过已校准的强相关门槛；不足四条且有主题时，可补最多一条通过独立门槛的当前
+人物背景。SELF Episode 和显式偏好没有旁路。主动 overview/list/detail 不套自动门槛。
+预取为空不等于长期记忆不存在，Main Agent 可以利用完整前文发起意图补查。
+不新增冷却，也不强迫回复引用记忆。旧 P1“不新增阈值”阶段约束已被
+[强相关召回任务书](Yuki-记忆可靠性与强相关召回任务书.md)取代。
 
 指标与排障见 [指标口径](memory-v2-quality-metrics.md)、
 [质量运维](../operations/memory-quality.md)。旧 phase/Adaptive 文档不是当前权限合同。

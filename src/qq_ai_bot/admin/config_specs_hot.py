@@ -14,6 +14,33 @@ from qq_ai_bot.admin.models import ConfigSpec
 
 def hot_config_specs() -> tuple[ConfigSpec, ...]:
     return (
+        *tuple(
+            _spec(
+                f"memory.automatic_{kind}_threshold",
+                f"自动召回{title}门槛",
+                "仅作用于自动注入；必须与验收后的 embedding profile 指纹配套。",
+                value_type="number",
+                minimum=0.35,
+                maximum=0.90,
+                scopes=_G,
+                env_alias=f"MEMORY_AUTOMATIC_{kind.upper()}_THRESHOLD",
+                getter=_field(f"memory_automatic_{kind}_threshold"),
+                settings_fields=(f"memory_automatic_{kind}_threshold",),
+                category="memory",
+            )
+            for kind, title in (("topic", "主题"), ("background", "背景"))
+        ),
+        _spec(
+            "memory.automatic_calibrated_profile",
+            "自动召回已校准模型指纹",
+            "与当前 embedding profile 不一致或为空时自动只接受精确匹配，不影响主动搜索。",
+            value_type="string",
+            scopes=_G,
+            env_alias="MEMORY_AUTOMATIC_CALIBRATED_PROFILE",
+            getter=_field("memory_automatic_calibrated_profile"),
+            settings_fields=("memory_automatic_calibrated_profile",),
+            category="memory",
+        ),
         _spec(
             "memory.retrieval_enabled",
             "查询驱动记忆检索",

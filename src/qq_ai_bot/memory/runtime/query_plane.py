@@ -163,7 +163,7 @@ def apply_total_hit_limit(result: MemoryRetrievalResult, total_limit: int) -> Me
         )
         for block in result.blocks
     )
-    final_hits = tuple(hit for block in blocks for hit in block.hits)
+    final_hits = tuple(selected)
     return result.model_copy(
         update={
             "blocks": blocks,
@@ -193,7 +193,7 @@ class MemoryQueryPlane:
             if consumer in {MemoryReadConsumer.PLUGIN, MemoryReadConsumer.ADMIN}
             else (request.intent)
         )
-        if intent is not None:
+        if intent is not None and not intent.subjects and consumer is MemoryReadConsumer.AGENT_TOOL:
             subjects = tuple(
                 dict.fromkeys(
                     MemorySubjectRole(target.role.value.removesuffix("_group"))

@@ -50,6 +50,11 @@ class MemoryRecallRepository:
         by_fact: dict[int, MemoryRetrievalHit] = {}
         for hit in result.trace_hits:
             by_fact.setdefault(hit.fact.id, hit)
+        # A chosen background may fall outside the bounded trace head. Every
+        # exposed fact still needs a receipt item and its final global position.
+        final_ranks = {hit.fact.id: index for index, hit in enumerate(result.hits, 1)}
+        for hit in result.hits:
+            by_fact[hit.fact.id] = hit
         async with self._database.sessions() as session, session.begin():
             receipt = MemoryRecallReceiptModel(
                 turn_id=turn_id,
@@ -92,7 +97,9 @@ class MemoryRecallRepository:
                         kind_score=hit.kind_score,
                         activation_score=hit.activation_score,
                         rerank_score=hit.rerank_score,
-                        selection_reason=hit.selection_reason[:64],
+                        selection_reason=(
+                            f"{hit.selection_reason[:44]};rank={final_ranks.get(hit.fact.id, 0)}"
+                        )[:64],
                         injected_at=now if hit.fact.id in injected_ids else None,
                         used_at=None,
                         reinforced_at=None,

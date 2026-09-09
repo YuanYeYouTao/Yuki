@@ -37,8 +37,6 @@ def test_memory_dream_absolute_output_budget_cannot_exceed_contract() -> None:
     with pytest.raises(ValidationError):
         Settings(_env_file=None, memory_dream_episode_max_characters=801)
 
-
-def test_memory_dream_compression_defaults_keep_quality_headroom() -> None:
     settings = Settings(_env_file=None)
 
     assert settings.memory_dream_episode_compression_ratio == 0.45
@@ -285,7 +283,7 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
     assert settings.history_window_low_watermark_ratio == 0.67
     assert settings.context_metadata_budget_ratio == 0.04
     assert settings.memory_context_limit_per_entity == 4
-    assert settings.memory_automatic_recall_continuation_limit == 2
+    assert settings.memory_automatic_recall_continuation_limit == 4
     assert settings.conversation_rollup_raw_tail_events == 128
     assert settings.conversation_rollup_raw_tail_characters == 20_480
     assert settings.conversation_rollup_trigger_events == 384

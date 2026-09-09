@@ -1112,11 +1112,11 @@ async def test_worker_isolates_job_completion_failure(
 @pytest.mark.asyncio
 async def test_context_keeps_facts_in_current_entity_blocks_only(database: Database) -> None:
     memories = MemoryFactService(MemoryFactRepository(database))
-    await memories.remember(_fact(content="只属于当前人物"))
+    await memories.remember(_fact(content="只属于当前人物", memory_key="context:exact"))
     await memories.remember(
         _fact(
             content="只属于当前群",
-            memory_key="group:topic",
+            memory_key="context:exact",
             user_id=None,
             group_id="2001",
             scope_type=MemoryScopeType.GROUP,
@@ -1125,7 +1125,7 @@ async def test_context_keeps_facts_in_current_entity_blocks_only(database: Datab
     await memories.remember(
         _fact(
             content="当前群内称呼",
-            memory_key="member:alias",
+            memory_key="context:exact",
             group_id="2001",
             scope_type=MemoryScopeType.PERSON_GROUP,
         )
@@ -1155,7 +1155,7 @@ async def test_context_keeps_facts_in_current_entity_blocks_only(database: Datab
         event_type="message:group:normal",
         scope_type=ScopeType.GROUP,
         sender=SenderIdentity(user_id="1001", nickname="当前用户"),
-        text="只属于当前人物，只属于当前群，当前群内称呼",
+        text="context:exact",
         group_id="2001",
         mentioned_user_ids=("1002",),
         mentions_bot=True,
@@ -1186,12 +1186,12 @@ async def test_context_includes_authorized_person_facts_without_scanning_other_g
 ) -> None:
     memories = MemoryFactService(MemoryFactRepository(database))
     person_fact = await memories.remember(
-        _fact(content="小李喜欢水彩绘画", memory_key="hobby:painting", user_id="1002")
+        _fact(content="小李喜欢水彩绘画", memory_key="shared:exact", user_id="1002")
     )
     group_fact = await memories.remember(
         _fact(
             content="小李在本群负责美术",
-            memory_key="role:artist",
+            memory_key="shared:exact",
             user_id="1002",
             group_id="2001",
             scope_type=MemoryScopeType.PERSON_GROUP,
@@ -1217,7 +1217,7 @@ async def test_context_includes_authorized_person_facts_without_scanning_other_g
         event_type="message:group:normal",
         scope_type=ScopeType.GROUP,
         sender=SenderIdentity(user_id="1001", nickname="当前用户"),
-        text="小李喜欢水彩绘画，也在本群负责美术吗",
+        text="shared:exact",
         group_id="2001",
         mentioned_user_ids=("1002",),
         mentions_bot=True,

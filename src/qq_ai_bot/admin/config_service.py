@@ -1349,6 +1349,13 @@ class RuntimeConfigService:
                 automatic_recall_per_target_limit=int(
                     cast(int, value("memory.automatic_recall_per_target_limit"))
                 ),
+                automatic_topic_threshold=float(
+                    cast(float, value("memory.automatic_topic_threshold"))
+                ),
+                automatic_background_threshold=float(
+                    cast(float, value("memory.automatic_background_threshold"))
+                ),
+                automatic_calibrated_profile=str(value("memory.automatic_calibrated_profile")),
                 automatic_recall_background_limit=int(
                     cast(int, value("memory.automatic_recall_background_limit"))
                 ),

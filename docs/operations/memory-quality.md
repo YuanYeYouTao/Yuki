@@ -23,6 +23,16 @@ uv run qq-ai-bot-cli memory stats --database-url <database-url> --hours 24
 
 ## 自省与 Dream 的恢复边界
 
+强相关召回使用 `memory.automatic_topic_threshold`、
+`memory.automatic_background_threshold` 与 `memory.automatic_calibrated_profile`。
+先冻结真实样本、分组标注和校准，再在独立验收集通过后设置；不能直接把默认 0.90 当成
+已验证阈值。主题门槛不得低于背景，profile 不符/不可用时自动仅精确匹配，主动 lexical
+查询仍可用。默认四条、背景最多一条补位，不是必须注入四条。旧的明确数量配置需审计后
+定向调整，不会被新默认值覆盖。
+
+质量回放不得改变生产 Memory、History、Rollup 或 embedding。原始样本只留在仓库外受限
+目录；不能还原历史状态的样本只计入冻结 corpus 对照，不计严格历史指标。
+
 自省的 `enabled=true` 不代表调度器仍存活，必须同时检查 `running`、最近 run 的终态和
 `committed_count`。后台批次遇到未预料的异常时按持久化 result checkpoint 恢复：已有提交
 保留并推进水位；没有提交则记录失败，后续周期可重试。异常不能杀死整个调度循环，取消仍

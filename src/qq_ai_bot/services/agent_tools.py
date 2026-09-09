@@ -423,6 +423,7 @@ class AgentToolService:
             ChatTool(
                 name="get_person_memories",
                 description=(
+                    "自动预取为空不代表没有长期记忆；明确询问历史且材料不足时，结合完整前文主动补查。"
                     "读取本人，或与真实请求者有历史共同群关系的人物结构记忆。"
                     "包含获准人物的完整 Person 事实及共同群 PersonGroup；"
                     "不返回原始聊天或 evidence。"
@@ -477,6 +478,7 @@ class AgentToolService:
             ChatTool(
                 name="get_group_memories",
                 description=(
+                    "自动预取为空不代表没有长期记忆；明确询问群历史且材料不足时可主动补查。"
                     "读取请求者历史参与群的共同结构记忆。群聊省略目标时为当前群；"
                     "私聊须指定 group_name 或 group_id。空结果表示没有匹配事实。"
                 ),
