@@ -8,7 +8,10 @@ from datetime import UTC, datetime
 
 from sqlalchemy import text
 
-from qq_ai_bot.memory.eligibility import sql_fact_event_evidence_predicate
+from qq_ai_bot.memory.eligibility import (
+    sql_fact_event_evidence_predicate,
+    sql_fact_tool_evidence_predicate,
+)
 from qq_ai_bot.memory.embedding.text import EmbeddingDocumentBuilder
 from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.quality.audit import MemoryProductionQualityAudit
@@ -45,6 +48,13 @@ class MemoryProvenanceHygiene:
                               AND e.source_speaker_user_id=c.sender_user_id
                               AND trim(e.excerpt)!=''
                               AND instr(c.content,e.excerpt)>0
+                          )
+                          AND NOT EXISTS (
+                            SELECT 1 FROM memory_evidence e
+                            JOIN memory_tool_receipts t ON t.id=e.tool_receipt_id
+                            JOIN chat_events c ON c.id=t.trigger_event_id
+                            JOIN canonical_conversations v ON v.id=c.canonical_conversation_id
+                            WHERE e.fact_id=f.id AND {sql_fact_tool_evidence_predicate()}
                           )
                         ORDER BY f.id LIMIT 500
                         """

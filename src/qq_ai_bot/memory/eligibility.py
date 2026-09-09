@@ -45,6 +45,31 @@ def sql_fact_event_evidence_predicate() -> str:
     )
 
 
+def sql_fact_tool_evidence_predicate() -> str:
+    """Retained SELF receipt chain: aliases f/e/t/c/v are fact/evidence/receipt/event/conversation.
+
+    Expiry limits new reflection input, not evidence already committed. Failed
+    tool results may document a failure; success is not an evidence requirement.
+    """
+    return (
+        "COALESCE((f.scope_type='self' AND e.relation='agent_reflection' "
+        "AND e.authority='agent_reflection' AND e.source_speaker_user_id=t.bot_user_id "
+        "AND trim(e.excerpt)!='' AND instr(t.result_excerpt,e.excerpt)>0 "
+        "AND c.canonical_event_id IS NOT NULL "
+        f"AND {sql_keeper_event_predicate('c')} "
+        "AND ((c.direction='inbound' AND c.author_kind='person') "
+        "OR (c.direction='outbound' AND c.author_kind='yuki')) "
+        "AND ((t.canonical_person_id=v.person_id AND t.canonical_space_id IS NULL) "
+        "OR (t.canonical_space_id=v.space_id AND t.canonical_person_id IS NULL)) "
+        "AND ((f.visibility_type='global' AND f.canonical_visibility_person_id IS NULL "
+        "AND f.canonical_visibility_space_id IS NULL) "
+        "OR (f.visibility_type='private' AND f.canonical_visibility_person_id=v.person_id "
+        "AND f.canonical_visibility_space_id IS NULL) "
+        "OR (f.visibility_type='group' AND f.canonical_visibility_space_id=v.space_id "
+        "AND f.canonical_visibility_person_id IS NULL))), 0)"
+    )
+
+
 class MemoryEventEligibilityPolicy:
     """Keep domain and SQL event eligibility intentionally equivalent."""
 

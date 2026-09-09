@@ -11,6 +11,7 @@ from sqlalchemy.exc import DatabaseError
 
 from qq_ai_bot.memory.eligibility import (
     sql_fact_event_evidence_predicate,
+    sql_fact_tool_evidence_predicate,
     sql_human_evidence_predicate,
 )
 from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
@@ -194,7 +195,22 @@ class MemoryProductionQualityAudit:
                 "error",
                 _query(
                     "memory_evidence e",
-                    "NOT EXISTS (SELECT 1 FROM chat_events c WHERE c.id=e.event_id)",
+                    "e.event_id IS NOT NULL AND NOT EXISTS "
+                    "(SELECT 1 FROM chat_events c WHERE c.id=e.event_id)",
+                    id_expression="e.id",
+                ),
+            ),
+            (
+                "evidence_tool_source_invalid",
+                "error",
+                _query(
+                    "memory_evidence e JOIN memory_facts f ON f.id=e.fact_id",
+                    "e.tool_receipt_id IS NOT NULL AND NOT EXISTS ("
+                    "SELECT 1 FROM memory_tool_receipts t "
+                    "JOIN chat_events c ON c.id=t.trigger_event_id "
+                    "JOIN canonical_conversations v ON v.id=c.canonical_conversation_id "
+                    "WHERE t.id=e.tool_receipt_id "
+                    f"AND {sql_fact_tool_evidence_predicate()})",
                     id_expression="e.id",
                 ),
             ),

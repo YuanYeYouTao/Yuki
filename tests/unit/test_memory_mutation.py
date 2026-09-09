@@ -68,6 +68,8 @@ from qq_ai_bot.memory.mutation.models import (
     SelfMemoryVisibilityMode,
 )
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
+from qq_ai_bot.memory.quality.audit import MemoryProductionQualityAudit
+from qq_ai_bot.memory.quality.hygiene import MemoryProvenanceHygiene
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.resolution import MemoryResolutionPolicy
 from qq_ai_bot.memory.self_reflection.models import SelfReflectionOutput
@@ -936,6 +938,46 @@ async def test_self_reflection_can_commit_tool_receipt_evidence(database: Databa
     async with database.sessions() as session:
         assert await session.get(MemoryToolReceiptModel, receipt_id) is not None
     assert (await facts.list_evidence(result.new_fact_id))[0].tool_receipt_id == receipt_id
+
+    # Expiration excludes new reflection input, not retained committed evidence.
+    audited = await MemoryProductionQualityAudit(database).run()
+    assert (
+        next(
+            item.count
+            for item in audited.issues
+            if item.issue_code == "evidence_source_event_missing"
+        )
+        == 0
+    )
+    assert (
+        next(
+            item.count
+            for item in audited.issues
+            if item.issue_code == "evidence_tool_source_invalid"
+        )
+        == 0
+    )
+    assert (
+        result.new_fact_id not in (await MemoryProvenanceHygiene(database).scan()).invalid_fact_ids
+    )
+
+    # A receipt ID alone is insufficient: its stored result must support the excerpt.
+    async with database.immediate_session() as session:
+        await session.execute(
+            update(MemoryToolReceiptModel)
+            .where(MemoryToolReceiptModel.id == receipt_id)
+            .values(result_excerpt="unrelated synthetic result")
+        )
+    audited = await MemoryProductionQualityAudit(database).run()
+    assert (
+        next(
+            item.count
+            for item in audited.issues
+            if item.issue_code == "evidence_tool_source_invalid"
+        )
+        == 1
+    )
+    assert result.new_fact_id in (await MemoryProvenanceHygiene(database).scan()).invalid_fact_ids
 
 
 @pytest.mark.asyncio
