@@ -37,6 +37,7 @@ def _configuration() -> GateConfiguration:
         gates=(),
         max_absolute_drop=0.01,
         max_latency_ratio=1.25,
+        min_latency_increase_ms=20.0,
         max_model_request_ratio=1.1,
         file_hash="gates",
     )
@@ -55,14 +56,20 @@ def test_single_sample_suite_total_is_report_only() -> None:
     assert regressions == ()
 
 
-def test_per_operation_latency_regression_remains_blocking() -> None:
+def test_per_operation_latency_requires_material_absolute_and_relative_growth() -> None:
+    scheduler_noise = compare_baseline(
+        {"extraction_latency_p50_ms": _metric(13.0)},
+        _baseline(),
+        _configuration(),
+    )
     regressions = compare_baseline(
         {
             "quality_suite_total_ms": _metric(100.0),
-            "extraction_latency_p50_ms": _metric(13.0),
+            "extraction_latency_p50_ms": _metric(35.0),
         },
         _baseline(),
         _configuration(),
     )
 
-    assert regressions == ("extraction_latency_p50_ms:ratio=1.3000",)
+    assert scheduler_noise == ()
+    assert regressions == ("extraction_latency_p50_ms:ratio=3.5000",)

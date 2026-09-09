@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from sqlalchemy import text
@@ -12,6 +13,13 @@ from tests.conftest import make_settings
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
+from qq_ai_bot.memory.attribution import (
+    MemoryAttributionJob,
+    MemoryAttributionOutput,
+    MemoryAttributionWorker,
+    MemoryExposure,
+    MemoryExposureSource,
+)
 from qq_ai_bot.memory.context import MemoryContextService
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
@@ -25,6 +33,7 @@ from qq_ai_bot.memory.enums import (
 )
 from qq_ai_bot.memory.errors import MemoryRetrievalError
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex, build_safe_lexical_query
+from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.models import (
     MemoryEntityTarget,
     MemoryFact,
@@ -32,15 +41,246 @@ from qq_ai_bot.memory.models import (
     MemoryLexicalCandidate,
     MemoryQuery,
     MemoryQueryIntent,
+    MemoryRetrievalBlock,
+    MemoryRetrievalHit,
+    MemoryRetrievalResult,
 )
 from qq_ai_bot.memory.query import MemoryQueryBuilder
 from qq_ai_bot.memory.ranking import MemoryRanker
+from qq_ai_bot.memory.receipt import MemoryRecallRepository
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.retrieval import MemoryRetriever
+from qq_ai_bot.memory.runtime.query_plane import apply_total_hit_limit
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.targets import MemoryTargetResolver
+from qq_ai_bot.model_runtime.executor import ModelExecutor
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.people_repository import PeopleRepository
+
+
+async def test_attribution_worker_evaluates_no_use_but_not_failed_requests(database: Database):
+    runtime_config = RuntimeConfigService(settings=make_settings(database.url), database=database)
+    runtime = await runtime_config.snapshot(user_id="1001", group_id=None)
+    context = Mock(spec=MemoryContextService)
+    context.mark_attributed_used = AsyncMock(return_value=())
+    context.set_attribution_outcome = AsyncMock()
+    worker = MemoryAttributionWorker(
+        models=Mock(spec=ModelExecutor),
+        memory_context=context,
+        runtime_config=runtime_config,
+        metrics=MemoryLifecycleMetrics(),
+    )
+    worker._structured.run = AsyncMock(return_value=MemoryAttributionOutput())
+    job = MemoryAttributionJob(
+        turn_id="synthetic",
+        user_id="1001",
+        group_id=None,
+        user_question="synthetic",
+        final_response="synthetic",
+        intent=MemoryQueryIntent(),
+        runtime=runtime,
+        enqueued_at=datetime.now(UTC),
+        exposures=(
+            MemoryExposure(
+                memory_ref="M1",
+                fact_id=1,
+                kind="fact",
+                category="test",
+                content="synthetic",
+                target_role="current_person",
+                source=MemoryExposureSource.AUTOMATIC,
+            ),
+        ),
+    )
+    await worker._process(job)
+    context.mark_attributed_used.assert_awaited_once_with(
+        "synthetic",
+        (),
+        evaluated_fact_ids=(1,),
+    )
+    context.mark_attributed_used.reset_mock()
+    worker._structured.run = AsyncMock(side_effect=TimeoutError)
+    await worker._process(job)
+    context.mark_attributed_used.assert_not_awaited()
+    context.set_attribution_outcome.assert_awaited_once_with("synthetic", "failed", "timeout")
+    worker._structured.run = AsyncMock(return_value=MemoryAttributionOutput(used_refs=("M99",)))
+    await worker._process(job)
+    context.mark_attributed_used.assert_not_awaited()
+    context.set_attribution_outcome.assert_awaited_with("synthetic", "failed", "invalid")
+
+
+async def test_recall_receipt_tracks_zero_partial_evaluation_and_interruption(database: Database):
+    import json
+
+    from sqlalchemy.exc import SQLAlchemyError
+    from tests.conftest import build_harness
+
+    from qq_ai_bot.domain.conversations import ConversationScope
+    from qq_ai_bot.memory.receipt import MemoryRecallTurn
+    from qq_ai_bot.memory.runtime.partition_lookup import DatabaseMemoryPartitionLookup
+    from qq_ai_bot.memory.runtime.turn_session import TurnMemorySession
+    from qq_ai_bot.runtime.authority import TurnAuthority
+    from qq_ai_bot.runtime.origin import TurnOrigin
+    from qq_ai_bot.services.agent_tools import ToolRuntime
+
+    facts = MemoryFactService(MemoryFactRepository(database))
+    first = await _remember(facts, user_id="1001", memory_key="first", content="synthetic first")
+    second = await _remember(facts, user_id="1001", memory_key="second", content="synthetic second")
+    receipts = MemoryRecallRepository(database)
+    result = MemoryRetrievalResult(
+        blocks=(),
+        hits=(),
+        candidate_count=0,
+        selected_count=0,
+        query_hash="",
+        mode=MemoryRetrievalMode.RELEVANT,
+    )
+    context = MemoryContextService(
+        query_builder=MemoryQueryBuilder(MemoryTargetResolver(PeopleRepository(database))),
+        retriever=MemoryRetriever(
+            repository=facts.repository, lexical_index=SQLiteMemoryFTSIndex(database)
+        ),
+        facts=facts,
+        receipts=receipts,
+    )
+    runtime = await RuntimeConfigService(
+        settings=make_settings(database.url), database=database
+    ).snapshot(user_id="1001")
+    memory_session = TurnMemorySession.open(
+        inbound=InboundMessage(
+            message_id="synthetic",
+            event_type="message:private:friend",
+            scope_type=ScopeType.PRIVATE,
+            sender=SenderIdentity(user_id="1001", nickname="test"),
+            text="synthetic",
+            bot_user_id="8000",
+        ),
+        identity=ConversationScope.private("8000", "1001"),
+        runtime=runtime,
+        memory_context=context,
+        partition_lookup=DatabaseMemoryPartitionLookup(database),
+        origin=TurnOrigin.USER_MESSAGE,
+        user_question="synthetic",
+        authority=TurnAuthority(
+            actor_user_id="1001",
+            bot_user_id="8000",
+            origin=TurnOrigin.USER_MESSAGE,
+            permission_ceiling=frozenset(),
+            delegated_authority=None,
+            authority_revision=1,
+        ),
+    )
+    # No prefetch or prompt exposure: execution creates only a zero-exposure receipt.
+    await memory_session.record_read_outcome("success")
+    async with database.sessions() as session:
+        turn = MemoryRecallTurn(
+            (
+                await session.execute(text("SELECT turn_id FROM memory_recall_receipts"))
+            ).scalar_one(),
+            (),
+        )
+    async with database.sessions() as session:
+        assert (
+            await session.execute(
+                text(
+                    "SELECT injected_count, attribution_status, attribution_reason "
+                    "FROM memory_recall_receipts"
+                )
+            )
+        ).one() == (0, "skipped", "no_memory")
+    await receipts.record_tool_injected(turn.turn_id, (first.id, second.id))
+    await memory_session.record_read_outcome("duplicate")
+    await receipts.set_attribution_outcome(turn.turn_id, "pending", "queued")
+    await receipts.mark_attributed_used(turn.turn_id, (), evaluated_fact_ids=(first.id,))
+    await receipts.set_attribution_outcome(turn.turn_id, "failed", "interrupted")
+    async with database.sessions() as session:
+        assert (
+            await session.execute(
+                text(
+                    "SELECT attribution_status, attribution_reason, injected_count, used_count "
+                    "FROM memory_recall_receipts"
+                )
+            )
+        ).one() == ("succeeded", "no_used", 2, 0)
+        assert (
+            await session.execute(
+                text(
+                    "SELECT fact_id, attribution_evaluated, used "
+                    "FROM memory_recall_items ORDER BY fact_id"
+                )
+            )
+        ).all() == [(first.id, 1, 0), (second.id, 0, 0)]
+    pending = await receipts.record_initial(
+        conversation_key="synthetic",
+        trigger_message_id="next",
+        origin="user_message",
+        intent=MemoryQueryIntent(),
+        result=result,
+        injected_fact_ids=(),
+        retention_days=30,
+    )
+    await receipts.set_attribution_outcome(pending.turn_id, "pending", "queued")
+    await receipts.recover_pending_attribution()
+    async with database.sessions() as session:
+        assert (
+            await session.execute(
+                text(
+                    "SELECT attribution_status, attribution_reason FROM memory_recall_receipts "
+                    "WHERE turn_id=:turn"
+                ),
+                {"turn": pending.turn_id},
+            )
+        ).one() == ("failed", "interrupted")
+    with pytest.raises(ValueError, match="invalid attribution"):
+        await receipts.set_attribution_outcome(turn.turn_id, "failed", "secret exception payload")
+    report = await receipts.summarize(since=datetime(2020, 1, 1, tzinfo=UTC))
+    assert report["evaluated"] == 1
+    assert report["evaluated_use_rate"] == 0
+    assert report["evaluation_coverage"] == 0.5
+    assert report["tool_reads"] == {
+        "success": 1,
+        "empty": 0,
+        "ambiguous": 0,
+        "permission_denied": 0,
+        "duplicate": 1,
+        "infrastructure_failure": 0,
+    }
+    # Exercise the actual tool boundary, including failed observability. A read
+    # failure must remain an infrastructure error, not turn into invalid arguments.
+    tools = build_harness(database, make_settings(database.url)).processor._chat._tools
+    tools._memory_context = context
+    tool_runtime = ToolRuntime(
+        inbound=memory_session._inbound,
+        gateway=None,
+        allow_generic_onebot=False,
+        runtime_config=runtime,
+        memory_session=memory_session,
+    )
+    with patch.object(tools, "_person_memories", AsyncMock(side_effect=SQLAlchemyError("secret"))):
+        failure = json.loads(await tools.execute("get_person_memories", "{}", tool_runtime))
+    assert failure["error"] == "database_failure"
+    assert failure["retryable"] is True
+    assert context.metrics.count("memory_read_infrastructure_failure") == 1
+    assert (await receipts.summarize(since=datetime(2020, 1, 1, tzinfo=UTC)))["tool_reads"][
+        "infrastructure_failure"
+    ] == 1
+    with (
+        patch.object(tools, "_person_memories", AsyncMock(return_value='{"ok":true,"data":{}}')),
+        patch.object(
+            context, "record_tool_read_outcome", AsyncMock(side_effect=RuntimeError("secret"))
+        ),
+    ):
+        success = json.loads(await tools.execute("get_person_memories", "{}", tool_runtime))
+    assert success["ok"] is True and success["data"] == {}
+    assert success["evidence_state"] == {
+        "source": "memory_tool",
+        "query_status": "empty",
+        "returned_count": 0,
+        "truncated": False,
+        "partial_failure": False,
+        "source_refs": [],
+        "delivery": "staged",
+    }
 
 
 def _target(
@@ -251,7 +491,7 @@ async def test_query_builder_adds_self_target_only_for_enabled_explicit_recall(
 
 
 @pytest.mark.asyncio
-async def test_relevant_chat_adds_one_current_scope_self_episode_without_explicit_recall(
+async def test_self_episode_has_no_automatic_bypass_but_active_query_still_works(
     database: Database,
 ) -> None:
     people = PeopleRepository(database)
@@ -319,15 +559,13 @@ async def test_relevant_chat_adds_one_current_scope_self_episode_without_explici
         self_recall=False,
     )
     auto_self = [hit for hit in automatic.hits if hit.target.role is MemoryTargetRole.CURRENT_SELF]
-    assert len(auto_self) == 1
-    assert auto_self[0].fact.id in {first.id, second.id}
-    assert auto_self[0].fact.id != other_group.id
+    assert auto_self == []  # No calibrated profile, and no exact match.
 
-    explicit = await context.retrieve_for_turn(
-        inbound=inbound,
-        content=inbound.text,
+    explicit = await context.search(
+        text=inbound.text,
+        mode=MemoryRetrievalMode.RELEVANT,
+        targets=await context.resolve_targets(inbound, runtime, self_recall=True),
         runtime=runtime,
-        self_recall=True,
     )
     explicit_self_ids = {
         hit.fact.id for hit in explicit.hits if hit.target.role is MemoryTargetRole.CURRENT_SELF
@@ -643,10 +881,10 @@ async def test_planner_memory_modes_control_semantic_retrieval(database: Databas
     assert hybrid.semantic_enabled is runtime.memory.semantic_enabled
     assert overview.mode is MemoryRetrievalMode.OVERVIEW
     assert overview.semantic_enabled is False
+    await _assert_none_memory_mode_returns_empty_result(database)
 
 
-@pytest.mark.asyncio
-async def test_none_memory_mode_returns_empty_result(database: Database) -> None:
+async def _assert_none_memory_mode_returns_empty_result(database: Database) -> None:
     people = PeopleRepository(database)
     repository = MemoryFactRepository(database)
     context = MemoryContextService(
@@ -682,8 +920,117 @@ async def test_none_memory_mode_returns_empty_result(database: Database) -> None
     assert result.semantic_status == "skipped"
 
 
+async def test_strict_time_filters_before_candidate_limits(database: Database) -> None:
+    from qq_ai_bot.memory.embedding.codec import Float32VectorCodec
+    from qq_ai_bot.memory.embedding.models import EmbeddingProviderProfile, EmbeddingVector
+    from qq_ai_bot.memory.embedding.repository import MemoryEmbeddingRepository
+    from qq_ai_bot.memory.embedding.semantic import MemorySemanticIndex
+    from qq_ai_bot.memory.embedding.text import EmbeddingDocumentBuilder
+    from qq_ai_bot.memory.tool_intent import parse_memory_tool_intent
+    from qq_ai_bot.persistence.models import MemoryEmbeddingModel
+
+    facts, retriever = _retriever(database)
+    old = await _remember(facts, user_id="1001", memory_key="camera", content="camera old")
+    inside = await _remember(
+        facts, user_id="1001", memory_key="camera-inside", content="camera inside"
+    )
+    end = await _remember(facts, user_id="1001", memory_key="camera-end", content="camera end")
+    unknown = await _remember(
+        facts, user_id="1001", memory_key="camera-unknown", content="camera unknown"
+    )
+    async with database.sessions() as session, session.begin():
+        for fact, occurred in (
+            (old, "2026-08-01 00:00:00.000000"),
+            (inside, "2026-09-08 16:00:00.000000"),
+            (end, "2026-09-09 16:00:00.000000"),
+        ):
+            await session.execute(
+                text("UPDATE memory_facts SET valid_from=:time WHERE id=:id"),
+                {"time": occurred, "id": fact.id},
+            )
+        await session.execute(
+            text("UPDATE memory_facts SET importance=5 WHERE id=:id"), {"id": old.id}
+        )
+    intent = parse_memory_tool_intent(
+        {
+            "query": "camera",
+            "start_at": "2026-09-09T00:00:00+08:00",
+            "end_at": "2026-09-10T00:00:00+08:00",
+        }
+    )
+    query = _query("camera", _target("1001"), limit=1).model_copy(
+        update={"intent": intent, "candidate_limit": 1, "always_on_explicit_preference_limit": 0}
+    )
+    result = await retriever.retrieve(query)
+    assert [hit.fact.id for hit in result.hits] == [inside.id]
+    overview = await retriever.retrieve(
+        query.model_copy(update={"mode": MemoryRetrievalMode.OVERVIEW})
+    )
+    assert [hit.fact.id for hit in overview.hits] == [inside.id]
+    short_query = await retriever.retrieve(
+        query.model_copy(update={"text": "c", "normalized_text": "c"})
+    )
+    assert [hit.fact.id for hit in short_query.hits] == [inside.id]
+    vectors = MemoryEmbeddingRepository(database)
+    profile = await vectors.ensure_profile(
+        EmbeddingProviderProfile(
+            provider_id="synthetic",
+            model_id="synthetic",
+            dimensions=2,
+            document_template_version=1,
+            endpoint_identity="synthetic",
+        )
+    )
+    documents = EmbeddingDocumentBuilder(template_version=1, max_characters=1000)
+    vector = EmbeddingVector(values=(1.0, 0.0), dimensions=2)
+    async with database.sessions() as session, session.begin():
+        for fact in (old, inside, end, unknown):
+            session.add(
+                MemoryEmbeddingModel(
+                    fact_id=fact.id,
+                    profile_id=profile.id,
+                    content_hash=documents.content_hash_fields(
+                        kind=fact.kind.value,
+                        category=fact.category,
+                        memory_key=fact.memory_key,
+                        content=fact.content,
+                    ),
+                    vector_blob=Float32VectorCodec().encode(vector),
+                    created_at=datetime.now(UTC),
+                    updated_at=datetime.now(UTC),
+                )
+            )
+    semantic = await MemorySemanticIndex(vectors, documents=documents).search(
+        target=_target("1001"),
+        query_vector=vector,
+        profile=profile.profile,
+        profile_id=profile.id,
+        candidate_limit=1,
+        kinds=(MemoryKind.FACT,),
+        min_similarity=0.0,
+        temporal=intent.temporal,
+    )
+    assert [item.fact_id for item in semantic] == [inside.id]
+    assert not {old.id, end.id, unknown.id} & {hit.fact.id for hit in result.hits}
+    assert parse_memory_tool_intent({}).mode.value == "overview"
+    assert parse_memory_tool_intent({"query": "camera"}).mode.value == "hybrid"
+    for invalid in (
+        {"purpose": "invented"},
+        {"preferred_kinds": ["invented"]},
+        {"entities": "camera"},
+        {"mode": "none"},
+        {"start_at": "2026-09-09"},
+        {"start_at": "invalid"},
+        {"start_at": "2026-09-10T00:00:00Z", "end_at": "2026-09-09T00:00:00Z"},
+    ):
+        with pytest.raises(ValueError):
+            parse_memory_tool_intent(invalid)
+
+
 @pytest.mark.asyncio
-async def test_disabled_retrieval_uses_bounded_current_entities_only(database: Database) -> None:
+async def test_disabled_retrieval_cannot_inject_unrelated_current_background(
+    database: Database,
+) -> None:
     people = PeopleRepository(database)
     await people.observe(user_id="1001", nickname="当前", group_id="2001")
     await people.observe(user_id="1002", nickname="被提及", group_id="2001")
@@ -722,7 +1069,8 @@ async def test_disabled_retrieval_uses_bounded_current_entities_only(database: D
         runtime=runtime,
     )
 
-    assert current.id in {hit.fact.id for hit in result.hits}
+    assert result.hits == ()
+    assert current.id in {hit.fact.id for hit in result.trace_hits}
     assert all(
         block.target.role
         not in {
@@ -731,7 +1079,7 @@ async def test_disabled_retrieval_uses_bounded_current_entities_only(database: D
         }
         for block in result.blocks
     )
-    assert {hit.fact.subject_user_id for hit in result.hits if hit.fact.subject_user_id} == {"1001"}
+    assert all(hit.selection_reason.startswith("rejected_") for hit in result.trace_hits)
 
 
 @pytest.mark.asyncio
@@ -814,6 +1162,97 @@ def test_ranker_uses_exact_fields_then_stable_fact_id() -> None:
         limit=10,
     )
     assert [hit.fact.id for hit in stable] == [8, 6, 7, 9]
+
+
+@pytest.mark.asyncio
+async def test_global_topics_precede_background_and_preserve_total_order(
+    database: Database,
+) -> None:
+    memories, _ = _retriever(database)
+    current, other = _target("1001"), _target("1002", role=MemoryTargetRole.REFERENCED_PERSON)
+    specs = ((current, 0.68), (other, 0.86), (other, 0.84), (other, 0.82), (other, 0.80))
+    hits = []
+    for index, (target, score) in enumerate(specs):
+        fact = await _remember(
+            memories,
+            content=f"独立测试事实 {index}",
+            memory_key=f"test:{index}",
+            user_id=target.subject_user_id,
+        )
+        hits.append(
+            MemoryRetrievalHit(
+                fact=fact,
+                target=target,
+                rank=1,
+                lexical_score=1,
+                semantic_score=score,
+                selection_reason="hybrid_match",
+            )
+        )
+    query = _query("主题", current, other)
+    ranked = MemoryRanker.rank_global(tuple(hits), query)
+    assert [hit.fact.id for hit in ranked] == [hit.fact.id for hit in hits[1:]] + [hits[0].fact.id]
+    assert [hit.semantic_rank for hit in ranked] == [1, 2, 3, 4, 5]
+    profile = "a" * 64
+    result = MemoryRetrievalResult(
+        hits=ranked,
+        blocks=tuple(
+            MemoryRetrievalBlock(
+                target=target, hits=tuple(hit for hit in ranked if hit.target == target)
+            )
+            for target in (current, other)
+        ),
+        trace_hits=ranked,
+        candidate_count=5,
+        selected_count=5,
+        query_hash="synthetic",
+        mode=query.mode,
+        embedding_profile=profile,
+        semantic_status="ready",
+    )
+    runtime = await RuntimeConfigService(
+        settings=make_settings(database.url), database=database
+    ).snapshot()
+    runtime = replace(
+        runtime,
+        memory=replace(
+            runtime.memory,
+            automatic_calibrated_profile=profile,
+            automatic_topic_threshold=0.75,
+            automatic_background_threshold=0.60,
+        ),
+    )
+    topics = MemoryContextService._limit_automatic_result(result, None, runtime)
+    assert [hit.fact.id for hit in topics.hits] == [hit.fact.id for hit in ranked[:4]]
+    assert all(hit.target == other and hit.selection_reason == "topic" for hit in topics.hits)
+    runtime = replace(runtime, memory=replace(runtime.memory, automatic_topic_threshold=0.81))
+    mixed = MemoryContextService._limit_automatic_result(result, None, runtime)
+    assert [hit.selection_reason for hit in mixed.hits] == ["topic", "topic", "topic", "background"]
+    assert mixed.hits[-1].fact.id == hits[0].fact.id
+    capped = apply_total_hit_limit(mixed, 2)
+    assert capped.hits == mixed.hits[:2]
+    no_topics = result.model_copy(update={"hits": (hits[0],)})
+    assert MemoryContextService._limit_automatic_result(no_topics, None, runtime).hits == ()
+    uncalibrated = result.model_copy(update={"embedding_profile": "unknown"})
+    assert MemoryContextService._limit_automatic_result(uncalibrated, None, runtime).hits == ()
+    from qq_ai_bot.memory.match_projection import match_projection
+
+    assert match_projection(hits[0], result, runtime) == {
+        "lexical_match": True,
+        "semantic_candidate": True,
+        "topic_admission": "not_passed",
+    }
+    assert match_projection(hits[1], result, runtime)["topic_admission"] == "passed"
+    assert match_projection(hits[1], uncalibrated, runtime)["topic_admission"] == "unknown"
+    overview = result.model_copy(update={"mode": MemoryRetrievalMode.OVERVIEW})
+    assert match_projection(hits[1], overview, runtime) == {
+        "lexical_match": False,
+        "semantic_candidate": False,
+        "topic_admission": "unknown",
+    }
+    overview_hits = MemoryRanker.rank_overview((hits[1].fact,), target=other, limit=4)
+    assert overview_hits[0].lexical_score is None
+    assert overview_hits[0].semantic_score is None
 
 
 @pytest.mark.asyncio

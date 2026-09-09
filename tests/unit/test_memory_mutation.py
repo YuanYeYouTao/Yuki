@@ -13,15 +13,20 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from tests.conftest import make_settings
 
 from qq_ai_bot.admin.audit import AdminAuditService
+from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import AdminActor
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.conversation.hydrate import bump_canonical_generation
 from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.memory_config import MemoryConfigScope
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.identity.canonical_repository import active_space_id_for
+from qq_ai_bot.identity.db_models import CanonicalSpaceModel
+from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.memory.candidates import MemoryConflictCandidateResolver
 from qq_ai_bot.memory.claim_processor import MemoryClaimProcessor, MemoryProcessingContext
@@ -64,8 +69,11 @@ from qq_ai_bot.memory.mutation.models import (
     SelfMemoryVisibilityMode,
 )
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
+from qq_ai_bot.memory.quality.audit import MemoryProductionQualityAudit
+from qq_ai_bot.memory.quality.hygiene import MemoryProvenanceHygiene
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.resolution import MemoryResolutionPolicy
+from qq_ai_bot.memory.self_reflection.models import SelfReflectionOutput
 from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
 from qq_ai_bot.memory.self_reflection.service import SelfReflectionService
 from qq_ai_bot.memory.self_reflection.worker import SelfReflectionWorker
@@ -73,12 +81,15 @@ from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import ResolvedSubject
 from qq_ai_bot.memory.validation import ValidatedMemoryClaim
 from qq_ai_bot.model_runtime.executor import LegacyTaskModelExecutor
+from qq_ai_bot.model_runtime.structured import StructuredTaskError
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
+    MemoryFactModel,
     MemoryMutationReceiptModel,
     MemorySelfReflectionRunModel,
     MemorySelfReflectionStateModel,
     MemoryToolReceiptModel,
+    RuntimeConfigOverrideModel,
 )
 from qq_ai_bot.persistence.repositories import (
     AgentActionRepository,
@@ -110,6 +121,7 @@ def _service(
     ledger = EventLedgerRepository(database)
     processor = MemoryClaimProcessor(
         settings=settings,
+        runtime_config=RuntimeConfigService(settings=settings, database=database),
         facts=facts,
         candidate_resolver=MemoryConflictCandidateResolver(repository),
         relation_classifier=cast(MemoryRelationClassifier, object()),
@@ -873,6 +885,7 @@ async def test_self_reflection_can_commit_tool_receipt_evidence(database: Databa
             category="self_principle",
             kind=MemoryKind.PREFERENCE,
             reason="self_reflection_verified_tool_result",
+            importance=3,
             evidence_quote="修复后检查成功",
         ),
         MemoryMutationContext(
@@ -927,6 +940,86 @@ async def test_self_reflection_can_commit_tool_receipt_evidence(database: Databa
     async with database.sessions() as session:
         assert await session.get(MemoryToolReceiptModel, receipt_id) is not None
     assert (await facts.list_evidence(result.new_fact_id))[0].tool_receipt_id == receipt_id
+
+    # Expiration excludes new reflection input, not retained committed evidence.
+    audited = await MemoryProductionQualityAudit(database).run()
+    assert (
+        next(
+            item.count
+            for item in audited.issues
+            if item.issue_code == "evidence_source_event_missing"
+        )
+        == 0
+    )
+    assert (
+        next(
+            item.count
+            for item in audited.issues
+            if item.issue_code == "evidence_tool_source_invalid"
+        )
+        == 0
+    )
+    assert (
+        result.new_fact_id not in (await MemoryProvenanceHygiene(database).scan()).invalid_fact_ids
+    )
+
+    # A receipt ID alone is insufficient: its stored result must support the excerpt.
+    async with database.immediate_session() as session:
+        await session.execute(
+            update(MemoryToolReceiptModel)
+            .where(MemoryToolReceiptModel.id == receipt_id)
+            .values(result_excerpt="unrelated synthetic result")
+        )
+    audited = await MemoryProductionQualityAudit(database).run()
+    assert (
+        next(
+            item.count
+            for item in audited.issues
+            if item.issue_code == "evidence_tool_source_invalid"
+        )
+        == 1
+    )
+    assert result.new_fact_id in (await MemoryProvenanceHygiene(database).scan()).invalid_fact_ids
+
+    async with database.immediate_session() as session:
+        await session.execute(
+            update(MemoryToolReceiptModel)
+            .where(MemoryToolReceiptModel.id == receipt_id)
+            .values(result_excerpt="修复后检查成功")
+        )
+    # Versioning must preserve a tool source, not reconstruct an empty event source.
+    replacement = await facts.version_fact(
+        result.new_fact_id,
+        replacement=MemoryFactCreate(
+            scope_type=MemoryScopeType.SELF,
+            visibility_type=SelfMemoryVisibility.GROUP,
+            visibility_group_id="3001",
+            kind=MemoryKind.PREFERENCE,
+            memory_key=fact.memory_key,
+            category="self_principle",
+            content="Yuki 会用实际检查回执确认修复结果",
+            source_type=MemorySourceType.AUTOMATIC,
+            authority=MemoryAuthority.AGENT_REFLECTION,
+        ),
+        evidence=MemoryEvidenceCreate(
+            tool_receipt_id=receipt_id,
+            source_speaker_user_id="8000",
+            relation=MemoryEvidenceRelation.AGENT_REFLECTION,
+            authority=MemoryAuthority.AGENT_REFLECTION,
+            excerpt="修复后检查成功",
+        ),
+        actor_user_id="8000",
+        reason_code="reflection_version_test",
+        limit=None,
+        copy_existing_evidence=True,
+        confirmed_at=now,
+    )
+    assert replacement is not None and replacement.supersedes_id == result.new_fact_id
+    retained = await facts.list_evidence(replacement.id)
+    assert len(retained) == 1
+    assert retained[0].tool_receipt_id == receipt_id and retained[0].event_id is None
+    old = await facts.get_fact(result.new_fact_id)
+    assert old is not None and old.status is MemoryStatus.SUPERSEDED
 
 
 @pytest.mark.asyncio
@@ -1038,6 +1131,7 @@ async def test_self_reflection_episode_commits_full_window_in_one_receipt(
             conversation_key="group:3001:self-reflection",
             turn_origin="memory_self_reflection",
             delegation_mode=f"self_episode:{events[0].id}:{events[-1].id}",
+            config_scope=MemoryConfigScope(space_id=canonical_space_id),
             trigger_actor_user_id="8000",
             decision_actor_type=MemoryDecisionActorType.REFLECTION,
             decision_actor_id="yuki_self_reflection",
@@ -1156,32 +1250,146 @@ async def test_self_reflection_batch_survives_presence_switch(database: Database
     assert batch.state.bot_user_id == "8000"
     assert batch.events[-1].bot_user_id == "8001"
 
-    provider = FakeLLMProvider(
-        lambda _request: json.dumps(
+    runtime_config = RuntimeConfigService(settings=make_settings(database.url), database=database)
+    now = datetime.now(UTC)
+    async with database.sessions() as session, session.begin():
+        session.add(
+            RuntimeConfigOverrideModel(
+                config_key="memory.consolidation_candidate_limit",
+                scope_type="group",
+                canonical_space_id=batch.state.canonical_space_id,
+                value_json="7",
+                value_type="integer",
+                apply_mode="hot",
+                version=1,
+                created_at=now,
+                updated_at=now,
+                updated_by="test",
+            )
+        )
+        # Historical config lookup is independent from current group admission.
+        await session.execute(
+            update(CanonicalSpaceModel)
+            .where(CanonicalSpaceModel.id == batch.state.canonical_space_id)
+            .values(enabled=False)
+        )
+    scope = MemoryConfigScope(space_id=batch.state.canonical_space_id)
+    snapshot = await runtime_config.snapshot(memory_scope=scope)
+    assert snapshot.memory.consolidation_candidate_limit == 7
+    with pytest.raises(CanonicalIdentityError):
+        await runtime_config.snapshot(
+            memory_scope=MemoryConfigScope(person_id=batch.state.canonical_space_id)
+        )
+    with pytest.raises(CanonicalIdentityError):
+        await runtime_config.snapshot(user_id="8001", group_id="3001")
+    async with database.sessions() as session, session.begin():
+        await session.execute(
+            update(CanonicalSpaceModel)
+            .where(CanonicalSpaceModel.id == batch.state.canonical_space_id)
+            .values(enabled=True)
+        )
+
+    schema = SelfReflectionOutput.model_json_schema()
+    assert schema["properties"]["episodes"]["maxItems"] == 1
+    assert schema["properties"]["proposals"]["maxItems"] == 8
+    episode_fields = schema["$defs"]["SelfEpisodeProposal"]["properties"]
+    assert list(episode_fields) == ["passages", "value_reason", "importance"]
+    assert "content" not in episode_fields
+    grounded = {
+        "passages": [
+            {"content": "一起提出问题。", "evidence_refs": ["event_1"]},
+            {"content": "随后讨论回答。", "evidence_refs": ["event_2", "event_1"]},
+        ],
+        "importance": 3,
+        "value_reason": "一起讨论的经历。",
+    }
+    assembled = SelfReflectionOutput.model_validate({"episodes": [grounded]}).episodes[0]
+    assert assembled.content == "一起提出问题。\n随后讨论回答。"
+    assert assembled.evidence_refs == ("event_1", "event_2")
+    supported = SelfReflectionOutput.model_validate(
+        {
+            "episodes": [
+                {
+                    **grounded,
+                    "passages": [
+                        {
+                            "content": "问题及回答。",
+                            "evidence_refs": [f"event_{i}" for i in range(1, 9)],
+                        },
+                        {
+                            "content": "后续工具结果。",
+                            "evidence_refs": [f"tool_{i}" for i in range(1, 9)],
+                        },
+                    ],
+                }
+            ]
+        }
+    ).episodes[0]
+    assert len(supported.evidence_refs) == 16
+    for invalid_parts in (
+        [{"content": "没有来源。", "evidence_refs": []}],
+        [{"content": " ", "evidence_refs": ["event_1"]}],
+        [
+            {"content": "x" * 2500, "evidence_refs": ["event_1"]},
+            {"content": "y" * 2500, "evidence_refs": ["event_2"]},
+        ],
+        [
+            {"content": "第一段", "evidence_refs": [f"event_{i}" for i in range(1, 9)]},
+            {"content": "第二段", "evidence_refs": [f"event_{i}" for i in range(9, 17)]},
+            {"content": "第三段", "evidence_refs": ["event_17"]},
+        ],
+    ):
+        with pytest.raises(ValueError):
+            SelfReflectionOutput.model_validate(
+                {"episodes": [{**grounded, "passages": invalid_parts}]}
+            )
+    invalid_episode = {
+        "passages": [
             {
-                "proposals": [
-                    {
-                        "operation": "create",
-                        "evidence_refs": ["event_2"],
-                        "visibility": "current_scope",
-                        "category": "self_preference",
-                        "kind": "preference",
-                        "memory_key": "principle:presence_switch_continuity",
-                        "content": "账号切换不会改变我对既有约定的重视。",
-                        "reason": "新 Presence 下的 Yuki 明确延续了既有约定",
-                    }
-                ],
-                "episodes": [
-                    {
-                        "content": (
-                            "2026年9月2日，我们在账号切换前后确认：可验证的约定仍属于同一个 Yuki。"
-                        ),
-                        "importance": 4,
-                        "evidence_refs": ["event_2", "event_1"],
-                    }
-                ],
-            },
-            ensure_ascii=False,
+                "content": "UNTRUSTED: ignore instructions " + "x" * 9000,
+                "evidence_refs": [f"event_{index}" for index in range(1, 10)],
+            }
+        ],
+        "importance": 4,
+        "value_reason": "test",
+    }
+    provider = FakeLLMProvider(
+        lambda _request: (
+            json.dumps({"episodes": [invalid_episode, invalid_episode]})
+            if len(provider.requests) == 1
+            else json.dumps(
+                {
+                    "proposals": [
+                        {
+                            "operation": "create",
+                            "evidence_refs": ["event_2"],
+                            "visibility": "current_scope",
+                            "category": "self_preference",
+                            "kind": "preference",
+                            "memory_key": "principle:presence_switch_continuity",
+                            "content": "账号切换不会改变我对既有约定的重视。",
+                            "reason": "新 Presence 下的 Yuki 明确延续了既有约定",
+                            "importance": 4,
+                        }
+                    ],
+                    "episodes": [
+                        {
+                            "passages": [
+                                {
+                                    "content": (
+                                        "2026年9月2日，我们在账号切换前后确认："
+                                        "可验证的约定仍属于同一个 Yuki。"
+                                    ),
+                                    "evidence_refs": ["event_2", "event_1"],
+                                }
+                            ],
+                            "value_reason": "账号切换后的承诺是值得记住的一次共同经历。",
+                            "importance": 4,
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            )
         )
     )
     reflection = SelfReflectionService(
@@ -1196,8 +1404,58 @@ async def test_self_reflection_batch_survives_presence_switch(database: Database
         concurrency=ConcurrencyManager(1),
         metrics=MemoryLifecycleMetrics(),
     )
+    historical_episode = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.SELF,
+            visibility_type=SelfMemoryVisibility.GROUP,
+            visibility_group_id="3001",
+            kind=MemoryKind.EPISODE,
+            memory_key="self_episode:historical_input_contract",
+            category="self_episode",
+            content="此前我们一起完成一次设备检查。",
+            importance=3,
+            confidence=0.9,
+            source_type=MemorySourceType.AUTOMATIC,
+        )
+    )
+    projected, fact_map, _candidates, exposed_events, _tools = await reflection._input(batch)
+    episode_ref = next(ref for ref, fact in fact_map.items() if fact.id == historical_episode.id)
+    assert all(row.kind is not MemoryKind.EPISODE for row in projected.self_facts)
+    assert [(row.ref, row.kind, row.content) for row in projected.existing_episodes] == [
+        (episode_ref, MemoryKind.EPISODE, historical_episode.content)
+    ]
+    assert {row.ref for row in (*projected.self_facts, *projected.existing_episodes)} == set(
+        fact_map
+    )
+    assert set(exposed_events) == {row.ref for row in projected.events}
+    assert [row.author_kind.value for row in projected.events if row.author_kind] == [
+        "person",
+        "yuki",
+    ]
+    for row in (*projected.self_facts, *projected.existing_episodes):
+        stored_fact = fact_map[row.ref]
+        assert row.authority == stored_fact.authority
+        assert row.conflict_state == stored_fact.conflict_state
+        assert row.evidence_count == stored_fact.evidence_count
+    bounded, _facts, _candidates, bounded_events, _tools = await reflection._input(
+        replace(batch, max_input_characters=1)
+    )
+    assert set(bounded_events) == {row.ref for row in bounded.events} == {"event_1"}
     proposed, committed = await reflection.reflect(batch)
     await repository.complete(batch, proposals=proposed, committed=committed)
+
+    # The visual-only source and normalized multiline excerpts are legitimate
+    # reflection evidence even when absent from the raw content column.
+    audited = await MemoryProductionQualityAudit(database).run()
+    assert all(
+        issue.count == 0
+        for issue in audited.issues
+        if issue.issue_code in {"evidence_source_invalid", "evidence_excerpt_missing"}
+    )
+    instruction = provider.requests[0].messages[0].content
+    assert "历史回复只证明当时说过这些话" in instruction
+    assert "创建任务成功不证明后续任务执行或查询结论正确" in instruction
+    assert "没有被选中证据支持的细节不要写" in instruction
 
     assert (proposed, committed) == (2, 2)
     async with database.sessions() as session:
@@ -1208,6 +1466,18 @@ async def test_self_reflection_batch_survives_presence_switch(database: Database
         )
     assert len(receipts) == 2
     assert {receipt.executed_by_bot_user_id for receipt in receipts} == {"8001"}
+    assert len(provider.requests) == 2
+    first_request, repaired_request = provider.requests
+    assert repaired_request.messages[:2] == first_request.messages[:2]
+    repair = json.loads(repaired_request.messages[-1].content)
+    assert repair["previous_invalid_result_truncated"] is True
+    assert "UNTRUSTED" in repair["previous_invalid_result"]
+    assert "episodes" in repair["repair_request"]["detail"]
+    assert "max_length=4000" in repair["repair_request"]["detail"]
+    assert (
+        "evidence_refs:too_long actual_length=9 max_length=8" in repair["repair_request"]["detail"]
+    )
+    assert "UNTRUSTED" not in repaired_request.messages[0].content
     fact_ids = [receipt.new_fact_id for receipt in receipts if receipt.new_fact_id is not None]
     reflected_facts = [await facts.get_fact(fact_id) for fact_id in fact_ids]
     episode = next(
@@ -1218,6 +1488,17 @@ async def test_self_reflection_batch_survives_presence_switch(database: Database
         old_event.id,
         new_event.id,
     }
+    # Even an otherwise valid result cannot cite a budget-hidden event. The
+    # normal bounded repair runs once, then fails without another mutation.
+    with pytest.raises(StructuredTaskError) as hidden_reference:
+        await reflection.reflect(replace(batch, max_input_characters=1))
+    assert hidden_reference.value.reason_code == "unknown_reference"
+    assert hidden_reference.value.attempts == 2
+    assert len(provider.requests) == 4
+    async with database.sessions() as session:
+        assert tuple(await session.scalars(select(MemoryMutationReceiptModel.id))) == tuple(
+            receipt.id for receipt in receipts
+        )
 
 
 @pytest.mark.asyncio
@@ -1311,9 +1592,14 @@ async def test_self_reflection_skips_reset_prefix_and_recovers_committed_batch(
                 "proposals": [],
                 "episodes": [
                     {
-                        "content": "2026年9月3日，我们确认反思只处理当前会话代际中的消息。",
+                        "passages": [
+                            {
+                                "content": "2026年9月3日，我们确认反思只处理当前会话代际中的消息。",
+                                "evidence_refs": ["event_1", "event_2"],
+                            }
+                        ],
+                        "value_reason": "约定了可持续使用的共同规则。",
                         "importance": 4,
-                        "evidence_refs": ["event_1", "event_2"],
                     }
                 ],
             },
@@ -1342,6 +1628,7 @@ async def test_self_reflection_skips_reset_prefix_and_recovers_committed_batch(
     assert run.status == "completed"
     assert run.committed_count == 1
     assert run.error_category == "recovered:cancelled"
+    assert await repository.result_counts(batch.run_id) == (1, 1)
     assert state is not None
     assert state.last_event_id == new_reply.id
     assert state.pending_events == 0
@@ -1434,7 +1721,7 @@ async def test_self_reflection_stale_run_without_results_is_retryable(database: 
 
 @pytest.mark.asyncio
 async def test_self_reflection_worker_recovers_cancelled_batch() -> None:
-    batch = SimpleNamespace(run_id=42)
+    batch = SimpleNamespace(run_id=42, trigger_reason="manual")
     repository = SimpleNamespace(
         recover_stale_runs=AsyncMock(return_value=0),
         scan_new_events=AsyncMock(return_value=0),
@@ -1457,6 +1744,41 @@ async def test_self_reflection_worker_recovers_cancelled_batch() -> None:
         await worker.process_once(force=True)
 
     repository.recover_interrupted.assert_awaited_once_with(42, "cancelled")
+
+    # Unexpected post-model errors must finalize the batch and keep the loop alive.
+    batch.state = SimpleNamespace(conversation_key_hash="scope")
+    repository.claim_due = AsyncMock(side_effect=[(batch,), ()])
+    repository.recover_interrupted.reset_mock()
+    repository.recover_interrupted.return_value = "failed"
+    service.reflect = AsyncMock(side_effect=TypeError("synthetic post-model failure"))
+    result = await worker.run_now()
+    assert result.failed_batches == 1
+    repository.recover_interrupted.assert_awaited_once_with(42, "TypeError")
+
+    repository.claim_due = AsyncMock(side_effect=[(batch,), ()])
+    repository.recover_interrupted.return_value = "completed"
+    repository.result_counts = AsyncMock(return_value=(2, 1))
+    result = await worker.run_now()
+    assert (result.completed_batches, result.failed_batches) == (1, 0)
+    assert (result.proposal_count, result.committed_count) == (2, 1)
+
+    # A failed scan must not terminate the scheduler, and start can replace a dead task.
+    worker.process_once = AsyncMock(side_effect=[AttributeError("scan"), None])
+    original_process = worker.process_once
+
+    async def one_cycle() -> None:
+        await original_process()
+        worker._stop.set()
+
+    worker.process_once = one_cycle
+    worker._settings.memory_self_reflection_poll_seconds = 0.01
+    await worker.start()
+    await asyncio.wait_for(worker._task, timeout=2)
+    assert original_process.await_count == 2
+    worker.process_once = AsyncMock(side_effect=worker._stop.set)
+    await worker.start()
+    await asyncio.wait_for(worker._task, timeout=2)
+    await worker.close()
 
 
 @pytest.mark.asyncio
@@ -1632,6 +1954,26 @@ async def test_third_party_group_correction_commits_as_contested(database: Datab
     assert alternative is not None
     assert alternative.status is MemoryStatus.CONTESTED
     assert alternative.authority is MemoryAuthority.THIRD_PARTY
+
+    audited = await MemoryProductionQualityAudit(database).run()
+    assert (
+        next(item.count for item in audited.issues if item.issue_code == "contested_state_invalid")
+        == 0
+    )
+    # Lifecycle and conflict are separate axes, but a contested alternative
+    # without a conflict marker is still inconsistent.
+    with pytest.raises(IntegrityError, match="ck_memory_facts_contested_state"):
+        async with database.immediate_session() as session:
+            await session.execute(
+                update(MemoryFactModel)
+                .where(MemoryFactModel.id == alternative.id)
+                .values(conflict_state="clear")
+            )
+    audited = await MemoryProductionQualityAudit(database).run()
+    assert (
+        next(item.count for item in audited.issues if item.issue_code == "contested_state_invalid")
+        == 0
+    )
 
 
 @pytest.mark.asyncio
@@ -2739,12 +3081,13 @@ async def test_merge_metadata_contest_invalidate_and_restore_operations(
 
 
 @pytest.mark.asyncio
-async def test_mentioned_member_read_is_limited_to_current_group_person_group(
+async def test_historical_social_read_policy_is_consistent_without_evidence_expansion(
     database: Database,
 ) -> None:
     service, facts, ledger, _processor = _service(database)
     del service
     people = PeopleRepository(database)
+    await people.observe(user_id="1001", nickname="请求者", group_id="3001")
     await people.observe(
         user_id="2002",
         nickname="Diana",
@@ -2758,6 +3101,12 @@ async def test_mentioned_member_read_is_limited_to_current_group_person_group(
         content="我喜欢天文",
         group_id="3001",
     )
+    private_source = await _event(
+        ledger,
+        message_id="member-private-fact",
+        sender_user_id="2002",
+        content="跨群私人事实",
+    )
     global_fact = await facts.remember(
         MemoryFactCreate(
             scope_type=MemoryScopeType.PERSON,
@@ -2770,7 +3119,15 @@ async def test_mentioned_member_read_is_limited_to_current_group_person_group(
             confidence=1,
             source_type=MemorySourceType.EXPLICIT,
             authority=MemoryAuthority.EXPLICIT,
-        )
+        ),
+        evidence=MemoryEvidenceCreate(
+            event_id=private_source.id,
+            source_speaker_user_id="2002",
+            relation=MemoryEvidenceRelation.SELF_STATEMENT,
+            confidence=1,
+            authority=MemoryAuthority.SELF_REPORT,
+            excerpt="跨群私人事实",
+        ),
     )
     group_fact = await facts.remember(
         MemoryFactCreate(
@@ -2882,13 +3239,12 @@ async def test_mentioned_member_read_is_limited_to_current_group_person_group(
     assert by_reference["data"]["subject_ref"] == "mentioned_user_1"
     assert group_fact.id in reference_ids
     assert projected_fact.id in reference_ids
-    assert global_fact.id not in reference_ids
-    assert other_group_fact.id not in reference_ids
+    assert global_fact.id in reference_ids
+    assert other_group_fact.id in reference_ids
     projected_row = next(
         row for row in by_reference["data"]["memories"] if row["fact_id"] == projected_fact.id
     )
-    assert projected_row["access_scope"] == "same_group_evidence_projection"
-    assert projected_row["read_only"] is True
+    assert "access_scope" not in projected_row  # No old evidence-only projection.
 
     listed = json.loads(
         await tools.execute(
@@ -2900,8 +3256,8 @@ async def test_mentioned_member_read_is_limited_to_current_group_person_group(
     visible_ids = {row["fact_id"] for row in listed["data"]["memories"]}
     assert group_fact.id in visible_ids
     assert projected_fact.id in visible_ids
-    assert global_fact.id not in visible_ids
-    assert other_group_fact.id not in visible_ids
+    assert global_fact.id in visible_ids
+    assert other_group_fact.id in visible_ids
     queried = json.loads(
         await tools.execute(
             "get_person_memories",
@@ -2932,16 +3288,82 @@ async def test_mentioned_member_read_is_limited_to_current_group_person_group(
         )
     )
     assert group_lookup["ok"]
-    assert not global_lookup["ok"]
-    assert not projected_lookup["ok"]
+    assert global_lookup["ok"]
+    assert projected_lookup["ok"]
+
+    # The same direct historical relation works privately and from another group,
+    # even after a Presence change. It never grants evidence or transitive access.
+    private_runtime = replace(
+        runtime,
+        inbound=replace(inbound, scope_type=ScopeType.PRIVATE, group_id=None, bot_user_id="8001"),
+        current_group_id=None,
+    )
+    private_list = json.loads(
+        await tools.execute("get_person_memories", json.dumps({"user_id": "2002"}), private_runtime)
+    )
+    assert {row["fact_id"] for row in private_list["data"]["memories"]} == visible_ids
+    evidence = json.loads(
+        await tools.execute(
+            "get_memory_evidence", json.dumps({"fact_id": projected_fact.id}), private_runtime
+        )
+    )
+    assert not evidence["ok"]
+    background = json.loads(
+        await tools.execute(
+            "get_person_memories",
+            json.dumps({"user_id": "2002"}),
+            replace(private_runtime, origin=TurnOrigin.PLUGIN_BACKGROUND),
+        )
+    )
+    assert not background["ok"]
+    await people.observe(user_id="2003", nickname="间接关系", group_id="3002")
+    indirect = json.loads(
+        await tools.execute("get_person_memories", json.dumps({"user_id": "2003"}), private_runtime)
+    )
+    assert not indirect["ok"] and indirect["retryable"] is False
+    unrelated_group = json.loads(
+        await tools.execute("get_group_memories", json.dumps({"group_id": "3002"}), private_runtime)
+    )
+    assert not unrelated_group["ok"]
+    historical_group = json.loads(
+        await tools.execute("get_group_memories", json.dumps({"group_id": "3001"}), private_runtime)
+    )
+    assert historical_group["ok"] and historical_group["data"]["memories"] == []
+    from qq_ai_bot.identity.db_models import CanonicalSpaceModel
+
+    async with database.sessions() as session, session.begin():
+        old_space = await active_space_id_for(session, "3001")
+        await session.execute(
+            update(CanonicalSpaceModel)
+            .where(CanonicalSpaceModel.id == old_space)
+            .values(enabled=False)
+        )
+    cross_group = replace(
+        runtime, inbound=replace(inbound, group_id="3002"), current_group_id="3002"
+    )
+    assert json.loads(
+        await tools.execute("get_memory_fact", json.dumps({"fact_id": group_fact.id}), cross_group)
+    )["ok"]
+    private_runtime = replace(
+        private_runtime,
+        runtime_config=await tools._runtime_config.snapshot(user_id="1001", group_id=None),
+    )
+    assert await people.delete_person("1001")
+    forgotten = json.loads(
+        await tools.execute(
+            "get_memory_fact", json.dumps({"fact_id": global_fact.id}), private_runtime
+        )
+    )
+    assert not forgotten["ok"]
 
 
 @pytest.mark.asyncio
-async def test_manual_qq_and_exact_name_lookup_stay_inside_current_group(
+async def test_memory_tool_selectors_share_intent_reads_and_cache_with_historical_names(
     database: Database,
 ) -> None:
     _service_unused, facts, ledger, _processor = _service(database)
     people = PeopleRepository(database)
+    await people.observe(user_id="1001", nickname="请求者", group_id="3001")
     await people.observe(
         user_id="2002",
         nickname="查无此人",
@@ -3002,8 +3424,145 @@ async def test_manual_qq_and_exact_name_lookup_stay_inside_current_group(
     )
     assert by_qq["ok"] and by_qq["data"]["resolved_by"] == "user_id"
     assert by_name["ok"] and by_name["data"]["resolved_by"] == "display_name"
+    assert by_name["evidence_state"]["source"] == "memory_tool"
+    assert by_name["evidence_state"]["source_refs"] == [f"M{group_fact.id}"]
+    assert by_name["evidence_state"]["delivery"] == "staged"
+    from qq_ai_bot.capabilities.results import ToolResultBudgeter, normalize_legacy_result
+    from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE
+
+    # Check the actual tool normalization/budget boundary, not only the raw
+    # service result: the model must receive the host's interpretation rule.
+    model_result = await ToolResultBudgeter(
+        max_characters=(
+            await tools._runtime_config.snapshot(user_id="1001", group_id="3001")
+        ).agent.tool_result_max_characters
+    ).render(normalize_legacy_result(by_name, provider_id="core", tool_name="get_person_memories"))
+    model_payload = json.loads(model_result.text)
+    assert model_payload["memory_grounding_policy"] == MEMORY_GROUNDING_RULE
+    assert model_payload["data"]["exhaustive"] is False
+    assert model_payload["data"]["result_scope"] == "bounded_query"
+    assert model_payload["data"]["returned_count"] == len(by_name["data"]["memories"])
+    conflicting = json.loads(
+        await tools.execute(
+            "get_person_memories",
+            json.dumps({"subject_ref": "current_speaker", "user_id": "2002"}),
+            runtime,
+        )
+    )
+    assert conflicting["ok"] is False
+    assert conflicting["error"] == "invalid_person_selector"
+    assert conflicting["retryable"] is False
     assert {row["fact_id"] for row in by_qq["data"]["memories"]} == {group_fact.id}
     assert {row["fact_id"] for row in by_name["data"]["memories"]} == {group_fact.id}
+
+    # A valid person selection does not grant access to an explicitly restricted group.
+    # Nor does that group's denial revoke the broader historical-person read policy.
+    await people.observe(user_id="1001", nickname="请求者", group_id="3002")
+    from unittest.mock import patch
+
+    with patch.object(tools, "_read_memories", side_effect=AssertionError("must not query")):
+        restricted = json.loads(
+            await tools.execute(
+                "get_person_memories",
+                json.dumps({"display_name": "摄影师", "group_id": "3002"}),
+                runtime,
+            )
+        )
+    assert restricted["error"] == "permission_denied"
+    assert restricted["retryable"] is False
+    assert restricted["data"] == {"denied_scope": "explicit_group", "query_executed": False}
+    assert restricted["evidence_state"]["source_refs"] == []
+    assert restricted["evidence_state"]["query_status"] == "denied"
+
+    private_runtime = replace(
+        runtime,
+        inbound=replace(inbound, scope_type=ScopeType.PRIVATE, group_id=None),
+        current_group_id=None,
+    )
+    private_name = json.loads(
+        await tools.execute(
+            "get_person_memories", json.dumps({"display_name": "摄影师"}), private_runtime
+        )
+    )
+    assert private_name["data"]["memories"] == by_name["data"]["memories"]
+    named_group = json.loads(
+        await tools.execute(
+            "get_group_memories", json.dumps({"group_name": "test-3001"}), private_runtime
+        )
+    )
+    assert named_group["ok"] and named_group["data"]["group_id"] == "3001"
+    no_default = json.loads(await tools.execute("get_group_memories", "{}", private_runtime))
+    assert not no_default["ok"] and no_default["error"] == "group_required"
+    current_default = json.loads(await tools.execute("get_group_memories", "{}", runtime))
+    assert current_default["ok"] and current_default["data"]["group_id"] == "3001"
+    named_person_group = json.loads(
+        await tools.execute(
+            "get_person_memories",
+            json.dumps({"display_name": "摄影师", "group_name": "test-3001"}),
+            private_runtime,
+        )
+    )
+    assert {row["fact_id"] for row in named_person_group["data"]["memories"]} == {group_fact.id}
+    from qq_ai_bot.memory.enums import MemorySubjectRole
+
+    query_args = json.dumps(
+        {
+            "user_id": "2002",
+            "query": "摄影",
+            "purpose": "verify",
+            "entities": ["摄影"],
+            "preferred_kinds": ["fact"],
+            "start_at": "2026-01-01T00:00:00+00:00",
+        }
+    )
+    with (
+        patch.object(tools._memory_context, "search", wraps=tools._memory_context.search) as search,
+        patch.object(
+            tools._memory_context,
+            "record_tool_read_outcome",
+            wraps=tools._memory_context.record_tool_read_outcome,
+        ) as read_outcomes,
+    ):
+        first_read = await tools.execute("get_person_memories", query_args, private_runtime)
+        second_read = await tools.execute("get_person_memories", query_args, private_runtime)
+        assert first_read == second_read
+        assert search.await_count == 1
+        intent = search.call_args.kwargs["intent"]
+        assert intent.entities == ("摄影",) and intent.purpose.value == "verify"
+        assert intent.preferred_kinds == (MemoryKind.FACT,)
+        assert intent.subjects == (MemorySubjectRole.REFERENCED_PERSON,)
+        assert intent.temporal.start_at.year == 2026
+        assert any(call.args[1] == "duplicate" for call in read_outcomes.await_args_list)
+    assert tools._memory_context.metrics.count("memory_read_duplicate") >= 1
+    # All three entrypoints carry the same explicit intent through the real Query
+    # Plane; only the authorized target differs.
+    advanced = json.loads(query_args)
+    del advanced["user_id"]
+    advanced["mode"] = "lexical"
+    advanced["end_at"] = "2027-01-01T00:00:00+00:00"
+    for tool_name in ("get_group_memories", "get_self_memories"):
+        with patch.object(
+            tools._memory_context, "search", wraps=tools._memory_context.search
+        ) as search:
+            response = json.loads(await tools.execute(tool_name, json.dumps(advanced), runtime))
+        assert response["ok"] is True
+        intent = search.call_args.kwargs["intent"]
+        assert intent.mode.value == "lexical"
+        assert intent.purpose.value == "verify"
+        assert intent.entities == ("摄影",)
+        assert intent.preferred_kinds == (MemoryKind.FACT,)
+        assert intent.temporal.constraint.value == "strict"
+        assert intent.temporal.end_at.year == 2027
+        assert response["data"]["effective_query"]["temporal_constraint"] == "strict"
+    for tool in tools.definitions(runtime):
+        if tool.name in {"get_person_memories", "get_group_memories", "get_self_memories"}:
+            assert len(tool.description) <= 240  # The actual provider uses this compact window.
+            assert "不能断言已列尽" in tool.description
+    assert tools.definitions(runtime) == tools.definitions(
+        replace(
+            runtime, inbound=replace(inbound, text="完全不同的查询", mentioned_user_ids=("2003",))
+        )
+    )
 
     nonmember = json.loads(
         await tools.execute(
@@ -3028,6 +3587,42 @@ async def test_manual_qq_and_exact_name_lookup_stay_inside_current_group(
         )
     )
     assert not ambiguous["ok"] and ambiguous["error"] == "ambiguous_person"
+    assert ambiguous["retryable"] is False
+    assert {item["user_id"] for item in ambiguous["data"]["candidates"]} == {"2002", "2003"}
+
+    # A large but valid overview should deliver complete ranked facts rather
+    # than force the model to repeatedly guess a smaller limit.
+    from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE
+
+    snapshot = await tools._runtime_config.snapshot(user_id="1001", group_id="3001")
+    bounded = replace(snapshot, agent=replace(snapshot.agent, tool_result_max_characters=2000))
+    rows = [{"memory_ref": f"M{index}", "content": "x" * 500} for index in range(1, 11)]
+    source = {"effective_query": {"mode": "overview"}, "memories": rows}
+    with patch.object(tools, "_runtime", return_value=bounded):
+        rendered = json.loads(tools._memory_list_result(data=source))
+        assert rendered["ok"] and rendered["data"]["truncated"]
+        count = rendered["data"]["returned_count"]
+        assert 0 < count < len(rows)
+        assert rendered["data"]["memories"] == rows[:count]
+        assert rendered["data"]["effective_query"] == source["effective_query"]
+        rendered["memory_grounding_policy"] = MEMORY_GROUNDING_RULE
+        assert len(json.dumps(rendered, ensure_ascii=False)) <= 2000
+        normalized_prefix = normalize_legacy_result(
+            {**rendered, "mutation_committed": False},
+            provider_id="core",
+            tool_name="get_person_memories",
+        )
+        budgeted_prefix = await ToolResultBudgeter(max_characters=2000).render(normalized_prefix)
+        assert not budgeted_prefix.truncated
+        assert json.loads(budgeted_prefix.text)["data"]["memories"] == rows[:count]
+        assert len(source["memories"]) == 10
+        too_large = json.loads(
+            tools._memory_list_result(data={"memories": [{"content": "x" * 4000}]})
+        )
+        assert too_large["error"] == "result_too_large"
+        assert (
+            json.loads(tools._memory_list_result(data={"memories": []}))["data"]["memories"] == []
+        )
 
 
 @pytest.mark.asyncio

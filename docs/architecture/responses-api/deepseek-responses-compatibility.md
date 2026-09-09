@@ -10,7 +10,8 @@
 - 本地函数结果使用 `function_call_output`，并复用原 `call_id`。
 - `reasoning.effort` 使用 Responses 通用枚举
   `none|minimal|low|medium|high|xhigh|max`；DeepSeek 将兼容档映射到自身实际档位。
-  关闭思考时不发送 `reasoning`，避免已知的 `effort=none` 可见输出异常。
+  原始协议适配器在关闭时不发送 `reasoning`；当前业务执行层已统一至少 low，
+  不再产生关闭请求，见 [最低思考合同](../model-reasoning-policy.md)。
 - 原生联网工具定义为 `{"type":"web_search"}`，服务端可能连续产生 `search` 和
   `open_page` action。
 - `web_search_call` 是服务端已执行事件，不能转换为本地 Function Call。

@@ -726,7 +726,7 @@ def _assert_orm_shape(path: Path) -> None:
 
 def _assert_final_health(path: Path, *, populated: bool) -> None:
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0050",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0051",)
         tables = _tables(connection)
         assert not (_RETIRED_TABLES & tables)
         assert {
@@ -736,6 +736,15 @@ def _assert_final_health(path: Path, *, populated: bool) -> None:
             "canonical_conversations",
             "canonical_event_receipts",
         } <= tables
+        receipt_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info('memory_recall_receipts')")
+        }
+        assert {
+            "consumer",
+            "attribution_status",
+            "tool_read_success_count",
+            "tool_read_infrastructure_failure_count",
+        } <= receipt_columns
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert connection.execute("PRAGMA quick_check").fetchone() == ("ok",)
         triggers = {
@@ -810,12 +819,31 @@ def test_fresh_baseline_reaches_current_head_with_final_integrity(
     config = Config("alembic.ini")
     scripts = ScriptDirectory.from_config(config)
     assert scripts.get_bases() == ["0048"]
-    assert scripts.get_heads() == ["0050"]
+    assert scripts.get_heads() == ["0051"]
 
     path = tmp_path / "fresh.db"
     _upgrade(path, monkeypatch)
     _assert_final_health(path, populated=False)
     _assert_orm_shape(path)
+
+    old = tmp_path / "0050.db"
+    _upgrade(old, monkeypatch, "0050")
+    with sqlite3.connect(old) as connection:
+        connection.execute(
+            "INSERT INTO memory_recall_receipts "
+            "(turn_id,origin,mode,purpose,candidate_count,selected_count,injected_count,"
+            "used_count,reinforced_count,created_at,updated_at,expires_at) VALUES "
+            "('old','user_message','hybrid','background',0,0,0,0,0,"
+            "'2026-01-01','2026-01-01','2026-02-01')"
+        )
+    _upgrade(old, monkeypatch)
+    _assert_orm_shape(old)
+    with sqlite3.connect(old) as connection:
+        assert connection.execute(
+            "SELECT turn_id, attribution_status, attribution_completed_at "
+            "FROM memory_recall_receipts"
+        ).fetchone() == ("old", "unknown", None)
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
 @pytest.mark.parametrize(
@@ -831,6 +859,37 @@ def test_populated_historical_0048_preserves_data_and_matches_fresh_schema(
     path = tmp_path / "historical.db"
     fresh = tmp_path / "fresh.db"
     restore_historical(path)
+    # Parent-table rebuilds must retain CASCADE children and SET NULL edges,
+    # not merely preserve fact bodies and pass foreign_key_check.
+    with sqlite3.connect(path) as connection:
+        columns = [row[1] for row in connection.execute("PRAGMA table_info(memory_facts)")]
+        projection = ", ".join(
+            "2" if column == "id" else "'k2'" if column == "memory_key" else f'"{column}"'
+            for column in columns
+        )
+        connection.execute(f"INSERT INTO memory_facts SELECT {projection} FROM memory_facts")
+        connection.execute("UPDATE memory_facts SET supersedes_id=1 WHERE id=2")
+        connection.execute(
+            "INSERT INTO memory_fact_state_events "
+            "(fact_id, action, reason_code, source_event_id, created_at) "
+            "VALUES (1, 'superseded', 'migration_regression', 1, '2026-08-26')"
+        )
+        connection.execute(
+            "INSERT INTO memory_fact_relations "
+            "(source_fact_id,target_fact_id,relation_type,confidence,source_event_id,created_at) "
+            "VALUES (2,1,'refines',1.0,1,'2026-08-26')"
+        )
+        connection.execute(
+            "INSERT INTO memory_evidence "
+            "(fact_id,event_id,source_speaker_user_id,relation,confidence,"
+            "authority,excerpt,created_at) "
+            "VALUES (2,1,'1001','self_statement',1.0,'self_report',"
+            "'historical group message','2026-08-26')"
+        )
+        retained_children = {
+            table: connection.execute(f'SELECT * FROM "{table}" ORDER BY id').fetchall()
+            for table in ("memory_fact_state_events", "memory_fact_relations", "memory_evidence")
+        }
     _upgrade(path, monkeypatch)
     _upgrade(fresh, monkeypatch)
 
@@ -846,7 +905,13 @@ def test_populated_historical_0048_preserves_data_and_matches_fresh_schema(
             "SELECT memory_key, content, canonical_subject_person_id FROM memory_facts ORDER BY id"
         ).fetchall() == [
             ("k", "c", "e8b15d59-3988-473e-a13c-d277ca77b5c1"),
+            ("k2", "c", "e8b15d59-3988-473e-a13c-d277ca77b5c1"),
         ]
+        assert connection.execute(
+            "SELECT supersedes_id FROM memory_facts WHERE id=2"
+        ).fetchone() == (1,)
+        for table, expected in retained_children.items():
+            assert connection.execute(f'SELECT * FROM "{table}" ORDER BY id').fetchall() == expected
         assert connection.execute(
             "SELECT enabled FROM persons WHERE id='e8b15d59-3988-473e-a13c-d277ca77b5c1'"
         ).fetchone() == (0,)

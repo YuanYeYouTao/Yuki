@@ -1,3 +1,7 @@
+> **历史设计/非现行合同。** 本文保留当时的方案或实测口径，不用于当前授权、调度或使用率判断。
+> 当前实现以 [Memory 架构](../memory-v2.md)、[检索合同](../memory-v2-retrieval.md)
+> 和 [P1 治理任务书](../Yuki-Memory-P1治理任务书.md) 为准；本文不在当前实施导航内。
+
 # Codex 任务：Yuki Memory V2 第三阶段——Qwen Embedding 与混合 RAG
 
 你是一名资深 Python、SQLAlchemy、SQLite、异步任务、向量检索、RAG、远程 Embedding API 和 LLM Agent 上下文架构工程师。

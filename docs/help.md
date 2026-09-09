@@ -1,6 +1,6 @@
 # Yuki 3.8 使用与运维帮助
 
-Yuki 3.8 只支持 canonical runtime，当前源码 Alembic head 为 `0050`，Plugin API 为 `2.0`。永久 Yuki、
+Yuki 3.8 只支持 canonical runtime，当前源码 Alembic head 为 `0051`，Plugin API 为 `2.0`。永久 Yuki、
 Person、Binding、Space、Presence 和 canonical Conversation 的关系见
 [当前架构](architecture/canonical-runtime.md)。
 
@@ -81,7 +81,9 @@ doctor 是只读检查，不发送消息、不调用私有 action，也不输出
 
 - 不在聊天、日志、Issue 或 Git 中粘贴 API key。
 - Responses 请求默认不发送 `temperature`。
-- 模型不支持某个请求字段时，在 profile 中关闭该能力，不伪装成功。
+- 所有生成模型至少 low 思考，保留更高档位；后台任务不再关闭思考。
+  Profile 必须声明 reasoning 能力，不能靠禁用它绕过最低合同；不支持时显式失败。
+  视觉使用原生思考预算，详见 [最低思考合同](architecture/model-reasoning-policy.md)。
 - Web、Embedding、Vision 和 Speech 都是可选能力；不可用时应有界降级，不影响纯文本主路径。
 - secret 只能写入或查询“是否已配置”，不能通过控制面读回。
 
@@ -123,6 +125,17 @@ Memory owner：
 - PERSON：永久 Person。
 - GROUP：永久 Space。
 - PERSON_GROUP：某 Person 与某 Space 的共同经历。
+
+结构化读取按后端记录的历史共同群关系授权：本人 Person 始终可读；他人 Person 需要直接历史
+共同群；Group 需要请求者的历史 membership；PersonGroup 需要双方都曾属于该群。退群、群停用、
+Provider 离线或 Presence 切换不会自动撤销这项历史关系。共同群授权允许读取 Person 中来自私聊的
+结构化事实，但不开放原始私聊、他人 evidence/private SELF，也不扩大 mutation 权限。群聊可直接
+查询其他历史共同群，私聊查询群记忆时必须指定群名或兼容 ID；同名歧义会要求澄清，无结果则正常
+返回空结果。
+
+普通自动提取按同一 canonical owner 聚合；达到 12 条、8,000 字符或最老事件等待一小时中的任一
+条件才领取。显式记住、纠正与删除仍立即执行；没有足够价值的新事实时 noop 是健康结果。只自动
+保留稳定事实、持续偏好及有意义的一次性共同经历。
 
 `memory_change.visibility` 只对 SELF 生效。PERSON、PERSON_GROUP 和 GROUP 目标若带合法的
 `current_scope` 或 `global` hint，会忽略该 hint 后继续授权与 mutation；非法 visibility 仍会
@@ -190,8 +203,8 @@ Web、Memory read 和 history read 仍可使用。
 
 ## 数据与升级
 
-全新 3.8 数据库执行 `0048 -> 0049 -> 0050`。历史 bridge 只接受已经完成 canonical v2 的旧
-`0048`；已有 canonical `0049` 直接升级到 `0050`。
+全新 3.8 数据库执行 `0048 -> 0049 -> 0050 -> 0051`。历史 bridge 只接受已经完成 canonical v2
+的旧 `0048`；已有 canonical `0050` 直接升级到 `0051`。
 更早数据库和 v1/backfill/cutover 中间态不支持。
 
 升级前停止所有写入，并按同一时点备份：
@@ -202,7 +215,8 @@ Web、Memory read 和 history read 仍可使用。
 - 配置、Compose 文件、镜像 digest 和 Provider 登录目录
 - `plugins/github-monitor/` 与 `data/plugin_artifacts/`
 
-`0049` 不提供 downgrade；`0050` 是追加式因果迁移。生产失败时仍应恢复完整快照，不能手工
+`0049` 不提供 downgrade；`0050` 是追加式因果迁移，`0051` 是追加式 Memory 观测迁移。生产失败
+时仍应恢复完整快照，不能手工
 stamp revision、git revert 数据
 或只恢复主 DB。3.8.0 升级时还必须在停写状态运行会话 uncovered recount/check、
 受控替换 GitHub Monitor 并通过离线 queue doctor，详见

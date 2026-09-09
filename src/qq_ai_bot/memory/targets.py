@@ -13,6 +13,7 @@ from qq_ai_bot.memory.enums import (
 )
 from qq_ai_bot.memory.errors import MemoryRetrievalError
 from qq_ai_bot.memory.models import MemoryEntityTarget
+from qq_ai_bot.memory.read_scope import MemoryReadScopeResolver
 from qq_ai_bot.persistence.repositories import PeopleRepository
 
 
@@ -21,6 +22,7 @@ class MemoryTargetResolver:
 
     def __init__(self, people: PeopleRepository) -> None:
         self._people = people
+        self._read_scopes = MemoryReadScopeResolver(people.database)
 
     async def resolve(
         self,
@@ -48,13 +50,10 @@ class MemoryTargetResolver:
                         block_id="current_self",
                     )
                 )
-            targets.append(
-                MemoryEntityTarget(
-                    role=MemoryTargetRole.CURRENT_PERSON,
-                    scope_type=MemoryScopeType.PERSON,
-                    subject_user_id=user_id,
-                    block_id="current_person",
-                )
+            targets.extend(
+                (
+                    await self._read_scopes.person(user_id, user_id, include_person_groups=False)
+                ).targets
             )
         except ValidationError as exc:
             raise MemoryRetrievalError("memory_target_invalid") from exc
@@ -63,22 +62,15 @@ class MemoryTargetResolver:
 
         group_id = inbound.group_id
         try:
+            local = await self._read_scopes.person(user_id, user_id, group_id=group_id)
             targets.extend(
-                (
-                    MemoryEntityTarget(
-                        role=MemoryTargetRole.CURRENT_PERSON_GROUP,
-                        scope_type=MemoryScopeType.PERSON_GROUP,
-                        subject_user_id=user_id,
-                        group_id=group_id,
-                        block_id="current_person_in_group",
-                    ),
-                    MemoryEntityTarget(
-                        role=MemoryTargetRole.CURRENT_GROUP,
-                        scope_type=MemoryScopeType.GROUP,
-                        group_id=group_id,
-                        block_id="current_group",
-                    ),
-                )
+                target.model_copy(update={"block_id": "current_person_in_group"})
+                for target in local.targets
+                if target.scope_type is MemoryScopeType.PERSON_GROUP
+            )
+            targets.extend(
+                target.model_copy(update={"block_id": "current_group"})
+                for target in (await self._read_scopes.group(user_id, group_id)).targets
             )
         except ValidationError as exc:
             raise MemoryRetrievalError("memory_target_invalid") from exc
@@ -93,24 +85,20 @@ class MemoryTargetResolver:
                 bot_user_id=inbound.bot_user_id,
             )
         )
-        members = (
-            await self._people.members_in_group(tuple(candidates), group_id)
-            if candidates
-            else frozenset()
-        )
         referenced_count = 0
         for candidate in candidates:
-            if candidate not in members:
-                continue
             try:
-                targets.append(
-                    MemoryEntityTarget(
-                        role=MemoryTargetRole.REFERENCED_PERSON_GROUP,
-                        scope_type=MemoryScopeType.PERSON_GROUP,
-                        subject_user_id=candidate,
-                        group_id=group_id,
-                        block_id=f"referenced_person_group:{candidate}:{group_id}",
-                    )
+                person = await self._read_scopes.person(
+                    user_id, candidate, include_person_groups=False
+                )
+                if not person.targets:
+                    continue
+                targets.extend(person.targets)
+                local = await self._read_scopes.person(user_id, candidate, group_id=group_id)
+                targets.extend(
+                    target
+                    for target in local.targets
+                    if target.scope_type is MemoryScopeType.PERSON_GROUP
                 )
             except ValidationError as exc:
                 raise MemoryRetrievalError("memory_target_invalid") from exc

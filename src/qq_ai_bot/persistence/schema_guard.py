@@ -8,9 +8,24 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-CANONICAL_SCHEMA_REVISION = "0050"
+CANONICAL_SCHEMA_REVISION = "0051"
 
 _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
+    "memory_recall_receipts": frozenset(
+        {
+            "consumer",
+            "attribution_status",
+            "attribution_reason",
+            "attribution_completed_at",
+            "tool_read_success_count",
+            "tool_read_empty_count",
+            "tool_read_ambiguous_count",
+            "tool_read_permission_denied_count",
+            "tool_read_duplicate_count",
+            "tool_read_infrastructure_failure_count",
+        }
+    ),
+    "memory_recall_items": frozenset({"attribution_evaluated"}),
     "persons": frozenset({"id", "enabled", "revision"}),
     "identity_bindings": frozenset(
         {
@@ -90,7 +105,8 @@ async def require_canonical_schema(database_url: str) -> None:
             tables = {str(row[0]) for row in table_rows}
             if "alembic_version" not in tables:
                 raise CanonicalSchemaError(
-                    "database is not initialized; upgrade it to canonical revision 0050"
+                    "database is not initialized; upgrade it to canonical revision "
+                    f"{CANONICAL_SCHEMA_REVISION}"
                 )
             revision_rows = await connection.execute(
                 text("SELECT version_num FROM alembic_version")
@@ -98,7 +114,8 @@ async def require_canonical_schema(database_url: str) -> None:
             revisions = tuple(str(row[0]) for row in revision_rows)
             if revisions != (CANONICAL_SCHEMA_REVISION,):
                 raise CanonicalSchemaError(
-                    "database migration head is unsupported; expected canonical revision 0050"
+                    "database migration head is unsupported; expected canonical revision "
+                    f"{CANONICAL_SCHEMA_REVISION}"
                 )
 
             forbidden = sorted(tables & _FORBIDDEN_TABLES)

@@ -10,7 +10,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.memory.enums import MemoryKind
+from qq_ai_bot.domain.identity import AuthorKind
+from qq_ai_bot.memory.enums import MemoryAuthority, MemoryConflictState, MemoryKind
 from qq_ai_bot.persistence.repository_records import EventRecord
 
 
@@ -42,6 +43,7 @@ class SelfReflectionEvent(_Contract):
     ref: str = Field(pattern=r"^event_[1-9]\d*$")
     occurred_at: datetime
     direction: str = Field(pattern=r"^(?:inbound|outbound)$")
+    author_kind: AuthorKind | None = None
     rendered: str = Field(min_length=1, max_length=9000)
 
 
@@ -49,6 +51,7 @@ class SelfReflectionContextEvent(_Contract):
     ref: str = Field(pattern=r"^context_[1-9]\d*$")
     occurred_at: datetime
     direction: str = Field(pattern=r"^(?:inbound|outbound)$")
+    author_kind: AuthorKind | None = None
     rendered: str = Field(min_length=1, max_length=3000)
 
 
@@ -61,10 +64,14 @@ class SelfReflectionToolReceipt(_Contract):
 
 class SelfReflectionFact(_Contract):
     ref: str = Field(pattern=r"^(?:fact|candidate)_[1-9]\d*$")
+    kind: MemoryKind | None = None
     category: str = Field(max_length=64)
     memory_key: str = Field(max_length=128)
     content: str = Field(max_length=4000)
     status: str = Field(max_length=32)
+    authority: MemoryAuthority | None = None
+    conflict_state: MemoryConflictState | None = None
+    evidence_count: int | None = Field(default=None, ge=0)
 
 
 class SelfReflectionPreviousEpisode(_Contract):
@@ -82,6 +89,7 @@ class SelfReflectionInput(_Contract):
     tool_receipts: tuple[SelfReflectionToolReceipt, ...] = ()
     previous_episode: SelfReflectionPreviousEpisode | None = None
     self_facts: tuple[SelfReflectionFact, ...] = ()
+    existing_episodes: tuple[SelfReflectionFact, ...] = ()
     self_candidates: tuple[SelfReflectionFact, ...] = ()
 
     @model_validator(mode="after")
@@ -111,9 +119,23 @@ class SelfReflectionProposal(_Contract):
         ]
         | None
     ) = None
-    kind: Literal[MemoryKind.FACT, MemoryKind.PREFERENCE] | None = None
+    kind: Literal[MemoryKind.FACT, MemoryKind.PREFERENCE] | None = Field(
+        default=None,
+        description=(
+            "create 仅保存持续成立的自我事实或偏好；某次做了什么是经历，"
+            "必须放 episodes，不能填 fact 逃避一条 Episode 上限。"
+        ),
+    )
     memory_key: str | None = Field(default=None, max_length=128)
-    content: str | None = Field(default=None, max_length=4000)
+    content: str | None = Field(
+        default=None,
+        max_length=4000,
+        description=(
+            "create 的正文是有证据支持的持续自我认识，不是某天的事件摘要。"
+            "只想叙述某次聊天、辅导或任务执行时，不创建本条，改用 episodes。"
+            "不得由一次互动推断持久偏好；已有事实的纠错和撤回不受此首次写入要求限制。"
+        ),
+    )
     reason: str = Field(min_length=1, max_length=500)
     confidence: float = Field(default=0.85, ge=0, le=1)
     importance: int = Field(default=3, ge=1, le=5)
@@ -136,6 +158,8 @@ class SelfReflectionProposal(_Contract):
         if not self.evidence_refs:
             raise ValueError("self-reflection mutations require trusted evidence aliases")
         if self.operation is SelfReflectionOperation.CREATE:
+            if "importance" not in self.model_fields_set:
+                raise ValueError("create requires an explicit importance assessment")
             if self.fact_ref or self.merge_fact_ref:
                 raise ValueError("create cannot reference an existing fact")
             if not all((self.category, self.kind, self.memory_key, self.content)):
@@ -147,13 +171,32 @@ class SelfReflectionProposal(_Contract):
         return self
 
 
-class SelfEpisodeProposal(_Contract):
-    content: str = Field(min_length=1, max_length=4000)
-    importance: int = Field(default=3, ge=1, le=5)
-    evidence_refs: tuple[str, ...] = Field(min_length=1, max_length=8)
+class SelfEpisodePassage(_Contract):
+    """One contiguous narrative passage with explicit source bindings."""
+
+    evidence_refs: tuple[str, ...] = Field(
+        min_length=1,
+        max_length=8,
+        description=(
+            "先选择能支持一个核心经历的 event_N/tool_N，再撰写 content。"
+            "只选问题不能证明回答内容；聊天中声称查过不能证明工具确实执行。"
+            "未选中的窗口消息不是该条正文的证据。"
+        ),
+    )
+    content: str = Field(
+        min_length=1,
+        max_length=4000,
+        description=(
+            "只写一个核心经历及其直接进展，不是整窗摘要或当天日记。"
+            "话题无因果关联时选最有价值的一件，舍弃其余；"
+            "同一天、同一群或都是自己参与不足以合并。正文须由本条 evidence_refs 支持。"
+        ),
+    )
 
     @model_validator(mode="after")
-    def _trusted_evidence_aliases(self) -> SelfEpisodeProposal:
+    def _trusted_evidence_aliases(self) -> SelfEpisodePassage:
+        if not self.content.strip():
+            raise ValueError("episode passage content must not be blank")
         if len(set(self.evidence_refs)) != len(self.evidence_refs):
             raise ValueError("episode evidence aliases must be unique")
         if any(
@@ -163,17 +206,39 @@ class SelfEpisodeProposal(_Contract):
         return self
 
 
-class SelfReflectionOutput(_Contract):
-    proposals: tuple[SelfReflectionProposal, ...] = ()
-    episodes: tuple[SelfEpisodeProposal, ...] = ()
+class SelfEpisodeProposal(_Contract):
+    passages: tuple[SelfEpisodePassage, ...] = Field(
+        min_length=1,
+        max_length=8,
+        description=(
+            "同一个核心经历的连续叙述片段；每段先绑定直接支持它的来源，再写正文。"
+            "提问与回答使用各自来源；旧回复中的外部说法须表述为当时的说法。"
+            "不是多个独立经历，不需要凑满片段。后端按顺序连接正文，不另写总述。"
+        ),
+    )
+    value_reason: str = Field(min_length=1, max_length=240)
+    importance: int = Field(ge=1, le=5)
+
+    @property
+    def content(self) -> str:
+        return "\n".join(passage.content for passage in self.passages)
+
+    @property
+    def evidence_refs(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(ref for part in self.passages for ref in part.evidence_refs))
 
     @model_validator(mode="after")
-    def _bounded(self) -> SelfReflectionOutput:
-        if len(self.proposals) > 8:
-            raise ValueError("one self-reflection batch may emit at most eight proposals")
-        if len(self.episodes) > 1:
-            raise ValueError("one self-reflection batch may emit at most one episode")
+    def _bounded_episode(self) -> SelfEpisodeProposal:
+        if len(self.content) > 4000:
+            raise ValueError("joined episode content must not exceed 4000 characters")
+        if len(self.evidence_refs) > 16:
+            raise ValueError("episode must use at most 16 unique evidence aliases across passages")
         return self
+
+
+class SelfReflectionOutput(_Contract):
+    proposals: tuple[SelfReflectionProposal, ...] = Field(default=(), max_length=8)
+    episodes: tuple[SelfEpisodeProposal, ...] = Field(default=(), max_length=1)
 
 
 @dataclass(frozen=True, slots=True)

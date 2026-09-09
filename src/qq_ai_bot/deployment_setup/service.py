@@ -220,9 +220,9 @@ def build_model_profiles(*, main_protocol: str, flash_enabled: bool) -> str:
     if main_protocol not in {"chat_completions", "responses"}:
         raise SetupValidationError("主模型协议无效")
     provider = "deepseek" if main_protocol == "responses" else "openai_compatible"
-    main_capabilities = ["tools", "structured_output", "long_context"]
+    main_capabilities = ["tools", "structured_output", "long_context", "reasoning"]
     if main_protocol == "responses":
-        main_capabilities.extend(("reasoning", "native_web_search"))
+        main_capabilities.append("native_web_search")
     lines = [
         "schema_version = 3",
         "",
@@ -237,15 +237,12 @@ def build_model_profiles(*, main_protocol: str, flash_enabled: bool) -> str:
         "max_retries = 2",
         "default_temperature = 0.7",
         "default_max_output_tokens = 8192",
-        f'thinking_mode = "{"configurable" if main_protocol == "responses" else "disabled"}"',
+        'thinking_mode = "enabled"',
+        'reasoning_effort = "low"',
+        'reasoning_effort_env = "LLM_REASONING_EFFORT"',
         'structured_output_mode = "function_tool"',
         f"capabilities = {json.dumps(main_capabilities)}",
     ]
-    if main_protocol == "responses":
-        lines.insert(
-            lines.index('structured_output_mode = "function_tool"'),
-            'reasoning_effort_env = "LLM_REASONING_EFFORT"',
-        )
     if flash_enabled:
         lines.extend(
             (
@@ -259,10 +256,11 @@ def build_model_profiles(*, main_protocol: str, flash_enabled: bool) -> str:
                 "timeout_seconds = 30.0",
                 "max_retries = 1",
                 "default_temperature = 0.1",
-                "default_max_output_tokens = 2048",
-                'thinking_mode = "disabled"',
+                "default_max_output_tokens = 4096",
+                'thinking_mode = "enabled"',
+                'reasoning_effort = "low"',
                 'structured_output_mode = "function_tool"',
-                'capabilities = ["structured_output"]',
+                'capabilities = ["structured_output", "reasoning"]',
             )
         )
     lines.extend(("", "[routes]"))

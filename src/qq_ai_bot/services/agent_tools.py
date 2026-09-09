@@ -8,7 +8,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any, Literal, Protocol, cast
 
@@ -19,6 +19,7 @@ from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.admin.permission_catalog import CapabilityReport, PermissionCatalogService
 from qq_ai_bot.automation.models import TurnOrigin
+from qq_ai_bot.capabilities.results import normalize_legacy_result
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.delivery import ReplyControlState, ReplySequenceSpec
 from qq_ai_bot.conversation.reply import ReplyEffect
@@ -33,19 +34,15 @@ from qq_ai_bot.emoji.models import (
 from qq_ai_bot.memory.attribution import MemoryExposure, MemoryExposureRegistry
 from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE, MemoryContextService
 from qq_ai_bot.memory.enums import (
-    MemoryContextMode,
-    MemoryKind,
-    MemoryRecallPurpose,
     MemoryRetrievalMode,
     MemoryScopeType,
     MemoryTargetRole,
-    MemoryTemporalConstraint,
-    MemoryTemporalIntentMode,
     SelfMemoryVisibility,
 )
 from qq_ai_bot.memory.errors import MemoryRetrievalError
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
-from qq_ai_bot.memory.models import MemoryEntityTarget, MemoryQueryIntent, MemoryTemporalIntent
+from qq_ai_bot.memory.match_projection import match_projection
+from qq_ai_bot.memory.models import MemoryEntityTarget, MemoryQueryIntent
 from qq_ai_bot.memory.mutation.models import (
     SELF_MEMORY_CATEGORIES,
     MemoryDecisionActorType,
@@ -55,6 +52,7 @@ from qq_ai_bot.memory.mutation.models import (
 )
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.query import MemoryQueryBuilder
+from qq_ai_bot.memory.read_scope import MemoryReadScopeResolver
 from qq_ai_bot.memory.retrieval import MemoryRetriever
 from qq_ai_bot.memory.runtime.query_plane import (
     MemoryQueryPlane,
@@ -65,6 +63,7 @@ from qq_ai_bot.memory.runtime.query_plane import (
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import ResolvedSubject
 from qq_ai_bot.memory.targets import MemoryTargetResolver
+from qq_ai_bot.memory.tool_intent import effective_query_summary, parse_memory_tool_intent
 from qq_ai_bot.persistence.people_repository import PeopleRepository
 from qq_ai_bot.persistence.repositories import (
     AgentActionRepository,
@@ -72,6 +71,7 @@ from qq_ai_bot.persistence.repositories import (
     RelationshipRepository,
     WebSearchSourceRepository,
 )
+from qq_ai_bot.services.evidence_state import evidence_state
 from qq_ai_bot.services.reply_target import ReplyTargetControl
 from qq_ai_bot.services.turn_coordinator import TurnToken
 from qq_ai_bot.speech.models import VoiceMode, VoicePreferenceMode
@@ -108,12 +108,40 @@ _MEMORY_INTENT_PROPERTIES = {
         "maxItems": 3,
         "items": {"type": "string", "enum": ["fact", "preference", "episode"]},
     },
-    "start_at": {"type": "string", "description": "ISO-8601 绝对时间范围起点"},
-    "end_at": {"type": "string", "description": "ISO-8601 绝对时间范围终点"},
+    "start_at": {
+        "type": "string",
+        "description": (
+            "带时区 ISO-8601 起点（包含）。当地某一天从当地00:00开始；"
+            "例如+08:00的9月7日填2026-09-07T00:00:00+08:00，"
+            "不要先减8小时又保留+08:00。今天/昨天按当前时间上下文换算。"
+        ),
+    },
+    "end_at": {"type": "string", "description": "带时区 ISO-8601 终点（不包含），例如次日零点"},
+    "temporal_constraint": {
+        "type": "string",
+        "enum": ["strict", "soft"],
+        "description": (
+            "有时间边界默认 strict；明确日期必须严格，不混入旧经历或时间未知项。"
+            "soft 仅用于宽泛偏好，空结果不得自动放宽。"
+        ),
+    },
 }
 _RUNTIME_SNAPSHOT: ContextVar[RuntimeConfigSnapshot | None] = ContextVar(
     "agent_tool_runtime_snapshot",
     default=None,
+)
+_MEMORY_READ_CACHE: ContextVar[dict[str, Any] | None] = ContextVar(
+    "memory_read_cache", default=None
+)
+_MEMORY_READ_DUPLICATE: ContextVar[bool] = ContextVar("memory_read_duplicate", default=False)
+_MEMORY_READ_TOOL: ContextVar[str] = ContextVar("memory_read_tool", default="")
+_OBSERVED_MEMORY_READS = frozenset(
+    {
+        "get_person_memories",
+        "get_group_memories",
+        "get_self_memories",
+        "get_memory_fact",
+    }
 )
 
 logger = logging.getLogger(__name__)
@@ -171,6 +199,7 @@ class ToolRuntime:
     person_id: str | None = None
     space_id: str | None = None
     external_target_id: str | None = None
+    memory_read_cache: dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
 
     @property
     def effective_scope_type(self) -> ScopeType:
@@ -225,7 +254,6 @@ class _PersonMemorySelection:
     targets: tuple[MemoryEntityTarget, ...]
     resolved_by: str
     subject_ref: str | None = None
-    same_group_projection_group_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,6 +267,7 @@ class _RelationshipSelection:
 class _ToolFailure:
     code: str
     detail: str
+    data: Any = None
 
 
 def _object_schema(
@@ -284,6 +313,7 @@ class AgentToolService:
         self._memories = memories
         self._memory_repository = memories.repository
         self._people = PeopleRepository(ledger._database)
+        self._memory_reads = MemoryReadScopeResolver(memories.repository.database)
         if memory_context is None:
             memory_context = MemoryContextService(
                 query_builder=MemoryQueryBuilder(MemoryTargetResolver(self._people)),
@@ -417,15 +447,12 @@ class AgentToolService:
             ChatTool(
                 name="get_person_memories",
                 description=(
-                    "读取本人结构记忆，或当前群友的本群 person_group 结构记忆；还会只读投影"
-                    "该群友由本人在当前群 evidence 支持的 person 事实，但不暴露 evidence、"
-                    "其他群的 person_group 或没有本群本人 evidence 的跨群 person 记忆。"
-                    "真实 @ 或回复"
-                    "目标时必须使用 subject_ref，不要把昵称、[提及成员1] 等占位符填入 user_id；"
-                    "手输昵称/群名片使用 display_name，手输 QQ 号使用兼容字段 user_id。"
-                    "用户询问‘某人的群记忆’仍属于本工具；get_group_memories 只查询群整体事实。"
-                    f"本工具不能读取 {bot_name} 自己；读取 {bot_name} 的自我长期记忆必须使用"
-                    " get_self_memories。"
+                    "查询人物身份、偏好及经历（本人或历史共同群人物）；自身经历用SELF，群整体用Group。"
+                    "姓名用display_name，真实@/回复用subject_ref，勿改填user_id；仅手输账号用user_id。"
+                    "默认省略group_id/group_name；在群中提问或@不等于限定群。仅用户明确要求某群才填。"
+                    "结合完整前文解析指代。"
+                    "历史材料不足主动补查，预取空不代表不存在。总览可省query；有界结果不能断言已列尽。"
+                    "空结果可换实质不同查询；歧义澄清，权限拒绝不重试。"
                 ),
                 parameters=_object_schema(
                     {
@@ -446,11 +473,26 @@ class AgentToolService:
                         "display_name": {
                             "type": "string",
                             "maxLength": 128,
-                            "description": "用户手输的本群昵称或群名片，必须精确且唯一",
+                            "description": "历史关系范围内的昵称、群名片或别名，必须精确且唯一",
                         },
                         "user_id": {
                             "type": "string",
-                            "description": "兼容字段；用户手输的 QQ 号，必须是当前群成员",
+                            "description": "兼容字段；用户手输的 QQ 号，后台验证历史关系权限",
+                        },
+                        "group_id": {
+                            "type": "string",
+                            "description": (
+                                "默认省略，不要复制上下文的当前群号。仅用户明确要求限定某群"
+                                "的记忆时填写；这是缩小查询范围，不是权限证明。"
+                            ),
+                        },
+                        "group_name": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "description": (
+                                "默认省略；仅用户明确限定某群时填写精确且唯一的历史共同群名，"
+                                "与 group_id 二选一。在群里提问本身不是群限定。"
+                            ),
                         },
                         "query": {"type": "string", "maxLength": 400},
                         "mode": {
@@ -464,10 +506,17 @@ class AgentToolService:
             ),
             ChatTool(
                 name="get_group_memories",
-                description="读取当前群的共同结构记忆，可按自然语言查询。",
+                description=(
+                    "自动预取为空不代表没有长期记忆；明确询问群历史且材料不足时可主动补查。"
+                    "读取请求者历史参与群的共同结构记忆。群聊省略目标时为当前群；"
+                    "私聊须指定 group_name 或 group_id。空结果表示没有匹配事实。"
+                    "群友个人经历用 Person 工具。歧义先澄清，权限拒绝不重试。"
+                    "结果有数量上限，不能断言已列尽。"
+                ),
                 parameters=_object_schema(
                     {
                         "group_id": {"type": "string"},
+                        "group_name": {"type": "string", "maxLength": 128},
                         "query": {"type": "string", "maxLength": 400},
                         "mode": {
                             "type": "string",
@@ -476,7 +525,6 @@ class AgentToolService:
                         "limit": {"type": "integer", "minimum": 1, "maximum": 100},
                         **_MEMORY_INTENT_PROPERTIES,
                     },
-                    required=("group_id",),
                 ),
             ),
             ChatTool(
@@ -504,12 +552,11 @@ class AgentToolService:
                 ChatTool(
                     name="get_self_memories",
                     description=(
-                        f"读取 {bot_name} 自己在当前会话中有权回忆的长期记忆。"
-                        f"用户询问 {bot_name} 的过去、经历、偏好、反思、原则，"
-                        f"或要求展示 {bot_name} 自己的长期记忆时使用。"
-                        "无 query 时默认总览；有 query 时默认相关检索。后端只返回全局记忆加当前"
-                        "私聊用户或当前群可见的记忆，不得用 get_person_memories 代替，也不能指定"
-                        "用户、群或其他会话的可见范围。"
+                        f"读取 {bot_name} 自己的经历、偏好、反思和原则；其他人物身份用Person工具，"
+                        "不能用SELF代替姓名解析。只返回全局加当前私聊/群可见记忆，不能指定其他会话。"
+                        "结合完整前文理解指代；明确历史问题且材料不足时主动补查，自动预取为空不代表不存在。"
+                        "无query默认总览，有query默认相关检索。结果有数量上限，不能断言已列尽。"
+                        "空结果可换实质不同查询，严格日期不得放宽；歧义先澄清，权限拒绝不重试。"
                     ),
                     parameters=_object_schema(
                         {
@@ -679,9 +726,21 @@ class AgentToolService:
                                 "type": "string",
                                 "enum": ["fact", "preference", "episode"],
                             },
-                            "reason": {"type": "string", "maxLength": 500},
+                            "reason": {
+                                "type": "string",
+                                "maxLength": 500,
+                                "description": "自主 create 必填：简述未来记忆价值，不写思考过程。",
+                            },
                             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                            "importance": {"type": "integer", "minimum": 1, "maximum": 5},
+                            "importance": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 5,
+                                "description": (
+                                    "自主 create 必须明确且至少为 3；1–2 是临时琐事，3 是未来有用的"
+                                    "事实或有意义的单次经历，4–5 是重要变化/承诺/里程碑。"
+                                ),
+                            },
                             "evidence_refs": {
                                 "type": "array",
                                 "items": {"type": "string", "enum": ["current_event"]},
@@ -918,6 +977,9 @@ class AgentToolService:
             group_id=runtime.current_group_id,
         )
         token = _RUNTIME_SNAPSHOT.set(snapshot)
+        cache_token = _MEMORY_READ_CACHE.set(runtime.memory_read_cache)
+        duplicate_token = _MEMORY_READ_DUPLICATE.set(False)
+        read_tool_token = _MEMORY_READ_TOOL.set(name if name in _OBSERVED_MEMORY_READS else "")
         try:
             try:
                 arguments = json.loads(arguments_json)
@@ -926,6 +988,8 @@ class AgentToolService:
             if not isinstance(arguments, dict):
                 return self._result(error="invalid_arguments", detail="工具参数必须是对象")
             try:
+                if name in {"get_person_memories", "get_group_memories", "get_self_memories"}:
+                    self._log_memory_read_intent(arguments, parse_memory_tool_intent(arguments))
                 if name == "get_my_capabilities":
                     return self._my_capabilities(arguments, runtime)
                 if name == "get_recent_chat_history":
@@ -951,6 +1015,7 @@ class AgentToolService:
                 if name == "get_memory_evidence":
                     return await self._memory_evidence(arguments, runtime)
                 if name == "memory_change":
+                    runtime.memory_read_cache.clear()
                     return await self._memory_change(arguments, runtime)
                 if name == "web_search":
                     return await self._web_search(arguments, runtime)
@@ -972,12 +1037,27 @@ class AgentToolService:
             except WebSearchError as exc:
                 return self._web_result(error=exc.code, detail=exc.detail)
             except MemoryRetrievalError as exc:
-                return self._result(error=exc.code, detail="记忆检索失败")
+                await self._record_memory_tool_outcome(runtime, "infrastructure_failure")
+                return self._result(error=exc.code, detail="记忆检索失败", retryable=True)
             except SQLAlchemyError:
-                return self._result(error="database_failure", detail="数据库事务未提交")
-            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                await self._record_memory_tool_outcome(runtime, "infrastructure_failure")
+                return self._result(
+                    error="database_failure", detail="数据库事务未提交", retryable=True
+                )
+            except (TypeError, ValueError) as exc:
+                if name in _OBSERVED_MEMORY_READS:
+                    return self._result(
+                        error="invalid_arguments",
+                        detail="记忆查询参数无效，请检查枚举及带时区日期区间",
+                        retryable=False,
+                    )
+                return self._result(error=type(exc).__name__, detail="工具执行失败")
+            except (OSError, RuntimeError) as exc:
                 return self._result(error=type(exc).__name__, detail="工具执行失败")
         finally:
+            _MEMORY_READ_TOOL.reset(read_tool_token)
+            _MEMORY_READ_DUPLICATE.reset(duplicate_token)
+            _MEMORY_READ_CACHE.reset(cache_token)
             _RUNTIME_SNAPSHOT.reset(token)
 
     @staticmethod
@@ -1533,117 +1613,54 @@ class AgentToolService:
     ) -> str:
         selection = await self._resolve_person_memory_selection(arguments, runtime)
         if isinstance(selection, _ToolFailure):
-            return self._result(error=selection.code, detail=selection.detail)
-        user_id = selection.user_id
-        limit = self._memory_list_limit(arguments)
-        query, mode = self._memory_query(arguments)
-        person_targets = selection.targets
-        projected_rows = (
-            await self._memory_repository.list_person_facts_projected_to_group(
-                user_id,
-                selection.same_group_projection_group_id,
-                limit=100,
-            )
-            if selection.same_group_projection_group_id is not None
-            else ()
+            return self._result(error=selection.code, detail=selection.detail, data=selection.data)
+        group_id = await self._read_group_selector(arguments, runtime, default_current=False)
+        if isinstance(group_id, _ToolFailure):
+            return self._result(error=group_id.code, detail=group_id.detail, data=group_id.data)
+        targets = selection.targets
+        if group_id is not None:
+            requester = self._social_requester(runtime)
+            if requester is not None:
+                targets = (
+                    await self._memory_reads.person(requester, selection.user_id, group_id=group_id)
+                ).targets
+            else:
+                targets = tuple(target for target in targets if target.group_id == group_id)
+            if not targets:
+                return self._result(
+                    error="permission_denied",
+                    detail=(
+                        "本次指定群范围没有双方的历史关系授权。该拒绝仅适用于指定群范围，"
+                        "不能推断此人的所有记忆均不可读或不存在；不要自动换范围重试。"
+                    ),
+                    data={"denied_scope": "explicit_group", "query_executed": False},
+                )
+        query, _mode = self._memory_query(arguments)
+        result = await self._read_memories(
+            arguments,
+            runtime=runtime,
+            text=query or "",
+            targets=targets,
+            requested_limit=self._memory_requested_limit(arguments),
+            default_overview=query is None,
         )
-        projected_ids = {row.id for row in projected_rows}
-        if query is None and mode is None:
-            rows: list[tuple[Any, bool]] = []
-            for target in person_targets:
-                if target.scope_type is MemoryScopeType.PERSON:
-                    rows.extend(
-                        (row, False)
-                        for row in await self._memories.list_person(user_id, limit=limit)
-                    )
-                elif target.group_id is not None:
-                    rows.extend(
-                        (row, False)
-                        for row in await self._memories.list_person_group(
-                            user_id, target.group_id, limit=limit
-                        )
-                    )
-            existing_ids = {row.id for row, _projected in rows}
-            rows.extend((row, True) for row in projected_rows if row.id not in existing_ids)
-            rows.sort(
-                key=lambda item: (
-                    item[0].importance,
-                    item[0].confidence,
-                    item[0].updated_at,
-                    -item[0].id,
-                ),
-                reverse=True,
-            )
-            memories = [
-                self._memory_json(
-                    row,
-                    retrieval_reason=(
-                        "same_group_evidence_projection" if projected else "deterministic_list"
-                    ),
-                    same_group_evidence_projection=projected,
-                )
-                for row, projected in rows[:limit]
-            ]
-        else:
-            search_targets = person_targets
-            if selection.same_group_projection_group_id is not None and projected_rows:
-                search_targets = (
-                    *search_targets,
-                    MemoryEntityTarget(
-                        role=MemoryTargetRole.REFERENCED_PERSON,
-                        scope_type=MemoryScopeType.PERSON,
-                        subject_user_id=user_id,
-                        group_id=None,
-                        block_id=f"tool_person_projection:{user_id}",
-                    ),
-                )
-            result = await self._read_memories(
-                arguments,
-                text=query or "",
-                targets=search_targets,
-                requested_limit=100 if projected_rows else self._memory_requested_limit(arguments),
-            )
-            visible_hits = [
-                hit
-                for hit in result.hits
-                if hit.fact.scope_type is not MemoryScopeType.PERSON
-                or selection.same_group_projection_group_id is None
-                or hit.fact.id in projected_ids
-            ]
-            if selection.same_group_projection_group_id is not None:
-                visible_hits.sort(
-                    key=lambda hit: (
-                        hit.exact_match,
-                        hit.fusion_score,
-                        hit.fact.importance,
-                        hit.fact.confidence,
-                        -hit.rank,
-                    ),
-                    reverse=True,
-                )
-                visible_hits = visible_hits[:limit]
-            memories = [
-                self._memory_json(
-                    hit.fact,
-                    retrieval_reason=(
-                        "same_group_evidence_projection"
-                        if hit.fact.id in projected_ids
-                        else hit.selection_reason
-                    ),
-                    same_group_evidence_projection=hit.fact.id in projected_ids,
-                )
-                for hit in visible_hits
-            ]
-        return self._result(
+        return self._memory_list_result(
             data={
-                "user_id": user_id,
+                "user_id": selection.user_id,
                 "resolved_by": selection.resolved_by,
+                "effective_query": effective_query_summary(parse_memory_tool_intent(arguments)),
                 **(
                     {"subject_ref": selection.subject_ref}
                     if selection.subject_ref is not None
                     else {}
                 ),
-                "memories": memories,
+                "memories": [
+                    {
+                        **self._memory_json(hit.fact, retrieval_reason=hit.selection_reason),
+                        "match": match_projection(hit, result, self._runtime()),
+                    }
+                    for hit in result.hits
+                ],
             }
         )
 
@@ -1782,22 +1799,25 @@ class AgentToolService:
                 return _ToolFailure("invalid_display_name", "display_name 必须是非空字符串")
             if len(display_name) > 128:
                 return _ToolFailure("invalid_display_name", "display_name 不能超过 128 个字符")
-            group_id = runtime.current_group_id
-            if group_id is None:
-                return _ToolFailure(
-                    "person_not_found",
-                    "私聊中不能按昵称查找其他人，请提供本人目标",
+            requester = self._social_requester(runtime)
+            if requester is not None:
+                matches = await self._memory_reads.people_named(requester, display_name)
+            elif runtime.current_group_id is not None:
+                matches = await self._people.find_group_members_by_exact_name(
+                    display_name, runtime.current_group_id
                 )
-            matches = await self._people.find_group_members_by_exact_name(display_name, group_id)
+            else:
+                matches = ()
             if not matches:
-                return _ToolFailure(
-                    "person_not_found",
-                    "当前群没有精确匹配该昵称、群名片或别名的成员",
-                )
+                return _ToolFailure("person_not_found", "授权范围内没有精确匹配的昵称或别名")
             if len(matches) > 1:
                 return _ToolFailure(
                     "ambiguous_person",
-                    "当前群有多个同名成员，请真正 @ 对方后再查询",
+                    "存在多个同名人物，请澄清目标或提供真实 @/兼容 ID",
+                    {
+                        "candidates": [{"user_id": item} for item in matches[:5]],
+                        "has_more": len(matches) > 5,
+                    },
                 )
             return await self._person_memory_selection_for_user(
                 matches[0],
@@ -1891,17 +1911,16 @@ class AgentToolService:
                 "permission_denied",
                 f"不能读取 {self._settings.bot_display_name} 身份的个人记忆",
             )
-        if inbound is not None and user_id == inbound.sender.user_id:
-            targets = await self._memory_context.resolve_targets(inbound, self._runtime())
-            own_targets = tuple(
-                target
-                for target in targets
-                if target.subject_user_id == user_id
-                and target.scope_type in {MemoryScopeType.PERSON, MemoryScopeType.PERSON_GROUP}
+        if self._social_requester(runtime) is not None:
+            scope = await self._memory_reads.person(
+                runtime.require_inbound().sender.user_id,
+                user_id,
             )
+            if not scope.targets:
+                return _ToolFailure("permission_denied", "没有本人或历史共同群关系授权")
             return _PersonMemorySelection(
                 user_id=user_id,
-                targets=own_targets,
+                targets=scope.targets,
                 resolved_by=resolved_by,
                 subject_ref=subject_ref,
             )
@@ -1948,62 +1967,91 @@ class AgentToolService:
             targets=(target,),
             resolved_by=resolved_by,
             subject_ref=subject_ref,
-            same_group_projection_group_id=group_id,
         )
+
+    async def _read_group_selector(
+        self,
+        arguments: dict[str, Any],
+        runtime: ToolRuntime,
+        *,
+        default_current: bool,
+    ) -> str | None | _ToolFailure:
+        selectors = [key for key in ("group_id", "group_name") if arguments.get(key) is not None]
+        if not selectors:
+            return runtime.current_group_id if default_current else None
+        if len(selectors) != 1:
+            return _ToolFailure("invalid_group_selector", "group_id 与 group_name 只能提供一个")
+        key = selectors[0]
+        value = arguments[key]
+        if not isinstance(value, str) or not value.strip() or len(value) > 128:
+            return _ToolFailure("invalid_group_selector", "群目标必须是 1～128 字符的字符串")
+        if key == "group_id":
+            return value.strip()
+        requester = self._social_requester(runtime)
+        if requester is None:
+            return _ToolFailure("permission_denied", "历史群名查询需要真实用户主体")
+        matches = await self._memory_reads.groups_named(requester, value)
+        if not matches:
+            return _ToolFailure("group_not_found", "授权历史群中没有精确匹配的群名")
+        if len(matches) > 1:
+            return _ToolFailure(
+                "ambiguous_group",
+                "存在多个同名群，请澄清目标",
+                {
+                    "candidates": [{"group_id": item} for item in matches[:5]],
+                    "has_more": len(matches) > 5,
+                },
+            )
+        return matches[0]
 
     async def _group_memories(
         self,
         arguments: dict[str, Any],
         runtime: ToolRuntime,
     ) -> str:
-        group_id = arguments.get("group_id")
-        if not isinstance(group_id, str) or not group_id:
-            return self._result(error="invalid_group_id", detail="group_id 必须是字符串")
-        limit = self._memory_list_limit(arguments)
-        query, mode = self._memory_query(arguments)
-        if runtime.inbound is not None:
-            targets = await self._memory_context.resolve_targets(runtime.inbound, self._runtime())
-            target = next(
-                (
-                    item
-                    for item in targets
-                    if item.scope_type is MemoryScopeType.GROUP and item.group_id == group_id
-                ),
-                None,
-            )
+        group_id = await self._read_group_selector(arguments, runtime, default_current=True)
+        if isinstance(group_id, _ToolFailure):
+            return self._result(error=group_id.code, detail=group_id.detail, data=group_id.data)
+        if group_id is None:
+            return self._result(error="group_required", detail="私聊查询群记忆请指定群名或群号")
+        query, _mode = self._memory_query(arguments)
+        requester = self._social_requester(runtime)
+        if requester is not None:
+            targets = (await self._memory_reads.group(requester, group_id)).targets
         elif (
             runtime.effective_scope_type is ScopeType.GROUP and runtime.current_group_id == group_id
         ):
-            target = MemoryEntityTarget(
-                role=MemoryTargetRole.CURRENT_GROUP,
-                scope_type=MemoryScopeType.GROUP,
-                group_id=group_id,
-                block_id="current_group",
+            targets = (
+                MemoryEntityTarget(
+                    role=MemoryTargetRole.CURRENT_GROUP,
+                    scope_type=MemoryScopeType.GROUP,
+                    group_id=group_id,
+                    block_id="current_group",
+                ),
             )
         else:
-            target = None
-        if target is None:
-            return self._result(error="permission_denied", detail="只能读取当前群的共同记忆")
-        if query is None and mode is None:
-            rows = await self._memories.list_group(group_id, limit=limit)
-            memories = [
-                self._memory_json(row, retrieval_reason="deterministic_list") for row in rows
-            ]
-        else:
-            result = await self._read_memories(
-                arguments,
-                text=query or "",
-                targets=(target,),
-                requested_limit=self._memory_requested_limit(arguments),
-            )
-            memories = [
-                self._memory_json(hit.fact, retrieval_reason=hit.selection_reason)
-                for hit in result.hits
-            ]
-        return self._result(
+            targets = ()
+        if not targets:
+            return self._result(error="permission_denied", detail="没有该群的历史成员关系授权")
+        result = await self._read_memories(
+            arguments,
+            runtime=runtime,
+            text=query or "",
+            targets=targets,
+            requested_limit=self._memory_requested_limit(arguments),
+            default_overview=query is None,
+        )
+        return self._memory_list_result(
             data={
                 "group_id": group_id,
-                "memories": memories,
+                "effective_query": effective_query_summary(parse_memory_tool_intent(arguments)),
+                "memories": [
+                    {
+                        **self._memory_json(hit.fact, retrieval_reason=hit.selection_reason),
+                        "match": match_projection(hit, result, self._runtime()),
+                    }
+                    for hit in result.hits
+                ],
             }
         )
 
@@ -2052,6 +2100,7 @@ class AgentToolService:
             return self._result(error="self_memory_unavailable", detail="当前会话不能读取自我记忆")
         result = await self._read_memories(
             arguments,
+            runtime=runtime,
             text=query or "",
             targets=(target,),
             requested_limit=self._memory_requested_limit(arguments),
@@ -2060,19 +2109,66 @@ class AgentToolService:
         visible_hits = tuple(
             hit for hit in result.hits if hit.fact.scope_type is MemoryScopeType.SELF
         )
-        return self._result(
+        return self._memory_list_result(
             data={
+                "effective_query": effective_query_summary(parse_memory_tool_intent(arguments)),
                 "visible_scope": (
                     "global_and_current_private"
                     if runtime.effective_scope_type is ScopeType.PRIVATE
                     else "global_and_current_group"
                 ),
                 "memories": [
-                    self._self_memory_json(hit.fact, retrieval_reason=hit.selection_reason)
+                    {
+                        **self._self_memory_json(hit.fact, retrieval_reason=hit.selection_reason),
+                        "match": match_projection(hit, result, self._runtime()),
+                    }
                     for hit in visible_hits
                 ],
             }
         )
+
+    def _memory_list_result(self, *, data: dict[str, Any]) -> str:
+        """Fit ranked whole facts into the existing response budget, never fake an empty search."""
+        remaining = list(data["memories"])
+        payload = {
+            **data,
+            "memories": remaining,
+            "returned_count": len(remaining),
+            "result_scope": "bounded_query",
+            "exhaustive": False,
+        }
+        limit = self._runtime().agent.tool_result_max_characters
+        while True:
+            wire = {"ok": True, "data": payload}
+            wire["evidence_state"] = evidence_state(wire, "memory_tool")
+            if remaining:
+                # _capture_memory_tool_result appends this after rendering.
+                wire["memory_grounding_policy"] = MEMORY_GROUNDING_RULE
+            # Account for the normalized envelope as well as the service payload.
+            # Otherwise preserving the grounding rule can overflow downstream and
+            # turn complete facts into an artifact/summary after this prefix fits.
+            model_wire = normalize_legacy_result(
+                {**wire, "mutation_committed": False},
+                provider_id="core",
+                tool_name=_MEMORY_READ_TOOL.get() or "get_person_memories",
+            ).model_payload()
+            if (
+                max(
+                    len(json.dumps(wire, ensure_ascii=False, default=str)),
+                    len(json.dumps(model_wire, ensure_ascii=False, default=str)),
+                )
+                <= limit
+            ):
+                return self._result(data=payload)
+            if len(remaining) <= 1:
+                return self._result(
+                    error="result_too_large",
+                    detail="首条完整记忆超过本轮结果预算；不能把它裁成片段或报告为空",
+                )
+            remaining.pop()
+            payload["truncated"] = True
+            payload["returned_count"] = len(remaining)
+            payload["truncation_reason"] = "response_character_budget"
 
     @staticmethod
     def _memory_requested_limit(arguments: dict[str, Any]) -> int | None:
@@ -2091,21 +2187,70 @@ class AgentToolService:
         self,
         arguments: dict[str, Any],
         *,
+        runtime: ToolRuntime,
         text: str,
         targets: tuple[MemoryEntityTarget, ...],
         requested_limit: int | None,
         default_overview: bool = False,
     ) -> Any:
         intent = self._memory_tool_intent(arguments, default_overview=default_overview)
-        return await MemoryQueryPlane(self._memory_context).read(
+        request = MemoryReadRequest(
+            text=text,
+            intent=intent,
+            requested_limit=requested_limit,
+            resolved_scope=ResolvedReadScope(targets=targets),
+        )
+        # Scope resolution above always rechecks historical relationships; only
+        # the expensive retrieval is reused, never an enduring permission grant.
+        cache = _MEMORY_READ_CACHE.get()
+        runtime_config = self._runtime()
+        key = "query:" + request.model_dump_json() + repr(runtime_config.memory)
+        if cache is not None and key in cache:
+            _MEMORY_READ_DUPLICATE.set(True)
+            return cache[key]
+        result = await MemoryQueryPlane(self._memory_context).read(
             MemoryReadConsumer.AGENT_TOOL,
-            MemoryReadRequest(
-                text=text,
-                intent=intent,
-                requested_limit=requested_limit,
-                resolved_scope=ResolvedReadScope(targets=targets),
+            request,
+            runtime=runtime_config,
+        )
+        if cache is not None:
+            cache[key] = result
+        return result
+
+    @staticmethod
+    def _log_memory_read_intent(arguments: dict[str, Any], intent: MemoryQueryIntent) -> None:
+        from qq_ai_bot.runtime.observability import current_runtime_turn_correlation
+
+        correlation = current_runtime_turn_correlation()
+        logger.info(
+            "memory_read_intent correlation_id=%s tool=%s mode=%s purpose=%s "
+            "explicit_fields=%s entities_count=%d kinds_count=%d temporal_constraint=%s",
+            correlation.turn_id if correlation else "unbound",
+            _MEMORY_READ_TOOL.get(),
+            intent.mode.value,
+            intent.purpose.value,
+            ",".join(
+                name
+                for name in (
+                    "query",
+                    "mode",
+                    "purpose",
+                    "entities",
+                    "preferred_kinds",
+                    "start_at",
+                    "end_at",
+                    "temporal_constraint",
+                    "subject_ref",
+                    "display_name",
+                    "user_id",
+                    "group_id",
+                    "group_name",
+                )
+                if name in arguments
             ),
-            runtime=self._runtime(),
+            len(intent.entities),
+            len(intent.preferred_kinds),
+            intent.temporal.constraint.value,
         )
 
     @staticmethod
@@ -2113,60 +2258,21 @@ class AgentToolService:
         arguments: dict[str, Any],
         *,
         default_overview: bool = False,
-    ) -> MemoryQueryIntent | None:
-        raw_mode = arguments.get("mode")
-        has_structured = any(
-            arguments.get(name) not in (None, "", ())
-            for name in ("purpose", "entities", "preferred_kinds", "start_at", "end_at")
-        )
-        if raw_mode is None and not has_structured and not default_overview:
-            return None
-        mode = (
-            MemoryContextMode.OVERVIEW
-            if default_overview and raw_mode is None
-            else (
-                MemoryContextMode.OVERVIEW
-                if raw_mode == "overview"
-                else MemoryContextMode.LEXICAL
-                if raw_mode == "lexical"
-                else MemoryContextMode.HYBRID
-            )
-        )
-        purpose_raw = arguments.get("purpose")
-        purpose = (
-            MemoryRecallPurpose(purpose_raw)
-            if isinstance(purpose_raw, str) and purpose_raw in MemoryRecallPurpose
-            else MemoryRecallPurpose.RECALL
-        )
-        entities = arguments.get("entities")
-        kinds = arguments.get("preferred_kinds")
-        start_at = AgentToolService._parse_time(arguments.get("start_at"))
-        end_at = AgentToolService._parse_time(arguments.get("end_at"))
-        temporal = MemoryTemporalIntent()
-        if start_at is not None or end_at is not None:
-            temporal = MemoryTemporalIntent(
-                mode=MemoryTemporalIntentMode.RANGE,
-                constraint=MemoryTemporalConstraint.SOFT,
-                start_at=start_at,
-                end_at=end_at,
-            )
-        return MemoryQueryIntent(
-            mode=mode,
-            purpose=purpose,
-            entities=tuple(entities) if isinstance(entities, list) else (),
-            preferred_kinds=tuple(
-                MemoryKind(item) for item in kinds if item in {kind.value for kind in MemoryKind}
-            )
-            if isinstance(kinds, list)
-            else (),
-            temporal=temporal,
-        )
+    ) -> MemoryQueryIntent:
+        del default_overview
+        return parse_memory_tool_intent(arguments)
 
     async def _memory_fact(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
         fact_id = arguments.get("fact_id")
         if isinstance(fact_id, bool) or not isinstance(fact_id, int) or fact_id <= 0:
             raise ValueError("fact_id 必须是正整数")
-        fact = await self._memories.get_fact(fact_id)
+        key = f"fact:{fact_id}"
+        if key in runtime.memory_read_cache:
+            _MEMORY_READ_DUPLICATE.set(True)
+            fact = runtime.memory_read_cache[key]
+        else:
+            fact = await self._memories.get_fact(fact_id)
+            runtime.memory_read_cache[key] = fact
         if fact is None or not await self._can_read_fact(fact, runtime):
             return self._result(error="memory_not_found", detail="没有找到可查看的事实")
         return self._result(data={"memory": self._memory_json(fact, retrieval_reason="fact_id")})
@@ -2383,7 +2489,17 @@ class AgentToolService:
                     space_id = None
         return person_id, space_id
 
+    @staticmethod
+    def _social_requester(runtime: ToolRuntime) -> str | None:
+        # An origin or arbitrary actor_user_id is not proof of a real user.
+        if runtime.inbound is not None and runtime.origin in _MEMORY_CHANGE_ORIGINS:
+            return runtime.inbound.sender.user_id
+        return None
+
     async def _can_read_fact(self, fact: Any, runtime: ToolRuntime) -> bool:
+        requester = self._social_requester(runtime)
+        if requester is not None and fact.scope_type is not MemoryScopeType.SELF:
+            return await self._memory_reads.allows_fact(requester, fact)
         owners = await self._runtime_canonical_owners(runtime)
         return self._can_read_canonical_fact(fact, runtime, *owners)
 
@@ -2460,7 +2576,6 @@ class AgentToolService:
         row: Any,
         *,
         retrieval_reason: str,
-        same_group_evidence_projection: bool = False,
     ) -> dict[str, Any]:
         payload = {
             "fact_id": row.id,
@@ -2485,13 +2600,6 @@ class AgentToolService:
             "retrieval_reason": retrieval_reason,
         }
         payload["occurred_at"] = row.valid_from.isoformat() if row.valid_from is not None else None
-        if same_group_evidence_projection:
-            payload.update(
-                {
-                    "access_scope": "same_group_evidence_projection",
-                    "read_only": True,
-                }
-            )
         return payload
 
     @staticmethod
@@ -2542,14 +2650,69 @@ class AgentToolService:
 
         visit(payload)
         unique_ids = tuple(dict.fromkeys(fact_ids))
+        if payload.get("ok"):
+            outcome = (
+                "duplicate"
+                if _MEMORY_READ_DUPLICATE.get()
+                else ("success" if unique_ids else "empty")
+            )
+        elif payload.get("error") in {"ambiguous_person", "ambiguous_subject", "ambiguous_group"}:
+            outcome = "ambiguous"
+        elif payload.get("error") == "permission_denied":
+            outcome = "permission_denied"
+        else:
+            outcome = "unavailable"
+        payload["evidence_state"] = evidence_state(payload, "memory_tool")
         if unique_ids:
-            await self._memory_context.mark_tool_injected(runtime.memory_turn_id, unique_ids)
+            payload["memory_grounding_policy"] = MEMORY_GROUNDING_RULE
+        rendered = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        if len(rendered) > self._runtime().agent.tool_result_max_characters:
+            await self._record_memory_tool_outcome(runtime, "unavailable", result_count=0)
+            return self._result(error="result_too_large", detail="完整结果与证据元数据超过本轮预算")
+        await self._record_memory_tool_outcome(runtime, outcome, result_count=len(unique_ids))
+        if unique_ids:
+            if runtime.memory_session is None and runtime.origin in _MEMORY_CHANGE_ORIGINS:
+                await self._memory_context.mark_tool_injected(runtime.memory_turn_id, unique_ids)
             if runtime.memory_exposure_registry is not None:
                 runtime.memory_exposure_registry.register_tool_payload(payload)
-            if isinstance(payload, dict):
-                payload["memory_grounding_policy"] = MEMORY_GROUNDING_RULE
-                return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-        return result
+        return rendered
+
+    async def _record_memory_tool_outcome(
+        self, runtime: ToolRuntime, outcome: str, *, result_count: int = 0
+    ) -> None:
+        if not _MEMORY_READ_TOOL.get():
+            return
+        from qq_ai_bot.runtime.observability import current_runtime_turn_correlation
+
+        correlation = current_runtime_turn_correlation()
+        logger.info(
+            "memory_tool_read correlation_id=%s tool=%s outcome=%s result_count=%d",
+            correlation.turn_id if correlation else "unbound",
+            _MEMORY_READ_TOOL.get(),
+            outcome,
+            result_count,
+        )
+        self._memory_context.metrics.record_read_outcome(outcome)
+        if outcome == "unavailable":
+            return
+        try:
+            from qq_ai_bot.memory.runtime.turn_session import TurnMemorySession
+
+            if isinstance(runtime.memory_session, TurnMemorySession):
+                await runtime.memory_session.record_read_outcome(outcome)
+            elif runtime.origin in _MEMORY_CHANGE_ORIGINS:
+                await self._memory_context.record_tool_read_outcome(runtime.memory_turn_id, outcome)
+        except Exception as exc:
+            # Observability must not turn a successful read or a handled database
+            # failure into another user-visible tool failure.
+            logger.warning(
+                "memory_tool_outcome_persist_failed correlation_id=%s tool=%s "
+                "outcome=%s category=%s",
+                correlation.turn_id if correlation else "unbound",
+                _MEMORY_READ_TOOL.get(),
+                outcome,
+                type(exc).__name__,
+            )
 
     async def _call_onebot(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
         if (
@@ -2931,6 +3094,7 @@ class AgentToolService:
         payload: dict[str, Any] = (
             {"ok": False, "error": error, "detail": detail} if error else {"ok": True, "data": data}
         )
+        payload["evidence_state"] = evidence_state(payload, "web_tool")
         limit = self._runtime().web.tool_result_max_characters
         rendered = json.dumps(payload, ensure_ascii=False, default=str)
         if len(rendered) <= limit:
@@ -2944,20 +3108,25 @@ class AgentToolService:
                         continue
                     content = source.get("relevant_content")
                     if isinstance(content, str) and len(content) > 256:
+                        data["truncated"] = True
                         source["relevant_content"] = content[: max(256, len(content) // 2)]
                         changed = True
                     snippet = source.get("snippet")
                     if len(rendered) > limit and isinstance(snippet, str) and len(snippet) > 160:
+                        data["truncated"] = True
                         source["snippet"] = snippet[: max(160, len(snippet) // 2)]
                         changed = True
+                    payload["evidence_state"] = evidence_state(payload, "web_tool")
                     rendered = json.dumps(payload, ensure_ascii=False, default=str)
                     if len(rendered) <= limit:
                         break
                 if len(rendered) > limit and not changed:
                     if len(sources) > 1:
+                        data["truncated"] = True
                         sources.pop()
                     else:
                         break
+                payload["evidence_state"] = evidence_state(payload, "web_tool")
                 rendered = json.dumps(payload, ensure_ascii=False, default=str)
         if len(rendered) > limit:
             rendered = json.dumps(

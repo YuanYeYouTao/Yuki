@@ -116,6 +116,9 @@ def entity_block(block: MemoryContextBlock, timezone: str = "Asia/Shanghai") -> 
 
 
 _ENTITY_MEMORY_RULE_TEMPLATE = (
+    "event_bound_memory_refs 只列本条消息可用的 subject_ref，不是可查询人物名单或权限白名单。"
+    "没有列出的姓名仍可交给人物记忆工具的 display_name，由后端解析与鉴权；"
+    "不要仅因引用列表未列出就断言不能查，或在尝试名称查询前要求用户提供账号。"
     "每条长期事实只属于它所在的 entity block。不得把 current_group 或其他人物的"
     "信息归给 current_person；没有事实时不得猜测。third_party/reported 表示他人报告，"
     "不等于本人确认；contested=true 表示存在未解决冲突，不得当作确定事实。"
@@ -131,6 +134,11 @@ MEMORY_GROUNDING_RULE = (
     "补充提及次数、最新状态或相反偏好。只有 occurred_at 才是可用于正文的事件时间；updated_at 是"
     "存储更新时间，不能据此声称‘昨天’‘刚才’或事件发生日期。用户限制输出 N 条时至多输出 N 条；"
     "一个 episode 即使包含多件事，在用户只要一件时也只能选择其中一件。"
+    "空结果只表示本次查询未找到匹配材料，不证明记忆不存在；返回N条不代表全部存档，"
+    "truncated表示结果尚未列尽。权限拒绝、查询故障不是无记录；"
+    "限定范围被拒绝不能推断整个人的记忆均不可读，也不要自动换范围重试。"
+    "严格日期无结果不得自动放宽。"
+    "检索排名不是事实相关性保证；不相关候选不得编造成所问经历，可换实质不同查询或说明未找到。"
 )
 
 
@@ -225,56 +233,43 @@ class MemoryContextService:
                     )
                 }
             )
-        if runtime.memory.retrieval_enabled:
-            result = await self._retriever.retrieve(
-                query,
-                diversify=query.mode is MemoryRetrievalMode.RELEVANT,
-            )
-            if (
-                query.mode is MemoryRetrievalMode.RELEVANT
-                and runtime.memory.self_enabled
-                and not query.intent.self_recall
-                if query.intent is not None
-                else False
-            ):
-                episode = await self._retrieve_current_self_episode(
-                    inbound=inbound,
-                    query=query,
-                    runtime=runtime,
-                )
-                result = self._merge_results(result, episode)
-            return (
-                result
-                if neutral_ordering
-                else self._limit_automatic_result(
-                    result, query.intent, runtime, requested_limit=requested_limit
-                )
-            )
-        current_targets = tuple(
-            target
-            for target in query.targets
-            if target.role
-            in {
-                MemoryTargetRole.CURRENT_PERSON,
-                MemoryTargetRole.CURRENT_SELF,
-                MemoryTargetRole.CURRENT_PERSON_GROUP,
-                MemoryTargetRole.CURRENT_GROUP,
-            }
+        from qq_ai_bot.memory.runtime.query_plane import (
+            MemoryQueryPlane,
+            MemoryReadConsumer,
+            MemoryReadRequest,
+            ResolvedReadScope,
+            apply_total_hit_limit,
         )
-        fallback = query.model_copy(
-            update={
-                "targets": current_targets,
-                "limit_per_target": runtime.memory.context_limit_per_entity,
-            }
-        )
-        result = await self._retriever.retrieve(fallback, lexical_enabled=False)
-        return (
-            result
-            if neutral_ordering
-            else self._limit_automatic_result(
-                result, query.intent, runtime, requested_limit=requested_limit
+
+        self_target = None
+        if (
+            runtime.memory.self_enabled
+            and query.intent is not None
+            and not query.intent.self_recall
+            and query.mode is MemoryRetrievalMode.RELEVANT
+        ):
+            self_target = next(
+                (
+                    target
+                    for target in await self.resolve_targets(inbound, runtime, self_recall=True)
+                    if target.role is MemoryTargetRole.CURRENT_SELF
+                ),
+                None,
             )
+        result = await MemoryQueryPlane(self).read(
+            MemoryReadConsumer.AUTOMATIC_CONTEXT,
+            MemoryReadRequest(
+                text=query.text,
+                intent=query.intent,
+                resolved_scope=ResolvedReadScope(targets=query.targets),
+                automatic_self_target=self_target,
+                neutral_ordering=neutral_ordering,
+            ),
+            runtime=runtime,
         )
+        if requested_limit is not None and query.mode is MemoryRetrievalMode.OVERVIEW:
+            return apply_total_hit_limit(result, requested_limit)
+        return result
 
     async def retrieve_for_targets(
         self,
@@ -316,14 +311,11 @@ class MemoryContextService:
         result: MemoryRetrievalResult,
         intent: MemoryQueryIntent | None,
         runtime: RuntimeConfigSnapshot,
-        requested_limit: int | None = None,
     ) -> MemoryRetrievalResult:
         memory = runtime.memory
         purpose = intent.purpose if intent is not None else MemoryRecallPurpose.BACKGROUND
         if result.mode is MemoryRetrievalMode.OVERVIEW:
             total_limit = memory.automatic_recall_overview_limit
-            if requested_limit is not None:
-                total_limit = min(total_limit, requested_limit + 2)
         elif purpose is MemoryRecallPurpose.BACKGROUND:
             total_limit = memory.automatic_recall_background_limit
         elif purpose is MemoryRecallPurpose.CONTINUATION:
@@ -331,19 +323,37 @@ class MemoryContextService:
         else:
             total_limit = memory.automatic_recall_focused_limit
 
-        def ordering(hit: MemoryRetrievalHit) -> tuple[int, int, float, float, int, int]:
-            exact = hit.exact_match or hit.selection_reason.endswith("_exact")
-            preference = hit.selection_reason == "always_on_explicit_preference"
-            return (
-                0 if exact else 1,
-                0 if preference else 1,
-                -hit.rerank_score,
-                -hit.base_rank_score,
-                hit.rank,
-                hit.fact.id,
-            )
+        calibrated = bool(
+            memory.automatic_calibrated_profile
+            and memory.automatic_calibrated_profile == result.embedding_profile
+            and not result.semantic_degraded
+            and memory.automatic_topic_threshold >= memory.automatic_background_threshold
+        )
+        topics: list[MemoryRetrievalHit] = []
+        backgrounds: list[MemoryRetrievalHit] = []
+        decisions: dict[int, str] = {}
+        for hit in result.hits:
+            exact = hit.selection_reason in {"memory_key_exact", "content_exact"}
+            score = hit.semantic_score
+            if exact or (
+                calibrated and score is not None and score >= memory.automatic_topic_threshold
+            ):
+                topics.append(hit)
+                decisions[hit.fact.id] = "topic"
+            elif (
+                calibrated
+                and score is not None
+                and score >= memory.automatic_background_threshold
+                and hit.target.role is MemoryTargetRole.CURRENT_PERSON
+            ):
+                backgrounds.append(hit)
+                decisions[hit.fact.id] = "background"
+            else:
+                decisions[hit.fact.id] = (
+                    "rejected_relevance" if calibrated else "rejected_uncalibrated"
+                )
 
-        ordered = sorted(result.hits, key=ordering)
+        ordered = topics + (backgrounds[:1] if topics and len(topics) < total_limit else [])
         selected: list[MemoryRetrievalHit] = []
         per_target: dict[str, int] = {}
         selected_ids: set[int] = set()
@@ -355,7 +365,14 @@ class MemoryContextService:
             target_key = hit.target.block_id
             if per_target.get(target_key, 0) >= memory.automatic_recall_per_target_limit:
                 continue
-            selected.append(hit)
+            selected.append(
+                hit.model_copy(
+                    update={
+                        "selection_reason": decisions[hit.fact.id],
+                        "rank": len(selected) + 1,
+                    }
+                )
+            )
             selected_ids.add(hit.fact.id)
             per_target[target_key] = per_target.get(target_key, 0) + 1
 
@@ -363,94 +380,23 @@ class MemoryContextService:
         for hit in selected:
             by_target.setdefault(hit.target.block_id, []).append(hit)
         blocks = tuple(
-            block.model_copy(
-                update={
-                    "hits": tuple(
-                        item.model_copy(update={"rank": rank})
-                        for rank, item in enumerate(
-                            by_target.get(block.target.block_id, ()),
-                            start=1,
-                        )
-                    )
-                }
-            )
+            block.model_copy(update={"hits": tuple(by_target.get(block.target.block_id, ()))})
             for block in result.blocks
         )
-        final_hits = tuple(hit for block in blocks for hit in block.hits)
+        final_hits = tuple(selected)
         return result.model_copy(
             update={
                 "blocks": blocks,
                 "hits": final_hits,
                 "selected_count": len(final_hits),
-            }
-        )
-
-    async def _retrieve_current_self_episode(
-        self,
-        *,
-        inbound: InboundMessage,
-        query: MemoryQuery,
-        runtime: RuntimeConfigSnapshot,
-    ) -> MemoryRetrievalResult:
-        targets = await self.resolve_targets(inbound, runtime, self_recall=True)
-        self_targets = tuple(
-            target for target in targets if target.role is MemoryTargetRole.CURRENT_SELF
-        )
-        episode_query = query.model_copy(
-            update={
-                "targets": self_targets,
-                "kinds": (MemoryKind.EPISODE,),
-                "limit_per_target": query.candidate_limit,
-                "always_on_explicit_preference_limit": 0,
-            }
-        )
-        result = await self._retriever.retrieve(episode_query)
-        if not self_targets:
-            return result
-        target = self_targets[0]
-        selected = tuple(
-            hit
-            for hit in result.hits
-            if hit.target == target and hit.fact.visibility_type is target.visibility_type
-        )[:1]
-        selected_ids = {hit.fact.id for hit in selected}
-        blocks = tuple(
-            block.model_copy(
-                update={"hits": tuple(hit for hit in block.hits if hit.fact.id in selected_ids)}
-            )
-            for block in result.blocks
-        )
-        return result.model_copy(
-            update={
-                "blocks": blocks,
-                "hits": selected,
-                "selected_count": len(selected),
-            }
-        )
-
-    @staticmethod
-    def _merge_results(
-        primary: MemoryRetrievalResult,
-        additional: MemoryRetrievalResult,
-    ) -> MemoryRetrievalResult:
-        known = {hit.fact.id for hit in primary.hits}
-        new_hits = tuple(hit for hit in additional.hits if hit.fact.id not in known)
-        if not new_hits:
-            return primary
-        new_ids = {hit.fact.id for hit in new_hits}
-        blocks = list(primary.blocks)
-        for block in additional.blocks:
-            selected = tuple(hit for hit in block.hits if hit.fact.id in new_ids)
-            if selected:
-                blocks.append(block.model_copy(update={"hits": selected}))
-        return primary.model_copy(
-            update={
-                "blocks": tuple(blocks),
-                "hits": (*primary.hits, *new_hits),
-                "candidate_count": primary.candidate_count + additional.candidate_count,
-                "selected_count": primary.selected_count + len(new_hits),
-                "semantic_degraded": (primary.semantic_degraded or additional.semantic_degraded),
-                "trace_hits": (*primary.trace_hits, *additional.trace_hits),
+                "trace_hits": tuple(
+                    hit.model_copy(
+                        update={
+                            "selection_reason": decisions.get(hit.fact.id, "not_selected"),
+                        }
+                    )
+                    for hit in result.trace_hits
+                ),
             }
         )
 
@@ -463,6 +409,9 @@ class MemoryContextService:
         runtime: RuntimeConfigSnapshot,
         limit: int | None = None,
         intent: MemoryQueryIntent | None = None,
+        automatic: bool = False,
+        automatic_self_target: MemoryEntityTarget | None = None,
+        neutral_ordering: bool = False,
     ) -> MemoryRetrievalResult:
         query = self._queries.for_targets(
             text=text,
@@ -472,7 +421,41 @@ class MemoryContextService:
             limit=limit,
             intent=intent,
         )
-        return await self._retriever.retrieve(query)
+        if not automatic:
+            return await self._retriever.retrieve(query)
+        if neutral_ordering:
+            query = query.model_copy(update={"semantic_enabled": False})
+        else:
+            query = query.model_copy(
+                update={
+                    "limit_per_target": max(query.candidate_limit, query.semantic_candidate_limit),
+                    "always_on_explicit_preference_limit": 0,
+                    "targets": tuple(dict.fromkeys((*query.targets, automatic_self_target)))
+                    if automatic_self_target is not None
+                    else query.targets,
+                }
+            )
+        if runtime.memory.retrieval_enabled:
+            result = await self._retriever.retrieve(query)
+        else:
+            query = query.model_copy(
+                update={
+                    "targets": tuple(
+                        target
+                        for target in query.targets
+                        if target.role
+                        in {
+                            MemoryTargetRole.CURRENT_PERSON,
+                            MemoryTargetRole.CURRENT_SELF,
+                            MemoryTargetRole.CURRENT_PERSON_GROUP,
+                            MemoryTargetRole.CURRENT_GROUP,
+                        }
+                    ),
+                    "limit_per_target": runtime.memory.context_limit_per_entity,
+                }
+            )
+            result = await self._retriever.retrieve(query, lexical_enabled=False)
+        return result if neutral_ordering else self._limit_automatic_result(result, intent, runtime)
 
     async def mark_injected(
         self,
@@ -499,6 +482,7 @@ class MemoryContextService:
         result: MemoryRetrievalResult,
         injected_fact_ids: tuple[int, ...],
         runtime: RuntimeConfigSnapshot,
+        consumer: str = "automatic_context",
     ) -> MemoryRecallTurn | None:
         if intent is None:
             return None
@@ -518,20 +502,33 @@ class MemoryContextService:
             result=result,
             injected_fact_ids=injected_fact_ids,
             retention_days=runtime.memory.recall_receipt_retention_days,
+            consumer=consumer,
         )
 
     async def mark_attributed_used(
         self,
         turn_id: str,
         fact_ids: tuple[int, ...],
+        *,
+        evaluated_fact_ids: tuple[int, ...] | None = None,
     ) -> tuple[int, ...]:
         if self._receipts is None:
             self.metrics.record_recall_stage("used", len(fact_ids))
             return fact_ids
-        recorded = await self._receipts.mark_attributed_used(turn_id, fact_ids)
+        recorded = await self._receipts.mark_attributed_used(
+            turn_id, fact_ids, evaluated_fact_ids=evaluated_fact_ids
+        )
         used = fact_ids if recorded is None else recorded
         self.metrics.record_recall_stage("used", len(used))
         return used
+
+    async def set_attribution_outcome(self, turn_id: str, status: str, reason: str) -> None:
+        if self._receipts is not None:
+            await self._receipts.set_attribution_outcome(turn_id, status, reason)
+
+    async def recover_pending_attribution(self) -> None:
+        if self._receipts is not None:
+            await self._receipts.recover_pending_attribution()
 
     async def mark_tool_injected(
         self,
@@ -544,6 +541,10 @@ class MemoryContextService:
         if self._receipts is not None:
             await self._receipts.record_tool_injected(turn_id, unique_ids)
         return updated
+
+    async def record_tool_read_outcome(self, turn_id: str, outcome: str) -> None:
+        if self._receipts is not None:
+            await self._receipts.record_tool_read_outcome(turn_id, outcome)
 
     async def reinforce_usage(
         self,

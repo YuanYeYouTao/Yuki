@@ -166,6 +166,7 @@ class MemoryAttributionWorker:
 
     async def start(self) -> None:
         if self._task is None:
+            await self._memory_context.recover_pending_attribution()
             self._task = asyncio.create_task(self._run(), name="memory-attribution-worker")
 
     async def close(self) -> None:
@@ -180,18 +181,28 @@ class MemoryAttributionWorker:
             except asyncio.QueueEmpty:
                 break
             self._pending_turn_ids.discard(discarded.turn_id)
+            await self._outcome(discarded, "interrupted", status="failed")
             self._queue.task_done()
         self._metrics.set_attribution_queue_depth(0)
 
-    def enqueue(self, job: MemoryAttributionJob) -> bool:
+    async def enqueue(self, job: MemoryAttributionJob) -> bool:
         if job.turn_id in self._pending_turn_ids:
             self._metrics.record_attribution("duplicate")
             return False
         limit = max(1, job.runtime.memory.usage_attribution_queue_limit)
         if self._queue.qsize() >= limit:
-            self._metrics.record_attribution("queue_full")
+            await self._outcome(job, "queue_full")
             return False
         self._pending_turn_ids.add(job.turn_id)
+        try:
+            await self._memory_context.set_attribution_outcome(job.turn_id, "pending", "queued")
+        except BaseException:
+            self._pending_turn_ids.discard(job.turn_id)
+            raise
+        if self._queue.qsize() >= limit:
+            self._pending_turn_ids.discard(job.turn_id)
+            await self._outcome(job, "queue_full")
+            return False
         self._queue.put_nowait(job)
         self._metrics.record_attribution("enqueue")
         self._metrics.set_attribution_queue_depth(self._queue.qsize())
@@ -207,10 +218,11 @@ class MemoryAttributionWorker:
             try:
                 await self._process(job)
             except asyncio.CancelledError:
+                await self._outcome(job, "interrupted", status="failed")
                 raise
             except Exception as exc:  # defensive worker boundary; never log content
-                self._metrics.record_attribution("model_error")
-                logger.exception(
+                await self._outcome(job, "model_error", status="failed")
+                logger.warning(
                     "memory_attribution_unexpected_failure exception_category=%s",
                     type(exc).__name__,
                 )
@@ -220,15 +232,15 @@ class MemoryAttributionWorker:
 
     async def _process(self, job: MemoryAttributionJob) -> None:
         if self._expired(job):
-            self._metrics.record_attribution("expired")
+            await self._outcome(job, "expired")
             return
         current = await self._runtime_config.snapshot(user_id=job.user_id, group_id=job.group_id)
         if not current.memory.usage_attribution_enabled:
-            self._metrics.record_attribution("disabled")
+            await self._outcome(job, "disabled")
             return
         payload = _bounded_payload(job)
         if not payload["memories"]:
-            self._metrics.record_attribution("invalid")
+            await self._outcome(job, "invalid", status="failed")
             return
         started = time.perf_counter()
         try:
@@ -247,7 +259,8 @@ class MemoryAttributionWorker:
                     structured_input=payload,
                     output_model=MemoryAttributionOutput,
                     temperature=0,
-                    max_output_tokens=256,
+                    # Reasoning and the final structured result share the output budget.
+                    max_output_tokens=4096,
                     compact_schema=True,
                     validation_retries=0,
                     priority=ModelExecutionPriority.BEST_EFFORT_BACKGROUND,
@@ -255,14 +268,14 @@ class MemoryAttributionWorker:
                 timeout=max(0.1, job.runtime.memory.usage_attribution_timeout_seconds),
             )
         except BackgroundModelPreempted:
-            self._metrics.record_attribution("preempted")
+            await self._outcome(job, "preempted")
             return
         except TimeoutError:
-            self._metrics.record_attribution("timeout")
+            await self._outcome(job, "timeout", status="failed")
             return
         except (LLMError, StructuredTaskError, ValueError, OSError, RuntimeError) as exc:
             outcome = "invalid" if isinstance(exc, StructuredTaskError) else "model_error"
-            self._metrics.record_attribution(outcome)
+            await self._outcome(job, outcome, status="failed")
             logger.warning(
                 "memory_attribution_failed exception_category=%s",
                 type(exc).__name__,
@@ -277,21 +290,18 @@ class MemoryAttributionWorker:
             for item in payload["memories"]
         }
         if any(ref not in allowed for ref in output.used_refs):
-            self._metrics.record_attribution("invalid")
-            return
-        if not output.used_refs:
-            self._metrics.record_attribution("no_used")
+            await self._outcome(job, "invalid", status="failed")
             return
         if self._expired(job):
-            self._metrics.record_attribution("expired")
+            await self._outcome(job, "expired")
             return
         latest = await self._runtime_config.snapshot(user_id=job.user_id, group_id=job.group_id)
         if not latest.memory.usage_attribution_enabled:
-            self._metrics.record_attribution("disabled")
+            await self._outcome(job, "disabled")
             return
         fact_ids = tuple(allowed[ref] for ref in output.used_refs)
         commit_task = asyncio.create_task(
-            self._commit(job, fact_ids, latest),
+            self._commit(job, fact_ids, latest, tuple(allowed.values())),
             name="memory-attribution-commit",
         )
         try:
@@ -305,10 +315,13 @@ class MemoryAttributionWorker:
         job: MemoryAttributionJob,
         fact_ids: tuple[int, ...],
         runtime: RuntimeConfigSnapshot,
+        evaluated_fact_ids: tuple[int, ...],
     ) -> None:
-        used = await self._memory_context.mark_attributed_used(job.turn_id, fact_ids)
+        used = await self._memory_context.mark_attributed_used(
+            job.turn_id, fact_ids, evaluated_fact_ids=evaluated_fact_ids
+        )
         if not used:
-            self._metrics.record_attribution("invalid")
+            self._metrics.record_attribution("no_used" if not fact_ids else "invalid")
             return
         reinforcement_runtime = job.runtime
         if not runtime.memory.reinforcement_enabled:
@@ -325,6 +338,12 @@ class MemoryAttributionWorker:
         self._metrics.record_attribution("success")
         self._metrics.increment("memory_attribution_used_count", len(used))
         self._metrics.increment("memory_attribution_reinforced_count", len(reinforced))
+
+    async def _outcome(
+        self, job: MemoryAttributionJob, reason: str, *, status: str = "skipped"
+    ) -> None:
+        self._metrics.record_attribution(reason)
+        await self._memory_context.set_attribution_outcome(job.turn_id, status, reason)
 
     @staticmethod
     def _expired(job: MemoryAttributionJob) -> bool:

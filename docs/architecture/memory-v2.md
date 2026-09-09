@@ -1,144 +1,130 @@
-# Memory V2 架构
+# Memory 当前架构
 
-Memory V2 将长期记忆拆为事实、证据、逐事件提取任务和可重建检索索引。关系数据库中的
-`memory_facts` 始终是真相来源；`memory_facts_fts` 与 `memory_embeddings` 只负责从当前问题
-召回候选，删除后可以由事实表完整重建。
+本文是 canonical 3.8.1 的现行 Memory 合同（schema 0051）。实施与验收见
+[Yuki Memory P1 治理任务书](Yuki-Memory-P1治理任务书.md)。
 
-## 数据边界
+## 所有权与记忆层次
 
-- `memory_facts` 保存版本化事实，作用域只能是人物 `person`、人物在某群的
-  `person_group` 或群 `group`。
-- `memory_evidence` 将事实绑定到真实 `chat_events` 和真实发送者；事实或事件删除时按外键
-  级联。
-- `memory_jobs` 一行只对应一个真人入站事件。任务可以批量领取，但提取和提交始终逐事件进行。
-- `memory_facts_fts` 是 Alembic `0021` 创建的 FTS5 `trigram` 外部内容表，只索引
-  `content`、`memory_key` 和 `category`，由 INSERT/DELETE/UPDATE 触发器同步。
-- `memory_embedding_profiles`、`memory_embeddings` 和 `memory_embedding_jobs` 是 Alembic
-  `0022` 创建的派生语义索引。向量按 profile 隔离，事实删除时级联删除。
-- `memory_fact_relations` 与 `memory_fact_state_events` 是 Alembic `0023` 创建的冲突关系和
-  内容无关状态审计；`memory_facts` / `memory_evidence` 同时增加 authority、冲突和聚合元数据。
-- `memory_rebuild_runs`、`memory_rebuild_items` 和 `memory_rebuild_proposals` 是 Alembic `0024`
-  创建的可审阅暂存区；它们不构成第二套事实库，只有 commit 才会经共享事实服务写入。
-- `memory_mutation_receipts` 是 Alembic `0025` 创建的统一变更回执，记录触发者、决策者、Bot
-  执行者、请求/实际操作、双指纹、事实版本和真实结果；事实写入与回执处于同一事务。
-- `memory_reflection_jobs` 是 Alembic `0026` 创建的可恢复后台治理队列；它只保存内容无关的
-  候选事实 ID、问题类型、领取/重试状态和错误类别，不构成第二套事实库。
-- 三个 partial unique index 保证每个主体、kind、memory_key 最多一个 active fact。
+一个数据库是一个永久 Yuki。Person、Space 使用 canonical UUID；QQ 号仅通过 Binding
+解析，Presence/Provider 是传输身份，不划分记忆所有权。更换 NapCat、SnowLuma 或 Yuki 账号
+不重建记忆，也不改变 Conversation、Route 或 Rollup generation。
 
-## 可信身份映射
+| 分类 | 所有者与含义 |
+|---|---|
+| Person | 人物的结构化事实、持续偏好及有意义经历 |
+| PersonGroup | 某人物在某 canonical Space 的事实与第三方报告 |
+| Group | canonical Space 的共同事实与经历 |
+| SELF | Yuki 的动态自我事实、偏好、经历；global/current-private/current-group 可见性 |
 
-写入模型只看到一个 `primary_event`、后端生成的 `available_subjects` 和同一精确会话的少量
-上下文。自动提取提供 `speaker`、群聊中的 `group`，以及由当前真实消息段证明的
-`mentioned_N` / `reply_author`；第三方主体只允许当前群 `person_group`。模型不能提交 QQ 号、
-群号、事件 ID、状态、authority、冲突字段或替代链。
+History 是不可变事件账本；Rollup 是短期上下文压缩，不等于长期事实。
+事实的版本、证据、来源、可信度、争议和 canonical 所有权保留在长期 Memory。
+external_event 保持 external_untrusted，不伪装成人类聊天，不自动进入人物记忆或关系。
+Plugin API 2.0 的受控读取也不产生普通用户社会关系授权。
 
-读取时由 `MemoryTargetResolver` 根据当前真实事件生成目标：私聊只有当前人物；群聊包含当前
-人物、当前人物在本群和当前群。只有当前事件真实 `@` 的群成员或被回复消息的真实发送者，才会
-新增独立的 `referenced_person_group`。被提及群友的跨群 `person` 不会投影给普通成员；最近
-发言者不会成为长期记忆目标，昵称和模型输出也不能改变主体范围。
+## 自动提取与价值
 
-## 查询驱动检索
+普通 Memory Job 按 canonical 所有者聚合，数据库是批次就绪的唯一真源：
+30 秒轮询；累计 12 条、8,000 字符或最老事件等待 3,600 秒之一满足即可领取；
+单批最多 12 条、8,000 字符，提取输出预算 4,096 tokens。
+不跨 Person/Space 拼批，不因 Presence 改变拆队列。一小时是到期领取条件，不是积压或宕机
+情况下的完成承诺，也不是 Rollup、反思、lease 或重试间隔。
 
-普通聊天调用链为：
+自动输出必须显式给出 retention、source_style、importance、confidence 和简短 value_reason。
+仅 durable/meaningful_episode 且 importance ≥ 3 的候选进入主体、来源、证据与可信度流程。
+有意义的一次性共同经历可以达标；问候、临时要求、无进展的调侃主要留在 History/Rollup。
+数值门槛只是结构执行合同，不声称代替模型的语义判断。
 
-```text
-当前消息 + 有界回复文本 + Memory Runtime / Agent 读工具给出的结构化 intent
-  → MemoryQueryBuilder
-  → MemoryTargetResolver
-  → 对每个实体分别执行带 scope/user/group/status/valid_until 硬过滤的 FTS SQL
-  → MemoryRanker 确定性排序
-  → 独立实体块
-  → ContextBudgeter
-  → mark_used(最终入选 fact IDs)
-```
+低价值直接正常跳过，不转入另一条候选队列。高价值但主体/可信度待确认的内容使用已有候选
+机制。后台来源不能通过填写 explicit 获得用户权威。反思的新 SELF 内容复用价值门槛；
+无价值新内容允许 noop，完成批次并推进水位。已有事实的纠正、撤回、证据补强、去重合并
+和 Dream 维护不受首次写入最低价值阻碍，也不能借维护引入未经验证的新事实。
+不批量重新审判或删除旧事实。
 
-FTS 查询先做 NFKC、casefold、空白压缩和有界词项提取，再由后端生成带引号的 OR 表达式，
-不会执行用户输入的 FTS 运算符。两字以内查询只会在已经限定实体作用域的 SQL 内做有界
-`LIKE`。无词法命中时不会加载全部事实，只允许当前人物少量 `explicit + preference` 常驻；
-“你记得我什么”等集中定义的概览表达使用 `overview`，在每个实体内按重要度、置信度、更新时间
-和事实 ID 返回有界结果。
+明确的用户记住、纠正、删除请求继续由完整 Main Agent 调用即时
+[`memory_change`](memory-change.md)，不等待聚合窗口，不用自然语言正则认定显式权威。
+主体、第三方写入、证据、SELF 可见性与受保护键规则保持独立。
 
-词法与语义候选以确定性 RRF 融合，再结合精确匹配、重要度、置信度、更新时间和稳定事实 ID
-确定顺序。一次 relevant 检索只生成一个 query embedding 并复用于全部合法目标；overview 不
-生成向量。Provider 故障时只降级当前轮为词法检索，不中断聊天，也不改变事实。完整排序和
-降级状态见 [Memory V2 检索](memory-v2-retrieval.md)。
+### 自省的配置与结构化安全
 
-语义候选必须先在 SQL 中按 `scope_type`、`subject_user_id`、`group_id`、active 状态、有效期和
-当前 profile 过滤，再在内存中计算余弦相似度。严禁全库向量搜索后反推身份。文档向量异步生成，
-正文模板只包含有界的 kind、category、memory_key 和 content，不包含 QQ、群号、昵称、证据、
-聊天历史或系统提示词。详细设计与运维见 [Embedding 与混合 RAG](memory-v2-embedding.md)。
+自省按 canonical 会话所有者读取配置：群任务使用 Space，私聊任务使用 Person。
+首条 evidence 即使是 Yuki 的旧/新 Presence 或工具回执，也不承担配置主体角色。
+配置读取允许已有停用所有者，任务准入仍独立判断；不存在或类型错误的引用失败关闭。
 
-## 上下文和已使用时间
+自省 schema 和本地校验一致限制最多 8 个 proposals、1 个 episode；episode 使用
+整条最多16个唯一、真实允许的 evidence alias，每段1–8个。模型输出1–8个连续passages，每段包含
+evidence_refs和content；后端按顺序以换行连接正文、按首次出现合并引用，整条正文
+仍最多4000字符、不同来源最多16个。模型不另写未绑定来源的总述，旧的整条content/
+evidence_refs输出不再接受。一次输出的引用先整体校验，再执行 mutation。
+片段绑定只检查结构与真实引用，不证明每句话被语义支持；该生成策略仍须真实验收。
+最多一次定向模型修复，携带原任务、原输入和作为不可信资料的失败输出；超长资料明确
+标记截断。非法输出不删字段冒充成功，无值得记录的内容允许正常 noop。
 
-`ContextAssembler` 通过 `MemoryContextService` 获取以下互不混合的块：
+本轮后续召回及 Dream 变更的验收要求见
+[记忆可靠性与强相关召回任务书](Yuki-记忆可靠性与强相关召回任务书.md)，该任务书状态为
+实施中时，不代表其中所有目标已上线。
 
-```json
-{
-  "current_person": {"user_id": "10001", "facts": []},
-  "current_person_in_group": {"user_id": "10001", "group_id": "20001", "facts": []},
-  "current_group": {"group_id": "20001", "facts": []},
-  "referenced_people": [
-    {"user_id": "10002", "group_id": "20001", "person_facts": [], "group_facts": []}
-  ]
-}
-```
+### Dream 的意义与预算
 
-聊天历史中的发送者 QQ、昵称和群名片来自 `chat_events` 的不可变事件快照，不从人物目录二次拼装；
-只有当前消息明确提及或回复的人物才会进入引用主体记忆检索。
-`last_used_at` 只在事实通过最终 `ContextBudgeter` 后一次性更新；候选、被预算删除的事实、管理
-列表和索引重建都不会更新它。Core Agent、管理员诊断和 Plugin API v1 的相关搜索均复用同一个
-`MemoryRetriever`。
+Dream 完整保留输入事实正文，超预算先移除可选 evidence excerpt；仍超限则失败保留原事实，
+不以截断源文再替换完整事实的方式继续。新正文最多四条、单条 800 字、合计 1600 字，
+生成与正式 mutation 使用同一长度校验；0.45 压缩比只作软目标，未达到不触发重试。
+默认输出预算 4096 tokens，移除旧 0.70 硬压缩比。
 
-## 冲突与生命周期
+每簇最多两次生成，首次和修复都预占持久预算，每轮默认 12 簇/24 次。schema、来源或绝对
+长度不合格时最多一次定向修复，保留原任务、原输入及不可信失败输出；两次均失败不合成
+keep 成功。显式事实、来源覆盖、scope、重复/未知引用与原子 mutation 保护不变。
 
-Memory Worker 对每个 claim 先查找同 target 的 exact key/content、FTS 和可用语义候选，再让
-独立 Flash 分类器判断语义关系。分类器只返回本地 `candidate_N` 和稳定关系枚举；
-`MemoryResolutionPolicy` 才能决定合并证据、创建版本、标记 contested、替代或失效。分类失败
-采用保守策略，第三方或低权威陈述不会覆盖本人/explicit 事实。
+增量优先未尝试或指纹变化的簇，已尝试按最久未尝试优先；预算延期不当作已执行，不推进
+成功 checkpoint。输入超限、执行失败和预算延期有独立的错误类别。
 
-修正创建新版本并保存 `supersedes_id`；撤回只进入 invalidated。每次创建、确认、争议、替代、
-失效、恢复、合并和过期都与事实状态在同一事务写入 `memory_fact_state_events`。支持证据按固定
-权重聚合为 confidence，并受最强 authority 的上限约束；关系分数不参与该过程。
+## 历史共同群读取
 
-本地维护任务使用 `last_confirmed_at` 而不是 `last_used_at` 判断低价值自动事实是否陈旧。
-explicit、高重要度或高 confidence 事实不走陈旧失效；维护不调用 LLM/Embedding、不扫描历史、
-不物理删除事实或证据。详见 [冲突治理](memory-v2-conflicts.md)、
-[生命周期](memory-v2-lifecycle.md) 和 [第三方人物事实](memory-v2-third-party-facts.md)。
+所有普通用户结构化读取使用后端 `MemoryReadScopeResolver`。设请求者 R，目标人物 P，
+G(X) 为数据库记录的 X 的历史 canonical membership：
 
-## 索引运维
+| 目标 | 允许条件 |
+|---|---|
+| R 本人的 Person | 本人 |
+| 他人的 Person | G(R) 与 G(P) 存在直接交集 |
+| Group H | H 属于 G(R) |
+| PersonGroup(P,H) | H 同时属于 G(R)、G(P) |
+| SELF | 原有 global/current-private/current-group 规则，不按历史群扩权 |
 
-超级管理员可以使用：
+**有共同群关系即可读取目标完整 Person 结构化事实，包括私聊来源的事实。**
+这是明确接受的隐私取舍；在群聊里查询可能向其他成员展示这些事实。它不开放原始私聊、
+完整 evidence、其他人的 private SELF，也不是第三方写入授权。
 
-```text
-/ai memory search person <QQ号> <query>
-/ai memory search group <群号> <query>
-/ai memory index status
-/ai memory index rebuild
-/ai memory embedding status
-/ai memory embedding doctor
-/ai memory embedding retry
-/ai memory embedding rebuild
-/ai memory embedding purge-old
-```
+成员关系不依赖实时网关群列表、群 enabled、路由 paused、Provider 在线或当前 Presence。
+退群但历史记录仍在时关系仍有效；不做朋友的朋友等传递授权。forget 删除关系后下一次查询
+依据剩余数据库记录重新判断，不缓存永久许可。当前在群 G，也可查历史共同群 H。
+Binding ID、群号、昵称、工具参数都只是选择器，不是模型自己声明的权限。
 
-健康检查仅返回事实数、物理索引行数、缺失数和孤儿数，不记录查询或事实正文。重建只执行
-FTS 派生索引 rebuild，不修改事实、证据或状态，也不会在每次启动时自动运行。
+自动预取、人物/群工具的列表与搜索、fact detail 复用相同政策；旧的“只凭当前群 evidence
+投影 Person”授权路径已经删除。evidence 仍走本人/显式管理授权边界。
+无真实用户主体的 Plugin、Automation、System 使用既有受控目标；不能伪造 actor 自行扩权。
+Control Plane 仍要求 capability。
 
-## 受控历史重建
+## 检索与使用
 
-3.0.0rc1 可以从固定快照内的 `chat_events` 显式重建。plan 无模型，extract 只暂存 claim，
-全部 proposal 经超级管理员 approve/reject 后才能 commit。提交时重新验证真实事件、主体、时间、
-当前事实与 live receipt；历史事实不会覆盖更新事实，也不会为腾出容量淘汰当前 active fact。
-升级、启动和 Worker 启动均不会自动开始；重启只会将执行中任务暂停。详见
-[受控历史重建](memory-v2-rebuild.md)。
+[检索合同](memory-v2-retrieval.md)定义 Query Plane、结构化 intent、检索与排序。
+自动预取只以当前人物、当前群、真实 mention/reply 等现有目标为起点，默认最多四条，可以零条；
+“有权查”不等于每轮扫描历史群和全部群友。当前主题优先，剩余位置最多一条相关人物背景，
+没有主题不靠背景凑数。门槛必须绑定已校准 embedding profile，未校准或故障只接受精确匹配。
+本轮不增加冷却或最低配额；旧 P1“不新增相关性门槛”的阶段约束由强相关召回任务书取代。
+更广范围主要通过完整 Main Agent 的主动查询意图进入；不增加识别/裁判 Agent 或独立短上下文。
 
-## 正式质量门禁
+候选、实际注入、完成使用评估是三件不同的事。
+零注入轮有 receipt，但不调用 attribution；旧 used=false 是未知而非确认未使用。
+只有成功评估的 item 才进入使用率分母，失败、跳过、取消和重启中断单独统计。
+Plugin/Admin 纯查询不产生强化或使用回执。详见
+[指标口径](memory-v2-quality-metrics.md)、[质量运维](../operations/memory-quality.md)。
 
-3.0.0 以版本化合成 suite、外部 TOML gates、冻结 baseline、生产只读 audit、指纹保护 hygiene
-和 contract snapshot 完成正式收敛。完整 suite 逐 case 使用独立临时 SQLite，并复用生产
-Memory V2 服务；CI 不调用真实模型。详见 [质量与治理架构](memory-v2-quality.md)。
+## 维护与变更边界
 
-## 尚未实现
-
-当前没有独立向量数据库、模型重排、模糊昵称人物识别或第三方跨群人物事实。Memory V2 六个
-阶段均已完成；这些边界不是 3.0.0 的遗留发布项。
+- 不用 /ai new、清空事实或重建 embedding 掩盖队列/召回问题。
+- 0051 仅增加 recall 观测列；不改事实、证据、身份、正文或路由。
+- 未来 WebUI 复用 Control Plane，不直接查询 ORM；读取、content、mutation、destructive
+  能力边界继续分离，secret 永不返回。
+- [第三方事实写入](memory-v2-third-party-facts.md)、
+  [质量架构](memory-v2-quality.md)仍是对应领域合同。
+  phase/roadmap/旧任务书仅供历史参考，不覆盖本页。

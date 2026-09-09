@@ -1,3 +1,7 @@
+> **历史设计/非现行合同。** 本文保留当时的方案或实测口径，不用于当前授权、调度或使用率判断。
+> 当前实现以 [Memory 架构](memory-v2.md)、[检索合同](memory-v2-retrieval.md)
+> 和 [P1 治理任务书](Yuki-Memory-P1治理任务书.md) 为准；本文不在当前实施导航内。
+
 # Yuki Memory Dream 真实数据测试报告
 
 > 测试时间：2026-08-13 16:49～16:58（Asia/Shanghai）  

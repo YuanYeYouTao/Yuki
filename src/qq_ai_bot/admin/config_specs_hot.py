@@ -14,6 +14,33 @@ from qq_ai_bot.admin.models import ConfigSpec
 
 def hot_config_specs() -> tuple[ConfigSpec, ...]:
     return (
+        *tuple(
+            _spec(
+                f"memory.automatic_{kind}_threshold",
+                f"自动召回{title}门槛",
+                "仅作用于自动注入；必须与验收后的 embedding profile 指纹配套。",
+                value_type="number",
+                minimum=0.35,
+                maximum=0.90,
+                scopes=_G,
+                env_alias=f"MEMORY_AUTOMATIC_{kind.upper()}_THRESHOLD",
+                getter=_field(f"memory_automatic_{kind}_threshold"),
+                settings_fields=(f"memory_automatic_{kind}_threshold",),
+                category="memory",
+            )
+            for kind, title in (("topic", "主题"), ("background", "背景"))
+        ),
+        _spec(
+            "memory.automatic_calibrated_profile",
+            "自动召回已校准模型指纹",
+            "与当前 embedding profile 不一致或为空时自动只接受精确匹配，不影响主动搜索。",
+            value_type="string",
+            scopes=_G,
+            env_alias="MEMORY_AUTOMATIC_CALIBRATED_PROFILE",
+            getter=_field("memory_automatic_calibrated_profile"),
+            settings_fields=("memory_automatic_calibrated_profile",),
+            category="memory",
+        ),
         _spec(
             "memory.retrieval_enabled",
             "查询驱动记忆检索",
@@ -737,7 +764,7 @@ def hot_config_specs() -> tuple[ConfigSpec, ...]:
         _spec(
             "llm.thinking_enabled",
             "模型深度思考开关",
-            "是否为普通聊天请求显式启用深度思考。",
+            "兼容配置项；所有生成请求固定启用思考，false 不再降低 low 下限。",
             aliases=("深度思考", "思考模式"),
             value_type="boolean",
             scopes=_GGU,
@@ -956,7 +983,7 @@ def hot_config_specs() -> tuple[ConfigSpec, ...]:
         _spec(
             "vision.thinking_enabled",
             "视觉动态思考开关",
-            "角色、表情包和问题模式启用深度思考，普通低置信度结果可自动复核。",
+            "兼容配置项；所有视觉模式固定启用原生思考，false 不再关闭。",
             aliases=("识图思考", "视觉深度思考"),
             value_type="boolean",
             scopes=_GGU,
@@ -982,7 +1009,7 @@ def hot_config_specs() -> tuple[ConfigSpec, ...]:
         _spec(
             "vision.low_confidence_retry_threshold",
             "视觉低置信度复核阈值",
-            "快速识别低于该平均置信度时，自动使用思考模式复核一次。",
+            "兼容配置项；所有视觉请求已开启思考，不再触发先快速识别、后思考的复核。",
             aliases=("识图复核阈值", "视觉置信度阈值"),
             value_type="number",
             minimum=0,

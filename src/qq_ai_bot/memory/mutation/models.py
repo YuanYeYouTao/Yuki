@@ -8,6 +8,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from qq_ai_bot.domain.memory_config import MemoryConfigScope
 from qq_ai_bot.memory.enums import MemoryKind, MemoryReviewState, MemoryScopeType, MemoryStatus
 from qq_ai_bot.persistence.repository_records import EventRecord
 
@@ -172,6 +173,7 @@ class MemoryMutationContext:
     executed_by_bot_user_id: str
     actor_is_superuser: bool = False
     evidence_tool_receipt_id: int | None = None
+    config_scope: MemoryConfigScope | None = None
 
 
 @dataclass(frozen=True, slots=True)

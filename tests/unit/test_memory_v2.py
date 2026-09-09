@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from tests.conftest import MemorySender, build_harness, make_settings
 
@@ -32,6 +32,7 @@ from qq_ai_bot.memory.enums import (
 from qq_ai_bot.memory.extraction import (
     BatchMemoryClaim,
     BatchMemoryExtractionOutput,
+    ExtractedMemoryClaim,
     MemoryClaim,
 )
 from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
@@ -71,7 +72,7 @@ def _event(
     )
 
 
-def _claim(**overrides: object) -> MemoryClaim:
+def _claim(**overrides: object) -> ExtractedMemoryClaim:
     values: dict[str, object] = {
         "subject_ref": "speaker",
         "scope_type": "person",
@@ -83,9 +84,13 @@ def _claim(**overrides: object) -> MemoryClaim:
         "importance": 4,
         "confidence": 0.9,
         "source_type": "automatic",
+        "subject_basis": "omitted_self",
+        "retention": "durable",
+        "source_style": "natural_statement",
+        "value_reason": "A lasting education plan informs future conversations.",
     }
     values.update(overrides)
-    return MemoryClaim.model_validate(values)
+    return ExtractedMemoryClaim.model_validate(values)
 
 
 def test_extraction_schema_rejects_model_selected_identity_fields() -> None:
@@ -93,29 +98,64 @@ def test_extraction_schema_rejects_model_selected_identity_fields() -> None:
         MemoryClaim.model_validate({**_claim().model_dump(), "user_id": "2002"})
     with pytest.raises(ValidationError):
         MemoryClaim.model_validate({**_claim().model_dump(), "source_event_id": 999})
+    for field in ("importance", "confidence", "retention", "source_style", "value_reason"):
+        omitted = _claim().model_dump()
+        omitted.pop(field)
+        with pytest.raises(ValidationError):
+            ExtractedMemoryClaim.model_validate(omitted)
 
 
-def test_batch_extraction_supports_multiple_claims_per_event() -> None:
+async def test_batch_retains_multiple_valuable_claims_without_self_declared_authority(
+    database: Database,
+) -> None:
+    ledger = EventLedgerRepository(database)
+    event = await _append_event(
+        ledger, message_id="selective", content="我准备考研。我第一次独立登顶高山。哈哈。"
+    )
     output = BatchMemoryExtractionOutput(
-        claims=(
-            BatchMemoryClaim(source_event_id=42, claim=_claim()),
-            BatchMemoryClaim(
-                source_event_id=42,
-                claim=_claim(
-                    memory_key="pet:cat",
-                    category="pet",
-                    content="开始养猫",
-                    evidence_quote="最近开始养猫",
+        claims=tuple(
+            BatchMemoryClaim(source_event_id=event.id, claim=claim)
+            for claim in (
+                _claim(source_type="explicit"),
+                _claim(
+                    memory_key="milestone",
+                    content="第一次独立登顶高山",
+                    evidence_quote="我第一次独立登顶高山",
+                    importance=3,
+                    retention="meaningful_episode",
+                    value_reason="有意义的单次里程碑",
                 ),
-            ),
+                _claim(memory_key="banter", importance=2, subject_basis="about_yuki"),
+                _claim(memory_key="forged-explicit", retention="transient", source_type="explicit"),
+            )
         )
     )
 
-    assert [item.source_event_id for item in output.claims] == [42, 42]
-    assert [item.claim.memory_key for item in output.claims] == [
-        "education:plan",
-        "pet:cat",
-    ]
+    class Provider(LLMProvider):
+        async def complete(self, request: ChatRequest) -> ChatResponse:
+            return ChatResponse(content=output.model_dump_json(), latency_seconds=0)
+
+    jobs = MemoryJobRepository(database)
+    facts = MemoryFactService(MemoryFactRepository(database))
+    worker = MemoryWorker(
+        settings=make_settings(database.url, memory_batch_max_wait_seconds=0),
+        jobs=jobs,
+        facts=facts,
+        ledger=ledger,
+        provider=Provider(),
+        concurrency=ConcurrencyManager(1),
+    )
+    assert await worker.enqueue(event.id, "private:1001")
+    assert await worker.process_once() == 1
+    rows = await facts.list_person("1001")
+    assert {row.memory_key for row in rows} == {"education:plan", "milestone"}
+    assert all(row.source_type is MemorySourceType.AUTOMATIC for row in rows)
+    assert next(row for row in rows if row.memory_key == "milestone").kind is MemoryKind.EPISODE
+    assert await worker.process_once() == 0
+    from sqlalchemy import text
+
+    async with database.sessions() as session:
+        assert await session.scalar(text("SELECT count(*) FROM memory_claim_candidates")) == 0
 
 
 def test_subject_resolver_only_allows_primary_speaker_and_current_group() -> None:
@@ -593,6 +633,14 @@ async def test_ready_batch_waits_for_twelve_events_and_never_mixes_conversations
         max_characters=8000,
         max_wait_seconds=300,
     )
+    health = await jobs.batch_health(
+        trigger_count=12,
+        max_characters=8000,
+        max_wait_seconds=300,
+    )
+    assert health["ready_owner_count"] == 0
+    assert health["waiting_owner_count"] == 2
+    assert health["normal_waiting_is_blocked"] is False
 
     twelfth = await _append_event(
         ledger,
@@ -631,7 +679,7 @@ async def test_ready_batch_triggers_on_characters_or_oldest_wait(database: Datab
         limit=12,
         trigger_count=12,
         max_characters=8000,
-        max_wait_seconds=300,
+        max_wait_seconds=3600,
     )
     assert len(characters) == 2
     for job in characters:
@@ -644,12 +692,20 @@ async def test_ready_batch_triggers_on_characters_or_oldest_wait(database: Datab
         group_id="2002",
     )
     assert await jobs.enqueue(waiting.id, "group:2002")
+    assert make_settings(database.url).memory_batch_max_wait_seconds == 3600
+    assert not await jobs.claim_ready_batch(
+        limit=12,
+        trigger_count=12,
+        max_characters=8000,
+        max_wait_seconds=3600,
+        now=datetime.now(UTC) + timedelta(seconds=3590),
+    )
     aged = await jobs.claim_ready_batch(
         limit=12,
         trigger_count=12,
         max_characters=8000,
-        max_wait_seconds=300,
-        now=datetime.now(UTC) + timedelta(seconds=301),
+        max_wait_seconds=3600,
+        now=datetime.now(UTC) + timedelta(seconds=3601),
     )
     assert [job.event_id for job in aged] == [waiting.id]
 
@@ -678,6 +734,10 @@ class _BatchProvider(LLMProvider):
                         "importance": 3,
                         "confidence": 0.9,
                         "source_type": "automatic",
+                        "subject_basis": "omitted_self",
+                        "retention": "durable",
+                        "source_style": "natural_statement",
+                        "value_reason": "Synthetic stable fact used by later conversation.",
                     },
                 }
             )
@@ -775,6 +835,10 @@ class _RejectedClaimProvider(LLMProvider):
                                 "importance": 3,
                                 "confidence": 0.9,
                                 "source_type": "automatic",
+                                "subject_basis": "omitted_self",
+                                "retention": "durable",
+                                "source_style": "natural_statement",
+                                "value_reason": "Stable fact with a separate evidence check.",
                             },
                         }
                     ]
@@ -889,16 +953,17 @@ async def test_worker_requeues_every_job_when_shared_batch_extraction_fails(
     jobs = MemoryJobRepository(database)
     assert await jobs.enqueue(first.id, "group:2001")
     assert await jobs.enqueue(second.id, "group:2001")
+    provider = _UnexpectedThenValidProvider()
     worker = MemoryWorker(
         settings=make_settings(
             database.url,
             memory_batch_trigger_count=2,
-            memory_batch_max_wait_seconds=300,
+            memory_batch_max_wait_seconds=3600,
         ),
         jobs=jobs,
         facts=MemoryFactService(MemoryFactRepository(database)),
         ledger=ledger,
-        provider=_UnexpectedThenValidProvider(),
+        provider=provider,
         concurrency=ConcurrencyManager(1),
     )
 
@@ -914,6 +979,26 @@ async def test_worker_requeues_every_job_when_shared_batch_extraction_fails(
     assert [row.status for row in rows] == ["pending", "pending"]
     assert [row.attempts for row in rows] == [1, 1]
     assert [row.error_category for row in rows] == ["KeyError", "KeyError"]
+    async with database.sessions() as session, session.begin():
+        await session.execute(
+            update(MemoryJobModel)
+            .where(MemoryJobModel.event_id.in_((first.id, second.id)))
+            .values(next_attempt_at=datetime.now(UTC) - timedelta(seconds=1))
+        )
+    assert await worker.process_once() == 2
+    assert provider.calls == 2
+    stale_event = await _append_event(ledger, message_id="worker-stale-recovery", user_id="1001")
+    assert await jobs.enqueue(stale_event.id, "private:1001")
+    async with database.sessions() as session, session.begin():
+        await session.execute(
+            update(MemoryJobModel)
+            .where(MemoryJobModel.event_id == stale_event.id)
+            .values(status="processing", updated_at=datetime.now(UTC) - timedelta(minutes=6))
+        )
+    recovered = await jobs.claim_ready_batch(
+        limit=12, trigger_count=12, max_characters=8000, max_wait_seconds=3600
+    )
+    assert len(recovered) == 1 and recovered[0].batch_trigger == "recovery"
 
 
 @pytest.mark.asyncio
@@ -1027,11 +1112,11 @@ async def test_worker_isolates_job_completion_failure(
 @pytest.mark.asyncio
 async def test_context_keeps_facts_in_current_entity_blocks_only(database: Database) -> None:
     memories = MemoryFactService(MemoryFactRepository(database))
-    await memories.remember(_fact(content="只属于当前人物"))
+    await memories.remember(_fact(content="只属于当前人物", memory_key="context:exact"))
     await memories.remember(
         _fact(
             content="只属于当前群",
-            memory_key="group:topic",
+            memory_key="context:exact",
             user_id=None,
             group_id="2001",
             scope_type=MemoryScopeType.GROUP,
@@ -1040,7 +1125,7 @@ async def test_context_keeps_facts_in_current_entity_blocks_only(database: Datab
     await memories.remember(
         _fact(
             content="当前群内称呼",
-            memory_key="member:alias",
+            memory_key="context:exact",
             group_id="2001",
             scope_type=MemoryScopeType.PERSON_GROUP,
         )
@@ -1070,7 +1155,7 @@ async def test_context_keeps_facts_in_current_entity_blocks_only(database: Datab
         event_type="message:group:normal",
         scope_type=ScopeType.GROUP,
         sender=SenderIdentity(user_id="1001", nickname="当前用户"),
-        text="只属于当前人物，只属于当前群，当前群内称呼",
+        text="context:exact",
         group_id="2001",
         mentioned_user_ids=("1002",),
         mentions_bot=True,
@@ -1096,17 +1181,17 @@ async def test_context_keeps_facts_in_current_entity_blocks_only(database: Datab
 
 
 @pytest.mark.asyncio
-async def test_context_limits_mentioned_member_facts_to_current_group_block(
+async def test_context_includes_authorized_person_facts_without_scanning_other_groups(
     database: Database,
 ) -> None:
     memories = MemoryFactService(MemoryFactRepository(database))
     person_fact = await memories.remember(
-        _fact(content="小李喜欢水彩绘画", memory_key="hobby:painting", user_id="1002")
+        _fact(content="小李喜欢水彩绘画", memory_key="shared:exact", user_id="1002")
     )
     group_fact = await memories.remember(
         _fact(
             content="小李在本群负责美术",
-            memory_key="role:artist",
+            memory_key="shared:exact",
             user_id="1002",
             group_id="2001",
             scope_type=MemoryScopeType.PERSON_GROUP,
@@ -1132,7 +1217,7 @@ async def test_context_limits_mentioned_member_facts_to_current_group_block(
         event_type="message:group:normal",
         scope_type=ScopeType.GROUP,
         sender=SenderIdentity(user_id="1001", nickname="当前用户"),
-        text="小李喜欢水彩绘画，也在本群负责美术吗",
+        text="shared:exact",
         group_id="2001",
         mentioned_user_ids=("1002",),
         mentions_bot=True,
@@ -1151,9 +1236,9 @@ async def test_context_limits_mentioned_member_facts_to_current_group_block(
     referenced = blocks["referenced_person.0"]
 
     assert referenced["user_id"] == "1002"
-    assert referenced["person_facts"] == []
+    assert [fact["fact_id"] for fact in referenced["person_facts"]] == [person_fact.id]
     assert [fact["fact_id"] for fact in referenced["group_facts"]] == [group_fact.id]
-    assert person_fact.id not in {
+    assert person_fact.id in {
         fact["fact_id"]
         for values in (referenced["person_facts"], referenced["group_facts"])
         for fact in values

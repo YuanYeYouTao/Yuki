@@ -5,9 +5,9 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from qq_ai_bot.domain.messages import ReasoningEffort
+from qq_ai_bot.domain.messages import ReasoningEffort, minimum_reasoning_effort
 
 
 class ModelTask(StrEnum):
@@ -78,10 +78,21 @@ class ModelProfile(_FrozenModel):
     max_retries: int = Field(ge=0)
     default_temperature: float = Field(ge=0, le=2)
     default_max_output_tokens: int = Field(gt=0)
-    thinking_enabled: bool | None = None
-    reasoning_effort: ReasoningEffort | None = None
+    thinking_enabled: bool | None = True
+    reasoning_effort: ReasoningEffort | None = ReasoningEffort.LOW
     structured_output_mode: StructuredOutputMode = StructuredOutputMode.FUNCTION_TOOL
     capabilities: frozenset[ModelCapability] = frozenset()
+
+    @field_validator("thinking_enabled")
+    @classmethod
+    def _enable_reasoning(cls, value: bool | None) -> bool:
+        # Legacy disable/unspecified settings cannot bypass the application floor.
+        return True
+
+    @field_validator("reasoning_effort")
+    @classmethod
+    def _reasoning_floor(cls, value: ReasoningEffort | None) -> ReasoningEffort:
+        return minimum_reasoning_effort(value)
 
     @model_validator(mode="after")
     def _validate_endpoint(self) -> ModelProfile:
@@ -89,10 +100,10 @@ class ModelProfile(_FrozenModel):
             raise ValueError("base_url is required for non-fake model profiles")
         if self.provider.casefold() != "fake" and not self.api_key_env:
             raise ValueError("api_key_env is required for non-fake model profiles")
-        if self.reasoning_effort is not None and ModelCapability.REASONING not in self.capabilities:
-            raise ValueError("reasoning_effort requires the reasoning capability")
-        if self.reasoning_effort is not None and self.thinking_enabled is False:
-            raise ValueError("reasoning_effort cannot be used with disabled thinking")
+        if ModelCapability.REASONING not in self.capabilities:
+            raise ValueError(
+                "all generation profiles require the reasoning capability (minimum low)"
+            )
         if self.protocol is ModelProtocol.RESPONSES and self.provider.casefold() not in {
             "deepseek",
             "fake",

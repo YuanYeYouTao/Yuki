@@ -8,7 +8,7 @@
 
 <p>
   <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.1"><img src="https://img.shields.io/badge/Release-3.8.1-blue" alt="Yuki 3.8.1 release"></a>
-  <img src="https://img.shields.io/badge/Schema-0050-blue" alt="Alembic head 0050">
+  <img src="https://img.shields.io/badge/Schema-0051-blue" alt="Alembic head 0051">
   <img src="https://img.shields.io/badge/Plugin%20API-2.0-8A2BE2" alt="Plugin API 2.0">
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
@@ -22,8 +22,9 @@ Yuki 不是给 QQ 套一层模型回复的问答机器人。它把 Conversation�
 Automation、Plugin 与 QQ 登录账号和 Gateway 连接分开，让同一个长期角色能够换账号、换
 Provider，并在权限边界内持续记住人与共同经历。
 
-最新已发布版本为 **3.8.1**。当前源码包含 3.8.1 之后的插件唤醒修复；3.8 只运行
-canonical schema，Alembic head 为 `0050`。
+最新已发布版本为 **3.8.1**；当前源码基线为 **3.8.2（发布准备中）**，包含插件唤醒、Memory P1
+治理、意图读取与记忆可靠性修复。3.8 只运行
+canonical schema，Alembic head 为 `0051`。
 
 ## 3.8 核心合同
 
@@ -41,6 +42,17 @@ canonical schema，Alembic head 为 `0050`。
 | 管理能力 | transport-neutral Control Plane 是未来 WebUI 的唯一业务后端边界 |
 
 完整结构见 [Yuki 3.8 canonical runtime](docs/architecture/canonical-runtime.md)。
+
+### 记忆读取与自动保存
+
+可以自然地询问本人或历史共同群友的记忆、指定旧群名查询群整体或某人在群里的记忆；
+同名时 Yuki 会要求澄清。权限取决于后端历史成员关系，不取决于当前登录的 Yuki 账号或旧群
+是否启用。**共同群关系可开放人物完整 Person 结构化事实（含私聊来源）**，但不开放原始
+私聊、他人 evidence/private SELF，也不改变写入权限。
+
+普通自动提取最长等待一小时聚合，优先保存稳定事实、持续偏好和有意义的单次经历；
+没有值得保存的内容时空提取是正常结果。明确的记住、纠正和删除仍立即处理。
+详见唯一现行 [Memory 合同](docs/architecture/memory-v2.md)。
 
 ## 消息主路径
 
@@ -108,7 +120,8 @@ Invoke-WebRequest -Uri https://github.com/YuanYeYouTao/Yuki-QQbot/releases/downl
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-安装器默认版本为 `3.8.1`。它会校验 Release bundle、固定镜像版本、备份已有部署、受控更新
+上述下载命令仍指向已发布的 `3.8.1`；当前源码安装器默认 `3.8.2`，须等待对应 Release 资产
+发布后使用，不能将未发布版本视为可下载。安装器会校验 Release bundle、固定镜像版本、备份已有部署、受控更新
 内置插件，并在 Bot 启动前执行离线 recount/check 与队列 doctor。任一门禁失败都保持
 Bot 停止。密钥输入不回显，安装器不会在线试用 API key。
 
@@ -145,10 +158,11 @@ docker compose up -d
 
 3.8 的数据库合同：
 
-- fresh install：无父 revision 的 `0048` canonical baseline，随后升级到 `0049 -> 0050`。
+- fresh install：无父 revision 的 `0048` canonical baseline，随后升级到 `0049 -> 0050 -> 0051`。
 - historical bridge：只接受已完成 canonical v2 的旧 `0048` 数据库。
 - pre-3.8、v1、dual-write、backfill/cutover 中间态数据库不受支持，启动时失败关闭。
-- `0049` 仍是不提供 downgrade 的 canonical bridge；`0050` 只增加主动回复因果列和索引。
+- `0049` 仍是不提供 downgrade 的 canonical bridge；`0050` 增加主动回复因果列和索引，`0051`
+  只增加 Memory recall 评估与主动读取结果的无正文观测列。
   生产数据的可靠回退方式仍是恢复升级前同一时点的 DB/WAL/SHM 快照。
 
 升级前必须停止 Bot 与 Provider，并把以下文件作为一组保存：
@@ -205,7 +219,7 @@ uv run mypy src
 uv run pytest
 ```
 
-涉及 schema 或发布时还要验证 fresh `0048 -> 0049 -> 0050`、populated `0049 -> 0050`、SQLite
+涉及 schema 或发布时还要验证 fresh `0048 -> 0049 -> 0050 -> 0051`、populated `0050 -> 0051`、SQLite
 `foreign_key_check`、FTS/trigger、release smoke 和 Docker Compose 配置。
 
 ## 文档
@@ -221,6 +235,8 @@ uv run pytest
 - [SnowLuma Provider](docs/deployment/snowluma.md)
 - [3.8.1 升级指南](docs/upgrade-3.8.1.md)
 - [3.8.1 发布说明](docs/releases/v3.8.1.md)
+- [3.8.2 发布准备说明](docs/releases/v3.8.2.md)
+- [3.8.2 升级指南](docs/upgrade-3.8.2.md)
 - [版本化 Docker Release](docs/operations/versioned-docker-release.md)
 - [CHANGELOG](CHANGELOG.md)
 

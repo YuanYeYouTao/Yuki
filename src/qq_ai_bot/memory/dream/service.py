@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,7 +23,7 @@ from qq_ai_bot.memory.dream.models import (
     DreamRun,
     DreamRunMode,
 )
-from qq_ai_bot.memory.dream.quality import episode_compression_limit
+from qq_ai_bot.memory.dream.quality import episode_compression_limit, validate_output_lengths
 from qq_ai_bot.memory.dream.repository import (
     DreamCandidate,
     DreamCandidateLoad,
@@ -50,6 +51,10 @@ class DreamQualityError(ValueError):
         super().__init__(detail)
         self.code = code
         self.detail = detail
+
+
+class DreamBudgetExhausted(RuntimeError):
+    """No generation was issued because the durable attempt budget is exhausted."""
 
 
 _RECOMPOSE_QUALITY_INSTRUCTION = """\
@@ -223,6 +228,19 @@ class DreamService:
     async def plan_incremental(self, *, scheduled_slot: str) -> DreamRun:
         loaded = await self._load()
         clusters, isolated = await self._clusters(loaded, incremental=True)
+        attempted = await self._repository.attempted_fingerprints()
+        unique = {self._candidate_cluster_fingerprint(items): items for items in clusters}
+        clusters = tuple(
+            unique[key]
+            for key in sorted(
+                unique,
+                key=lambda key: (
+                    key in attempted,
+                    attempted[key].isoformat() if key in attempted else "",
+                    tuple(item.fact.id for item in unique[key]),
+                ),
+            )
+        )
         if isolated:
             await self._repository.checkpoint_candidates(isolated)
         clusters = clusters[: self._settings.memory_dream_max_clusters_per_run]
@@ -584,10 +602,8 @@ class DreamService:
         ref_map = {f"memory_{index}": fact for index, fact in enumerate(facts, start=1)}
         remaining = self._settings.memory_dream_max_input_characters
         rows: list[DreamMemoryInput] = []
-        for index, (ref, fact) in enumerate(ref_map.items()):
-            facts_left = len(ref_map) - index
-            content_budget = max(0, remaining // max(1, facts_left))
-            content = fact.content[:content_budget]
+        for ref, fact in ref_map.items():
+            content = fact.content
             remaining -= len(content)
             evidence_rows = await self._facts.list_evidence(fact.id, limit=100_000)
             selected = self._select_evidence(evidence_rows)
@@ -643,6 +659,20 @@ class DreamService:
         return self._fit_input(payload), ref_map
 
     def _validate_output(self, payload: DreamInput, output: DreamOutput) -> None:
+        contents = tuple(
+            content
+            for action in output.actions
+            for content in ((action.content,) if action.content is not None else ())
+            + tuple(item.content for item in action.outputs)
+        )
+        try:
+            validate_output_lengths(
+                contents, per_output=self._settings.memory_dream_episode_max_characters
+            )
+        except ValueError as exc:
+            raise DreamQualityError(
+                str(exc), "at most 4 outputs; each <=800, total <=1600 characters"
+            ) from exc
         expected = {item.ref for item in payload.memories}
         used = {ref for action in output.actions for ref in action.source_refs}
         if used != expected:
@@ -690,56 +720,6 @@ class DreamService:
                     "dream_output_too_long",
                     "dream recompose episode exceeds the character limit",
                 )
-        self._validate_episode_compression(
-            payload,
-            output,
-            ratio=self._settings.memory_dream_episode_hard_compression_ratio,
-            code="dream_compression_hard_failed",
-        )
-
-    def _validate_compression_target(self, payload: DreamInput, output: DreamOutput) -> None:
-        self._validate_episode_compression(
-            payload,
-            output,
-            ratio=self._settings.memory_dream_episode_compression_ratio,
-            code="dream_compression_soft_miss",
-        )
-
-    def _validate_episode_compression(
-        self,
-        payload: DreamInput,
-        output: DreamOutput,
-        *,
-        ratio: float,
-        code: str,
-    ) -> None:
-        if payload.kind != MemoryKind.EPISODE.value:
-            return
-        by_ref = {item.ref: item for item in payload.memories}
-        recomposed_refs: set[str] = set()
-        for action in output.actions:
-            if action.operation is not DreamOperationType.RECOMPOSE:
-                continue
-            recomposed_refs.update(action.source_refs)
-            source_characters = sum(len(by_ref[ref].content) for ref in action.source_refs)
-            output_characters = sum(len(item.content.strip()) for item in action.outputs)
-            allowed = self._episode_compression_limit(source_characters, ratio=ratio)
-            if output_characters > allowed:
-                raise DreamQualityError(
-                    code,
-                    "dream recompose did not compress the source episodes "
-                    f"enough: output={output_characters} allowed={allowed}",
-                )
-        if recomposed_refs:
-            source_characters = sum(len(by_ref[ref].content) for ref in recomposed_refs)
-            output_characters = self._output_characters(output)
-            allowed = self._episode_compression_limit(source_characters, ratio=ratio)
-            if output_characters > allowed:
-                raise DreamQualityError(
-                    code,
-                    "dream output did not meet the total episode compression ratio: "
-                    f"output={output_characters} allowed={allowed}",
-                )
 
     @staticmethod
     def _output_characters(output: DreamOutput) -> int:
@@ -771,16 +751,13 @@ class DreamService:
                     if overflow <= 0:
                         break
                 row = row.model_copy(update={"evidence": tuple(evidence)})
-                if overflow > 0 and row.content:
-                    cut = min(len(row.content), max(1, overflow))
-                    row = row.model_copy(update={"content": row.content[:-cut]})
-                    overflow -= cut
-                    changed = True
                 rows[row_index] = row
                 if overflow <= 0:
                     break
             if not changed:
-                raise ValueError("memory_dream_input_metadata_exceeds_limit")
+                raise DreamQualityError(
+                    "dream_input_too_large", "complete source facts exceed input budget"
+                )
             current = current.model_copy(update={"memories": tuple(rows)})
         return current
 
@@ -808,50 +785,14 @@ class DreamService:
     ) -> tuple[DreamOutput, int]:
         instruction = self._instruction(self_memory=self_memory, payload=payload)
         calls = 0
-        first_hard_valid: DreamOutput | None = None
-        try:
+
+        async def reserve() -> None:
+            nonlocal calls
             if not await self._reserve_model_call(run, cluster):
-                raise RuntimeError("memory_dream_model_call_budget_exhausted")
+                raise DreamBudgetExhausted("memory_dream_model_call_budget_exhausted")
             calls += 1
-            result = await self._run_model(instruction, payload)
-            self._validate_output(payload, result)
-            first_hard_valid = result
-            self._validate_compression_target(payload, result)
-        except (StructuredTaskError, ValueError) as exc:
-            if not await self._reserve_model_call(run, cluster):
-                if first_hard_valid is not None:
-                    return first_hard_valid, calls
-                raise
-            calls += 1
-            reason = self._quality_reason(exc)
-            repair = self._repair_instruction(instruction, exc, reason=reason)
-            try:
-                repaired = await self._run_model(repair, payload)
-                self._validate_output(payload, repaired)
-            except (StructuredTaskError, ValueError) as repair_exc:
-                if first_hard_valid is not None:
-                    logger.info(
-                        "memory_dream_quality_fallback run_id=%s cluster_id=%d repair_error=%s",
-                        run.public_id,
-                        cluster.id,
-                        self._quality_reason(repair_exc),
-                    )
-                    return first_hard_valid, calls
-                raise StructuredTaskError(
-                    "Memory Dream structured output remained invalid after repair",
-                    reason_code=self._quality_reason(repair_exc),
-                    detail=self._quality_detail(repair_exc),
-                    attempts=calls,
-                ) from repair_exc
-            result = (
-                self._preferred_output(first_hard_valid, repaired)
-                if first_hard_valid is not None
-                else repaired
-            )
-        refs = {item.ref for item in payload.memories}
-        for action in result.actions:
-            if not set(action.source_refs).issubset(refs):
-                raise ValueError("dream output contains an unknown alias")
+
+        result = await self._run_model(instruction, payload, before_attempt=reserve)
         return result, calls
 
     async def _preview_decide(
@@ -861,36 +802,14 @@ class DreamService:
         self_memory: bool,
     ) -> tuple[DreamOutput, int]:
         instruction = self._instruction(self_memory=self_memory, payload=payload)
-        first_hard_valid: DreamOutput | None = None
-        try:
-            result = await self._run_model(instruction, payload)
-            self._validate_output(payload, result)
-            first_hard_valid = result
-            self._validate_compression_target(payload, result)
-            return result, 1
-        except (StructuredTaskError, ValueError) as exc:
-            reason = self._quality_reason(exc)
-            repair = self._repair_instruction(instruction, exc, reason=reason)
-            try:
-                repaired = await self._run_model(repair, payload)
-                self._validate_output(payload, repaired)
-            except (StructuredTaskError, ValueError):
-                if first_hard_valid is not None:
-                    return first_hard_valid, 2
-                raise
-            return (
-                self._preferred_output(first_hard_valid, repaired)
-                if first_hard_valid is not None
-                else repaired,
-                2,
-            )
+        calls = 0
 
-    @classmethod
-    def _preferred_output(cls, first: DreamOutput, repaired: DreamOutput) -> DreamOutput:
-        return min(
-            (first, repaired),
-            key=lambda item: (cls._output_characters(item), len(item.actions)),
-        )
+        async def count() -> None:
+            nonlocal calls
+            calls += 1
+
+        result = await self._run_model(instruction, payload, before_attempt=count)
+        return result, calls
 
     @staticmethod
     def _quality_reason(error: StructuredTaskError | ValueError) -> str:
@@ -908,24 +827,6 @@ class DreamService:
             return error.detail
         return str(error)
 
-    @staticmethod
-    def _repair_instruction(
-        instruction: str,
-        error: StructuredTaskError | ValueError,
-        *,
-        reason: str,
-    ) -> str:
-        detail = error.detail if isinstance(error, StructuredTaskError) else str(error)
-        return (
-            f"{instruction}\n上一次输出无效：{reason}；具体位置：{detail or 'unknown'}。"
-            "请重新划分语义事件、删掉所有不直接服务 focus 的旁支，并充分压缩。"
-            "如果这些来源只是主题接近但各自独立，或继续压缩会损害独立召回，请使用一个 keep "
-            "action 覆盖所有无需改写的来源，不要为了产生新记忆而强行合并。"
-            "必须重新返回完整结果：每个 recompose output 都要同时包含 focus、source_refs、"
-            "content、importance；整个簇最多一个 recompose action、合计最多 4 个 outputs。"
-            "同一来源的拆分必须放在该 action 的 outputs 内，不能把来源重复放进多个 action。"
-        )
-
     def _instruction(self, *, self_memory: bool, payload: DreamInput) -> str:
         instruction = f"{_INSTRUCTION}\n{_RECOMPOSE_QUALITY_INSTRUCTION}"
         if payload.kind == MemoryKind.EPISODE.value:
@@ -934,16 +835,11 @@ class DreamService:
                 source_characters,
                 ratio=self._settings.memory_dream_episode_compression_ratio,
             )
-            hard_limit = self._episode_compression_limit(
-                source_characters,
-                ratio=self._settings.memory_dream_episode_hard_compression_ratio,
-            )
             instruction += (
                 f"\n本簇 Episode 原文共 {source_characters} 字。若全部 recompose，所有 output "
-                f"正文合计目标为 {target} 字以内，最终硬上限为 {hard_limit} 字；优先达到目标，"
-                "但不要为了硬压缩而混合或损坏独立经历。若来源彼此独立且已经清楚，应直接 keep。"
-                "若部分来源 keep，recompose 的目标和硬上限会按其实际来源进一步缩小。"
-                "这些预算都是整个簇合计，不是每条 output 各自可用。"
+                f"正文合计软目标为 {target} 字以内；意义完整优先，不达软目标不会拒绝或重试。"
+                "所有新正文合计最多 1600 字，单条最多 800 字。不要为了压缩而混合或损坏经历。"
+                "来源彼此独立且已经清楚时可 keep；总硬上限不会随来源长度缩小。"
             )
         if self_memory:
             instruction += (
@@ -966,7 +862,7 @@ class DreamService:
         return episode_compression_limit(
             source_characters,
             ratio=ratio,
-            maximum=self._settings.memory_dream_episode_max_characters,
+            maximum=1600,
         )
 
     async def _reserve_model_call(self, run: DreamRun, cluster: DreamCluster) -> bool:
@@ -980,7 +876,23 @@ class DreamService:
             ),
         )
 
-    async def _run_model(self, instruction: str, payload: DreamInput) -> DreamOutput:
+    async def _run_model(
+        self,
+        instruction: str,
+        payload: DreamInput,
+        *,
+        before_attempt: Callable[[], Awaitable[None]],
+    ) -> DreamOutput:
+        def validate(output: DreamOutput) -> None:
+            try:
+                self._validate_output(payload, output)
+            except ValueError as exc:
+                raise StructuredTaskError(
+                    "Dream result failed semantic validation",
+                    reason_code=self._quality_reason(exc),
+                    detail=self._quality_detail(exc),
+                ) from exc
+
         return await self._concurrency.run_llm(
             "memory-dream",
             lambda: self._structured.run(
@@ -992,7 +904,18 @@ class DreamService:
                 max_output_tokens=self._settings.memory_dream_max_output_tokens,
                 allow_text_json=True,
                 compact_schema=True,
-                validation_retries=0,
+                validation_retries=1,
+                before_attempt=before_attempt,
+                validate_output=validate,
+                validation_repair_hint=(
+                    "Correct the reported failure, keeping the original task and source facts. "
+                    "For schema errors fix the named fields; for source coverage errors use only "
+                    "the supplied memory_N aliases and cover each exactly once across actions. "
+                    "For length errors shorten output without losing meaning. Do not invent "
+                    "facts, bypass explicit-source protection, or keep everything just to hide "
+                    "invalid output. Recompose has at most 4 outputs, each with focus, "
+                    "source_refs, content and importance."
+                ),
             ),
             translate_cancellation=False,
         )

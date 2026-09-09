@@ -64,6 +64,12 @@ def inbound(
 
 
 def test_capability_view_owns_first_round_memory_scope() -> None:
+    from qq_ai_bot.config import Settings
+
+    defaults = make_settings("sqlite+aiosqlite:///:memory:")
+    assert "get_group_memories" in defaults.tooling_first_round_pin_ids
+    explicit = Settings(_env_file=None, tooling_first_round_pin_ids_csv="get_self_memories")
+    assert explicit.tooling_first_round_pin_ids == ("get_self_memories",)
     requested = frozenset({"memory", "memory.read", "web"})
     passive = MemoryCapabilityView(
         eager_namespaces=(),
@@ -181,7 +187,7 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     )
     admin_text = admin_sender.messages[0].text
     assert "当前权限：超级管理员" in admin_text
-    assert "可修改运行时配置参数：220 项" in admin_text
+    assert "可修改运行时配置参数：223 项" in admin_text
     assert "管理员业务接口：44 项，其中修改型 33 项" in admin_text
     assert "conversation.autonomous_batch_limit" in admin_text
     assert "relationship.set_affection" in admin_text
@@ -462,7 +468,12 @@ async def _wait_provider_requests(
 
 
 @pytest.mark.asyncio
-async def test_stop_cancels_only_current_task(database: Database) -> None:
+async def test_stop_cancels_only_current_task(
+    database: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    import json
+
+    caplog.set_level("INFO", logger="qq_ai_bot.services.evidence_observation")
     provider = FakeLLMProvider(delay_seconds=5)
     entered, started = _arm_provider_entry(provider)
     harness = build_harness(database, make_settings(database.url), provider)
@@ -503,6 +514,18 @@ async def test_stop_cancels_only_current_task(database: Database) -> None:
         assert other_result.sent_messages >= 1
         assert any("FakeLLM" in (message.text or "") for message in other_sender.messages)
         assert not harness.concurrency.is_processing(other_key)
+        observations = [
+            json.loads(record.getMessage().removeprefix("agent_evidence "))
+            for record in caplog.records
+            if record.name == "qq_ai_bot.services.evidence_observation"
+        ]
+        prepared = {
+            item["correlation_id"] for item in observations if item["phase"] == "request_prepared"
+        }
+        received = {
+            item["correlation_id"] for item in observations if item["phase"] == "response_received"
+        }
+        assert len(prepared) == 2 and len(received) == 1
     finally:
         leftover = [
             task for task in (chat_task, other_task) if task is not None and not task.done()
@@ -636,6 +659,13 @@ async def test_ordinary_chat_always_assembles_agent_context(database: Database) 
     assert result.reason == "chat"
     assert len(provider.requests) == 1
     assert sender.messages[0].text == "表情也要先走 Main Agent"
+    request = provider.requests[0]
+    assert "event_bound_memory_refs" in request.messages[-1].content
+    assert "available_memory_subjects" not in request.messages[-1].content
+    assert any(
+        message.role == "system" and "不是可查询人物名单或权限白名单" in (message.content or "")
+        for message in request.messages
+    )
 
 
 @pytest.mark.asyncio

@@ -68,6 +68,15 @@ class OpenAICompatibleProvider(LLMProvider):
                 reraise=True,
             ):
                 with attempt:
+                    from qq_ai_bot.runtime.observability import current_runtime_turn_correlation
+
+                    correlation = current_runtime_turn_correlation()
+                    logger.info(
+                        "model_transport_attempt protocol=chat_completions correlation_id=%s "
+                        "attempt=%d",
+                        correlation.turn_id if correlation else "unbound",
+                        attempt.retry_state.attempt_number,
+                    )
                     response = await self._post(request)
         except httpx.TimeoutException as exc:
             raise LLMTimeoutError("LLM request timed out") from exc

@@ -11,7 +11,7 @@ from qq_ai_bot.memory.embedding.models import (
 from qq_ai_bot.memory.embedding.repository import MemoryEmbeddingRepository
 from qq_ai_bot.memory.embedding.text import EmbeddingDocumentBuilder
 from qq_ai_bot.memory.enums import MemoryKind
-from qq_ai_bot.memory.models import MemoryEntityTarget
+from qq_ai_bot.memory.models import MemoryEntityTarget, MemoryTemporalIntent
 
 
 class MemorySemanticIndex:
@@ -42,11 +42,13 @@ class MemorySemanticIndex:
         candidate_limit: int,
         kinds: tuple[MemoryKind, ...],
         min_similarity: float,
+        temporal: MemoryTemporalIntent | None = None,
     ) -> tuple[MemorySemanticCandidate, ...]:
         rows = await self._repository.load_target_vectors(
             target=target,
             profile_id=profile_id,
             kinds=tuple(kind.value for kind in kinds),
+            temporal=temporal,
         )
         scored: list[tuple[int, float]] = []
         for row in rows:

@@ -292,11 +292,15 @@ class MemoryIntentRanker:
                     }
                 )
             )
+        from qq_ai_bot.memory.enums import MemoryRetrievalMode
+        from qq_ai_bot.memory.ranking import relevance_band
+
         ordered = sorted(
             scored,
             key=lambda hit: (
-                0 if hit.selection_reason.endswith("_exact") else 1,
-                -hit.rerank_score,
+                -relevance_band(hit) if query.mode is MemoryRetrievalMode.RELEVANT else 0,
+                -(hit.rerank_score - weights[-1] * hit.activation_score),
+                -hit.activation_score,
                 hit.rank,
                 hit.fact.id,
             ),
@@ -323,7 +327,7 @@ def apply_strict_temporal_constraint(
             continue
         if start_at is not None and occurred_at < start_at:
             continue
-        if end_at is not None and occurred_at > end_at:
+        if end_at is not None and occurred_at >= end_at:
             continue
         matched.append(hit)
     return tuple(hit.model_copy(update={"rank": rank}) for rank, hit in enumerate(matched, start=1))
@@ -376,6 +380,6 @@ def _temporal_score(
         return max(0.0, min(1.0, (age_days - 90.0) / (365.0 - 90.0)))
     if start_at is not None and occurred_at < start_at:
         return 0.0
-    if end_at is not None and occurred_at > end_at:
+    if end_at is not None and occurred_at >= end_at:
         return 0.0
     return 1.0

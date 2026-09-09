@@ -73,7 +73,7 @@ class MemoryRelationClassifier:
         *,
         model_executor: ModelExecutor,
         concurrency: ConcurrencyManager,
-        max_output_tokens: int = 1200,
+        max_output_tokens: int = 4096,
     ) -> None:
         self._structured = StructuredTaskRunner(model_executor)
         self._concurrency = concurrency

@@ -9,7 +9,7 @@ from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
 from qq_ai_bot import __version__
@@ -732,9 +732,17 @@ class ApplicationContainer:
         )
         try:
             await runtime_config.initialize()
-            active_settings = settings.model_copy(
-                update=await runtime_config.startup_settings_updates()
-            )
+            # model_copy preserves cached domain projections computed during
+            # Settings validation. Rebuild so long-lived modules see overrides,
+            # and validate the combined configuration before creating clients.
+            try:
+                active_settings = Settings(
+                    _env_file=None,
+                    **{**settings.model_dump(), **await runtime_config.startup_settings_updates()},
+                )
+            except ValidationError:
+                # Validation errors can retain credential-bearing input mappings.
+                raise ValueError("activated runtime settings failed validation") from None
             return cls(
                 active_settings,
                 database=database,

@@ -1,3 +1,7 @@
+> **历史设计/非现行合同。** 本文保留当时的方案或实测口径，不用于当前授权、调度或使用率判断。
+> 当前实现以 [Memory 架构](../memory-v2.md)、[检索合同](../memory-v2-retrieval.md)
+> 和 [P1 治理任务书](../Yuki-Memory-P1治理任务书.md) 为准；本文不在当前实施导航内。
+
 # Codex 任务：Yuki Memory V2 第二阶段——查询驱动的词法检索
 
 你是一名资深 Python、SQLAlchemy、SQLite FTS5、信息检索、LLM Agent 上下文工程和测试工程师。

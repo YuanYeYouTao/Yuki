@@ -1,6 +1,7 @@
 schema_version = "1"
-suite_version = "memory-v2-quality-v1"
-dataset_hash = "84b7aa3cc6c099548e63b84e4cd6e2b3763d2bdf98f1b33724192493cf776ca3"
+suite_version = "memory-v2-quality-v2"
+read_policy_version = "historical-social-v1"
+dataset_hash = "5dfc20b7c1de038d985ce14d773ca0d73c1c731134366b039db55e5d89af71d4"
 fake_model_id = "memory-quality-fake-model-v1"
 fake_embedding_id = "fake-embedding/local-test/v1"
 case_files = [
@@ -22,6 +23,7 @@ case_files = [
   "empty_query.json",
   "person_group_isolation.json",
   "historical_guard.json",
+  "historical_social_read.json",
 ]
 
 [symbolic_identities]

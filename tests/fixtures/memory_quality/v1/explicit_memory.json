@@ -1,9 +1,9 @@
 {
-  "schema_version":"1","case_id":"explicit_memory","category":"extraction","description":"An explicit remember request keeps explicit authority.",
+  "schema_version":"1","case_id":"explicit_memory","category":"extraction","description":"A background extractor cannot self-appoint explicit user authority.",
   "events":[{"event_ref":"event_explicit","speaker":"person_a","scope_type":"private","content":"请记住我最喜欢蓝色","occurred_at":"2026-01-08T01:00:00Z"}],
   "fake_model_outputs":[{"event_ref":"event_explicit","memory_key":"favorite:color","category":"preference","content":"最喜欢蓝色","evidence_quote":"请记住我最喜欢蓝色","source_type":"explicit"}],
   "queries":[{"query_ref":"query_color","text":"最喜欢蓝色","scope_type":"person","subject":"person_a","expected_fact_refs":["fact_color"]}],
   "expected_claims":["event_explicit|person|person_a|favorite:color|最喜欢蓝色"],
-  "expected_facts":[{"fact_ref":"fact_color","scope_type":"person","subject":"person_a","memory_key":"favorite:color","category":"preference","content":"最喜欢蓝色","source_type":"explicit","authority":"explicit"}],
-  "expected_evidence":[{"fact_ref":"fact_color","event_ref":"event_explicit","speaker":"person_a","excerpt":"请记住我最喜欢蓝色","relation":"explicit_command"}],"tags":["explicit"]
+  "expected_facts":[{"fact_ref":"fact_color","scope_type":"person","subject":"person_a","memory_key":"favorite:color","category":"preference","content":"最喜欢蓝色","source_type":"automatic","authority":"self_report"}],
+  "expected_evidence":[{"fact_ref":"fact_color","event_ref":"event_explicit","speaker":"person_a","excerpt":"请记住我最喜欢蓝色","relation":"self_statement"}],"tags":["explicit"]
 }

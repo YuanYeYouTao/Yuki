@@ -44,6 +44,8 @@ from qq_ai_bot.admin.models import (
     WebRuntimeConfig,
 )
 from qq_ai_bot.config import Settings, _csv_tuple
+from qq_ai_bot.domain.memory_config import MemoryConfigScope
+from qq_ai_bot.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel
 from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import RuntimeConfigOverrideModel
@@ -100,6 +102,47 @@ class RuntimeConfigRepository:
 
     def __init__(self, database: Database) -> None:
         self._database = database
+
+    async def list_memory_scope(
+        self, scope: MemoryConfigScope
+    ) -> tuple[RuntimeConfigOverrideRecord, ...]:
+        """Read existing canonical owners, including disabled historical owners.
+
+        This is configuration lookup, not task admission or mutation authorization.
+        """
+        conditions: list[Any] = [
+            RuntimeConfigOverrideModel.scope_type == ConfigScopeType.GLOBAL.value
+        ]
+        async with self._database.sessions() as session:
+            for owner_id, model, kind, column in (
+                (
+                    scope.person_id,
+                    CanonicalPersonModel,
+                    ConfigScopeType.USER,
+                    RuntimeConfigOverrideModel.canonical_person_id,
+                ),
+                (
+                    scope.space_id,
+                    CanonicalSpaceModel,
+                    ConfigScopeType.GROUP,
+                    RuntimeConfigOverrideModel.canonical_space_id,
+                ),
+            ):
+                if owner_id is None:
+                    continue
+                if await session.get(model, owner_id) is None:
+                    raise CanonicalIdentityError("missing_or_invalid_canonical_config_owner")
+                conditions.append(
+                    (RuntimeConfigOverrideModel.scope_type == kind.value) & (column == owner_id)
+                )
+            rows = (
+                await session.scalars(
+                    select(RuntimeConfigOverrideModel)
+                    .where(or_(*conditions))
+                    .order_by(RuntimeConfigOverrideModel.id)
+                )
+            ).all()
+            return tuple(_record(row) for row in rows)
 
     async def list_all(
         self,
@@ -1254,15 +1297,16 @@ class RuntimeConfigService:
         *,
         user_id: str | None = None,
         group_id: str | None = None,
+        memory_scope: MemoryConfigScope | None = None,
     ) -> RuntimeConfigSnapshot:
-        records = await self._repository.list_relevant(
-            user_id=user_id,
-            group_id=group_id,
-        )
-        person_id, space_id = await self._owner_match(
-            user_id=user_id,
-            group_id=group_id,
-        )
+        if memory_scope is not None:
+            if user_id is not None or group_id is not None:
+                raise ValueError("memory config scope cannot mix canonical and external owners")
+            records = await self._repository.list_memory_scope(memory_scope)
+            person_id, space_id = memory_scope.person_id, memory_scope.space_id
+        else:
+            records = await self._repository.list_relevant(user_id=user_id, group_id=group_id)
+            person_id, space_id = await self._owner_match(user_id=user_id, group_id=group_id)
 
         def value(key: str) -> ConfigValue:
             spec = self.registry.get(key)
@@ -1305,6 +1349,13 @@ class RuntimeConfigService:
                 automatic_recall_per_target_limit=int(
                     cast(int, value("memory.automatic_recall_per_target_limit"))
                 ),
+                automatic_topic_threshold=float(
+                    cast(float, value("memory.automatic_topic_threshold"))
+                ),
+                automatic_background_threshold=float(
+                    cast(float, value("memory.automatic_background_threshold"))
+                ),
+                automatic_calibrated_profile=str(value("memory.automatic_calibrated_profile")),
                 automatic_recall_background_limit=int(
                     cast(int, value("memory.automatic_recall_background_limit"))
                 ),
@@ -1435,7 +1486,8 @@ class RuntimeConfigService:
                 max_retries=int(cast(int, value("llm.max_retries"))),
                 temperature=float(cast(float | int, value("llm.temperature"))),
                 max_output_tokens=int(cast(int, value("llm.max_output_tokens"))),
-                thinking_enabled=cast(bool | None, value("llm.thinking_enabled")),
+                # Legacy persisted toggles cannot lower the generation floor.
+                thinking_enabled=True,
             ),
             agent=AgentRuntimeConfig(
                 max_tool_calls=int(cast(int, value("agent.max_tool_calls"))),
@@ -1534,7 +1586,7 @@ class RuntimeConfigService:
                 max_images_per_turn=int(cast(int, value("vision.max_images_per_turn"))),
                 max_frames_per_turn=int(cast(int, value("vision.max_frames_per_turn"))),
                 gif_max_frames=int(cast(int, value("vision.gif_max_frames"))),
-                thinking_enabled=bool(value("vision.thinking_enabled")),
+                thinking_enabled=True,
                 thinking_budget=int(cast(int, value("vision.thinking_budget"))),
                 low_confidence_retry_threshold=float(
                     cast(float | int, value("vision.low_confidence_retry_threshold"))
@@ -1665,11 +1717,11 @@ class RuntimeConfigService:
         candidates = (
             (
                 ConfigScopeType.USER,
-                user_id,
+                person_id if person_id is not None else user_id,
             ),
             (
                 ConfigScopeType.GROUP,
-                group_id,
+                space_id if space_id is not None else group_id,
             ),
             (
                 ConfigScopeType.GLOBAL,

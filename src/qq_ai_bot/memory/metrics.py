@@ -43,6 +43,7 @@ OPERATIONAL_LIFECYCLE_COUNTERS = (
 
 ADAPTIVE_MEMORY_STAGES = ("candidate", "selected", "injected", "used", "reinforced")
 ADAPTIVE_ATTRIBUTION_OUTCOMES = (
+    "interrupted",
     "enqueue",
     "duplicate",
     "queue_full",
@@ -185,6 +186,20 @@ class MemoryLifecycleMetrics:
     def count(self, name: str) -> int:
         return self._counts[name]
 
+    def record_read_outcome(self, outcome: str) -> None:
+        if outcome not in {
+            "success",
+            "empty",
+            "ambiguous",
+            "permission_denied",
+            "duplicate",
+            "unavailable",
+            "infrastructure_failure",
+        }:
+            raise ValueError("invalid memory read outcome")
+        self.increment(f"memory_read_{outcome}")
+        logger.info("memory_read_outcome outcome=%s", outcome)
+
     def operational_snapshot(self) -> dict[str, int]:
         transitions = sum(
             self._counts[name]
@@ -212,6 +227,18 @@ class MemoryLifecycleMetrics:
         """Return a fixed-cardinality, content-free lifecycle metric projection."""
 
         names = [
+            *(
+                f"memory_read_{outcome}"
+                for outcome in (
+                    "success",
+                    "empty",
+                    "ambiguous",
+                    "permission_denied",
+                    "duplicate",
+                    "unavailable",
+                    "infrastructure_failure",
+                )
+            ),
             *(f"memory_access_{access.value}" for access in MemoryAccessMode),
             *(f"memory_intent_mode_{mode.value}" for mode in MemoryContextMode),
             *(f"memory_intent_purpose_{purpose.value}" for purpose in MemoryRecallPurpose),

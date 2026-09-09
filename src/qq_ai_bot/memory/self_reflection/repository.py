@@ -754,6 +754,15 @@ class SelfReflectionRepository:
                 )
             return len(rows)
 
+    async def result_counts(self, run_id: int) -> tuple[int, int]:
+        """Read durable counts after recovering a partially committed batch."""
+
+        async with self._database.sessions() as session:
+            run = await session.get(MemorySelfReflectionRunModel, run_id)
+            if run is None:
+                return 0, 0
+            return int(run.proposal_count), int(run.committed_count)
+
     async def _recover_processing_run(
         self,
         session: AsyncSession,

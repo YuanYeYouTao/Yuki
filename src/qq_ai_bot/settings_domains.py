@@ -197,6 +197,9 @@ class MemorySettings(DomainSettings):
     memory_batch_max_wait_seconds: float = Field(ge=0)
     memory_batch_max_output_tokens: int = Field(gt=0)
     memory_retrieval_enabled: bool
+    memory_automatic_topic_threshold: float = Field(ge=0.35, le=0.90)
+    memory_automatic_background_threshold: float = Field(ge=0.35, le=0.90)
+    memory_automatic_calibrated_profile: str
     self_memory_enabled: bool
     memory_self_reflection_enabled: bool
     memory_self_reflection_schedule_hours: str
@@ -249,9 +252,8 @@ class MemorySettings(DomainSettings):
     memory_dream_max_cluster_size: int = Field(ge=2, le=20)
     memory_dream_max_input_characters: int = Field(gt=0, le=100_000)
     memory_dream_max_output_tokens: int = Field(gt=0)
-    memory_dream_episode_max_characters: int = Field(ge=200, le=4000)
+    memory_dream_episode_max_characters: int = Field(ge=200, le=800)
     memory_dream_episode_compression_ratio: float = Field(gt=0, le=1)
-    memory_dream_episode_hard_compression_ratio: float = Field(gt=0, le=1)
     memory_dream_evidence_per_fact: int = Field(ge=1, le=10)
     memory_dream_evidence_excerpt_characters: int = Field(gt=0, le=2000)
     memory_evidence_compaction_enabled: bool
@@ -309,6 +311,8 @@ class MemorySettings(DomainSettings):
 
     @model_validator(mode="after")
     def _memory_batch_shape(self) -> MemorySettings:
+        if self.memory_automatic_topic_threshold < self.memory_automatic_background_threshold:
+            raise ValueError("automatic topic threshold cannot be below background threshold")
         if self.memory_batch_trigger_count > self.memory_batch_max_events:
             raise ValueError("memory batch trigger count cannot exceed batch event limit")
         hours = [item.strip() for item in self.memory_self_reflection_schedule_hours.split(",")]
@@ -349,11 +353,6 @@ class MemorySettings(DomainSettings):
                 "memory self-reflection high character watermark cannot exceed "
                 "batch character limit"
             )
-        if (
-            self.memory_dream_episode_hard_compression_ratio
-            < self.memory_dream_episode_compression_ratio
-        ):
-            raise ValueError("memory Dream hard compression ratio cannot be below its target ratio")
         return self
 
 

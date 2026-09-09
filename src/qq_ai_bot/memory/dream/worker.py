@@ -20,7 +20,7 @@ from qq_ai_bot.memory.dream.models import (
     DreamRunPage,
 )
 from qq_ai_bot.memory.dream.repository import DreamRepository
-from qq_ai_bot.memory.dream.service import DreamService
+from qq_ai_bot.memory.dream.service import DreamBudgetExhausted, DreamQualityError, DreamService
 from qq_ai_bot.model_runtime.structured import StructuredTaskError
 
 logger = logging.getLogger(__name__)
@@ -186,10 +186,7 @@ class DreamWorker:
             run = refreshed
             if run.mode is DreamRunMode.INCREMENTAL:
                 if run.model_calls >= self._settings.memory_dream_max_model_calls_per_run:
-                    await self._repository.fail_pending(
-                        run.public_id,
-                        error_category="model_call_budget_exhausted",
-                    )
+                    await self._repository.defer_pending(run.public_id)
                     await self._repository.finalize_run(run.public_id)
                     return
             cluster = await self._repository.claim_next_cluster(run.public_id)
@@ -212,10 +209,18 @@ class DreamWorker:
             except (OSError, RuntimeError, ValueError, StructuredTaskError) as exc:
                 await self._repository.finish_cluster(
                     cluster.id,
-                    status=DreamClusterStatus.FAILED,
+                    status=(
+                        DreamClusterStatus.SKIPPED
+                        if isinstance(exc, DreamBudgetExhausted)
+                        else DreamClusterStatus.FAILED
+                    ),
                     operation_count=0,
                     error_category=(
-                        f"StructuredTaskError:{exc.reason_code}"
+                        "budget_deferred"
+                        if isinstance(exc, DreamBudgetExhausted)
+                        else exc.code
+                        if isinstance(exc, DreamQualityError)
+                        else f"StructuredTaskError:{exc.reason_code}"
                         if isinstance(exc, StructuredTaskError)
                         else type(exc).__name__
                     ),

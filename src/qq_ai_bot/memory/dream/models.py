@@ -191,6 +191,7 @@ class DreamPlanStatistics(_DreamModel):
     candidate_clusters: int = Field(ge=0)
     isolated_facts: int = Field(ge=0)
     estimated_model_calls: int = Field(ge=0)
+    budget_deferred_clusters: int = Field(default=0, ge=0)
 
 
 class DreamRun(_DreamModel):

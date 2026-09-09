@@ -21,11 +21,11 @@ from qq_ai_bot.memory.enums import (
 )
 from qq_ai_bot.persistence.repository_records import EventRecord
 
-EXTRACTION_PROMPT_VERSION = "memory-v2-extraction-v3"
-EXTRACTION_SCHEMA_VERSION = "3"
+EXTRACTION_PROMPT_VERSION = "memory-v2-extraction-v4"
+EXTRACTION_SCHEMA_VERSION = "4"
 SOURCE_ADAPTATION_VERSION = "3"
-BATCH_EXTRACTION_PROMPT_VERSION = "memory-v2-batch-extraction-v2"
-BATCH_EXTRACTION_SCHEMA_VERSION = "2"
+BATCH_EXTRACTION_PROMPT_VERSION = "memory-v2-batch-extraction-v3"
+BATCH_EXTRACTION_SCHEMA_VERSION = "3"
 
 
 class _ExtractionModel(BaseModel):
@@ -72,13 +72,25 @@ class MemoryClaim(_ExtractionModel):
     subject_basis: MemorySubjectBasis = MemorySubjectBasis.OMITTED_SELF
     retention: MemoryRetention = MemoryRetention.DURABLE
     source_style: MemorySourceStyle = MemorySourceStyle.NATURAL_STATEMENT
+    value_reason: str = Field(default="", max_length=240)
     temporal_mode: MemoryTemporalMode = MemoryTemporalMode.PERSISTENT
     valid_from: str | None = None
     valid_until: str | None = None
 
 
+class ExtractedMemoryClaim(MemoryClaim):
+    """Model extraction must declare value; internal mutations keep their own contract."""
+
+    importance: int = Field(ge=1, le=5)
+    confidence: float = Field(ge=0, le=1)
+    subject_basis: MemorySubjectBasis
+    retention: MemoryRetention
+    source_style: MemorySourceStyle
+    value_reason: str = Field(min_length=1, max_length=240)
+
+
 class MemoryExtractionOutput(_ExtractionModel):
-    claims: tuple[MemoryClaim, ...] = ()
+    claims: tuple[ExtractedMemoryClaim, ...] = ()
 
 
 class BatchPrimaryEvent(_ExtractionModel):
@@ -106,7 +118,7 @@ class BatchMemoryExtractionInput(_ExtractionModel):
 
 class BatchMemoryClaim(_ExtractionModel):
     source_event_id: int = Field(gt=0)
-    claim: MemoryClaim
+    claim: ExtractedMemoryClaim
 
 
 class BatchMemoryExtractionOutput(_ExtractionModel):

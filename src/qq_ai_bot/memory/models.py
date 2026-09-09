@@ -125,7 +125,7 @@ class MemoryFact(_MemoryModel):
 
     @property
     def user_id(self) -> str | None:
-        """Compatibility projection used by Plugin API v1."""
+        """Legacy-shaped projection retained by the Plugin API 2.0 adapter."""
 
         return self.subject_user_id
 
@@ -341,6 +341,7 @@ class MemoryFactQuery(_MemoryModel):
 
 
 class MemoryJob(_MemoryModel):
+    batch_trigger: str | None = None
     id: int = Field(gt=0)
     event_id: int = Field(gt=0)
     conversation_key: str

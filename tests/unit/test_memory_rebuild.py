@@ -62,6 +62,10 @@ class _ExtractionProvider(LLMProvider):
             "importance": 3,
             "confidence": 0.9,
             "source_type": "automatic",
+            "subject_basis": "omitted_self",
+            "retention": "durable",
+            "source_style": "natural_statement",
+            "value_reason": "Synthetic historical fact useful for later recall.",
         }
         if "临时" in content:
             claim.update(

@@ -1,3 +1,7 @@
+> **历史设计/非现行合同。** 本文保留当时的方案或实测口径，不用于当前授权、调度或使用率判断。
+> 当前实现以 [Memory 架构](memory-v2.md)、[检索合同](memory-v2-retrieval.md)
+> 和 [P1 治理任务书](Yuki-Memory-P1治理任务书.md) 为准；本文不在当前实施导航内。
+
 # Yuki 自适应记忆生命周期实施计划
 
 > 状态：已按 `codex/adaptive-memory-lifecycle` 的真实代码更新。记忆使用归因采用发送后的异步

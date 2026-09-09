@@ -8,13 +8,77 @@ from qq_ai_bot.memory.models import (
     MemoryEntityTarget,
     MemoryFact,
     MemoryLexicalCandidate,
+    MemoryQuery,
     MemoryRetrievalHit,
 )
 from qq_ai_bot.memory.query import normalize_query_text
 
 
+def relevance_band(hit: MemoryRetrievalHit) -> int:
+    """Coarse relevance tier, not a confidence probability or authorization."""
+    if hit.selection_reason in {"memory_key_exact", "content_exact"}:
+        return 21
+    return int(max(0.0, hit.semantic_score or 0.0) * 20)
+
+
 class MemoryRanker:
     """Rank without an LLM and always end with a stable fact-id tie break."""
+
+    @staticmethod
+    def rank_global(
+        hits: tuple[MemoryRetrievalHit, ...], query: MemoryQuery
+    ) -> tuple[MemoryRetrievalHit, ...]:
+        """Recompute both ranks in the common pool, not inside each owner."""
+        unique = tuple({hit.fact.id: hit for hit in reversed(hits)}.values())
+        lexical = {
+            hit.fact.id: rank
+            for rank, hit in enumerate(
+                sorted(
+                    (hit for hit in unique if hit.lexical_score is not None),
+                    key=lambda hit: (-(hit.lexical_score or 0), hit.fact.id),
+                ),
+                1,
+            )
+        }
+        semantic = {
+            hit.fact.id: rank
+            for rank, hit in enumerate(
+                sorted(
+                    (hit for hit in unique if hit.semantic_score is not None),
+                    key=lambda hit: (-float(hit.semantic_score or 0), hit.fact.id),
+                ),
+                1,
+            )
+        }
+        scored = tuple(
+            hit.model_copy(
+                update={
+                    "lexical_rank": lexical.get(hit.fact.id),
+                    "semantic_rank": semantic.get(hit.fact.id),
+                    "fusion_score": (
+                        query.hybrid_lexical_weight / (query.hybrid_rrf_k + lexical[hit.fact.id])
+                        if hit.fact.id in lexical
+                        else 0
+                    )
+                    + (
+                        query.hybrid_semantic_weight / (query.hybrid_rrf_k + semantic[hit.fact.id])
+                        if hit.fact.id in semantic
+                        else 0
+                    ),
+                }
+            )
+            for hit in unique
+        )
+        ordered = sorted(
+            scored,
+            key=lambda hit: (
+                -relevance_band(hit),
+                -hit.fusion_score,
+                -hit.fact.importance,
+                hit.fact.id,
+            ),
+        )
+        return tuple(hit.model_copy(update={"rank": rank}) for rank, hit in enumerate(ordered, 1))
 
     def rank_lexical(
         self,
@@ -182,7 +246,6 @@ class MemoryRanker:
                 fact=fact,
                 target=target,
                 rank=rank,
-                lexical_score=0,
                 sources=(reason,),
                 selection_reason=reason,
             )

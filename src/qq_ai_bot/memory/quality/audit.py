@@ -9,8 +9,12 @@ from typing import Final
 from sqlalchemy import text
 from sqlalchemy.exc import DatabaseError
 
-from qq_ai_bot.memory.eligibility import sql_human_evidence_predicate
+from qq_ai_bot.memory.eligibility import (
+    sql_fact_tool_evidence_predicate,
+    sql_human_evidence_predicate,
+)
 from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
+from qq_ai_bot.memory.quality.event_evidence import audit_event_evidence
 from qq_ai_bot.memory.quality.models import ProductionAuditIssue, ProductionAuditReport
 from qq_ai_bot.persistence.database import Database
 
@@ -33,6 +37,14 @@ class MemoryProductionQualityAudit:
         checks = self._checks()
         issues: list[ProductionAuditIssue] = []
         async with self._database.sessions() as session:
+            try:
+                issues.extend(await audit_event_evidence(session))
+            except (DatabaseError, ValueError, TypeError):
+                issues.append(
+                    ProductionAuditIssue(
+                        issue_code="event_evidence_query_failed", severity="error", count=1
+                    )
+                )
             for code, severity, query in checks:
                 try:
                     rows = tuple((await session.execute(text(query))).all())
@@ -132,8 +144,9 @@ class MemoryProductionQualityAudit:
                 "error",
                 _query(
                     "memory_facts",
-                    "(status='contested' AND conflict_state!='contested') "
-                    "OR (status='active' AND conflict_state='contested')",
+                    # A challenged active fact stays active; its alternative has
+                    # status=contested. Both carry conflict_state=contested.
+                    "status='contested' AND conflict_state!='contested'",
                 ),
             ),
             (
@@ -191,35 +204,22 @@ class MemoryProductionQualityAudit:
                 "error",
                 _query(
                     "memory_evidence e",
-                    "NOT EXISTS (SELECT 1 FROM chat_events c WHERE c.id=e.event_id)",
+                    "e.event_id IS NOT NULL AND NOT EXISTS "
+                    "(SELECT 1 FROM chat_events c WHERE c.id=e.event_id)",
                     id_expression="e.id",
                 ),
             ),
             (
-                "evidence_source_invalid",
+                "evidence_tool_source_invalid",
                 "error",
                 _query(
-                    "memory_evidence e JOIN chat_events c ON c.id=e.event_id",
-                    "c.direction!='inbound' OR trim(c.content)='' "
-                    f"OR NOT ({sql_human_evidence_predicate('c')})",
-                    id_expression="e.id",
-                ),
-            ),
-            (
-                "evidence_speaker_mismatch",
-                "error",
-                _query(
-                    "memory_evidence e JOIN chat_events c ON c.id=e.event_id",
-                    "e.source_speaker_user_id!=c.sender_user_id",
-                    id_expression="e.id",
-                ),
-            ),
-            (
-                "evidence_excerpt_missing",
-                "error",
-                _query(
-                    "memory_evidence e JOIN chat_events c ON c.id=e.event_id",
-                    "trim(e.excerpt)='' OR instr(c.content,e.excerpt)=0",
+                    "memory_evidence e JOIN memory_facts f ON f.id=e.fact_id",
+                    "e.tool_receipt_id IS NOT NULL AND NOT EXISTS ("
+                    "SELECT 1 FROM memory_tool_receipts t "
+                    "JOIN chat_events c ON c.id=t.trigger_event_id "
+                    "JOIN canonical_conversations v ON v.id=c.canonical_conversation_id "
+                    "WHERE t.id=e.tool_receipt_id "
+                    f"AND {sql_fact_tool_evidence_predicate()})",
                     id_expression="e.id",
                 ),
             ),
@@ -313,7 +313,8 @@ class MemoryProductionQualityAudit:
                 _query(
                     "memory_fact_relations r JOIN memory_facts s ON s.id=r.source_fact_id "
                     "JOIN memory_facts t ON t.id=r.target_fact_id",
-                    "r.relation_type='contradicts' AND s.status='active' AND t.status='active'",
+                    "r.relation_type='contradicts' AND s.status='active' AND t.status='active' "
+                    "AND (s.conflict_state!='contested' OR t.conflict_state!='contested')",
                     id_expression="r.id",
                 ),
             ),

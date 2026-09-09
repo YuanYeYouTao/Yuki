@@ -1,7 +1,7 @@
 # Yuki 3.8 canonical runtime
 
 本文描述 Yuki 3.8 的现行架构合同，不是迁移任务书。3.8 运行时只支持 canonical schema，
-Alembic head 为 `0050`。
+Alembic head 为 `0051`。
 
 ## 永久主体与身份
 
@@ -120,10 +120,11 @@ QQ 消息证明伪造成 Web 请求。分页使用 opaque cursor；mutation 使�
 
 ## 数据库与安全边界
 
-- 新数据库从无父 revision 的 `0048` canonical baseline 创建最终表，再升级到 `0049 -> 0050`。
+- 新数据库从无父 revision 的 `0048` canonical baseline 创建最终表，再升级到 `0049 -> 0050 -> 0051`。
 - 历史桥接只接受已经完成 canonical v2 的旧 `0048` 数据库；更早或过渡态数据库失败关闭。
 - 运行时没有 v1、dual-write、backfill 或 cutover 分支。
-- `0049` 不提供 downgrade；`0050` 追加 `chat_events.caused_by_event_id` 及其索引。生产回退仍须
+- `0049` 不提供 downgrade；`0050` 追加事件因果引用，`0051` 仅追加 recall 评估观测列。
+  不修改事实、证据、身份、正文或路由；历史 used=false 保持未知口径。生产回退仍须
   停止写入并恢复升级前同一时点的 DB/WAL/SHM 快照。
 - `/healthz` 保持公开瘦载荷；管理健康和连接详情只能通过授权后的控制面查询。
 - secret 永不回读；日志与错误不输出 token、Cookie、完整外部 ID、消息正文或本地敏感路径。

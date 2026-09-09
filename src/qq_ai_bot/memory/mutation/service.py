@@ -33,7 +33,7 @@ from qq_ai_bot.memory.dream.models import (
     DreamOperationStatus,
     DreamOperationType,
 )
-from qq_ai_bot.memory.dream.quality import episode_compression_limit
+from qq_ai_bot.memory.dream.quality import validate_output_lengths
 from qq_ai_bot.memory.dream.repository import fact_signature
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
@@ -234,6 +234,8 @@ class MemoryMutationService:
 
         if not source_facts:
             raise ValueError("dream mutation requires source facts")
+        if content is not None:
+            validate_output_lengths((content,))
         current: list[MemoryFact] = []
         for snapshot in source_facts:
             fact = await self._facts.repository.get_fact(snapshot.id, session=session)
@@ -472,6 +474,10 @@ class MemoryMutationService:
                 for output in recompose_outputs
             ):
                 raise ValueError("dream recompose output has invalid sources")
+            validate_output_lengths(
+                tuple(output.content for output in recompose_outputs),
+                per_output=self._settings.memory_dream_episode_max_characters,
+            )
             normalized_outputs = tuple(
                 normalize_memory_text(output.content, maximum=4000) for output in recompose_outputs
             )
@@ -484,14 +490,6 @@ class MemoryMutationService:
                 for item in normalized_outputs
             ):
                 raise ValueError("dream recompose content exceeds the character limit")
-            source_characters = sum(len(item.content) for item in sources)
-            output_characters = sum(len(item) for item in normalized_outputs)
-            if output_characters > episode_compression_limit(
-                source_characters,
-                ratio=self._settings.memory_dream_episode_hard_compression_ratio,
-                maximum=self._settings.memory_dream_episode_max_characters,
-            ):
-                raise ValueError("dream recompose did not compress its source episodes")
             for source in sources:
                 await self._facts.repository.transition(
                     source.id,
@@ -777,6 +775,33 @@ class MemoryMutationService:
         if dependencies:
             raise RuntimeError("Dream operation has later dependent operations")
 
+        added_evidence = tuple(int(item) for item in json.loads(operation.added_evidence_ids_json))
+        added_relations = tuple(int(item) for item in json.loads(operation.added_relation_ids_json))
+        # Persisted JSON IDs are not ownership proofs. Historical table rebuilds
+        # can reuse IDs; never delete another fact's evidence or relation.
+        if added_evidence:
+            foreign_evidence = await session.scalar(
+                select(MemoryEvidenceModel.id)
+                .where(
+                    MemoryEvidenceModel.id.in_(added_evidence),
+                    MemoryEvidenceModel.fact_id.not_in(affected_ids),
+                )
+                .limit(1)
+            )
+            if foreign_evidence is not None:
+                raise RuntimeError("Dream evidence reference belongs to an unrelated fact")
+        if added_relations:
+            relation_rows = await session.scalars(
+                select(MemoryFactRelationModel).where(
+                    MemoryFactRelationModel.id.in_(added_relations)
+                )
+            )
+            if any(
+                row.source_fact_id not in affected_ids or row.target_fact_id not in affected_ids
+                for row in relation_rows
+            ):
+                raise RuntimeError("Dream relation reference belongs to an unrelated fact")
+
         fingerprint = hashlib.sha256(f"dream-rollback:{operation.id}".encode()).hexdigest()
         receipt = await self._receipts.reserve_dream(
             mutation_id=str(uuid.uuid4()),
@@ -794,8 +819,6 @@ class MemoryMutationService:
             created_at=datetime.now(UTC),
             session=session,
         )
-        added_evidence = tuple(int(item) for item in json.loads(operation.added_evidence_ids_json))
-        added_relations = tuple(int(item) for item in json.loads(operation.added_relation_ids_json))
         if added_evidence:
             await session.execute(
                 delete(MemoryEvidenceModel).where(MemoryEvidenceModel.id.in_(added_evidence))
@@ -1036,6 +1059,7 @@ class MemoryMutationService:
                     MemoryProcessingContext(
                         source=MemoryProcessingSource.LIVE,
                         event=context.event,
+                        config_scope=context.config_scope,
                     ),
                 )
             try:
@@ -1799,6 +1823,29 @@ class MemoryMutationService:
         )
         if not content or not key or not category:
             raise MemoryMutationRejected("memory_content_key_and_category_required")
+        automatic_creation = request.operation is MemoryMutationOperation.CREATE and (
+            request.request_basis is MemoryMutationRequestBasis.AGENT_INITIATED
+            or context.decision_actor_type
+            in {
+                MemoryDecisionActorType.WORKER,
+                MemoryDecisionActorType.REFLECTION,
+                MemoryDecisionActorType.SYSTEM,
+            }
+            or context.turn_origin in {"plugin_background", "scheduled_automation"}
+        )
+        if automatic_creation:
+            from qq_ai_bot.memory.enums import MemoryRetention
+            from qq_ai_bot.memory.quality_policy import AutomaticValuePolicy
+
+            value = AutomaticValuePolicy.evaluate(
+                importance=request.importance or 0,
+                retention=MemoryRetention.DURABLE,
+                value_reason=(
+                    request.reason if request.reason != "agent_requested_memory_change" else ""
+                ),
+            )
+            if not value.accepted:
+                raise MemoryMutationRejected(value.reason_code)
         quote = evidence.excerpt
         claim = MemoryClaim(
             operation=(
@@ -1825,6 +1872,7 @@ class MemoryMutationService:
                 if subject_ref.startswith("mentioned_")
                 else MemorySubjectBasis.OMITTED_SELF
             ),
+            value_reason=request.reason,
             temporal_mode=(
                 MemoryTemporalMode.TEMPORARY
                 if request.valid_until is not None
@@ -2310,7 +2358,12 @@ class MemoryMutationService:
             return MemoryAuthority.GROUP_REPORT, MemorySourceType.AUTOMATIC
         if (
             context.decision_actor_type
-            not in {MemoryDecisionActorType.REFLECTION, MemoryDecisionActorType.SYSTEM}
+            not in {
+                MemoryDecisionActorType.REFLECTION,
+                MemoryDecisionActorType.SYSTEM,
+                MemoryDecisionActorType.WORKER,
+            }
+            and context.turn_origin not in {"plugin_background", "scheduled_automation"}
             and request.request_basis is MemoryMutationRequestBasis.USER_REQUESTED
         ):
             return MemoryAuthority.EXPLICIT, MemorySourceType.EXPLICIT

@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+## 3.8.2 - Release candidate
+
+### Memory reliability and evidence-seeking
+
+- Canonical Conversation 决定自省配置范围，不再把 Yuki Presence 当作 Person。
+- 自省逐片段绑定真实来源；Dream 使用有界定向修复、绝对长度预算和失败公平调度。
+- 自动召回跨目标统一排序，主题优先；主动读取保留意图、严格日期与有界结果语义。
+- Main Agent 使用固定查证合同，工具可见性、查询、实际暴露和使用判定分开观测。
+- 全部生成任务至少 low 思考；修复 runtime settings 派生缓存及工具结果 grounding 丢失。
+- 修复 SELF 工具证据版本继承、证据文本审计误报与 Dream 回滚跨事实软引用防护。
+- 历史迁移丢失的状态链/证据仅完成隔离恢复演练；升级不会自动导入旧备份。
+- 不宣称消除幻觉或达到独立真实相关性指标；详见 3.8.2 发布说明中的限制。
+
+### Memory worker recovery
+
+- 自省调度循环隔离意外异常，批次失败按持久化结果恢复，避免单次异常留下永久 processing
+  并停止后续周期；已结束的调度任务可以重新启动，错误日志不携带记忆正文。
+- Dream 默认请求预算增至 24，保留每轮 12 个 cluster。预算耗尽前尚未执行的工作记为
+  `budget_deferred` 并留待后续增量规划，不再冒充执行失败。
+
+### Memory P1 governance
+
+- 普通自动提取按 canonical owner 聚合到 12 条、8,000 字符或一小时；失败重试和过期 lease
+  仍立即恢复。自动首次写入要求显式价值字段并只保留稳定事实、持续偏好及有意义的一次性经历。
+- 结构化读取统一使用历史共同群关系，列表、搜索、详情与主动工具共享同一后端 Scope Resolver；
+  写入、evidence、private SELF 与插件身份边界不随读取扩权。
+- `0051` 增加无正文 recall attribution 与主动读取结果观测，区分零注入、未评估、失败和已评估
+  未使用。质量数据集升级为 v2；微基准延迟需同时超过 25% 与 20ms 才判定回归，其他质量门不变。
+
 ### Plugin wakeup causality and stable Main Agent context
 
 - 插件 `external_event` 继续独立落账；需要主动点评时只创建可靠 WakeupRequest，并唤醒与普通聊天

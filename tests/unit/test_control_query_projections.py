@@ -445,7 +445,13 @@ async def test_synthetic_yuki_is_not_presence_count(database: Database) -> None:
 
 
 @pytest.mark.asyncio
-async def test_pending_restart_exposes_keys_not_values(database: Database) -> None:
+async def test_pending_restart_exposes_keys_not_values(
+    database: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.conftest import make_settings
+
+    from qq_ai_bot.container import ApplicationContainer
+
     async with database.sessions() as session, session.begin():
         session.add(
             RuntimeConfigOverrideModel(
@@ -466,6 +472,47 @@ async def test_pending_restart_exposes_keys_not_values(database: Database) -> No
     dumped = json.dumps(dataclasses.asdict(system), default=str)
     assert "do-not-leak" not in dumped
     assert "9000" not in dumped
+    # Exercise the production startup handoff, not just a copied Settings object.
+    # Avoid constructing clients/workers; retain the actual override repository.
+    original = make_settings(
+        database.url, vision_enabled=False, vision_api_key="", vision_base_url=""
+    )
+    old_model = original.model_runtime.llm_model
+    captured: dict[str, object] = {}
+
+    def capture_constructor(self, settings, *, database, runtime_config):
+        captured.update(settings=settings, database=database)
+
+    monkeypatch.setattr(ApplicationContainer, "__init__", capture_constructor)
+    await ApplicationContainer.create(original)
+    active = captured["settings"]
+    try:
+        assert active.llm_model == "do-not-leak"
+        assert active.model_runtime.llm_model == "do-not-leak"
+        assert original.model_runtime.llm_model == old_model
+        assert active.model_runtime is not original.model_runtime
+    finally:
+        await captured["database"].close()
+    captured.clear()
+    async with database.sessions() as session, session.begin():
+        session.add(
+            RuntimeConfigOverrideModel(
+                config_key="vision.enabled",
+                scope_type="global",
+                value_json="true",
+                value_type="boolean",
+                apply_mode="restart_required",
+                version=1,
+                created_at=_NOW,
+                updated_at=_NOW,
+                updated_by="9000",
+            )
+        )
+    with pytest.raises(ValueError, match="activated runtime settings failed validation") as failed:
+        await ApplicationContainer.create(original)
+    assert not captured  # Invalid combined settings must not create any clients.
+    assert failed.value.__suppress_context__
+    assert "do-not-leak" not in str(failed.value)
 
 
 @pytest.mark.asyncio

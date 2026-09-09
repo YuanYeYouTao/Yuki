@@ -57,6 +57,7 @@ class QualityClaim(_QualityModel):
     subject_basis: str = "omitted_self"
     retention: str = "durable"
     source_style: str = "natural_statement"
+    value_reason: str = "Synthetic fixture declares a stable fact useful for future recall."
     temporal_mode: str = "persistent"
     valid_from: str | None = None
     valid_until: str | None = None
@@ -116,6 +117,7 @@ class QualityQuerySpec(_QualityModel):
     limit: int = Field(default=5, gt=0, le=100)
     semantic: bool = False
     context: bool = True
+    requester: str | None = None
 
 
 class QualityRebuildExpectation(_QualityModel):
@@ -146,6 +148,7 @@ class MemoryQualityCase(_QualityModel):
     forbidden_context: tuple[str, ...] = ()
     expected_rebuild: QualityRebuildExpectation | None = None
     tags: tuple[str, ...] = ()
+    historical_memberships: tuple[tuple[str, str], ...] = ()
 
     @field_validator("events")
     @classmethod
@@ -165,6 +168,7 @@ class MemoryQualityCase(_QualityModel):
 class QualityManifest(_QualityModel):
     schema_version: str = "1"
     suite_version: str
+    read_policy_version: str
     case_files: tuple[str, ...]
     dataset_hash: str
     symbolic_identities: dict[str, str]

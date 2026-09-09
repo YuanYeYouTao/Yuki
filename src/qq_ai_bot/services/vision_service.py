@@ -911,9 +911,8 @@ def _cache_prompt_version(
             str(runtime.max_images_per_turn),
             str(runtime.max_frames_per_turn),
             str(runtime.gif_max_frames),
-            str(runtime.thinking_enabled),
+            "native-reasoning-required-v1",
             str(runtime.thinking_budget),
-            f"{runtime.low_confidence_retry_threshold:.4f}",
             str(len(references)),
             *hints,
         )

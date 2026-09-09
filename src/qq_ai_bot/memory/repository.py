@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy import and_, case, delete, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,6 +39,7 @@ from qq_ai_bot.memory.models import (
     MemoryFactRelation,
     MemoryFactStateEvent,
     MemoryJob,
+    MemoryTemporalIntent,
 )
 from qq_ai_bot.memory.partition import (
     MemoryPartitionResolutionError,
@@ -48,6 +49,7 @@ from qq_ai_bot.memory.partition import (
     resolve_memory_partition_for_event,
 )
 from qq_ai_bot.memory.projections import project_memory_fact_rows
+from qq_ai_bot.memory.temporal_filter import strict_time_conditions
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
@@ -289,80 +291,6 @@ class MemoryFactRepository:
         )
         return await project_memory_fact_rows(session, rows)
 
-    async def list_person_facts_projected_to_group(
-        self,
-        user_id: str,
-        group_id: str,
-        *,
-        limit: int = 100,
-        session: AsyncSession | None = None,
-    ) -> tuple[MemoryFact, ...]:
-        """Project global person facts supported by that person's evidence in one group.
-
-        This is a read-only visibility query.  It never changes the canonical fact scope,
-        and deliberately requires an inbound event and self/explicit evidence from the
-        target user in the current group.
-        """
-
-        if session is None:
-            async with self._database.sessions() as owned:
-                return await self.list_person_facts_projected_to_group(
-                    user_id,
-                    group_id,
-                    limit=limit,
-                    session=owned,
-                )
-        try:
-            person_id = await resolve_active_person_id(session, user_id)
-            space_id = await resolve_active_space_id(session, group_id)
-        except MemoryPartitionResolutionError:
-            return ()
-        qualifying_evidence = (
-            select(MemoryEvidenceModel.id)
-            .join(ChatEventModel, ChatEventModel.id == MemoryEvidenceModel.event_id)
-            .join(
-                CanonicalConversationModel,
-                CanonicalConversationModel.id == ChatEventModel.canonical_conversation_id,
-            )
-            .where(
-                MemoryEvidenceModel.fact_id == MemoryFactModel.id,
-                MemoryEvidenceModel.authority.in_(
-                    (MemoryAuthority.SELF_REPORT.value, MemoryAuthority.EXPLICIT.value)
-                ),
-                ChatEventModel.direction == "inbound",
-                ChatEventModel.author_person_id == person_id,
-                ChatEventModel.author_kind.is_not(None),
-                ChatEventModel.canonical_event_id.is_not(None),
-                CanonicalConversationModel.space_id == space_id,
-                keeper_event_clause(),
-            )
-            .correlate(MemoryFactModel)
-            .exists()
-        )
-        rows = await self._execute_facts_with_count(
-            session,
-            [
-                MemoryFactModel.scope_type == MemoryScopeType.PERSON.value,
-                *(await self._person_subject_conditions(session, user_id)),
-                MemoryFactModel.canonical_subject_space_id.is_(None),
-                MemoryFactModel.status == MemoryStatus.ACTIVE.value,
-                MemoryFactModel.review_state != "quarantined",
-                or_(
-                    MemoryFactModel.valid_until.is_(None),
-                    MemoryFactModel.valid_until > datetime.now(UTC),
-                ),
-                qualifying_evidence,
-            ],
-            order_by=(
-                MemoryFactModel.importance.desc(),
-                MemoryFactModel.confidence.desc(),
-                MemoryFactModel.updated_at.desc(),
-                MemoryFactModel.id.asc(),
-            ),
-            limit=max(1, limit),
-        )
-        return await project_memory_fact_rows(session, rows)
-
     async def get_fact(
         self,
         fact_id: int,
@@ -552,11 +480,13 @@ class MemoryFactRepository:
         target: MemoryEntityTarget,
         *,
         limit: int,
+        temporal: MemoryTemporalIntent | None = None,
     ) -> tuple[MemoryFact, ...]:
         async with self._database.sessions() as session:
             rows = await self._execute_facts_with_count(
                 session,
                 [
+                    *strict_time_conditions(temporal),
                     *(await self._async_target_conditions(session, target)),
                     MemoryFactModel.status == MemoryStatus.ACTIVE.value,
                     MemoryFactModel.review_state != "quarantined",
@@ -580,6 +510,7 @@ class MemoryFactRepository:
         target: MemoryEntityTarget,
         *,
         limit: int,
+        temporal: MemoryTemporalIntent | None = None,
     ) -> tuple[MemoryFact, ...]:
         if limit <= 0:
             return ()
@@ -587,6 +518,7 @@ class MemoryFactRepository:
             rows = await self._execute_facts_with_count(
                 session,
                 [
+                    *strict_time_conditions(temporal),
                     *(await self._async_target_conditions(session, target)),
                     MemoryFactModel.kind == "preference",
                     MemoryFactModel.source_type == "explicit",
@@ -1478,6 +1410,97 @@ class MemoryJobRepository:
             )
         return int(value or 0)
 
+    async def batch_health(
+        self, *, trigger_count: int, max_characters: int, max_wait_seconds: float
+    ) -> dict[str, object]:
+        """Content-free queue readiness; normal sub-hour accumulation is not blocked."""
+        now = datetime.now(UTC)
+        stale = now - timedelta(minutes=5)
+        async with self._database.sessions() as session:
+            rows = (
+                await session.execute(
+                    select(
+                        MemoryJobModel.canonical_person_id,
+                        MemoryJobModel.canonical_space_id,
+                        MemoryJobModel.status,
+                        MemoryJobModel.attempts,
+                        MemoryJobModel.next_attempt_at,
+                        MemoryJobModel.created_at,
+                        MemoryJobModel.updated_at,
+                        func.length(ChatEventModel.content),
+                        MemoryJobModel.error_category,
+                    )
+                    .join(ChatEventModel, ChatEventModel.id == MemoryJobModel.event_id)
+                    .where(
+                        MemoryJobModel.status.in_(
+                            (
+                                MemoryJobStatus.PENDING.value,
+                                MemoryJobStatus.PROCESSING.value,
+                                MemoryJobStatus.FAILED.value,
+                            )
+                        )
+                    )
+                )
+            ).all()
+        owners: dict[tuple[str | None, str | None], list[Any]] = {}
+        failures: dict[str, int] = {}
+        pending = processing = failed = stale_processing = invalid_owner = 0
+        oldest_age = 0
+        for row in rows:
+            status, attempts = str(row[2]), int(row[3])
+            created = row[5].replace(tzinfo=UTC)
+            if status == MemoryJobStatus.PENDING.value:
+                pending += 1
+                oldest_age = max(oldest_age, max(0, int((now - created).total_seconds())))
+            elif status == MemoryJobStatus.PROCESSING.value:
+                processing += 1
+                oldest_age = max(oldest_age, max(0, int((now - created).total_seconds())))
+                stale_processing += int(row[6].replace(tzinfo=UTC) <= stale)
+            else:
+                failed += 1
+                category = str(row[8] or "unknown")[:64]
+                failures[category] = failures.get(category, 0) + 1
+            if bool(row[0]) == bool(row[1]):
+                invalid_owner += 1
+                continue
+            due = row[4].replace(tzinfo=UTC) <= now
+            eligible = (status == MemoryJobStatus.PENDING.value and due) or (
+                status == MemoryJobStatus.PROCESSING.value and row[6].replace(tzinfo=UTC) <= stale
+            )
+            if eligible:
+                owners.setdefault((row[0], row[1]), []).append(
+                    (attempts, created, int(row[7] or 0), status)
+                )
+        ready = sum(
+            1
+            for items in owners.values()
+            if (
+                any(
+                    attempts > 0 or status == MemoryJobStatus.PROCESSING.value
+                    for attempts, _created, _chars, status in items
+                )
+                or len(items) >= max(1, trigger_count)
+                or sum(chars for _attempts, _created, chars, _status in items)
+                >= max(1, max_characters)
+                or any(
+                    (now - created).total_seconds() >= max_wait_seconds
+                    for _attempts, created, _chars, _status in items
+                )
+            )
+        )
+        return {
+            "pending_events": pending,
+            "processing_events": processing,
+            "failed_events": failed,
+            "stale_processing_events": stale_processing,
+            "oldest_open_age_seconds": oldest_age,
+            "ready_owner_count": ready,
+            "waiting_owner_count": max(0, len(owners) - ready),
+            "normal_waiting_is_blocked": False,
+            "invalid_owner_count": invalid_owner,
+            "failure_categories": dict(sorted(failures.items())),
+        }
+
     async def claim(self, *, limit: int = 20) -> tuple[MemoryJob, ...]:
         now = datetime.now(UTC)
         stale = now - timedelta(minutes=5)
@@ -1568,6 +1591,18 @@ class MemoryJobRepository:
             MemoryJobModel.next_attempt_at <= claimed_at,
         )
         job_count = func.count(MemoryJobModel.id)
+        recovery_count = func.sum(
+            case(
+                (
+                    or_(
+                        MemoryJobModel.attempts > 0,
+                        MemoryJobModel.status == MemoryJobStatus.PROCESSING.value,
+                    ),
+                    1,
+                ),
+                else_=0,
+            )
+        )
         character_count = func.coalesce(func.sum(func.length(ChatEventModel.content)), 0)
         oldest_job = func.min(MemoryJobModel.created_at)
         first_job_id = func.min(MemoryJobModel.id)
@@ -1588,6 +1623,12 @@ class MemoryJobRepository:
                         MemoryJobModel.canonical_person_id,
                         MemoryJobModel.canonical_space_id,
                         first_job_id.label("first_job_id"),
+                        case(
+                            (recovery_count > 0, "recovery"),
+                            (job_count >= max(1, trigger_count), "event_count"),
+                            (character_count >= max(1, max_characters), "characters"),
+                            else_="age",
+                        ).label("batch_trigger"),
                     )
                     .join(ChatEventModel, ChatEventModel.id == MemoryJobModel.event_id)
                     .where(eligible, xor_owner)
@@ -1597,6 +1638,7 @@ class MemoryJobRepository:
                     )
                     .having(
                         or_(
+                            recovery_count > 0,
                             job_count >= max(1, trigger_count),
                             character_count >= max(1, max_characters),
                             oldest_job <= oldest_ready,
@@ -1674,6 +1716,7 @@ class MemoryJobRepository:
                         outcome=row.outcome,
                         completed_at=row.completed_at,
                         event=_event_record(event),
+                        batch_trigger=str(owner_ready[3]),
                     )
                 )
             return tuple(jobs)

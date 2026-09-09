@@ -1,6 +1,55 @@
 # Memory V2 质量、审计与治理操作
 
+## 当前自动写入合同
+
+普通提取每 30 秒检查数据库；同一 canonical 所有者累计 12 条、8,000 字符或最老事件等待
+3,600 秒即可领取（单批最多 12 条/8,000 字符）。一小时不是重试、lease、Rollup 或反思间隔；
+未到期且无错误的 pending 属于正常聚合。明确的 `memory_change` 仍即时执行。
+
+自动新内容须声明 retention、source_style、importance、confidence、value_reason，并通过
+主体、来源与证据校验。长期价值最低为 3；有意义的单次经历可以达标，日常问候和无进展调侃
+应正常跳过。Worker、重建和反思不能自报 explicit 获得用户权威；低价值结果不进入候选队列。
+空提取和反思 noop 都应推进批次水位。已有事实的纠正、撤回、合并及证据维护不受首次写入门槛
+阻挡。语义质量仍由模型任务判断，后端数值校验不是语义质量保证。
+
+统计时区分事件 job、提取 batch 和实际模型 request（含重试）；详见
+[指标口径](../architecture/memory-v2-quality-metrics.md)及
+[P1 合同](../architecture/Yuki-Memory-P1治理任务书.md)。
+
+生产诊断使用只读、内容无关的统计入口：
+
+```bash
+uv run qq-ai-bot-cli memory stats \
+  --database-url sqlite+aiosqlite:///./data/qq_ai_bot.db \
+  --hours 24
+```
+
+它报告正常等待与 ready owner、失败类别、零注入、归因覆盖、已评估使用率，以及主动读取的
+成功/空结果/歧义/权限拒绝/重复/基础设施失败。重复读取复用同轮结果，duplicate 可与其最终
+success/empty 同时出现。未绑定普通聊天 recall receipt 的 Plugin/Admin 查询不会为统计造轮次。
+
 ## 离线质量套件
+
+### 证据审计口径
+
+普通事件证据仍要求人类入站来源。SELF 的 `agent_reflection` 证据可引用 Yuki 出站，
+但作者、非抑制状态、来源账号和摘录仍必须匹配。自省使用实际事件渲染文本（包含带有
+不可信标记的图片识别摘要），摘录按原文或写入时的空白规范化结果核对，不能直接只在
+原始正文列做 substring 判断。图片摘要不是用户原话，也不是独立事实核验。
+
+工具证据检查回执、触发事件、canonical 会话、SELF 可见范围及结果摘录；已被正式记忆
+引用的回执不会仅因过期而失效。审计与清理扫描复用相同证据规则，按有界批次检查，
+报告只含数量和有限内部 ID。清理预案仍须显式应用，扫描本身不修改事实。历史缺少
+证据或替代链时不得补造来源，更不能将审计误报修正解释为允许删除所有历史事实。
+
+Dream CONTEST 可保留两个 active 事实，并把双方 `conflict_state` 标记为 contested；
+这是保留争议的合法状态，不是矛盾状态错误。active 矛盾关系中任一方未标记仍报错。
+缺失历史替代链必须单独调查；旧备份中存在链不代表可以直接覆盖现有数据库。
+
+Dream 回滚在删除新增证据／关系前，还会检查持久化编号所指记录的事实归属。
+证据必须属于该操作的来源或结果事实，关系两端也必须在该集合内；跨事实错指会
+拒绝回滚，而不是删除无关记录。这个检查不能替代恢复时的完整来源核验，尤其不能
+把已被复用的旧编号视为可信身份。
 
 ```bash
 uv run qq-ai-bot-cli memory quality validate-dataset
@@ -25,23 +74,13 @@ Embedding，再设置 `MEMORY_QUALITY_REAL_EMBEDDING_ENABLED=true`。它仍只�
 结果写入 `artifacts/memory-quality-real/`，不会覆盖 deterministic report/baseline，也不进入 CI
 或发布 merge gate。不要在包含真实数据库内容的自定义 fixture 上启用。
 
-## 合成性能场景
+## 历史性能基线
 
-完整场景不会读取配置中的数据库：
-
-```bash
-uv run qq-ai-bot-cli memory quality performance
-```
-
-默认建立 100 用户、每人 100 facts、10 个群、100,000 条事件和 Fake Embedding，结果写入
-`artifacts/memory-quality/performance.json`。只有确认结果可接受时才显式更新 baseline：
-
-```bash
-uv run qq-ai-bot-cli memory quality performance --update-baseline
-```
-
-这是本机类别下的回归参考，不是跨硬件 SLA。命令只使用临时 SQLite，结束即清理；不会调用
-DeepSeek/Qwen，也不会读取 `DATABASE_URL`、真实聊天或真实人物资料。
+baseline 仍保存 100 用户、10,000 facts、10 个群和 100,000 条事件的既有合成性能快照，
+供 release-check 确认规模合同没有丢失。3.8 canonical-only 收口时，依赖已删除 carrier 表的旧
+`memory quality performance` 生成器已一并退役，不能再把文档中的旧命令当成现役入口。
+当前变更使用完整 `quality run --suite full`、全量测试和 release smoke 作为执行门；未来若恢复
+大规模性能命令，必须先以 canonical Person/Space/Conversation 重写生成器，不能复活旧表。
 
 ## 生产审计
 
@@ -98,10 +137,11 @@ uv run qq-ai-bot-cli memory release-check
 ## 故障排查与发布清单
 
 - `dataset hash mismatch`：不要改 expected 掩盖失败；审阅 fixture 后重新计算 manifest hash。
-- `baseline regression`：先重复运行排除调度噪声；确认实现变化后显式 `update-baseline`，禁止
-  降低绝对污染门禁。
+- `baseline regression`：延迟必须同时超过配置的相对比例和 20ms 绝对增量才阻断；仍应先重复
+  运行排除调度噪声。确认数据集或实现变化后才可显式 `update-baseline`，禁止降低污染、权限或
+  行为门禁。
 - `contract snapshot changed`：审阅领域/Pydantic/Plugin API 差异后显式刷新快照；Plugin API
-  主版本必须仍为 `1.0`。
+  主版本必须仍为 `2.0`。
 - `fingerprint changed`：数据库在 scan 后已变化，重新 scan 和人工审阅，不要复用旧 fingerprint。
 - `production audit` 失败：先备份数据库，只对确定可治理项执行 hygiene；其余保留为人工问题。
 
