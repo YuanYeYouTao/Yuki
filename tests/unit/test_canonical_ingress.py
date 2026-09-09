@@ -397,7 +397,9 @@ async def test_canonical_ingress_segments_or_occurred_at_conflict_fails_closed(
         )
     with pytest.raises(CanonicalIdentityError) as occurred:
         await uow.append_inbound(
-            replace(admitted.message, received_at=admitted.message.received_at + timedelta(minutes=1)),
+            replace(
+                admitted.message, received_at=admitted.message.received_at + timedelta(minutes=1)
+            ),
             admitted,
         )
     assert segments.value.category == "receipt_conflict"
