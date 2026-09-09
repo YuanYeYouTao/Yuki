@@ -254,3 +254,21 @@ active 不等于无争议，证据数量不证明语义正确。不增加读取�
 语义依旧失败，且再次出现无依据“第一次”断言；人物来源元数据有用，但不能据此声称
 模型已正确使用，引用选择与正文一致性仍未解决。累计 **102/144**，剩余 42 次。
 本轮开发样本没有转入独立验收集；没有部署或生产写入。
+
+## medium 单变量实验与文本口径核验
+
+reflection-r12 仅在私有验证 catalog 克隆自省 Profile 并将该路由 effort 设为 medium；
+模型、上下文、schema、4096 输出预算及其他任务路由不变，经真实 TaskModelExecutor
+发送，没有在 Provider 末端改写请求。3 次请求（含一次修复），两批仅一批完成并写入
+一条 Episode，另一批第一次 JSON 不完整、修复结果多出 result 包装而被严格拒绝。
+首个响应 reported completion_tokens=4097、provider status=completed、reasoning_tokens
+缺失，实际参数只有半截 JSON；不能单凭 provider completed 判成功，也不能确定其
+思考/正文分别消耗多少。写入的一条仍有来源不充分的页面读取叙述，语义验收失败。
+该实验不证明 medium 普遍更差，但不支持现在将线上自省直接改为 medium。
+失败记录保留，线上 Profile 未改。累计 **105/144**，剩余 39 次。
+
+独立只读核验三条 SQL 摘录异常：均是 SELF agent_reflection，原 excerpt 不在未经
+处理的 chat_events.content 中，但全部存在于实际 renderer + normalize_memory_text
+输出。其中一条正文为空、含 visual_summary；另外两条为非空正文规范化差异。
+这证明旧 SQL substring 检查与实际写入口径不一致，不代表已修复全部相关检查；
+后续需让审计与清理使用同一证据文本规则，不能简单跳过 excerpt 校验。
