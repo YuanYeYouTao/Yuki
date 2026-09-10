@@ -1586,6 +1586,13 @@ class RuntimeConfigService:
                 max_images_per_turn=int(cast(int, value("vision.max_images_per_turn"))),
                 max_frames_per_turn=int(cast(int, value("vision.max_frames_per_turn"))),
                 gif_max_frames=int(cast(int, value("vision.gif_max_frames"))),
+                video_max_duration_seconds=int(
+                    cast(int, value("vision.video_max_duration_seconds"))
+                ),
+                video_sample_interval_seconds=int(
+                    cast(int, value("vision.video_sample_interval_seconds"))
+                ),
+                video_max_frames=int(cast(int, value("vision.video_max_frames"))),
                 thinking_enabled=True,
                 thinking_budget=int(cast(int, value("vision.thinking_budget"))),
                 low_confidence_retry_threshold=float(

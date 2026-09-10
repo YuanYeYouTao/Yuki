@@ -325,6 +325,9 @@ class VisionRuntimeConfig:
     per_user_requests_per_minute: int
     per_group_requests_per_minute: int
     analysis_retention_days: int
+    video_max_duration_seconds: int = 600
+    video_sample_interval_seconds: int = 5
+    video_max_frames: int = 16
 
 
 @dataclass(frozen=True, slots=True)

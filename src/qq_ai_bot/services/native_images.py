@@ -73,7 +73,11 @@ class NativeImageService:
                             raise VisionProcessingError("video_unavailable", "视频缺少可下载地址")
                         downloaded = await self._resolver.resolve(reference, None)
                         video_frames = await sample_video(
-                            downloaded, source=reference.source, maximum=remaining
+                            downloaded,
+                            source=reference.source,
+                            maximum=min(remaining, runtime.video_max_frames),
+                            max_duration_seconds=runtime.video_max_duration_seconds,
+                            sample_interval_seconds=runtime.video_sample_interval_seconds,
                         )
                         size += sum(len(frame.data_url) for frame in video_frames)
                         if size > self._max_bytes:

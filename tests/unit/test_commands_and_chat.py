@@ -186,7 +186,7 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     )
     admin_text = admin_sender.messages[0].text
     assert "当前权限：超级管理员" in admin_text
-    assert "可修改运行时配置参数：223 项" in admin_text
+    assert "可修改运行时配置参数：226 项" in admin_text
     assert "管理员业务接口：44 项，其中修改型 33 项" in admin_text
     assert "conversation.autonomous_batch_limit" in admin_text
     assert "relationship.set_affection" in admin_text
@@ -777,7 +777,10 @@ async def test_native_images_use_full_chat_without_external_vision(
         assert failure.reason == "vision_resource_unavailable"
         assert len(provider.requests) == count
 
+        decoded_paths: list[Path] = []
+
         async def decoder(*args: str) -> bytes:
+            decoded_paths.append(Path(args[-1]))
             assert "-protocol_whitelist" in args and "-format_whitelist" in args
             if args[0] == "ffprobe":
                 return b'{"streams":[{"width":32,"height":32}],"format":{"duration":"4"}}'
@@ -803,6 +806,46 @@ async def test_native_images_use_full_chat_without_external_vision(
         )
         assert (await harness.processor.handle(replied, sender)).reason == "chat"
         assert all(i.source == "reply" for i in provider.requests[-1].messages[-1].images)
+        assert all(not path.parent.exists() for path in decoded_paths)
+
+        import asyncio
+
+        from qq_ai_bot.services.video_frames import sample_video
+        from qq_ai_bot.vision.models import DownloadedMedia
+
+        media = DownloadedMedia(
+            content=b"\x00\x00\x00\x18ftypisom",
+            content_type="video/mp4",
+            content_hash="test",
+            byte_size=12,
+        )
+        sparse = await sample_video(media, source="current", maximum=16)
+        dense = await sample_video(media, source="current", maximum=16, sample_interval_seconds=1)
+        capped = await sample_video(media, source="current", maximum=3, sample_interval_seconds=1)
+        assert len(sparse) == 2 and len(dense) == 5 and len(capped) == 3
+        assert capped[-1].video_timestamp_seconds == pytest.approx(3.0)
+        assert all(not path.parent.exists() for path in decoded_paths)
+        from qq_ai_bot.services.vision_service import VisionProcessingError
+
+        with pytest.raises(VisionProcessingError):
+            await sample_video(media, source="current", maximum=4, max_duration_seconds=3)
+        assert all(not path.parent.exists() for path in decoded_paths)
+
+        entered = asyncio.Event()
+
+        async def cancelled_decoder(*args: str) -> bytes:
+            decoded_paths.append(Path(args[-1]))
+            entered.set()
+            await asyncio.Event().wait()
+            return b""
+
+        monkeypatch.setattr("qq_ai_bot.services.video_frames._run", cancelled_decoder)
+        task = asyncio.create_task(sample_video(media, source="current", maximum=4))
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert all(not path.parent.exists() for path in decoded_paths)
     finally:
         await resolver.close()
 

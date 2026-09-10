@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import math
+from fractions import Fraction
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -31,13 +32,18 @@ async def _run(*args: str) -> bytes:
 
 
 async def sample_video(
-    media: DownloadedMedia, *, source: str, maximum: int
+    media: DownloadedMedia,
+    *,
+    source: str,
+    maximum: int,
+    max_duration_seconds: int = 600,
+    sample_interval_seconds: int = 5,
 ) -> tuple[ChatImage, ...]:
-    """Sample at most four frames across a <=120s MP4; do not imply full viewing."""
+    """Adapt sampling to duration and the shared frame budget; never cache files."""
     if maximum <= 0:
         return ()
-    if len(media.content) > 32 * 1024 * 1024:
-        raise VisionProcessingError("video_limit", "视频文件过大")
+    if max_duration_seconds <= 0 or sample_interval_seconds <= 0:
+        raise ValueError("video sampling settings must be positive")
     if len(media.content) < 12 or media.content[4:8] != b"ftyp":
         raise VisionProcessingError("unsupported_video", "目前仅支持 MP4/MOV 视频画面")
     with TemporaryDirectory(prefix="yuki-video-") as directory:
@@ -57,7 +63,7 @@ async def sample_video(
                 "-select_streams",
                 "v:0",
                 "-show_entries",
-                "stream=width,height:format=duration",
+                "stream=width,height,avg_frame_rate:format=duration",
                 "-of",
                 "json",
                 str(path),
@@ -65,15 +71,22 @@ async def sample_video(
         )
         streams = metadata.get("streams", [])
         duration = float(metadata.get("format", {}).get("duration", 0))
-        if not streams or not math.isfinite(duration) or not 0 < duration <= 120:
-            raise VisionProcessingError("video_limit", "视频需在 120 秒以内且包含画面")
+        if not streams or not math.isfinite(duration) or not 0 < duration <= max_duration_seconds:
+            raise VisionProcessingError("video_limit", "视频超过配置的时长上限或不包含画面")
         width, height = int(streams[0].get("width", 0)), int(streams[0].get("height", 0))
         if min(width, height) <= 0 or max(width, height) > 4096:
             raise VisionProcessingError("video_limit", "视频分辨率超过限制")
-        count = min(maximum, 4)
+        count = min(maximum, max(1, math.ceil(duration / sample_interval_seconds) + 1))
+        try:
+            frame_rate = float(Fraction(streams[0].get("avg_frame_rate", "0/1")))
+        except (ValueError, ZeroDivisionError):
+            frame_rate = 0.0
+        frame_period = 1 / frame_rate if frame_rate > 0 else 1.0
+        last_position = max(0.0, duration - max(frame_period, 0.05))
         frames: list[ChatImage] = []
         for index in range(count):
-            position = duration * index / count
+            # Leave one frame period before EOF (also works for low-FPS clips).
+            position = last_position * index / max(1, count - 1)
             output = Path(directory) / f"frame-{index}.jpg"
             await _run(
                 "ffmpeg",
