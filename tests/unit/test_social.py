@@ -1,6 +1,8 @@
 """Safety invariants for canonical social effects."""
 
 import asyncio
+from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 import pytest
@@ -121,3 +123,98 @@ async def test_social_receipt_claim_replay_and_interrupted_delivery(database: Da
                 platform_reference="123",
                 session=session,
             )
+
+
+@pytest.mark.asyncio
+async def test_social_gateway_delivery_and_fail_closed(database: Database, tmp_path: Path) -> None:
+    from sqlalchemy import select
+
+    from qq_ai_bot.conversation.rollup.models import RollupPolicyConfig
+    from qq_ai_bot.domain.conversations import ConversationScope
+    from qq_ai_bot.gateway.providers import builtin_provider_catalog
+    from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
+    from qq_ai_bot.identity.db_models import CanonicalPersonModel
+    from qq_ai_bot.identity.routing import PresenceRouter
+    from qq_ai_bot.persistence.models import ChatEventModel
+    from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+    from qq_ai_bot.social.service import SocialContext, SocialService
+    from qq_ai_bot.social.transfer import ArtifactTransfer
+    from qq_ai_bot.workspace.store import WorkspaceStore
+
+    class Bot:
+        self_id = "80001"
+
+        def __init__(self):
+            self.calls: list[tuple[str, dict[str, Any]]] = []
+            self.fail = False
+
+        async def call_api(self, action: str, **params: Any):
+            self.calls.append((action, params))
+            if self.fail:
+                raise TimeoutError()
+            return {"message_id": 1000 + len(self.calls)}
+
+    bot = Bot()
+    registry = GatewayConnectionRegistry(providers=builtin_provider_catalog())
+    router = PresenceRouter(database, registry)
+    writer = ScopedEventLedgerUnitOfWork(database, config=RollupPolicyConfig())
+    async with database.sessions() as session, session.begin():
+        person = await ensure_person(session, "10001")
+        presence = await ensure_presence(session, bot.self_id)
+        row = await session.get(CanonicalPersonModel, person)
+        row.enabled = True
+    registry.connect(bot, provider_id="snowluma")
+    registry.bind_presence(platform="qq", external_account_id=bot.self_id, presence_id=presence)
+    await writer.append(
+        scope=ConversationScope.private(bot.self_id, "10001"),
+        platform_message_id="1",
+        sender_user_id="10001",
+        direction="inbound",
+        content="hello",
+    )
+    async with database.sessions() as session:
+        event = await session.scalar(
+            select(ChatEventModel).where(ChatEventModel.platform_message_id == "1")
+        )
+        conversation_id = event.canonical_conversation_id
+    assert await router.cas_takeover_person(person) in {"taken", "unchanged"}
+    service = SocialService(database, router, writer)
+    store = WorkspaceStore(tmp_path / "workspace")
+    service.transfer = ArtifactTransfer(store, tmp_path / "transfer", "/transfer")
+    context = SocialContext("turn", "text", conversation_id)
+    args = {"target_id": person, "text": "reply"}
+    first = await service.execute("send_private_message", args, context)
+    assert first["status"] == "succeeded" and len(bot.calls) == 1
+    assert await service.execute("send_private_message", args, context) == first
+    async with database.sessions() as session:
+        outbound = await session.scalar(
+            select(ChatEventModel).where(
+                ChatEventModel.platform_message_id == first["platform_reference"]
+            )
+        )
+        assert (
+            outbound.canonical_conversation_id == conversation_id
+            and outbound.author_presence_id == presence
+        )
+        event_id = outbound.id
+    recalled = await service.execute(
+        "recall_own_message",
+        {"event_id": event_id},
+        SocialContext("turn", "recall", conversation_id),
+    )
+    assert recalled["status"] == "succeeded" and bot.calls[-1][0] == "delete_msg"
+    artifact = store.write("report.txt", b"report")
+    sent = await service.execute(
+        "send_private_message",
+        {"target_id": person, "artifact_id": artifact["artifact_id"], "attachment_kind": "file"},
+        SocialContext("turn", "file", conversation_id),
+    )
+    assert sent["status"] == "succeeded" and bot.calls[-1][0] == "upload_private_file"
+    assert list((tmp_path / "transfer").iterdir()) == []
+    bot.fail = True
+    uncertain_context = SocialContext("turn", "timeout", conversation_id)
+    uncertain = await service.execute("send_private_message", args, uncertain_context)
+    assert uncertain["status"] == "uncertain"
+    count = len(bot.calls)
+    assert await service.execute("send_private_message", args, uncertain_context) == uncertain
+    assert len(bot.calls) == count

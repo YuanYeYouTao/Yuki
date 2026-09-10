@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Final, final
 
 from qq_ai_bot.gateway.provider import GatewayConnectionProfile
+from qq_ai_bot.gateway.providers.social import OneBotSocialOperations
 
 SNOWLUMA_PROVIDER_ID: Final[str] = "snowluma"
 SNOWLUMA_PLATFORM: Final[str] = "qq"
@@ -21,7 +22,7 @@ SNOWLUMA_CAPABILITIES: Final[frozenset[str]] = frozenset(
 
 
 @final
-class SnowLumaProvider:
+class SnowLumaProvider(OneBotSocialOperations):
     """Profile SnowLuma OneBot handles without leaking them into core services."""
 
     @property

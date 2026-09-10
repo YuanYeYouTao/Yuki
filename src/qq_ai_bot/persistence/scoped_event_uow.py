@@ -85,6 +85,10 @@ class ScopedEventLedgerUnitOfWork:
     def set_worker_notifier(self, notify_worker: Callable[[], None] | None) -> None:
         self._notify_worker = notify_worker
 
+    def notify_committed(self, result: ScopedAppendResult) -> None:
+        """Notify only after an external caller committed its shared ledger transaction."""
+        self._notify_after_commit(result.job_signalled)
+
     async def append_inbound(self, message: InboundMessage) -> ScopedAppendResult:
         scope = message.scope()
         segments = list(message.segments)

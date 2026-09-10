@@ -8,6 +8,7 @@ from qq_ai_bot.gateway.provider import (
     GatewayConnectionProfile,
     GatewayProviderCatalog,
 )
+from qq_ai_bot.gateway.providers.social import OneBotSocialOperations
 
 NAPCAT_PROVIDER_ID: Final[str] = "napcat"
 NAPCAT_PLATFORM: Final[str] = "qq"
@@ -24,7 +25,7 @@ NAPCAT_CAPABILITIES: Final[frozenset[str]] = frozenset(
 
 
 @final
-class NapCatProvider:
+class NapCatProvider(OneBotSocialOperations):
     """Profile NapCat OneBot handles without leaking them into core services."""
 
     @property
