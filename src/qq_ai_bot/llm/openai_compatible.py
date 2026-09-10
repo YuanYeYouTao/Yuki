@@ -19,6 +19,7 @@ from qq_ai_bot.llm.base import (
     LLMConfigurationError,
     LLMEmptyResponseError,
     LLMError,
+    LLMInvalidRequestError,
     LLMProvider,
     LLMTimeoutError,
     LLMUnavailableError,
@@ -111,6 +112,16 @@ class OpenAICompatibleProvider(LLMProvider):
         messages: list[dict[str, Any]] = []
         for message in request.messages:
             item: dict[str, Any] = {"role": message.role, "content": message.content}
+            if message.images:
+                if message.role != "user":
+                    raise LLMInvalidRequestError("images must be attached to a user message")
+                item["content"] = [
+                    {"type": "text", "text": message.content or ""},
+                    *(
+                        {"type": "image_url", "image_url": {"url": image.data_url}}
+                        for image in message.images
+                    ),
+                ]
             if message.tool_calls:
                 item["tool_calls"] = [
                     {

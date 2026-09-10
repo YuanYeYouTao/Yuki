@@ -211,6 +211,8 @@ class DeepSeekResponsesProvider(LLMProvider):
         leading: list[str] = []
         index = 0
         while index < len(messages) and messages[index].role in {"system", "developer"}:
+            if messages[index].images:
+                raise LLMInvalidRequestError("images must be attached to a user message")
             content = messages[index].content
             if content:
                 leading.append(content)
@@ -223,7 +225,22 @@ class DeepSeekResponsesProvider(LLMProvider):
                 )
             if message.role not in {"user", "assistant", "system", "developer"}:
                 raise LLMInvalidRequestError("unsupported Responses message role")
-            if message.content is not None:
+            if message.images:
+                if message.role != "user":
+                    raise LLMInvalidRequestError("images must be attached to a user message")
+                inputs.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": message.content or ""},
+                            *(
+                                {"type": "input_image", "image_url": image.data_url}
+                                for image in message.images
+                            ),
+                        ],
+                    }
+                )
+            elif message.content is not None:
                 inputs.append({"role": message.role, "content": message.content})
         return "\n\n".join(leading), inputs
 

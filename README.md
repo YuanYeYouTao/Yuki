@@ -54,6 +54,17 @@ canonical schema，Alembic head 为 `0051`。
 没有值得保存的内容时空提取是正常结果。明确的记住、纠正和删除仍立即处理。
 详见唯一现行 [Memory 合同](docs/architecture/memory-v2.md)。
 
+### 原生看图与联网
+
+DeepSeek V4.1 使用正式模型名 `deepseek-flash`。主模型 profile 声明 `image_input` 后，
+当前/引用图片经安全下载、限量抽帧直接进入完整 Main Agent，不再先调用 Qwen 描述图片。
+图片仅在本轮工具循环中保留，不把 Base64 写进历史；后续重新查看可引用原图片。
+表情包入库分类、OCR/标签与去重仍走独立后台视觉任务，保留现有可配置 VisionProvider。
+`VISION_ENABLED` 控制该外接服务，不是原生看图的开关；无图片能力的 profile 不会被强行喂图。
+
+新版 DeepSeek 忽略内置 `web_search`；配置 `WEB_MODE=tavily` 与 `TAVILY_API_KEY`。
+旧 `native_with_tavily_fallback` 会按有效能力进入 Tavily，不能把“未报错”视为原生搜索成功。
+
 ## 消息主路径
 
 ```text

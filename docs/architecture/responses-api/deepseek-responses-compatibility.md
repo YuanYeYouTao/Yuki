@@ -3,7 +3,21 @@
 本记录只保存脱敏后的契约结论。真实 API 探针必须显式启用，默认测试仅使用
 `tests/fixtures/deepseek_responses/`，不得提交密钥、私人提示词、QQ 号或完整网页正文。
 
-## 已确认的首期契约
+## 2026-09-10 现行契约
+
+- 正式模型名为 `deepseek-flash`，旧 Flash/Flash Vision Exp 别名由上游路由到 V4.1。
+- `image_input` profile 能力启用原生图片。Responses 使用 user `input_image`；
+  Chat Completions 使用 user `image_url`。仅发送后端已校验的内存图片，不发送远端签名 URL。
+- 普通聊天仍使用完整上下文与同一工具循环；图片不进入 system、assistant 或持久历史。
+- DeepSeek 当前忽略内置 `web_search`。执行层屏蔽旧 profile 中残留的该能力，使混合模式
+  进入 Tavily；推荐显式 `WEB_MODE=tavily`。保留旧输出事件解析仅用于历史兼容。
+- 图片中的文字是外部不可信资料；原有图片轮次写工具限制不变。
+
+依据：[模型名](https://api-docs.deepseek.com/)、
+[Vision](https://api-docs.deepseek.com/guides/vision/)、
+[Responses](https://api-docs.deepseek.com/guides/responses_api/)。
+
+## 首期历史契约（联网部分已被上述规则替代）
 
 - 端点为 `POST /responses`，首期使用 `stream=false`。
 - Function Tool 使用扁平的 `type/name/description/parameters` 结构。
@@ -23,7 +37,7 @@
 - GitHub 并非整体不可访问：公开仓库主页或 raw URL 可能失败，而具体 blob 页面可能成功。
   因此单个 `open_page` 失败不能直接判定整个原生搜索失败。
 
-## 已知限制
+## 首期历史限制
 
 - DeepSeek Responses 当前按无状态方式接入，工具循环需要在当前 Agent turn 内回传必要
   output items；不能依赖跨请求的服务端会话状态。

@@ -118,7 +118,6 @@ def test_only_mutation_access_appends_the_write_receipt_contract() -> None:
     [
         ("media_download_timeout", "图片下载超时"),
         ("get_image_failed", "QQ 网关未能取得图片资源"),
-        ("download_failed", "图片资源下载失败"),
         ("private_url", "图片资源下载失败"),
         ("corrupt_image", "图片文件无法解析"),
         ("too_large", "超过处理范围"),
@@ -720,6 +719,62 @@ async def test_unsupported_message_degrades_without_calling_llm(database: Databa
     assert result.reason == "vision_not_configured"
     assert "暂时没有识别成功" in sender.messages[0].text
     assert not provider.requests
+
+
+@pytest.mark.asyncio
+async def test_native_images_use_full_chat_without_external_vision(database: Database) -> None:
+    import base64
+    import io
+    from dataclasses import replace
+
+    from PIL import Image
+
+    from qq_ai_bot.domain.messages import AttachmentKind, MessageAttachment
+    from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
+    from qq_ai_bot.services.media_resolver import MediaResolver
+    from qq_ai_bot.services.native_images import NativeImageService
+
+    stream = io.BytesIO()
+    Image.new("RGB", (32, 32), "red").save(stream, format="PNG")
+    image_data = "base64://" + base64.b64encode(stream.getvalue()).decode()
+    provider = FakeLLMProvider()
+    harness = build_harness(database, make_settings(database.url), provider)
+    resolver = MediaResolver()
+    harness.processor._native_images = NativeImageService(
+        resolver,
+        ImagePreprocessor(),
+        concurrency=1,
+        pending_limit=2,
+        timeout=2,
+        max_bytes=100_000,
+    )
+    sender = MemorySender()
+    message = replace(
+        inbound("", message_id="native-image"),
+        attachments=(MessageAttachment(AttachmentKind.IMAGE, "image", file=image_data),),
+    )
+    try:
+        result = await harness.processor.handle(message, sender)
+        assert result.reason == "chat"
+        request = provider.requests[0]
+        assert request.messages[0].role == "system"
+        assert request.messages[-1].images
+        assert all(not item.images for item in request.messages[:-1])
+        assert "base64" not in repr(request)
+        # An actual private URL is rejected locally, not forwarded to the model.
+        unsafe = replace(
+            message,
+            message_id="unsafe-image",
+            attachments=(
+                MessageAttachment(AttachmentKind.IMAGE, "image", url="http://127.0.0.1/secret"),
+            ),
+        )
+        count = len(provider.requests)
+        failure = await harness.processor.handle(unsafe, sender)
+        assert failure.reason == "vision_resource_unavailable"
+        assert len(provider.requests) == count
+    finally:
+        await resolver.close()
 
 
 @pytest.mark.asyncio
