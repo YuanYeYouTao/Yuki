@@ -675,7 +675,12 @@ class MessageProcessor:
             observation=not direct_turn,
             protect_from_observations=direct_turn,
         )
-        has_visual_input = VisionService.has_visual_input(message)
+        has_visual_input = VisionService.has_visual_input(message) or (
+            self._native_images is not None
+            and any(
+                a.kind.value == "video" for a in (*message.attachments, *message.reply_attachments)
+            )
+        )
         image_blocks_command = bool(
             has_visual_input
             and (
@@ -913,7 +918,7 @@ class MessageProcessor:
         )
         if not content:
             if visual.images:
-                content = "[当前消息仅包含图片，请直接查看随本轮提供的图片并回应]"
+                content = "[当前消息包含视觉附件，请查看随本轮提供的图片或视频采样帧并回应]"
             elif has_visual_input and visual.observation is not None:
                 content = (
                     "[当前消息仅包含图片；后端视觉识别已成功，请根据本轮视觉观察直接回应图片内容]"
@@ -1083,7 +1088,12 @@ class MessageProcessor:
         sender: OutboundSender,
         runtime: RuntimeConfigSnapshot,
     ) -> VisualTurnState:
-        if not VisionService.has_visual_input(message):
+        has_video = any(
+            a.kind.value == "video" for a in (*message.attachments, *message.reply_attachments)
+        )
+        if not VisionService.has_visual_input(message) and not (
+            self._native_images is not None and has_video
+        ):
             return VisualTurnState()
         if self._native_images is not None:
             gateway = (

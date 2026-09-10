@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 
 from qq_ai_bot.admin.models import VisionRuntimeConfig
-from qq_ai_bot.domain.messages import ChatImage, InboundMessage
+from qq_ai_bot.domain.messages import AttachmentKind, ChatImage, InboundMessage
 from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
 from qq_ai_bot.services.media_resolver import MediaResolver, OneBotMediaGateway
+from qq_ai_bot.services.video_frames import sample_video
 from qq_ai_bot.services.vision_rate_limit import VisionRateLimiter
-from qq_ai_bot.services.vision_service import VisionProcessingError, VisionService
+from qq_ai_bot.services.vision_service import VisionProcessingError
+from qq_ai_bot.vision.models import MediaReference
 
 
 class NativeImageService:
@@ -52,12 +54,32 @@ class NativeImageService:
             async with asyncio.timeout(self._timeout), self._semaphore:
                 images: list[ChatImage] = []
                 size = 0
-                for reference in VisionService.select_references(
-                    message, maximum=runtime.max_images_per_turn
-                ):
+                kinds = {AttachmentKind.IMAGE, AttachmentKind.VIDEO}
+                current = tuple(a for a in message.attachments if a.kind in kinds)
+                replied = tuple(a for a in message.reply_attachments if a.kind in kinds)
+                for attachment in (current or replied)[: runtime.max_images_per_turn]:
+                    reference = MediaReference(
+                        file=attachment.file,
+                        url=attachment.url,
+                        source="reply" if attachment.source == "reply" else "current",
+                    )
                     remaining = runtime.max_frames_per_turn - len(images)
                     if remaining <= 0:
                         break
+                    if attachment.kind is AttachmentKind.VIDEO:
+                        # Never reinterpret a video ID as get_image, or open gateway-local paths.
+                        location = reference.url or reference.file or ""
+                        if not location.startswith(("https://", "http://", "base64://")):
+                            raise VisionProcessingError("video_unavailable", "视频缺少可下载地址")
+                        downloaded = await self._resolver.resolve(reference, None)
+                        video_frames = await sample_video(
+                            downloaded, source=reference.source, maximum=remaining
+                        )
+                        size += sum(len(frame.data_url) for frame in video_frames)
+                        if size > self._max_bytes:
+                            raise VisionProcessingError("too_large", "视频帧超过本轮预算")
+                        images.extend(video_frames)
+                        continue
                     downloaded = await self._resolver.resolve(reference, gateway)
                     prepared = await asyncio.to_thread(
                         self._preprocessor.prepare,

@@ -236,6 +236,7 @@ class ChatImage:
 
     data_url: str = field(repr=False)
     source: str = "current"
+    video_timestamp_seconds: float | None = None
 
     def __post_init__(self) -> None:
         if not self.data_url.startswith(("data:image/jpeg;base64,", "data:image/png;base64,")):

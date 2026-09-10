@@ -722,10 +722,13 @@ async def test_unsupported_message_degrades_without_calling_llm(database: Databa
 
 
 @pytest.mark.asyncio
-async def test_native_images_use_full_chat_without_external_vision(database: Database) -> None:
+async def test_native_images_use_full_chat_without_external_vision(
+    database: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import base64
     import io
     from dataclasses import replace
+    from pathlib import Path
 
     from PIL import Image
 
@@ -773,6 +776,33 @@ async def test_native_images_use_full_chat_without_external_vision(database: Dat
         failure = await harness.processor.handle(unsafe, sender)
         assert failure.reason == "vision_resource_unavailable"
         assert len(provider.requests) == count
+
+        async def decoder(*args: str) -> bytes:
+            assert "-protocol_whitelist" in args and "-format_whitelist" in args
+            if args[0] == "ffprobe":
+                return b'{"streams":[{"width":32,"height":32}],"format":{"duration":"4"}}'
+            Image.new("RGB", (32, 32), "blue").save(Path(args[-1]), format="JPEG")
+            return b""
+
+        monkeypatch.setattr("qq_ai_bot.services.video_frames._run", decoder)
+        video_data = "base64://" + base64.b64encode(b"\x00\x00\x00\x18ftypisom").decode()
+        video = replace(
+            message,
+            message_id="native-video",
+            attachments=(MessageAttachment(AttachmentKind.VIDEO, "video", file=video_data),),
+        )
+        assert (await harness.processor.handle(video, sender)).reason == "chat"
+        frames = provider.requests[-1].messages[-1].images
+        assert frames and frames[0].video_timestamp_seconds == 0
+        assert "没有音频" in (provider.requests[-1].messages[-1].content or "")
+        replied = replace(
+            video,
+            message_id="reply-video",
+            attachments=(),
+            reply_attachments=(replace(video.attachments[0], source="reply"),),
+        )
+        assert (await harness.processor.handle(replied, sender)).reason == "chat"
+        assert all(i.source == "reply" for i in provider.requests[-1].messages[-1].images)
     finally:
         await resolver.close()
 

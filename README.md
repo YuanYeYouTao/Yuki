@@ -59,6 +59,12 @@ canonical schema，Alembic head 为 `0051`。
 DeepSeek V4.1 使用正式模型名 `deepseek-flash`。主模型 profile 声明 `image_input` 后，
 当前/引用图片经安全下载、限量抽帧直接进入完整 Main Agent，不再先调用 Qwen 描述图片。
 图片仅在本轮工具循环中保留，不把 Base64 写进历史；后续重新查看可引用原图片。
+视频查看（Issue #21）使用本地 FFmpeg 对真实消息/引用中的 MP4/MOV 视频抽帧：
+最长 120 秒、分辨率最长边 4096、最多 4 帧（仍受本轮视觉帧数/字节预算限制）。
+下载沿用 `VISION_MAX_DOWNLOAD_BYTES` 限制，视频本身另有 32 MiB 硬上限。
+采样帧附带时间位置进入同一个 Main Agent，不使用额外看图模型；不分析音轨，
+不能保证看到所有瞬间。不支持视频网页链接解析、网关本地路径或仅有文件 ID 的视频。
+Docker 已包含 FFmpeg；源码运行需将 `ffmpeg`、`ffprobe` 加入 PATH。
 表情包入库分类、OCR/标签与去重仍走独立后台视觉任务，保留现有可配置 VisionProvider。
 `VISION_ENABLED` 控制该外接服务，不是原生看图的开关；无图片能力的 profile 不会被强行喂图。
 
