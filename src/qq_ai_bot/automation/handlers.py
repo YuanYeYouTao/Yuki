@@ -873,7 +873,22 @@ class _AutomationAgentBackend(AgentToolBackend):
         try:
             raw = json.loads(arguments_json)
             arguments = definition.validate_arguments(raw)
-            result = await definition.handler(arguments, self._context)
+            from qq_ai_bot.capabilities.invocation import current_invocation
+
+            invocation = current_invocation.get()
+            call_context = self._context
+            if invocation is not None:
+                from dataclasses import replace
+                from hashlib import sha256
+
+                call_context = replace(
+                    self._context,
+                    step_id="agent:"
+                    + sha256(
+                        (self._context.step_id + ":" + invocation.call_id).encode()
+                    ).hexdigest(),
+                )
+            result = await definition.handler(arguments, call_context)
         except ValidationError as exc:
             issues = [
                 {

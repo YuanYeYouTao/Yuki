@@ -284,6 +284,31 @@ class ApplicationContainer:
         self.deduplication = conversation.deduplication
         self.rate_limiter = conversation.rate_limiter
         self.agent_tools = conversation.agent_tools
+        from qq_ai_bot.social.service import SocialService
+
+        self.social_service = SocialService(
+            self.database, self.presence_router, persistence.scoped_events
+        )
+        self.agent_tools.social_service = self.social_service
+        self.social_service.runtime_config = self.runtime_config
+        from qq_ai_bot.workspace.service import WorkspaceService
+        from qq_ai_bot.workspace.store import WorkspaceStore
+
+        self.workspace_service = WorkspaceService(
+            WorkspaceStore(settings.workspace_directory), self.media_resolver, self.database
+        )
+        self.agent_tools.workspace_service = self.workspace_service
+        from qq_ai_bot.sandbox.client import SandboxClient
+
+        self.sandbox_client = SandboxClient(settings.sandbox_socket)
+        self.agent_tools.sandbox_client = self.sandbox_client
+        from qq_ai_bot.social.transfer import ArtifactTransfer
+
+        self.social_service.transfer = ArtifactTransfer(
+            self.workspace_service.store,
+            settings.social_transfer_directory,
+            settings.social_gateway_transfer_directory,
+        )
         self.plugin_agent_tools = conversation.plugin_agent_tools
         self.chat = conversation.chat
         self.chat.register_tool_provider(self.mcp_tools)
@@ -365,6 +390,17 @@ class ApplicationContainer:
         self.automation_bundle = automation
         self.automation_repository = automation.repository
         self._automation_handlers = automation.handlers
+        from qq_ai_bot.social.automation import SocialAutomationAdapter
+
+        self.social_automation = SocialAutomationAdapter(
+            self.social_service, self.workspace_service, self.sandbox_client
+        )
+        for capability_name, handler in self.social_automation.mapping().items():
+            from dataclasses import replace
+
+            definition = automation.registry.require(capability_name)
+            automation.registry.unregister(capability_name)
+            automation.registry.register(replace(definition, handler=handler))
         self.automation_registry = automation.registry
         self.automation = automation.service
         self.automation_tools = automation.tools
@@ -772,6 +808,12 @@ class ApplicationContainer:
         return self.gateway_registry.has_any_active()
 
     def _register_lifecycle(self) -> None:
+        self.lifecycle.register(
+            "social_recovery", start=self.social_service.receipts.recover_interrupted
+        )
+        self.lifecycle.register(
+            "workspace", start=self.workspace_service.start, close=self.workspace_service.close
+        )
         self.lifecycle.register(
             "memory_embeddings",
             start=self.memory_embeddings.start,

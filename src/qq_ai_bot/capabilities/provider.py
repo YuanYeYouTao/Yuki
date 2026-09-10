@@ -9,7 +9,7 @@ from typing import Any, Protocol
 
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities.binding import InProcessToolBinding
-from qq_ai_bot.capabilities.invocation import ToolInvocationContext
+from qq_ai_bot.capabilities.invocation import ToolInvocationContext, current_invocation
 from qq_ai_bot.capabilities.models import (
     CapabilityDescriptor,
     CapabilityEffect,
@@ -45,6 +45,7 @@ _RESIDENT_YUKI_TOOLS = frozenset(
     }
 )
 _ORIGIN_OVERRIDES: dict[str, frozenset[TurnOrigin]] = {
+    **{name: _SOCIAL_ORIGINS for name in _RESIDENT_YUKI_TOOLS},
     "find_contacts": _SOCIAL_ORIGINS,
     "send_private_message": _SOCIAL_ORIGINS,
     "send_group_message": _SOCIAL_ORIGINS,
@@ -59,6 +60,18 @@ _ORIGIN_OVERRIDES: dict[str, frozenset[TurnOrigin]] = {
 }
 
 _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
+    "workspace_list": ("workspace.read", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
+    "workspace_read": ("workspace.read", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
+    "workspace_write": ("workspace.write", CapabilityEffect.WRITE_STATE, CapabilityRisk.MUTATE),
+    "workspace_delete": ("workspace.write", CapabilityEffect.WRITE_STATE, CapabilityRisk.MUTATE),
+    "workspace_import_attachment": (
+        "workspace.write",
+        CapabilityEffect.WRITE_STATE,
+        CapabilityRisk.MUTATE,
+    ),
+    "run_python": ("sandbox.run", CapabilityEffect.WRITE_STATE, CapabilityRisk.MUTATE),
+    "get_code_run": ("sandbox.read", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
+    "cancel_code_run": ("sandbox.cancel", CapabilityEffect.WRITE_STATE, CapabilityRisk.MUTATE),
     "find_contacts": ("social.contacts", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
     "send_private_message": ("social.send", CapabilityEffect.PLATFORM_SEND, CapabilityRisk.MUTATE),
     "send_group_message": ("social.send", CapabilityEffect.PLATFORM_SEND, CapabilityRisk.MUTATE),
@@ -451,11 +464,13 @@ class InProcessToolProvider:
             arguments: dict[str, object],
             context: ToolInvocationContext,
         ) -> object:
-            return await self._execute(
-                tool.name,
-                json.dumps(arguments, ensure_ascii=False),
-                context.runtime,
-            )
+            token = current_invocation.set(context)
+            try:
+                return await self._execute(
+                    tool.name, json.dumps(arguments, ensure_ascii=False), context.runtime
+                )
+            finally:
+                current_invocation.reset(token)
 
         search_tags = (
             _CORE_SEARCH_TAGS.get(tool.name, ())

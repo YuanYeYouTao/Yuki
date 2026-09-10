@@ -43,6 +43,15 @@ canonical schema，Alembic head 为 `0052`。
 
 完整结构见 [Yuki 3.8 canonical runtime](docs/architecture/canonical-runtime.md)。
 
+### 社交工具与临时工作区
+
+普通 Main Agent 固定暴露 QQ 社交、临时工作区和 Python 沙箱共十四个工具，
+也可显式注册到自动化。发送遵守已有 canonical 路由；不确定的网络结果不自动重发。
+工作区全会话共享，内容修改后 24 小时过期，不是永久文件库或私人保险箱。
+Python 通过独立 runsc 容器运行，可经代理访问公网 HTTP/HTTPS；宿主、内网和网关隔离。
+沙箱依赖额外宿主管理器，未安装时工具返回不可用，不能退回 Bot 内执行。
+部署与边界详见 [社交、工作区与沙箱](docs/operations/social-workspace-sandbox.md)。
+
 ### 记忆读取与自动保存
 
 可以自然地询问本人或历史共同群友的记忆、指定旧群名查询群整体或某人在群里的记忆；

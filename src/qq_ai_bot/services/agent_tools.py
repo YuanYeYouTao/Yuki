@@ -335,6 +335,9 @@ class AgentToolService:
             config_registry=self._runtime_config.registry,
         )
         self._voice_preferences = voice_preferences
+        self.social_service: Any = None
+        self.workspace_service: Any = None
+        self.sandbox_client: Any = None
 
     def definitions(self, runtime: ToolRuntime) -> tuple[ChatTool, ...]:
         bot_name = self._settings.bot_display_name
@@ -959,7 +962,11 @@ class AgentToolService:
                     ),
                 )
             )
-        return tuple(tools)
+        from qq_ai_bot.sandbox.client import sandbox_tools
+        from qq_ai_bot.social.tools import social_tool_definitions
+        from qq_ai_bot.workspace.service import workspace_tools
+
+        return (*tools, *social_tool_definitions(), *workspace_tools(), *sandbox_tools())
 
     async def execute(
         self,
@@ -985,6 +992,69 @@ class AgentToolService:
             if not isinstance(arguments, dict):
                 return self._result(error="invalid_arguments", detail="工具参数必须是对象")
             try:
+                from qq_ai_bot.social.tools import social_tool_definitions
+
+                if name in {"run_python", "get_code_run", "cancel_code_run"}:
+                    from qq_ai_bot.capabilities.invocation import current_invocation
+
+                    invocation = current_invocation.get()
+                    if (
+                        runtime.origin not in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}
+                        or runtime.tools_closed
+                        or (runtime.read_only and name != "get_code_run")
+                    ):
+                        return self._result(error="permission_denied", detail="本轮未授权沙箱操作")
+                    if self.sandbox_client is None or invocation is None:
+                        return self._result(error="sandbox_unavailable", detail="沙箱未连接")
+                    from hashlib import sha256
+
+                    request_id = sha256(
+                        f"{runtime.conversation_id}:{runtime.trigger_message_id}:{invocation.call_id}".encode()
+                    ).hexdigest()
+                    result = await self.sandbox_client.execute(
+                        name, arguments, request_id=request_id
+                    )
+                    return self._result(data=result)
+
+                if name.startswith("workspace_"):
+                    from qq_ai_bot.workspace.store import WorkspaceError
+
+                    if (
+                        runtime.origin not in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}
+                        or (runtime.read_only and name not in {"workspace_read", "workspace_list"})
+                        or runtime.tools_closed
+                    ):
+                        return self._result(
+                            error="permission_denied", detail="本轮未授权工作区操作"
+                        )
+                    if self.workspace_service is None:
+                        return self._result(error="workspace_unavailable", detail="工作区未连接")
+                    try:
+                        workspace_result = await self.workspace_service.execute(
+                            name, arguments, runtime=runtime
+                        )
+                        return self._result(data=workspace_result)
+                    except (WorkspaceError, ValueError, OSError) as exc:
+                        category = (
+                            str(exc) if isinstance(exc, WorkspaceError) else type(exc).__name__
+                        )
+                        return self._result(error=category, detail="临时文件操作未完成")
+
+                if name in {tool.name for tool in social_tool_definitions()}:
+                    from qq_ai_bot.social.agent_adapter import invoke_social
+                    from qq_ai_bot.social.models import SocialError
+
+                    if self.social_service is None:
+                        return self._result(error="social_unavailable", detail="社交服务尚未连接")
+                    try:
+                        social_result = await invoke_social(
+                            self.social_service, name, arguments, runtime
+                        )
+                        return self._result(data=social_result)
+                    except SocialError as exc:
+                        return self._result(
+                            error=str(exc), detail="社交操作未执行或结果不确定，请勿盲重试"
+                        )
                 if name in {"get_person_memories", "get_group_memories", "get_self_memories"}:
                     self._log_memory_read_intent(arguments, parse_memory_tool_intent(arguments))
                 if name == "get_my_capabilities":

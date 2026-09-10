@@ -513,4 +513,7 @@ def build_capability_registry(
                 handler=bound.get(name),
             )
         )
+    from qq_ai_bot.social.automation import register_social_automation
+
+    register_social_automation(registry, bound)
     return registry

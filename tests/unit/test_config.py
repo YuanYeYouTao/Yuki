@@ -265,20 +265,16 @@ def test_memory_embedding_disabled_needs_no_secret_but_enabled_does() -> None:
     assert "test-only-key" not in repr(enabled)
 
 
-@pytest.mark.parametrize(
-    ("override", "error"),
-    [
+def test_memory_embedding_rejects_unsupported_profiles() -> None:
+    invalid_profiles = (
         ({"memory_embedding_provider": "other"}, "must be qwen_dashscope"),
         ({"memory_embedding_dimensions": 768}, "supports 1024 dimensions"),
         ({"memory_embedding_output_type": "sparse"}, "must be dense"),
         ({"memory_embedding_document_template_version": 2}, "unsupported"),
-    ],
-)
-def test_memory_embedding_rejects_unsupported_profiles(
-    override: dict[str, object], error: str
-) -> None:
-    with pytest.raises(ValidationError, match=error):
-        Settings.model_validate(override)
+    )
+    for override, error in invalid_profiles:
+        with pytest.raises(ValidationError, match=error):
+            Settings.model_validate(override)
 
 
 def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps() -> None:

@@ -2,6 +2,8 @@
 set -eu
 
 mkdir -p /app/data /app/napcat-config /app/snowluma-data/config
+mkdir -p /app/workspace /app/social-transfer
+chown bot:bot /app/workspace /app/social-transfer
 chown -R bot:bot /app/data
 
 if [ -n "${NAPCAT_CONFIG_OUTPUT:-}" ]; then

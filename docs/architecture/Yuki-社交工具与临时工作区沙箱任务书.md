@@ -4,8 +4,8 @@
 
 从 `ab4db69` 建立 `codex/social-workspace-sandbox`，保留记忆修复。
 版本保持 3.8.2；当前数据库 head 0051，新增加法迁移 0052，不修改历史迁移。
-正常完整 Main Agent 获得固定 QQ 社交工具、跨平台跨会话临时工作区和离线 Python 执行能力。
-不修改人格、不实现 Telegram、不建立永久文件库，不自动推送、部署或发布。
+正常完整 Main Agent 获得固定 QQ 社交工具、跨平台跨会话临时工作区和隔离 Python 执行能力。
+不修改人格、不实现 Telegram、不建立永久文件库。后续授权已允许提 PR、本地构建并部署；不自动发布 Release。
 
 依赖：Main Agent → 社交应用服务 → canonical 路由 → Provider；Main Agent → 临时工作区；
 Main Agent → 沙箱客户端 → 可信宿主管理器 → 一次性容器 → 产物导回工作区。
@@ -75,12 +75,15 @@ gVisor runsc（systrap）＋每任务新容器；不允许退回普通容器或 
 
 工具 run_python(code,input_artifact_ids,timeout_seconds)、get_code_run、cancel_code_run。
 同步最多等 5 秒，其后返回 run_id；查询不重执行，同请求 ID 幂等。
-Python 3.12，预装标准库/Pillow/openpyxl/pypdf，构建锁依赖，不在执行时 pip 联网。
+Python 3.12，预装标准库/Pillow/openpyxl/pypdf，构建锁依赖。
+用户已允许联网：经专用代理访问公网 HTTP/HTTPS，可在任务临时目录运行 pip；
+保持离开任务即销毁，不修改基础镜像。拒绝内网、宿主、云元数据和业务网关。
 并发 1、队列 4、默认 30 秒/上限 120 秒、256 MiB 内存/no swap、0.5 CPU、64 进程、
 128 MiB 可写空间、stdout+stderr 32 KiB、最多 20 个/100 MiB 产物。
-离线、非 root、只读根、no-new-privileges、drop capabilities；不挂数据库/密钥/账号/工作区整体。
+非 root、只读根、no-new-privileges、drop capabilities；不挂数据库/密钥/账号/工作区整体。
+代码容器仅接内部网络；专用代理负责出站，宿主防火墙独立限制目标与端口。
 
-仅选定对象复制至只读 /inputs；/work 临时处理；/outputs 导出。
+仅选定对象复制至只读 /inputs（以 artifact_id 为文件名）；/work 临时处理；/work/outputs 导出。
 先停止所有执行，再检查普通文件类型/路径/数量/大小并导入工作区。
 失败/取消/超时不发布半成品；诊断有界。产物导回后销毁容器和暂存区。
 重启终止本系统遗留任务，不自动重跑；任务元数据/代码/诊断保留不超过 24 小时，不进普通日志。
@@ -103,7 +106,7 @@ agent_tools.py 仅注册与委派，不堆 Provider/文件/容器实现。
 
 必须验证普通人自主联系/陌生拒绝/停用与暂停、各 Provider 全部社交动作、正确目标账本、
 切号不改 generation、重放不重复发、超时不盲重试；跨会话工作区/不续期/重启/并发更新；
-沙箱断网/无宿主或密钥访问/无网关访问/无限循环/fork/内存与输出洪泛/路径攻击；
+沙箱公网可达/无宿主或密钥访问/无网关访问/无限循环/fork/内存与输出洪泛/路径攻击；
 导入→运行→产物→发送端到端。固定工具 schema 不随文件与人名变化。
 
 真实 QQ 测试仅在用户指定联系人/群进行；未提供时标记未实测，不对真实用户试发。
@@ -111,7 +114,7 @@ agent_tools.py 仅注册与委派，不堆 Provider/文件/容器实现。
 
 ## 5. 后续上线条件
 
-另行确认后本地构建传输，备份 DB/config/image，验证 runsc；需要重启 Docker 时安排维护窗口，
+按最新授权本地构建传输，备份 DB/config/image，验证 runsc；需要重启 Docker 时安排维护窗口，
 不得顺带中断 SnowLuma。至少可用磁盘 3 GiB、内存 512 MiB，并发 1 压测通过。
 不满足则沙箱不可用，不降低隔离；社交与工作区可独立运行。
 
@@ -121,6 +124,7 @@ agent_tools.py 仅注册与委派，不堆 Provider/文件/容器实现。
 
 ## 实施状态
 
-- 基础合同/0052/回执：实现中，尚未接通普通 Agent。
-- Provider 社交、工作区、沙箱、端到端：待实现。
+- 基础合同/0052/回执：已提交 147e834。
+- Provider 社交、工作区、沙箱及自动化：实现中，普通 Agent 已接入固定注册。
+- 本地代码测试进行中；真实 Provider 与沙箱隔离验收尚未完成。
 - 未运行真实 QQ 操作，未安装服务器 runtime，未部署。

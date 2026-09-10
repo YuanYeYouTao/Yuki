@@ -79,6 +79,14 @@ class Settings(BaseSettings):
     app_port: int = 8080
     log_level: str = "INFO"
     log_message_content: bool = False
+    workspace_directory: Path = Path("workspace")
+    social_send_per_target_per_minute: int = Field(default=3, ge=1)
+    social_send_global_per_minute: int = Field(default=10, ge=1)
+    social_poke_per_target_per_minute: int = Field(default=1, ge=1)
+    social_poke_global_per_minute: int = Field(default=5, ge=1)
+    social_transfer_directory: Path = Path("social-transfer")
+    social_gateway_transfer_directory: str = ""
+    sandbox_socket: Path = Path("/run/yuki-sandbox/manager.sock")
 
     onebot_access_token: str = ""
     superusers_csv: str = Field(default="", validation_alias="SUPERUSERS")
