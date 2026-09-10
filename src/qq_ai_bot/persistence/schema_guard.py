@@ -8,9 +8,20 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-CANONICAL_SCHEMA_REVISION = "0051"
+CANONICAL_SCHEMA_REVISION = "0052"
 
 _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
+    "social_operation_receipts": frozenset(
+        {
+            "id",
+            "source_turn_id",
+            "tool_call_id",
+            "payload_hash",
+            "status",
+            "target_id",
+            "presence_id",
+        }
+    ),
     "memory_recall_receipts": frozenset(
         {
             "consumer",

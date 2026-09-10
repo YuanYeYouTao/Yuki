@@ -143,7 +143,7 @@ def test_yuki_persona_file_must_exist_and_not_be_empty(tmp_path: Path) -> None:
         )
 
 
-def test_legacy_prompt_without_placeholder_is_not_duplicated(tmp_path: Path) -> None:
+def test_persona_aliases_do_not_modify_prompt_without_placeholder(tmp_path: Path) -> None:
     persona_file = tmp_path / "persona.md"
     persona_file.write_text("shared persona", encoding="utf-8")
     prompt_file = tmp_path / "legacy.md"
@@ -157,6 +157,15 @@ def test_legacy_prompt_without_placeholder_is_not_duplicated(tmp_path: Path) -> 
     )
 
     assert settings.system_prompt == "legacy prompt already contains its persona"
+
+    persona_file.write_text("Mika 的独立共享人格", encoding="utf-8")
+    original_prompt = "# 私有系统提示词\n\n这里不包含任何人格占位符。"
+    prompt_file.write_text(original_prompt, encoding="utf-8")
+    settings = Settings.model_validate(
+        {"BOT_PERSONA_FILE": persona_file, "system_prompt_file": prompt_file}
+    )
+    assert settings.bot_persona == "Mika 的独立共享人格"
+    assert settings.system_prompt == original_prompt
 
 
 def test_bot_identity_is_configurable_and_aliases_are_stably_deduplicated() -> None:
@@ -172,26 +181,6 @@ def test_bot_identity_is_configurable_and_aliases_are_stably_deduplicated() -> N
     assert settings.bot_aliases == ("Mika", "米卡")
     assert settings.bot_voice_name == "みか"
     assert settings.bot_identity.display_name == "Mika"
-
-
-def test_bot_persona_does_not_modify_prompt_without_legacy_placeholder(
-    tmp_path: Path,
-) -> None:
-    persona_file = tmp_path / "persona.md"
-    persona_file.write_text("Mika 的独立共享人格", encoding="utf-8")
-    prompt_file = tmp_path / "system_prompt.md"
-    original_prompt = "# 私有系统提示词\n\n这里不包含任何人格占位符。"
-    prompt_file.write_text(original_prompt, encoding="utf-8")
-
-    settings = Settings.model_validate(
-        {
-            "BOT_PERSONA_FILE": persona_file,
-            "system_prompt_file": prompt_file,
-        }
-    )
-
-    assert settings.bot_persona == "Mika 的独立共享人格"
-    assert settings.system_prompt == original_prompt
 
 
 def test_example_system_prompt_is_complete_and_preserves_mode_boundaries() -> None:

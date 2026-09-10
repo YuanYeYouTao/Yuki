@@ -25,7 +25,32 @@ _ALL_ORIGINS = frozenset(TurnOrigin)
 _DIRECT_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP})
 _DECLINE_REPLY_ORIGINS = frozenset({TurnOrigin.AUTONOMOUS_GROUP, TurnOrigin.PLUGIN_BACKGROUND})
 _REPLY_LAYOUT_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP})
+_SOCIAL_ORIGINS = _DIRECT_ORIGINS | frozenset({TurnOrigin.SCHEDULED_AUTOMATION})
+_RESIDENT_YUKI_TOOLS = frozenset(
+    {
+        "find_contacts",
+        "send_private_message",
+        "send_group_message",
+        "poke_person",
+        "get_group_members",
+        "recall_own_message",
+        "workspace_list",
+        "workspace_read",
+        "workspace_write",
+        "workspace_import_attachment",
+        "workspace_delete",
+        "run_python",
+        "get_code_run",
+        "cancel_code_run",
+    }
+)
 _ORIGIN_OVERRIDES: dict[str, frozenset[TurnOrigin]] = {
+    "find_contacts": _SOCIAL_ORIGINS,
+    "send_private_message": _SOCIAL_ORIGINS,
+    "send_group_message": _SOCIAL_ORIGINS,
+    "poke_person": _SOCIAL_ORIGINS,
+    "get_group_members": _SOCIAL_ORIGINS,
+    "recall_own_message": _SOCIAL_ORIGINS,
     "decline_reply": _DECLINE_REPLY_ORIGINS,
     "set_voice_preference": _DIRECT_ORIGINS,
     "set_reply_layout": _REPLY_LAYOUT_ORIGINS,
@@ -34,6 +59,16 @@ _ORIGIN_OVERRIDES: dict[str, frozenset[TurnOrigin]] = {
 }
 
 _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
+    "find_contacts": ("social.contacts", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
+    "send_private_message": ("social.send", CapabilityEffect.PLATFORM_SEND, CapabilityRisk.MUTATE),
+    "send_group_message": ("social.send", CapabilityEffect.PLATFORM_SEND, CapabilityRisk.MUTATE),
+    "poke_person": ("social.poke", CapabilityEffect.PLATFORM_MUTATE, CapabilityRisk.MUTATE),
+    "get_group_members": ("social.members", CapabilityEffect.EXTERNAL_READ, CapabilityRisk.READ),
+    "recall_own_message": (
+        "social.recall",
+        CapabilityEffect.PLATFORM_MUTATE,
+        CapabilityRisk.MUTATE,
+    ),
     "get_my_capabilities": (
         "kernel.authority.read",
         CapabilityEffect.READ_STATE,
@@ -331,7 +366,11 @@ class ChatToolCapabilityProvider:
                 if risk is CapabilityRisk.READ
                 else CapabilityIdempotency.CONDITIONAL
             ),
-            exposure=CapabilityExposure.PLANNED,
+            exposure=(
+                CapabilityExposure.DIRECT_ALWAYS
+                if self._source is CapabilityTrustSource.CORE and tool.name in _RESIDENT_YUKI_TOOLS
+                else CapabilityExposure.PLANNED
+            ),
             schema_version=str(tool.schema_version),
             tags=tuple(dict.fromkeys(tags)),
         )

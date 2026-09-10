@@ -9,6 +9,7 @@ from qq_ai_bot.capabilities.catalog import UnifiedToolCatalog, UnifiedToolCatalo
 from qq_ai_bot.capabilities.models import (
     CapabilityDescriptor,
     CapabilityEffect,
+    CapabilityExposure,
     CapabilityTrustSource,
 )
 from qq_ai_bot.capabilities.request import REQUEST_TOOLS_NAME
@@ -200,6 +201,16 @@ class AuthorityFirstExposurePlanner:
             add(candidate, require_requestable=False)
 
         reason = "ready"
+        selected = [
+            entry
+            for entry in selected
+            if not (
+                entry.descriptor.trust_source is CapabilityTrustSource.CORE
+                and entry.descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS
+                and is_prefix_declarable(entry)
+            )
+        ]
+        selected_ids = {entry.descriptor.model_name for entry in selected}
         selected, selected_ids, rejected = _expand_selected_bundles(
             selected,
             selected_ids=selected_ids,
@@ -222,6 +233,18 @@ class AuthorityFirstExposurePlanner:
                 entry.descriptor.model_name for entry in selected if entry.descriptor.bundle_scopes
             },
         )
+        # Resident core tools have dedicated prefix slots, outside the discovery
+        # budget. Availability changes callability, never the deployment schema.
+        for entry in catalog.entries:
+            if (
+                entry.descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS
+                and entry.descriptor.trust_source is CapabilityTrustSource.CORE
+                and is_prefix_declarable(entry)
+                and entry.descriptor.model_name
+                not in {item.descriptor.model_name for item in selected}
+            ):
+                selected.append(entry)
+        selected_ids = {entry.descriptor.model_name for entry in selected}
         callable_ids = frozenset(
             item.descriptor.model_name
             for item in selected

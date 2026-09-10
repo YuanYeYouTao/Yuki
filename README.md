@@ -8,7 +8,7 @@
 
 <p>
   <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.1"><img src="https://img.shields.io/badge/Release-3.8.1-blue" alt="Yuki 3.8.1 release"></a>
-  <img src="https://img.shields.io/badge/Schema-0051-blue" alt="Alembic head 0051">
+  <img src="https://img.shields.io/badge/Schema-0052-blue" alt="Alembic head 0052">
   <img src="https://img.shields.io/badge/Plugin%20API-2.0-8A2BE2" alt="Plugin API 2.0">
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
@@ -24,7 +24,7 @@ Provider，并在权限边界内持续记住人与共同经历。
 
 最新已发布版本为 **3.8.1**；当前源码基线为 **3.8.2（发布准备中）**，包含插件唤醒、Memory P1
 治理、意图读取与记忆可靠性修复。3.8 只运行
-canonical schema，Alembic head 为 `0051`。
+canonical schema，Alembic head 为 `0052`。
 
 ## 3.8 核心合同
 
@@ -211,11 +211,12 @@ docker compose up -d
 
 3.8 的数据库合同：
 
-- fresh install：无父 revision 的 `0048` canonical baseline，随后升级到 `0049 -> 0050 -> 0051`。
+- fresh install：无父 revision 的 `0048` canonical baseline，随后升级到 `0049 -> 0050 -> 0051 -> 0052`。
 - historical bridge：只接受已完成 canonical v2 的旧 `0048` 数据库。
 - pre-3.8、v1、dual-write、backfill/cutover 中间态数据库不受支持，启动时失败关闭。
 - `0049` 仍是不提供 downgrade 的 canonical bridge；`0050` 增加主动回复因果列和索引，`0051`
   只增加 Memory recall 评估与主动读取结果的无正文观测列。
+  `0052` 增加社交操作回执，防止不确定发送被重试；社交工具仍在开发，不代表已经可用。
   生产数据的可靠回退方式仍是恢复升级前同一时点的 DB/WAL/SHM 快照。
 
 升级前必须停止 Bot 与 Provider，并把以下文件作为一组保存：
@@ -272,7 +273,7 @@ uv run mypy src
 uv run pytest
 ```
 
-涉及 schema 或发布时还要验证 fresh `0048 -> 0049 -> 0050 -> 0051`、populated `0050 -> 0051`、SQLite
+涉及 schema 或发布时还要验证 fresh `0048 -> 0049 -> 0050 -> 0051 -> 0052`、populated `0051 -> 0052`、SQLite
 `foreign_key_check`、FTS/trigger、release smoke 和 Docker Compose 配置。
 
 ## 文档
