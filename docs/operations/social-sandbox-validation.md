@@ -40,10 +40,28 @@ in Squid's test hosts file. **No private-IP exception was added.** The productio
 configuration does not include that test pin; production DNS independently returned
 public addresses and must be checked again during activation.
 
+## Production activation
+
+- PR: #66. Bot image was built locally, transferred with SHA-256 verification;
+  no remote build and no Docker daemon restart.
+- Image: `ghcr.io/yuanyeyoutao/yuki-qqbot:social-0a38550`, ID
+  `sha256:af26f227114b8803664520e512b3c169aaeac336d8b1e5d61107f85d28442b74`.
+- The isolated 0051 to 0052 rehearsal preserved content hashes and row counts of
+  all 102 existing tables; integrity and foreign-key checks passed.
+- Host runsc passed all seven probes above with production DNS, without a hosts pin.
+- Real systemd testing exposed two deployment-specific issues: UMask removed input
+  directory traversal for the sandbox UID, and runtime-directory recreation left
+  Bot's bind mount stale. Explicit input permissions and RuntimeDirectoryPreserve
+  fix these. Bot UID 10001 executed Python successfully and retained socket access
+  across a manager restart. Cancellation now exits the service cleanly.
+- Final Bot restart: 2026-09-11 05:22:48 +08:00. SnowLuma retains its original
+  2026-08-30 start time; no QQ test messages were sent.
+- Rollback backup: `/opt/yuki-qqbot/backups/pre-social-0a38550`; retained image
+  `yuki-rollback:pre-social-0a38550`. The old binary expects 0051: preserve new data
+  and assess schema compatibility before rollback, never blindly overwrite new messages.
+
 ## Remaining live verification
 
 No real QQ recipient/group was designated, so no message, poke or recall was sent
 to users for testing. NapCat/SnowLuma's real action compatibility must not be inferred
-from the mock Provider test. Deployment status and host pressure/connection checks
-are recorded separately after activation; these local results alone are not a claim
-that production is running the new build.
+from the mock Provider test. These actions remain explicitly unverified end-to-end.

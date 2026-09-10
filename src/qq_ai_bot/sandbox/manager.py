@@ -255,6 +255,8 @@ class Manager:
         directory.mkdir(mode=0o700)
         inputs, work = directory / "inputs", directory / "work"
         inputs.mkdir(mode=0o755)
+        # systemd's private umask must not remove traversal for the sandbox UID.
+        inputs.chmod(0o755)
         work.mkdir()
         mounted, _ = await self.command(
             "mount",
@@ -412,6 +414,8 @@ async def main() -> None:
     try:
         async with server:
             await server.serve_forever()
+    except asyncio.CancelledError:
+        pass
     finally:
         worker.cancel()
         await asyncio.gather(worker, return_exceptions=True)
