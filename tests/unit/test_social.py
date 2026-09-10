@@ -152,6 +152,8 @@ async def test_social_gateway_delivery_and_fail_closed(database: Database, tmp_p
             self.calls.append((action, params))
             if self.fail:
                 raise TimeoutError()
+            if action == "get_group_member_list":
+                return [{"user_id": 10001, "nickname": "known"}]
             return {"message_id": 1000 + len(self.calls)}
 
     bot = Bot()
@@ -217,4 +219,49 @@ async def test_social_gateway_delivery_and_fail_closed(database: Database, tmp_p
     assert uncertain["status"] == "uncertain"
     count = len(bot.calls)
     assert await service.execute("send_private_message", args, uncertain_context) == uncertain
+    assert len(bot.calls) == count
+    bot.fail = False
+    from qq_ai_bot.conversation.canonical_db_models import PersonActiveRouteModel
+    from qq_ai_bot.identity.canonical_repository import ensure_space
+    from qq_ai_bot.identity.db_models import CanonicalSpaceModel
+
+    async with database.sessions() as session, session.begin():
+        space_id = await ensure_space(session, "20001")
+        space = await session.get(CanonicalSpaceModel, space_id)
+        space.enabled = space.autonomous_enabled = True
+        unknown = await ensure_person(session, "10002")
+        row = await session.get(CanonicalPersonModel, unknown)
+        row.enabled = True
+    with pytest.raises(SocialError, match="contact_not_allowed"):
+        await service.execute("send_private_message", {"target_id": unknown, "text": "no"}, context)
+    assert await router.cas_takeover_space(space_id) in {"taken", "unchanged"}
+    group = await service.execute(
+        "send_group_message",
+        {"target_id": space_id, "text": "group"},
+        SocialContext("turn", "group", conversation_id),
+    )
+    assert group["status"] == "succeeded"
+    async with database.sessions() as session:
+        event = await session.scalar(
+            select(ChatEventModel).where(
+                ChatEventModel.platform_message_id == group["platform_reference"]
+            )
+        )
+        assert event.canonical_conversation_id != conversation_id and event.group_id == "20001"
+    members = await service.execute("get_group_members", {"target_id": space_id}, context)
+    assert members["items"][0]["display_name"] == "known"
+    poke = await service.execute(
+        "poke_person",
+        {"target_id": person, "space_id": space_id},
+        SocialContext("turn", "poke", conversation_id),
+    )
+    assert poke["status"] == "succeeded" and bot.calls[-1][0] == "send_poke"
+    async with database.sessions() as session, session.begin():
+        route = await session.get(PersonActiveRouteModel, person)
+        route.paused = True
+    count = len(bot.calls)
+    with pytest.raises(SocialError, match="route_paused"):
+        await service.execute(
+            "send_private_message", args, SocialContext("turn", "paused", conversation_id)
+        )
     assert len(bot.calls) == count

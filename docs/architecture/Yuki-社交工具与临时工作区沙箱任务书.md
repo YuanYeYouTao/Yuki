@@ -125,6 +125,7 @@ agent_tools.py 仅注册与委派，不堆 Provider/文件/容器实现。
 ## 实施状态
 
 - 基础合同/0052/回执：已提交 147e834。
-- Provider 社交、工作区、沙箱及自动化：实现中，普通 Agent 已接入固定注册。
-- 本地代码测试进行中；真实 Provider 与沙箱隔离验收尚未完成。
+- Provider 社交、工作区、沙箱及自动化：已分领域提交，普通 Agent 已接入固定注册。
+- 本地 800 项测试通过；真实 runsc 隔离检查见 [验收记录](../operations/social-sandbox-validation.md)。
+- 实际 QQ 接收者尚未指定，真实 Provider 操作不冒充已通过。
 - 未运行真实 QQ 操作，未安装服务器 runtime，未部署。

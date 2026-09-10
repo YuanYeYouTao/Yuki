@@ -8,7 +8,7 @@ import sqlite3
 import stat
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -44,7 +44,7 @@ class WorkspaceStore:
         index = self.root / "manifest.sqlite3"
         if index.is_symlink() or (index.exists() and index.stat().st_nlink != 1):
             raise WorkspaceError("unsafe_workspace_index")
-        with sqlite3.connect(index, timeout=5) as db:
+        with closing(sqlite3.connect(index, timeout=5)) as db:
             db.row_factory = sqlite3.Row
             db.execute(
                 "CREATE TABLE IF NOT EXISTS artifacts (id TEXT PRIMARY KEY, name TEXT NOT NULL, "

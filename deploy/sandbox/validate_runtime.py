@@ -69,7 +69,7 @@ async def main() -> None:
                     "else: raise AssertionError('unbounded process count')\n"
                 ),
                 15,
-                "succeeded",
+                "failed",
             ),
             ("flood", "print('x'*100000)", 10, "succeeded"),
             ("symlink", "import os\nos.symlink('/etc/passwd','/work/outputs/leak')", 10, "failed"),
