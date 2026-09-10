@@ -11,6 +11,9 @@
   unknown-contact rejection, paused routes and uncertain replay without another call.
 - Workspace tests cover TTL across reopen, read/rename without extension, CAS,
   quota, traversal/hardlink rejection, and all-or-nothing artifact publication.
+- All fourteen definitions remain exposed even with a one-tool discovery budget;
+  callable permissions remain separate. All fourteen automation schemas match
+  their chat definitions and are registered at the normal user permission level.
 
 These are code-contract tests, **not real QQ delivery confirmation**.
 
@@ -54,6 +57,8 @@ public addresses and must be checked again during activation.
   Bot's bind mount stale. Explicit input permissions and RuntimeDirectoryPreserve
   fix these. Bot UID 10001 executed Python successfully and retained socket access
   across a manager restart. Cancellation now exits the service cleanly.
+- The actual Bot UID also fetched public HTTPS from a job, generated an artifact,
+  read it through the shared workspace and deleted that synthetic test artifact.
 - Final Bot restart: 2026-09-11 05:22:48 +08:00. SnowLuma retains its original
   2026-08-30 start time; no QQ test messages were sent.
 - Rollback backup: `/opt/yuki-qqbot/backups/pre-social-0a38550`; retained image

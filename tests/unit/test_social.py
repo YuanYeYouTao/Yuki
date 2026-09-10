@@ -15,19 +15,22 @@ from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
 from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.runtime.origin import TurnOrigin
+from qq_ai_bot.sandbox.client import sandbox_tools
+from qq_ai_bot.social.automation import automation_name, register_social_automation
 from qq_ai_bot.social.models import OperationStatus, SocialError, SocialTarget
 from qq_ai_bot.social.repository import SocialOperationRepository
 from qq_ai_bot.social.tools import social_tool_definitions
+from qq_ai_bot.workspace.service import workspace_tools
 
 
 @pytest.mark.asyncio
 async def test_social_receipt_claim_replay_and_interrupted_delivery(database: Database) -> None:
-    definitions = social_tool_definitions()
-    assert definitions == social_tool_definitions()
+    definitions = (*social_tool_definitions(), *workspace_tools(), *sandbox_tools())
+    assert definitions == (*social_tool_definitions(), *workspace_tools(), *sandbox_tools())
     descriptors = ChatToolCapabilityProvider(
         definitions, source=CapabilityTrustSource.CORE
     ).descriptors()
-    assert len(descriptors) == 6
+    assert len(descriptors) == 14
     assert all(
         descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS for descriptor in descriptors
     )
@@ -72,6 +75,16 @@ async def test_social_receipt_claim_replay_and_interrupted_delivery(database: Da
         tool.name for tool in definitions
     }
     assert plan.callable_ids == frozenset({"find_contacts"})
+    from qq_ai_bot.automation.authority import PermissionLevel
+    from qq_ai_bot.automation.registry import AutomationCapabilityRegistry
+
+    registry = AutomationCapabilityRegistry()
+    register_social_automation(registry, {})
+    assert set(registry.names_for(PermissionLevel.USER)) == {
+        automation_name(tool.name) for tool in definitions
+    }
+    for tool in definitions:
+        assert registry.require(automation_name(tool.name)).argument_schema == tool.parameters
     async with database.sessions() as session, session.begin():
         person = await ensure_person(session, "10001")
         presence = await ensure_presence(session, "80001")
