@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from qq_ai_bot.admin.models import VisionRuntimeConfig
 from qq_ai_bot.domain.messages import AttachmentKind, ChatImage, InboundMessage
@@ -71,14 +73,18 @@ class NativeImageService:
                         location = reference.url or reference.file or ""
                         if not location.startswith(("https://", "http://", "base64://")):
                             raise VisionProcessingError("video_unavailable", "视频缺少可下载地址")
-                        downloaded = await self._resolver.resolve(reference, None)
-                        video_frames = await sample_video(
-                            downloaded,
-                            source=reference.source,
-                            maximum=min(remaining, runtime.video_max_frames),
-                            max_duration_seconds=runtime.video_max_duration_seconds,
-                            sample_interval_seconds=runtime.video_sample_interval_seconds,
-                        )
+                        with TemporaryDirectory(prefix="yuki-video-download-") as directory:
+                            path = Path(directory) / "input.mp4"
+                            await self._resolver.download_video(
+                                reference, path, max_download_bytes=runtime.video_max_download_bytes
+                            )
+                            video_frames = await sample_video(
+                                path,
+                                source=reference.source,
+                                maximum=min(remaining, runtime.video_max_frames),
+                                max_duration_seconds=runtime.video_max_duration_seconds,
+                                sample_interval_seconds=runtime.video_sample_interval_seconds,
+                            )
                         size += sum(len(frame.data_url) for frame in video_frames)
                         if size > self._max_bytes:
                             raise VisionProcessingError("too_large", "视频帧超过本轮预算")

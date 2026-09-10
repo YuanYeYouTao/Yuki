@@ -523,6 +523,7 @@ async def test_vision_defaults_are_safe_and_api_key_is_hidden() -> None:
     assert settings.vision_max_frames_per_turn == 16
     assert settings.vision_gif_max_frames == 8
     assert settings.vision_max_download_bytes == 20_971_520
+    assert settings.vision_video_max_download_bytes == 209_715_200
     assert settings.vision_max_prepared_bytes == 16_777_216
     assert settings.vision_max_dimension == 4096
     assert settings.vision_max_pixels == 16_777_216

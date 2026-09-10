@@ -446,6 +446,7 @@ class Settings(BaseSettings):
     vision_video_max_duration_seconds: int = 600
     vision_video_sample_interval_seconds: int = 5
     vision_video_max_frames: int = 16
+    vision_video_max_download_bytes: int = 209_715_200
     vision_max_download_bytes: int = 20_971_520
     vision_max_prepared_bytes: int = 16_777_216
     vision_max_dimension: int = 4096

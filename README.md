@@ -59,11 +59,15 @@ canonical schema，Alembic head 为 `0051`。
 DeepSeek V4.1 使用正式模型名 `deepseek-flash`。主模型 profile 声明 `image_input` 后，
 当前/引用图片经安全下载、限量抽帧直接进入完整 Main Agent，不再先调用 Qwen 描述图片。
 图片仅在本轮工具循环中保留，不把 Base64 写进历史；后续重新查看可引用原图片。
-视频查看（Issue #21）使用本地 FFmpeg 对真实消息/引用中的 MP4/MOV 视频抽帧：
+视频查看（Issue #21）使用本地 FFmpeg 对真实消息/引用中的 MP4/MOV 视频抽帧；
+当前只接入 QQ `video` 消息类型，以普通 `file` 附件发送的 MP4 尚未接入：
 默认最长 600 秒，按 5 秒期望间隔自适应取帧，最多 16 帧；达到帧数预算后均匀覆盖首尾。
 分别通过 `VISION_VIDEO_MAX_DURATION_SECONDS`、`VISION_VIDEO_SAMPLE_INTERVAL_SECONDS`、
 `VISION_VIDEO_MAX_FRAMES` 调整，也可通过对应 `vision.video_*` 运行时配置修改。
-视频仍与图片共享本轮帧数/字节预算；下载沿用 `VISION_MAX_DOWNLOAD_BYTES`，分辨率最长边 4096。
+视频仍与图片共享处理后帧数/字节预算，分辨率最长边 4096。
+视频下载独立使用 `VISION_VIDEO_MAX_DOWNLOAD_BYTES`，默认 200 MiB；普通图片继续使用
+`VISION_MAX_DOWNLOAD_BYTES`，默认 20 MiB。提高下载上限不提高模型输入帧数或压缩后预算。
+HTTP 视频流式写入受控临时文件，不将整个大视频缓存在内存；下载和抽帧期间继续受并发与超时限制。
 临时视频及 JPEG 在抽帧结束后立即删除（包括异常、超时与取消），不建立视频文件缓存；
 本轮模型循环结束后释放帧引用，不将帧 Base64 存入历史。进程强杀/主机故障无法执行清理，
 因此临时文件属于容器临时目录，不放入持久化数据目录。

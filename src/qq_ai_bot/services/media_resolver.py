@@ -10,6 +10,8 @@ import inspect
 import ipaddress
 import socket
 from collections.abc import Awaitable, Callable, Sequence
+from contextlib import nullcontext
+from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import SplitResult, urljoin, urlsplit, urlunsplit
 
@@ -115,6 +117,28 @@ class MediaResolver:
             raise MediaResolutionError("get_image_failed", "图片资源查询失败") from exc
         return await self._resolve_get_image_payload(payload)
 
+    async def download_video(
+        self, reference: MediaReference, destination: Path, *, max_download_bytes: int
+    ) -> None:
+        """Stream a video to a caller-owned temporary path using the same URL policy."""
+        bounded = MediaResolver(
+            max_download_bytes=max_download_bytes,
+            timeout_seconds=self._timeout_seconds,
+            max_redirects=self._max_redirects,
+            allow_private_urls=self._allow_private_urls,
+            client=self._client,
+            host_resolver=self._host_resolver,
+        )
+        location = reference.url or reference.file or ""
+        if _looks_like_http(location):
+            async with asyncio.timeout(self._timeout_seconds):
+                await bounded._download_with_redirects(location, destination=destination)
+        elif location.startswith("base64://"):
+            with destination.open("wb") as output:
+                output.write(bounded._decode_inline(location).content)
+        else:
+            raise MediaResolutionError("resource_unavailable", "视频缺少可下载地址")
+
     async def _resolve_get_image_payload(self, payload: Any) -> DownloadedMedia:
         if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
             payload = payload["data"]
@@ -138,11 +162,15 @@ class MediaResolver:
     async def _download(self, raw_url: str) -> DownloadedMedia:
         try:
             async with asyncio.timeout(self._timeout_seconds):
-                return await self._download_with_redirects(raw_url)
+                result = await self._download_with_redirects(raw_url)
+                assert result is not None
+                return result
         except TimeoutError as exc:
             raise MediaResolutionError("timeout", "图片资源下载超时") from exc
 
-    async def _download_with_redirects(self, raw_url: str) -> DownloadedMedia:
+    async def _download_with_redirects(
+        self, raw_url: str, *, destination: Path | None = None
+    ) -> DownloadedMedia | None:
         current = raw_url
         for redirect_count in range(self._max_redirects + 1):
             normalized, request_url, original_host = await self._validate_public_url(current)
@@ -178,18 +206,26 @@ class MediaResolver:
                     if declared is not None and declared > self._max_download_bytes:
                         raise MediaResolutionError("too_large", "图片超过允许的下载大小")
                     content = bytearray()
-                    async for chunk in response.aiter_bytes():
-                        if len(content) + len(chunk) > self._max_download_bytes:
-                            raise MediaResolutionError("too_large", "图片超过允许的下载大小")
-                        content.extend(chunk)
+                    byte_count = 0
+                    with destination.open("wb") if destination else nullcontext() as output:
+                        async for chunk in response.aiter_bytes(chunk_size=65536):
+                            byte_count += len(chunk)
+                            if byte_count > self._max_download_bytes:
+                                raise MediaResolutionError("too_large", "媒体超过允许的下载大小")
+                            if output is not None:
+                                output.write(chunk)
+                            else:
+                                content.extend(chunk)
             except MediaResolutionError:
                 raise
             except httpx.TimeoutException as exc:
                 raise MediaResolutionError("timeout", "图片资源下载超时") from exc
             except httpx.RequestError as exc:
                 raise MediaResolutionError("download_failed", "无法连接图片资源") from exc
-            if not content:
+            if not byte_count:
                 raise MediaResolutionError("empty_media", "图片资源为空")
+            if destination is not None:
+                return None
             return _downloaded(bytes(content), response.headers.get("Content-Type"))
         raise MediaResolutionError("redirect_rejected", "图片下载重定向次数过多")
 

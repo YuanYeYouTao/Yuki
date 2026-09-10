@@ -186,7 +186,7 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     )
     admin_text = admin_sender.messages[0].text
     assert "当前权限：超级管理员" in admin_text
-    assert "可修改运行时配置参数：226 项" in admin_text
+    assert "可修改运行时配置参数：227 项" in admin_text
     assert "管理员业务接口：44 项，其中修改型 33 项" in admin_text
     assert "conversation.autonomous_batch_limit" in admin_text
     assert "relationship.set_affection" in admin_text
@@ -789,6 +789,44 @@ async def test_native_images_use_full_chat_without_external_vision(
 
         monkeypatch.setattr("qq_ai_bot.services.video_frames._run", decoder)
         video_data = "base64://" + base64.b64encode(b"\x00\x00\x00\x18ftypisom").decode()
+        from tempfile import TemporaryDirectory
+
+        import httpx
+
+        from qq_ai_bot.services.media_resolver import MediaResolutionError
+        from qq_ai_bot.vision.models import MediaReference
+
+        reference = MediaReference(file=video_data, source="current")
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "download.mp4"
+            await resolver.download_video(reference, path, max_download_bytes=12)
+            assert path.stat().st_size == 12
+            with pytest.raises(MediaResolutionError):
+                await resolver.download_video(reference, path, max_download_bytes=11)
+        assert (await resolver.resolve(reference)).byte_size == 12
+
+        class VideoChunks(httpx.AsyncByteStream):
+            async def __aiter__(self):  # type: ignore[no-untyped-def]
+                yield b"x" * 65536
+                yield b"y" * 100
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _: httpx.Response(200, stream=VideoChunks()))
+        ) as client:
+            bounded = MediaResolver(
+                client=client,
+                max_download_bytes=16,
+                host_resolver=lambda *_: ["93.184.216.34"],
+            )
+            remote = MediaReference(url="https://example.com/video.mp4", source="current")
+            with TemporaryDirectory() as directory:
+                path = Path(directory) / "video.mp4"
+                await bounded.download_video(remote, path, max_download_bytes=65636)
+                assert path.stat().st_size == 65636
+                with pytest.raises(MediaResolutionError):
+                    await bounded.download_video(remote, path, max_download_bytes=65635)
+                with pytest.raises(MediaResolutionError):
+                    await bounded.resolve(remote)
         video = replace(
             message,
             message_id="native-video",

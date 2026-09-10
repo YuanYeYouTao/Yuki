@@ -32,7 +32,7 @@ async def _run(*args: str) -> bytes:
 
 
 async def sample_video(
-    media: DownloadedMedia,
+    media: DownloadedMedia | Path,
     *,
     source: str,
     maximum: int,
@@ -44,11 +44,16 @@ async def sample_video(
         return ()
     if max_duration_seconds <= 0 or sample_interval_seconds <= 0:
         raise ValueError("video sampling settings must be positive")
-    if len(media.content) < 12 or media.content[4:8] != b"ftyp":
-        raise VisionProcessingError("unsupported_video", "目前仅支持 MP4/MOV 视频画面")
     with TemporaryDirectory(prefix="yuki-video-") as directory:
-        path = Path(directory) / "input.mp4"
-        path.write_bytes(media.content)
+        if isinstance(media, Path):
+            path = media  # Caller owns this temporary download, never a model-supplied path.
+        else:
+            path = Path(directory) / "input.mp4"
+            path.write_bytes(media.content)
+        with path.open("rb") as stream:
+            header = stream.read(12)
+        if len(header) < 12 or header[4:8] != b"ftyp":
+            raise VisionProcessingError("unsupported_video", "目前仅支持 MP4/MOV 视频画面")
         metadata = json.loads(
             await _run(
                 "ffprobe",

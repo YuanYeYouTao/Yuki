@@ -426,6 +426,7 @@ class VisionSettings(DomainSettings):
     vision_video_max_duration_seconds: int = Field(gt=0, le=3600)
     vision_video_sample_interval_seconds: int = Field(gt=0, le=300)
     vision_video_max_frames: int = Field(gt=0, le=64)
+    vision_video_max_download_bytes: int = Field(gt=0, le=1_073_741_824)
     vision_max_download_bytes: int = Field(gt=0)
     vision_max_prepared_bytes: int = Field(gt=0)
     vision_max_dimension: int = Field(gt=0)

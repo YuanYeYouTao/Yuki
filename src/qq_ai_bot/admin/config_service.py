@@ -1593,6 +1593,7 @@ class RuntimeConfigService:
                     cast(int, value("vision.video_sample_interval_seconds"))
                 ),
                 video_max_frames=int(cast(int, value("vision.video_max_frames"))),
+                video_max_download_bytes=int(cast(int, value("vision.video_max_download_bytes"))),
                 thinking_enabled=True,
                 thinking_budget=int(cast(int, value("vision.thinking_budget"))),
                 low_confidence_retry_threshold=float(
