@@ -161,9 +161,8 @@ from qq_ai_bot.speech.reply_effect import (
 )
 from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.vision.models import VisualObservation
-from qq_ai_bot.web.models import WebMode, WebProvider, WebRouteReason, WebSearchResponse
+from qq_ai_bot.web.models import WebMode, WebSearchResponse
 from qq_ai_bot.web.native_sources import recover_native_web_response
-from qq_ai_bot.web.router import WebProviderRouter
 from yuki_plugin_sdk.events import EventName
 
 logger = logging.getLogger(__name__)
@@ -425,19 +424,7 @@ class _ChatAgentBackend(AgentToolBackend):
         self._tool_turn_recorded = False
         self._request_tools_called = False
         self._first_real_tool_recorded = False
-        self._native_web_fallback = runtime.native_web_fallback
         self._batch_rejected: str = ""
-
-    def enable_native_web_fallback(self) -> None:
-        """Allow Tavily tools only after the Runner verifies a fallback condition."""
-
-        if self._native_web_fallback:
-            return
-        self._native_web_fallback = True
-        # Catalog providers depend on this flag; rebuild before the first request.
-        self._capability_runtime = None
-        self._catalog = None
-        self._requestable_catalog = None
 
     async def prepare(self, runtime: AgentRuntime | None = None) -> None:
         """Hydrate lazy MCP metadata before the first model request."""
@@ -663,16 +650,6 @@ class _ChatAgentBackend(AgentToolBackend):
             names.extend(getattr(tooling, "first_round_pin_ids", ()))
         elif getattr(self._service, "_settings", None) is not None:
             names.extend(self._service._settings.tooling_first_round_pin_ids)
-        web_route = self._runtime.web_route
-        if self._native_web_fallback or (
-            web_route is not None
-            and web_route.provider is WebProvider.TAVILY
-            and web_route.reason is WebRouteReason.MODE
-        ):
-            # Deployment-wide Tavily, or this turn already fell back. Do not pin
-            # from a URL, user override, or domain rule: those change tools[]
-            # per message and punch the DeepSeek prefix from token 0.
-            names.extend(("web_search", "read_webpage"))
         return tuple(dict.fromkeys(names))
 
     def _scene_facts(self) -> Any:
@@ -1432,7 +1409,6 @@ class _ChatAgentBackend(AgentToolBackend):
             origin=TurnOrigin.USER_MESSAGE,
             allow_automation=True,
             reply_effects=reply_effects,
-            native_web_fallback=self._native_web_fallback,
         )
 
 
@@ -1500,13 +1476,7 @@ class ChatService:
         self._source_policy = source_policy or SourceDisplayPolicy()
         self._source_renderer = source_renderer or SourceRenderer()
         self._runtime_config = runtime_config
-        self._web_router = WebProviderRouter(
-            tavily_domains=settings.web.tavily_domains,
-            allow_provider_override=settings.web.web_allow_provider_override,
-            fallback_on_access_denied=settings.web.web_fallback_on_access_denied,
-            fallback_on_target_miss=settings.web.web_fallback_on_target_miss,
-        )
-        self._agent_runner = AgentRunner(models, concurrency, web_router=self._web_router)
+        self._agent_runner = AgentRunner(models, concurrency)
         self._capability_index = CapabilityIndexCache()
         self._admin_tools: AdminToolService | None = None
         self._automation_tools: AutomationToolProvider | None = None
@@ -1964,19 +1934,6 @@ class ChatService:
             reply_effects: list[ReplyEffect] = []
             if self._memory_context is not None and memory_session is not None:
                 self._memory_context.metrics.record_runtime_access(memory_session.contract)
-            logged_web_route = self._web_router.select(content, runtime_config.web.mode)
-            web_route = self._web_router.deployment_route(runtime_config.web.mode)
-            if logged_web_route is not None:
-                logger.info(
-                    "web_route_selected conversation_hash=%s provider=%s reason=%s "
-                    "matched_domain=%s attempt=%d fallback_allowed=%s",
-                    identifier_hash(conversation_key) or "missing",
-                    logged_web_route.provider.value,
-                    logged_web_route.reason.value,
-                    logged_web_route.matched_domain or "none",
-                    logged_web_route.attempt,
-                    logged_web_route.fallback_allowed,
-                )
             voice_spontaneous_allowed = await self._voice_spontaneous_allowed(
                 conversation_key,
                 inbound.sender.user_id,
@@ -2010,12 +1967,6 @@ class ChatService:
                 voice_spontaneous_allowed=voice_spontaneous_allowed,
                 selection_query=content,
                 scheduled_automation_intent=scheduled_automation_allowed,
-                native_web_fallback=bool(
-                    web_route is not None
-                    and web_route.provider is WebProvider.TAVILY
-                    and web_route.reason is WebRouteReason.MODE
-                ),
-                web_route=web_route,
                 memory_turn_id=memory_turn_id,
                 memory_exposures=automatic_memory_exposures,
                 memory_intent=memory_intent,
@@ -2064,39 +2015,6 @@ class ChatService:
                         identifier_hash(conversation_key) or "missing",
                         len(agent_result.native_tool_events),
                     )
-                    completed_route = agent_result.web_route
-                    source_failure = self._web_router.missing_source_failure(
-                        completed_route,
-                        source_display_requested=source_display_requested,
-                        source_count=len(native_response.sources),
-                    )
-                    if source_failure is not None and completed_route is not None:
-                        logger.warning(
-                            "web_provider_fallback from_provider=deepseek_native "
-                            "to_provider=tavily reason_category=%s",
-                            source_failure.value,
-                        )
-                        fallback_limit = min(
-                            2,
-                            runtime.max_model_requests_override
-                            or runtime_config.agent.max_model_requests,
-                        )
-                        fallback_runtime = replace(
-                            runtime,
-                            native_web_fallback=True,
-                            web_route=self._web_router.fallback(
-                                completed_route,
-                                source_failure,
-                            ),
-                            max_model_requests_override=fallback_limit,
-                        )
-                        completed_agent = await self._run_agent(
-                            conversation_key,
-                            messages,
-                            fallback_runtime,
-                        )
-                        agent_result = completed_agent.result
-                        response_text = agent_result.text
             sources = await self._web_sources.for_trigger(
                 conversation_key=conversation_key,
                 trigger_message_id=inbound.message_id,
@@ -2972,8 +2890,6 @@ class ChatService:
                 ),
                 prompt_diagnostics=runtime.prompt_diagnostics,
                 before_model_request=before_model_request,
-                force_tavily_fallback=runtime.native_web_fallback,
-                web_route=runtime.web_route,
                 canonical_conversation_id=runtime.effective_conversation_id,
             ),
             backend,
@@ -3107,7 +3023,6 @@ class ChatService:
             turn_snapshot=turn_snapshot,
             reply_target_control=ReplyTargetControl(visible_event_ids=context.visible_event_ids),
             selection_query=f"{event.content}\n{trigger.agent_intent}".strip(),
-            web_route=self._web_router.deployment_route(runtime.web.mode),
             prompt_diagnostics=PromptRequestDiagnostics(
                 conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
                 prompt_snapshot_fingerprint=(composition.metrics.prompt_snapshot_fingerprint),

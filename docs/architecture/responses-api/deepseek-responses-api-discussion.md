@@ -1,6 +1,8 @@
 # Yuki DeepSeek Responses API 支持任务书
 
-> 状态：可交给 Codex 执行
+> 状态：历史设计，非现行实施合同。联网路由、按域名切换及自动换后端重跑均已删除。
+> 当前模式为 disabled/native/tavily/both；both 固定暴露可用工具，由 Main Agent 选择。
+> 旧配置拼写 native_with_tavily_fallback 仅映射为 both。详见 README 的原生图片与联网说明。
 > 目标版本：Yuki 3.x 后续版本
 > 基准日期：2026-08-04
 > 范围：DeepSeek Responses API、现有 Function Tool 循环、DeepSeek 原生 Web Search、来源审计

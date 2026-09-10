@@ -81,7 +81,6 @@ from qq_ai_bot.time.formatting import local_iso
 from qq_ai_bot.web.base import WebSearchError, WebSearchProvider, normalize_public_url
 from qq_ai_bot.web.models import (
     WebMode,
-    WebRouteDecision,
     WebSearchRequest,
     WebSearchResponse,
     WebSearchTimeRange,
@@ -183,8 +182,6 @@ class ToolRuntime:
     selection_query: str = ""
     scheduled_automation_intent: bool = False
     max_model_requests_override: int | None = None
-    native_web_fallback: bool = False
-    web_route: WebRouteDecision | None = None
     memory_turn_id: str = ""
     memory_exposures: tuple[MemoryExposure, ...] = ()
     memory_exposure_registry: MemoryExposureRegistry | None = None
@@ -2838,10 +2835,8 @@ class AgentToolService:
     def _web_catalog_enabled(self) -> bool:
         """Put web tools in the requestable catalog without choosing a provider.
 
-        Native-first used to omit these until Tavily fallback, so
-        ``request_tools`` returned ``capability_not_found`` and the native
-        binder never saw ``web_search``. Catalog membership is not first-round
-        exposure; ``WebProviderRouter`` still selects native vs Tavily.
+        Catalog membership is not first-round exposure. Deployment mode and
+        backend authorization control availability; no failure-driven switching.
         """
 
         mode = self._settings.web.mode
@@ -2849,7 +2844,7 @@ class AgentToolService:
             return False
         if self._web_provider is not None and self._web_sources is not None:
             return True
-        return mode in {WebMode.NATIVE, WebMode.NATIVE_WITH_TAVILY_FALLBACK}
+        return mode in {WebMode.NATIVE, WebMode.BOTH}
 
     def _web_dependencies(
         self,
@@ -2858,7 +2853,7 @@ class AgentToolService:
             self._settings.web.mode
             not in {
                 WebMode.TAVILY,
-                WebMode.NATIVE_WITH_TAVILY_FALLBACK,
+                WebMode.BOTH,
             }
             or self._web_provider is None
             or self._web_sources is None

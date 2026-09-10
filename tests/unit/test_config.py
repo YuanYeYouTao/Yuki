@@ -462,6 +462,14 @@ def test_web_enabled_requires_tavily_key_and_hides_it_from_repr() -> None:
     )
     assert settings.web_configured
     assert "tvly-sensitive-test-value" not in repr(settings)
+    migrated = Settings.model_validate(
+        {
+            "web_mode": "native_with_tavily_fallback",
+            "tavily_api_key": "test-placeholder",
+        }
+    )
+    assert migrated.web.mode.value == "both"
+    assert Settings.model_validate({"web_mode": "disabled"}).web.mode.value == "disabled"
 
 
 def test_web_limits_are_configurable_and_search_depth_is_validated() -> None:

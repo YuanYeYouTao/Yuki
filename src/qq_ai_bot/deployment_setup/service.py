@@ -429,7 +429,7 @@ def validate_configuration(paths: SetupPaths, configuration: SetupConfiguration)
                 settings.web.mode
                 in {
                     WebMode.NATIVE,
-                    WebMode.NATIVE_WITH_TAVILY_FALLBACK,
+                    WebMode.BOTH,
                 }
                 and ModelCapability.NATIVE_WEB_SEARCH not in chat_profile.capabilities
             ):

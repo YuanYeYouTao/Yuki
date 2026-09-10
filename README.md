@@ -62,8 +62,15 @@ DeepSeek V4.1 使用正式模型名 `deepseek-flash`。主模型 profile 声明 
 表情包入库分类、OCR/标签与去重仍走独立后台视觉任务，保留现有可配置 VisionProvider。
 `VISION_ENABLED` 控制该外接服务，不是原生看图的开关；无图片能力的 profile 不会被强行喂图。
 
-新版 DeepSeek 忽略内置 `web_search`；配置 `WEB_MODE=tavily` 与 `TAVILY_API_KEY`。
-旧 `native_with_tavily_fallback` 会按有效能力进入 Tavily，不能把“未报错”视为原生搜索成功。
+新版 DeepSeek Responses 忽略内置 `web_search`；使用 Tavily 可配置 `WEB_MODE=tavily`
+与 `TAVILY_API_KEY`。
+`web_search` 已在默认首轮常驻工具名单中。`both` 保留 Tavily
+函数工具，不再因原生工具可用而移除它；Agent 可直接选择 Tavily，无须先等待原生失败。
+`native` 仍表示仅原生，`disabled` 仍禁止联网；显式自定义工具名单保持有效。
+部署级工具结构不随消息关键词或域名切换。联网路由器及自动换后端重跑已删除；
+旧配置值 `native_with_tavily_fallback` 仅映射为 `both`。普通模型错误恢复和调用预算仍保留，
+不会因缺来源另起 Agent 循环。不能把“未报错”视为原生搜索成功。DeepSeek Responses 当前无原生搜索，Anthropic
+入口已独立实测可用，但本项目尚未接入该协议。
 
 ## 消息主路径
 

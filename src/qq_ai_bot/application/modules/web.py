@@ -23,7 +23,7 @@ class WebModule:
 
     def build(self) -> WebBundle:
         settings = self._settings
-        if settings.mode not in {WebMode.TAVILY, WebMode.NATIVE_WITH_TAVILY_FALLBACK}:
+        if settings.mode not in {WebMode.TAVILY, WebMode.BOTH}:
             return WebBundle(None)
         provider = TavilyWebSearchProvider(
             api_key=settings.tavily_api_key,

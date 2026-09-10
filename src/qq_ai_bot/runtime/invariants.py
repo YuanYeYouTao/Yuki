@@ -7,8 +7,7 @@ exactly one ``TurnOutcome``.  ``DurableEffectState`` is orthogonal and
 monotonic: once a mutation committed, closing the turn can never undo it and
 failure outcomes must be reported as ``COMMITTED_BUT_FINALIZATION_FAILED``.
 
-This machine intentionally covers the real 3.5.3 retry shapes: empty-reply
-retries, incomplete-response recovery and the native web fallback all loop
+This machine covers empty-reply retries and incomplete-response recovery, which loop
 inside ``MODEL_ACTIVE`` (self-transition), while tool rounds alternate
 ``MODEL_ACTIVE`` ↔ ``TOOL_ACTIVE``.
 """

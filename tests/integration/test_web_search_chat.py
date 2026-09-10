@@ -14,6 +14,7 @@ from qq_ai_bot.domain.messages import (
     ChatResponse,
     CitationOrigin,
     InboundMessage,
+    NativeToolDefinition,
     NativeToolEvent,
     NativeToolStatus,
     NativeToolType,
@@ -422,13 +423,13 @@ async def test_native_web_sources_are_persisted_before_backend_rendering(
 
 
 @pytest.mark.asyncio
-async def test_chat_completions_profile_uses_tavily_fallback_before_request(
+async def test_chat_completions_profile_can_request_tavily_without_native(
     database: Database,
 ) -> None:
     settings = make_settings(
         database.url,
         web_enabled=False,
-        web_mode=WebMode.NATIVE_WITH_TAVILY_FALLBACK,
+        web_mode=WebMode.BOTH,
         tavily_api_key="test-placeholder",
         tooling_first_round_pin_ids_csv="",
     )
@@ -453,7 +454,7 @@ async def test_chat_completions_profile_uses_tavily_fallback_before_request(
 
 
 @pytest.mark.asyncio
-async def test_explicit_domain_rule_routes_directly_to_tavily(
+async def test_domain_text_does_not_fabricate_a_deployment_route(
     database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -470,9 +471,8 @@ async def test_explicit_domain_rule_routes_directly_to_tavily(
     settings = make_settings(
         database.url,
         web_enabled=False,
-        web_mode=WebMode.NATIVE_WITH_TAVILY_FALLBACK,
+        web_mode=WebMode.BOTH,
         tavily_api_key="test-placeholder",
-        web_tavily_domains_csv="github.com",
         tooling_first_round_pin_ids_csv="",
     )
     llm = DomainRoutedTavilyLLM(target_url)
@@ -489,11 +489,13 @@ async def test_explicit_domain_rule_routes_directly_to_tavily(
     assert [message.text for message in sender.messages] == ["这个仓库是 Yuki QQ 机器人项目。"]
     assert web.extract_requests == [(target_url, "这个项目是什么")]
     assert len(llm.requests) == 3
-    assert "provider=tavily reason=domain_rule matched_domain=github.com" in caplog.text
+    assert '"web_mode": "both"' in caplog.text
+    assert "web_route_selected" not in caplog.text
+    assert "reason=domain_rule" not in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_tavily_keyword_without_verb_routes_directly_to_tavily(
+async def test_tavily_keyword_does_not_fabricate_a_deployment_route(
     database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -501,7 +503,7 @@ async def test_tavily_keyword_without_verb_routes_directly_to_tavily(
     settings = make_settings(
         database.url,
         web_enabled=False,
-        web_mode=WebMode.NATIVE_WITH_TAVILY_FALLBACK,
+        web_mode=WebMode.BOTH,
         tavily_api_key="test-placeholder",
         tooling_first_round_pin_ids_csv="",
     )
@@ -521,7 +523,9 @@ async def test_tavily_keyword_without_verb_routes_directly_to_tavily(
     assert not llm.requests[0].native_tools
     assert "web_search" not in {tool.name for tool in llm.requests[0].tools}
     assert "web_search" in {tool.name for tool in llm.requests[1].tools}
-    assert "provider=tavily reason=user_override" in caplog.text
+    assert '"web_mode": "both"' in caplog.text
+    assert "web_route_selected" not in caplog.text
+    assert "reason=user_override" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -540,7 +544,7 @@ async def test_chat_completions_url_read_uses_read_webpage(
     settings = make_settings(
         database.url,
         web_enabled=False,
-        web_mode=WebMode.NATIVE_WITH_TAVILY_FALLBACK,
+        web_mode=WebMode.BOTH,
         tavily_api_key="test-placeholder",
         tooling_first_round_pin_ids_csv="",
     )
@@ -760,7 +764,7 @@ def _native_first_settings(database: Database):
     return make_settings(
         database.url,
         web_enabled=True,
-        web_mode=WebMode.NATIVE_WITH_TAVILY_FALLBACK,
+        web_mode=WebMode.BOTH,
         tavily_api_key="test-placeholder",
         tooling_first_round_pin_ids_csv="",
     )
@@ -789,24 +793,56 @@ async def test_spoken_search_phrase_exposes_web_search_in_native_first_mode(
 
 
 @pytest.mark.asyncio
-async def test_native_first_idle_turn_does_not_pin_web_search(database: Database) -> None:
-    llm = FakeLLMProvider()
+async def test_mixed_tools_stay_visible_and_missing_native_sources_do_not_restart(
+    database: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qq_ai_bot.services.native_tool_binder import NativeToolBinder
+
+    monkeypatch.setattr(
+        NativeToolBinder,
+        "bind",
+        lambda self, **kwargs: (NativeToolDefinition(type=NativeToolType.WEB_SEARCH),),
+    )
+
+    class MissingSourcesLLM(FakeLLMProvider):
+        async def complete(self, request: ChatRequest) -> ChatResponse:
+            self.requests.append(request)
+            return ChatResponse(
+                content="搜索未取得可核验来源，暂时无法确认。",
+                latency_seconds=0,
+                native_tool_events=(
+                    NativeToolEvent(
+                        tool_type=NativeToolType.WEB_SEARCH,
+                        call_id="failed-native",
+                        status=NativeToolStatus.FAILED,
+                        action_type="search",
+                    ),
+                ),
+            )
+
+    llm = MissingSourcesLLM()
+    web = FakeWebSearchProvider(response=web_response())
     harness = build_harness(
         database,
-        _native_first_settings(database),
+        make_settings(
+            database.url,
+            web_enabled=True,
+            web_mode=WebMode.BOTH,
+            tavily_api_key="test-placeholder",
+        ),
         llm,
-        web_provider=FakeWebSearchProvider(response=web_response()),
+        web_provider=web,
     )
     result = await harness.processor.handle(
-        event("在吗", message_id="idle-no-web"),
+        event("请搜索最新公告并附上来源", message_id="failed-native-no-restart"),
         MemorySender(),
     )
     assert result.reason == "chat"
-    assert llm.requests
+    assert len(llm.requests) == 1
+    assert not web.search_requests
     first_names = {tool.name for tool in llm.requests[0].tools}
-    assert "web_search" not in first_names
-    assert "read_webpage" not in first_names
-    assert not llm.requests[0].native_tools
+    assert "web_search" in first_names
+    assert llm.requests[0].native_tools
 
 
 @pytest.mark.asyncio

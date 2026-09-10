@@ -387,17 +387,11 @@ class WebSettings(DomainSettings):
     web_tool_result_max_characters: int = Field(gt=0)
     web_source_retention_days: int = Field(gt=0)
     web_source_max_runs_per_conversation: int = Field(gt=0)
-    web_tavily_domains_csv: str = ""
-    web_allow_provider_override: bool = True
-    web_fallback_on_access_denied: bool = True
-    web_fallback_on_target_miss: bool = True
 
     @model_validator(mode="after")
     def _credentials(self) -> WebSettings:
-        if self.mode in {WebMode.TAVILY, WebMode.NATIVE_WITH_TAVILY_FALLBACK} and not (
-            self.tavily_api_key
-        ):
-            raise ValueError("TAVILY_API_KEY is required for tavily and fallback web modes")
+        if self.mode in {WebMode.TAVILY, WebMode.BOTH} and not (self.tavily_api_key):
+            raise ValueError("TAVILY_API_KEY is required for tavily and both web modes")
         return self
 
     @property
@@ -407,12 +401,6 @@ class WebSettings(DomainSettings):
         if self.web_mode is not None:
             return self.web_mode
         return WebMode.TAVILY if self.web_enabled else WebMode.DISABLED
-
-    @property
-    def tavily_domains(self) -> frozenset[str]:
-        return frozenset(
-            item.strip() for item in self.web_tavily_domains_csv.split(",") if item.strip()
-        )
 
 
 class VisionSettings(DomainSettings):

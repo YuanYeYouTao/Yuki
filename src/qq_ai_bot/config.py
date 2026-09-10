@@ -423,10 +423,6 @@ class Settings(BaseSettings):
     web_tool_result_max_characters: int = 16000
     web_source_retention_days: int = 7
     web_source_max_runs_per_conversation: int = 10
-    web_tavily_domains_csv: str = Field(default="", validation_alias="WEB_TAVILY_DOMAINS")
-    web_allow_provider_override: bool = True
-    web_fallback_on_access_denied: bool = True
-    web_fallback_on_target_miss: bool = True
 
     vision_enabled: bool = False
     vision_provider: str = "qwen"
@@ -964,12 +960,6 @@ class Settings(BaseSettings):
             aliases=self.bot_aliases,
             voice_name=self.bot_voice_name,
         )
-
-    @property
-    def web_tavily_domains(self) -> frozenset[str]:
-        """Domains routed directly to Tavily in hybrid web mode."""
-
-        return _csv_set(self.web_tavily_domains_csv)
 
     @property
     def sqlite_path(self) -> Path | None:
