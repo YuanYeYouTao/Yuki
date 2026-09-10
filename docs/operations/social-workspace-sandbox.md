@@ -68,7 +68,7 @@ is required, arrange a maintenance window instead of disrupting SnowLuma.
 
 Install the package source under `/opt/yuki-sandbox/src` (the manager uses only
 Python 3.12 standard-library dependencies), and install the systemd unit in
-`deploy/sandbox/`. The host manager runs as
+`deploy/sandbox/` using `install-manager.sh` (including host group 10001). The host manager runs as
 root with group 10001 and controls only its labelled containers. Neither Bot nor job
 container receives the Docker socket. The Unix socket is group-restricted, not public.
 
@@ -78,6 +78,10 @@ The internal bridge allows code only to the proxy; the proxy allows public ports
 80/443. Host INPUT and DOCKER-USER rules independently block host/private destinations.
 IPv6 is not enabled. Do not remove these rules while executing jobs. See
 [Squid access controls](https://wiki.squid-cache.org/SquidFaq/SquidAcl).
+
+The guard loads `br_netfilter` if absent and requires bridge filtering to be enabled.
+It fails closed when the host lacks this prerequisite. The two fixed public DNS
+resolver addresses may receive UDP/53 from the proxy, not from Python job containers.
 
 Each task uses a new runsc container, UID 65532, read-only root, no capabilities or
 privilege escalation, 256 MiB with no extra swap, 0.5 CPU, 64 processes and 128 MiB

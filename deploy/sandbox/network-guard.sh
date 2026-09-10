@@ -2,6 +2,9 @@
 # Root-owned, idempotent firewall additions limited to dedicated sandbox bridges.
 set -eu
 test "$(id -u)" = 0
+if [ ! -e /proc/sys/net/bridge/bridge-nf-call-iptables ]; then
+    modprobe br_netfilter
+fi
 test "$(sysctl -n net.bridge.bridge-nf-call-iptables)" = 1
 ipt() { iptables -w 10 "$@"; }
 ensure() { table="$1"; shift; ipt -C "$table" "$@" 2>/dev/null || ipt -I "$table" 1 "$@"; }
