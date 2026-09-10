@@ -1,0 +1,22 @@
+[Unit]
+Description=Yuki restricted Python execution manager
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+Group=10001
+WorkingDirectory=/opt/yuki-sandbox
+Environment=PYTHONPATH=/opt/yuki-sandbox/src
+ExecStartPre=/bin/sh /opt/yuki-sandbox/deploy/sandbox/network-guard.sh
+ExecStart=/usr/bin/python3 -m qq_ai_bot.sandbox.manager --root /var/lib/yuki-sandbox --workspace /opt/yuki-qqbot/workspace --socket /run/yuki-sandbox/manager.sock --image yuki-python:3.8.2
+RuntimeDirectory=yuki-sandbox
+RuntimeDirectoryMode=0750
+UMask=0007
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+# This trusted host service needs Docker and mount. Neither socket is given to code containers.
+
+[Install]
+WantedBy=multi-user.target

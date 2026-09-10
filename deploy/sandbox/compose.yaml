@@ -1,0 +1,31 @@
+# Optional host execution infrastructure, not part of the Bot's default startup.
+name: yuki-sandbox
+services:
+  egress:
+    image: ubuntu/squid:6.10-24.10_edge@sha256:c9f5212b147a766529c7b026e2bebed37b998d33d0066b658596af5eba7cc65c
+    container_name: yuki-sandbox-egress
+    restart: unless-stopped
+    mem_limit: 96m
+    cpus: 0.2
+    pids_limit: 64
+    volumes:
+      - ./squid.conf:/etc/squid/squid.conf:ro
+    networks:
+      internal:
+        ipv4_address: 172.30.251.2
+      public: {}
+    # No published ports; sandbox jobs have no public network attachment.
+networks:
+  internal:
+    name: yuki-sandbox-internal
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.name: yuki-sandbox0
+    ipam:
+      config:
+        - subnet: 172.30.251.0/24
+  public:
+    name: yuki-sandbox-egress
+    enable_ipv6: false
+    driver_opts:
+      com.docker.network.bridge.name: yuki-egress0
