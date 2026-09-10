@@ -54,6 +54,7 @@ def _diagnostic_message(message: object) -> dict[str, object]:
     return {
         "role": role,
         "content_hash": _json_hash(content),
+        "image_hashes": [_json_hash(image.data_url) for image in getattr(message, "images", ())],
         "tool_calls": [
             {
                 "id_hash": _json_hash(getattr(call, "id", "")),
@@ -312,6 +313,8 @@ class TaskModelExecutor:
             required.add(ModelCapability.STRUCTURED_OUTPUT)
         if request.native_tools:
             required.add(ModelCapability.NATIVE_WEB_SEARCH)
+        if any(message.images for message in request.messages):
+            required.add(ModelCapability.IMAGE_INPUT)
         _route, profile = self._router.route(task, required_capabilities=frozenset(required))
         if request.continuation is not None:
             continuation = request.continuation
@@ -624,6 +627,10 @@ class TaskModelExecutor:
 
     def capabilities(self, task: ModelTask) -> frozenset[ModelCapability]:
         _route, profile = self._router.route(task)
+        # DeepSeek V4.1 silently ignores built-in web tools, including old Flash aliases.
+        # Report the effective capability so the normal Tavily fallback activates.
+        if profile.provider.casefold() == "deepseek":
+            return profile.capabilities - {ModelCapability.NATIVE_WEB_SEARCH}
         return profile.capabilities
 
     async def close(self) -> None:

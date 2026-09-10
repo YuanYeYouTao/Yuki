@@ -231,6 +231,21 @@ class OutboundSendReceipt:
 
 
 @dataclass(frozen=True, slots=True)
+class ChatImage:
+    """Ephemeral, locally validated image; never a remote URL or persisted history."""
+
+    data_url: str = field(repr=False)
+    source: str = "current"
+    video_timestamp_seconds: float | None = None
+
+    def __post_init__(self) -> None:
+        if not self.data_url.startswith(("data:image/jpeg;base64,", "data:image/png;base64,")):
+            raise ValueError("chat image must be a prepared inline image")
+        if self.source not in {"current", "reply"}:
+            raise ValueError("invalid image source")
+
+
+@dataclass(frozen=True, slots=True)
 class ChatMessage:
     """A message sent to a chat completion API, including tool-call turns."""
 
@@ -239,6 +254,7 @@ class ChatMessage:
     tool_calls: tuple[ToolCall, ...] = ()
     tool_call_id: str | None = None
     reasoning_content: str | None = None
+    images: tuple[ChatImage, ...] = field(default=(), repr=False)
 
 
 @dataclass(frozen=True, slots=True)

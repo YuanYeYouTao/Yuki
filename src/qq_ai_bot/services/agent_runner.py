@@ -35,23 +35,16 @@ from qq_ai_bot.llm.base import (
     LLMEmptyResponseError,
     LLMError,
     LLMIncompleteResponseError,
-    LLMRateLimitError,
     LLMTimeoutError,
     LLMUnavailableError,
 )
 from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
-from qq_ai_bot.model_runtime.models import ModelCapability, ModelProtocol, ModelTask
+from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.evidence_observation import EVIDENCE_TOOLS, EvidenceObservation
 from qq_ai_bot.services.native_tool_binder import NativeToolBinder
 from qq_ai_bot.time.models import TimeContext
-from qq_ai_bot.web.models import (
-    WebMode,
-    WebProvider,
-    WebRouteDecision,
-    WebRouteReason,
-)
-from qq_ai_bot.web.router import WebProviderRouter
+from qq_ai_bot.web.models import WebMode
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +66,6 @@ class AgentRuntime:
     max_model_requests: int
     prompt_diagnostics: PromptRequestDiagnostics | None = None
     before_model_request: Callable[[], Awaitable[None]] | None = None
-    force_tavily_fallback: bool = False
-    web_route: WebRouteDecision | None = None
     canonical_conversation_id: str | None = None
 
 
@@ -87,7 +78,6 @@ class AgentRunResult:
     native_tool_events: tuple[NativeToolEvent, ...] = ()
     citations: tuple[ResponseCitation, ...] = ()
     response_status: ModelResponseStatus = ModelResponseStatus.COMPLETED
-    web_route: WebRouteDecision | None = None
     suppress_delivery: bool = False
 
 
@@ -123,7 +113,6 @@ class AgentRunner:
         concurrency: ConcurrencyManager,
         *,
         task: ModelTask = ModelTask.CHAT_AGENT,
-        web_router: WebProviderRouter | None = None,
     ) -> None:
         if callable(getattr(model_executor, "execute", None)):
             self._models = cast(ModelExecutor, model_executor)
@@ -136,7 +125,6 @@ class AgentRunner:
         self._task = task
         self._tool_coordinator = ToolInvocationCoordinator()
         self._native_tools = NativeToolBinder()
-        self._web_router = web_router or WebProviderRouter()
 
     async def run(
         self,
@@ -164,17 +152,6 @@ class AgentRunner:
         force_finalization = False
         reusable_tool_results: dict[tuple[str, str], str] = {}
         finalization_prompt_added = False
-        web_route = runtime.web_route
-        deployment_tavily = (
-            web_route is not None
-            and web_route.provider is WebProvider.TAVILY
-            and web_route.reason is WebRouteReason.MODE
-        )
-        tavily_fallback = bool(runtime.force_tavily_fallback or deployment_tavily)
-        if (runtime.force_tavily_fallback or deployment_tavily) and tools is not None:
-            enable_fallback = getattr(tools, "enable_native_web_fallback", None)
-            if callable(enable_fallback):
-                enable_fallback()
         await self._prepare_tools(tools, runtime)
         for request_index in range(runtime.max_model_requests):
             definitions = (
@@ -197,26 +174,10 @@ class AgentRunner:
                 if web_search_selected
                 else ()
             )
-            if (
-                not tavily_fallback
-                and web_search_selected
-                and web_mode is WebMode.NATIVE_WITH_TAVILY_FALLBACK
-                and not native_definitions
-                and not self._native_web_bindable()
-                and tools is not None
-            ):
-                # Only protocol/profile gaps count as native-unavailable.
-                # An empty allowed_capabilities set is not a bind failure.
-                enable_fallback = getattr(tools, "enable_native_web_fallback", None)
-                if callable(enable_fallback):
-                    enable_fallback()
-                    tavily_fallback = True
-                    web_route = self._fallback_route(web_route, WebRouteReason.NATIVE_UNAVAILABLE)
-                    await self._prepare_tools(tools, runtime)
-                    definitions = tools.definitions(runtime, web_was_used=web_was_used)
-            if tavily_fallback:
-                native_definitions = ()
-            if native_definitions:
+            if web_mode is WebMode.NATIVE:
+                # Native-only deliberately excludes external search. Mixed mode
+                # keeps the pinned Tavily function alongside the native tool;
+                # availability must not depend on a preceding native failure.
                 definitions = tuple(
                     item for item in definitions if item.name not in {"web_search", "read_webpage"}
                 )
@@ -296,7 +257,7 @@ class AgentRunner:
                     definitions,
                     native_definitions,
                     finalization=finalization_only,
-                    route=web_route.provider.value if web_route is not None else "disabled",
+                    web_mode=web_mode.value,
                 )
                 execute = (
                     partial(
@@ -346,37 +307,10 @@ class AgentRunner:
                     native_events=native_events,
                     citations=citations,
                     response_status=response_status,
-                    web_route=web_route,
                     exception_category=type(exc).__name__,
                 )
                 if recovered is not None:
                     return recovered
-                if self._enable_tavily_fallback(
-                    tools=tools,
-                    web_mode=web_mode,
-                    native_was_offered=(
-                        bool(native_definitions) and not isinstance(exc, LLMRateLimitError)
-                    ),
-                    fallback_used=tavily_fallback,
-                    has_request_budget=request_index + 1 < runtime.max_model_requests,
-                    reason=(
-                        WebRouteReason.NATIVE_TIMEOUT
-                        if isinstance(exc, LLMTimeoutError)
-                        else WebRouteReason.NATIVE_UNAVAILABLE
-                    ),
-                    web_route=web_route,
-                ):
-                    tavily_fallback = True
-                    continuation = None
-                    continuation_tools = ()
-                    continuation_native_tools = ()
-                    web_route = self._fallback_route(
-                        web_route,
-                        WebRouteReason.NATIVE_TIMEOUT
-                        if isinstance(exc, LLMTimeoutError)
-                        else WebRouteReason.NATIVE_UNAVAILABLE,
-                    )
-                    continue
                 self._record_failure_usage(
                     tools, tool_calls=calls_used, model_requests=request_index + 1
                 )
@@ -390,26 +324,10 @@ class AgentRunner:
                     native_events=native_events,
                     citations=citations,
                     response_status=response_status,
-                    web_route=web_route,
                     exception_category=type(exc).__name__,
                 )
                 if recovered is not None:
                     return recovered
-                if self._enable_tavily_fallback(
-                    tools=tools,
-                    web_mode=web_mode,
-                    native_was_offered=bool(native_definitions),
-                    fallback_used=tavily_fallback,
-                    has_request_budget=request_index + 1 < runtime.max_model_requests,
-                    reason=WebRouteReason.NATIVE_EMPTY,
-                    web_route=web_route,
-                ):
-                    tavily_fallback = True
-                    continuation = None
-                    continuation_tools = ()
-                    continuation_native_tools = ()
-                    web_route = self._fallback_route(web_route, WebRouteReason.NATIVE_EMPTY)
-                    continue
                 has_visible_effects = bool(
                     tools is not None
                     and callable(getattr(tools, "has_visible_effects", None))
@@ -424,7 +342,6 @@ class AgentRunner:
                         native_tool_events=tuple(native_events),
                         citations=tuple(citations),
                         response_status=response_status,
-                        web_route=web_route,
                     )
                 if empty_retries >= 2 or request_index + 1 >= runtime.max_model_requests:
                     self._record_failure_usage(
@@ -457,7 +374,6 @@ class AgentRunner:
                     native_events=native_events,
                     citations=citations,
                     response_status=response_status,
-                    web_route=web_route,
                     exception_category=type(exc).__name__,
                 )
                 if recovered is not None:
@@ -489,7 +405,6 @@ class AgentRunner:
                         native_events=native_events,
                         citations=citations,
                         response_status=response_status,
-                        web_route=web_route,
                         exception_category=LLMIncompleteResponseError.__name__,
                     )
                     if recovered is not None:
@@ -512,30 +427,6 @@ class AgentRunner:
                     response.incomplete_reason or "unknown",
                 )
                 continue
-            terminal_web_failure = (
-                self._web_router.native_terminal_failure(
-                    web_route,
-                    events=tuple(native_events),
-                    citations=tuple(citations),
-                )
-                if not response.tool_calls
-                else None
-            )
-            if terminal_web_failure is not None and self._enable_tavily_fallback(
-                tools=tools,
-                web_mode=web_mode,
-                native_was_offered=True,
-                fallback_used=tavily_fallback,
-                has_request_budget=request_index + 1 < runtime.max_model_requests,
-                reason=terminal_web_failure,
-                web_route=web_route,
-            ):
-                tavily_fallback = True
-                continuation = None
-                continuation_tools = ()
-                continuation_native_tools = ()
-                web_route = self._fallback_route(web_route, terminal_web_failure)
-                continue
             if not response.tool_calls:
                 content = response.content
                 if tools is not None:
@@ -554,7 +445,6 @@ class AgentRunner:
                         native_events=native_events,
                         citations=citations,
                         response_status=response_status,
-                        web_route=web_route,
                         exception_category=LLMEmptyResponseError.__name__,
                     )
                     if recovered is not None:
@@ -586,7 +476,6 @@ class AgentRunner:
                     native_tool_events=tuple(native_events),
                     citations=tuple(citations),
                     response_status=response_status,
-                    web_route=web_route,
                 )
             if finalization_only:
                 logger.warning(
@@ -602,7 +491,6 @@ class AgentRunner:
                     native_events=native_events,
                     citations=citations,
                     response_status=response_status,
-                    web_route=web_route,
                     exception_category="tool_call_during_finalization",
                 )
                 if recovered is not None:
@@ -620,7 +508,6 @@ class AgentRunner:
                     native_tool_events=tuple(native_events),
                     citations=tuple(citations),
                     response_status=response_status,
-                    web_route=web_route,
                 )
             if no_progress_recovery:
                 logger.warning(
@@ -636,7 +523,6 @@ class AgentRunner:
                     native_tool_events=tuple(native_events),
                     citations=tuple(citations),
                     response_status=response_status,
-                    web_route=web_route,
                 )
             responses_path = response.continuation is not None
             if not responses_path:
@@ -710,7 +596,6 @@ class AgentRunner:
                         native_tool_events=tuple(native_events),
                         citations=tuple(citations),
                         response_status=response_status,
-                        web_route=web_route,
                         suppress_delivery=True,
                     )
                 terminal_reply = getattr(tools, "terminal_memory_reply", None)
@@ -725,7 +610,6 @@ class AgentRunner:
                             native_tool_events=tuple(native_events),
                             citations=tuple(citations),
                             response_status=response_status,
-                            web_route=web_route,
                         )
             if finalizing_commit_in_batch:
                 force_finalization = True
@@ -790,7 +674,6 @@ class AgentRunner:
             native_events=native_events,
             citations=citations,
             response_status=response_status,
-            web_route=web_route,
             exception_category="model_request_budget_exhausted",
         )
         if recovered is not None:
@@ -806,7 +689,6 @@ class AgentRunner:
             native_tool_events=tuple(native_events),
             citations=tuple(citations),
             response_status=response_status,
-            web_route=web_route,
         )
 
     async def _execute_tool_batch(
@@ -1043,7 +925,6 @@ class AgentRunner:
         native_events: list[NativeToolEvent],
         citations: list[ResponseCitation],
         response_status: ModelResponseStatus,
-        web_route: WebRouteDecision | None,
         exception_category: str,
     ) -> AgentRunResult | None:
         recovery = getattr(tools, "post_commit_recovery_text", None)
@@ -1067,56 +948,4 @@ class AgentRunner:
             native_tool_events=tuple(native_events),
             citations=tuple(citations),
             response_status=response_status,
-            web_route=web_route,
-        )
-
-    def _native_web_bindable(self) -> bool:
-        return (
-            self._models.protocol(self._task) is ModelProtocol.RESPONSES
-            and ModelCapability.NATIVE_WEB_SEARCH in self._models.capabilities(self._task)
-        )
-
-    @staticmethod
-    def _enable_tavily_fallback(
-        *,
-        tools: AgentToolBackend | None,
-        web_mode: WebMode,
-        native_was_offered: bool,
-        fallback_used: bool,
-        has_request_budget: bool,
-        reason: WebRouteReason,
-        web_route: WebRouteDecision | None,
-    ) -> bool:
-        if (
-            tools is None
-            or web_mode is not WebMode.NATIVE_WITH_TAVILY_FALLBACK
-            or not native_was_offered
-            or fallback_used
-            or not has_request_budget
-            or (web_route is not None and not WebProviderRouter.can_fallback(web_route))
-        ):
-            return False
-        enable = getattr(tools, "enable_native_web_fallback", None)
-        if not callable(enable):
-            return False
-        enable()
-        logger.warning(
-            "web_provider_fallback from_provider=deepseek_native to_provider=tavily "
-            "reason_category=%s",
-            reason.value,
-        )
-        return True
-
-    @staticmethod
-    def _fallback_route(
-        web_route: WebRouteDecision | None,
-        reason: WebRouteReason,
-    ) -> WebRouteDecision:
-        if web_route is not None:
-            return WebProviderRouter.fallback(web_route, reason)
-        return WebRouteDecision(
-            provider=WebProvider.TAVILY,
-            reason=reason,
-            fallback_allowed=False,
-            attempt=2,
         )

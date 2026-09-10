@@ -76,7 +76,7 @@ class EvidenceObservation:
         native: tuple[NativeToolDefinition, ...],
         *,
         finalization: bool,
-        route: str,
+        web_mode: str,
     ) -> None:
         shape = [(tool.name, tool.description, tool.parameters) for tool in definitions]
         fingerprint = hashlib.sha256(
@@ -92,6 +92,6 @@ class EvidenceObservation:
                 sorted(tool.name for tool in definitions if tool.name in EVIDENCE_TOOLS)
             ),
             native_web=bool(native),
-            route=route,
+            web_mode=web_mode,
             finalization=finalization,
         )

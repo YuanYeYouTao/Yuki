@@ -4,6 +4,7 @@ schema_version = 3
 # Secrets stay in environment variables; this file only names them.
 
 [profiles.pro]
+# For deepseek-flash (V4.1). Remove image_input for a text-only model.
 provider = "deepseek"
 protocol = "responses"
 base_url_env = "LLM_BASE_URL"
@@ -17,7 +18,7 @@ thinking_mode = "enabled"
 reasoning_effort = "low"
 reasoning_effort_env = "LLM_REASONING_EFFORT"
 structured_output_mode = "function_tool"
-capabilities = ["tools", "reasoning", "long_context", "native_web_search"]
+capabilities = ["tools", "reasoning", "long_context", "image_input"]
 
 [profiles.flash]
 provider = "deepseek"

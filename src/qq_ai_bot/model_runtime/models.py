@@ -44,6 +44,7 @@ class ModelCapability(StrEnum):
     REASONING = "reasoning"
     LONG_CONTEXT = "long_context"
     NATIVE_WEB_SEARCH = "native_web_search"
+    IMAGE_INPUT = "image_input"
 
 
 class ModelProtocol(StrEnum):

@@ -107,7 +107,7 @@ def load_model_profile_catalog(
             "model_profiles_compatibility_mode file=%s profile=main",
             path,
         )
-        capabilities = frozenset(ModelCapability)
+        capabilities = frozenset(ModelCapability) - {ModelCapability.IMAGE_INPUT}
         profile = ModelProfile(
             id="main",
             provider=legacy_provider,

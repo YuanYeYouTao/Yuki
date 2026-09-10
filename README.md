@@ -54,6 +54,39 @@ canonical schema，Alembic head 为 `0051`。
 没有值得保存的内容时空提取是正常结果。明确的记住、纠正和删除仍立即处理。
 详见唯一现行 [Memory 合同](docs/architecture/memory-v2.md)。
 
+### 原生看图与联网
+
+DeepSeek V4.1 使用正式模型名 `deepseek-flash`。主模型 profile 声明 `image_input` 后，
+当前/引用图片经安全下载、限量抽帧直接进入完整 Main Agent，不再先调用 Qwen 描述图片。
+图片仅在本轮工具循环中保留，不把 Base64 写进历史；后续重新查看可引用原图片。
+视频查看（Issue #21）使用本地 FFmpeg 对真实消息/引用中的 MP4/MOV 视频抽帧；
+当前只接入 QQ `video` 消息类型，以普通 `file` 附件发送的 MP4 尚未接入：
+默认最长 600 秒，按 5 秒期望间隔自适应取帧，最多 16 帧；达到帧数预算后均匀覆盖首尾。
+分别通过 `VISION_VIDEO_MAX_DURATION_SECONDS`、`VISION_VIDEO_SAMPLE_INTERVAL_SECONDS`、
+`VISION_VIDEO_MAX_FRAMES` 调整，也可通过对应 `vision.video_*` 运行时配置修改。
+视频仍与图片共享处理后帧数/字节预算，分辨率最长边 4096。
+视频下载独立使用 `VISION_VIDEO_MAX_DOWNLOAD_BYTES`，默认 200 MiB；普通图片继续使用
+`VISION_MAX_DOWNLOAD_BYTES`，默认 20 MiB。提高下载上限不提高模型输入帧数或压缩后预算。
+HTTP 视频流式写入受控临时文件，不将整个大视频缓存在内存；下载和抽帧期间继续受并发与超时限制。
+临时视频及 JPEG 在抽帧结束后立即删除（包括异常、超时与取消），不建立视频文件缓存；
+本轮模型循环结束后释放帧引用，不将帧 Base64 存入历史。进程强杀/主机故障无法执行清理，
+因此临时文件属于容器临时目录，不放入持久化数据目录。
+采样帧附带时间位置进入同一个 Main Agent，不使用额外看图模型；不分析音轨，
+不能保证看到所有瞬间。不支持视频网页链接解析、网关本地路径或仅有文件 ID 的视频。
+Docker 已包含 FFmpeg；源码运行需将 `ffmpeg`、`ffprobe` 加入 PATH。
+表情包入库分类、OCR/标签与去重仍走独立后台视觉任务，保留现有可配置 VisionProvider。
+`VISION_ENABLED` 控制该外接服务，不是原生看图的开关；无图片能力的 profile 不会被强行喂图。
+
+新版 DeepSeek Responses 忽略内置 `web_search`；使用 Tavily 可配置 `WEB_MODE=tavily`
+与 `TAVILY_API_KEY`。
+`web_search` 已在默认首轮常驻工具名单中。`both` 保留 Tavily
+函数工具，不再因原生工具可用而移除它；Agent 可直接选择 Tavily，无须先等待原生失败。
+`native` 仍表示仅原生，`disabled` 仍禁止联网；显式自定义工具名单保持有效。
+部署级工具结构不随消息关键词或域名切换。联网路由器及自动换后端重跑已删除；
+旧配置值 `native_with_tavily_fallback` 仅映射为 `both`。普通模型错误恢复和调用预算仍保留，
+不会因缺来源另起 Agent 循环。不能把“未报错”视为原生搜索成功。DeepSeek Responses 当前无原生搜索，Anthropic
+入口已独立实测可用，但本项目尚未接入该协议。
+
 ## 消息主路径
 
 ```text

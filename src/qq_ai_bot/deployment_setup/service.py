@@ -221,8 +221,8 @@ def build_model_profiles(*, main_protocol: str, flash_enabled: bool) -> str:
         raise SetupValidationError("主模型协议无效")
     provider = "deepseek" if main_protocol == "responses" else "openai_compatible"
     main_capabilities = ["tools", "structured_output", "long_context", "reasoning"]
-    if main_protocol == "responses":
-        main_capabilities.append("native_web_search")
+    # Protocol alone proves neither native web search nor image support.
+    # image_input is an explicit profile capability, enabled after model validation.
     lines = [
         "schema_version = 3",
         "",
@@ -429,7 +429,7 @@ def validate_configuration(paths: SetupPaths, configuration: SetupConfiguration)
                 settings.web.mode
                 in {
                     WebMode.NATIVE,
-                    WebMode.NATIVE_WITH_TAVILY_FALLBACK,
+                    WebMode.BOTH,
                 }
                 and ModelCapability.NATIVE_WEB_SEARCH not in chat_profile.capabilities
             ):

@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from qq_ai_bot.domain.messages import (
+    ChatImage,
     ChatMessage,
     ChatRequest,
     ChatTool,
@@ -58,6 +59,22 @@ def _request(**overrides: object) -> ChatRequest:
 
 @pytest.mark.asyncio
 async def test_request_mapping_is_responses_native_and_flat() -> None:
+    image = ChatImage(data_url="data:image/png;base64,aW1hZ2U=")
+    instructions, parts = DeepSeekResponsesProvider._convert_messages(
+        (
+            ChatMessage(role="system", content="fixed"),
+            ChatMessage(role="user", content="picture", images=(image,)),
+        )
+    )
+    assert instructions == "fixed"
+    assert parts[0]["content"][1] == {"type": "input_image", "image_url": image.data_url}
+    with pytest.raises(LLMInvalidRequestError):
+        DeepSeekResponsesProvider._convert_messages((ChatMessage(role="system", images=(image,)),))
+    with pytest.raises(LLMInvalidRequestError):
+        DeepSeekResponsesProvider._convert_messages(
+            (ChatMessage(role="assistant", images=(image,)),)
+        )
+
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/responses"
         payload = json.loads(request.content)
@@ -118,6 +135,31 @@ async def test_request_mapping_is_responses_native_and_flat() -> None:
     assert response.cached_prompt_tokens == 3
     assert response.reasoning_tokens == 2
     assert response.continuation is not None
+
+    from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
+
+    def chat_handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload["messages"][0]["content"][1] == {
+            "type": "image_url",
+            "image_url": {"url": image.data_url},
+        }
+        return httpx.Response(200, json={"choices": [{"message": {"content": "seen"}}]})
+
+    async with httpx.AsyncClient(
+        base_url="https://example.com", transport=httpx.MockTransport(chat_handler)
+    ) as client:
+        compatible = OpenAICompatibleProvider(
+            base_url="https://example.com",
+            api_key="test",
+            timeout_seconds=1,
+            max_retries=0,
+            client=client,
+        )
+        seen = await compatible.complete(
+            _request(messages=(ChatMessage(role="user", content="image", images=(image,)),))
+        )
+        assert seen.content == "seen"
 
 
 @pytest.mark.asyncio
@@ -222,6 +264,25 @@ async def test_responses_reasoning_payload_matches_thinking_preference(
         )
         assert profile.thinking_enabled is True
         assert profile.reasoning_effort is ReasoningEffort.LOW
+        stale = profile.model_copy(
+            update={
+                "provider": "deepseek",
+                "base_url": "https://api.deepseek.com",
+                "api_key_env": "TEST_KEY",
+            }
+        )
+        stale_catalog = ModelProfileCatalog(
+            profiles={"test": stale},
+            routes={task: ModelRoute(task=task, profile_id="test") for task in ModelTask},
+        )
+        stale_executor = TaskModelExecutor(
+            router=ModelRouter(stale_catalog),
+            pool=ModelClientPool(injected_profiles={"test": provider}),
+        )
+        assert ModelCapability.NATIVE_WEB_SEARCH not in stale_executor.capabilities(
+            ModelTask.CHAT_AGENT
+        )
+        assert ModelCapability.IMAGE_INPUT in stale_executor.capabilities(ModelTask.CHAT_AGENT)
         catalog = ModelProfileCatalog(
             profiles={"test": profile},
             routes={task: ModelRoute(task=task, profile_id="test") for task in ModelTask},
