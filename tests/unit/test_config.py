@@ -86,16 +86,13 @@ def test_system_prompt_file_overrides_inline_prompt(tmp_path: Path) -> None:
     assert settings.system_prompt == "# Role\n\nExternal prompt"
 
 
-def test_system_prompt_file_must_exist(tmp_path: Path) -> None:
+def test_system_prompt_file_must_exist_and_not_be_empty(tmp_path: Path) -> None:
     with pytest.raises(ValidationError, match="cannot read SYSTEM_PROMPT_FILE"):
         Settings.model_validate(
             {
                 "system_prompt_file": tmp_path / "missing.md",
             }
         )
-
-
-def test_system_prompt_file_must_not_be_empty(tmp_path: Path) -> None:
     prompt_file = tmp_path / "empty.md"
     prompt_file.write_text(" \n", encoding="utf-8")
 
@@ -218,7 +215,7 @@ def test_example_system_prompt_is_complete_and_preserves_mode_boundaries() -> No
     assert all(fragment in prompt for fragment in required_fragments)
 
 
-def test_rollup_event_watermarks_must_fit_local_event_limit() -> None:
+def test_rollup_event_and_batch_watermarks_are_consistent() -> None:
     with pytest.raises(ValidationError, match="must not exceed LOCAL_CONTEXT_EVENT_LIMIT"):
         Settings(
             _env_file=None,
@@ -226,9 +223,6 @@ def test_rollup_event_watermarks_must_fit_local_event_limit() -> None:
             conversation_rollup_raw_tail_events=768,
             conversation_rollup_trigger_events=512,
         )
-
-
-def test_rollup_batches_must_cover_one_trigger_window() -> None:
     with pytest.raises(ValidationError, match="must cover one CONVERSATION_ROLLUP_TRIGGER_EVENTS"):
         Settings(
             _env_file=None,

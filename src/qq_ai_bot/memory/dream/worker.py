@@ -35,6 +35,7 @@ class DreamWorker:
         service: DreamService,
         process_lock: asyncio.Lock | None = None,
         compaction_active: Callable[[], bool] | None = None,
+        compaction_error: Callable[[], str | None] | None = None,
     ) -> None:
         self._settings = settings
         self._repository = repository
@@ -45,6 +46,7 @@ class DreamWorker:
         self._task: asyncio.Task[None] | None = None
         self._process_lock = process_lock or asyncio.Lock()
         self._compaction_active = compaction_active or (lambda: False)
+        self._compaction_error = compaction_error or (lambda: None)
         self._baseline_ready = False
 
     async def start(self) -> None:
@@ -132,9 +134,11 @@ class DreamWorker:
         snapshot = await self._repository.health(enabled=self._settings.memory_dream_enabled)
         return snapshot.model_copy(
             update={
+                "compaction_last_error_category": self._compaction_error()
+                or snapshot.compaction_last_error_category,
                 "waiting_for_compaction_lock": (
                     self._process_lock.locked() and self._compaction_active()
-                )
+                ),
             }
         )
 

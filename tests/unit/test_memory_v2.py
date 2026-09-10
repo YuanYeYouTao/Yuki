@@ -448,6 +448,156 @@ async def _append_event(
     return row
 
 
+@pytest.mark.asyncio
+async def test_compaction_worker_recovers_errors_and_restarts(
+    database: Database, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from sqlalchemy.exc import OperationalError
+
+    from qq_ai_bot.memory.evidence_compaction import EvidenceCompactionWorker
+
+    settings = make_settings(database.url).model_copy(update={"memory_dream_poll_seconds": 0.01})
+    recovered = asyncio.Event()
+    release = asyncio.Event()
+
+    class Service:
+        calls = 0
+
+        async def run_batch(self) -> int:
+            self.calls += 1
+            if self.calls == 1:
+                raise OperationalError("private SQL", {}, Exception("secret must not be logged"))
+            recovered.set()
+            await release.wait()
+            return 0
+
+    service = Service()
+    lock = asyncio.Lock()
+    worker = EvidenceCompactionWorker(settings=settings, service=service, process_lock=lock)  # type: ignore[arg-type]
+    await worker.start()
+    try:
+        await asyncio.wait_for(recovered.wait(), 2)
+        assert worker.running and worker.last_error_category == "OperationalError"
+        release.set()
+        for _ in range(100):
+            if worker.last_success_at is not None:
+                break
+            await asyncio.sleep(0.01)
+        assert worker.last_success_at is not None and worker.last_error_category is None
+        assert "secret must not be logged" not in caplog.text and "private SQL" not in caplog.text
+        task = worker._task
+        assert task is not None
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert not worker.running and not lock.locked()
+        from qq_ai_bot.memory.dream.models import DreamHealth
+        from qq_ai_bot.memory.dream.worker import DreamWorker
+
+        class HealthRepository:
+            async def health(self, *, enabled: bool) -> DreamHealth:
+                return DreamHealth(
+                    enabled=enabled, running=False, pending_clusters=0, failed_clusters=0
+                )
+
+        dream = DreamWorker(
+            settings=settings,
+            repository=HealthRepository(),  # type: ignore[arg-type]
+            service=None,  # type: ignore[arg-type]
+            compaction_error=lambda: (
+                "worker_not_running" if not worker.running else worker.last_error_category
+            ),
+        )
+        assert (await dream.health()).compaction_last_error_category == "worker_not_running"
+        await worker.start()
+        assert worker.running and worker._task is not task
+        assert (await dream.health()).compaction_last_error_category is None
+        monkeypatch.setattr("qq_ai_bot.memory.evidence_compaction._BATCH_TIMEOUT_SECONDS", 0.02)
+        await lock.acquire()
+        try:
+            for _ in range(100):
+                if worker.last_error_category == "TimeoutError":
+                    break
+                await asyncio.sleep(0.01)
+            assert worker.running and worker.last_error_category == "TimeoutError"
+        finally:
+            lock.release()
+    finally:
+        await worker.close()
+    assert not worker.running and not worker.holding_lock and not worker.waiting_for_lock
+
+
+@pytest.mark.asyncio
+async def test_missing_activation_is_repaired_without_resetting_history(database: Database) -> None:
+    from sqlalchemy import delete
+
+    from qq_ai_bot.memory.activation import MemoryActivationRepository
+    from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
+    from qq_ai_bot.memory.models import MemoryQuery
+    from qq_ai_bot.persistence.models import MemoryActivationStateModel
+
+    repository = MemoryFactRepository(database)
+    anchor = datetime.now(UTC) - timedelta(days=60)
+    ids = []
+    async with repository.transaction() as session:
+        for index, kind in enumerate((MemoryKind.FACT, MemoryKind.PREFERENCE, MemoryKind.EPISODE)):
+            row = await repository.create_fact(
+                _fact(content=f"lasting fact {index}", kind=kind, memory_key=f"repair:{index}"),
+                normalized_content=f"lasting fact {index}",
+                supersedes_id=None,
+                recorded_at=anchor,
+                session=session,
+            )
+            ids.append(row.id)
+        await session.execute(
+            delete(MemoryActivationStateModel).where(
+                MemoryActivationStateModel.fact_id.in_(ids[:2])
+            )
+        )
+        await session.execute(
+            update(MemoryActivationStateModel)
+            .where(MemoryActivationStateModel.fact_id == ids[2])
+            .values(activation=0.91, recall_count=7, revision=4, last_recalled_at=anchor)
+        )
+    activation = MemoryActivationRepository(database)
+    before = await activation.load((ids[2],))
+    facts_before = tuple([await repository.get_fact(fact_id) for fact_id in ids])
+    with pytest.raises(RuntimeError, match="rollback probe"):
+        async with repository.transaction() as session:
+            assert await repository.repair_missing_activation(limit=1, session=session) == 1
+            raise RuntimeError("rollback probe")
+    assert await activation.load(tuple(ids)) == before
+    settings = make_settings(database.url).model_copy(update={"memory_maintenance_batch_limit": 1})
+    worker = MemoryMaintenanceWorker(settings=settings, facts=MemoryFactService(repository))
+    await worker.process_once()
+    assert len(await activation.load(tuple(ids))) == 2
+    await worker.process_once()
+    states = await activation.load(tuple(ids))
+    assert states[ids[2]] == before[ids[2]]
+    for fact_id, expected in zip(ids[:2], (0.70, 0.80), strict=True):
+        state = states[fact_id]
+        assert state.activation == expected
+        assert state.activation_updated_at == anchor
+        assert state.last_recalled_at is None and state.recall_count == 0 and state.revision == 0
+    await worker.process_once()
+    assert await activation.load(tuple(ids)) == states
+    assert tuple([await repository.get_fact(fact_id) for fact_id in ids]) == facts_before
+    from qq_ai_bot.memory.enums import MemoryRetrievalMode
+
+    query = MemoryQuery(
+        text="fact",
+        normalized_text="fact",
+        mode=MemoryRetrievalMode.RELEVANT,
+        targets=(),
+        candidate_limit=10,
+        limit_per_target=4,
+        always_on_explicit_preference_limit=0,
+        query_term_limit=12,
+    )
+    reinforced = await activation.reinforce((ids[0],), alpha=0.1, query=query)
+    assert reinforced == (ids[0],)
+    assert (await activation.load((ids[0],)))[ids[0]].recall_count == 1
+
+
 def _fact(
     *,
     content: str,
