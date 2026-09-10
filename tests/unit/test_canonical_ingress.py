@@ -386,6 +386,7 @@ async def test_canonical_ingress_segments_or_occurred_at_conflict_fails_closed(
     database: Database,
 ) -> None:
     from dataclasses import replace
+    from datetime import timedelta
 
     uow, admitted = await _admit_private(database, "ingress-payload-1", text="payload")
     first = await uow.append_inbound(admitted.message, admitted)
@@ -396,7 +397,9 @@ async def test_canonical_ingress_segments_or_occurred_at_conflict_fails_closed(
         )
     with pytest.raises(CanonicalIdentityError) as occurred:
         await uow.append_inbound(
-            replace(admitted.message, received_at=admitted.message.received_at.replace(minute=1)),
+            replace(
+                admitted.message, received_at=admitted.message.received_at + timedelta(minutes=1)
+            ),
             admitted,
         )
     assert segments.value.category == "receipt_conflict"

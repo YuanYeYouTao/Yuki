@@ -7,7 +7,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import case, delete, func, select, text, update
 
 from qq_ai_bot.memory.models import MemoryQueryIntent, MemoryRetrievalHit, MemoryRetrievalResult
 from qq_ai_bot.persistence.database import Database
@@ -425,7 +425,17 @@ class MemoryRecallRepository:
             await session.execute(
                 update(MemoryRecallReceiptModel)
                 .where(MemoryRecallReceiptModel.id == receipt_id)
-                .values(injected_count=injected_count, updated_at=now)
+                .values(
+                    injected_count=injected_count,
+                    attribution_reason=case(
+                        (
+                            MemoryRecallReceiptModel.attribution_reason == "no_memory",
+                            "not_scheduled",
+                        ),
+                        else_=MemoryRecallReceiptModel.attribution_reason,
+                    ),
+                    updated_at=now,
+                )
             )
 
     async def pending_reinforcement(

@@ -189,6 +189,12 @@ async def test_recall_receipt_tracks_zero_partial_evaluation_and_interruption(da
             )
         ).one() == (0, "skipped", "no_memory")
     await receipts.record_tool_injected(turn.turn_id, (first.id, second.id))
+    async with database.sessions() as session:
+        assert (
+            await session.execute(
+                text("SELECT attribution_reason, injected_count FROM memory_recall_receipts")
+            )
+        ).one() == ("not_scheduled", 2)
     await memory_session.record_read_outcome("duplicate")
     await receipts.set_attribution_outcome(turn.turn_id, "pending", "queued")
     await receipts.mark_attributed_used(turn.turn_id, (), evaluated_fact_ids=(first.id,))
@@ -559,7 +565,13 @@ async def test_self_episode_has_no_automatic_bypass_but_active_query_still_works
         self_recall=False,
     )
     auto_self = [hit for hit in automatic.hits if hit.target.role is MemoryTargetRole.CURRENT_SELF]
-    assert auto_self == []  # No calibrated profile, and no exact match.
+    assert len(auto_self) == 1  # Literal topic hit, not an unconditional SELF bypass.
+    assert auto_self[0].fact.id in {first.id, second.id}
+    assert auto_self[0].selection_reason == "lexical_fallback_uncalibrated"
+    unrelated = await context.retrieve_for_turn(
+        inbound=inbound, content="完全无关的数据库索引优化", runtime=runtime, self_recall=False
+    )
+    assert unrelated.hits == ()
 
     explicit = await context.search(
         text=inbound.text,
@@ -1234,7 +1246,20 @@ async def test_global_topics_precede_background_and_preserve_total_order(
     no_topics = result.model_copy(update={"hits": (hits[0],)})
     assert MemoryContextService._limit_automatic_result(no_topics, None, runtime).hits == ()
     uncalibrated = result.model_copy(update={"embedding_profile": "unknown"})
-    assert MemoryContextService._limit_automatic_result(uncalibrated, None, runtime).hits == ()
+    fallback = MemoryContextService._limit_automatic_result(uncalibrated, None, runtime)
+    assert len(fallback.hits) == 1
+    assert fallback.hits[0].selection_reason == "lexical_fallback_uncalibrated"
+    semantic_only = uncalibrated.model_copy(
+        update={"hits": tuple(hit.model_copy(update={"lexical_score": None}) for hit in ranked)}
+    )
+    assert MemoryContextService._limit_automatic_result(semantic_only, None, runtime).hits == ()
+    from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE, self_retrieval_fact_context
+
+    assert (
+        self_retrieval_fact_context(fallback.hits[0])["retrieval_reason"]
+        == "lexical_fallback_uncalibrated"
+    )
+    assert "lexical_fallback_uncalibrated" in MEMORY_GROUNDING_RULE
     from qq_ai_bot.memory.match_projection import match_projection
 
     assert match_projection(hits[0], result, runtime) == {

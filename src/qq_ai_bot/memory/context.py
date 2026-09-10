@@ -89,6 +89,7 @@ def self_retrieval_fact_context(
         "fact_id": hit.fact.id,
         "memory_ref": f"M{hit.fact.id}",
         "kind": hit.fact.kind.value,
+        "retrieval_reason": hit.selection_reason,
         "category": hit.fact.category,
         "content": hit.fact.content,
         "confidence": hit.fact.confidence,
@@ -139,6 +140,8 @@ MEMORY_GROUNDING_RULE = (
     "限定范围被拒绝不能推断整个人的记忆均不可读，也不要自动换范围重试。"
     "严格日期无结果不得自动放宽。"
     "检索排名不是事实相关性保证；不相关候选不得编造成所问经历，可换实质不同查询或说明未找到。"
+    "lexical_fallback_uncalibrated只表示未校准时的字面匹配候选，不代表主题已匹配；"
+    "先判断是否与当前问题有关，无关则忽略并按需主动补查。"
 )
 
 
@@ -352,6 +355,17 @@ class MemoryContextService:
                 decisions[hit.fact.id] = (
                     "rejected_relevance" if calibrated else "rejected_uncalibrated"
                 )
+
+        # Uncalibrated semantics are not a trustworthy scale. Offer one lexical
+        # candidate, explicitly unverified, rather than unrelated background.
+        if not calibrated and not topics:
+            lexical = [hit for hit in result.hits if hit.lexical_score is not None]
+            if lexical:
+                fallback = min(
+                    lexical, key=lambda hit: (-float(hit.lexical_score or 0), hit.fact.id)
+                )
+                topics.append(fallback)
+                decisions[fallback.fact.id] = "lexical_fallback_uncalibrated"
 
         ordered = topics + (backgrounds[:1] if topics and len(topics) < total_limit else [])
         selected: list[MemoryRetrievalHit] = []

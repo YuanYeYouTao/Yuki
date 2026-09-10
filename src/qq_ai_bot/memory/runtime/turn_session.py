@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import uuid
 from datetime import UTC, datetime
 
@@ -148,6 +149,7 @@ class TurnMemorySession:
         self._confirmed_exposures: list[MemoryExposure] = []
         self._prefetch_confirmed = False
         self._read_receipt_lock = asyncio.Lock()
+        self._delivery_reported = False
 
     @classmethod
     def open(
@@ -398,6 +400,7 @@ class TurnMemorySession:
                     handle.receipt_turn_id, "skipped", "delivery_failed"
                 )
             self._state.skip_attribution()
+            self._delivery_reported = True
             return
         if (
             self._attribution is None
@@ -418,6 +421,7 @@ class TurnMemorySession:
                         handle.receipt_turn_id, "skipped", reason
                     )
             self._state.skip_attribution()
+            self._delivery_reported = True
             return
         self._state.freeze_exposures()
         exposures = tuple({item.fact_id: item for item in self._confirmed_exposures}.values())
@@ -437,9 +441,23 @@ class TurnMemorySession:
                 summary,
             )
         self._state.queue_attribution()
+        self._delivery_reported = True
 
     async def close(self) -> None:
-        self._state.close()
+        if self._state.closed:
+            return
+        try:
+            if not self._delivery_reported:
+                for handle in self._state.recall_handles():
+                    await self._memory_context.set_attribution_outcome(
+                        handle.receipt_turn_id, "skipped", "interrupted"
+                    )
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "memory_session_cleanup_failed exception_category=%s", type(exc).__name__
+            )
+        finally:
+            self._state.close()
 
     def _observe_write(self, result_json: str) -> None:
         if self._state.contract.write_transition is MemoryWriteTransition.REQUESTABLE:
