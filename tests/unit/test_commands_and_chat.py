@@ -733,9 +733,9 @@ async def test_native_images_use_full_chat_without_external_vision(
     from PIL import Image
 
     from qq_ai_bot.domain.messages import AttachmentKind, MessageAttachment
+    from qq_ai_bot.services.attachment_inputs import AttachmentInputService
     from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
     from qq_ai_bot.services.media_resolver import MediaResolver
-    from qq_ai_bot.services.native_images import NativeImageService
 
     stream = io.BytesIO()
     Image.new("RGB", (32, 32), "red").save(stream, format="PNG")
@@ -743,7 +743,7 @@ async def test_native_images_use_full_chat_without_external_vision(
     provider = FakeLLMProvider()
     harness = build_harness(database, make_settings(database.url), provider)
     resolver = MediaResolver()
-    harness.processor._native_images = NativeImageService(
+    harness.processor._native_images = AttachmentInputService(
         resolver,
         ImagePreprocessor(),
         concurrency=1,
@@ -799,10 +799,10 @@ async def test_native_images_use_full_chat_without_external_vision(
         reference = MediaReference(file=video_data, source="current")
         with TemporaryDirectory() as directory:
             path = Path(directory) / "download.mp4"
-            await resolver.download_video(reference, path, max_download_bytes=12)
+            await resolver.download_attachment(reference, path, max_download_bytes=12)
             assert path.stat().st_size == 12
             with pytest.raises(MediaResolutionError):
-                await resolver.download_video(reference, path, max_download_bytes=11)
+                await resolver.download_attachment(reference, path, max_download_bytes=11)
         assert (await resolver.resolve(reference)).byte_size == 12
 
         class VideoChunks(httpx.AsyncByteStream):
@@ -821,10 +821,10 @@ async def test_native_images_use_full_chat_without_external_vision(
             remote = MediaReference(url="https://example.com/video.mp4", source="current")
             with TemporaryDirectory() as directory:
                 path = Path(directory) / "video.mp4"
-                await bounded.download_video(remote, path, max_download_bytes=65636)
+                await bounded.download_attachment(remote, path, max_download_bytes=65636)
                 assert path.stat().st_size == 65636
                 with pytest.raises(MediaResolutionError):
-                    await bounded.download_video(remote, path, max_download_bytes=65635)
+                    await bounded.download_attachment(remote, path, max_download_bytes=65635)
                 with pytest.raises(MediaResolutionError):
                     await bounded.resolve(remote)
         video = replace(
@@ -844,6 +844,47 @@ async def test_native_images_use_full_chat_without_external_vision(
         )
         assert (await harness.processor.handle(replied, sender)).reason == "chat"
         assert all(i.source == "reply" for i in provider.requests[-1].messages[-1].images)
+        from qq_ai_bot.adapters.onebot.normalizer import project_serialized_segments
+
+        file_projection = project_serialized_segments(
+            ({"type": "file", "data": {"name": "movie.mp4", "file": video_data}},),
+            yuki_account_ids=frozenset(),
+            source="current",
+        )
+        assert file_projection.attachments[0].filename == "movie.mp4"
+        file_video = replace(
+            video,
+            message_id="file-video",
+            attachments=file_projection.attachments,
+        )
+        assert (await harness.processor.handle(file_video, sender)).reason == "chat"
+        assert provider.requests[-1].messages[-1].images
+        file_reply = replace(
+            file_video,
+            message_id="file-reply",
+            attachments=(),
+            reply_attachments=(replace(file_video.attachments[0], source="reply"),),
+        )
+        assert (await harness.processor.handle(file_reply, sender)).reason == "chat"
+        assert all(i.source == "reply" for i in provider.requests[-1].messages[-1].images)
+        text_file = replace(
+            file_video,
+            message_id="text-file",
+            attachments=(
+                MessageAttachment(
+                    AttachmentKind.FILE,
+                    "file",
+                    filename="notes.txt",
+                    file="base64://"
+                    + base64.b64encode("a unique attachment fact 你好吗".encode()).decode(),
+                ),
+            ),
+        )
+        harness.processor._native_images.images_enabled = False
+        assert (await harness.processor.handle(text_file, sender)).reason == "chat"
+        assert "a unique attachment fact" in provider.requests[-1].messages[-1].content
+        assert not provider.requests[-1].messages[-1].images
+        assert "不可信资料" in provider.requests[-1].messages[-1].content
         assert all(not path.parent.exists() for path in decoded_paths)
 
         import asyncio

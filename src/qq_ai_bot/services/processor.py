@@ -73,6 +73,7 @@ from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
 from qq_ai_bot.services.admin.preference_admin import PreferenceAdminService
 from qq_ai_bot.services.admin.private_access_admin import PrivateAccessAdminService
 from qq_ai_bot.services.admin.relationship_admin import RelationshipAdminService
+from qq_ai_bot.services.attachment_inputs import AttachmentInputService
 from qq_ai_bot.services.autonomous_groups import AutonomousGroupService
 from qq_ai_bot.services.chat import ChatService, OutboundSender
 from qq_ai_bot.services.command_service import CommandExecution, CommandService
@@ -84,7 +85,6 @@ from qq_ai_bot.services.effect_gate import (
     EffectPermitRejectedError,
 )
 from qq_ai_bot.services.media_resolver import OneBotMediaGateway
-from qq_ai_bot.services.native_images import NativeImageService
 from qq_ai_bot.services.plugin_events import (
     LifecycleEventPublisher,
     content_free_turn_payload,
@@ -221,6 +221,7 @@ class VisualTurnState:
     failed: bool = False
     error_code: str | None = None
     images: tuple[ChatImage, ...] = ()
+    attachment_text: str = ""
 
 
 def _vision_failure_message(error_code: str | None, *, reply_only: bool) -> str:
@@ -311,7 +312,7 @@ class MessageProcessor:
         config_admin: ConfigAdminService | None = None,
         permission_catalog: PermissionCatalogService | None = None,
         vision_service: VisionService | None = None,
-        native_images: NativeImageService | None = None,
+        attachment_inputs: AttachmentInputService | None = None,
         automation_service: AutomationService | None = None,
         automation_repository: AutomationRepository | None = None,
         automation_worker: AutomationWorker | None = None,
@@ -416,7 +417,7 @@ class MessageProcessor:
             action_registry=ActionRegistry(),
         )
         self._vision = vision_service
-        self._native_images = native_images
+        self._native_images = attachment_inputs
         self._automation = automation_service
         self._automation_repository = automation_repository
         self._automation_worker = automation_worker
@@ -678,7 +679,8 @@ class MessageProcessor:
         has_visual_input = VisionService.has_visual_input(message) or (
             self._native_images is not None
             and any(
-                a.kind.value == "video" for a in (*message.attachments, *message.reply_attachments)
+                a.kind.value in {"video", "file"}
+                for a in (*message.attachments, *message.reply_attachments)
             )
         )
         image_blocks_command = bool(
@@ -917,8 +919,8 @@ class MessageProcessor:
             runtime=runtime_snapshot,
         )
         if not content:
-            if visual.images:
-                content = "[当前消息包含视觉附件，请查看随本轮提供的图片或视频采样帧并回应]"
+            if visual.images or visual.attachment_text:
+                content = "[当前消息包含附件，请依据本轮附件读取结果回应；未读取的部分不能猜测]"
             elif has_visual_input and visual.observation is not None:
                 content = (
                     "[当前消息仅包含图片；后端视觉识别已成功，请根据本轮视觉观察直接回应图片内容]"
@@ -975,6 +977,7 @@ class MessageProcessor:
                 runtime_snapshot=runtime_snapshot,
                 visual_observation=visual.observation,
                 native_images=visual.images,
+                attachment_text=visual.attachment_text,
                 visual_input_present=has_visual_input,
                 visual_failure=visual.failed,
                 turn_token=turn_token,
@@ -1089,26 +1092,54 @@ class MessageProcessor:
         runtime: RuntimeConfigSnapshot,
     ) -> VisualTurnState:
         has_video = any(
-            a.kind.value == "video" for a in (*message.attachments, *message.reply_attachments)
+            a.kind.value in {"video", "file"}
+            for a in (*message.attachments, *message.reply_attachments)
         )
         if not VisionService.has_visual_input(message) and not (
             self._native_images is not None and has_video
         ):
             return VisualTurnState()
-        if self._native_images is not None:
+        if self._native_images is not None and (self._native_images.images_enabled or has_video):
             gateway = (
                 cast(OneBotMediaGateway, sender)
                 if callable(getattr(sender, "call_api", None))
                 else None
             )
             try:
-                images = await self._native_images.prepare(message, runtime.vision, gateway)
-                return VisualTurnState(images=images)
+                prepared = await self._native_images.prepare(message, runtime.vision, gateway)
+                return VisualTurnState(images=prepared.images, attachment_text=prepared.documents)
             except Exception as exc:
                 logger.warning(
                     "native_image_prepare_failed exception_category=%s", type(exc).__name__
                 )
-                return VisualTurnState(failed=True, error_code="resource_unavailable")
+                code = getattr(exc, "code", "resource_unavailable")
+                allowed = {
+                    "too_large",
+                    "video_limit",
+                    "unsupported_video",
+                    "video_unavailable",
+                    "document_unreadable",
+                    "frame_budget",
+                    "rate_limited",
+                    "queue_full",
+                    "image_capability_unavailable",
+                    "encrypted_document",
+                    "archive_expansion_limit",
+                    "unsafe_archive",
+                    "unsupported_archive",
+                    "unsupported_document",
+                    "binary_document",
+                }
+                safe_code = code if code in allowed else "resource_unavailable"
+                return VisualTurnState(
+                    failed=True,
+                    error_code=safe_code,
+                    attachment_text=(
+                        f"[附件读取失败，原因={safe_code}。未获得附件内容；说明此限制，不能声称已经查看或根据附件猜测。]"
+                        if has_video
+                        else ""
+                    ),
+                )
         if self._vision is None or not self._settings.vision_enabled:
             return VisualTurnState(failed=True, error_code="not_configured")
 

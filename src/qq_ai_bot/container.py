@@ -66,11 +66,11 @@ from qq_ai_bot.plugin_host.notification_repository import PluginNotificationRepo
 from qq_ai_bot.plugin_host.secrets import BoundSecretsFacade
 from qq_ai_bot.plugin_host.session_facade import BoundAgentSessionFacade
 from qq_ai_bot.plugin_host.storage import BoundStorageFacade
+from qq_ai_bot.services.attachment_inputs import AttachmentInputService
 from qq_ai_bot.services.autonomous_groups import AutonomousGroupService
 from qq_ai_bot.services.command_service import CommandService
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.effect_gate import ConversationEffectGate
-from qq_ai_bot.services.native_images import NativeImageService
 from qq_ai_bot.services.plugin_events import publish_notification
 from qq_ai_bot.services.processor import MessageProcessor
 from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
@@ -492,17 +492,17 @@ class ApplicationContainer:
             config=self.conversation_rollups.config,
         )
         self.processor = MessageProcessor(
-            native_images=(
-                NativeImageService(
+            attachment_inputs=(
+                AttachmentInputService(
                     self.media_resolver,
                     self.image_preprocessor,
                     concurrency=settings.vision_global_concurrency,
                     pending_limit=settings.vision_queue_max_pending,
                     timeout=settings.vision_queue_timeout_seconds,
                     max_bytes=settings.vision_max_prepared_bytes,
+                    images_enabled=ModelCapability.IMAGE_INPUT
+                    in self.models.capabilities(ModelTask.CHAT_AGENT),
                 )
-                if ModelCapability.IMAGE_INPUT in self.models.capabilities(ModelTask.CHAT_AGENT)
-                else None
             ),
             settings=settings,
             ledger=self.ledger,

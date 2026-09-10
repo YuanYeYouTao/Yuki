@@ -117,10 +117,10 @@ class MediaResolver:
             raise MediaResolutionError("get_image_failed", "图片资源查询失败") from exc
         return await self._resolve_get_image_payload(payload)
 
-    async def download_video(
+    async def download_attachment(
         self, reference: MediaReference, destination: Path, *, max_download_bytes: int
     ) -> None:
-        """Stream a video to a caller-owned temporary path using the same URL policy."""
+        """Stream event media to a caller-owned temporary path using the same URL policy."""
         bounded = MediaResolver(
             max_download_bytes=max_download_bytes,
             timeout_seconds=self._timeout_seconds,
