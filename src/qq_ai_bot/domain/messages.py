@@ -108,6 +108,7 @@ class MessageAttachment:
     emoji_id: str | None = None
     emoji_package_id: str | None = None
     key: str | None = field(default=None, repr=False)
+    filename: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)

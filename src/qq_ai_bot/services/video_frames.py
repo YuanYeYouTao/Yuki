@@ -15,9 +15,9 @@ from qq_ai_bot.services.vision_service import VisionProcessingError
 from qq_ai_bot.vision.models import DownloadedMedia
 
 
-async def _run(*args: str) -> bytes:
+async def _run(*args: str, env: dict[str, str] | None = None) -> bytes:
     process = await asyncio.create_subprocess_exec(
-        *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
+        *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, env=env
     )
     try:
         async with asyncio.timeout(15):

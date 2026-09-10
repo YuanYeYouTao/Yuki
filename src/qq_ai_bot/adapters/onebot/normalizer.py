@@ -117,6 +117,7 @@ def _attachment_from_segment(
         emoji_id=_optional_string(data.get("emoji_id")),
         emoji_package_id=_optional_string(data.get("emoji_package_id")),
         key=_optional_string(data.get("key")),
+        filename=_optional_string(data.get("name") or data.get("filename")),
     )
 
 

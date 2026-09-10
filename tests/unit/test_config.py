@@ -490,8 +490,6 @@ def test_relationship_defaults_have_no_daily_caps_and_keep_single_turn_bounds() 
     assert not hasattr(settings, "trust_daily_positive_cap")
     assert not hasattr(settings, "trust_daily_negative_cap")
 
-
-def test_relationship_configuration_is_validated() -> None:
     assert Settings.model_validate({"affection_max_auto_delta": 3})
     assert Settings.model_validate({"relationship_batch_max_turns": 11})
     with pytest.raises(ValidationError, match="less than or equal to 1"):
