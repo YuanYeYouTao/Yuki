@@ -40,6 +40,7 @@ from qq_ai_bot.automation.templates import TemplateError, resolve_templates
 from qq_ai_bot.config import Settings
 from qq_ai_bot.control_plane.principal import ControlPrincipal, PrincipalSource
 from qq_ai_bot.conversation.canonical_db_models import (
+    CanonicalConversationModel,
     PersonActiveRouteModel,
     SpaceActiveRouteModel,
 )
@@ -186,11 +187,17 @@ class AutomationExecutor:
         web_was_used = False
         conversation_key = f"automation:{automation.id}"
         conversation_id = None
+        conversation_generation = None
         try:
             async with self._repository._database.sessions() as session:
                 conversation_key, conversation_id = await bind_automation_conversation(
                     session, automation
                 )
+                if conversation_id is not None:
+                    conversation = await session.get(CanonicalConversationModel, conversation_id)
+                    if conversation is None:
+                        raise AutomationBindError("conversation_not_found")
+                    conversation_generation = conversation.generation
         except AutomationBindError as exc:
             return ExecutionResult(
                 status=RunStatus.BLOCKED,
@@ -230,6 +237,9 @@ class AutomationExecutor:
                         canonical_target_person_id=automation.canonical_target_person_id,
                         canonical_target_space_id=automation.canonical_target_space_id,
                         canonical_conversation_id=conversation_id,
+                        conversation_generation=conversation_generation,
+                        automation_script_hash=automation.script_hash,
+                        source_step_id=step.id,
                         revalidate_authority=revalidate_authority,
                     )
                     if self._gateway_factory is not None:

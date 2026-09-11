@@ -22,6 +22,10 @@ async def authority_between_attempts(
         nonlocal calls
         calls += 1
         assert context.revalidate_authority is not None
+        assert context.automation_script_hash == row.script_hash
+        assert context.source_step_id == row.script.steps[0].id
+        # This fixture's target has not had a conversation yet: never invent an epoch.
+        assert context.conversation_generation is None
         async with database.sessions() as session, session.begin():
             current = await session.get(AutomationModel, row.id)
             current.status = "paused"

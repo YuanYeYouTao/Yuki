@@ -339,6 +339,14 @@ class AutomationCapabilityHandlers:
             ),
             canonical_conversation_id=context.canonical_conversation_id,
         )
+        context = replace(
+            context,
+            authority=context.authority.model_copy(
+                update={"allowed_capabilities": runtime.allowed_capabilities}
+            ),
+            agent_instruction=str(arguments["instruction"]),
+            agent_context_profile=str(arguments.get("context_profile") or "none"),
+        )
         backend = _AutomationAgentBackend(self._registry, context)
         backend.main_contract = self._agent_runner.main_contract
         backend.short_state = (

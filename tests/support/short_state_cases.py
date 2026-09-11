@@ -309,6 +309,9 @@ async def run_short_state_cases(database, tmp_path, context):
     from tests.support.main_turn_cases import run_compiled_state_cases
 
     await guarded_agent_calls(handlers, context, provider)
+    from tests.support.automation_task_source_cases import automation_task_source_cases
+
+    await automation_task_source_cases(handlers, context, provider)
     await run_compiled_state_cases(handlers, state, provider, runtime, context)
 
     # A reset before dispatch costs no model call; a reset after the first

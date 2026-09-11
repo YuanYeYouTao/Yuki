@@ -132,6 +132,14 @@ class SocialAutomationAdapter:
                             "bot_user_id": context.bot_user_id,
                             "automation_id": context.automation_id,
                             "automation_run_id": context.automation_run_id,
+                            "script_hash": context.automation_script_hash,
+                            "source_step_id": context.source_step_id,
+                            "generation": context.conversation_generation,
+                            "instruction": context.agent_instruction,
+                            "context_profile": context.agent_context_profile,
+                            "automation_context": context.automation_context.model_dump(
+                                mode="json"
+                            ),
                             "delegated_authority": context.authority.delegated_authority.model_dump(
                                 mode="json"
                             ),
