@@ -61,4 +61,41 @@ async def test_sandbox_bounded_request_lifecycle_and_publication(tmp_path: Path)
     with pytest.raises(WorkspaceError, match="workspace_full"):
         store.publish_batch([("three", b"123")])
     assert len(store.list()["items"]) == 2
+    # Concurrent observers wake from the persisted terminal result. Polling does
+    # not consume or rerun the job, and abandoning a wait does not cancel it.
+    identity = result["run_id"]
+    manager.finish(identity, "running", {})
+    observers = [
+        asyncio.create_task(
+            manager.handle(
+                {
+                    "method": "get_code_run",
+                    "args": {"run_id": identity},
+                }
+            )
+        )
+        for _ in range(2)
+    ]
+    await asyncio.sleep(0)
+    assert not any(observer.done() for observer in observers)
+    manager.finish(identity, "succeeded", {"artifacts": ["image"]})
+    observed = await asyncio.gather(*observers)
+    assert all(r["status"] == "succeeded" and r["artifacts"] == ["image"] for r in observed)
+    assert all(r["pending"] is False for r in observed)
+    assert manager._waiters == {}
+    manager.finish(identity, "running", {})
+    waiting = await manager.wait_result(identity, wait_seconds=0.01)
+    assert waiting["pending"] is True and waiting["status"] == "running"
+    assert manager._waiters == {}
+    abandoned = asyncio.create_task(manager.wait_result(identity))
+    await asyncio.sleep(0)
+    abandoned.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await abandoned
+    assert manager.get(identity)["status"] == "running"
+    assert manager._waiters == {}
+    waiting_task = asyncio.create_task(manager.wait_result(identity))
+    await asyncio.sleep(0)
+    await manager.handle({"method": "cancel_code_run", "args": {"run_id": identity}})
+    assert (await waiting_task)["status"] == "cancelled"
     manager.db.close()

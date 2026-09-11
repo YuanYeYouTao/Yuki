@@ -42,6 +42,7 @@ class Manager:
         self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=4)
         self.current: str | None = None
         self.cancelled: set[str] = set()
+        self._waiters: dict[str, set[asyncio.Event]] = {}
         self.ready = False
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.root / "jobs.sqlite3")
@@ -77,6 +78,31 @@ class Manager:
             "UPDATE jobs SET state=?, result=? WHERE id=?", (state, json.dumps(result), identity)
         )
         self.db.commit()
+        for waiter in self._waiters.get(identity, ()):
+            waiter.set()
+
+    async def wait_result(self, identity: str, *, wait_seconds: float = 4.5) -> dict[str, Any]:
+        """Wait within the socket deadline; observation cancellation leaves the job alive."""
+        result = self.get(identity)
+        if result.get("error") or result.get("status") in TERMINAL:
+            return result
+        changed = asyncio.Event()
+        waiters = self._waiters.setdefault(identity, set())
+        waiters.add(changed)
+        try:
+            async with asyncio.timeout(wait_seconds):
+                while True:
+                    changed.clear()
+                    result = self.get(identity)
+                    if result.get("error") or result.get("status") in TERMINAL:
+                        return result
+                    await changed.wait()
+        except TimeoutError:
+            return self.get(identity)
+        finally:
+            waiters.discard(changed)
+            if not waiters:
+                self._waiters.pop(identity, None)
 
     def get(self, identity: str) -> dict[str, Any]:
         row = self.db.execute("SELECT * FROM jobs WHERE id=?", (identifier(identity),)).fetchone()
@@ -87,6 +113,7 @@ class Manager:
             "status": row["state"],
             **json.loads(row["result"]),
             "external_untrusted": True,
+            "pending": row["state"] in {"queued", "running"},
         }
 
     async def recover(self) -> None:
@@ -126,6 +153,8 @@ class Manager:
             return {"error": "invalid_arguments"}
         if method in {"get_code_run", "cancel_code_run"}:
             identity = identifier(args.get("run_id"))
+            if method == "get_code_run":
+                return await self.wait_result(identity)
             result = self.get(identity)
             if (
                 method == "cancel_code_run"
@@ -180,13 +209,7 @@ class Manager:
         )
         self.db.commit()
         self.queue.put_nowait(identity)
-        deadline = time.monotonic() + 4.5
-        while time.monotonic() < deadline:
-            result = self.get(identity)
-            if result.get("status") in TERMINAL:
-                return result
-            await asyncio.sleep(0.05)
-        return self.get(identity)
+        return await self.wait_result(identity)
 
     def docker_args(self, identity: str) -> tuple[str, ...]:
         directory = self.root / identifier(identity)

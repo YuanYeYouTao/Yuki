@@ -232,8 +232,9 @@ async def run_short_state_cases(database, tmp_path, context):
                 {
                     "ok": True,
                     "data": {
-                        "status": "running" if self.polls == 1 else "succeeded",
-                        "artifacts": [] if self.polls == 1 else ["downloaded-image"],
+                        "status": "running" if self.polls <= 3 else "succeeded",
+                        "pending": self.polls <= 3,
+                        "artifacts": [] if self.polls <= 3 else ["downloaded-image"],
                     },
                 }
             )
@@ -259,11 +260,13 @@ async def run_short_state_cases(database, tmp_path, context):
         )
 
     provider._responder = observe
-    result = await chat._agent_runner.run(initial, runtime, progress)
+    result = await chat._agent_runner.run(
+        initial, replace(runtime, max_tool_calls=5, max_model_requests=6), progress
+    )
     assert result.text == "image ready"
-    assert progress.polls == 2
-    assert result.tool_calls_used == 2
-    assert model_calls == 3
+    assert progress.polls == 4
+    assert result.tool_calls_used == 4
+    assert model_calls == 5
 
     # Real automation handler now composes through the main pipeline and shared
     # runner, without promoting its creator to a direct-message administrator.

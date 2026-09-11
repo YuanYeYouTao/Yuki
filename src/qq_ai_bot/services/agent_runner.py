@@ -663,7 +663,8 @@ class AgentRunner:
                 (call.function.name, self._tool_call_signature(call)[1], result)
                 for call, result, _was_executed in batch
             )
-            if fingerprint and fingerprint == previous_batch_fingerprint:
+            pending_work = any(self._tool_result_pending(result) for _, result, _ in batch)
+            if fingerprint and fingerprint == previous_batch_fingerprint and not pending_work:
                 repeated_batch_count += 1
             else:
                 repeated_batch_count = 0
@@ -889,7 +890,18 @@ class AgentRunner:
         return call.function.name, normalized
 
     @staticmethod
-    def _tool_result_reusable(result: str) -> bool:
+    def _tool_result_pending(result: str) -> bool:
+        try:
+            payload = json.loads(result)
+        except json.JSONDecodeError:
+            return False
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            return False
+        data = payload.get("data")
+        return isinstance(data, dict) and data.get("pending") is True
+
+    @classmethod
+    def _tool_result_reusable(cls, result: str) -> bool:
         try:
             payload = json.loads(result)
         except json.JSONDecodeError:
@@ -898,6 +910,7 @@ class AgentRunner:
             isinstance(payload, dict)
             and payload.get("ok") is True
             and payload.get("retryable") is not True
+            and not cls._tool_result_pending(result)
         )
 
     @staticmethod

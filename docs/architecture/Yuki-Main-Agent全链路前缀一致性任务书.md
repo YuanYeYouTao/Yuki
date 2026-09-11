@@ -244,3 +244,6 @@ ledger 继续是事实真源；投影快照是可重建、有版本的模型输�
 
 - P2 执行/发现边界：Runner 只将本次已声明工具交给执行后端，运行时新增工具返回 tool_not_declared；固定 manifest 下 request_tools 改为纯目录查询，不做 MCP 临时 hydration、不改变声明或 Memory 独占状态。Memory REQUESTABLE→独占阶段改在调用已经授权的写能力时发生，保留原状态机授权条件和批次副作用隔离。50 项相关测试、目录只读/未声明工具定向回归与类型检查通过。
 - 新待决项 D3：统一 Main Agent 是否只支持受控函数联网（native/mixed 配置明确拒绝），或将 Provider 原生联网作为显式合同例外。Provider 原生执行无法由本地 execute 拦截，不能同时以变动的原生声明实现按轮授权和全量固定声明。已向用户询问；尚未更改 native/mixed 配置行为。
+
+- 作业等待首批：Manager 的提交/查询共用最多 4.5 秒的事件等待，状态落库后唤醒所有查询者，不再按 50ms 轮询数据库；超时返回真实 pending 状态，取消观察不取消作业。Runner 对显式 pending 结果不做跨请求复用，也不将连续等待误判为无进展，原有总调用/轮次预算保留。62 项沙箱/自动化/聊天相关测试与类型检查通过，包含完成/超时/多观察者/取消及连续 pending 后成功场景。可靠跨轮接续仍未实现。
+- 部署补充：此项包含宿主 yuki-sandbox manager 代码，未来交付不能只更新 Bot 镜像后声称等待已上线。应先停止新的 Bot 提交并等待已有沙箱作业结束，备份 manager 代码和 jobs 数据库，再更新并重启 manager；Bot 和 manager 都需可回滚。不得通过重启丢弃正在运行的用户作业，SnowLuma/NapCat 继续保留。
