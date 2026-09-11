@@ -816,6 +816,11 @@ def test_fresh_baseline_reaches_current_head_with_final_integrity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import asyncio
+
+    from qq_ai_bot.conversation.projection_schema import PROJECTION_TRIGGERS_0054
+    from qq_ai_bot.persistence.schema_guard import CanonicalSchemaError, require_canonical_schema
+
     config = Config("alembic.ini")
     scripts = ScriptDirectory.from_config(config)
     assert scripts.get_bases() == ["0048"]
@@ -825,6 +830,16 @@ def test_fresh_baseline_reaches_current_head_with_final_integrity(
     _upgrade(path, monkeypatch)
     _assert_final_health(path, populated=False)
     _assert_orm_shape(path)
+
+    url = f"sqlite+aiosqlite:///{path.as_posix()}"
+    asyncio.run(require_canonical_schema(url))
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP TRIGGER prompt_projection_reset")
+    with pytest.raises(CanonicalSchemaError, match="projection invalidation trigger"):
+        asyncio.run(require_canonical_schema(url))
+    with sqlite3.connect(path) as connection:
+        connection.execute(PROJECTION_TRIGGERS_0054["prompt_projection_reset"])
+    asyncio.run(require_canonical_schema(url))
 
     old = tmp_path / "0050.db"
     _upgrade(old, monkeypatch, "0050")

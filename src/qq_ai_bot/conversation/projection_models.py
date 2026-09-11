@@ -2,9 +2,12 @@
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text, event, inspect
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.schema import MetaData
 
+from qq_ai_bot.conversation.projection_schema import PROJECTION_TRIGGERS_0054
 from qq_ai_bot.persistence.models import Base
 
 
@@ -25,6 +28,18 @@ class PromptProjectionModel(Base):
     contract_revision: Mapped[str] = mapped_column(String(64), nullable=False)
     revision: Mapped[int] = mapped_column(Integer, nullable=False)
     rebuild_reason: Mapped[str] = mapped_column(String(32), nullable=False)
+    invalidated_reason: Mapped[str | None] = mapped_column(String(32))
     payload_json: Mapped[str] = mapped_column(Text, nullable=False)
     byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+@event.listens_for(Base.metadata, "after_create")
+def install_projection_triggers(
+    metadata: MetaData, connection: Connection, **kwargs: object
+) -> None:
+    if connection.dialect.name == "sqlite" and inspect(connection).has_table("prompt_projections"):
+        for statement in PROJECTION_TRIGGERS_0054.values():
+            connection.exec_driver_sql(
+                statement.replace("CREATE TRIGGER", "CREATE TRIGGER IF NOT EXISTS", 1)
+            )

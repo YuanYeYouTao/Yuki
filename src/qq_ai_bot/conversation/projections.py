@@ -23,6 +23,7 @@ REBUILD_REASONS = frozenset(
         "contract_changed",
         "read_scope_changed",
         "deleted_event",
+        "source_changed",
         "protocol_changed",
     }
 )
@@ -76,12 +77,21 @@ class PromptProjectionRepository:
                 )
                 .where(
                     PromptProjectionModel.view_key == view_key,
+                    PromptProjectionModel.invalidated_reason.is_(None),
                     PromptProjectionModel.generation == CanonicalConversationModel.generation,
                     PromptProjectionModel.starts_after_event_id
                     == CanonicalConversationModel.starts_after_event_id,
                 )
             )
             return _snapshot(row) if row else None
+
+    async def invalidation_reason(self, view_key: str) -> str | None:
+        async with self.database.sessions() as session:
+            return await session.scalar(
+                select(PromptProjectionModel.invalidated_reason).where(
+                    PromptProjectionModel.view_key == view_key,
+                )
+            )
 
     async def commit(
         self,
@@ -135,12 +145,20 @@ class PromptProjectionRepository:
                     and (old.generation, old.starts_after_event_id)
                     != (generation, starts_after_event_id)
                 )
+                invalidated_rebuild = (
+                    old.invalidated_reason is not None
+                    and rebuild_reason == old.invalidated_reason
+                    and expected_epoch is None
+                    and expected_revision == 0
+                )
                 if old.conversation_id != conversation_id or (
-                    not stale_reset
+                    not (stale_reset or invalidated_rebuild)
                     and (old.epoch_id, old.revision) != (expected_epoch, expected_revision)
                 ):
                     raise ProjectionConflict("projection revision changed")
                 if rebuild_reason is None:
+                    if old.invalidated_reason is not None:
+                        raise ProjectionConflict("invalidated projection requires a new epoch")
                     if (
                         old.generation,
                         old.starts_after_event_id,
@@ -179,6 +197,7 @@ class PromptProjectionRepository:
             row.epoch_id = str(uuid4()) if rebuild_reason else row.epoch_id
             row.revision = 1 if rebuild_reason else row.revision + 1
             row.rebuild_reason = rebuild_reason or row.rebuild_reason
+            row.invalidated_reason = None
             row.payload_json, row.byte_size = payload, size
             row.updated_at = datetime.now(UTC)
             session.add(row)

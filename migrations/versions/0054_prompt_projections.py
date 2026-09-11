@@ -3,6 +3,8 @@
 import sqlalchemy as sa
 from alembic import op
 
+from qq_ai_bot.conversation.projection_schema import PROJECTION_TRIGGERS_0054
+
 revision = "0054"
 down_revision = "0053"
 branch_labels = None
@@ -26,6 +28,7 @@ def upgrade() -> None:
         sa.Column("contract_revision", sa.String(64), nullable=False),
         sa.Column("revision", sa.Integer(), nullable=False),
         sa.Column("rebuild_reason", sa.String(32), nullable=False),
+        sa.Column("invalidated_reason", sa.String(32)),
         sa.Column("payload_json", sa.Text(), nullable=False),
         sa.Column("byte_size", sa.Integer(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
@@ -34,8 +37,12 @@ def upgrade() -> None:
     op.create_index(
         "ix_prompt_projections_conversation_id", "prompt_projections", ["conversation_id"]
     )
+    for statement in PROJECTION_TRIGGERS_0054.values():
+        op.execute(statement)
 
 
 def downgrade() -> None:
+    for name in PROJECTION_TRIGGERS_0054:
+        op.execute(f"DROP TRIGGER {name}")
     op.drop_index("ix_prompt_projections_conversation_id", table_name="prompt_projections")
     op.drop_table("prompt_projections")

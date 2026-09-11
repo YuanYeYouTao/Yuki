@@ -8,6 +8,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
+from qq_ai_bot.conversation.projection_schema import PROJECTION_TRIGGERS_0054
+
 CANONICAL_SCHEMA_REVISION = "0054"
 
 _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
@@ -22,6 +24,7 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "contract_revision",
             "revision",
             "rebuild_reason",
+            "invalidated_reason",
             "payload_json",
             "byte_size",
             "updated_at",
@@ -161,5 +164,15 @@ async def require_canonical_schema(database_url: str) -> None:
             foreign_key_rows = await connection.execute(text("PRAGMA foreign_key_check"))
             if foreign_key_rows.first() is not None:
                 raise CanonicalSchemaError("database canonical foreign-key integrity check failed")
+            trigger_rows = await connection.execute(
+                text("SELECT name, sql FROM sqlite_master WHERE type='trigger'")
+            )
+            triggers = {str(row[0]): str(row[1]) for row in trigger_rows}
+            for name, expected in PROJECTION_TRIGGERS_0054.items():
+                actual = triggers.get(name, "").replace("IF NOT EXISTS ", "")
+                if " ".join(actual.split()) != " ".join(expected.split()):
+                    raise CanonicalSchemaError(
+                        "database projection invalidation trigger is missing or changed"
+                    )
     finally:
         await engine.dispose()

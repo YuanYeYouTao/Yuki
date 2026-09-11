@@ -101,3 +101,6 @@ async def projection_storage_cases(database, conversation_id):
     assert sum(isinstance(result, ProjectionCapacityError) for result in results) == 1
     assert sum(isinstance(result, ProjectionSnapshot) for result in results) == 1
     await tiny.invalidate(conversation_id)
+    from tests.support.projection_invalidation_cases import projection_invalidation_cases
+
+    await projection_invalidation_cases(database, repository, args)
