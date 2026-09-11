@@ -115,7 +115,10 @@ class DeepSeekResponsesProvider(LLMProvider):
                         attempt.retry_state.attempt_number,
                     )
                     self._wire_observer.observe(
-                        payload, "responses", chain_id=request.request_chain_id
+                        payload,
+                        "responses",
+                        chain_id=request.request_chain_id,
+                        provider=self.provider_name,
                     )
                     response = await self._post(payload)
         except httpx.TimeoutException as exc:

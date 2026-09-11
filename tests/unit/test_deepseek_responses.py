@@ -464,6 +464,37 @@ async def test_function_output_follows_cumulative_continuation(caplog) -> None:
     assert observer.observe(without_tools, "responses", chain_id="independent")[
         "changed_fields"
     ] == ["tools"]
+    assert len({item["contract_revision"] for item in observations}) == 1
+    assert [item["contract_change"] for item in observations] == [
+        "first_observation",
+        "unchanged",
+        "unchanged",
+    ]
+    native = {
+        **requests[0],
+        "tools": [*requests[0]["tools"], {"type": "web_search"}],
+        "tool_choice": "auto",
+    }
+    first = observer.observe(native, "responses", chain_id="native", provider="openai")
+    final = observer.observe(
+        {**native, "tool_choice": "none"}, "responses", chain_id="native", provider="openai"
+    )
+    assert final["contract_revision"] == first["contract_revision"]
+    assert final["contract_change"] == "unchanged"
+    assert final["execution_controls_changed"] is True
+    assert final["changed_fields"] == ["settings"]
+    for field, value in (
+        ("model", "another-model"),
+        ("instructions", "new static contract"),
+        ("tools", requests[0]["tools"]),
+        ("max_output_tokens", 999),
+    ):
+        change = observer.observe({**native, field: value}, "responses", provider="openai")
+        assert change["contract_revision"] != first["contract_revision"], field
+    isolated = observer.observe(native, "responses", chain_id="native", provider="deepseek")
+    assert isolated["contract_change"] == "first_observation"
+    assert isolated["contract_revision"] != first["contract_revision"]
+    assert "new static contract" not in json.dumps(change)
 
 
 @pytest.mark.asyncio

@@ -172,7 +172,12 @@ class OpenAICompatibleProvider(LLMProvider):
             payload["reasoning_effort"] = request.reasoning_effort.value
         if request.response_format is not None:
             payload["response_format"] = request.response_format
-        self._wire_observer.observe(payload, "chat_completions", chain_id=request.request_chain_id)
+        self._wire_observer.observe(
+            payload,
+            "chat_completions",
+            chain_id=request.request_chain_id,
+            provider="openai_compatible",
+        )
         response = await self._client.post(
             "/chat/completions",
             headers={"Authorization": f"Bearer {self._api_key}"},

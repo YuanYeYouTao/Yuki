@@ -30,6 +30,7 @@
 
 ## 硬断言与结果
 
+- 最终 HTTP observer 计算 `contract_revision`（格式版本 1）：适配器 Provider 标签、协议、实际静态指令、完整函数/原生声明及固定请求设置共同决定指纹，保留 JSON 键顺序。输入追加不改变合同；`tool_choice` 单独形成执行控制指纹，收尾 auto→none 仍保留相同合同。原 `settings_hash/changed_fields` 继续报告控制字段的真实 wire 变化，不掩盖请求差异。Provider 不同的链不混比；这些日志仍只有哈希和分类，没有正文。
 - 同协议内，各入口的固定指令、完整工具清单、模型和其他固定 HTTP 字段相同；比较保留 JSON 字段插入顺序，不仅使用忽略键顺序的 dict 相等。
 - 每一对相邻请求的历史/input 前缀完全相等；模型输出和工具结果只追加到尾部。
 - 成功写入有 `ok=true` 的真实 ShortState 回执。纯生成尝试发送返回 `capability_not_allowed`，绑定的发送处理器调用次数为零。
