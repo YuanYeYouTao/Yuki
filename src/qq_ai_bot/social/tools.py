@@ -7,13 +7,24 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
     selector: dict[str, object] = {
         "target_id": {"type": "string", "description": "find_contacts 返回的 canonical ID"},
         "display_name": {"type": "string", "maxLength": 128},
-        "subject_ref": {"type": "string", "description": "真实当前发送者、mention 或 reply 引用"},
+        "subject_ref": {
+            "type": "string",
+            "description": (
+                "当前发送者用 current_speaker；也可用 mentioned_user 或 replied_message_author"
+            ),
+        },
     }
     message: dict[str, object] = {
         **selector,
         "text": {"type": "string", "maxLength": 4000},
         "artifact_id": {"type": "string", "description": "工作区对象 ID，不是路径或 URL"},
-        "attachment_kind": {"type": "string", "enum": ["image", "file"]},
+        "attachment_kind": {
+            "type": "string",
+            "enum": ["image", "file"],
+            "description": (
+                "提供 artifact_id 时必填。普通文件用 file，且不填写 text；图片用 image。"
+            ),
+        },
     }
 
     def tool(
@@ -42,7 +53,9 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
         ),
         tool(
             "send_private_message",
-            "Yuki 可自主私聊有真实互动且路由可用的人。目标只选一种；uncertain 不要重发。",
+            "回复当前私聊对象使用 subject_ref=current_speaker，经当前接收账号发送；"
+            "联系其他人须主动路由可用。target_id 只接受 canonical UUID，不接受 QQ 号。"
+            "目标只选一种；uncertain 不要重发。",
             message,
         ),
         tool(

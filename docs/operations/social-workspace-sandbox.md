@@ -8,10 +8,21 @@ subject to canonical target policies and the actual delegated capability grant.
 ## Social operations
 
 `find_contacts` resolves names or canonical IDs. Only people with actual inbound
-interaction qualify; a group member-list entry alone is insufficient. Sending needs
+interaction qualify; a group member-list entry alone is insufficient. Proactive sending needs
 an existing enabled target and unpaused active route. Group sends also require
 `autonomous_enabled`. These tools do not change account, repair routes or add friends.
 NapCat and SnowLuma use the same explicit social-operation interface.
+
+Replies to the current private sender (text, image or file) instead use the proven
+inbound Presence. The adapter supplies the event reference, never model arguments;
+the ledger must match the conversation, private human sender and ingress Presence.
+This does not unpause the proactive route. A reconnection may use only the same
+Presence; there is no fallback to another account. Other targets and automation
+still require their active route. Target enablement, idempotency and tool rate
+limits apply to both paths, with a final connection check before execution.
+Use `subject_ref=current_speaker` for the current sender; `target_id` is a canonical
+UUID, not a QQ number. Attachment IDs require `attachment_kind=image|file`.
+Validation/route failures do not delete already generated workspace artifacts.
 
 `send_private_message` and `send_group_message` accept text or workspace artifacts.
 Images may include text. File uploads are one operation and cannot include a separate

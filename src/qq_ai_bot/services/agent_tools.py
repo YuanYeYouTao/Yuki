@@ -1052,9 +1052,21 @@ class AgentToolService:
                         )
                         return self._result(data=social_result)
                     except SocialError as exc:
-                        return self._result(
-                            error=str(exc), detail="社交操作未执行或结果不确定，请勿盲重试"
-                        )
+                        detail = {
+                            "invalid_target_id": (
+                                "target_id 必须是联系人查询返回的 UUID；"
+                                "当前私聊用 subject_ref=current_speaker"
+                            ),
+                            "invalid_message_arguments": (
+                                "检查 text、artifact_id 和 attachment_kind；"
+                                "文件必须指定 file 类型。"
+                                "已生成的工作区文件仍保留"
+                            ),
+                            "route_paused": (
+                                "目标主动联系路由已暂停，尚未发送；已生成的工作区文件仍保留"
+                            ),
+                        }.get(str(exc), "社交操作未执行或结果不确定，请勿盲重试")
+                        return self._result(error=str(exc), detail=detail)
                 if name in {"get_person_memories", "get_group_memories", "get_self_memories"}:
                     self._log_memory_read_intent(arguments, parse_memory_tool_intent(arguments))
                 if name == "get_my_capabilities":

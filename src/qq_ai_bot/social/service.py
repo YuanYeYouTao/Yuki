@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID
@@ -19,6 +19,7 @@ from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
     IdentityBindingModel,
+    PresenceModel,
     SpaceBindingModel,
 )
 from qq_ai_bot.identity.routing import PresenceRouter, ResolvedSend
@@ -38,6 +39,9 @@ class SocialContext:
     conversation_id: str
     person_refs: dict[str, str] = field(default_factory=dict)
     space_id: str | None = None
+    # Backend-only proof from the current private inbound event, never tool arguments.
+    reply_message_id: str | None = None
+    reply_presence_id: str | None = None
 
 
 class SocialService:
@@ -191,6 +195,51 @@ class SocialService:
                 raise SocialError("binding_unavailable")
         return result
 
+    async def send_route(self, target: SocialTarget, context: SocialContext) -> ResolvedSend:
+        if target.kind != "person" or context.reply_message_id is None:
+            return await self.route(target)
+        async with self.database.sessions() as session:
+            event = await session.scalar(
+                select(ChatEventModel).where(
+                    ChatEventModel.canonical_conversation_id == context.conversation_id,
+                    ChatEventModel.platform_message_id == context.reply_message_id,
+                    ChatEventModel.ingress_presence_id == context.reply_presence_id,
+                    ChatEventModel.scope_type == "private",
+                    ChatEventModel.direction == "inbound",
+                    ChatEventModel.author_kind == "person",
+                )
+            )
+            if event is None:
+                raise SocialError("invalid_reply_context")
+            if event.author_person_id != str(target.id):
+                return await self.route(target)
+            presence = await session.get(PresenceModel, context.reply_presence_id)
+            binding = await session.scalar(
+                select(IdentityBindingModel).where(
+                    IdentityBindingModel.person_id == str(target.id),
+                    IdentityBindingModel.platform == "qq",
+                    IdentityBindingModel.external_account_id == event.sender_user_id,
+                    IdentityBindingModel.status == "active",
+                )
+            )
+            if presence is None or not presence.enabled or binding is None:
+                raise SocialError("reply_identity_unavailable")
+            account, binding_id, peer = (
+                presence.external_account_id,
+                binding.id,
+                binding.external_account_id,
+            )
+        route = await self.router.resolve_send_for_account(account)
+        if route.presence_id != context.reply_presence_id:
+            raise SocialError("reply_presence_changed")
+        return replace(
+            route,
+            binding_id=binding_id,
+            external_target_id=peer,
+            kind="private",
+            route_generation=0,
+        )
+
     async def execute(
         self, name: str, args: dict[str, Any], context: SocialContext
     ) -> dict[str, Any]:
@@ -247,7 +296,7 @@ class SocialService:
         if name == "poke_person" and args.get("space_id"):
             route_target = SocialTarget(kind="space", id=UUID(str(args["space_id"])))
         await self.check_target(route_target, sending=True)
-        route = await self.route(route_target)
+        route = await self.send_route(route_target, context)
         params: dict[str, Any]
         if name == "poke_person":
             async with self.database.sessions() as session:
@@ -358,7 +407,7 @@ class SocialService:
             await self.check_target(target, sending=name.startswith("send_"))
             if route_target is not None:
                 await self.check_target(route_target, sending=True)
-            fresh = await self.route(route_target or target)
+            fresh = await self.send_route(route_target or target, context)
             if (
                 fresh.presence_id,
                 fresh.binding_id,

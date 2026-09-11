@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy import select
 
 from qq_ai_bot.capabilities.invocation import current_invocation
@@ -53,5 +54,14 @@ async def invoke_social(
         conversation_id=conversation_id,
         person_refs={key: by_account[value] for key, value in refs.items() if value in by_account},
         space_id=runtime.space_id or getattr(inbound, "space_id", None),
+        reply_message_id=inbound.message_id if inbound.scope_type == "private" else None,
+        reply_presence_id=inbound.presence_id if inbound.scope_type == "private" else None,
     )
-    return await service.execute(name, arguments, context)
+    try:
+        return await service.execute(name, arguments, context)
+    except ValidationError as exc:
+        # Field names only: never expose input values or raw Pydantic payloads.
+        fields = {str(error["loc"][0]) for error in exc.errors() if error["loc"]}
+        raise SocialError(
+            "invalid_target_id" if "id" in fields else "invalid_message_arguments"
+        ) from None

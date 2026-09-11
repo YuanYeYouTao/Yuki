@@ -278,3 +278,39 @@ async def test_social_gateway_delivery_and_fail_closed(database: Database, tmp_p
             "send_private_message", args, SocialContext("turn", "paused", conversation_id)
         )
     assert len(bot.calls) == count
+    # A paused proactive route does not block a proven reply to the private sender.
+    from dataclasses import replace
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import update
+
+    from qq_ai_bot.social.db_models import SocialOperationModel
+
+    async with database.sessions() as session, session.begin():
+        await session.execute(
+            update(SocialOperationModel).values(updated_at=datetime.now(UTC) - timedelta(minutes=2))
+        )
+    reply_context = SocialContext(
+        "reply-turn",
+        "reply-file",
+        conversation_id,
+        reply_message_id="1",
+        reply_presence_id=presence,
+    )
+    replied = await service.execute(
+        "send_private_message",
+        {"target_id": person, "artifact_id": artifact["artifact_id"], "attachment_kind": "file"},
+        reply_context,
+    )
+    assert replied["status"] == "succeeded" and bot.calls[-1][0] == "upload_private_file"
+    async with database.sessions() as session:
+        paused = await session.get(PersonActiveRouteModel, person)
+        assert paused.paused
+    with pytest.raises(SocialError, match="invalid_reply_context"):
+        await service.send_route(
+            SocialTarget(kind="person", id=UUID(person)),
+            replace(reply_context, reply_message_id="forged"),
+        )
+    registry.disconnect(bot)
+    with pytest.raises(Exception, match="disconnected"):
+        await service.send_route(SocialTarget(kind="person", id=UUID(person)), reply_context)
