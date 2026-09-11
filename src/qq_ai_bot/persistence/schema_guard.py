@@ -8,9 +8,25 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-CANONICAL_SCHEMA_REVISION = "0053"
+CANONICAL_SCHEMA_REVISION = "0054"
 
 _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
+    "prompt_projections": frozenset(
+        {
+            "view_key",
+            "conversation_id",
+            "generation",
+            "starts_after_event_id",
+            "epoch_id",
+            "context_key",
+            "contract_revision",
+            "revision",
+            "rebuild_reason",
+            "payload_json",
+            "byte_size",
+            "updated_at",
+        }
+    ),
     "social_operation_receipts": frozenset(
         {
             "id",

@@ -232,6 +232,9 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             bot_user_id="9999", platform_message_id=f"wire-{protocol.value}-private"
         )
         assert observed is not None
+        from tests.support.projection_cases import projection_storage_cases
+
+        await projection_storage_cases(database, observed.canonical_conversation_id)
         bound_message = InboundMessage(
             message_id=observed.platform_message_id,
             event_type="message:test",
