@@ -5,11 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from dataclasses import replace
 from typing import Any
 
 from qq_ai_bot.domain.messages import ChatMessage, ChatTool
-from qq_ai_bot.prompting.serializer import DYNAMIC_ENVELOPE_HEADER
+from qq_ai_bot.prompting.serializer import DYNAMIC_ENVELOPE_HEADER, append_dynamic_item
 from qq_ai_bot.workspace.store import WorkspaceError, WorkspaceStore
 
 STATE_TOOL = ChatTool(
@@ -127,30 +126,4 @@ class ShortState:
         rows = await asyncio.to_thread(self.snapshot)
         if not any(row["text"] for row in rows):
             return messages
-        item = self.envelope(rows)
-        # Only the current input changes; history and system instructions stay byte-identical.
-        index = next(
-            (i for i in range(len(messages) - 1, -1, -1) if messages[i].role == "user"), None
-        )
-        if index is None:
-            return (
-                *messages,
-                ChatMessage(role="user", content=DYNAMIC_ENVELOPE_HEADER + encode([item])),
-            )
-        content = messages[index].content or ""
-        if content.startswith(DYNAMIC_ENVELOPE_HEADER):
-            items, end = json.JSONDecoder().raw_decode(content[len(DYNAMIC_ENVELOPE_HEADER) :])
-            position = next(
-                (i for i, v in enumerate(items) if v.get("id") == "runtime.time"), len(items)
-            )
-            items.insert(position, item)
-            content = (
-                DYNAMIC_ENVELOPE_HEADER
-                + encode(items)
-                + content[len(DYNAMIC_ENVELOPE_HEADER) + end :]
-            )
-        else:
-            content = DYNAMIC_ENVELOPE_HEADER + encode([item]) + "\n\n" + content
-        updated = list(messages)
-        updated[index] = replace(messages[index], content=content)
-        return tuple(updated)
+        return append_dynamic_item(messages, self.envelope(rows))

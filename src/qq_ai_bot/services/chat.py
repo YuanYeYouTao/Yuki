@@ -113,6 +113,7 @@ from qq_ai_bot.persistence.repositories import (
     WebSearchSourceRepository,
 )
 from qq_ai_bot.persistence.repository_records import EventRecord
+from qq_ai_bot.prompting.serializer import append_dynamic_item
 from qq_ai_bot.runtime.authority import TurnAuthority
 from qq_ai_bot.runtime.contracts import DeliverySummary
 from qq_ai_bot.runtime.delivery import DeliveryStatus
@@ -172,11 +173,7 @@ _EffectResult = TypeVar("_EffectResult")
 _ARTIFACT_PROVIDER_ID = "artifacts"
 _ARTIFACT_READER_NAME = "read_tool_artifact"
 _SET_REPLY_TARGET_NAME = "set_reply_target"
-_MEMORY_MUTATION_EXECUTION_CONTRACT = (
-    "本轮是后端授权的长期记忆变更终端轮次。必须先调用当前唯一暴露的长期记忆写能力，"
-    "并严格以真实工具回执为准；不得直接用正文确认、模拟或承诺变更。定位失败时也必须"
-    "保留真实失败回执，不得改用管理员能力。本轮不继续处理其他问答。"
-)
+
 _SET_REPLY_TARGET_TOOL = ChatTool(
     name=_SET_REPLY_TARGET_NAME,
     description=(
@@ -198,12 +195,14 @@ def _with_memory_mutation_contract(
 ) -> tuple[ChatMessage, ...]:
     if not exclusive_write:
         return messages
-    if not messages:
-        return (ChatMessage(role="system", content=_MEMORY_MUTATION_EXECUTION_CONTRACT),)
-    return (
-        *messages[:-1],
-        ChatMessage(role="system", content=_MEMORY_MUTATION_EXECUTION_CONTRACT),
-        messages[-1],
+    return append_dynamic_item(
+        messages,
+        {
+            "id": "runtime.memory_mutation",
+            "channel": "runtime",
+            "trust": "trusted",
+            "data": {"exclusive_write": True},
+        },
     )
 
 
@@ -1931,19 +1930,14 @@ class ChatService:
             )
             scheduled_automation_allowed = bool(scheduled_automation_intent and not exclusive_write)
             if scheduled_automation_allowed:
-                messages = (
-                    *messages[:-1],
-                    ChatMessage(
-                        role="system",
-                        content=(
-                            "当前消息可能涉及未来触发任务。如果需要创建定时任务，先用 "
-                            "request_tools 加载 automation_create，再调用它。"
-                            "如果只是当前查询、列举、讨论或无需持久化，则不要创建。"
-                            "只有 automation_create 返回 confirmation=persisted 和真实 "
-                            "automation_id 后，才能声称任务已经创建。"
-                        ),
-                    ),
-                    messages[-1],
+                messages = append_dynamic_item(
+                    messages,
+                    {
+                        "id": "runtime.automation_intent",
+                        "channel": "runtime",
+                        "trust": "trusted",
+                        "data": {"scheduled_automation_intent": True},
+                    },
                 )
             messages = _with_memory_mutation_contract(messages, exclusive_write)
             gateway = (

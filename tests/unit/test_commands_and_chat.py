@@ -190,16 +190,36 @@ def test_capability_view_owns_first_round_memory_scope() -> None:
 
 
 def test_only_mutation_access_appends_the_write_receipt_contract() -> None:
-    messages = (ChatMessage(role="user", content="更新测试配置"),)
+    from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
+    from qq_ai_bot.prompting.contracts import CORE_CONTRACT
+    from qq_ai_bot.prompting.serializer import append_dynamic_item, strip_dynamic_prefix
 
-    mutation_messages = _with_memory_mutation_contract(messages, True)
-
-    assert len(mutation_messages) == 2
-    assert mutation_messages[-1] is messages[-1]
-    assert mutation_messages[-2].role == "system"
-    assert "真实工具回执" in (mutation_messages[-2].content or "")
-    assert "管理员能力" in (mutation_messages[-2].content or "")
-    assert _with_memory_mutation_contract(messages, False) is messages
+    for history in ((), (ChatMessage(role="assistant", content="past"),)):
+        messages = (
+            ChatMessage(role="system", content=CORE_CONTRACT),
+            *history,
+            ChatMessage(role="user", content="更新测试配置"),
+        )
+        mutation_messages = _with_memory_mutation_contract(messages, True)
+        assert mutation_messages[:-1] == messages[:-1]
+        assert strip_dynamic_prefix(mutation_messages[-1].content) == messages[-1].content
+        assert '"exclusive_write":true' in mutation_messages[-1].content
+        scheduled = append_dynamic_item(
+            mutation_messages,
+            {
+                "id": "runtime.automation_intent",
+                "channel": "runtime",
+                "trust": "trusted",
+                "data": {"scheduled_automation_intent": True},
+            },
+        )
+        # No-history and existing-history paths retain exactly the same instructions.
+        for variant in (messages, mutation_messages, scheduled):
+            instructions, _ = DeepSeekResponsesProvider._convert_messages(variant)
+            assert instructions == CORE_CONTRACT
+        assert "真实工具回执" in CORE_CONTRACT
+        assert "管理员能力" in CORE_CONTRACT
+        assert _with_memory_mutation_contract(messages, False) is messages
 
 
 @pytest.mark.parametrize(
