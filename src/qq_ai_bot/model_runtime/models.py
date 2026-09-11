@@ -107,9 +107,11 @@ class ModelProfile(_FrozenModel):
             )
         if self.protocol is ModelProtocol.RESPONSES and self.provider.casefold() not in {
             "deepseek",
+            "openai",
+            "openai_compatible",
             "fake",
         }:
-            raise ValueError("responses protocol is currently supported only for deepseek")
+            raise ValueError("responses protocol requires a supported Responses provider")
         return self
 
 

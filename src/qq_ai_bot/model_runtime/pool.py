@@ -11,6 +11,10 @@ from qq_ai_bot.llm.base import LLMConfigurationError, LLMProvider
 from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
+from qq_ai_bot.llm.openai_responses import (
+    OpenAICompatibleResponsesProvider,
+    OpenAIResponsesProvider,
+)
 from qq_ai_bot.model_runtime.models import ModelProfile, ModelProtocol
 
 
@@ -75,8 +79,17 @@ class ModelClientPool:
                     client=connection_pool,
                 )
             else:
-                raise LLMConfigurationError(
-                    f"model profile {profile.id} uses an unsupported responses provider"
+                response_provider = (
+                    OpenAIResponsesProvider
+                    if profile.provider.casefold() == "openai"
+                    else OpenAICompatibleResponsesProvider
+                )
+                provider = response_provider(
+                    base_url=profile.base_url,
+                    api_key=api_key,
+                    timeout_seconds=profile.timeout_seconds,
+                    max_retries=profile.max_retries,
+                    client=connection_pool,
                 )
         else:
             raise LLMConfigurationError(

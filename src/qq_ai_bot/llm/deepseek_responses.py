@@ -60,6 +60,8 @@ _CONTINUATION_TYPES = frozenset(
 class DeepSeekResponsesProvider(LLMProvider):
     """Translate Yuki's compatibility models to DeepSeek Responses items."""
 
+    provider_name = "deepseek"
+
     def __init__(
         self,
         *,
@@ -133,11 +135,12 @@ class DeepSeekResponsesProvider(LLMProvider):
         )
         failed = sum(event.status is NativeToolStatus.FAILED for event in parsed.native_tool_events)
         logger.info(
-            "responses_request_completed provider=deepseek protocol=responses success=true "
+            "responses_request_completed provider=%s protocol=responses success=true "
             "response_status=%s latency_seconds=%.3f input_tokens=%s output_tokens=%s "
             "reasoning_tokens=%s cached_tokens=%s function_call_count=%d "
             "native_web_used=%s native_action_count=%d native_completed_count=%d "
             "native_failed_count=%d citation_count=%d incomplete_reason=%s",
+            self.provider_name,
             parsed.status.value,
             latency,
             parsed.prompt_tokens,
@@ -192,8 +195,9 @@ class DeepSeekResponsesProvider(LLMProvider):
         if request.response_format is not None:
             payload["text"] = {"format": request.response_format}
         logger.info(
-            "responses_request_started provider=deepseek protocol=responses model=%s "
+            "responses_request_started provider=%s protocol=responses model=%s "
             "native_tool_types=%s function_tool_count=%d continuation=%s",
+            self.provider_name,
             request.model,
             ",".join(tool.type.value for tool in request.native_tools) or "none",
             len(request.tools),
@@ -265,7 +269,7 @@ class DeepSeekResponsesProvider(LLMProvider):
                 items = list(
                     cls._merge_continuation(
                         ProviderContinuation(
-                            provider="deepseek", protocol="responses", payload=tuple(items)
+                            provider=cls.provider_name, protocol="responses", payload=tuple(items)
                         ),
                         (item,),
                         [],
@@ -277,17 +281,17 @@ class DeepSeekResponsesProvider(LLMProvider):
                 _, converted = cls._convert_messages((item,), leading_instructions=False)
                 items.extend({"type": "message", **value} for value in converted)
         return ProviderContinuation(
-            provider="deepseek",
+            provider=cls.provider_name,
             protocol="responses",
             payload=tuple(items),
             profile_id=request.continuation.profile_id if request.continuation else "",
         )
 
-    @staticmethod
-    def _continuation_items(continuation: ProviderContinuation | None) -> list[dict[str, Any]]:
+    @classmethod
+    def _continuation_items(cls, continuation: ProviderContinuation | None) -> list[dict[str, Any]]:
         if continuation is None:
             return []
-        if continuation.provider != "deepseek" or continuation.protocol != "responses":
+        if continuation.provider != cls.provider_name or continuation.protocol != "responses":
             raise LLMInvalidRequestError("continuation belongs to another provider or protocol")
         if not isinstance(continuation.payload, tuple) or not all(
             isinstance(item, dict) for item in continuation.payload
@@ -408,7 +412,7 @@ class DeepSeekResponsesProvider(LLMProvider):
         if not content and not calls and response_status is ModelResponseStatus.COMPLETED:
             raise LLMEmptyResponseError("provider returned no final message or function call")
         continuation = ProviderContinuation(
-            provider="deepseek",
+            provider=cls.provider_name,
             protocol="responses",
             payload=cls._merge_continuation(previous, function_outputs, continuation_output),
         )

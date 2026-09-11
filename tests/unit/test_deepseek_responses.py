@@ -59,6 +59,9 @@ def _request(**overrides: object) -> ChatRequest:
 
 @pytest.mark.asyncio
 async def test_request_mapping_is_responses_native_and_flat() -> None:
+    from tests.support.openai_responses_cases import standard_responses_cases
+
+    await standard_responses_cases()
     image = ChatImage(data_url="data:image/png;base64,aW1hZ2U=")
     instructions, parts = DeepSeekResponsesProvider._convert_messages(
         (

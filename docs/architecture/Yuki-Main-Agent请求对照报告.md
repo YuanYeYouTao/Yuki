@@ -40,6 +40,12 @@
 
 ## 尚未证明的范围
 
+### D3 标准 Responses 适配准备
+
+客户端池和 ModelProfile 校验原先只允许 DeepSeek Responses。现已为 `openai` 与 `openai_compatible` 接通独立标准 Responses 适配，保留原生工具及 `tool_choice`，采用 `store=false` 和加密 reasoning continuation；不改变 DeepSeek 省略 `tool_choice` 的既有行为。Provider 标签参与续链校验，不把兼容端点的续链标成 DeepSeek 或 OpenAI。
+
+依据：[OpenAI Responses 创建请求文档](https://developers.openai.com/api/reference/python/resources/responses/methods/create)（2026-09-11 核对），包含工具选择与无状态加密 continuation 字段。23 项 Responses 定向测试通过，新增 helper 经 ModelExecutor、ModelClientPool 和 MockTransport 检查两个标准 Provider 的实际 JSON、保留原生声明的收尾控制、加密项续传和跨 Provider 拒绝。4 个模块类型与 Ruff 检查通过。这证明本地适配，不代表兼容服务商一定实现这些控制，也没有进行付费线上调用；原生完整合同与主 Agent 授权矩阵仍待完成。
+
 这不是生产安装插件/MCP 清单的启动验收；插件调度器和自主准入策略本身不在本矩阵内。SDK 生成接口已覆盖上述直接入站场景；缺少真实绑定的后台旧调用明确报迁移错误。D1/D2/D3 已确认，原生联网合同与有界持久投影仍待实现，不能视为已验证。
 
 本矩阵没有代替所有媒体/结构化 @/语音的最终 HTTP 对照，也没有证明 Rollup、改名、重启、删除后的跨轮投影稳定，或全部恢复/取消路径。相关已有定向测试只证明各自覆盖的行为，不能合并解释为这些维度全部通过。最终上线仍需完成任务书其余工作和最终集成检查。
