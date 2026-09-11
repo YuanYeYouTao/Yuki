@@ -38,6 +38,7 @@ from qq_ai_bot.plugin_host.facades import (
     _agent_dependencies,
 )
 from qq_ai_bot.runtime.trigger import ExternalEventTurnTrigger
+from qq_ai_bot.sandbox.client import sandbox_tools
 from qq_ai_bot.services.main_agent_contract import MainAgentContract
 from qq_ai_bot.workspace.short_state import ShortState
 from qq_ai_bot.workspace.store import WorkspaceStore
@@ -193,6 +194,9 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
         chat._agent_runner.main_contract = contract
         chat._tools.short_state = state
         manifest = await contract.definitions()
+        python_tool = next(t for t in manifest if t.name == "run_python")
+        assert python_tool.description == sandbox_tools()[0].description
+        assert python_tool.parameters == sandbox_tools()[0].parameters
         denied_name = contract.automation_names["onebot.send_private_message"]
         assert len(manifest) > 10
 

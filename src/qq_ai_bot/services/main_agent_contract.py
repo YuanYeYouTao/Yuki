@@ -47,7 +47,8 @@ class MainAgentContract:
             registry = self.chat._build_tool_registry(declaration, web_was_used=False)
             automation_names: dict[str, str] = {}
             tools = [
-                entry.descriptor.as_chat_tool() for entry in registry.catalog(declaration).entries
+                entry.descriptor.as_chat_tool(description=entry.descriptor.description)
+                for entry in registry.catalog(declaration).entries
             ]
             tools.extend((request_tools_definition(), _SET_REPLY_TARGET_TOOL, STATE_TOOL))
             if self.automation._registry is not None:

@@ -34,7 +34,13 @@ async def run_manifest_cases(state):
         assert release.is_set()
         return SimpleNamespace(
             catalog=lambda context: SimpleNamespace(
-                entries=(SimpleNamespace(descriptor=SimpleNamespace(as_chat_tool=lambda: tool)),)
+                entries=(
+                    SimpleNamespace(
+                        descriptor=SimpleNamespace(
+                            description=tool.description, as_chat_tool=lambda **kwargs: tool
+                        )
+                    ),
+                )
             )
         )
 
