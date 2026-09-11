@@ -73,7 +73,9 @@ await ctx.messages.send_text(turn.text)
 
 ## 一次性 LLM 与 Agent
 
-`ctx.llm.generate()` 适合无需工具的短生成；`generate_with_context()` 需要对应上下文权限。`ctx.agent.run()` 适合宿主受控工具循环，但插件只能请求自身已获批准的 capability，不能传入超级管理员标志。
+`ctx.llm.generate()`、`generate_with_context()` 和 `ctx.agent.run()` 均进入 Yuki 主 Agent，使用相同固定提示词、工具声明和 short_state 编译。旧的独立 system 提示词与随机会话键已移除，允许兼容性变化。调用必须绑定真实入站事件、canonical Conversation 和 Presence；缺少来源或来源已被会话重置淘汰时明确报错，不自动选择人物或群。后台任务应通过有明确目标的通知唤醒入口发起；独立计算使用 `agent_sessions`。
+
+`generate()` 返回文字，不自动投递；全局 short_state 工具仍可使用。`generate_with_context()` 需要对应权限，仅沿用所选人物/当前群的有限资料范围，不因入口统一而读取额外聊天历史。`agent.run()` 只执行插件获批且本轮允许的 capability 交集，不能传入超级管理员标志。固定工具声明不代表获准执行；递归调用这组生成接口会被拒绝。来源 generation 在每次模型请求前重新检查。
 
 当前 Host 可向一次性插件 Agent 提供以下只读能力：
 

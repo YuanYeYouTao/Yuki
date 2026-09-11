@@ -72,6 +72,8 @@ class PluginAgentToolBackend:
         arguments_json: str,
         runtime: AgentRuntime,
     ) -> str:
+        if runtime.before_model_request is not None:
+            await runtime.before_model_request()
         if name == "update_short_state" and self._service.short_state is not None:
             return cast(str, await self._service.short_state.execute(arguments_json))
         if name not in runtime.allowed_capabilities:

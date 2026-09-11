@@ -4,17 +4,19 @@ import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from itertools import pairwise
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import httpx
+import pytest
 
 from qq_ai_bot.automation.handlers import AutomationCapabilityHandlers
-from qq_ai_bot.automation.models import AutomationContext
+from qq_ai_bot.automation.models import AutomationContext, TurnOrigin
 from qq_ai_bot.automation.registry import build_capability_registry
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
+from qq_ai_bot.llm.base import LLMInvalidRequestError
 from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
 from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
 from qq_ai_bot.model_runtime.executor import TaskModelExecutor
@@ -28,11 +30,14 @@ from qq_ai_bot.model_runtime.models import (
 from qq_ai_bot.model_runtime.pool import ModelClientPool
 from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
 from qq_ai_bot.model_runtime.routes import ModelRouter
+from qq_ai_bot.plugin_host.facades import HostPluginContext, PluginFacadeServices, PluginInvocation
 from qq_ai_bot.runtime.trigger import ExternalEventTurnTrigger
 from qq_ai_bot.services.main_agent_contract import MainAgentContract
 from qq_ai_bot.workspace.short_state import ShortState
 from qq_ai_bot.workspace.store import WorkspaceStore
 from tests.conftest import MemorySender, build_harness, make_settings
+from yuki_plugin_sdk.errors import PluginPermissionError
+from yuki_plugin_sdk.permissions import PluginPermission
 
 
 async def run_main_agent_wire_cases(database, tmp_path, automation_context):
@@ -52,7 +57,7 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
         chain = captured.setdefault(current_entry, [])
         chain.append(payload)
         first = len(chain) == 1
-        denied = current_entry == "automation-generate" and len(chain) == 2
+        denied = current_entry in {"automation-generate", "sdk-generate"} and len(chain) == 2
         call_id = f"state-{current_entry}"
         arguments = json.dumps(
             {
@@ -201,6 +206,80 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             result = await harness.processor.handle(message, sender)
             assert result.reason == "chat" and sender.messages
 
+        plugin = HostPluginContext(
+            plugin_id="wire.plugin",
+            approved_permissions=(
+                PluginPermission.LLM_GENERATE,
+                PluginPermission.LLM_GENERATE_WITH_CONTEXT,
+                PluginPermission.AGENT_RUN,
+            ),
+            services=PluginFacadeServices(
+                ledger=harness.ledger,
+                people=chat._people,
+                agent_runner=chat._agent_runner,
+                runtime_config=chat._runtime_config,
+            ),
+        )
+        observed = await harness.ledger.find_by_platform_message(
+            bot_user_id="9999", platform_message_id=f"wire-{protocol.value}-private"
+        )
+        assert observed is not None
+        bound_message = InboundMessage(
+            message_id=observed.platform_message_id,
+            event_type="message:test",
+            scope_type=ScopeType.PRIVATE,
+            sender=SenderIdentity("1001"),
+            text=observed.content,
+            bot_user_id="9999",
+            person_id=observed.author_person_id,
+            conversation_id=observed.canonical_conversation_id,
+            presence_id=observed.ingress_presence_id,
+            legacy_conversation_key=ConversationScope.private("9999", "1001").key,
+        )
+        invocation = PluginInvocation(
+            plugin_id="wire.plugin",
+            origin=TurnOrigin.USER_MESSAGE,
+            actor_user_id="1001",
+            bot_user_id="9999",
+            inbound=bound_message,
+        )
+        for name in ("sdk-generate", "sdk-context", "sdk-agent"):
+            current_entry = name
+            with plugin.bind(invocation):
+                if name == "sdk-generate":
+                    answer = await plugin.llm.generate("记录结果")
+                elif name == "sdk-context":
+                    answer = await plugin.llm.generate_with_context(
+                        "记录结果", context_profile="current_user"
+                    )
+                else:
+                    result = await plugin.agent.run("记录结果")
+                    answer = result.data["text"]
+                assert answer == "已完成"
+        before = sum(map(len, captured.values()))
+        with plugin.bind(replace(invocation, inbound=replace(bound_message, conversation_id=None))):
+            with pytest.raises(PluginPermissionError, match="real Host-bound"):
+                await plugin.llm.generate("no source")
+        with plugin.bind(replace(invocation, inbound=replace(bound_message, message_id="unknown"))):
+            with pytest.raises(PluginPermissionError, match="source does not match"):
+                await plugin.agent.run("wrong source")
+        with plugin.bind(invocation):
+            with pytest.raises(PluginPermissionError, match="real group turn"):
+                await plugin.llm.generate_with_context("no group", context_profile="current_group")
+            with patch.object(
+                harness.ledger, "read_version_matches", AsyncMock(return_value=False)
+            ):
+                with pytest.raises(LLMInvalidRequestError, match="Conversation changed"):
+                    await plugin.llm.generate("reset source")
+
+            async def recurse(*args, **kwargs):
+                return await plugin.llm.generate("nested")
+
+            with patch.object(chat._main_turns, "run", recurse):
+                with pytest.raises(PluginPermissionError, match="recursive"):
+                    await plugin.agent.run("outer")
+        assert sum(map(len, captured.values())) == before
+
         for name in ("automation-generate", "automation-agent"):
             current_entry = name
             context = replace(
@@ -303,10 +382,10 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
         assert sender.messages
 
     forbidden_send.assert_not_awaited()
-    assert len(captured) == 6
+    assert len(captured) == 9
     fixed = None
     for name, chain in captured.items():
-        assert len(chain) == (3 if name == "automation-generate" else 2), (
+        assert len(chain) == (3 if name in {"automation-generate", "sdk-generate"} else 2), (
             protocol,
             name,
             len(chain),
@@ -322,9 +401,9 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             old, new = first["messages"], second["messages"]
             outputs = [item["content"] for item in new if item.get("role") == "tool"]
         assert new[: len(old)] == old
-        assert len(outputs) == (2 if name == "automation-generate" else 1)
+        assert len(outputs) == (2 if name in {"automation-generate", "sdk-generate"} else 1)
         assert json.loads(outputs[0])["ok"] is True
-        if name == "automation-generate":
+        if name in {"automation-generate", "sdk-generate"}:
             assert json.loads(outputs[-1]) == {"ok": False, "error": "capability_not_allowed"}
         sequence_key = "input" if protocol is ModelProtocol.RESPONSES else "messages"
         for previous, following in pairwise(chain):
