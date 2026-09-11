@@ -32,7 +32,6 @@ from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.runtime.contracts import MemoryCapabilityView
 from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.services.chat import _with_memory_mutation_contract
 from qq_ai_bot.services.processor import (
     MENTION_ONLY_CONTEXT,
     ProcessResult,
@@ -189,37 +188,51 @@ def test_capability_view_owns_first_round_memory_scope() -> None:
     )
 
 
-def test_only_mutation_access_appends_the_write_receipt_contract() -> None:
+@pytest.mark.asyncio
+async def test_only_mutation_access_appends_the_write_receipt_contract(database) -> None:
     from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
     from qq_ai_bot.prompting.contracts import CORE_CONTRACT
-    from qq_ai_bot.prompting.serializer import append_dynamic_item, strip_dynamic_prefix
+    from qq_ai_bot.prompting.serializer import strip_dynamic_prefix
+    from qq_ai_bot.services.context_assembler import AssembledContext, ContextMetrics
 
+    harness = build_harness(database, make_settings(database.url))
+    chat = harness.processor._chat
+    runtime = await chat._runtime_config.snapshot()
     for history in ((), (ChatMessage(role="assistant", content="past"),)):
-        messages = (
-            ChatMessage(role="system", content=CORE_CONTRACT),
-            *history,
-            ChatMessage(role="user", content="更新测试配置"),
+        context = AssembledContext(
+            metadata_payload={},
+            history_messages=history,
+            current_message=ChatMessage(role="user", content="更新测试配置"),
+            recent_delivery=(),
+            current_time=chat._time.current_default(),
+            current_relationship=None,
+            metrics=ContextMetrics(0, 0, len(history), 6, False),
         )
-        mutation_messages = _with_memory_mutation_contract(messages, True)
-        assert mutation_messages[:-1] == messages[:-1]
-        assert strip_dynamic_prefix(mutation_messages[-1].content) == messages[-1].content
-        assert '"exclusive_write":true' in mutation_messages[-1].content
-        scheduled = append_dynamic_item(
-            mutation_messages,
-            {
-                "id": "runtime.automation_intent",
-                "channel": "runtime",
-                "trust": "trusted",
-                "data": {"scheduled_automation_intent": True},
-            },
-        )
-        # No-history and existing-history paths retain exactly the same instructions.
-        for variant in (messages, mutation_messages, scheduled):
-            instructions, _ = DeepSeekResponsesProvider._convert_messages(variant)
-            assert instructions == CORE_CONTRACT
+        variants = []
+        for exclusive, scheduled in ((False, False), (True, False), (False, True), (True, True)):
+            composed = await chat._main_turns.compose(
+                inbound=None,
+                context=context,
+                runtime=runtime,
+                visual_observation=None,
+                visual_failure=False,
+                memory_exclusive_write=exclusive,
+                scheduled_automation_intent=scheduled,
+            )
+            variants.append(composed.messages)
+            tail = composed.messages[-1].content
+            assert strip_dynamic_prefix(tail) == context.current_message.content
+            assert ('"exclusive_write":true' in tail) == exclusive
+            assert ('"scheduled_automation_intent":true' in tail) == (scheduled and not exclusive)
+            assert composed.metrics.total_characters == sum(
+                len(message.content or "") for message in composed.messages
+            )
+        instructions = [DeepSeekResponsesProvider._convert_messages(v)[0] for v in variants]
+        assert all(text == instructions[0] for text in instructions)
+        assert CORE_CONTRACT in instructions[0]
+        assert all(messages[1:-1] == history for messages in variants)
         assert "真实工具回执" in CORE_CONTRACT
         assert "管理员能力" in CORE_CONTRACT
-        assert _with_memory_mutation_contract(messages, False) is messages
 
 
 @pytest.mark.parametrize(

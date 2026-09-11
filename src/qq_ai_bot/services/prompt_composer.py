@@ -71,6 +71,8 @@ class PromptComposer:
         scope_type: ScopeType | None = None,
         include_plugin_context: bool = True,
         short_state: list[dict[str, Any]] | None = None,
+        memory_exclusive_write: bool = False,
+        scheduled_automation_intent: bool = False,
     ) -> PromptComposition:
         contributions: list[PromptContribution] = [
             static_text(
@@ -117,6 +119,25 @@ class PromptComposer:
                     required=True,
                 )
             )
+        for identity, enabled, data in (
+            ("runtime.memory_mutation", memory_exclusive_write, {"exclusive_write": True}),
+            (
+                "runtime.automation_intent",
+                scheduled_automation_intent and not memory_exclusive_write,
+                {"scheduled_automation_intent": True},
+            ),
+        ):
+            if enabled:
+                contributions.append(
+                    PromptContribution(
+                        id=identity,
+                        channel=PromptChannel.RUNTIME,
+                        trust=PromptTrust.TRUSTED,
+                        priority=90,
+                        payload=data,
+                        required=True,
+                    )
+                )
         if inbound is not None and inbound.sender.user_id in self._settings.superusers:
             contributions.append(
                 PromptContribution(

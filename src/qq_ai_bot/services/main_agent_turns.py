@@ -36,6 +36,8 @@ class MainAgentTurnService:
         visual_failure: bool,
         scope_type: ScopeType | None = None,
         include_plugin_context: bool = True,
+        memory_exclusive_write: bool = False,
+        scheduled_automation_intent: bool = False,
     ) -> PromptComposition:
         contract = self._runner.main_contract
         state = await asyncio.to_thread(contract.state.snapshot) if contract else None
@@ -48,6 +50,8 @@ class MainAgentTurnService:
             scope_type=scope_type,
             include_plugin_context=include_plugin_context,
             short_state=state,
+            memory_exclusive_write=memory_exclusive_write,
+            scheduled_automation_intent=scheduled_automation_intent,
         )
 
     async def run(

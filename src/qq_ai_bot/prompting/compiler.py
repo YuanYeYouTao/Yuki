@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+from dataclasses import replace
 
 from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.prompting.models import (
@@ -127,10 +128,7 @@ def _with_dynamic_prefix(message: ChatMessage, dynamic_text: str) -> ChatMessage
     if not dynamic_text:
         return message
     body = message.content or ""
-    return ChatMessage(
-        role=message.role,
+    return replace(
+        message,
         content=f"{dynamic_text}\n\n{body}" if body else dynamic_text,
-        tool_calls=message.tool_calls,
-        tool_call_id=message.tool_call_id,
-        reasoning_content=message.reasoning_content,
     )
