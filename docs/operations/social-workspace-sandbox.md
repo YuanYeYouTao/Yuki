@@ -27,6 +27,16 @@ Failed core platform sends remain tool evidence for the normal final answer, rat
 than replacing it with an admin-command error sentence. Remaining tool execution
 is closed for that turn (including uncertain delivery); no automatic resend is added.
 Administrative mutations retain their existing terminal-receipt behavior.
+The same non-terminal failure policy covers social poke and own-message recall;
+it does not weaken administrative mutations. A failed poke cannot replace the
+normal answer with a generic admin failure sentence.
+
+`poke_person` defaults to the backend's current canonical Space in group turns,
+and to private delivery outside a group. Set `scene=private` to explicitly poke
+privately; it cannot be combined with `space_id`. An explicit `space_id` is a
+canonical UUID, never a QQ group number. Group pokes use the Space route and a
+live member probe, not the person's private route. Paused routes remain paused;
+there is no automatic fallback between private and group scenes.
 
 The dedicated `social-transfer` host directory must be owned by Bot UID 10001,
 mode 0755. Bot mounts it read-write at `/app/social-transfer`; providers mount the

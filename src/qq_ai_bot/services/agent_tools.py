@@ -1078,8 +1078,12 @@ class AgentToolService:
                                 "文件必须指定 file 类型。"
                                 "已生成的工作区文件仍保留"
                             ),
-                            "route_paused": (
-                                "目标主动联系路由已暂停，尚未发送；已生成的工作区文件仍保留"
+                            "route_paused": "该操作所需路由已暂停，未执行；不会自动换路或解暂停",
+                            "invalid_space_id": (
+                                "space_id 必须是 canonical 群 UUID，不是 QQ 群号；当前群可省略"
+                            ),
+                            "invalid_poke_scene": (
+                                "scene 只允许 current 或 private；私聊场景不能同时指定群"
                             ),
                         }.get(str(exc), "社交操作未执行或结果不确定，请勿盲重试")
                         return self._result(error=str(exc), detail=detail)

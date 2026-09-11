@@ -41,8 +41,13 @@ from qq_ai_bot.services.processor import (
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["artifact_transfer_unavailable", "uncertain"])
-async def test_delivery_failure_keeps_normal_answer(database: Database, failure: str) -> None:
+@pytest.mark.parametrize(
+    "tool_name,failure",
+    [("send_private_message", "artifact_transfer_unavailable"), ("poke_person", "route_paused")],
+)
+async def test_delivery_failure_keeps_normal_answer(
+    database: Database, tool_name: str, failure: str
+) -> None:
     from dataclasses import replace
 
     from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
@@ -64,9 +69,16 @@ async def test_delivery_failure_keeps_normal_answer(database: Database, failure:
                     ToolCall(
                         id="delivery",
                         function=ToolFunction(
-                            name="send_private_message",
+                            name=tool_name,
                             arguments=json.dumps(
-                                {"subject_ref": "current_speaker", "text": "hello"}
+                                {
+                                    "subject_ref": "current_speaker",
+                                    **(
+                                        {"text": "hello"}
+                                        if tool_name == "send_private_message"
+                                        else {}
+                                    ),
+                                }
                             ),
                         ),
                     ),
@@ -74,9 +86,7 @@ async def test_delivery_failure_keeps_normal_answer(database: Database, failure:
             )
         if model_calls == 2:
             results = [m.content or "" for m in request.messages if m.role == "tool"]
-            assert any(
-                "artifact_transfer_unavailable" in r or "delivery_uncertain" in r for r in results
-            ), results
+            assert any(failure in r for r in results), results
             return "文件已生成，但未确认发送成功。"
         return "可以正常聊天。"
 

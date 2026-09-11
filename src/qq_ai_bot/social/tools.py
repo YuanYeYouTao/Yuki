@@ -66,10 +66,16 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
         ),
         tool(
             "poke_person",
-            "戳一戳认识的人。省略 space_id 表示私聊；遵守后端限频，失败不连续重试。",
+            "戳一戳认识的人。默认在当前群操作，私聊中默认私聊；"
+            "scene=private 可明确选择私聊。群戳不依赖对方私聊主动路由。失败不连续重试。",
             {
                 **selector,
-                "space_id": {"type": "string"},
+                "space_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "可选 canonical 群 UUID，不是 QQ 群号；省略使用当前群",
+                },
+                "scene": {"type": "string", "enum": ["current", "private"]},
             },
         ),
         tool(

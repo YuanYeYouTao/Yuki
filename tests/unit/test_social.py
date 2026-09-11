@@ -334,6 +334,23 @@ async def test_social_gateway_delivery_and_fail_closed(database: Database, tmp_p
         reply_message_id="1",
         reply_presence_id=presence,
     )
+    group_context = SocialContext("group-poke", "default", conversation_id, space_id=space_id)
+    poked = await service.execute("poke_person", {"target_id": person}, group_context)
+    assert poked["status"] == "succeeded"
+    assert bot.calls[-1][0] == "send_poke" and bot.calls[-1][1]["group_id"] == 20001
+    assert bot.calls[-2][0] == "get_group_member_info"
+    count = len(bot.calls)
+    for scene_args, error in (
+        ({"scene": "private"}, "route_paused"),
+        ({"space_id": "20001"}, "invalid_space_id"),
+        ({"scene": "private", "space_id": space_id}, "invalid_poke_scene"),
+    ):
+        with pytest.raises(SocialError, match=error):
+            await service.execute("poke_person", {"target_id": person, **scene_args}, group_context)
+    assert len(bot.calls) == count
+    async with database.sessions() as session:
+        paused = await session.get(PersonActiveRouteModel, person)
+        assert paused.paused
     replied = await service.execute(
         "send_private_message",
         {"target_id": person, "artifact_id": artifact["artifact_id"], "attachment_kind": "file"},

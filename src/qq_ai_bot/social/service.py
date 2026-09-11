@@ -294,8 +294,16 @@ class SocialService:
             )
         )
         route_target = target
-        if name == "poke_person" and args.get("space_id"):
-            route_target = SocialTarget(kind="space", id=UUID(str(args["space_id"])))
+        if name == "poke_person":
+            scene = args.get("scene", "current")
+            if scene not in {"current", "private"} or (scene == "private" and args.get("space_id")):
+                raise SocialError("invalid_poke_scene")
+            space_id = (args.get("space_id") or context.space_id) if scene == "current" else None
+            if space_id:
+                try:
+                    route_target = SocialTarget.model_validate({"kind": "space", "id": space_id})
+                except ValueError:
+                    raise SocialError("invalid_space_id") from None
         await self.check_target(route_target, sending=True)
         route = await self.send_route(route_target, context)
         params: dict[str, Any]

@@ -1037,7 +1037,8 @@ class _ChatAgentBackend(AgentToolBackend):
         if self._is_mutating_call(call):
             if (
                 effective_descriptor.trust_source is CapabilityTrustSource.CORE
-                and effective_descriptor.effect is CapabilityEffect.PLATFORM_SEND
+                and effective_descriptor.namespace_id
+                in {"social.send", "social.poke", "social.recall"}
                 and not bool(decoded.get("ok"))
             ):
                 # Delivery failure is evidence for the normal answer, not an admin
