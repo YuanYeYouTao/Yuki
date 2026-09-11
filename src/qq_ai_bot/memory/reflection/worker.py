@@ -18,6 +18,7 @@ from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.reflection.models import MemoryReflectionIssue, MemoryReflectionJob
 from qq_ai_bot.memory.reflection.repository import MemoryReflectionRepository
 from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.persistence.worker_recovery import recover_database_loop
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,9 @@ class MemoryReflectionWorker:
         self._wake.set()
 
     async def _run(self) -> None:
+        await recover_database_loop(self._run_queue, stop=self._stop, logger=logger)
+
+    async def _run_queue(self) -> None:
         while not self._stop.is_set():
             try:
                 await asyncio.wait_for(

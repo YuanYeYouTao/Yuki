@@ -5,8 +5,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy.exc import OperationalError
 
+from qq_ai_bot.emoji.worker import EmojiWorker
+from qq_ai_bot.memory.reflection.worker import MemoryReflectionWorker
 from qq_ai_bot.plugin_host.background_turns import PluginBackgroundTurnWorker
+from qq_ai_bot.plugin_host.notification_delivery import PluginNotificationOutboxWorker
 
 
 @pytest.mark.asyncio
@@ -46,3 +50,24 @@ async def test_worker_recovers_claim_and_admission_failures(fail_claim):
         repository.fail_turn.assert_awaited_once_with(7, attempt=1, error_category="RuntimeError")
     assert (await worker.health())["running"] is False
     await worker.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "worker_type", [PluginNotificationOutboxWorker, EmojiWorker, MemoryReflectionWorker]
+)
+async def test_durable_workers_resume_after_database_lock(worker_type):
+    worker = object.__new__(worker_type)
+    worker._stop = asyncio.Event()
+    calls = 0
+
+    async def run_queue():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OperationalError("BEGIN IMMEDIATE", {}, RuntimeError("database is locked"))
+        worker._stop.set()
+
+    worker._run_queue = run_queue
+    await asyncio.wait_for(worker._run(), timeout=4)
+    assert calls == 2

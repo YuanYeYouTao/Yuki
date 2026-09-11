@@ -1,6 +1,7 @@
 """Host manager contracts without executing untrusted code on the test host."""
 
 import asyncio
+import json
 from pathlib import Path
 from uuid import uuid4
 
@@ -10,6 +11,28 @@ from tests.support.sandbox_completion_cases import completion_delivery_cases, pe
 from qq_ai_bot.sandbox.client import sandbox_tools
 from qq_ai_bot.sandbox.manager import Manager
 from qq_ai_bot.workspace.store import WorkspaceError, WorkspaceStore
+
+
+def test_workspace_is_available_without_explicit_inputs(tmp_path: Path):
+    store = WorkspaceStore(tmp_path / "workspace")
+    state = store.write("chess.json", b'{"moves": ["J9"]}')
+    first = store.write("board.png", b"first")
+    second = store.write("board.png", b"second")
+    manager = Manager(tmp_path / "jobs", store, "python:test", "internal", "http://proxy")
+    target = tmp_path / "snapshot"
+    manager.stage_workspace(target)
+    assert (target / "chess.json").read_bytes() == b'{"moves": ["J9"]}'
+    assert not (target / "board.png").exists()
+    assert (target / "by-id" / first["artifact_id"]).read_bytes() == b"first"
+    assert (target / "by-id" / second["artifact_id"]).read_bytes() == b"second"
+    assert not (target / "manifest.sqlite3").exists()
+    manifest = json.loads((target / "manifest.json").read_text(encoding="utf-8"))
+    assert len(manifest) == 3
+    assert (
+        next(r for r in manifest if r["artifact_id"] == state["artifact_id"])["named_path"]
+        == "/workspace/chess.json"
+    )
+    manager.db.close()
 
 
 @pytest.mark.asyncio

@@ -15,6 +15,7 @@ from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
 from qq_ai_bot.identity.routing import PresenceRouter, ResolvedSend, RouteSendError
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
+from qq_ai_bot.persistence.worker_recovery import recover_database_loop
 from qq_ai_bot.plugin_host.media_artifacts import PluginMediaArtifactStore
 from qq_ai_bot.plugin_host.notification_repository import (
     BackgroundTurnFenceError,
@@ -229,6 +230,9 @@ class PluginNotificationOutboxWorker:
         self._wake.set()
 
     async def _run(self) -> None:
+        await recover_database_loop(self._run_queue, stop=self._stop, logger=logger)
+
+    async def _run_queue(self) -> None:
         while not self._stop.is_set():
             item = await self._repository.claim_outbox()
             if item is None:

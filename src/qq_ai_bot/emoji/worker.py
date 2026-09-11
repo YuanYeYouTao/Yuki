@@ -12,6 +12,7 @@ from qq_ai_bot.emoji.classifier import EmojiClassifier
 from qq_ai_bot.emoji.lifecycle import EmojiLifecycleService
 from qq_ai_bot.emoji.repository import EmojiJob, EmojiRepository
 from qq_ai_bot.emoji.storage import EmojiStorage
+from qq_ai_bot.persistence.worker_recovery import recover_database_loop
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,9 @@ class EmojiWorker:
             await self._task
 
     async def _run(self) -> None:
+        await recover_database_loop(self._run_queue, stop=self._stop, logger=logger)
+
+    async def _run_queue(self) -> None:
         while not self._stop.is_set():
             snapshot = await self._runtime_config.snapshot()
             runtime = snapshot.emoji

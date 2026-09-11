@@ -19,7 +19,11 @@ def sandbox_tools() -> tuple[ChatTool, ...]:
             name="run_python",
             description=(
                 "在独立 Python 3.12 沙箱运行代码。可经代理访问公网 HTTP/HTTPS，"
-                "不能访问内网或宿主。仅指定 artifact_id 复制到 /inputs；"
+                "自动载入共享工作区文件快照：直接读取 /workspace/文件名；"
+                "同名文件不取第一项，查 /workspace/manifest.json 后使用其中的 path。"
+                "所有文件也可从 /workspace/by-id/artifact_id 读取，无需逐个传入。"
+                "input_artifact_ids 可选，兼容复制到 /inputs/artifact_id。"
+                "快照只读，要修改请复制到 /work；不能访问内网或宿主。"
                 "产物写 /work/outputs，成功后导回共享工作区。"
                 "预装 Pillow/openpyxl/pypdf，pip 可临时安装至 /work。"
                 "超时最多 120 秒；返回 run_id 后查询，不重跑。"

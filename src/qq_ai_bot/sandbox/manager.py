@@ -17,12 +17,13 @@ import signal
 import sqlite3
 import stat
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
 from qq_ai_bot.sandbox.completions import CompletionOutbox
-from qq_ai_bot.workspace.store import WorkspaceStore
+from qq_ai_bot.workspace.store import WorkspaceError, WorkspaceStore
 
 LABEL = "io.yuki.sandbox=python-v1"
 TERMINAL = {"succeeded", "failed", "cancelled"}
@@ -283,6 +284,8 @@ class Manager:
             "--mount",
             f"type=bind,src={directory / 'inputs'},dst=/inputs,readonly",
             "--mount",
+            f"type=bind,src={directory / 'workspace'},dst=/workspace,readonly",
+            "--mount",
             f"type=bind,src={directory / 'work'},dst=/work",
             "--env",
             f"HTTPS_PROXY={self.proxy}",
@@ -307,6 +310,51 @@ class Manager:
             "/inputs/code.py",
         )
 
+    def stage_workspace(self, destination: Path) -> None:
+        """Expose live artifacts with usable names, never the private index/blobs."""
+        destination.mkdir(mode=0o755)
+        destination.chmod(0o755)
+        by_id = destination / "by-id"
+        by_id.mkdir(mode=0o755)
+        by_id.chmod(0o755)
+        records: list[dict[str, Any]] = []
+        cursor = ""
+        total = 0
+        while True:
+            page = self.store.list(cursor=cursor, limit=100)
+            for item in page["items"]:
+                try:
+                    metadata, data = self.store.read_bytes(item["artifact_id"])
+                except WorkspaceError as exc:
+                    if str(exc) in {"artifact_not_found", "artifact_expired"}:
+                        continue
+                    raise
+                total += len(data)
+                if total > self.store.capacity or len(records) >= self.store.max_objects:
+                    raise ValueError("workspace_snapshot_limit")
+                artifact_id = identifier(metadata["artifact_id"])
+                path = by_id / artifact_id
+                path.write_bytes(data)
+                path.chmod(0o444)
+                records.append({**metadata, "path": f"/workspace/by-id/{artifact_id}"})
+            cursor = page["next_cursor"]
+            if not cursor:
+                break
+        counts = Counter(item["name"] for item in records)
+        for item in records:
+            name = item["name"]
+            if (
+                counts[name] == 1
+                and name not in {"by-id", "manifest.json", ".", ".."}
+                and Path(name).name == name
+                and not any(c in name for c in "\\/:\x00")
+            ):
+                (destination / name).hardlink_to(by_id / item["artifact_id"])
+                item["named_path"] = f"/workspace/{name}"
+        manifest = destination / "manifest.json"
+        manifest.write_text(json.dumps(records, ensure_ascii=False), encoding="utf-8")
+        manifest.chmod(0o444)
+
     async def execute(self, identity: str) -> None:
         row = self.db.execute("SELECT payload FROM jobs WHERE id=?", (identity,)).fetchone()
         args = json.loads(row["payload"])
@@ -314,6 +362,7 @@ class Manager:
         directory.mkdir(mode=0o700)
         inputs, work = directory / "inputs", directory / "work"
         inputs.mkdir(mode=0o755)
+        await asyncio.to_thread(self.stage_workspace, directory / "workspace")
         # systemd's private umask must not remove traversal for the sandbox UID.
         inputs.chmod(0o755)
         work.mkdir()
