@@ -54,8 +54,8 @@ class PluginAgentToolBackend:
     def parallel_safe(self, name: str, runtime: AgentRuntime) -> bool:
         """Plugin sessions expose read-only core tools, so calls may overlap."""
 
-        del name, runtime
-        return True
+        del runtime
+        return name != "update_short_state"
 
     def is_side_effecting(
         self,
@@ -63,8 +63,8 @@ class PluginAgentToolBackend:
         arguments_json: str,
         runtime: AgentRuntime,
     ) -> bool:
-        del name, arguments_json, runtime
-        return False
+        del arguments_json, runtime
+        return name == "update_short_state"
 
     async def execute(
         self,
@@ -72,6 +72,8 @@ class PluginAgentToolBackend:
         arguments_json: str,
         runtime: AgentRuntime,
     ) -> str:
+        if name == "update_short_state" and self._service.short_state is not None:
+            return cast(str, await self._service.short_state.execute(arguments_json))
         if name not in runtime.allowed_capabilities:
             return _error("capability_not_allowed", "插件 Agent 未获准使用该能力")
         scoped_arguments, scope_error = self._scope_arguments(

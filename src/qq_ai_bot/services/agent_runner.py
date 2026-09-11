@@ -8,7 +8,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import partial
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.authority import DelegatedAuthority
@@ -45,6 +45,9 @@ from qq_ai_bot.services.evidence_observation import EVIDENCE_TOOLS, EvidenceObse
 from qq_ai_bot.services.native_tool_binder import NativeToolBinder
 from qq_ai_bot.time.models import TimeContext
 from qq_ai_bot.web.models import WebMode
+
+if TYPE_CHECKING:
+    from qq_ai_bot.services.main_agent_contract import MainAgentContract
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +128,7 @@ class AgentRunner:
         self._task = task
         self._tool_coordinator = ToolInvocationCoordinator()
         self._native_tools = NativeToolBinder()
+        self.main_contract: MainAgentContract | None = None
 
     async def run(
         self,
@@ -132,6 +136,14 @@ class AgentRunner:
         runtime: AgentRuntime,
         tools: AgentToolBackend | None,
     ) -> AgentRunResult:
+        fixed_definitions = None
+        if self.main_contract is not None:
+            fixed_definitions = await self.main_contract.definitions()
+            initial_messages = await self.main_contract.state.inject(initial_messages)
+            if tools is None:
+                from qq_ai_bot.services.main_agent_contract import ShortStateOnlyBackend
+
+                tools = ShortStateOnlyBackend(self.main_contract.state)
         messages = list(initial_messages)
         evidence_observation = EvidenceObservation(runtime.origin.value)
         staged_evidence_results = 0
@@ -140,6 +152,7 @@ class AgentRunner:
         empty_retries = 0
         mention_recovery_used = False
         continuation: ProviderContinuation | None = None
+        continuation_prefix_length = len(messages)
         pending_function_outputs: tuple[FunctionCallOutput, ...] = ()
         native_events: list[NativeToolEvent] = []
         citations: list[ResponseCitation] = []
@@ -158,6 +171,8 @@ class AgentRunner:
             definitions = (
                 tools.definitions(runtime, web_was_used=web_was_used) if tools is not None else ()
             )
+            if fixed_definitions is not None:
+                definitions = fixed_definitions
             web_config = getattr(runtime.runtime_config, "web", None)
             try:
                 web_mode = WebMode(getattr(web_config, "mode", WebMode.DISABLED.value))
@@ -175,7 +190,7 @@ class AgentRunner:
                 if web_search_selected
                 else ()
             )
-            if web_mode is WebMode.NATIVE:
+            if web_mode is WebMode.NATIVE and fixed_definitions is None:
                 # Native-only deliberately excludes external search. Mixed mode
                 # keeps the pinned Tavily function alongside the native tool;
                 # availability must not depend on a preceding native failure.
@@ -183,7 +198,7 @@ class AgentRunner:
                     item for item in definitions if item.name not in {"web_search", "read_webpage"}
                 )
             restart_chain = getattr(tools, "consume_provider_chain_restart", None)
-            if callable(restart_chain) and restart_chain():
+            if callable(restart_chain) and restart_chain() and fixed_definitions is None:
                 continuation = None
                 continuation_tools = ()
                 continuation_native_tools = ()
@@ -203,7 +218,7 @@ class AgentRunner:
                 # Chat Completions can omit tools entirely. Responses continuations
                 # must retain every previously declared schema, so keep those
                 # definitions but force tool_choice=none below.
-                if continuation is None:
+                if continuation is None and fixed_definitions is None:
                     definitions = ()
                     native_definitions = ()
                 if not finalization_prompt_added:
@@ -218,10 +233,10 @@ class AgentRunner:
                         )
                     )
                     finalization_prompt_added = True
-            if incomplete_recovery_used and continuation is None:
+            if incomplete_recovery_used and continuation is None and fixed_definitions is None:
                 definitions = ()
                 native_definitions = ()
-            if no_progress_recovery and continuation is None:
+            if no_progress_recovery and continuation is None and fixed_definitions is None:
                 definitions = ()
                 native_definitions = ()
             try:
@@ -229,7 +244,12 @@ class AgentRunner:
                     await runtime.before_model_request()
                 diagnostics = runtime.prompt_diagnostics
                 request = ChatRequest(
-                    messages=tuple(messages),
+                    messages=tuple(
+                        messages[:continuation_prefix_length] if continuation else messages
+                    ),
+                    continuation_messages=tuple(messages[continuation_prefix_length:])
+                    if continuation
+                    else (),
                     model=runtime.runtime_config.llm.model or "fake",
                     temperature=runtime.runtime_config.llm.temperature,
                     max_output_tokens=runtime.runtime_config.llm.max_output_tokens,
@@ -237,7 +257,8 @@ class AgentRunner:
                     tools=definitions,
                     tool_choice=(
                         "none"
-                        if finalization_only and (definitions or native_definitions)
+                        if (finalization_only or incomplete_recovery_used or no_progress_recovery)
+                        and (definitions or native_definitions)
                         else ("auto" if definitions or native_definitions else None)
                     ),
                     native_tools=native_definitions,
@@ -393,6 +414,10 @@ class AgentRunner:
                 if callable(mark_native_web):
                     mark_native_web()
             if response.continuation is not None:
+                if continuation is None:
+                    continuation_prefix_length = len(messages)
+                else:
+                    del messages[continuation_prefix_length:]
                 continuation = response.continuation
                 continuation_tools = definitions
                 continuation_native_tools = native_definitions

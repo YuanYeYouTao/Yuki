@@ -353,6 +353,7 @@ class ChatRequest:
     native_tools: tuple[NativeToolDefinition, ...] = ()
     continuation: ProviderContinuation | None = None
     function_outputs: tuple[FunctionCallOutput, ...] = ()
+    continuation_messages: tuple[ChatMessage, ...] = ()
     conversation_prefix_hash: str = ""
     request_shape_hash: str = ""
     prompt_snapshot_fingerprint: str = ""

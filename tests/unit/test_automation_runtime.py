@@ -195,7 +195,9 @@ def test_create_tool_exposes_high_level_task_spec(database) -> None:
 
 
 @pytest.mark.asyncio
-async def test_generation_keeps_dynamic_automation_data_out_of_system_messages(database) -> None:
+async def test_generation_keeps_dynamic_automation_data_out_of_system_messages(
+    database, tmp_path
+) -> None:
     handlers = object.__new__(AutomationCapabilityHandlers)
     handlers._settings = make_settings(database.url, automation_enabled=True)
     context = CapabilityExecutionContext(
@@ -223,13 +225,16 @@ async def test_generation_keeps_dynamic_automation_data_out_of_system_messages(d
         {"instruction": instruction, "context_profile": "none"},
         context,
     )
-    assert [message.role for message in messages] == ["system", "system", "user"]
+    assert [message.role for message in messages] == ["system", "user"]
     assert all(
         instruction not in message.content for message in messages if message.role == "system"
     )
     payload = json.loads(messages[-1].content)
     assert payload["instruction"] == instruction
     assert payload["content_trust"] == "untrusted_automation_input"
+    from tests.support.short_state_cases import run_short_state_cases
+
+    await run_short_state_cases(database, tmp_path, context)
 
 
 def test_create_tool_description_does_not_embed_capability_catalog(database) -> None:

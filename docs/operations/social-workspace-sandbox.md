@@ -1,9 +1,39 @@
 # Social tools, scratch workspace and Python jobs
 
-The normal Main Agent has fourteen deployment-stable tools: six QQ social operations,
-five workspace operations, and three Python job operations. Tool schemas do not change
-with contact names, directory contents or gateway availability. Execution remains
-subject to canonical target policies and the actual delegated capability grant.
+All Yuki Main Agent entrypoints share a sorted function-tool manifest, frozen on
+first use for the running deployment. Normal/private/group turns, plugin wakeups,
+plugin generation, scheduled generation and scheduled Agent runs use the same
+schemas, including retry/finalization requests. Core, installed plugin, MCP and
+automation definitions are collected without an event identity. Execution still
+checks the real origin, target, current permission and delegated grant. Identical
+social/workspace/sandbox automation tools reuse their ordinary model-facing name.
+`request_tools` discovers current availability; it never changes the frozen manifest.
+Restart Bot after changing installed tool definitions to start a new manifest.
+
+## Global short-term state
+
+`update_short_state(slot, text, expected_revision)` stores up to three small records
+in a separate `short_state` table in `WORKSPACE_DIRECTORY/manifest.sqlite3`. Records
+have no person/group partition or access control. They survive Bot restarts, expire
+24 hours after a write, and are separate from artifact files and long-term memory.
+Reads do not extend expiry. Empty text deletes a record. Optimistic versions prevent
+concurrent turns from silently overwriting one another; conflicts return current
+records. Expired/deleted slots retain versions, so reuse may first return a conflict.
+
+The whole rendered state envelope is limited to 512 UTF-8 bytes (a conservative
+sub-512-token bound), including labels. Oversized writes are rejected atomically.
+A turn loads one snapshot after history, in the current input envelope immediately
+before `runtime.time` where present. Empty state adds nothing. Tool results carry
+subsequent writes; the turn's initial snapshot never changes inside its tool loop.
+Records are untrusted data and cannot grant platform permissions. Yuki must persist
+a temporary decision, such as a number to recall in another conversation, before
+claiming it has been remembered. A successful write is necessary; a statement alone
+is not persistence.
+
+Responses recovery/finalization messages follow prior function outputs at the true
+input tail. They no longer get inserted ahead of existing continuation items.
+History recompilation across separate turns still has its existing limits; this
+change does not promise a fully append-only lifetime conversation or a cache hit.
 
 ## Social operations
 

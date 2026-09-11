@@ -367,15 +367,20 @@ async def test_function_output_follows_cumulative_continuation() -> None:
         first = await provider.complete(_request())
         assert [call.id for call in first.tool_calls] == ["call_fixture_1", "call_fixture_2"]
         assert first.continuation is not None
-        await provider.complete(
+        second = await provider.complete(
             _request(
                 continuation=first.continuation,
+                continuation_messages=(
+                    ChatMessage(role="system", content="finalize after results"),
+                ),
                 function_outputs=(
                     FunctionCallOutput(call_id="call_fixture_1", output='{"ok":true}'),
                     FunctionCallOutput(call_id="call_fixture_2", output='{"ok":true}'),
                 ),
             )
         )
+
+        await provider.complete(_request(continuation=second.continuation))
 
     second_inputs = requests[1]["input"]
     assert isinstance(second_inputs, list)
@@ -385,8 +390,13 @@ async def test_function_output_follows_cumulative_continuation() -> None:
         "function_call",
         "function_call_output",
         "function_call_output",
+        "message",
     ]
-    assert second_inputs[-2]["call_id"] == "call_fixture_1"
+    assert second_inputs[-3]["call_id"] == "call_fixture_1"
+
+    assert second_inputs[-1]["content"] == "finalize after results"
+    assert requests[2]["input"][: len(second_inputs)] == second_inputs
+    assert requests[0].get("tools") == requests[1].get("tools") == requests[2].get("tools")
 
 
 @pytest.mark.asyncio

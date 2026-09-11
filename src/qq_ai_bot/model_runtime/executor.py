@@ -347,6 +347,7 @@ class TaskModelExecutor:
             native_tools=request.native_tools,
             continuation=request.continuation,
             function_outputs=request.function_outputs,
+            continuation_messages=request.continuation_messages,
             conversation_prefix_hash=request.conversation_prefix_hash,
             request_shape_hash=request_shape_hash(
                 request,

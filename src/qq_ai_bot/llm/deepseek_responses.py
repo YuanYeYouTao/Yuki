@@ -118,8 +118,8 @@ class DeepSeekResponsesProvider(LLMProvider):
         latency = time.perf_counter() - started
         parsed = self._parse_response(
             response,
-            request.continuation,
-            function_outputs=request.function_outputs,
+            self._request_continuation(request),
+            function_outputs=(),
             allowed_tool_names=frozenset(tool.name for tool in request.tools),
             latency=latency,
         )
@@ -151,18 +151,10 @@ class DeepSeekResponsesProvider(LLMProvider):
 
     def _build_payload(self, request: ChatRequest) -> dict[str, Any]:
         instructions, inputs = self._convert_messages(request.messages)
-        continuation_items = self._continuation_items(request.continuation)
-        function_outputs = [
-            {
-                "type": "function_call_output",
-                "call_id": output.call_id,
-                "output": output.output,
-            }
-            for output in request.function_outputs
-        ]
+        continuation_items = self._continuation_items(self._request_continuation(request))
         payload: dict[str, Any] = {
             "model": request.model,
-            "input": [*inputs, *continuation_items, *function_outputs],
+            "input": [*inputs, *continuation_items],
             "stream": False,
         }
         if instructions:
@@ -243,6 +235,23 @@ class DeepSeekResponsesProvider(LLMProvider):
             elif message.content is not None:
                 inputs.append({"role": message.role, "content": message.content})
         return "\n\n".join(leading), inputs
+
+    @classmethod
+    def _request_continuation(cls, request: ChatRequest) -> ProviderContinuation | None:
+        if (
+            not request.continuation
+            and not request.function_outputs
+            and not request.continuation_messages
+        ):
+            return None
+        items = cls._merge_continuation(request.continuation, request.function_outputs, [])
+        tail = tuple(
+            {"type": "message", "role": message.role, "content": message.content or ""}
+            for message in request.continuation_messages
+        )
+        return ProviderContinuation(
+            provider="deepseek", protocol="responses", payload=(*items, *tail)
+        )
 
     @staticmethod
     def _continuation_items(continuation: ProviderContinuation | None) -> list[dict[str, Any]]:

@@ -754,6 +754,8 @@ class _ChatAgentBackend(AgentToolBackend):
                     {"ok": False, "error": "tool_batch_state_mismatch"}, ensure_ascii=False
                 )
             call = self._batch.pop(call_index)
+        if name == "update_short_state" and self._service._agent_runner.main_contract is not None:
+            return await self._service._agent_runner.main_contract.state.execute(arguments_json)
         if name == _SET_REPLY_TARGET_NAME:
             return self._set_reply_target(arguments_json)
         if self._runtime.tools_closed:
@@ -799,7 +801,10 @@ class _ChatAgentBackend(AgentToolBackend):
                     {"ok": False, "error": error or NO_LONGER_AUTHORIZED},
                     ensure_ascii=False,
                 )
-        if name not in self._callable_tool_names:
+        if (
+            name not in self._callable_tool_names
+            and self._service._agent_runner.main_contract is None
+        ):
             requestable = (
                 self._requestable_catalog.by_model_name(name)
                 if self._requestable_catalog is not None
@@ -1222,6 +1227,8 @@ class _ChatAgentBackend(AgentToolBackend):
         runtime: AgentRuntime,
     ) -> bool:
         """Classify cache invalidation through the same descriptor used for execution."""
+        if name == "update_short_state":
+            return True
 
         del runtime
         if name in {REQUEST_TOOLS_NAME, _SET_REPLY_TARGET_NAME}:
@@ -1731,7 +1738,9 @@ class ChatService:
                     execute=artifact_execute,
                 )
             )
-        if runtime.allow_automation and self._automation_tools is not None:
+        if (
+            runtime.declaration_only or runtime.allow_automation
+        ) and self._automation_tools is not None:
             automation = self._automation_tools
 
             async def automation_execute(
@@ -1749,7 +1758,9 @@ class ChatService:
                     execute=automation_execute,
                 )
             )
-        if runtime.allow_admin_actions and self._admin_tools is not None:
+        if (
+            runtime.declaration_only or runtime.allow_admin_actions
+        ) and self._admin_tools is not None:
             admin = self._admin_tools
 
             async def admin_execute(

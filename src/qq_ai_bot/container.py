@@ -482,6 +482,15 @@ class ApplicationContainer:
         self.voice_profile_service.set_event_publisher(self.plugin_events)
         self.emoji_selector.set_plugin_signals(self.plugin_emoji_signals)
         self.chat.set_plugin_tools(self.plugin_tools)
+        from qq_ai_bot.services.main_agent_contract import MainAgentContract
+        from qq_ai_bot.workspace.short_state import ShortState
+
+        self.main_agent_contract = MainAgentContract(
+            self.chat, self._automation_handlers, ShortState(self.workspace_service.store)
+        )
+        self.agent_tools.short_state = self.main_agent_contract.state
+        self.chat._agent_runner.main_contract = self.main_agent_contract
+        self._automation_handlers._agent_runner.main_contract = self.main_agent_contract
         self.autonomous_groups = AutonomousGroupService(
             chat=self.chat,
             runtime_config=self.runtime_config,

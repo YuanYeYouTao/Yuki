@@ -160,6 +160,7 @@ class ToolRuntime:
     inbound: InboundMessage | None
     gateway: OneBotToolGateway | None
     allow_generic_onebot: bool
+    declaration_only: bool = False
     allow_admin_actions: bool = False
     allow_automation: bool = False
     conversation_key: str = ""
@@ -336,6 +337,7 @@ class AgentToolService:
         )
         self._voice_preferences = voice_preferences
         self.social_service: Any = None
+        self.short_state: Any = None
         self.workspace_service: Any = None
         self.sandbox_client: Any = None
 
@@ -575,7 +577,9 @@ class AgentToolService:
                     ),
                 )
             )
-        if self._memory_mutations is not None and runtime.origin in _MEMORY_CHANGE_ORIGINS:
+        if self._memory_mutations is not None and (
+            runtime.declaration_only or runtime.origin in _MEMORY_CHANGE_ORIGINS
+        ):
             tools.append(
                 ChatTool(
                     name="memory_change",
@@ -817,7 +821,7 @@ class AgentToolService:
                     ),
                 )
             )
-        if runtime.allow_generic_onebot:
+        if runtime.declaration_only or runtime.allow_generic_onebot:
             tools.append(
                 ChatTool(
                     name="call_onebot_api",
@@ -834,7 +838,7 @@ class AgentToolService:
                     ),
                 )
             )
-        if self._voice_available_for_turn(runtime):
+        if runtime.declaration_only or self._voice_available_for_turn(runtime):
             tools.append(
                 ChatTool(
                     name="send_voice",
@@ -864,7 +868,7 @@ class AgentToolService:
                     ),
                 )
             )
-        if self._emoji_available_for_turn(runtime):
+        if runtime.declaration_only or self._emoji_available_for_turn(runtime):
             tools.append(
                 ChatTool(
                     name="send_emoji",
@@ -890,7 +894,7 @@ class AgentToolService:
                     ),
                 )
             )
-        if (
+        if runtime.declaration_only or (
             self._voice_available_for_turn(runtime)
             and not runtime.read_only
             and runtime.origin in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}
@@ -913,7 +917,10 @@ class AgentToolService:
                     ),
                 )
             )
-        if runtime.origin in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}:
+        if runtime.declaration_only or runtime.origin in {
+            TurnOrigin.USER_MESSAGE,
+            TurnOrigin.AUTONOMOUS_GROUP,
+        }:
             tools.append(
                 ChatTool(
                     name="set_reply_layout",
@@ -938,7 +945,10 @@ class AgentToolService:
                     ),
                 )
             )
-        if runtime.origin in {TurnOrigin.AUTONOMOUS_GROUP, TurnOrigin.PLUGIN_BACKGROUND}:
+        if runtime.declaration_only or runtime.origin in {
+            TurnOrigin.AUTONOMOUS_GROUP,
+            TurnOrigin.PLUGIN_BACKGROUND,
+        }:
             tools.append(
                 ChatTool(
                     name="decline_reply",
