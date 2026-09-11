@@ -26,6 +26,7 @@ async def task_receipt_cases(database, tmp_path):
         "trigger_id": "inbound",
         "generation": 1,
         "presence_id": env.presence,
+        "bot_user_id": "80001",
     }
     arguments = {"code": "print(1)"}
     first, second = await asyncio.gather(
@@ -86,8 +87,11 @@ async def task_receipt_cases(database, tmp_path):
     row = await tasks.get("request")
     assert json.loads(row.source_json) == source
     assert row.status == "completed"
+    from tests.support.sandbox_source_cases import message_source_cases
+
     async with database.sessions() as session:
         assert await session.scalar(select(func.count()).select_from(SandboxTaskRunModel)) == 1
+    await message_source_cases(database, tasks, source, event)
     writer = SimpleNamespace(write=Mock(), drain=AsyncMock(), close=Mock(), wait_closed=AsyncMock())
     reader = SimpleNamespace(readline=AsyncMock(return_value=b'{"pending":true}\n'))
 
