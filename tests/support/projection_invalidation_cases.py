@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import select
 
 from qq_ai_bot.conversation.canonical_db_models import (
+    CanonicalConversationModel,
     CanonicalConversationRollupEmergencyOverlayModel,
     CanonicalConversationRollupModel,
 )
@@ -17,11 +18,38 @@ from qq_ai_bot.persistence.models import ChatEventModel
 
 async def projection_invalidation_cases(database, repository, args):
     async def seed(reason):
+        async with database.sessions() as session:
+            source = await session.get(CanonicalConversationModel, args["conversation_id"])
+            args["expected_source_revision"] = source.prompt_source_revision
         return await repository.commit(
             **args, items=[{"text": "cached body"}], rebuild_reason=reason
         )
 
     await repository.invalidate(args["conversation_id"])
+    async with database.sessions() as session:
+        source = await session.get(CanonicalConversationModel, args["conversation_id"])
+        args["expected_source_revision"] = source.prompt_source_revision
+        event = await session.scalar(
+            select(ChatEventModel)
+            .where(
+                ChatEventModel.canonical_conversation_id == args["conversation_id"],
+            )
+            .limit(1)
+        )
+        untouched_id, untouched_content = event.id, event.content
+    async with database.sessions() as session, session.begin():
+        event = await session.get(ChatEventModel, untouched_id)
+        event.content = "edit before first projection"
+    try:
+        with pytest.raises(ProjectionConflict, match="source revision changed"):
+            await repository.commit(
+                **args, items=[{"text": untouched_content}], rebuild_reason="bootstrap"
+            )
+        assert await repository.read(args["view_key"]) is None
+    finally:
+        async with database.sessions() as session, session.begin():
+            event = await session.get(ChatEventModel, untouched_id)
+            event.content = untouched_content
     current = await seed("bootstrap")
     async with database.sessions() as session:
         event = await session.scalar(

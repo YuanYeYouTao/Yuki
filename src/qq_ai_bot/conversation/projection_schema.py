@@ -5,6 +5,8 @@ def _trigger(name: str, event: str, scope: str, reason: str, when: str = "") -> 
     return f"""CREATE TRIGGER {name} AFTER {event}
     {f"WHEN {when}" if when else ""}
     BEGIN
+        UPDATE canonical_conversations
+        SET prompt_source_revision=prompt_source_revision+1 WHERE id IN ({scope});
         UPDATE prompt_projections
         SET payload_json='[]', byte_size=2, revision=revision+1,
             invalidated_reason='{reason}'

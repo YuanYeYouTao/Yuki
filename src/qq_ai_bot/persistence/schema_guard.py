@@ -18,6 +18,7 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "view_key",
             "conversation_id",
             "generation",
+            "source_revision",
             "starts_after_event_id",
             "epoch_id",
             "context_key",
@@ -79,7 +80,7 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
         }
     ),
     "presences": frozenset({"id", "platform", "external_account_id", "enabled"}),
-    "canonical_conversations": frozenset({"id", "kind", "generation"}),
+    "canonical_conversations": frozenset({"id", "kind", "generation", "prompt_source_revision"}),
     "conversation_legacy_aliases": frozenset({"id", "conversation_id", "scope_key", "is_primary"}),
     "chat_events": frozenset(
         {

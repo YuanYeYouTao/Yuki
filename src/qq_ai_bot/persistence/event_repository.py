@@ -71,6 +71,7 @@ class ConversationReadVersion:
     conversation_id: str | None
     generation: int
     starts_after_event_id: int
+    prompt_source_revision: int = 0
 
 
 async def _read_version(session: AsyncSession, scope: ConversationScope) -> ConversationReadVersion:
@@ -83,6 +84,7 @@ async def _read_version(session: AsyncSession, scope: ConversationScope) -> Conv
         identity,
         int(row.generation) if row else 0,
         int(row.starts_after_event_id) if row else 0,
+        int(row.prompt_source_revision) if row else 0,
     )
 
 

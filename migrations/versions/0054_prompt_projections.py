@@ -12,6 +12,15 @@ depends_on = None
 
 
 def upgrade() -> None:
+    op.add_column(
+        "canonical_conversations",
+        sa.Column(
+            "prompt_source_revision",
+            sa.Integer(),
+            nullable=False,
+            server_default=sa.text("0"),
+        ),
+    )
     op.create_table(
         "prompt_projections",
         sa.Column("view_key", sa.String(64), primary_key=True),
@@ -22,6 +31,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("generation", sa.Integer(), nullable=False),
+        sa.Column("source_revision", sa.Integer(), nullable=False),
         sa.Column("starts_after_event_id", sa.Integer(), nullable=False),
         sa.Column("epoch_id", sa.String(36), nullable=False),
         sa.Column("context_key", sa.String(64), nullable=False),
@@ -46,3 +56,4 @@ def downgrade() -> None:
         op.execute(f"DROP TRIGGER {name}")
     op.drop_index("ix_prompt_projections_conversation_id", table_name="prompt_projections")
     op.drop_table("prompt_projections")
+    op.drop_column("canonical_conversations", "prompt_source_revision")

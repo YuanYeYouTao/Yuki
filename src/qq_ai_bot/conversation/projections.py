@@ -46,6 +46,7 @@ class ProjectionSnapshot:
     contract_revision: str
     payload_json: str
     rebuild_reason: str
+    source_revision: int
 
     def items(self) -> list[dict[str, Any]]:
         # Each consumer gets a copy; changing it cannot mutate the committed view.
@@ -79,6 +80,8 @@ class PromptProjectionRepository:
                     PromptProjectionModel.view_key == view_key,
                     PromptProjectionModel.invalidated_reason.is_(None),
                     PromptProjectionModel.generation == CanonicalConversationModel.generation,
+                    PromptProjectionModel.source_revision
+                    == CanonicalConversationModel.prompt_source_revision,
                     PromptProjectionModel.starts_after_event_id
                     == CanonicalConversationModel.starts_after_event_id,
                 )
@@ -99,6 +102,7 @@ class PromptProjectionRepository:
         view_key: str,
         conversation_id: str,
         generation: int,
+        expected_source_revision: int,
         starts_after_event_id: int,
         context_key: str,
         contract_revision: str,
@@ -133,6 +137,8 @@ class PromptProjectionRepository:
                 starts_after_event_id,
             ):
                 raise ProjectionConflict("projection source generation changed")
+            if source.prompt_source_revision != expected_source_revision:
+                raise ProjectionConflict("projection source revision changed")
             old = await session.get(PromptProjectionModel, view_key)
             if old is None:
                 if expected_epoch is not None or expected_revision != 0 or rebuild_reason is None:
@@ -193,6 +199,7 @@ class PromptProjectionRepository:
                 raise ProjectionCapacityError("projection global budget exceeded")
             row = old or PromptProjectionModel(view_key=view_key, conversation_id=conversation_id)
             row.generation, row.starts_after_event_id = generation, starts_after_event_id
+            row.source_revision = expected_source_revision
             row.context_key, row.contract_revision = context_key, contract_revision
             row.epoch_id = str(uuid4()) if rebuild_reason else row.epoch_id
             row.revision = 1 if rebuild_reason else row.revision + 1
@@ -224,4 +231,5 @@ def _snapshot(row: PromptProjectionModel) -> ProjectionSnapshot:
         row.contract_revision,
         row.payload_json,
         row.rebuild_reason,
+        row.source_revision,
     )

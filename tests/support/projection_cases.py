@@ -17,11 +17,13 @@ async def projection_storage_cases(database, conversation_id):
     async with database.sessions() as session:
         source = await session.get(CanonicalConversationModel, conversation_id)
         generation, starts = source.generation, source.starts_after_event_id
+        source_revision = source.prompt_source_revision
     repository = PromptProjectionRepository(database, max_context_characters=128)
     args = dict(
         view_key="a" * 64,
         conversation_id=conversation_id,
         generation=generation,
+        expected_source_revision=source_revision,
         starts_after_event_id=starts,
         context_key="b" * 64,
         contract_revision="c" * 64,
@@ -76,7 +78,11 @@ async def projection_storage_cases(database, conversation_id):
         with pytest.raises(ProjectionConflict, match="source generation"):
             await repository.commit(**args, **cas, items=[])
         reset = await repository.commit(
-            **{**args, "generation": generation + 1},
+            **{
+                **args,
+                "generation": generation + 1,
+                "expected_source_revision": source_revision + 1,
+            },
             items=[],
             rebuild_reason="reset",
         )
@@ -86,6 +92,7 @@ async def projection_storage_cases(database, conversation_id):
             source = await session.get(CanonicalConversationModel, conversation_id)
             source.generation = generation
         await repository.invalidate(conversation_id)
+        args["expected_source_revision"] = source_revision + 2
     tiny = PromptProjectionRepository(database, max_context_characters=128, total_bytes=45)
     results = await asyncio.gather(
         *(

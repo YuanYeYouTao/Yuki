@@ -22,6 +22,7 @@ class PromptProjectionModel(Base):
         ForeignKey("canonical_conversations.id", ondelete="CASCADE"), nullable=False, index=True
     )
     generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     starts_after_event_id: Mapped[int] = mapped_column(Integer, nullable=False)
     epoch_id: Mapped[str] = mapped_column(String(36), nullable=False)
     context_key: Mapped[str] = mapped_column(String(64), nullable=False)
