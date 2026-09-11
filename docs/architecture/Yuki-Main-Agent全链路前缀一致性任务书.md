@@ -251,3 +251,4 @@ ledger 继续是事实真源；投影快照是可重建、有版本的模型输�
 - P3 重置边界首批：自动化历史改用当前 generation 的有界读取，携带实际读取 scope、canonical id、generation 与 starts_after_event_id；固定主 Agent 路径在每次模型请求前重新核验，变化时以 automation_context_changed 非重试错误停止。阻止尚未发出的请求不计入模型调用数；已用工具/模型统计保留。历史档案查询接口保持原语义。已验证旧事件隔离、版本失效、无会话读取、首轮/续轮拦截与调用统计。此处尚未覆盖排队期间/在途请求的协调取消、旧无 main_contract 兼容生成路径、完整投递前校验；不能宣称统一入口和 epoch 全部完成。
 - 本批验证：自动化、canonical runtime、聊天共 83 项定向测试通过；5 个修改源模块类型检查及 Ruff/diff 检查通过，没有运行全量。
 - P3 排队校验：before_model_request 移至获得全局并发额度之后、ModelExecutor 调用之前；校验异常单独传播，不进入已提交操作的模型失败恢复分支。实际阻塞队列回归证明排队期间重置不会发送 Provider 请求，调用数为 0。21 项自动化/外部唤醒定向测试与 Runner 类型检查通过。Provider 内部重试及在途取消仍需后续统一协调。
+- P3 编译/执行服务首批：新增 MainAgentTurnService，普通聊天、自主群回复、插件 external_event 与自动化共享 compose/run；在编译前读取一次全局 short_state，动态项排序在时间之前，空记录保留 CAS revision。已准备轮次不再由 Runner 注入/重读状态。动态预算使用完整序列化 envelope，并扣除历史与当前正文；总字符诊断包含真实分隔符。81 项聊天/自动化/外部事件测试、单次快照/空快照/写后不改输入/预算边界回归与 7 个模块类型检查通过。旧 raw-message 插件接口仍沿兼容注入路径，待 D1；服务当前尚未统一触发协调、投递和持久历史，不能将该首批视为 P3 完成。

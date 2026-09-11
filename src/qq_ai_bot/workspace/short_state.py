@@ -52,7 +52,12 @@ class ShortState:
 
     @staticmethod
     def envelope(rows: list[dict[str, Any]]) -> dict[str, Any]:
-        return {"id": "runtime.short_state", "trust": "untrusted_data", "data": rows}
+        return {
+            "id": "runtime.short_state",
+            "channel": "runtime",
+            "trust": "untrusted",
+            "data": rows,
+        }
 
     def snapshot(self) -> list[dict[str, Any]]:
         with self.store._transaction() as db:

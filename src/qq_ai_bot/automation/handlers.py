@@ -62,6 +62,7 @@ from qq_ai_bot.services.agent_runner import (
 )
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.context_assembler import ContextAssembler
+from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
 from qq_ai_bot.services.prompt_composer import PromptComposer, PromptComposition
 from qq_ai_bot.speech.genie_client import GenieWorkerFailure, GenieWorkerUnavailable
 from qq_ai_bot.speech.provider import SpeechSynthesisRequest
@@ -358,7 +359,7 @@ class AutomationCapabilityHandlers:
             ),
         )
         try:
-            result = await self._agent_runner.run(messages, runtime, backend)
+            result = await self._main_turn_service().run(messages, runtime, backend)
         except LLMError as exc:
             raise _automation_llm_error(
                 exc,
@@ -763,9 +764,7 @@ class AutomationCapabilityHandlers:
             profile=str(arguments.get("context_profile") or "none"),
             current_time=self._time.at(context.actual_started_at, context.timezone),
         )
-        contract = self._agent_runner.main_contract
-        composer = contract.chat._prompt_composer if contract else PromptComposer(self._settings)
-        composition = composer.compose(
+        composition = await self._main_turn_service().compose(
             inbound=None,
             context=assembled,
             runtime=snapshot,
@@ -775,6 +774,12 @@ class AutomationCapabilityHandlers:
             include_plugin_context=False,
         )
         return composition
+
+    def _main_turn_service(self) -> MainAgentTurnService:
+        contract = self._agent_runner.main_contract
+        if contract is not None:
+            return cast(MainAgentTurnService, contract.chat._main_turns)
+        return MainAgentTurnService(PromptComposer(self._settings), self._agent_runner)
 
 
 class _AutomationAgentBackend(AgentToolBackend):

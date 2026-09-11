@@ -15,7 +15,6 @@ from qq_ai_bot.prompting.models import (
 )
 from qq_ai_bot.prompting.serializer import (
     serialize_dynamic,
-    serialized_characters,
     serialized_messages_hash,
 )
 
@@ -71,9 +70,7 @@ class PromptCompiler:
         )
         history_characters = sum(len(item.content or "") for item in history)
         current_message_characters = len(current_message.content or "") if current_message else 0
-        total_characters = (
-            len(stable_text) + len(dynamic_text) + history_characters + current_message_characters
-        )
+        total_characters = sum(len(message.content or "") for message in messages)
         return CompiledPrompt(
             messages=tuple(messages),
             selected=static + selected_dynamic,
@@ -102,17 +99,16 @@ class PromptCompiler:
         if budget < 0:
             raise ValueError("dynamic prompt budget must not be negative")
         required = tuple(item for item in contributions if item.required)
-        used = sum(serialized_characters(item) for item in required)
+        used = len(serialize_dynamic(required))
         if used > budget:
             raise ValueError("required dynamic prompt contributions exceed configured budget")
         selected = list(required)
         for item in contributions:
             if item.required:
                 continue
-            cost = serialized_characters(item)
-            if used + cost <= budget:
+            cost = len(serialize_dynamic((*selected, item)))
+            if cost <= budget:
                 selected.append(item)
-                used += cost
         selected_ids = {item.id for item in selected}
         return tuple(item for item in contributions if item.id in selected_ids)
 

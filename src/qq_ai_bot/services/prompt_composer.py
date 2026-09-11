@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from typing import Any
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.config import Settings
@@ -69,6 +70,7 @@ class PromptComposer:
         visual_failure: bool,
         scope_type: ScopeType | None = None,
         include_plugin_context: bool = True,
+        short_state: list[dict[str, Any]] | None = None,
     ) -> PromptComposition:
         contributions: list[PromptContribution] = [
             static_text(
@@ -104,6 +106,17 @@ class PromptComposer:
                 required=True,
             ),
         ]
+        if short_state:
+            contributions.append(
+                PromptContribution(
+                    id="runtime.short_state",
+                    channel=PromptChannel.RUNTIME,
+                    trust=PromptTrust.UNTRUSTED,
+                    priority=-9_999,
+                    payload=short_state,
+                    required=True,
+                )
+            )
         if inbound is not None and inbound.sender.user_id in self._settings.superusers:
             contributions.append(
                 PromptContribution(
@@ -215,13 +228,19 @@ class PromptComposer:
                     payload={"available": True},
                 )
             )
+        history = self._conversation_history(context)
+        remaining = (
+            self._settings.max_context_characters
+            + runtime.plugins.max_total_prompt_characters
+            - sum(len(message.content or "") for message in history)
+            - len(context.current_message.content or "")
+            - (2 if context.current_message.content else 0)
+        )
         compiled = self._compiler.compile(
             PromptProgram(contributions=tuple(contributions)),
-            history=self._conversation_history(context),
+            history=history,
             current_message=context.current_message,
-            dynamic_character_budget=(
-                self._settings.max_context_characters + runtime.plugins.max_total_prompt_characters
-            ),
+            dynamic_character_budget=max(0, remaining),
         )
         return self._finalize(context, compiled)
 

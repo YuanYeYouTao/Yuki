@@ -302,6 +302,10 @@ async def run_short_state_cases(database, tmp_path, context):
     assert "runtime.short_state" in request.messages[-1].content
     assert "current_direct_event" not in request.messages[-1].content
 
+    from tests.support.main_turn_cases import run_compiled_state_cases
+
+    await run_compiled_state_cases(handlers, state, provider, runtime, context)
+
     # A reset before dispatch costs no model call; a reset after the first
     # response prevents continuation without erasing already used calls.
     from unittest.mock import AsyncMock

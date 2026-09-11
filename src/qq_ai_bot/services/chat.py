@@ -134,6 +134,7 @@ from qq_ai_bot.services.effect_gate import (
     EffectGateTimeoutError,
     EffectPermitRejectedError,
 )
+from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
 from qq_ai_bot.services.plugin_events import (
     LifecycleEventPublisher,
     publish_notification,
@@ -1546,6 +1547,7 @@ class ChatService:
                 rollup_service=rollup_service,
             )
         self._prompt_composer = prompt_composer or PromptComposer(settings)
+        self._main_turns = MainAgentTurnService(self._prompt_composer, self._agent_runner)
         self._turn_coordinator = turn_coordinator or ConversationTurnCoordinator(
             cancel_replies_on_new_message=settings.reply_sequence_cancel_on_new_message,
             interrupt_autonomous_on_new_message=(
@@ -2794,7 +2796,7 @@ class ChatService:
                 context.injected_memory_ids,
                 context.memory_exposures,
             )
-        composition = self._prompt_composer.compose(
+        composition = await self._main_turns.compose(
             inbound=inbound,
             context=context,
             runtime=runtime,
@@ -2924,7 +2926,7 @@ class ChatService:
             if snapshot is not None and not await self._validate_turn_snapshot(snapshot):
                 raise TurnSupersededError("turn generation changed before model invocation")
 
-        result = await self._agent_runner.run(
+        result = await self._main_turns.run(
             initial_messages,
             AgentRuntime(
                 origin=runtime.origin,
@@ -3051,7 +3053,7 @@ class ChatService:
             external_event=event,
             external_trigger=trigger,
         )
-        composition = self._prompt_composer.compose(
+        composition = await self._main_turns.compose(
             inbound=None,
             context=context,
             runtime=runtime,

@@ -76,6 +76,7 @@ class AgentRuntime:
     prompt_diagnostics: PromptRequestDiagnostics | None = None
     before_model_request: Callable[[], Awaitable[None]] | None = None
     canonical_conversation_id: str | None = None
+    dynamic_context_prepared: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,7 +146,9 @@ class AgentRunner:
         fixed_definitions = None
         if self.main_contract is not None:
             fixed_definitions = await self.main_contract.definitions()
-            initial_messages = await self.main_contract.state.inject(initial_messages)
+            if not runtime.dynamic_context_prepared:
+                # Legacy raw-message integrations await their explicit migration.
+                initial_messages = await self.main_contract.state.inject(initial_messages)
             if tools is None:
                 from qq_ai_bot.services.main_agent_contract import ShortStateOnlyBackend
 
@@ -296,6 +299,7 @@ class AgentRunner:
                     if runtime.canonical_conversation_id is not None
                     else partial(self._models.execute, self._task, request)
                 )
+
                 async def dispatch(
                     execute: Callable[[], Awaitable[ChatResponse]] = execute,
                 ) -> ChatResponse:
