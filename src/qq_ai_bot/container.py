@@ -835,12 +835,13 @@ class ApplicationContainer:
             start=self.plugin_notification_outbox.start,
             close=self.plugin_notification_outbox.close,
         )
+        self.plugin_module.register_lifecycle(self.plugins, self.lifecycle)
+        self.lifecycle.register("main_agent_manifest", start=self._freeze_main_manifest)
         self.lifecycle.register(
             "plugin_background_turns",
             start=self.plugin_background_turns.start,
             close=self.plugin_background_turns.close,
         )
-        self.plugin_module.register_lifecycle(self.plugins, self.lifecycle)
         self.lifecycle.register("application_event", start=self._publish_started)
         if self.settings.speech_enabled:
             self.lifecycle.register("speech_startup", start=self._start_speech)
@@ -852,6 +853,10 @@ class ApplicationContainer:
         self.conversation_module.register_workers(self.conversation, self.lifecycle)
         self.emoji_module.register_worker(self.emoji_bundle, self.lifecycle)
         self.automation_module.register_lifecycle(self.automation_bundle, self.lifecycle)
+
+    async def _freeze_main_manifest(self) -> None:
+        # Finish plugin registration before queued background turns can freeze a partial catalog.
+        await self.main_agent_contract.definitions()
 
     async def _publish_started(self) -> None:
         await publish_notification(

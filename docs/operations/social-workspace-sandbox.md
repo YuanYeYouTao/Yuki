@@ -1,7 +1,7 @@
 # Social tools, scratch workspace and Python jobs
 
-All Yuki Main Agent entrypoints share a sorted function-tool manifest, frozen on
-first use for the running deployment. Normal/private/group turns, plugin wakeups,
+All Yuki Main Agent entrypoints share a sorted function-tool manifest, frozen after
+plugin startup and before background turns for the running deployment. Normal/private/group turns, plugin wakeups,
 plugin generation, scheduled generation and scheduled Agent runs use the same
 schemas, including retry/finalization requests. Core, installed plugin, MCP and
 automation definitions are collected without an event identity. Execution still
