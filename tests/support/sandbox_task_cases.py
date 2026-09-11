@@ -156,3 +156,6 @@ async def task_receipt_cases(database, tmp_path):
         assert not (await receiver.health())["running"]
     assert await receiver.drain_once() == 1
     assert (await receiver.health())["acknowledged_this_process"] == 1
+    from tests.support.sandbox_automation_recovery_cases import automation_recovery_cases
+
+    await automation_recovery_cases(database, tasks)

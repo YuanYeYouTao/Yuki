@@ -361,7 +361,7 @@ class AutomationExecutor:
         )
 
     async def _begin_execution(
-        self, claimed: AutomationRecord
+        self, claimed: AutomationRecord, *, allow_completed: bool = False
     ) -> _ExecutionSnapshot | ExecutionResult:
         async with self._repository._database.sessions() as session:
             current = await self._repository.get(claimed.id, session=session)
@@ -377,7 +377,9 @@ class AutomationExecutor:
                     error_category="state_mismatch",
                     summary={"reason": "claimed canonical identity is stale"},
                 )
-            if current.status is not AutomationStatus.ACTIVE:
+            if current.status is not AutomationStatus.ACTIVE and not (
+                allow_completed and current.status is AutomationStatus.COMPLETED
+            ):
                 return ExecutionResult(
                     status=RunStatus.BLOCKED,
                     error_category="automation_inactive",
