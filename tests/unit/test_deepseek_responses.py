@@ -342,7 +342,20 @@ async def test_responses_omit_temperature_for_provider_defaults(model: str) -> N
 
 @pytest.mark.asyncio
 async def test_function_output_follows_cumulative_continuation() -> None:
+    from qq_ai_bot.services.turn_transcript import TurnTranscript
+
     requests: list[dict[str, object]] = []
+    declared = (ChatTool(name="lookup", description="fixed", parameters={"type": "object"}),)
+    transcript = TurnTranscript(_request().messages)
+
+    def current_request():
+        sequence = transcript.request()
+        return _request(
+            messages=sequence.messages,
+            tools=declared,
+            continuation=sequence.continuation,
+            continuation_items=sequence.items,
+        )
 
     def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
@@ -364,23 +377,16 @@ async def test_function_output_follows_cumulative_continuation() -> None:
             max_retries=0,
             client=client,
         )
-        first = await provider.complete(_request())
+        first = await provider.complete(current_request())
         assert [call.id for call in first.tool_calls] == ["call_fixture_1", "call_fixture_2"]
         assert first.continuation is not None
-        second = await provider.complete(
-            _request(
-                continuation=first.continuation,
-                continuation_messages=(
-                    ChatMessage(role="system", content="finalize after results"),
-                ),
-                function_outputs=(
-                    FunctionCallOutput(call_id="call_fixture_1", output='{"ok":true}'),
-                    FunctionCallOutput(call_id="call_fixture_2", output='{"ok":true}'),
-                ),
-            )
-        )
-
-        await provider.complete(_request(continuation=second.continuation))
+        transcript.accept(first.continuation)
+        transcript.append_result("call_fixture_1", '{"ok":true}')
+        transcript.append(ChatMessage(role="system", content="control between results"))
+        transcript.append_result("call_fixture_2", '{"ok":true}')
+        second = await provider.complete(current_request())
+        transcript.accept(second.continuation)
+        await provider.complete(current_request())
 
     second_inputs = requests[1]["input"]
     assert isinstance(second_inputs, list)
@@ -389,14 +395,36 @@ async def test_function_output_follows_cumulative_continuation() -> None:
         "function_call",
         "function_call",
         "function_call_output",
-        "function_call_output",
         "message",
+        "function_call_output",
     ]
     assert second_inputs[-3]["call_id"] == "call_fixture_1"
 
-    assert second_inputs[-1]["content"] == "finalize after results"
+    assert second_inputs[-2]["content"] == "control between results"
+    assert second_inputs[-1]["call_id"] == "call_fixture_2"
     assert requests[2]["input"][: len(second_inputs)] == second_inputs
-    assert requests[0].get("tools") == requests[1].get("tools") == requests[2].get("tools")
+    assert requests[0]["tools"] == requests[1]["tools"] == requests[2]["tools"]
+    assert requests[0]["tools"]
+    with pytest.raises(LLMInvalidRequestError, match="conflicting results"):
+        provider._build_payload(
+            _request(
+                continuation=second.continuation,
+                continuation_items=(
+                    FunctionCallOutput(call_id="call_fixture_1", output="different"),
+                ),
+            )
+        )
+    with pytest.raises(LLMInvalidRequestError, match="mixed ordered"):
+        provider._build_payload(
+            _request(
+                continuation=second.continuation,
+                continuation_items=(ChatMessage(role="system", content="tail"),),
+                function_outputs=(
+                    FunctionCallOutput(call_id="call_fixture_1", output="different"),
+                ),
+            )
+        )
+    assert requests[0]["instructions"] == requests[1]["instructions"] == requests[2]["instructions"]
 
 
 @pytest.mark.asyncio

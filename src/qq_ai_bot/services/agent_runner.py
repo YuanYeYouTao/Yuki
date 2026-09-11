@@ -22,12 +22,10 @@ from qq_ai_bot.domain.messages import (
     ChatMessage,
     ChatRequest,
     ChatTool,
-    FunctionCallOutput,
     ModelResponseStatus,
     NativeToolDefinition,
     NativeToolEvent,
     PromptRequestDiagnostics,
-    ProviderContinuation,
     ResponseCitation,
     ToolCall,
 )
@@ -43,6 +41,7 @@ from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.evidence_observation import EVIDENCE_TOOLS, EvidenceObservation
 from qq_ai_bot.services.native_tool_binder import NativeToolBinder
+from qq_ai_bot.services.turn_transcript import TurnTranscript
 from qq_ai_bot.time.models import TimeContext
 from qq_ai_bot.web.models import WebMode
 
@@ -144,16 +143,13 @@ class AgentRunner:
                 from qq_ai_bot.services.main_agent_contract import ShortStateOnlyBackend
 
                 tools = ShortStateOnlyBackend(self.main_contract.state)
-        messages = list(initial_messages)
+        transcript = TurnTranscript(initial_messages)
         evidence_observation = EvidenceObservation(runtime.origin.value)
         staged_evidence_results = 0
         calls_used = 0
         web_was_used = False
         empty_retries = 0
         mention_recovery_used = False
-        continuation: ProviderContinuation | None = None
-        continuation_prefix_length = len(messages)
-        pending_function_outputs: tuple[FunctionCallOutput, ...] = ()
         native_events: list[NativeToolEvent] = []
         citations: list[ResponseCitation] = []
         response_status = ModelResponseStatus.COMPLETED
@@ -198,11 +194,10 @@ class AgentRunner:
                     item for item in definitions if item.name not in {"web_search", "read_webpage"}
                 )
             restart_chain = getattr(tools, "consume_provider_chain_restart", None)
-            if callable(restart_chain) and restart_chain() and fixed_definitions is None:
-                continuation = None
-                continuation_tools = ()
-                continuation_native_tools = ()
-            if continuation is not None:
+            if callable(restart_chain):
+                # Discovery/execution policy cannot discard a submitted request prefix.
+                restart_chain()
+            if transcript.continuation is not None:
                 # Responses continuations are one cumulative request chain.
                 # Tools may be added after request_tools, but removing a tool
                 # previously declared in the chain makes some providers reject
@@ -218,11 +213,11 @@ class AgentRunner:
                 # Chat Completions can omit tools entirely. Responses continuations
                 # must retain every previously declared schema, so keep those
                 # definitions but force tool_choice=none below.
-                if continuation is None and fixed_definitions is None:
+                if transcript.continuation is None and fixed_definitions is None:
                     definitions = ()
                     native_definitions = ()
                 if not finalization_prompt_added:
-                    messages.append(
+                    transcript.append(
                         ChatMessage(
                             role="system",
                             content=(
@@ -233,23 +228,28 @@ class AgentRunner:
                         )
                     )
                     finalization_prompt_added = True
-            if incomplete_recovery_used and continuation is None and fixed_definitions is None:
+            if (
+                incomplete_recovery_used
+                and transcript.continuation is None
+                and fixed_definitions is None
+            ):
                 definitions = ()
                 native_definitions = ()
-            if no_progress_recovery and continuation is None and fixed_definitions is None:
+            if (
+                no_progress_recovery
+                and transcript.continuation is None
+                and fixed_definitions is None
+            ):
                 definitions = ()
                 native_definitions = ()
             try:
                 if runtime.before_model_request is not None:
                     await runtime.before_model_request()
                 diagnostics = runtime.prompt_diagnostics
+                sequence = transcript.request()
                 request = ChatRequest(
-                    messages=tuple(
-                        messages[:continuation_prefix_length] if continuation else messages
-                    ),
-                    continuation_messages=tuple(messages[continuation_prefix_length:])
-                    if continuation
-                    else (),
+                    messages=sequence.messages,
+                    continuation_items=sequence.items,
                     model=runtime.runtime_config.llm.model or "fake",
                     temperature=runtime.runtime_config.llm.temperature,
                     max_output_tokens=runtime.runtime_config.llm.max_output_tokens,
@@ -262,8 +262,7 @@ class AgentRunner:
                         else ("auto" if definitions or native_definitions else None)
                     ),
                     native_tools=native_definitions,
-                    continuation=continuation,
-                    function_outputs=pending_function_outputs,
+                    continuation=sequence.continuation,
                     conversation_prefix_hash=(
                         diagnostics.conversation_prefix_hash if diagnostics else ""
                     ),
@@ -376,7 +375,7 @@ class AgentRunner:
                     empty_retries,
                     calls_used,
                 )
-                messages.append(
+                transcript.append(
                     ChatMessage(
                         role="system",
                         content=(
@@ -404,7 +403,6 @@ class AgentRunner:
                     tools, tool_calls=calls_used, model_requests=request_index + 1
                 )
                 raise
-            pending_function_outputs = ()
             native_events.extend(response.native_tool_events)
             citations.extend(response.citations)
             response_status = response.status
@@ -414,11 +412,7 @@ class AgentRunner:
                 if callable(mark_native_web):
                     mark_native_web()
             if response.continuation is not None:
-                if continuation is None:
-                    continuation_prefix_length = len(messages)
-                else:
-                    del messages[continuation_prefix_length:]
-                continuation = response.continuation
+                transcript.accept(response.continuation)
                 continuation_tools = definitions
                 continuation_native_tools = native_definitions
             if response.status is ModelResponseStatus.INCOMPLETE:
@@ -439,7 +433,7 @@ class AgentRunner:
                         "provider response remained incomplete after bounded recovery"
                     )
                 incomplete_recovery_used = True
-                messages.append(
+                transcript.append(
                     ChatMessage(
                         role="system",
                         content=(
@@ -464,7 +458,7 @@ class AgentRunner:
                         and any(tool.name == "send_group_message" for tool in definitions)
                     ):
                         mention_recovery_used = True
-                        messages.append(
+                        transcript.append(
                             ChatMessage(
                                 role="system",
                                 content=(
@@ -505,7 +499,7 @@ class AgentRunner:
                         empty_retries,
                         calls_used,
                     )
-                    messages.append(
+                    transcript.append(
                         ChatMessage(
                             role="system",
                             content=(
@@ -574,7 +568,7 @@ class AgentRunner:
                 )
             responses_path = response.continuation is not None
             if not responses_path:
-                messages.append(
+                transcript.append(
                     ChatMessage(
                         role="assistant",
                         content=response.content or None,
@@ -627,13 +621,7 @@ class AgentRunner:
                     ),
                     not _was_executed,
                 )
-                if responses_path:
-                    pending_function_outputs = (
-                        *pending_function_outputs,
-                        FunctionCallOutput(call_id=call.id, output=result),
-                    )
-                else:
-                    messages.append(ChatMessage(role="tool", content=result, tool_call_id=call.id))
+                transcript.append_result(call.id, result)
             if tools is not None:
                 declined = getattr(tools, "declined_reply", None)
                 if callable(declined) and declined():
@@ -692,8 +680,8 @@ class AgentRunner:
                     repeated_batch_count,
                     calls_used,
                 )
-                if continuation is None:
-                    messages.append(
+                if transcript.continuation is None:
+                    transcript.append(
                         ChatMessage(
                             role="system",
                             content=(

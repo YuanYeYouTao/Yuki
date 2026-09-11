@@ -199,10 +199,16 @@ class DeepSeekResponsesProvider(LLMProvider):
     @staticmethod
     def _convert_messages(
         messages: tuple[ChatMessage, ...],
+        *,
+        leading_instructions: bool = True,
     ) -> tuple[str, list[dict[str, Any]]]:
         leading: list[str] = []
         index = 0
-        while index < len(messages) and messages[index].role in {"system", "developer"}:
+        while (
+            leading_instructions
+            and index < len(messages)
+            and messages[index].role in {"system", "developer"}
+        ):
             if messages[index].images:
                 raise LLMInvalidRequestError("images must be attached to a user message")
             content = messages[index].content
@@ -238,19 +244,38 @@ class DeepSeekResponsesProvider(LLMProvider):
 
     @classmethod
     def _request_continuation(cls, request: ChatRequest) -> ProviderContinuation | None:
-        if (
-            not request.continuation
-            and not request.function_outputs
-            and not request.continuation_messages
+        if request.continuation_items and (
+            request.function_outputs or request.continuation_messages
         ):
-            return None
-        items = cls._merge_continuation(request.continuation, request.function_outputs, [])
-        tail = tuple(
-            {"type": "message", "role": message.role, "content": message.content or ""}
-            for message in request.continuation_messages
+            raise LLMInvalidRequestError("mixed ordered and legacy continuation inputs")
+        delta = request.continuation_items or (
+            *request.function_outputs,
+            *request.continuation_messages,
         )
+        if not request.continuation and not delta:
+            return None
+        items = cls._continuation_items(request.continuation)
+        for item in delta:
+            if isinstance(item, FunctionCallOutput):
+                items = list(
+                    cls._merge_continuation(
+                        ProviderContinuation(
+                            provider="deepseek", protocol="responses", payload=tuple(items)
+                        ),
+                        (item,),
+                        [],
+                    )
+                )
+            else:
+                # Tail controls stay input messages, including system/developer roles.
+                # Never promote a leading control delta into top-level instructions.
+                _, converted = cls._convert_messages((item,), leading_instructions=False)
+                items.extend({"type": "message", **value} for value in converted)
         return ProviderContinuation(
-            provider="deepseek", protocol="responses", payload=(*items, *tail)
+            provider="deepseek",
+            protocol="responses",
+            payload=tuple(items),
+            profile_id=request.continuation.profile_id if request.continuation else "",
         )
 
     @staticmethod
@@ -625,6 +650,12 @@ class DeepSeekResponsesProvider(LLMProvider):
                 continue
             identity = cls._item_identity(item)
             if identity in seen:
+                if item.get("type") == "function_call_output" and any(
+                    cls._item_identity(previous_item) == identity
+                    and previous_item.get("output") != item.get("output")
+                    for previous_item in merged
+                ):
+                    raise LLMInvalidRequestError("conflicting results for the same tool call")
                 continue
             seen.add(identity)
             merged.append(dict(item))
