@@ -124,6 +124,23 @@ class SocialAutomationAdapter:
                         request_id=sha256(
                             f"automation:{context.automation_run_id}:{context.step_id}".encode()
                         ).hexdigest(),
+                        source={
+                            "conversation_id": context.canonical_conversation_id,
+                            "origin": context.authority.origin.value,
+                            "actor_user_id": context.authority.actor_user_id,
+                            "trigger_id": context.step_id,
+                            "bot_user_id": context.bot_user_id,
+                            "automation_id": context.automation_id,
+                            "automation_run_id": context.automation_run_id,
+                            "delegated_authority": context.authority.delegated_authority.model_dump(
+                                mode="json"
+                            ),
+                            "allowed_capabilities": sorted(context.authority.allowed_capabilities),
+                            "target_person_id": context.canonical_target_person_id,
+                            "target_space_id": context.canonical_target_space_id,
+                        }
+                        if tool_name == "run_python"
+                        else None,
                     )
                     return CapabilityResult(data=result)
                 if not context.canonical_conversation_id:

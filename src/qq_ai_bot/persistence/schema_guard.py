@@ -8,7 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-CANONICAL_SCHEMA_REVISION = "0052"
+CANONICAL_SCHEMA_REVISION = "0053"
 
 _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
     "social_operation_receipts": frozenset(

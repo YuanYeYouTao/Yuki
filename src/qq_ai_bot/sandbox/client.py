@@ -5,9 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from qq_ai_bot.domain.messages import ChatTool
+
+if TYPE_CHECKING:
+    from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
 
 
 def sandbox_tools() -> tuple[ChatTool, ...]:
@@ -66,15 +69,29 @@ def sandbox_tools() -> tuple[ChatTool, ...]:
 
 
 class SandboxClient:
-    def __init__(self, socket: Path) -> None:
+    def __init__(self, socket: Path, *, tasks: SandboxTaskRepository | None = None) -> None:
         self.socket = socket
+        self.tasks = tasks
 
-    async def execute(self, name: str, args: dict[str, Any], *, request_id: str) -> dict[str, Any]:
+    async def execute(
+        self,
+        name: str,
+        args: dict[str, Any],
+        *,
+        request_id: str,
+        source: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         message = (
             json.dumps({"method": name, "args": args, "request_id": request_id}).encode() + b"\n"
         )
         if len(message) > 262144:
             return {"error": "request_too_large", "retryable": False}
+        if name == "run_python" and self.tasks is not None:
+            if source is None:
+                return {"error": "missing_task_source", "retryable": False}
+            # Must commit before any socket write, including uncertain submissions.
+            # Source never crosses into the execution container/Manager payload.
+            await self.tasks.prepare(request_id, args, source)
         try:
             async with asyncio.timeout(7):
                 connect = getattr(asyncio, "open_unix_connection", None)

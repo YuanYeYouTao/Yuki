@@ -299,8 +299,10 @@ class ApplicationContainer:
         )
         self.agent_tools.workspace_service = self.workspace_service
         from qq_ai_bot.sandbox.client import SandboxClient
+        from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
 
-        self.sandbox_client = SandboxClient(settings.sandbox_socket)
+        self.sandbox_tasks = SandboxTaskRepository(self.database)
+        self.sandbox_client = SandboxClient(settings.sandbox_socket, tasks=self.sandbox_tasks)
         self.agent_tools.sandbox_client = self.sandbox_client
         from qq_ai_bot.social.transfer import ArtifactTransfer
 

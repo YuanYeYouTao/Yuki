@@ -1023,7 +1023,25 @@ class AgentToolService:
                         f"{runtime.conversation_id}:{runtime.trigger_message_id}:{invocation.call_id}".encode()
                     ).hexdigest()
                     result = await self.sandbox_client.execute(
-                        name, arguments, request_id=request_id
+                        name,
+                        arguments,
+                        request_id=request_id,
+                        source={
+                            "conversation_id": runtime.effective_conversation_id,
+                            "origin": runtime.origin.value,
+                            "actor_user_id": runtime.actor_user_id,
+                            "trigger_id": runtime.trigger_message_id,
+                            "bot_user_id": runtime.effective_bot_user_id,
+                            "presence_id": runtime.effective_presence_id,
+                            "generation": runtime.turn_snapshot.generation
+                            if runtime.turn_snapshot
+                            else None,
+                            "trigger_event_id": runtime.turn_snapshot.trigger_event_id
+                            if runtime.turn_snapshot
+                            else None,
+                        }
+                        if name == "run_python"
+                        else None,
                     )
                     return self._result(data=result)
 

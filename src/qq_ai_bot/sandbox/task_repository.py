@@ -1,0 +1,111 @@
+"""Durable receipt handoff; stored sources are anchors, never renewed authority."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from datetime import UTC, datetime
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError
+
+from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.sandbox.db_models import SandboxTaskRunModel
+
+
+def canonical_json(value: Any, *, limit: int) -> str:
+    serialized = json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False)
+    if len(serialized.encode()) > limit:
+        raise ValueError("sandbox_task_payload_too_large")
+    return serialized
+
+
+class SandboxTaskRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    async def prepare(
+        self, request_id: str, arguments: dict[str, Any], source: dict[str, Any]
+    ) -> SandboxTaskRunModel:
+        """Called by the host before socket submission, with host-derived source data."""
+        if not isinstance(request_id, str) or not 1 <= len(request_id) <= 256:
+            raise ValueError("invalid_request_id")
+        if not isinstance(source.get("conversation_id"), str):
+            raise ValueError("invalid_task_source")
+        conversation_id = str(UUID(source["conversation_id"]))
+        if (
+            source.get("origin") not in {"user_message", "autonomous_group", "scheduled_automation"}
+            or not source.get("actor_user_id")
+            or not source.get("trigger_id")
+        ):
+            raise ValueError("invalid_task_source")
+        if source["origin"] == "scheduled_automation" and not source.get("delegated_authority"):
+            raise ValueError("missing_task_delegation")
+        source_json = canonical_json(source, limit=65536)
+        digest = hashlib.sha256(canonical_json(arguments, limit=262144).encode()).hexdigest()
+        now = datetime.now(UTC)
+        row = SandboxTaskRunModel(
+            request_id=request_id,
+            source_conversation_id=conversation_id,
+            source_json=source_json,
+            payload_hash=digest,
+            status="waiting",
+            created_at=now,
+            updated_at=now,
+        )
+        try:
+            async with self.database.sessions() as session, session.begin():
+                session.add(row)
+                await session.flush()
+        except IntegrityError:
+            # Concurrent retries may both attempt the insert. Only an identical
+            # existing receipt is reusable; foreign-key failures still propagate.
+            existing = await self.get(request_id)
+            if existing is None:
+                raise
+            if existing.payload_hash != digest or existing.source_json != source_json:
+                raise ValueError("sandbox_task_idempotency_conflict") from None
+            return existing
+        return row
+
+    async def get(self, request_id: str) -> SandboxTaskRunModel | None:
+        async with self.database.sessions() as session:
+            return await session.get(SandboxTaskRunModel, request_id)
+
+    async def receive(self, event: dict[str, Any]) -> None:
+        """Persist a completion before the caller may acknowledge it to Manager."""
+        run_id = str(UUID(event["run_id"]))
+        result = event.get("result")
+        if (
+            not isinstance(result, dict)
+            or result.get("run_id") != run_id
+            or result.get("status") not in {"succeeded", "failed", "cancelled"}
+            or result.get("pending") is not False
+        ):
+            raise ValueError("invalid_task_completion")
+        payload = canonical_json(result, limit=240000)
+        request_id = event["request_id"]
+        async with self.database.sessions() as session, session.begin():
+            changed = await session.execute(
+                update(SandboxTaskRunModel)
+                .where(
+                    SandboxTaskRunModel.request_id == request_id,
+                    SandboxTaskRunModel.status == "waiting",
+                )
+                .values(
+                    run_id=run_id,
+                    status="completed",
+                    completion_json=payload,
+                    updated_at=datetime.now(UTC),
+                )
+                .returning(SandboxTaskRunModel.request_id)
+            )
+            if changed.scalar_one_or_none() is not None:
+                return
+            existing = await session.get(SandboxTaskRunModel, request_id)
+            if existing is None:
+                raise ValueError("unknown_task_completion")
+            if existing.run_id != run_id or existing.completion_json != payload:
+                raise ValueError("conflicting_task_completion")

@@ -13,7 +13,7 @@ from qq_ai_bot.workspace.store import WorkspaceError, WorkspaceStore
 
 
 @pytest.mark.asyncio
-async def test_sandbox_bounded_request_lifecycle_and_publication(tmp_path: Path) -> None:
+async def test_sandbox_bounded_request_lifecycle_and_publication(tmp_path: Path, database) -> None:
     store = WorkspaceStore(tmp_path / "workspace", capacity=8)
     manager = Manager(
         tmp_path / "jobs", store, "fixed-python:test", "internal", "http://proxy:3128"
@@ -104,3 +104,6 @@ async def test_sandbox_bounded_request_lifecycle_and_publication(tmp_path: Path)
     assert manager.get(identity)["status"] == "cancelled"
     manager.db.close()
     await completion_delivery_cases(tmp_path / "completion-delivery")
+    from tests.support.sandbox_task_cases import task_receipt_cases
+
+    await task_receipt_cases(database, tmp_path / "bot-receipts")
