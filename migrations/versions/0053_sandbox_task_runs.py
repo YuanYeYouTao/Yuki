@@ -12,6 +12,9 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    # A binary rollback retains execution receipts. Re-upgrade must reuse them.
+    if "sandbox_task_runs" in sa.inspect(op.get_bind()).get_table_names():
+        return
     op.create_table(
         "sandbox_task_runs",
         sa.Column("request_id", sa.String(256), primary_key=True),
@@ -33,4 +36,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError("retain sandbox task receipts on binary rollback; do not discard live tasks")
+    # Schema 0052 ignores this additional table. Keeping it allows the old Bot
+    # to restart without erasing accepted work or creating duplicate effects
+    # when the new binary is installed again.
+    pass
