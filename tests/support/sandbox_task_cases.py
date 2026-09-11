@@ -112,3 +112,43 @@ async def task_receipt_cases(database, tmp_path):
                 "run_python", {"code": "different"}, request_id="before-send", source=source
             )
         writer.write.assert_not_called()
+    # Rejecting an unknown record must not starve a valid record in the same page.
+    execute = transport.execute
+
+    async def mixed_page(name, args, *, request_id):
+        if name == "list_code_completions":
+            return {"events": [{**event, "request_id": "unknown"}, event]}
+        return await execute(name, args, request_id=request_id)
+
+    with patch.object(transport, "execute", mixed_page):
+        with pytest.raises(ValueError, match="unknown_task_completion"):
+            await receiver.drain_once()
+    assert transport.calls[-1] == "ack_code_completion"
+    # Background receiver retries a failure without a second worker and closes
+    # while an acknowledgement is in flight. The committed inbox remains usable.
+    receiver = CompletionReceiver(transport, tasks, poll_seconds=0.001)
+    ack_started = asyncio.Event()
+    attempts = 0
+
+    async def interrupted_ack(name, args, *, request_id):
+        nonlocal attempts
+        if name == "list_code_completions":
+            attempts += 1
+            if attempts == 1:
+                return {"error": "sandbox_unavailable"}
+            return {"events": [event]}
+        ack_started.set()
+        await asyncio.Event().wait()
+
+    with patch.object(transport, "execute", interrupted_ack):
+        await receiver.start()
+        worker = receiver._worker
+        await receiver.start()
+        assert receiver._worker is worker
+        await asyncio.wait_for(ack_started.wait(), timeout=2)
+        assert (await tasks.get("request")).status == "completed"
+        await receiver.close()
+        assert worker.done()
+        assert not (await receiver.health())["running"]
+    assert await receiver.drain_once() == 1
+    assert (await receiver.health())["acknowledged_this_process"] == 1

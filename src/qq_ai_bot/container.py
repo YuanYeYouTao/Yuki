@@ -299,10 +299,12 @@ class ApplicationContainer:
         )
         self.agent_tools.workspace_service = self.workspace_service
         from qq_ai_bot.sandbox.client import SandboxClient
+        from qq_ai_bot.sandbox.completion_receiver import CompletionReceiver
         from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
 
         self.sandbox_tasks = SandboxTaskRepository(self.database)
         self.sandbox_client = SandboxClient(settings.sandbox_socket, tasks=self.sandbox_tasks)
+        self.sandbox_completions = CompletionReceiver(self.sandbox_client, self.sandbox_tasks)
         self.agent_tools.sandbox_client = self.sandbox_client
         from qq_ai_bot.social.transfer import ArtifactTransfer
 
@@ -839,6 +841,12 @@ class ApplicationContainer:
         )
         self.plugin_module.register_lifecycle(self.plugins, self.lifecycle)
         self.lifecycle.register("main_agent_manifest", start=self._freeze_main_manifest)
+        self.lifecycle.register(
+            "sandbox_completions",
+            start=self.sandbox_completions.start,
+            close=self.sandbox_completions.close,
+            health=self.sandbox_completions.health,
+        )
         self.lifecycle.register(
             "plugin_background_turns",
             start=self.plugin_background_turns.start,
