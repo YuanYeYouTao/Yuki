@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 from typing import Protocol
 
 from qq_ai_bot.domain.messages import ChatRequest, ChatResponse, minimum_reasoning_effort
+from qq_ai_bot.llm.base import LLMUnsupportedFeatureError
 from qq_ai_bot.model_runtime.models import (
     ModelCapability,
     ModelExecutionPriority,
@@ -316,6 +317,10 @@ class TaskModelExecutor:
         if request.structured_output or request.response_format is not None:
             required.add(ModelCapability.STRUCTURED_OUTPUT)
         if request.native_tools:
+            if ModelCapability.NATIVE_WEB_SEARCH not in self.capabilities(task):
+                raise LLMUnsupportedFeatureError(
+                    "native web search is unavailable in the effective model contract"
+                )
             required.add(ModelCapability.NATIVE_WEB_SEARCH)
         if any(message.images for message in request.messages):
             required.add(ModelCapability.IMAGE_INPUT)

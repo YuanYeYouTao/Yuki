@@ -12,6 +12,7 @@ class OpenAIResponsesProvider(DeepSeekResponsesProvider):
     """Reuse ordered item parsing while preserving standard execution controls."""
 
     provider_name = "openai"
+    supports_tool_choice = True
 
     def _build_payload(self, request: ChatRequest) -> dict[str, Any]:
         payload = super()._build_payload(request)

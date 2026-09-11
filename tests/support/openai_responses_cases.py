@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, NativeToolDefinition, NativeToolType
-from qq_ai_bot.llm.base import LLMInvalidRequestError
+from qq_ai_bot.llm.base import LLMInvalidRequestError, LLMUnsupportedFeatureError
 from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
 from qq_ai_bot.llm.openai_responses import OpenAIResponsesProvider
 from qq_ai_bot.model_runtime.executor import TaskModelExecutor
@@ -113,5 +113,45 @@ async def standard_responses_cases():
                     DeepSeekResponsesProvider._continuation_items(first.continuation)
                 with pytest.raises(LLMInvalidRequestError):
                     adapter._continuation_items(replace(first.continuation, provider="deepseek"))
+                unsupported = DeepSeekResponsesProvider(
+                    base_url=profile.base_url,
+                    api_key="local-test",
+                    timeout_seconds=1,
+                    max_retries=0,
+                    client=client,
+                )
+                with pytest.raises(LLMInvalidRequestError, match="cannot disable"):
+                    await unsupported.complete(replace(request, tool_choice="none"))
+                assert len(captured) == 2
+                # Raw calls cannot bypass the effective native capability by
+                # skipping AgentRunner's native binder or advertising a stale bit.
+                for unavailable in (
+                    profile.model_copy(update={"provider": "deepseek"}),
+                    profile.model_copy(
+                        update={
+                            "capabilities": profile.capabilities
+                            - {
+                                ModelCapability.NATIVE_WEB_SEARCH,
+                            }
+                        }
+                    ),
+                ):
+                    denied = TaskModelExecutor(
+                        router=ModelRouter(
+                            ModelProfileCatalog(
+                                profiles={profile.id: unavailable},
+                                routes={
+                                    task: ModelRoute(task=task, profile_id=profile.id)
+                                    for task in ModelTask
+                                },
+                            )
+                        ),
+                        pool=pool,
+                    )
+                    with pytest.raises(
+                        LLMUnsupportedFeatureError, match="effective model contract"
+                    ):
+                        await denied.execute(ModelTask.CHAT_AGENT, request)
+                    assert len(captured) == 2
         finally:
             await pool.close()

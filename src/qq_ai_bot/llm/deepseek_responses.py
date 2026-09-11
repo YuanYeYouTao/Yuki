@@ -61,6 +61,7 @@ class DeepSeekResponsesProvider(LLMProvider):
     """Translate Yuki's compatibility models to DeepSeek Responses items."""
 
     provider_name = "deepseek"
+    supports_tool_choice = False
 
     def __init__(
         self,
@@ -158,6 +159,10 @@ class DeepSeekResponsesProvider(LLMProvider):
         return parsed
 
     def _build_payload(self, request: ChatRequest) -> dict[str, Any]:
+        if request.native_tools and request.tool_choice == "none" and not self.supports_tool_choice:
+            raise LLMInvalidRequestError(
+                "provider cannot disable declared native tools for this request"
+            )
         instructions, inputs = self._convert_messages(request.messages)
         continuation_items = self._continuation_items(self._request_continuation(request))
         payload: dict[str, Any] = {
