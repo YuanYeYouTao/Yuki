@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from qq_ai_bot.admin.action_service import AdminActionService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
+from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.executor import AutomationExecutionError
 from qq_ai_bot.automation.gateway import ProactiveGateway
 from qq_ai_bot.automation.registry import (
@@ -23,9 +24,8 @@ from qq_ai_bot.automation.registry import (
     CapabilityResult,
 )
 from qq_ai_bot.config import Settings
-from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.domain.messages import ChatMessage, ChatTool, ToolCall
-from qq_ai_bot.domain.relationships import style_policy
+from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.messages import ChatMessage, ChatTool, PromptRequestDiagnostics, ToolCall
 from qq_ai_bot.emoji.models import (
     EmojiPlacement,
     EmojiReplyMode,
@@ -48,7 +48,6 @@ from qq_ai_bot.llm.base import (
     LLMUnavailableError,
     LLMUnsupportedFeatureError,
 )
-from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE, entity_memory_rule
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
 from qq_ai_bot.model_runtime.models import ModelTask
@@ -56,13 +55,14 @@ from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     RelationshipRepository,
 )
-from qq_ai_bot.prompting.contracts import CORE_CONTRACT
 from qq_ai_bot.services.agent_runner import (
     AgentRunner,
     AgentRuntime,
     AgentToolBackend,
 )
 from qq_ai_bot.services.concurrency import ConcurrencyManager
+from qq_ai_bot.services.context_assembler import ContextAssembler
+from qq_ai_bot.services.prompt_composer import PromptComposer, PromptComposition
 from qq_ai_bot.speech.genie_client import GenieWorkerFailure, GenieWorkerUnavailable
 from qq_ai_bot.speech.provider import SpeechSynthesisRequest
 from qq_ai_bot.speech.service import (
@@ -333,7 +333,18 @@ class AutomationCapabilityHandlers:
         backend.short_state = (
             self._agent_runner.main_contract.state if self._agent_runner.main_contract else None
         )
-        messages = await self._generation_messages(arguments, context)
+        composition = await self._generation_composition(
+            arguments, context, runtime_config=snapshot
+        )
+        messages = composition.messages
+        runtime = replace(
+            runtime,
+            prompt_diagnostics=PromptRequestDiagnostics(
+                conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
+                prompt_snapshot_fingerprint=composition.metrics.prompt_snapshot_fingerprint,
+                static_prompt_revision=composition.metrics.stable_prefix_hash,
+            ),
+        )
         try:
             result = await self._agent_runner.run(messages, runtime, backend)
         except LLMError as exc:
@@ -705,101 +716,53 @@ class AutomationCapabilityHandlers:
         )
 
     async def _generation_messages(
-        self, arguments: dict[str, Any], context: CapabilityExecutionContext
+        self,
+        arguments: dict[str, Any],
+        context: CapabilityExecutionContext,
+        *,
+        runtime_config: RuntimeConfigSnapshot | None = None,
     ) -> tuple[ChatMessage, ...]:
-        trusted_time = {
-            "scheduled_for": context.scheduled_for.isoformat(),
-            "actual_started_at": context.actual_started_at.isoformat(),
-            "local_time": context.local_time.isoformat(),
-        }
-        profile = str(arguments.get("context_profile") or "none")
-        declared = context.automation_context
-        data: dict[str, Any] = {}
-        if profile != "none":
-            scope = ScopeType.GROUP if profile == "current_group" else ScopeType.PRIVATE
-            if declared.include_memories:
-                data["memories"] = [
-                    {"content": row.content, "source_type": row.source_type}
-                    for row in await self._memories.list_person(context.creator_user_id, limit=30)
-                ]
-                data["preferences"] = [
-                    {"key": row.key, "value": row.value}
-                    for row in await self._memories.list_preferences(
-                        context.creator_user_id, limit=30
-                    )
-                ]
-                if scope is ScopeType.GROUP and context.current_group_id is not None:
-                    data["group_memories"] = [
-                        {"content": row.content, "source_type": row.source_type}
-                        for row in await self._memories.list_group(
-                            context.current_group_id, limit=30
-                        )
-                    ]
-            if declared.include_relationship:
-                relationship = await self._relationships.get_or_create(context.creator_user_id)
-                data["relationship_style"] = style_policy(
-                    relationship.stage,
-                    scope,
-                    self._settings.bot_display_name,
-                )
-            if declared.history_limit:
-                if context.canonical_conversation_id:
-                    history_rows = await self._ledger.list_canonical_recent(
-                        context.canonical_conversation_id,
-                        limit=declared.history_limit,
-                        message_only=True,
-                    )
-                else:
-                    conversation_scope = (
-                        ConversationScope.group(context.bot_user_id, context.current_group_id)
-                        if scope is ScopeType.GROUP and context.current_group_id is not None
-                        else ConversationScope.private(context.bot_user_id, context.creator_user_id)
-                    )
-                    history_rows = await self._ledger.list_scope_recent(
-                        conversation_scope,
-                        limit=declared.history_limit,
-                        message_only=True,
-                    )
-                data["recent_history"] = [
-                    {
-                        "role": "assistant" if row.direction == "outbound" else "user",
-                        "content": row.content[:2000],
-                        "event_kind": row.event_kind,
-                        "author_kind": row.author_kind,
-                        "source": row.origin,
-                        "content_trust": "untrusted_conversation_message",
-                        "local_time": row.occurred_at.astimezone(
-                            context.local_time.tzinfo
-                        ).isoformat(),
-                    }
-                    for row in history_rows
-                ]
         return (
-            ChatMessage(
-                role="system",
-                content="\n\n".join(
-                    (
-                        self._settings.system_prompt,
-                        MEMORY_GROUNDING_RULE,
-                        entity_memory_rule(self._settings.bot_display_name),
-                        CORE_CONTRACT,
-                    )
-                ),
-            ),
-            ChatMessage(
-                role="user",
-                content=json.dumps(
-                    {
-                        "origin": "scheduled_automation",
-                        "content_trust": "untrusted_automation_input",
-                        "instruction": str(arguments["instruction"]),
-                        "time": trusted_time,
-                        "context": data,
-                    },
-                    ensure_ascii=False,
-                ),
-            ),
+            await self._generation_composition(
+                arguments,
+                context,
+                runtime_config=runtime_config,
+            )
+        ).messages
+
+    async def _generation_composition(
+        self,
+        arguments: dict[str, Any],
+        context: CapabilityExecutionContext,
+        *,
+        runtime_config: RuntimeConfigSnapshot | None = None,
+    ) -> PromptComposition:
+        snapshot = runtime_config or await self._runtime_config.snapshot(
+            user_id=context.creator_user_id,
+            group_id=context.current_group_id,
         )
+        assembled = await ContextAssembler.assemble_automation(
+            settings=self._settings,
+            ledger=self._ledger,
+            memories=self._memories,
+            relationships=self._relationships,
+            context=context,
+            instruction=str(arguments["instruction"]),
+            profile=str(arguments.get("context_profile") or "none"),
+            current_time=self._time.at(context.actual_started_at, context.timezone),
+        )
+        contract = self._agent_runner.main_contract
+        composer = contract.chat._prompt_composer if contract else PromptComposer(self._settings)
+        composition = composer.compose(
+            inbound=None,
+            context=assembled,
+            runtime=snapshot,
+            visual_observation=None,
+            visual_failure=False,
+            scope_type=ScopeType.GROUP if context.current_group_id else ScopeType.PRIVATE,
+            include_plugin_context=False,
+        )
+        return composition
 
 
 class _AutomationAgentBackend(AgentToolBackend):

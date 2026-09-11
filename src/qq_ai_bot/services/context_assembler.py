@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
+from qq_ai_bot.automation.registry import CapabilityExecutionContext
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
 from qq_ai_bot.conversation.rollup.models import ConversationRollupState
@@ -48,6 +49,7 @@ from qq_ai_bot.memory.models import (
     MemoryQueryIntent,
     MemoryRetrievalResult,
 )
+from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     EventRecord,
@@ -163,6 +165,105 @@ class ContextAssembler:
         self._time = time_service
         self._rollups = rollup_repository
         self._rollup_service = rollup_service
+
+    @staticmethod
+    async def assemble_automation(
+        *,
+        settings: Settings,
+        ledger: EventLedgerRepository,
+        memories: MemoryFactService,
+        relationships: RelationshipRepository,
+        context: CapabilityExecutionContext,
+        instruction: str,
+        profile: str,
+        current_time: TimeContext,
+    ) -> AssembledContext:
+        """Apply the declared read scope, then use the normal event projection.
+
+        An automation is a real backend trigger, never a synthetic QQ sender.
+        Its declared context remains narrower than the target conversation when
+        required; sharing the composer grants no additional reads or effects.
+        """
+        if profile not in {"none", "creator_private", "current_group"}:
+            raise ConversationCoverageError("invalid automation context profile")
+        declared = context.automation_context
+        if profile != "none" and profile != declared.scene:
+            raise ConversationCoverageError("automation context profile exceeds declaration")
+        if profile == "current_group" and not context.current_group_id:
+            raise ConversationCoverageError("automation group context is unavailable")
+        data: dict[str, Any] = {}
+        relationship = None
+        rows: tuple[EventRecord, ...] = ()
+        if profile != "none":
+            if declared.include_memories:
+                data["memories"] = [
+                    {"content": row.content, "source_type": row.source_type}
+                    for row in await memories.list_person(context.creator_user_id, limit=30)
+                ]
+                data["preferences"] = [
+                    {"key": row.key, "value": row.value}
+                    for row in await memories.list_preferences(context.creator_user_id, limit=30)
+                ]
+                if profile == "current_group" and context.current_group_id:
+                    data["group_memories"] = [
+                        {"content": row.content, "source_type": row.source_type}
+                        for row in await memories.list_group(context.current_group_id, limit=30)
+                    ]
+            if declared.include_relationship:
+                relationship = await relationships.get_or_create(context.creator_user_id)
+            if declared.history_limit:
+                # The send target's canonical id is not a read-scope grant. Resolve
+                # the declared transport scope through the canonical ledger instead.
+                scope = (
+                    ConversationScope.group(context.bot_user_id, context.current_group_id)
+                    if profile == "current_group" and context.current_group_id
+                    else ConversationScope.private(context.bot_user_id, context.creator_user_id)
+                )
+                rows = await ledger.list_scope_recent(
+                    scope,
+                    limit=declared.history_limit,
+                    message_only=True,
+                )
+        renderer = ChatEventPromptRenderer(
+            rows,
+            bot_display_name=settings.bot_display_name,
+            timezone=context.timezone,
+        )
+        history = tuple(message for _, _, message in renderer.main_agent_history(rows))
+        trigger = {
+            "origin": context.authority.origin.value,
+            "content_trust": "untrusted_automation_input",
+            "instruction": instruction,
+        }
+        content = json.dumps(trigger, ensure_ascii=False, separators=(",", ":"))
+        data["automation"] = {
+            "automation_id": context.automation_id,
+            "run_id": context.automation_run_id,
+            "step_id": context.step_id,
+            "context_profile": profile,
+            "scheduled_for": context.scheduled_for.isoformat(),
+            "actual_started_at": context.actual_started_at.isoformat(),
+        }
+        history_size = sum(len(message.content or "") for message in history)
+        metadata_size = len(json.dumps(data, ensure_ascii=False))
+        if history_size + metadata_size + len(content) > settings.max_context_characters:
+            raise ConversationCoverageError("automation context requires explicit compaction")
+        return AssembledContext(
+            metadata_payload=data,
+            history_messages=history,
+            current_message=ChatMessage(role="user", content=content),
+            recent_delivery=(),
+            current_time=current_time,
+            current_relationship=relationship,
+            metrics=ContextMetrics(
+                metadata_characters=metadata_size,
+                history_characters=history_size,
+                history_messages=len(history),
+                current_message_characters=len(content),
+                raw_history_window_shifted=False,
+            ),
+            visible_event_ids=frozenset(row.id for row in rows),
+        )
 
     async def assemble(
         self,

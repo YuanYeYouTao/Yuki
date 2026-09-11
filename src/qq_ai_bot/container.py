@@ -490,7 +490,7 @@ class ApplicationContainer:
         )
         self.agent_tools.short_state = self.main_agent_contract.state
         self.chat._agent_runner.main_contract = self.main_agent_contract
-        self._automation_handlers._agent_runner.main_contract = self.main_agent_contract
+        self._automation_handlers._agent_runner = self.chat._agent_runner
         self.autonomous_groups = AutonomousGroupService(
             chat=self.chat,
             runtime_config=self.runtime_config,

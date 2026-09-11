@@ -242,3 +242,37 @@ async def run_short_state_cases(database, tmp_path, context):
     assert progress.polls == 2
     assert result.tool_calls_used == 2
     assert model_calls == 3
+
+    # Real automation handler now composes through the main pipeline and shared
+    # runner, without promoting its creator to a direct-message administrator.
+    from qq_ai_bot.automation.handlers import AutomationCapabilityHandlers
+    from qq_ai_bot.prompting.contracts import CORE_CONTRACT
+
+    handlers = object.__new__(AutomationCapabilityHandlers)
+    handlers._settings = harness.settings
+    handlers._runtime_config = chat._runtime_config
+    handlers._ledger = harness.ledger
+    handlers._memories = SimpleNamespace()
+    handlers._relationships = harness.relationships
+    handlers._time = chat._time
+    handlers._agent_runner = chat._agent_runner
+    handlers._registry = registry
+    handlers._gateway_factory = lambda context: None
+    provider._responder = lambda request: "scheduled answer"
+    generated = await handlers.generate(
+        {
+            "instruction": "scheduled work",
+            "context_profile": "none",
+            "max_characters": 200,
+        },
+        context,
+    )
+    assert generated.data["text"] == "scheduled answer"
+    request = provider.requests[-1]
+    assert request.tools == declared
+    assert CORE_CONTRACT in request.messages[0].content
+    assert "scheduled work" not in request.messages[0].content
+    assert '"origin":"scheduled_automation"' in request.messages[-1].content
+    assert "runtime.time" in request.messages[-1].content
+    assert "runtime.short_state" in request.messages[-1].content
+    assert "current_direct_event" not in request.messages[-1].content

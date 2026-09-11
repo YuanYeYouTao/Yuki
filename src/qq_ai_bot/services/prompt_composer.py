@@ -66,6 +66,7 @@ class PromptComposer:
         visual_observation: VisualObservation | None,
         visual_failure: bool,
         scope_type: ScopeType | None = None,
+        include_plugin_context: bool = True,
     ) -> PromptComposition:
         contributions: list[PromptContribution] = [
             static_text(
@@ -162,7 +163,9 @@ class PromptComposer:
                     required=True,
                 )
             )
-        plugin_context = self._registry.render(target=PromptTarget.AGENT)
+        plugin_context = (
+            self._registry.render(target=PromptTarget.AGENT) if include_plugin_context else ()
+        )
         if plugin_context:
             contributions.append(
                 PromptContribution(

@@ -239,3 +239,5 @@ ledger 继续是事实真源；投影快照是可重建、有版本的模型输�
 - 尚未完成：原生工具与完整版本合同、入口收拢、历史快照取舍与实现、最终日志/全矩阵验收、可靠作业接续及部署。D1/D2 仍待定，不以推荐选项当作用户答复。
 
 - P5 验收基础：新增最终 HTTP JSON 的 wire diagnostics，Responses 与 Chat Completions 均在发送前观测；按独立 transcript chain 隔离，保存有界指纹而非正文。可记录输入正常追加/改写、首个差异索引及 instructions/tools/settings 变化；标记为 dispatch_attempt，不把发送尝试当作 Provider 已接受。中间请求日志明确标记 normalized_projection，并修正中途 system 被误归顶层的算法。58 项相关测试和 5 个目标模块类型检查通过。这只是最终请求对照基础，不代表完整入口矩阵、上下文 epoch 或实际缓存命中验收已完成。
+
+- P3 自动化首批：删除自动化专用 system 与 history JSON 拼装，改走 ContextAssembler 的受限自动化读取入口、ChatEventPromptRenderer 和主 PromptComposer；生产自动化复用聊天 AgentRunner/CHAT_AGENT 路由，保留原自动化执行后端与授权交集。none 不读取历史/记忆，其他 profile 不得超出声明；历史按声明的 creator_private/current_group scope 经 ledger 解析，不再用投递目标 Conversation 替代读取授权。插件动态上下文未额外开放给自动化。当前已贯通 Composer 诊断。81 项相关测试和 4 个目标模块类型检查通过，补充的人物/群读取范围定向场景通过。尚需统一背景任务协调与 generation/epoch 校验、插件接口迁移及全入口 HTTP 对照，不能宣称 P3 已全部完成。

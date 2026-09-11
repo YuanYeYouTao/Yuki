@@ -200,6 +200,18 @@ async def test_generation_keeps_dynamic_automation_data_out_of_system_messages(
 ) -> None:
     handlers = object.__new__(AutomationCapabilityHandlers)
     handlers._settings = make_settings(database.url, automation_enabled=True)
+    from tests.conftest import build_harness
+
+    from qq_ai_bot.prompting.serializer import strip_dynamic_prefix
+
+    harness = build_harness(database, handlers._settings)
+    chat = harness.processor._chat
+    handlers._runtime_config = chat._runtime_config
+    handlers._ledger = harness.ledger
+    handlers._memories = SimpleNamespace()
+    handlers._relationships = harness.relationships
+    handlers._time = chat._time
+    handlers._agent_runner = chat._agent_runner
     context = CapabilityExecutionContext(
         authority=AuthorityContext(
             origin=TurnOrigin.SCHEDULED_AUTOMATION,
@@ -229,9 +241,72 @@ async def test_generation_keeps_dynamic_automation_data_out_of_system_messages(
     assert all(
         instruction not in message.content for message in messages if message.role == "system"
     )
-    payload = json.loads(messages[-1].content)
+    payload = json.loads(strip_dynamic_prefix(messages[-1].content))
     assert payload["instruction"] == instruction
     assert payload["content_trust"] == "untrusted_automation_input"
+    from unittest.mock import AsyncMock
+
+    from qq_ai_bot.conversation.rollup.repository import ConversationCoverageError
+    from qq_ai_bot.services.context_assembler import ContextAssembler
+
+    ledger = SimpleNamespace(
+        list_scope_recent=AsyncMock(return_value=()),
+        list_canonical_recent=AsyncMock(return_value=()),
+    )
+    read_context = replace(
+        context,
+        canonical_conversation_id="different-target-conversation",
+        automation_context=AutomationContext(scene="creator_private", history_limit=3),
+    )
+    await ContextAssembler.assemble_automation(
+        settings=handlers._settings,
+        ledger=ledger,
+        memories=SimpleNamespace(),
+        relationships=SimpleNamespace(),
+        context=read_context,
+        instruction="bounded",
+        profile="creator_private",
+        current_time=chat._time.current_default(),
+    )
+    ledger.list_scope_recent.assert_awaited_once_with(
+        ConversationScope.private("7777", "10001"),
+        limit=3,
+        message_only=True,
+    )
+    ledger.list_canonical_recent.assert_not_awaited()
+    ledger.list_scope_recent.reset_mock()
+    group_context = replace(
+        read_context,
+        current_group_id="2001",
+        automation_context=AutomationContext(scene="current_group", history_limit=2),
+    )
+    await ContextAssembler.assemble_automation(
+        settings=handlers._settings,
+        ledger=ledger,
+        memories=SimpleNamespace(),
+        relationships=SimpleNamespace(),
+        context=group_context,
+        instruction="bounded",
+        profile="current_group",
+        current_time=chat._time.current_default(),
+    )
+    ledger.list_scope_recent.assert_awaited_once_with(
+        ConversationScope.group("7777", "2001"),
+        limit=2,
+        message_only=True,
+    )
+    ledger.list_canonical_recent.assert_not_awaited()
+    with pytest.raises(ConversationCoverageError, match="exceeds declaration"):
+        await ContextAssembler.assemble_automation(
+            settings=handlers._settings,
+            ledger=ledger,
+            memories=SimpleNamespace(),
+            relationships=SimpleNamespace(),
+            context=read_context,
+            instruction="bounded",
+            profile="current_group",
+            current_time=chat._time.current_default(),
+        )
     from tests.support.short_state_cases import run_short_state_cases
 
     await run_short_state_cases(database, tmp_path, context)
