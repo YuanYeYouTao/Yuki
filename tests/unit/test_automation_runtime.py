@@ -697,6 +697,18 @@ async def test_superuser_authority_revocation_blocks_old_task(database) -> None:
     ).execute(row, run)
     assert result.status.value == "blocked"
 
+    from tests.support.automation_live_authority_cases import authority_between_attempts
+
+    await authority_between_attempts(
+        database,
+        settings,
+        registry,
+        repository,
+        row,
+        run,
+        TimeContextService(database, clock=clock),
+    )
+
 
 @pytest.mark.asyncio
 async def test_pause_resume_cancel_and_run_now(database) -> None:

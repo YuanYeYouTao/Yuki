@@ -177,6 +177,9 @@ class CapabilityExecutionContext:
     canonical_target_person_id: str | None = None
     canonical_target_space_id: str | None = None
     canonical_conversation_id: str | None = None
+    revalidate_authority: Callable[[str | None], Awaitable[None]] | None = field(
+        default=None, repr=False, compare=False
+    )
 
 
 CapabilityHandler = Callable[

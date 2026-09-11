@@ -154,6 +154,23 @@ class AutomationExecutor:
             delegated_authority=authority,
             allowed_capabilities=allowed,
         )
+
+        async def revalidate_authority(capability: str | None) -> None:
+            fresh = await self._begin_execution(automation)
+            if isinstance(fresh, ExecutionResult):
+                raise AutomationExecutionError(
+                    fresh.error_category or "delegated_authority_revoked"
+                )
+            if (
+                fresh.record.script_hash != automation.script_hash
+                or fresh.record.authority_snapshot != automation.authority_snapshot
+            ):
+                raise AutomationExecutionError("automation_changed")
+            if capability is not None and (
+                capability not in allowed or capability not in fresh.allowed
+            ):
+                raise AutomationExecutionError("capability_not_delegated")
+
         builtins: dict[str, Any] = {
             "creator_user_id": automation.creator_user_id,
             "bot_user_id": automation.bot_user_id,
@@ -213,6 +230,7 @@ class AutomationExecutor:
                         canonical_target_person_id=automation.canonical_target_person_id,
                         canonical_target_space_id=automation.canonical_target_space_id,
                         canonical_conversation_id=conversation_id,
+                        revalidate_authority=revalidate_authority,
                     )
                     if self._gateway_factory is not None:
                         context = replace(
@@ -514,6 +532,8 @@ class AutomationExecutor:
         attempts = 2 if definition.retry_policy is RetryPolicy.TRANSIENT_ONCE else 1
         for attempt in range(attempts):
             try:
+                if context.revalidate_authority is not None:
+                    await context.revalidate_authority(definition.name)
                 return await definition.handler(arguments, context)
             except ProactiveGatewayError as exc:
                 raise AutomationExecutionError(exc.category, uncertain=exc.uncertain) from exc

@@ -85,6 +85,12 @@ class _AutomationContextChanged(LLMInvalidRequestError):
     """The declared history no longer belongs to the current conversation epoch."""
 
 
+class _AutomationAuthorityChanged(LLMInvalidRequestError):
+    def __init__(self, category: str) -> None:
+        super().__init__(category)
+        self.category = category
+
+
 class AutomationCapabilityHandlers:
     """Dependency-bound handlers; registry metadata remains independent and testable."""
 
@@ -344,6 +350,11 @@ class AutomationCapabilityHandlers:
         messages = composition.messages
 
         async def validate_context() -> None:
+            if context.revalidate_authority is not None:
+                try:
+                    await context.revalidate_authority(None)
+                except AutomationExecutionError as exc:
+                    raise _AutomationAuthorityChanged(exc.category) from exc
             if composition.read_version is not None and not await self._ledger.read_version_matches(
                 composition.read_version
             ):
@@ -878,6 +889,11 @@ class _AutomationAgentBackend(AgentToolBackend):
 
     async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str:
         if name == "update_short_state" and self.short_state is not None:
+            if self._context.revalidate_authority is not None:
+                try:
+                    await self._context.revalidate_authority(None)
+                except AutomationExecutionError as exc:
+                    return json.dumps({"ok": False, "error": exc.category})
             return cast(str, await self.short_state.execute(arguments_json))
         capability_name = self._name_map.get(name)
         if capability_name is None:
@@ -890,6 +906,8 @@ class _AutomationAgentBackend(AgentToolBackend):
         try:
             raw = json.loads(arguments_json)
             arguments = definition.validate_arguments(raw)
+            if self._context.revalidate_authority is not None:
+                await self._context.revalidate_authority(capability_name)
             from qq_ai_bot.capabilities.invocation import current_invocation
 
             invocation = current_invocation.get()
@@ -973,7 +991,9 @@ def _automation_llm_error(
     tool_calls: int = 0,
     messages_sent: int = 0,
 ) -> AutomationExecutionError:
-    if isinstance(error, _AutomationContextChanged):
+    if isinstance(error, _AutomationAuthorityChanged):
+        category, transient = error.category, False
+    elif isinstance(error, _AutomationContextChanged):
         category, transient = "automation_context_changed", False
     elif isinstance(error, LLMRateLimitError):
         category, transient = "llm_rate_limited", True
