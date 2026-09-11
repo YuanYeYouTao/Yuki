@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import shutil
 import signal
@@ -20,6 +21,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+from qq_ai_bot.sandbox.completions import CompletionOutbox
 from qq_ai_bot.workspace.store import WorkspaceStore
 
 LABEL = "io.yuki.sandbox=python-v1"
@@ -53,6 +55,7 @@ class Manager:
             "payload TEXT NOT NULL, state TEXT NOT NULL, result TEXT NOT NULL, "
             "created REAL NOT NULL)"
         )
+        self.completions = CompletionOutbox(self.db)
         self.db.commit()
 
     async def command(self, *args: str, deadline_seconds: float = 30) -> tuple[int, bytes]:
@@ -73,13 +76,32 @@ class Manager:
             raise
         return code, bytes(kept)
 
-    def finish(self, identity: str, state: str, result: dict[str, Any]) -> None:
-        self.db.execute(
-            "UPDATE jobs SET state=?, result=? WHERE id=?", (state, json.dumps(result), identity)
-        )
-        self.db.commit()
+    def finish(self, identity: str, state: str, result: dict[str, Any]) -> bool:
+        if state not in {*TERMINAL, "running"}:
+            raise ValueError("invalid_job_state")
+        with self.db:
+            changed = self.db.execute(
+                "UPDATE jobs SET state=?, result=? WHERE id=? "
+                "AND state IN ('queued','running') RETURNING request_id",
+                (state, json.dumps(result), identity),
+            ).fetchone()
+            if changed is None:
+                return False
+            if state in TERMINAL:
+                self.completions.record(
+                    identity,
+                    changed[0],
+                    {
+                        **result,
+                        "run_id": identity,
+                        "status": state,
+                        "pending": False,
+                        "external_untrusted": True,
+                    },
+                )
         for waiter in self._waiters.get(identity, ()):
             waiter.set()
+        return True
 
     async def wait_result(self, identity: str, *, wait_seconds: float = 4.5) -> dict[str, Any]:
         """Wait within the socket deadline; observation cancellation leaves the job alive."""
@@ -151,6 +173,10 @@ class Manager:
         method, args = request.get("method"), request.get("args")
         if not isinstance(args, dict):
             return {"error": "invalid_arguments"}
+        if method == "list_code_completions":
+            return self.completions.pending(args.get("limit", 20))
+        if method == "ack_code_completion":
+            return self.completions.acknowledge(identifier(args.get("run_id")))
         if method in {"get_code_run", "cancel_code_run"}:
             identity = identifier(args.get("run_id"))
             if method == "get_code_run":
@@ -202,6 +228,8 @@ class Manager:
             )
         if self.queue.full():
             return {"error": "sandbox_queue_full", "retryable": False}
+        if not self.completions.reserve_available():
+            return {"error": "completion_backlog_full", "retryable": False}
         identity = str(uuid4())
         self.db.execute(
             "INSERT INTO jobs VALUES (?,?,?,?,?,?,?)",
@@ -385,6 +413,9 @@ class Manager:
                     await self.cleanup(identity)
                 except Exception:
                     self.ready = False
+                    logging.getLogger(__name__).exception(
+                        "sandbox_cleanup_failed run_id=%s", identity
+                    )
                     self.finish(identity, "failed", {"error": "cleanup_failed"})
                 self.cancelled.discard(identity)
                 self.current = None

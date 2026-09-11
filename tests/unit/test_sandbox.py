@@ -5,6 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from tests.support.sandbox_completion_cases import completion_delivery_cases, pending_job
 
 from qq_ai_bot.sandbox.client import sandbox_tools
 from qq_ai_bot.sandbox.manager import Manager
@@ -63,7 +64,7 @@ async def test_sandbox_bounded_request_lifecycle_and_publication(tmp_path: Path)
     assert len(store.list()["items"]) == 2
     # Concurrent observers wake from the persisted terminal result. Polling does
     # not consume or rerun the job, and abandoning a wait does not cancel it.
-    identity = result["run_id"]
+    identity = pending_job(manager)
     manager.finish(identity, "running", {})
     observers = [
         asyncio.create_task(
@@ -83,6 +84,7 @@ async def test_sandbox_bounded_request_lifecycle_and_publication(tmp_path: Path)
     assert all(r["status"] == "succeeded" and r["artifacts"] == ["image"] for r in observed)
     assert all(r["pending"] is False for r in observed)
     assert manager._waiters == {}
+    identity = pending_job(manager)
     manager.finish(identity, "running", {})
     waiting = await manager.wait_result(identity, wait_seconds=0.01)
     assert waiting["pending"] is True and waiting["status"] == "running"
@@ -98,4 +100,7 @@ async def test_sandbox_bounded_request_lifecycle_and_publication(tmp_path: Path)
     await asyncio.sleep(0)
     await manager.handle({"method": "cancel_code_run", "args": {"run_id": identity}})
     assert (await waiting_task)["status"] == "cancelled"
+    assert not manager.finish(identity, "succeeded", {"artifacts": ["late"]})
+    assert manager.get(identity)["status"] == "cancelled"
     manager.db.close()
+    await completion_delivery_cases(tmp_path / "completion-delivery")
