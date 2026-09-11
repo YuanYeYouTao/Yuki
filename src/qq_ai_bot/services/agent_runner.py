@@ -590,6 +590,7 @@ class AgentRunner:
                 remaining_calls=max(0, runtime.max_tool_calls - calls_used),
                 max_parallel_calls=tooling.max_parallel_calls if tooling is not None else 1,
                 reusable_results=reusable_tool_results,
+                cacheable_names=frozenset(t.name for t in definitions if t.result_cacheable),
             )
             batch, executed = coordinated.calls, coordinated.executed_count
             calls_used += executed
@@ -748,6 +749,7 @@ class AgentRunner:
         remaining_calls: int,
         max_parallel_calls: int,
         reusable_results: dict[tuple[str, str], str],
+        cacheable_names: frozenset[str],
     ) -> CoordinatedToolResult:
         """Execute each semantic call once and fan its result out to duplicate IDs."""
 
@@ -759,7 +761,11 @@ class AgentRunner:
         for call in calls:
             signature = signatures[call.id]
             side_effecting = self._is_side_effecting(tools, call, runtime)
-            cached = None if side_effecting else reusable_results.get(signature)
+            cached = (
+                reusable_results.get(signature)
+                if not side_effecting and call.function.name in cacheable_names
+                else None
+            )
             if cached is not None:
                 reused_by_id[call.id] = cached
                 continue
@@ -851,7 +857,10 @@ class AgentRunner:
             signature = signatures[call.id]
             if self._successful_side_effect(tools, call, result, runtime):
                 reusable_results.clear()
-            elif not self._is_side_effecting(tools, call, runtime):
+            elif (
+                not self._is_side_effecting(tools, call, runtime)
+                and call.function.name in cacheable_names
+            ):
                 reusable_results[signature] = result
 
         return CoordinatedToolResult(

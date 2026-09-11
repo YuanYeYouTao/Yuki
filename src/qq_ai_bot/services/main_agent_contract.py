@@ -62,6 +62,7 @@ class MainAgentContract:
                                 name=self.automation._registry.agent_tool_name(capability.name),
                                 description=capability.description,
                                 parameters=capability.input_schema,
+                                result_cacheable=capability.result_cacheable,
                             )
                         )
             names = [tool.name for tool in tools]

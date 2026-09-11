@@ -183,3 +183,56 @@ async def run_short_state_cases(database, tmp_path, context):
     provider._responder = lambda request: "91"
     await chat._agent_runner.run(initial, runtime, None)
     assert "91" in provider.requests[-1].messages[-1].content
+
+    # State observations must refresh across requests even without local writes.
+    # Exercise the shared runner with the actual frozen sandbox tool declaration.
+    from qq_ai_bot.services.main_agent_contract import ShortStateOnlyBackend
+
+    assert next(t for t in declared if t.name == "get_code_run").result_cacheable is False
+    assert registry.require("sandbox.get_code_run").result_cacheable is False
+
+    class ProgressBackend(ShortStateOnlyBackend):
+        polls = 0
+
+        def is_side_effecting(self, name, arguments_json, runtime):
+            return False
+
+        async def execute(self, name, arguments_json, runtime):
+            assert name == "get_code_run"
+            self.polls += 1
+            return json.dumps(
+                {
+                    "ok": True,
+                    "data": {
+                        "status": "running" if self.polls == 1 else "succeeded",
+                        "artifacts": [] if self.polls == 1 else ["downloaded-image"],
+                    },
+                }
+            )
+
+    progress = ProgressBackend(state)
+    model_calls = 0
+
+    def observe(request):
+        nonlocal model_calls
+        model_calls += 1
+        results = [m for m in request.messages if m.role == "tool"]
+        if results and json.loads(results[-1].content)["data"]["status"] == "succeeded":
+            return "image ready"
+        return ChatResponse(
+            content="",
+            latency_seconds=0,
+            tool_calls=(
+                ToolCall(
+                    id=f"poll-{model_calls}",
+                    function=ToolFunction(name="get_code_run", arguments='{"run_id":"same-job"}'),
+                ),
+            ),
+        )
+
+    provider._responder = observe
+    result = await chat._agent_runner.run(initial, runtime, progress)
+    assert result.text == "image ready"
+    assert progress.polls == 2
+    assert result.tool_calls_used == 2
+    assert model_calls == 3

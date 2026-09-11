@@ -864,6 +864,7 @@ class _AutomationAgentBackend(AgentToolBackend):
                     name=tool_name,
                     description=capability.description,
                     parameters=capability.input_schema,
+                    result_cacheable=capability.result_cacheable,
                 )
             )
         return tuple(tools)

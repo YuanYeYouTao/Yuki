@@ -78,6 +78,7 @@ def register_social_automation(
                 description=tool.description,
                 argument_model=CapabilityArguments,
                 argument_schema=tool.parameters,
+                result_cacheable=tool.result_cacheable,
                 argument_validator=_validator(tool),
                 output_schema={"type": "object"},
                 required_permission=PermissionLevel.USER,

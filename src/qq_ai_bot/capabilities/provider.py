@@ -385,6 +385,7 @@ class ChatToolCapabilityProvider:
                 else CapabilityExposure.PLANNED
             ),
             schema_version=str(tool.schema_version),
+            result_cacheable=tool.result_cacheable,
             tags=tuple(dict.fromkeys(tags)),
         )
 

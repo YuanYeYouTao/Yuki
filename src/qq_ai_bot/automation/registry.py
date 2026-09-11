@@ -197,6 +197,7 @@ class AutomationCapability:
     retry_policy: RetryPolicy
     allowed_origins: frozenset[TurnOrigin]
     schema_version: CapabilitySchemaVersion = 1
+    result_cacheable: bool = True
     argument_schema: dict[str, object] | None = None
     argument_validator: CapabilityArgumentValidator | None = field(default=None, repr=False)
     provider_plugin_id: str | None = None

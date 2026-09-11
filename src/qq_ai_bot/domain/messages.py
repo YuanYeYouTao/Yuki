@@ -287,6 +287,8 @@ class ChatTool:
     use_when: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
     schema_version: str = "1"
+    # Host-only policy: read-only operations may still observe changing state.
+    result_cacheable: bool = True
 
 
 @dataclass(frozen=True, slots=True)
