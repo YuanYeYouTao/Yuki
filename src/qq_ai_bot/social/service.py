@@ -132,8 +132,10 @@ class SocialService:
         elif len(selectors) != 1:
             raise SocialError("target_selector_conflict")
         elif selectors[0] == "subject_ref":
-            if kind != "person" or args["subject_ref"] not in context.person_refs:
-                raise SocialError("target_not_found")
+            if kind != "person":
+                raise SocialError("group_target_required")
+            if args["subject_ref"] not in context.person_refs:
+                raise SocialError("subject_ref_unavailable")
             raw = context.person_refs[args["subject_ref"]]
         elif selectors[0] == "display_name":
             matches = [

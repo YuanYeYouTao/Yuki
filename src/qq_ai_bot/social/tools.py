@@ -15,7 +15,6 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
         },
     }
     message: dict[str, object] = {
-        **selector,
         "text": {"type": "string", "maxLength": 4000},
         "artifact_id": {"type": "string", "description": "工作区对象 ID，不是路径或 URL"},
         "attachment_kind": {
@@ -25,6 +24,15 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
                 "提供 artifact_id 时必填。普通文件用 file；可附 text，文件成功后另发说明。"
                 "图片用 image。部分成功不要重发文件。"
             ),
+        },
+    }
+
+    group_selector: dict[str, object] = {
+        "target_id": {"type": "string", "description": "目标群的 canonical UUID；当前群省略"},
+        "display_name": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "目标群名称，不是成员名",
         },
     }
 
@@ -57,18 +65,22 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
             "回复当前私聊对象使用 subject_ref=current_speaker，经当前接收账号发送；"
             "联系其他人须主动路由可用。target_id 只接受 canonical UUID，不接受 QQ 号。"
             "目标只选一种；uncertain 不要重发。",
-            message,
+            {**selector, **message},
         ),
         tool(
             "send_group_message",
-            "Yuki 可自主向启用且允许主动发言的群发送。目标只选一种；不解暂停、不换号试发。",
+            "群内真正 @某人也必须用本工具的 mentions；普通回复文字不能产生 @。"
+            "省略群目标即当前群。Yuki 可向启用且允许主动发言的群发送。"
+            "目标只选一种；不解暂停、不换号试发。",
             {
+                **group_selector,
                 **message,
                 "mentions": {
                     "type": "array",
                     "maxItems": 20,
                     "description": (
                         "真实 @成员，按顺序放在正文前；每项只选一种人物标识。不能用文字 @名字代替。"
+                        "@当前发言人用 mentions=[{subject_ref:current_speaker}]，顶层不填人物。"
                     ),
                     "items": {
                         "type": "object",
@@ -108,7 +120,7 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
             "get_group_members",
             "分页查询 Yuki 当前实际可访问群的成员，不会提供私聊历史。",
             {
-                **selector,
+                **group_selector,
                 "space_binding_id": {
                     "type": "string",
                     "format": "uuid",

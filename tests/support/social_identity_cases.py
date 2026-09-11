@@ -287,6 +287,43 @@ async def test_real_mentions_preserve_segments_and_replay(social_env, attachment
     ]
 
 
+async def current_speaker_mention(env):
+    from qq_ai_bot.capabilities.invocation import ToolInvocationContext, current_invocation
+    from qq_ai_bot.runtime.origin import TurnOrigin
+    from qq_ai_bot.social.agent_adapter import invoke_social
+
+    runtime = SimpleNamespace(
+        origin=TurnOrigin.USER_MESSAGE,
+        read_only=False,
+        tools_closed=False,
+        inbound=SimpleNamespace(
+            sender=SimpleNamespace(user_id="10001"),
+            scope_type="group",
+            message_id="inbound",
+            presence_id=env.presence,
+        ),
+        mentioned_user_ids=(),
+        effective_conversation_id=env.context.conversation_id,
+        trigger_message_id="inbound",
+        space_id=env.space,
+    )
+    token = current_invocation.set(ToolInvocationContext(runtime=runtime, call_id="mention-me"))
+    try:
+        result = await invoke_social(
+            env.service,
+            "send_group_message",
+            {
+                "mentions": [{"subject_ref": "current_speaker"}],
+                "text": "test",
+            },
+            runtime,
+        )
+    finally:
+        current_invocation.reset(token)
+    assert result["status"] == "succeeded"
+    assert env.bot.calls[-1][1]["message"][0] == {"type": "at", "data": {"qq": "10001"}}
+
+
 async def test_mentions_reject_ambiguous_or_nonmember_accounts(social_env):
     env = social_env
     binding = await add_second_account(env)
@@ -339,6 +376,7 @@ async def test_group_automation_poke_keeps_delegated_boundary(social_env, overri
 async def run_identity_scenarios(tmp_path):
     """Extend the existing social safety gate within the repository's test budget."""
     scenarios = [
+        (current_speaker_mention, ()),
         *[
             (test_recall_uses_original_presence, (state,))
             for state in ("paused", "switched", "deleted")

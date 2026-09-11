@@ -1087,6 +1087,18 @@ class AgentToolService:
                             "group_unavailable": "当前没有可访问该群的连接，未执行",
                             "group_member_unavailable": "无法确认目标 QQ 账号属于该群，未执行",
                             "mentions_require_group": "结构化 @成员只支持群消息",
+                            "group_target_required": (
+                                "顶层目标是群，当前群请省略；要 @ 的人放在 mentions 中，"
+                                "如 mentions=[{subject_ref:current_speaker}]"
+                            ),
+                            "subject_ref_unavailable": (
+                                "该人物引用不在当前事件中；当前发言人用 current_speaker，"
+                                "其他人物先 find_contacts，不要猜测引用或映射故障"
+                            ),
+                            "target_not_found": (
+                                "名称未精确匹配；先 find_contacts。群发送顶层是群目标，"
+                                "人物应放在 mentions；未找到不代表账号映射损坏"
+                            ),
                             "invalid_space_id": (
                                 "space_id 必须是 canonical 群 UUID，不是 QQ 群号；当前群可省略"
                             ),

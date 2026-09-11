@@ -645,6 +645,30 @@ async def test_empty_model_response_is_user_safe(database: Database) -> None:
     assert result.reason == "empty_llm_response"
     assert "空内容" in sender.messages[0].text
 
+    # History mention annotations are not transport instructions. Correct once
+    # within the existing request budget; never leak the placeholder as a fake @.
+    for repair in (False, True):
+
+        def mention_response(request: ChatRequest, repair: bool = repair) -> str:
+            if repair and any("已拦截且未发送" in str(m.content) for m in request.messages):
+                return "请先确认要提醒的具体账号。"
+            return "[提及ICE] 喊你呢\n\n@完了"
+
+        mention_provider = FakeLLMProvider(mention_response)
+        mention_harness = build_harness(database, make_settings(database.url), mention_provider)
+        mention_sender = MemorySender()
+        await mention_harness.processor.handle(
+            inbound("at ice", message_id=f"mention-placeholder-{repair}"), mention_sender
+        )
+        assert len(mention_provider.requests) == 2
+        assert mention_provider.requests[0].tools == mention_provider.requests[1].tools
+        assert all("[提及" not in str(message.text) for message in mention_sender.messages)
+        assert all("@完了" not in str(message.text) for message in mention_sender.messages)
+        assert any(
+            ("确认" if repair else "没有形成有效") in str(message.text)
+            for message in mention_sender.messages
+        )
+
 
 @pytest.mark.asyncio
 async def test_keyerror_during_chat_sends_retry_text(database: Database) -> None:

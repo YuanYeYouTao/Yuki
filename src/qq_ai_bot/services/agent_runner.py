@@ -138,6 +138,7 @@ class AgentRunner:
         calls_used = 0
         web_was_used = False
         empty_retries = 0
+        mention_recovery_used = False
         continuation: ProviderContinuation | None = None
         pending_function_outputs: tuple[FunctionCallOutput, ...] = ()
         native_events: list[NativeToolEvent] = []
@@ -429,6 +430,28 @@ class AgentRunner:
                 continue
             if not response.tool_calls:
                 content = response.content
+                if "[提及" in content:
+                    if (
+                        not mention_recovery_used
+                        and calls_used == 0
+                        and not finalization_only
+                        and request_index + 2 < runtime.max_model_requests
+                        and any(tool.name == "send_group_message" for tool in definitions)
+                    ):
+                        mention_recovery_used = True
+                        messages.append(
+                            ChatMessage(
+                                role="system",
+                                content=(
+                                    "上一回复含 [提及…] 历史占位标记，已拦截且未发送；"
+                                    "本轮尚未调用工具，不能声称已 @。若用户要求提醒成员，"
+                                    "先明确人物，再用 send_group_message.mentions 发送；"
+                                    "普通正文和 @名字都不能触发提醒。无法执行时如实说明。"
+                                ),
+                            )
+                        )
+                        continue
+                    content = "这段回复没有形成有效的 @ 提醒。"
                 if tools is not None:
                     content = tools.finalize(content, runtime)
                 has_visible_effects = bool(
