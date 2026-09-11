@@ -38,9 +38,14 @@ class MainAgentContract:
                 declaration_only=True,
                 runtime_config=config,
             )
-            registry = self.chat._build_tool_registry(declaration, web_was_used=False)
             for provider in self.chat._external_tool_providers:
-                await provider.refresh(force=False)
+                prepare = getattr(provider, "prepare_manifest", None)
+                if callable(prepare):
+                    await prepare(declaration)
+                else:
+                    await provider.refresh(force=False)
+            registry = self.chat._build_tool_registry(declaration, web_was_used=False)
+            automation_names: dict[str, str] = {}
             tools = [
                 entry.descriptor.as_chat_tool() for entry in registry.catalog(declaration).entries
             ]
@@ -58,9 +63,9 @@ class MainAgentContract:
                                 raise ValueError(
                                     f"invalid explicit tool mapping: {capability.name}"
                                 )
-                            self.automation_names[capability.name] = capability.model_tool_name
+                            automation_names[capability.name] = capability.model_tool_name
                             continue
-                        self.automation_names[capability.name] = (
+                        automation_names[capability.name] = (
                             self.automation._registry.agent_tool_name(capability.name)
                         )
                         tools.append(
@@ -74,11 +79,11 @@ class MainAgentContract:
             names = [tool.name for tool in tools]
             if len(names) != len(set(names)):
                 raise ValueError("duplicate Main Agent manifest tool")
-            self._tools = deepcopy(tuple(sorted(tools, key=lambda item: item.name)))
-            self.revision = hashlib.sha256(
+            frozen = deepcopy(tuple(sorted(tools, key=lambda item: item.name)))
+            revision = hashlib.sha256(
                 json.dumps(
                     {
-                        "version": 1,
+                        "version": 2,
                         "tools": [
                             {
                                 "name": t.name,
@@ -86,15 +91,17 @@ class MainAgentContract:
                                 "parameters": t.parameters,
                                 "result_cacheable": t.result_cacheable,
                             }
-                            for t in self._tools
+                            for t in frozen
                         ],
-                        "automation_names": self.automation_names,
+                        "automation_names": dict(sorted(automation_names.items())),
                     },
                     ensure_ascii=False,
-                    sort_keys=True,
+                    # Schema mapping order is part of the Provider token prefix.
+                    sort_keys=False,
                     separators=(",", ":"),
                 ).encode("utf-8")
             ).hexdigest()
+            self._tools, self.automation_names, self.revision = frozen, automation_names, revision
             logging.getLogger(__name__).info(
                 "main_agent_manifest_frozen tools=%d revision=%s", len(self._tools), self.revision
             )

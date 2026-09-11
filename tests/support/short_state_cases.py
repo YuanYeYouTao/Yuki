@@ -24,6 +24,9 @@ from tests.conftest import build_harness, make_settings
 
 async def run_short_state_cases(database, tmp_path, context):
     state = ShortState(WorkspaceStore(tmp_path / "working-state"))
+    from tests.support.manifest_cases import run_manifest_cases
+
+    await run_manifest_cases(state)
     state.update({"slot": 1, "text": "想好的数字是73", "expected_revision": 0})
     assert ShortState(state.store).snapshot()[0]["text"] == "想好的数字是73"
     prefix = (

@@ -879,6 +879,7 @@ async def test_mcp_disabled_keeps_catalog_empty_without_connecting(
     await manager.start()
     provider = MCPToolProvider(manager, gateway_enabled=True)
     assert provider.descriptors(SimpleNamespace(runtime_config=None)) == ()
+    await provider.prepare_manifest(SimpleNamespace(runtime_config=None))
     assert not connection.connected
 
 
@@ -1010,7 +1011,12 @@ async def test_mcp_connection_failure_is_real_and_next_call_can_recover(
 
     failed = await _call_mcp(manager, "recoverable", "health", {})
     assert not failed.ok and failed.error_code == "mcp_transport_unavailable"
+    provider = MCPToolProvider(manager, gateway_enabled=True)
+    with pytest.raises((OSError, RuntimeError, TimeoutError, ValueError)):
+        await provider.prepare_manifest(SimpleNamespace(runtime_config=None))
     connection.fail_connect = False
+    await provider.prepare_manifest(SimpleNamespace(runtime_config=None))
+    assert any(item.model_name == "mcp__recoverable__health" for item in provider.descriptors(None))
     recovered = await _call_mcp(manager, "recoverable", "health", {})
     assert recovered.ok and recovered.data == {"ready": True}
     await manager.close()

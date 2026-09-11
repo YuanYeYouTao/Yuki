@@ -250,6 +250,18 @@ class MCPToolProvider:
             parallel_safe=False,
         )
 
+    async def prepare_manifest(self, context: Any) -> None:
+        """Resolve every enabled server before a fixed deployment declaration.
+
+        Interactive discovery may be best effort; freezing an incomplete tool
+        contract must fail explicitly instead of relying on cached metadata.
+        """
+        if not self._configure_runtime(context):
+            return
+        for server_id in self._manager.configured_server_ids:
+            if self._manager.server_enabled(server_id):
+                await self._manager.refresh(server_id, force=True)
+
     async def refresh(self, *, force: bool = False) -> None:
         for server_id in self._manager.configured_server_ids:
             try:

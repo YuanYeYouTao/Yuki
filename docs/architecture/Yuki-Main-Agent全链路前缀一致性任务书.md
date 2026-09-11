@@ -254,3 +254,9 @@ ledger 继续是事实真源；投影快照是可重建、有版本的模型输�
 - P3 编译/执行服务首批：新增 MainAgentTurnService，普通聊天、自主群回复、插件 external_event 与自动化共享 compose/run；在编译前读取一次全局 short_state，动态项排序在时间之前，空记录保留 CAS revision。已准备轮次不再由 Runner 注入/重读状态。动态预算使用完整序列化 envelope，并扣除历史与当前正文；总字符诊断包含真实分隔符。81 项聊天/自动化/外部事件测试、单次快照/空快照/写后不改输入/预算边界回归与 7 个模块类型检查通过。旧 raw-message 插件接口仍沿兼容注入路径，待 D1；服务当前尚未统一触发协调、投递和持久历史，不能将该首批视为 P3 完成。
 - P3 编译收口补充：Memory 独占与定时意图改为 Composer 的可信动态项，删除聊天编译后的提示追加；附件文字、图片/视频来源说明先组装再编译，统一计入正文预算与字符诊断。编译器使用 dataclass replace 保留原生图片，不在重建 ChatMessage 时丢失媒体。无历史/有历史、独占/定时组合固定 instructions 相等；57 项聊天/外部唤醒/自动化定向测试通过，其中包含实际图片、视频与附件处理链，4 个源模块类型检查通过。未运行全量，未部署。
 - P5 六入口 HTTP 矩阵首批：私聊、管理员群聊、自主回复、插件事件唤醒和自动化 generate/agent 均通过实际 Assembler→Composer→Runner→TaskModelExecutor→Provider，由 MockTransport 捕获 Responses/Chat Completions 共 26 次请求；验证非空清单、固定字段和 Schema 键顺序、每个相邻请求的追加前缀。纯生成拒绝可见发送能力，处理器零调用，错误明确为 capability_not_allowed。48 项自动化/Responses 定向测试及类型/Ruff 检查通过。详见《Yuki-Main-Agent请求对照报告.md》；该矩阵不等于完整 P5，未覆盖的媒体、持久历史、旧 SDK、全部恢复及生产清单仍明确列出。
+
+## 追加任务：主动读取目标聊天记录（用户新增，统一交付上线）
+
+现有 get_recent_chat_history 只读取当前 ToolRuntime 的会话，并以当前 inbound 存储回读消息。新增 OneBot 网关目标读取能力：能明确指定主动联系的人或群，按已解析的 QQ Binding/Presence 读取后续会话；歧义拒绝，不能取第一项或以当前发送路由替代可达性。保留读取与委托边界，调用方应能区分真实网关消息、发送回执、本地账本和不可访问结果；状态查询不得跨请求缓存。跨目标结果不能伪装当前群入站消息入账。要贯通主 Agent 固定清单、目录说明及允许的自动化执行后端，补目标/账号/权限/失败场景定向验证。原 P1—P5 与可靠作业接续继续；所有任务完成后再统一部署。
+
+- P2 启动冻结：固定清单准备阶段要求启用的 MCP Server 成功刷新元数据，禁用 Server 不连接；与交互式 best-effort discovery 分开，失败直接阻止冻结。工具/自动化映射/revision 全部计算成功后一次发布，序列化失败或取消不留下半成品。manifest version=2 将 Schema 键顺序纳入 revision。48 项 MCP/自动化定向测试与 2 个模块类型检查通过，包括延迟/失败/恢复、禁用不连接、失败后重试及 Schema 重排版本变化。
