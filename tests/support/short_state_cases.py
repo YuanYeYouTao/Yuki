@@ -118,6 +118,28 @@ async def run_short_state_cases(database, tmp_path, context):
         )
         await chat._agent_runner.run(initial, scoped, backend)
         assert provider.requests[-1].tools == declared
+        before_discovery = backend._capability_runtime.exposure_snapshot()
+        before_exclusive = backend._capability_runtime.requested_exclusive_write()
+        lookup = ToolCall(
+            id="directory",
+            function=ToolFunction(
+                name="request_tools",
+                arguments='{"query":"workspace list","max_results":4}',
+            ),
+        )
+        backend.begin_batch((lookup,), scoped)
+        discovered = json.loads(
+            await backend.execute(
+                lookup.function.name,
+                lookup.function.arguments,
+                scoped,
+            )
+        )
+        assert "available_tools" in discovered["data"]
+        assert "loaded_tools" not in discovered["data"]
+        assert backend._capability_runtime.exposure_snapshot() == before_discovery
+        assert backend._capability_runtime.requested_exclusive_write() == before_exclusive
+        assert await contract.definitions() == declared
         # Global state has no person/group/origin ACL, including actorless and read-only turns.
         call = ToolCall(
             id="state",
@@ -276,3 +298,37 @@ async def run_short_state_cases(database, tmp_path, context):
     assert "runtime.time" in request.messages[-1].content
     assert "runtime.short_state" in request.messages[-1].content
     assert "current_direct_event" not in request.messages[-1].content
+
+    # Runtime registration cannot make a tool callable before the frozen manifest
+    # changes, even when the backend would happily execute it.
+    class UndeclaredBackend(ShortStateOnlyBackend):
+        attempts = 0
+
+        async def execute(self, name, arguments_json, runtime):
+            self.attempts += 1
+            return '{"ok":true}'
+
+    late_backend = UndeclaredBackend(state)
+    requests_seen = 0
+
+    def undeclared_response(request):
+        nonlocal requests_seen
+        requests_seen += 1
+        if requests_seen == 1:
+            return ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(
+                    ToolCall(
+                        id="late-tool-call",
+                        function=ToolFunction(name="late_registered_tool", arguments="{}"),
+                    ),
+                ),
+            )
+        returned = next(m for m in request.messages if m.tool_call_id == "late-tool-call")
+        assert json.loads(returned.content)["error"] == "tool_not_declared"
+        return "not available in this deployment"
+
+    provider._responder = undeclared_response
+    await chat._agent_runner.run(initial, runtime, late_backend)
+    assert late_backend.attempts == 0

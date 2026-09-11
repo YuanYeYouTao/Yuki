@@ -210,7 +210,7 @@ ledger 继续是事实真源；投影快照是可重建、有版本的模型输�
 
 ## 11. 本次交付范围
 
-已完成原讨论核对、当前源码复核和本任务书。没有修改应用代码、迁移数据库、推送或部署；没有以旧测试结果冒充本次全链路验证。待 D1/D2 定案后更新相应实施条款，其余已明确部分可直接用于后续实施。
+任务书编写阶段已完成原讨论核对与源码复核，当时没有修改应用代码、迁移或部署。后续用户已要求开始执行，实际代码进展见末尾实施记录；没有以旧测试结果冒充全链路验证。D1/D2 待定条款与实施记录中的待决项仍需明确。
 
 
 ## 附录：15:02—15:04 图片任务的生产证据（单独的任务接续问题）
@@ -241,3 +241,6 @@ ledger 继续是事实真源；投影快照是可重建、有版本的模型输�
 - P5 验收基础：新增最终 HTTP JSON 的 wire diagnostics，Responses 与 Chat Completions 均在发送前观测；按独立 transcript chain 隔离，保存有界指纹而非正文。可记录输入正常追加/改写、首个差异索引及 instructions/tools/settings 变化；标记为 dispatch_attempt，不把发送尝试当作 Provider 已接受。中间请求日志明确标记 normalized_projection，并修正中途 system 被误归顶层的算法。58 项相关测试和 5 个目标模块类型检查通过。这只是最终请求对照基础，不代表完整入口矩阵、上下文 epoch 或实际缓存命中验收已完成。
 
 - P3 自动化首批：删除自动化专用 system 与 history JSON 拼装，改走 ContextAssembler 的受限自动化读取入口、ChatEventPromptRenderer 和主 PromptComposer；生产自动化复用聊天 AgentRunner/CHAT_AGENT 路由，保留原自动化执行后端与授权交集。none 不读取历史/记忆，其他 profile 不得超出声明；历史按声明的 creator_private/current_group scope 经 ledger 解析，不再用投递目标 Conversation 替代读取授权。插件动态上下文未额外开放给自动化。当前已贯通 Composer 诊断。81 项相关测试和 4 个目标模块类型检查通过，补充的人物/群读取范围定向场景通过。尚需统一背景任务协调与 generation/epoch 校验、插件接口迁移及全入口 HTTP 对照，不能宣称 P3 已全部完成。
+
+- P2 执行/发现边界：Runner 只将本次已声明工具交给执行后端，运行时新增工具返回 tool_not_declared；固定 manifest 下 request_tools 改为纯目录查询，不做 MCP 临时 hydration、不改变声明或 Memory 独占状态。Memory REQUESTABLE→独占阶段改在调用已经授权的写能力时发生，保留原状态机授权条件和批次副作用隔离。50 项相关测试、目录只读/未声明工具定向回归与类型检查通过。
+- 新待决项 D3：统一 Main Agent 是否只支持受控函数联网（native/mixed 配置明确拒绝），或将 Provider 原生联网作为显式合同例外。Provider 原生执行无法由本地 execute 拦截，不能同时以变动的原生声明实现按轮授权和全量固定声明。已向用户询问；尚未更改 native/mixed 配置行为。

@@ -847,6 +847,12 @@ class _ChatAgentBackend(AgentToolBackend):
             and effective_descriptor.effect is CapabilityEffect.READ_STATE
         )
         is_memory_write_tool = effective_descriptor.namespace_id == "memory.state.write"
+        if is_memory_write_tool and self._service._agent_runner.main_contract is not None:
+            # Enter the already-authorized write phase on invocation, not on a
+            # directory lookup. Batch effect isolation is enforced by AgentRunner.
+            memory_session = self._memory()
+            if memory_session is not None:
+                memory_session.request_exclusive_write()
         if is_memory_read_tool and not self._exclusive_write() and not self._eager_memory_read():
             self._service._tool_metrics.record_automatic_memory_read_tool_call(
                 locator_fallback=self._locator_open()
@@ -1342,6 +1348,15 @@ class _ChatAgentBackend(AgentToolBackend):
                 ensure_ascii=False,
             )
         capability_runtime = self._ensure_capability_runtime()
+        contract = self._service._agent_runner.main_contract
+        if contract is not None:
+            payload = capability_runtime.discover_declared(
+                CapabilityQuery(text=query.strip(), origin=self._runtime.origin, limit=max_results),
+                frozenset(tool.name for tool in await contract.definitions()),
+            )
+            if not payload.get("ok"):
+                self._service._tool_metrics.record_request_tools_zero_result()
+            return json.dumps(payload, ensure_ascii=False)
         payload = await capability_runtime.request_tools(
             CapabilityQuery(
                 text=query.strip(),

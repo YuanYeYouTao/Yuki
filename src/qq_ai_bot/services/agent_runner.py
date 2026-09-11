@@ -586,6 +586,7 @@ class AgentRunner:
                 max_parallel_calls=tooling.max_parallel_calls if tooling is not None else 1,
                 reusable_results=reusable_tool_results,
                 cacheable_names=frozenset(t.name for t in definitions if t.result_cacheable),
+                declared_names=frozenset(t.name for t in definitions),
             )
             batch, executed = coordinated.calls, coordinated.executed_count
             calls_used += executed
@@ -739,15 +740,26 @@ class AgentRunner:
         max_parallel_calls: int,
         reusable_results: dict[tuple[str, str], str],
         cacheable_names: frozenset[str],
+        declared_names: frozenset[str],
     ) -> CoordinatedToolResult:
         """Execute each semantic call once and fan its result out to duplicate IDs."""
 
         signatures = {call.id: self._tool_call_signature(call) for call in calls}
         first_call_by_signature: dict[tuple[str, str], ToolCall] = {}
         reused_by_id: dict[str, str] = {}
+        rejected_by_id: dict[str, str] = {}
         aliases: dict[str, str] = {}
         unique_calls: list[ToolCall] = []
         for call in calls:
+            if call.function.name not in declared_names:
+                rejected_by_id[call.id] = json.dumps(
+                    {
+                        "ok": False,
+                        "error": "tool_not_declared",
+                        "detail": "Tool is not part of this request's declared manifest.",
+                    }
+                )
+                continue
             signature = signatures[call.id]
             side_effecting = self._is_side_effecting(tools, call, runtime)
             cached = (
@@ -821,6 +833,9 @@ class AgentRunner:
 
         ordered: list[tuple[ToolCall, str, bool]] = []
         for call in calls:
+            if call.id in rejected_by_id:
+                ordered.append((call, rejected_by_id[call.id], False))
+                continue
             if call.id in reused_by_id:
                 ordered.append((call, reused_by_id[call.id], False))
                 continue
