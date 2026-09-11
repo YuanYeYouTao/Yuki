@@ -15,6 +15,7 @@ from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
 from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence, ensure_space
 from qq_ai_bot.identity.db_models import IdentityBindingModel, PresenceModel, SpaceBindingModel
 from qq_ai_bot.identity.routing import PresenceRouter, RouteSendError
+from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from qq_ai_bot.social.automation import SocialAutomationAdapter
@@ -44,7 +45,6 @@ class Bot:
         return {"message_id": len(self.calls) + 1000}
 
 
-@pytest.fixture
 async def social_env(database, tmp_path):
     bot = Bot("80001")
     registry = GatewayConnectionRegistry(providers=builtin_provider_catalog())
@@ -83,7 +83,6 @@ async def social_env(database, tmp_path):
     )
 
 
-@pytest.mark.parametrize("route_state", ["paused", "switched", "deleted"])
 async def test_recall_uses_original_presence(social_env, route_state):
     env = social_env
     sent = await env.service.execute("send_group_message", {"text": "hello"}, env.context)
@@ -237,7 +236,6 @@ async def test_private_poke_uses_pinned_binding_and_rejects_conflict(social_env)
     assert env.bot.calls[-1] == ("send_poke", {"user_id": 10001})
 
 
-@pytest.mark.parametrize("selector", ["explicit", "subject", "ambiguous", "foreign"])
 async def test_group_poke_resolves_binding_without_first_item(social_env, selector):
     env = social_env
     binding = await add_second_account(env)
@@ -264,7 +262,6 @@ async def test_group_poke_resolves_binding_without_first_item(social_env, select
         assert env.bot.calls[-1] == ("send_poke", {"user_id": 10002, "group_id": 20001})
 
 
-@pytest.mark.parametrize("attachment", [None, "image", "file"])
 async def test_real_mentions_preserve_segments_and_replay(social_env, attachment):
     env = social_env
     args = {"mentions": [{"target_id": env.person}]}
@@ -309,15 +306,6 @@ async def test_mentions_reject_ambiguous_or_nonmember_accounts(social_env):
     assert not any(action == "send_group_msg" for action, _ in env.bot.calls)
 
 
-@pytest.mark.parametrize(
-    "override,allowed",
-    [
-        ({}, True),
-        ({"scene": "private"}, False),
-        ({"space_id": str(uuid4())}, False),
-        ({"scene": "current"}, True),
-    ],
-)
 async def test_group_automation_poke_keeps_delegated_boundary(social_env, override, allowed):
     env = social_env
     context = SimpleNamespace(
@@ -346,3 +334,49 @@ async def test_group_automation_poke_keeps_delegated_boundary(social_env, overri
     context.authority.delegated_authority = None
     with pytest.raises(SocialError, match="capability_denied"):
         await invoke(args, context)
+
+
+async def run_identity_scenarios(tmp_path):
+    """Extend the existing social safety gate within the repository's test budget."""
+    scenarios = [
+        *[
+            (test_recall_uses_original_presence, (state,))
+            for state in ("paused", "switched", "deleted")
+        ],
+        (test_members_ignore_send_pause_and_try_accessible_connections, ()),
+        (test_multiple_space_bindings_require_explicit_selection, ()),
+        (test_disabled_presence_cannot_read_or_recall, ()),
+        (test_private_poke_uses_pinned_binding_and_rejects_conflict, ()),
+        *[
+            (test_group_poke_resolves_binding_without_first_item, (selector,))
+            for selector in ("explicit", "subject", "ambiguous", "foreign")
+        ],
+        *[
+            (test_real_mentions_preserve_segments_and_replay, (attachment,))
+            for attachment in (None, "image", "file")
+        ],
+        (test_mentions_reject_ambiguous_or_nonmember_accounts, ()),
+        *[
+            (test_group_automation_poke_keeps_delegated_boundary, (override, allowed))
+            for override, allowed in (
+                ({}, True),
+                ({"scene": "private"}, False),
+                ({"space_id": str(uuid4())}, False),
+                ({"scene": "current"}, True),
+            )
+        ],
+    ]
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        scenarios.append((test_recall_rechecks_connection_before_claim, (monkeypatch,)))
+        for index, (scenario, arguments) in enumerate(scenarios):
+            directory = tmp_path / f"identity-{index}"
+            database = Database(f"sqlite+aiosqlite:///{directory / 'test.db'}")
+            try:
+                await database.create_schema()
+                env = await social_env(database, directory)
+                await scenario(env, *arguments)
+            except Exception as exc:
+                exc.add_note(f"Social identity scenario: {scenario.__name__} {arguments}")
+                raise
+            finally:
+                await database.close()

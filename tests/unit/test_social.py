@@ -462,3 +462,6 @@ async def test_social_gateway_delivery_and_fail_closed(database: Database, tmp_p
     registry.disconnect(bot)
     with pytest.raises(Exception, match="disconnected"):
         await service.send_route(SocialTarget(kind="person", id=UUID(person)), reply_context)
+    from tests.support.social_identity_cases import run_identity_scenarios
+
+    await run_identity_scenarios(tmp_path)
