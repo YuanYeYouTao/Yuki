@@ -31,9 +31,12 @@ class Bot:
         self.calls = []
         self.missing = set()
         self.fail_list = False
+        self.history = {"messages": []}
 
     async def call_api(self, action, **params):
         self.calls.append((action, params))
+        if action in {"get_friend_msg_history", "get_group_msg_history"}:
+            return self.history
         if action == "get_group_member_info":
             if str(params["user_id"]) in self.missing:
                 raise RuntimeError("not a member")
@@ -375,7 +378,16 @@ async def test_group_automation_poke_keeps_delegated_boundary(social_env, overri
 
 async def run_identity_scenarios(tmp_path):
     """Extend the existing social safety gate within the repository's test budget."""
+    from tests.support.social_history_cases import (
+        history_agent_loop,
+        history_receipt,
+        history_targets_and_delegation,
+    )
+
     scenarios = [
+        (history_agent_loop, ()),
+        (history_receipt, ()),
+        (history_targets_and_delegation, ()),
         (current_speaker_mention, ()),
         *[
             (test_recall_uses_original_presence, (state,))

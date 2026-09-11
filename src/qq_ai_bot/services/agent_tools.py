@@ -367,6 +367,7 @@ class AgentToolService:
             ),
             ChatTool(
                 name="get_recent_chat_history",
+                result_cacheable=False,
                 description=(
                     "直接从当前 QQ/OneBot Provider 读取私聊或群聊最近 20 条消息。"
                     "当用户问刚才说了什么、当前对话历史或人物上下文时使用。"
@@ -1067,7 +1068,9 @@ class AgentToolService:
                             return self._result(
                                 error=str(social_result.get("error") or "delivery_uncertain"),
                                 detail=(
-                                    "文件已发送成功，附带文字未确认发送；不要重发文件"
+                                    "读取账号不明确；从 presences 选择 presence_id，勿换号试读"
+                                    if name == "read_conversation_history"
+                                    else "文件已发送成功，附带文字未确认发送；不要重发文件"
                                     if social_result.get("error") == "file_sent_caption_unconfirmed"
                                     else "发送未确认成功，不要重复发送；请根据实际工具结果说明情况"
                                 ),
@@ -1076,6 +1079,15 @@ class AgentToolService:
                         return self._result(data=social_result)
                     except SocialError as exc:
                         detail = {
+                            "history_receipt_unavailable": (
+                                "该回执不属于当前来源会话，或没有可核验的发送账号"
+                            ),
+                            "history_anchor_unavailable": (
+                                "无法从回执确定原始会话；请明确指定目标、Binding 和 Presence"
+                            ),
+                            "history_presence_unavailable": "原账号不可用，未换号读取",
+                            "history_provider_failed": "网关读取失败，不表示没有消息",
+                            "invalid_history_result": "网关历史返回格式无效，不能据此判断会话内容",
                             "artifact_transfer_unavailable": (
                                 "文件已存在工作区，但中转不可用，尚未发送；本轮不要重复发送"
                             ),

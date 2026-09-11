@@ -67,6 +67,7 @@ def register_social_automation(
         read = tool.name in {
             "find_contacts",
             "get_group_members",
+            "read_conversation_history",
             "workspace_list",
             "workspace_read",
             "get_code_run",
@@ -133,9 +134,24 @@ class SocialAutomationAdapter:
                     conversation_id=context.canonical_conversation_id,
                     space_id=context.canonical_target_space_id,
                 )
+                if (
+                    tool_name == "read_conversation_history"
+                    and not context.authority.actor_is_superuser
+                ):
+                    from qq_ai_bot.social.history import resolve_history_target
+
+                    selection = await resolve_history_target(self.social, args, social_context)
+                    expected = (
+                        context.canonical_target_person_id
+                        if selection.target.kind == "person"
+                        else context.canonical_target_space_id
+                    )
+                    if str(selection.target.id) != expected:
+                        raise SocialError("delegated_target_not_allowed")
                 if not context.authority.actor_is_superuser and tool_name not in {
                     "find_contacts",
                     "get_group_members",
+                    "read_conversation_history",
                 }:
                     if tool_name == "recall_own_message":
                         raise SocialError("delegated_target_not_allowed")

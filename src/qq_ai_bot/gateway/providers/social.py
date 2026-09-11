@@ -26,6 +26,12 @@ class OneBotSocialOperations:
     async def recall(self, handle: object, **params: Any) -> Any:
         return await cast(Any, handle).call_api("delete_msg", **params)
 
+    async def private_history(self, handle: object, **params: Any) -> Any:
+        return await cast(Any, handle).call_api("get_friend_msg_history", **params)
+
+    async def group_history(self, handle: object, **params: Any) -> Any:
+        return await cast(Any, handle).call_api("get_group_msg_history", **params)
+
     async def social_action(self, handle: object, action: str, params: dict[str, Any]) -> Any:
         operations = {
             "send_private_msg": self.send_message,
@@ -36,6 +42,8 @@ class OneBotSocialOperations:
             "get_group_member_list": self.members,
             "get_group_member_info": self.member,
             "delete_msg": self.recall,
+            "get_friend_msg_history": self.private_history,
+            "get_group_msg_history": self.group_history,
         }
         if action not in operations:
             raise ValueError("capability_unavailable")

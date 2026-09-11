@@ -292,6 +292,10 @@ class SocialService:
     async def execute(
         self, name: str, args: dict[str, Any], context: SocialContext
     ) -> dict[str, Any]:
+        if name == "read_conversation_history":
+            from qq_ai_bot.social.history import read_history
+
+            return await read_history(self, args, context)
         if name == "find_contacts":
             kind = str(args.get("kind", "person"))
             items: list[dict[str, Any]]

@@ -51,6 +51,37 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
         )
 
     return (
+        ChatTool(
+            name="read_conversation_history",
+            description=(
+                "从 OneBot 实时读取明确的人或群的最近会话。主动发信后可用发送回执 operation_id "
+                "查看原账号上的后续消息；回执本身不表示对方回复。也可用 kind=person/space "
+                "配合 target_id/display_name/subject_ref；"
+                "多 QQ Binding 或多个在线账号必须明确选择。"
+                "返回有界历史和来源，不会发送消息，也不把其他私聊记进当前群。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    **selector,
+                    "kind": {"type": "string", "enum": ["person", "space"]},
+                    "operation_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "当前来源会话的发送回执；不能同时指定其他目标或账号",
+                    },
+                    "binding_id": {"type": "string", "format": "uuid"},
+                    "presence_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "读取哪个 Yuki QQ 账号的会话；歧义时从返回候选中选择",
+                    },
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                },
+                "additionalProperties": False,
+            },
+            result_cacheable=False,
+        ),
         tool(
             "find_contacts",
             "查找 Yuki 可联系的人或群。名称歧义必须澄清；成员名单出现不等于认识。",

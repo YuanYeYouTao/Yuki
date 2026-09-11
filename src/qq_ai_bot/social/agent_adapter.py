@@ -20,7 +20,7 @@ async def invoke_social(
 ) -> dict[str, Any]:
     if (
         runtime.origin not in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}
-        or runtime.read_only
+        or (runtime.read_only and name != "read_conversation_history")
         or runtime.tools_closed
     ):
         raise SocialError("permission_denied")

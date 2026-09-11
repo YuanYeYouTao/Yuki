@@ -33,6 +33,7 @@ _RESIDENT_YUKI_TOOLS = frozenset(
         "send_group_message",
         "poke_person",
         "get_group_members",
+        "read_conversation_history",
         "recall_own_message",
         "workspace_list",
         "workspace_read",
@@ -77,6 +78,11 @@ _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
     "send_group_message": ("social.send", CapabilityEffect.PLATFORM_SEND, CapabilityRisk.MUTATE),
     "poke_person": ("social.poke", CapabilityEffect.PLATFORM_MUTATE, CapabilityRisk.MUTATE),
     "get_group_members": ("social.members", CapabilityEffect.EXTERNAL_READ, CapabilityRisk.READ),
+    "read_conversation_history": (
+        "social.history",
+        CapabilityEffect.EXTERNAL_READ,
+        CapabilityRisk.READ,
+    ),
     "recall_own_message": (
         "social.recall",
         CapabilityEffect.PLATFORM_MUTATE,
