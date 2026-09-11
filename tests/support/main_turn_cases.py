@@ -1,5 +1,6 @@
 """Shared turn compilation scenarios exercised by the automation integration case."""
 
+import asyncio
 import json
 from unittest.mock import patch
 
@@ -17,6 +18,7 @@ from qq_ai_bot.prompting.serializer import DYNAMIC_ENVELOPE_HEADER, serialize_dy
 
 
 async def run_compiled_state_cases(handlers, state, provider, runtime, context):
+    await coordinator_reservation_cases()
     arguments = {"instruction": "compiled once", "context_profile": "none"}
     old_rows = state.snapshot()
     provider._responder = lambda request: "done"
@@ -77,3 +79,37 @@ async def run_compiled_state_cases(handlers, state, provider, runtime, context):
     )
     assert compiled.metrics.dynamic_characters == exact
     assert compiled.metrics.total_characters == len(compiled.messages[-1].content)
+
+
+async def coordinator_reservation_cases():
+    from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
+
+    turns = ConversationTurnCoordinator()
+    token = await turns.notify_message("source")
+    async with turns.hold("source"):
+        async with turns.track(token, "generation"):
+            pass
+        # No generation or reply stage is registered at this boundary.
+        assert await turns.begin_background("source") is None
+        assert await turns.begin_autonomous(token) is None
+        async with turns.hold("source"):
+            assert await turns.begin_background("source") is None
+        assert await turns.begin_background("source") is None
+        assert await turns.begin_background("unrelated") is not None
+        async with turns.track(token, "reply"):
+            pass
+    assert await turns.begin_background("source") is not None
+    entered = asyncio.Event()
+
+    async def interrupted():
+        async with turns.hold("cancelled"):
+            entered.set()
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(interrupted())
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    assert await turns.begin_background("cancelled") is None
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert await turns.begin_background("cancelled") is not None

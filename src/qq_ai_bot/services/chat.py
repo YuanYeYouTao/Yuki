@@ -1850,6 +1850,7 @@ class ChatService:
         )
 
         async with (
+            self._turn_coordinator.hold(conversation_key),
             self._concurrency.conversation(conversation_key),
             AsyncExitStack() as memory_cleanup,
         ):

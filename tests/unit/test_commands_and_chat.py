@@ -799,7 +799,9 @@ async def test_unused_planner_fallback_no_longer_blocks_the_agent(
 
 
 @pytest.mark.asyncio
-async def test_ordinary_chat_always_assembles_agent_context(database: Database) -> None:
+async def test_ordinary_chat_always_assembles_agent_context(
+    database: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
     provider = FakeLLMProvider(lambda _request: "表情也要先走 Main Agent")
     harness = build_harness(
         database,
@@ -808,12 +810,28 @@ async def test_ordinary_chat_always_assembles_agent_context(database: Database) 
     )
     sender = MemorySender()
 
+    chat = harness.processor._chat
+    send_sequence = chat._reply_sequence.send
+    checked = []
+
+    async def inspect_handoff(**kwargs):
+        key = kwargs["token"].conversation_key
+        # The real Main Agent has finished; reply tracking has not started yet.
+        assert not chat._turn_coordinator._states[key].tasks
+        assert await chat._turn_coordinator.begin_background(key) is None
+        checked.append(key)
+        return await send_sequence(**kwargs)
+
+    monkeypatch.setattr(chat._reply_sequence, "send", inspect_handoff)
+
     result = await harness.processor.handle(
         inbound("发个表情", message_id="emoji-still-calls-agent"),
         sender,
     )
 
     assert result.reason == "chat"
+    assert len(checked) == 1
+    assert await chat._turn_coordinator.begin_background(checked[0]) is not None
     assert len(provider.requests) == 1
     assert sender.messages[0].text == "表情也要先走 Main Agent"
     request = provider.requests[0]
