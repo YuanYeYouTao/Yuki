@@ -25,6 +25,7 @@ from qq_ai_bot.llm.base import (
     LLMUnavailableError,
     RetryableProviderError,
 )
+from qq_ai_bot.llm.wire_diagnostics import WireRequestObserver
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ class OpenAICompatibleProvider(LLMProvider):
         max_retries: int,
         client: httpx.AsyncClient | None = None,
     ) -> None:
+        self._wire_observer = WireRequestObserver()
         self._api_key = api_key
         self._max_retries = max_retries
         self._owns_client = client is None
@@ -170,6 +172,7 @@ class OpenAICompatibleProvider(LLMProvider):
             payload["reasoning_effort"] = request.reasoning_effort.value
         if request.response_format is not None:
             payload["response_format"] = request.response_format
+        self._wire_observer.observe(payload, "chat_completions", chain_id=request.request_chain_id)
         response = await self._client.post(
             "/chat/completions",
             headers={"Authorization": f"Bearer {self._api_key}"},

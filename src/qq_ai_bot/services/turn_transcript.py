@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+from uuid import uuid4
 
 from qq_ai_bot.domain.messages import ChatMessage, FunctionCallOutput, ProviderContinuation
 from qq_ai_bot.llm.base import LLMInvalidRequestError
@@ -22,6 +23,7 @@ class TranscriptRequest:
 
 class TurnTranscript:
     def __init__(self, messages: tuple[ChatMessage, ...]) -> None:
+        self.chain_id = uuid4().hex
         self._entries: list[ChatMessage | FunctionCallOutput | ProviderContinuation] = list(
             messages
         )

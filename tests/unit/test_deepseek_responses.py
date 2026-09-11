@@ -341,8 +341,11 @@ async def test_responses_omit_temperature_for_provider_defaults(model: str) -> N
 
 
 @pytest.mark.asyncio
-async def test_function_output_follows_cumulative_continuation() -> None:
+async def test_function_output_follows_cumulative_continuation(caplog) -> None:
+    from qq_ai_bot.llm.wire_diagnostics import WireRequestObserver, wire_hash
     from qq_ai_bot.services.turn_transcript import TurnTranscript
+
+    caplog.set_level("INFO", logger="qq_ai_bot.llm.wire_diagnostics")
 
     requests: list[dict[str, object]] = []
     declared = (ChatTool(name="lookup", description="fixed", parameters={"type": "object"}),)
@@ -352,6 +355,7 @@ async def test_function_output_follows_cumulative_continuation() -> None:
         sequence = transcript.request()
         return _request(
             messages=sequence.messages,
+            request_chain_id=transcript.chain_id,
             tools=declared,
             continuation=sequence.continuation,
             continuation_items=sequence.items,
@@ -425,6 +429,38 @@ async def test_function_output_follows_cumulative_continuation() -> None:
             )
         )
     assert requests[0]["instructions"] == requests[1]["instructions"] == requests[2]["instructions"]
+
+    observations = [
+        json.loads(record.getMessage().split(" ", 1)[1])
+        for record in caplog.records
+        if record.name == "qq_ai_bot.llm.wire_diagnostics"
+    ]
+    assert [o["relation"] for o in observations] == ["first_observation", "append", "append"]
+    for payload, observation in zip(requests, observations, strict=True):
+        assert observation["tools_hash"] == wire_hash(payload["tools"])
+        assert observation["instructions_hash"] == wire_hash(payload["instructions"])
+        assert observation["input_items"] == len(payload["input"])
+        assert observation["changed_fields"] == []
+    encoded = json.dumps(observations)
+    assert "trusted system" not in encoded
+    assert "control between results" not in encoded
+    assert "call_fixture_1" not in encoded
+
+    observer = WireRequestObserver()
+    observer.observe(requests[1], "responses", chain_id="independent")
+    rewritten = {**requests[1], "input": [*requests[1]["input"]]}
+    rewritten["input"][1] = {"type": "message", "role": "user", "content": "changed"}
+    difference = observer.observe(rewritten, "responses", chain_id="independent")
+    assert difference["relation"] == "input_rewritten"
+    assert difference["first_difference_index"] == 1
+    assert (
+        observer.observe(rewritten, "responses", chain_id="other")["relation"]
+        == "first_observation"
+    )
+    without_tools = {**rewritten, "tools": []}
+    assert observer.observe(without_tools, "responses", chain_id="independent")[
+        "changed_fields"
+    ] == ["tools"]
 
 
 @pytest.mark.asyncio

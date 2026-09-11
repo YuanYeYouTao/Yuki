@@ -39,7 +39,7 @@ def _json_hash(value: object) -> str:
 
 @dataclass(frozen=True, slots=True)
 class ProviderCacheShapeDiagnostics:
-    """Content-free hashes of the actual normalized cache-relevant request."""
+    """Pre-provider projection hashes; final HTTP diagnostics are authoritative."""
 
     provider_shape_hash: str
     instructions_hash: str
@@ -81,10 +81,14 @@ def provider_cache_shape_diagnostics(
 ) -> ProviderCacheShapeDiagnostics:
     """Hash the normalized provider request while excluding the current user tail."""
 
-    instructions = [
-        _diagnostic_message(message) for message in request.messages if message.role == "system"
-    ]
-    inputs = [message for message in request.messages if message.role != "system"]
+    boundary = 0
+    while boundary < len(request.messages) and request.messages[boundary].role in {
+        "system",
+        "developer",
+    }:
+        boundary += 1
+    instructions = [_diagnostic_message(message) for message in request.messages[:boundary]]
+    inputs = request.messages[boundary:]
     current_tail_index = next(
         (index for index in range(len(inputs) - 1, -1, -1) if inputs[index].role == "user"),
         None,
@@ -349,6 +353,7 @@ class TaskModelExecutor:
             function_outputs=request.function_outputs,
             continuation_messages=request.continuation_messages,
             continuation_items=request.continuation_items,
+            request_chain_id=request.request_chain_id,
             conversation_prefix_hash=request.conversation_prefix_hash,
             request_shape_hash=request_shape_hash(
                 request,
@@ -373,7 +378,8 @@ class TaskModelExecutor:
                 provider_shape_hash=provider_cache_shape.provider_shape_hash,
             )
             logger.info(
-                "prompt_request_diagnostics task=%s conversation_prefix_hash=%s "
+                "prompt_request_diagnostics stage=normalized_projection task=%s "
+                "conversation_prefix_hash=%s "
                 "request_shape_hash=%s provider_cache_shape_hash=%s "
                 "provider_instructions_hash=%s provider_tools_hash=%s "
                 "provider_input_prefix_hash=%s prompt_snapshot_fingerprint=%s",

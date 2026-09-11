@@ -48,6 +48,7 @@ from qq_ai_bot.llm.base import (
     LLMUnavailableError,
     RetryableProviderError,
 )
+from qq_ai_bot.llm.wire_diagnostics import WireRequestObserver
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,7 @@ class DeepSeekResponsesProvider(LLMProvider):
         max_retries: int,
         client: httpx.AsyncClient | None = None,
     ) -> None:
+        self._wire_observer = WireRequestObserver()
         self._api_key = api_key
         self._max_retries = max_retries
         self._owns_client = client is None
@@ -108,6 +110,9 @@ class DeepSeekResponsesProvider(LLMProvider):
                         "model_transport_attempt protocol=responses correlation_id=%s attempt=%d",
                         correlation.turn_id if correlation else "unbound",
                         attempt.retry_state.attempt_number,
+                    )
+                    self._wire_observer.observe(
+                        payload, "responses", chain_id=request.request_chain_id
                     )
                     response = await self._post(payload)
         except httpx.TimeoutException as exc:

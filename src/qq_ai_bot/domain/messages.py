@@ -359,6 +359,7 @@ class ChatRequest:
     continuation_items: tuple[ChatMessage | FunctionCallOutput, ...] = ()
     conversation_prefix_hash: str = ""
     request_shape_hash: str = ""
+    request_chain_id: str = ""
     prompt_snapshot_fingerprint: str = ""
     static_prompt_revision: str = ""
 

@@ -237,3 +237,5 @@ ledger 继续是事实真源；投影快照是可重建、有版本的模型输�
 - `bad8a82`：Memory/自动化条件规则加入固定核心合同，本轮状态使用统一动态 envelope；short_state 复用同一注入函数。无历史/有历史的 instructions 一致性定向场景通过，聊天与自动化共 61 项测试通过。
 - P2 首批：自动化工具改用注册时的显式 model_tool_name 映射，冻结时校验 Schema/描述/缓存策略；工具 manifest 有独立内容 revision，返回防御性副本。自动化与能力安全 39 项测试通过，定向类型检查通过。该 revision 仅覆盖工具合同，完整 Prompt/模型版本仍需后续收拢。
 - 尚未完成：原生工具与完整版本合同、入口收拢、历史快照取舍与实现、最终日志/全矩阵验收、可靠作业接续及部署。D1/D2 仍待定，不以推荐选项当作用户答复。
+
+- P5 验收基础：新增最终 HTTP JSON 的 wire diagnostics，Responses 与 Chat Completions 均在发送前观测；按独立 transcript chain 隔离，保存有界指纹而非正文。可记录输入正常追加/改写、首个差异索引及 instructions/tools/settings 变化；标记为 dispatch_attempt，不把发送尝试当作 Provider 已接受。中间请求日志明确标记 normalized_projection，并修正中途 system 被误归顶层的算法。58 项相关测试和 5 个目标模块类型检查通过。这只是最终请求对照基础，不代表完整入口矩阵、上下文 epoch 或实际缓存命中验收已完成。

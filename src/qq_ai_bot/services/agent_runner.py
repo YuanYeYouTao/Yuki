@@ -249,6 +249,7 @@ class AgentRunner:
                 sequence = transcript.request()
                 request = ChatRequest(
                     messages=sequence.messages,
+                    request_chain_id=transcript.chain_id,
                     continuation_items=sequence.items,
                     model=runtime.runtime_config.llm.model or "fake",
                     temperature=runtime.runtime_config.llm.temperature,
