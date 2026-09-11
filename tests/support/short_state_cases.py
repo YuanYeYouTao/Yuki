@@ -343,7 +343,51 @@ async def run_short_state_cases(database, tmp_path, context):
         assert caught.value.transient is False
         assert caught.value.llm_calls == dispatched
         assert len(provider.requests) - previous_requests == dispatched
-    handlers._ledger = real_ledger
+    from qq_ai_bot.services.concurrency import ConcurrencyManager
+
+    queued = asyncio.Event()
+
+    class ObservedConcurrency(ConcurrencyManager):
+        async def run_llm(self, *args, **kwargs):
+            queued.set()
+            return await super().run_llm(*args, **kwargs)
+
+    gate = ObservedConcurrency(1)
+    await gate._semaphore.acquire()
+    original_concurrency = chat._agent_runner._concurrency
+    chat._agent_runner._concurrency = gate
+    version_matches = AsyncMock(return_value=True)
+    handlers._ledger = SimpleNamespace(
+        read_scope_context=real_ledger.read_scope_context,
+        read_version_matches=version_matches,
+    )
+    previous_requests = len(provider.requests)
+    waiting = asyncio.create_task(
+        handlers.generate(
+            {
+                "instruction": "queued scoped work",
+                "context_profile": "creator_private",
+                "max_characters": 200,
+            },
+            scoped_context,
+        )
+    )
+    try:
+        await asyncio.wait_for(queued.wait(), timeout=3)
+        version_matches.assert_not_awaited()
+        version_matches.return_value = False
+        gate._semaphore.release()
+        with pytest.raises(AutomationExecutionError) as caught:
+            await asyncio.wait_for(waiting, timeout=3)
+        assert caught.value.category == "automation_context_changed"
+        assert caught.value.llm_calls == 0
+        assert len(provider.requests) == previous_requests
+    finally:
+        if not waiting.done():
+            waiting.cancel()
+        await asyncio.gather(waiting, return_exceptions=True)
+        chat._agent_runner._concurrency = original_concurrency
+        handlers._ledger = real_ledger
 
     # Runtime registration cannot make a tool callable before the frozen manifest
     # changes, even when the backend would happily execute it.

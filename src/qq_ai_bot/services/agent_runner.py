@@ -21,6 +21,7 @@ from qq_ai_bot.capabilities.coordinator import (
 from qq_ai_bot.domain.messages import (
     ChatMessage,
     ChatRequest,
+    ChatResponse,
     ChatTool,
     ModelResponseStatus,
     NativeToolDefinition,
@@ -49,6 +50,12 @@ if TYPE_CHECKING:
     from qq_ai_bot.services.main_agent_contract import MainAgentContract
 
 logger = logging.getLogger(__name__)
+
+
+class _RequestNotStarted(Exception):
+    def __init__(self, cause: LLMError) -> None:
+        self.cause = cause
+        super().__init__(str(cause))
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,14 +249,6 @@ class AgentRunner:
             ):
                 definitions = ()
                 native_definitions = ()
-            if runtime.before_model_request is not None:
-                try:
-                    await runtime.before_model_request()
-                except LLMError:
-                    self._record_failure_usage(
-                        tools, tool_calls=calls_used, model_requests=request_index
-                    )
-                    raise
             try:
                 diagnostics = runtime.prompt_diagnostics
                 sequence = transcript.request()
@@ -297,9 +296,21 @@ class AgentRunner:
                     if runtime.canonical_conversation_id is not None
                     else partial(self._models.execute, self._task, request)
                 )
+                async def dispatch(
+                    execute: Callable[[], Awaitable[ChatResponse]] = execute,
+                ) -> ChatResponse:
+                    # Admission can wait behind other conversations. Validate
+                    # only after acquiring the slot, immediately before execution.
+                    if runtime.before_model_request is not None:
+                        try:
+                            await runtime.before_model_request()
+                        except LLMError as exc:
+                            raise _RequestNotStarted(exc) from exc
+                    return await execute()
+
                 response = await self._concurrency.run_llm(
                     runtime.conversation_key,
-                    execute,
+                    dispatch,
                 )
                 # A prepared request may be cancelled while waiting for the LLM
                 # slot or rejected by the transport budget before dispatch.
@@ -326,6 +337,11 @@ class AgentRunner:
                     source_count=len(response.citations),
                 )
                 staged_evidence_results = 0
+            except _RequestNotStarted as exc:
+                self._record_failure_usage(
+                    tools, tool_calls=calls_used, model_requests=request_index
+                )
+                raise exc.cause from exc
             except (LLMTimeoutError, LLMUnavailableError) as exc:
                 recovered = self._recover_committed_mutation(
                     tools,
