@@ -50,6 +50,7 @@ from qq_ai_bot.memory.models import (
     MemoryRetrievalResult,
 )
 from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.persistence.event_repository import ConversationReadVersion
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     EventRecord,
@@ -104,6 +105,7 @@ class AssembledContext:
     prompt_effective_coverage: int = 0
     prompt_rollup_revision: int = 0
     prompt_raw_tail_end_event_id: int = 0
+    read_version: ConversationReadVersion | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +196,7 @@ class ContextAssembler:
         data: dict[str, Any] = {}
         relationship = None
         rows: tuple[EventRecord, ...] = ()
+        read_version = None
         if profile != "none":
             if declared.include_memories:
                 data["memories"] = [
@@ -219,7 +222,7 @@ class ContextAssembler:
                     if profile == "current_group" and context.current_group_id
                     else ConversationScope.private(context.bot_user_id, context.creator_user_id)
                 )
-                rows = await ledger.list_scope_recent(
+                read_version, rows = await ledger.read_scope_context(
                     scope,
                     limit=declared.history_limit,
                     message_only=True,
@@ -263,6 +266,7 @@ class ContextAssembler:
                 raw_history_window_shifted=False,
             ),
             visible_event_ids=frozenset(row.id for row in rows),
+            read_version=read_version,
         )
 
     async def assemble(

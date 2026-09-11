@@ -80,6 +80,10 @@ if TYPE_CHECKING:
 GatewayFactory = Callable[[CapabilityExecutionContext], ProactiveGateway]
 
 
+class _AutomationContextChanged(LLMInvalidRequestError):
+    """The declared history no longer belongs to the current conversation epoch."""
+
+
 class AutomationCapabilityHandlers:
     """Dependency-bound handlers; registry metadata remains independent and testable."""
 
@@ -337,8 +341,16 @@ class AutomationCapabilityHandlers:
             arguments, context, runtime_config=snapshot
         )
         messages = composition.messages
+
+        async def validate_context() -> None:
+            if composition.read_version is not None and not await self._ledger.read_version_matches(
+                composition.read_version
+            ):
+                raise _AutomationContextChanged("automation context generation changed")
+
         runtime = replace(
             runtime,
+            before_model_request=validate_context,
             prompt_diagnostics=PromptRequestDiagnostics(
                 conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
                 prompt_snapshot_fingerprint=composition.metrics.prompt_snapshot_fingerprint,
@@ -954,7 +966,9 @@ def _automation_llm_error(
     tool_calls: int = 0,
     messages_sent: int = 0,
 ) -> AutomationExecutionError:
-    if isinstance(error, LLMRateLimitError):
+    if isinstance(error, _AutomationContextChanged):
+        category, transient = "automation_context_changed", False
+    elif isinstance(error, LLMRateLimitError):
         category, transient = "llm_rate_limited", True
     elif isinstance(error, LLMTimeoutError):
         category, transient = "llm_timeout", True

@@ -302,6 +302,49 @@ async def run_short_state_cases(database, tmp_path, context):
     assert "runtime.short_state" in request.messages[-1].content
     assert "current_direct_event" not in request.messages[-1].content
 
+    # A reset before dispatch costs no model call; a reset after the first
+    # response prevents continuation without erasing already used calls.
+    from unittest.mock import AsyncMock
+
+    from qq_ai_bot.automation.executor import AutomationExecutionError
+    from qq_ai_bot.automation.models import AutomationContext
+
+    scoped_context = replace(
+        context,
+        automation_context=AutomationContext(scene="creator_private", history_limit=3),
+    )
+    real_ledger = handlers._ledger
+    for dispatched in (0, 1):
+        handlers._ledger = SimpleNamespace(
+            read_scope_context=real_ledger.read_scope_context,
+            read_version_matches=AsyncMock(side_effect=[True] * dispatched + [False]),
+        )
+        provider._responder = lambda request: ChatResponse(
+            content="",
+            latency_seconds=0,
+            tool_calls=(
+                ToolCall(
+                    id="before-reset",
+                    function=ToolFunction(name="get_short_state", arguments="{}"),
+                ),
+            ),
+        )
+        previous_requests = len(provider.requests)
+        with pytest.raises(AutomationExecutionError) as caught:
+            await handlers.generate(
+                {
+                    "instruction": "scoped work",
+                    "context_profile": "creator_private",
+                    "max_characters": 200,
+                },
+                scoped_context,
+            )
+        assert caught.value.category == "automation_context_changed"
+        assert caught.value.transient is False
+        assert caught.value.llm_calls == dispatched
+        assert len(provider.requests) - previous_requests == dispatched
+    handlers._ledger = real_ledger
+
     # Runtime registration cannot make a tool callable before the frozen manifest
     # changes, even when the backend would happily execute it.
     class UndeclaredBackend(ShortStateOnlyBackend):

@@ -100,8 +100,27 @@ async def test_primary_alias_freezes_and_generation_only_on_new(database: Databa
     assert second.primary_alias == primary
     appended = await uow.append_inbound(first.message, first)
     assert appended.scope.generation == 1
+    from qq_ai_bot.persistence.event_repository import EventLedgerRepository
+
+    ledger = EventLedgerRepository(database)
+    scope = ConversationScope.private("8000", "1001")
+    version, old_rows = await ledger.read_scope_context(scope, limit=10, message_only=True)
+    assert len(old_rows) == 1
+    assert await ledger.read_version_matches(version)
+    missing, empty = await ledger.read_scope_context(
+        ConversationScope.private("8000", "9999"), limit=10
+    )
+    assert not empty and missing.conversation_id is None
+    assert await ledger.read_version_matches(missing)
     switched = await uow.append_new_generation(_private("c-new"), first)
     assert switched.scope.generation == 2
+    assert not await ledger.read_version_matches(version)
+    current, rows = await ledger.read_scope_context(scope, limit=10, message_only=True)
+    assert current.generation == 2
+    assert all(row.id > current.starts_after_event_id for row in rows)
+    assert not {row.id for row in rows}.intersection(row.id for row in old_rows)
+    assert await ledger.read_version_matches(current)
+    assert len(await ledger.list_scope_recent(scope, limit=10, message_only=True)) > len(rows)
     async with database.sessions() as session:
         aliases = list(
             await session.scalars(

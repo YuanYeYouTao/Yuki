@@ -250,7 +250,7 @@ async def test_generation_keeps_dynamic_automation_data_out_of_system_messages(
     from qq_ai_bot.services.context_assembler import ContextAssembler
 
     ledger = SimpleNamespace(
-        list_scope_recent=AsyncMock(return_value=()),
+        read_scope_context=AsyncMock(return_value=(None, ())),
         list_canonical_recent=AsyncMock(return_value=()),
     )
     read_context = replace(
@@ -268,13 +268,13 @@ async def test_generation_keeps_dynamic_automation_data_out_of_system_messages(
         profile="creator_private",
         current_time=chat._time.current_default(),
     )
-    ledger.list_scope_recent.assert_awaited_once_with(
+    ledger.read_scope_context.assert_awaited_once_with(
         ConversationScope.private("7777", "10001"),
         limit=3,
         message_only=True,
     )
     ledger.list_canonical_recent.assert_not_awaited()
-    ledger.list_scope_recent.reset_mock()
+    ledger.read_scope_context.reset_mock()
     group_context = replace(
         read_context,
         current_group_id="2001",
@@ -290,7 +290,7 @@ async def test_generation_keeps_dynamic_automation_data_out_of_system_messages(
         profile="current_group",
         current_time=chat._time.current_default(),
     )
-    ledger.list_scope_recent.assert_awaited_once_with(
+    ledger.read_scope_context.assert_awaited_once_with(
         ConversationScope.group("7777", "2001"),
         limit=2,
         message_only=True,

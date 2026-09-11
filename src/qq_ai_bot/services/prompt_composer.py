@@ -13,6 +13,7 @@ from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage
 from qq_ai_bot.domain.relationships import RelationshipSnapshot, style_policy
 from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE, entity_memory_rule
+from qq_ai_bot.persistence.event_repository import ConversationReadVersion
 from qq_ai_bot.prompting import (
     CORE_CONTRACT,
     PromptChannel,
@@ -32,6 +33,7 @@ from qq_ai_bot.vision.models import VisualObservation
 class PromptComposition:
     messages: tuple[ChatMessage, ...]
     metrics: PromptMetrics
+    read_version: ConversationReadVersion | None = None
 
 
 class PromptComposer:
@@ -256,7 +258,9 @@ class PromptComposer:
                 ).hexdigest()
             }
         )
-        return PromptComposition(messages=compiled.messages, metrics=metrics)
+        return PromptComposition(
+            messages=compiled.messages, metrics=metrics, read_version=context.read_version
+        )
 
     @staticmethod
     def relationship_policy(

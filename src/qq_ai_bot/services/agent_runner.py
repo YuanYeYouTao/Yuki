@@ -242,9 +242,15 @@ class AgentRunner:
             ):
                 definitions = ()
                 native_definitions = ()
-            try:
-                if runtime.before_model_request is not None:
+            if runtime.before_model_request is not None:
+                try:
                     await runtime.before_model_request()
+                except LLMError:
+                    self._record_failure_usage(
+                        tools, tool_calls=calls_used, model_requests=request_index
+                    )
+                    raise
+            try:
                 diagnostics = runtime.prompt_diagnostics
                 sequence = transcript.request()
                 request = ChatRequest(
