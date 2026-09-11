@@ -23,6 +23,7 @@ from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.persistence.models import ChatEventModel
+from qq_ai_bot.persistence.rollup_holds import PersistentRollupCoverageHoldQuery
 from qq_ai_bot.plugin_host.db_models import (
     PluginBackgroundTurnJobModel,
     PluginInstallationModel,
@@ -186,6 +187,13 @@ async def test_reset_source_is_terminal_before_claim(database: Database) -> None
         conversation.covered_through_event_id = source_id
         conversation.revision += 1
         conversation.updated_at = _NOW
+    async with database.sessions() as session:
+        assert (
+            await PersistentRollupCoverageHoldQuery().earliest_source_event_id(
+                session, canonical_conversation_id=conversation_id
+            )
+            is None
+        )
     assert await repository.claim_turn() is None
     async with database.sessions() as session:
         row = await session.scalar(select(PluginBackgroundTurnJobModel))
@@ -244,6 +252,13 @@ async def test_later_human_message_is_terminal_before_claim(database: Database) 
         direction="inbound",
         content="human message",
     )
+    async with database.sessions() as session:
+        assert (
+            await PersistentRollupCoverageHoldQuery().earliest_source_event_id(
+                session, canonical_conversation_id=_conversation_id
+            )
+            is None
+        )
     assert await repository.claim_turn() is None
     async with database.sessions() as session:
         row = await session.scalar(select(PluginBackgroundTurnJobModel))

@@ -24,6 +24,7 @@ class HealthPayload(TypedDict):
     active_automation_count: int
     plugin_system_enabled: bool
     plugin_running_count: int
+    plugin_background_turns: dict[str, object]
     emoji_enabled: bool
     emoji_worker_running: bool
     emoji_asset_count: int
@@ -70,6 +71,7 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
     database_ok = await container.database.ping()
     plugin_manager = getattr(container, "plugin_manager", None)
     plugin_running_count = int(getattr(plugin_manager, "running_count", 0))
+    background_health = await container.plugin_background_turns.health()
     emoji_counts = await container.emoji_repository.counts()
     speech_health = await container.speech.health()
     speech_metrics = await container.speech.metrics()
@@ -85,7 +87,7 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
     rollup_health = await container.conversation_rollup_worker.health()
     prompt_shape_metrics = container.models.prompt_shape_metrics()
     return HealthPayload(
-        status="ok" if database_ok else "degraded",
+        status="ok" if database_ok and background_health["running"] else "degraded",
         version=__version__,
         database="ok" if database_ok else "unavailable",
         llm_configured=container.settings.llm_configured,
@@ -97,6 +99,7 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
         active_automation_count=await container.automation_repository.active_count(),
         plugin_system_enabled=container.settings.plugin_system_enabled,
         plugin_running_count=plugin_running_count,
+        plugin_background_turns=background_health,
         emoji_enabled=container.settings.emoji_enabled,
         emoji_worker_running=(
             container.emoji_worker is not None and container.emoji_worker.running

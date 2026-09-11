@@ -860,6 +860,7 @@ class ApplicationContainer:
             "plugin_background_turns",
             start=self.plugin_background_turns.start,
             close=self.plugin_background_turns.close,
+            health=self.plugin_background_turns.health,
         )
         self.lifecycle.register("application_event", start=self._publish_started)
         if self.settings.speech_enabled:
