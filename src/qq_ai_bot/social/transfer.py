@@ -43,7 +43,9 @@ class ArtifactTransfer:
                     stream.write(data)
                     stream.flush()
                     os.fsync(stream.fileno())
-                path.chmod(0o444)
+                # The gateway mount remains read-only. Its private copy must be
+                # owner-writable: SnowLuma preserves mode then reopens it with r+.
+                path.chmod(0o644)
             except OSError:
                 raise SocialError("artifact_transfer_unavailable") from None
             yield metadata, str(PurePosixPath(self.gateway_root) / token)

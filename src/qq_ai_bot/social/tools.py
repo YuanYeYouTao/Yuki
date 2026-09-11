@@ -22,7 +22,8 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
             "type": "string",
             "enum": ["image", "file"],
             "description": (
-                "提供 artifact_id 时必填。普通文件用 file，且不填写 text；图片用 image。"
+                "提供 artifact_id 时必填。普通文件用 file；可附 text，文件成功后另发说明。"
+                "图片用 image。部分成功不要重发文件。"
             ),
         },
     }

@@ -48,6 +48,14 @@ async def test_transfer_permission_failure_preserves_artifact(
     assert store.read(artifact["artifact_id"])["text"] == "hello"
     async with transfer.prepare(artifact["artifact_id"]):
         assert len(list(transfer.root.iterdir())) == 1
+        import shutil
+
+        snapshot = next(transfer.root.iterdir())
+        copied = tmp_path / "gateway-copy"
+        shutil.copy2(snapshot, copied)
+        assert copied.stat().st_mode & 0o200
+        with copied.open("r+b") as stream:
+            assert stream.read() == b"hello"
     assert list(transfer.root.iterdir()) == []
 
 
@@ -188,10 +196,11 @@ async def test_social_gateway_delivery_and_fail_closed(database: Database, tmp_p
         def __init__(self):
             self.calls: list[tuple[str, dict[str, Any]]] = []
             self.fail = False
+            self.fail_action = None
 
         async def call_api(self, action: str, **params: Any):
             self.calls.append((action, params))
-            if self.fail:
+            if self.fail or self.fail_action == action:
                 raise TimeoutError()
             if action == "get_group_member_list":
                 return [{"user_id": 10001, "nickname": "known"}]
@@ -339,6 +348,98 @@ async def test_social_gateway_delivery_and_fail_closed(database: Database, tmp_p
             SocialTarget(kind="person", id=UUID(person)),
             replace(reply_context, reply_message_id="forged"),
         )
+    # File and caption are independently receipted. Replay must never re-send,
+    # including a deleted source artifact or a failed caption.
+    for index, failing_action in enumerate((None, "send_private_msg", "upload_private_file")):
+        async with database.sessions() as session, session.begin():
+            await session.execute(
+                update(SocialOperationModel).values(
+                    updated_at=datetime.now(UTC) - timedelta(minutes=2)
+                )
+            )
+        item = store.write(f"caption-{index}.txt", b"hello world")
+        combined_args = {
+            "target_id": person,
+            "artifact_id": item["artifact_id"],
+            "attachment_kind": "file",
+            "text": "hello caption",
+        }
+        combined_context = replace(reply_context, call_id=f"caption-{index}")
+        bot.fail_action = failing_action
+        before = len(bot.calls)
+        combined = await service.execute("send_private_message", combined_args, combined_context)
+        actions = [action for action, _ in bot.calls[before:]]
+        assert actions == (
+            ["upload_private_file"]
+            if failing_action == "upload_private_file"
+            else ["upload_private_file", "send_private_msg"]
+        )
+        assert combined["file"]["status"] == (
+            "uncertain" if failing_action == "upload_private_file" else "succeeded"
+        )
+        assert combined["caption"]["status"] == (
+            "not_sent"
+            if failing_action == "upload_private_file"
+            else "uncertain"
+            if failing_action
+            else "succeeded"
+        )
+        if failing_action == "send_private_msg":
+            assert combined["error"] == "file_sent_caption_unconfirmed"
+        count = len(bot.calls)
+        store.delete(item["artifact_id"], expected_revision=item["revision"])
+        assert (
+            await service.execute("send_private_message", combined_args, combined_context)
+            == combined
+        )
+        assert len(bot.calls) == count
+        async with database.sessions() as session:
+            file_event = (
+                await session.scalar(
+                    select(ChatEventModel).where(
+                        ChatEventModel.platform_message_id == combined["file"]["platform_reference"]
+                    )
+                )
+                if combined["file"]["platform_reference"]
+                else None
+            )
+            if failing_action != "upload_private_file":
+                assert (
+                    file_event is not None and file_event.content == f"[文件: caption-{index}.txt]"
+                )
+    bot.fail_action = None
+    # Crash after a confirmed upload but before caption dispatch: do not resume
+    # either network action when the same tool call is replayed.
+    interrupted_args = {
+        "target_id": person,
+        "artifact_id": artifact["artifact_id"],
+        "attachment_kind": "file",
+        "text": "pending caption",
+    }
+    interrupted_context = replace(reply_context, call_id="caption-crash")
+    interrupted = await service.receipts.prepare(
+        source_turn_id=interrupted_context.turn_id,
+        tool_call_id=interrupted_context.call_id,
+        source_conversation_id=conversation_id,
+        action="send_private_message",
+        target=SocialTarget(kind="person", id=UUID(person)),
+        payload=interrupted_args,
+    )
+    assert await service.receipts.claim(interrupted.operation_id, presence_id=presence)
+    async with database.sessions() as session, session.begin():
+        await service.receipts.finish(
+            interrupted.operation_id,
+            status=OperationStatus.SUCCEEDED,
+            platform_reference="confirmed-before-crash",
+            session=session,
+        )
+    before = len(bot.calls)
+    interrupted_result = await service.execute(
+        "send_private_message", interrupted_args, interrupted_context
+    )
+    assert interrupted_result["file"]["status"] == "succeeded"
+    assert interrupted_result["caption"]["status"] == "not_sent"
+    assert len(bot.calls) == before
     registry.disconnect(bot)
     with pytest.raises(Exception, match="disconnected"):
         await service.send_route(SocialTarget(kind="person", id=UUID(person)), reply_context)

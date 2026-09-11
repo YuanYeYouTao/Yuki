@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
@@ -330,6 +331,23 @@ class SocialService:
                 "message": [{"type": "text", "data": {"text": message.text}}],
             }
         if message is not None and message.artifact_id is not None:
+            prior = await self.receipts.find(context.turn_id, context.call_id)
+            if prior is not None and prior.status is not OperationStatus.PREPARED:
+                # Validate the payload hash before returning a replay, without
+                # requiring an expired/deleted workspace artifact to still exist.
+                await self.receipts.prepare(
+                    source_turn_id=context.turn_id,
+                    tool_call_id=context.call_id,
+                    source_conversation_id=context.conversation_id,
+                    action=name,
+                    target=target,
+                    payload=args,
+                )
+                return (
+                    await self._file_result(prior.operation_id)
+                    if message.attachment_kind == "file" and message.text
+                    else prior.model_dump(mode="json")
+                )
             if self.transfer is None:
                 raise SocialError("artifact_transport_unavailable")
             async with self.transfer.prepare(str(message.artifact_id)) as (metadata, path):
@@ -342,9 +360,6 @@ class SocialService:
                 if message.attachment_kind == "image":
                     params["message"].append({"type": "image", "data": {"file": "file://" + path}})
                 else:
-                    # One upload operation, not text plus upload (partial two-send ambiguity).
-                    if message.text:
-                        raise SocialError("file_caption_not_supported")
                     action = (
                         "upload_private_file" if target.kind == "person" else "upload_group_file"
                     )
@@ -363,9 +378,14 @@ class SocialService:
                     route,
                     action,
                     params,
-                    content=message.text or f"[文件: {metadata['name']}]",
+                    content=(
+                        f"[文件: {metadata['name']}]"
+                        if message.attachment_kind == "file"
+                        else message.text or f"[图片: {metadata['name']}]"
+                    ),
                     ledger_segments=ledger_segments,
                     route_target=route_target,
+                    caption=message.text if message.attachment_kind == "file" else "",
                 )
         return await self._effect(
             name,
@@ -392,6 +412,7 @@ class SocialService:
         content: str | None = None,
         ledger_segments: tuple[dict[str, Any], ...] | None = None,
         route_target: SocialTarget | None = None,
+        caption: str = "",
     ) -> dict[str, Any]:
         receipt = await self.receipts.prepare(
             source_turn_id=context.turn_id,
@@ -402,7 +423,11 @@ class SocialService:
             payload=args,
         )
         if receipt.status is not OperationStatus.PREPARED:
-            return receipt.model_dump(mode="json")
+            return (
+                await self._file_result(receipt.operation_id)
+                if caption
+                else receipt.model_dump(mode="json")
+            )
         async with self._lock:
             await self.check_target(target, sending=name.startswith("send_"))
             if route_target is not None:
@@ -426,7 +451,7 @@ class SocialService:
                 if name == "poke_person"
                 else ("send_private_message", "send_group_message")
             )
-            if name != "recall_own_message":
+            if name not in {"recall_own_message", "send_file_caption"}:
                 async with self.database.sessions() as session:
                     where = (
                         SocialOperationModel.action.in_(family),
@@ -463,7 +488,11 @@ class SocialService:
                 if int(total or 0) >= global_limit or int(per_target or 0) >= target_limit:
                     return {"error": "rate_limited", "retry_after_seconds": 60, "retryable": False}
             if not await self.receipts.claim(receipt.operation_id, presence_id=route.presence_id):
-                return (await self.receipts.get(receipt.operation_id)).model_dump(mode="json")
+                return (
+                    await self._file_result(receipt.operation_id)
+                    if caption
+                    else (await self.receipts.get(receipt.operation_id)).model_dump(mode="json")
+                )
         try:
             result = await self._call(route, action, params)
             reference = (
@@ -522,7 +551,70 @@ class SocialService:
                 )
             if not isinstance(exc, Exception):
                 raise
-        return (await self.receipts.get(receipt.operation_id)).model_dump(mode="json")
+        completed = await self.receipts.get(receipt.operation_id)
+        if caption:
+            if completed.status is OperationStatus.SUCCEEDED:
+                caption_context = replace(
+                    context, turn_id=f"social-caption:{receipt.operation_id}", call_id="caption"
+                )
+                try:
+                    await self._effect(
+                        "send_file_caption",
+                        {"text": caption},
+                        caption_context,
+                        target,
+                        route,
+                        "send_private_msg" if target.kind == "person" else "send_group_msg",
+                        {
+                            "user_id" if target.kind == "person" else "group_id": int(
+                                route.external_target_id
+                            ),
+                            "message": [{"type": "text", "data": {"text": caption}}],
+                        },
+                        content=caption,
+                        route_target=route_target,
+                    )
+                except Exception as exc:
+                    # File confirmation is immutable even if caption preflight fails.
+                    # A replay only reads the child receipt; it never resumes sending.
+                    logging.getLogger(__name__).warning(
+                        "social_caption_preflight_failed category=%s", type(exc).__name__
+                    )
+                    child = await self.receipts.find(
+                        caption_context.turn_id, caption_context.call_id
+                    )
+                    if child is not None and child.status is OperationStatus.PREPARED:
+                        if await self.receipts.claim(
+                            child.operation_id, presence_id=route.presence_id
+                        ):
+                            async with self.database.sessions() as session, session.begin():
+                                await self.receipts.finish(
+                                    child.operation_id,
+                                    status=OperationStatus.FAILED,
+                                    error_category=type(exc).__name__[:64],
+                                    session=session,
+                                )
+            return await self._file_result(receipt.operation_id)
+        return completed.model_dump(mode="json")
+
+    async def _file_result(self, operation_id: str) -> dict[str, Any]:
+        file = await self.receipts.get(operation_id)
+        caption = await self.receipts.find(f"social-caption:{operation_id}", "caption")
+        result = file.model_dump(mode="json")
+        result["file"] = file.model_dump(mode="json")
+        result["caption"] = caption.model_dump(mode="json") if caption else {"status": "not_sent"}
+        if file.status is OperationStatus.SUCCEEDED and (
+            caption is None or caption.status is not OperationStatus.SUCCEEDED
+        ):
+            result["status"] = (
+                "uncertain"
+                if caption
+                and caption.status in {OperationStatus.EXECUTING, OperationStatus.UNCERTAIN}
+                else "failed"
+            )
+            result["error"] = "file_sent_caption_unconfirmed"
+            result["retryable"] = False
+        return result
 
     async def _recall(self, args: dict[str, Any], context: SocialContext) -> dict[str, Any]:
         from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel

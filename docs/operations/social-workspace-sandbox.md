@@ -34,14 +34,22 @@ same directory read-only at `/yuki-transfer`. Do not place the Bot's transfer pa
 under a gateway login directory whose parent cannot be traversed by the Bot UID.
 Adding this mount to an existing provider container requires a planned recreation;
 preserve every existing login/config mount. Do not widen login-directory permissions.
-Files are published mode 0444, read only by the gateway, and removed after use.
+Files are published mode 0644 on the read-only gateway mount and removed after use.
+SnowLuma copies the source mode into its private staging directory, then reopens
+the copy read-write to sync it. Mode 0444 breaks that flow; mount-level read-only
+protection still prevents gateway changes to the original transfer file.
 Preparation errors report `artifact_transfer_unavailable` before contacting the
 gateway; cleanup errors are logged without overwriting a confirmed send result.
 
 `send_private_message` and `send_group_message` accept text or workspace artifacts.
-Images may include text. File uploads are one operation and cannot include a separate
-caption: send a separate text operation if needed. This avoids pretending two network
-effects are atomic. File APIs may return no retractable message ID; such uploads are
+Images may include text. File uploads may include a caption: upload first, then send
+the text only after confirmed upload success, with separate durable receipts and
+separate target-ledger events. The combined tool result reports both stages; caption
+failure never erases file success. Replays return recorded outcomes without resending
+either stage, including after source expiry. A crash between stages can leave the
+caption unsent. Both stages count as one rate-limited tool operation, retain the same
+Presence, and recheck the route before dispatch. These network effects are not atomic.
+File APIs may return no retractable message ID; such uploads are
 recorded in the target ledger but `recall_own_message` cannot invent a recall handle.
 Recall always uses the original Presence. Poke, members and recall have dedicated
 methods; no arbitrary OneBot action is available through these tools.

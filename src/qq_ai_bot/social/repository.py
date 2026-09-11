@@ -17,7 +17,13 @@ from qq_ai_bot.social.db_models import SocialOperationModel
 from qq_ai_bot.social.models import OperationStatus, SocialError, SocialReceipt, SocialTarget
 
 _ACTIONS = frozenset(
-    {"send_private_message", "send_group_message", "poke_person", "recall_own_message"}
+    {
+        "send_private_message",
+        "send_group_message",
+        "send_file_caption",
+        "poke_person",
+        "recall_own_message",
+    }
 )
 
 
@@ -151,6 +157,16 @@ class SocialOperationRepository:
             if row is None:
                 raise SocialError("operation_not_found")
             return self._receipt(row)
+
+    async def find(self, source_turn_id: str, tool_call_id: str) -> SocialReceipt | None:
+        async with self.database.sessions() as session:
+            row = await session.scalar(
+                select(SocialOperationModel).where(
+                    SocialOperationModel.source_turn_id == source_turn_id,
+                    SocialOperationModel.tool_call_id == tool_call_id,
+                )
+            )
+            return self._receipt(row) if row is not None else None
 
     async def recover_interrupted(self) -> int:
         """Startup-only recovery, before admitting turns; never execute old payloads."""

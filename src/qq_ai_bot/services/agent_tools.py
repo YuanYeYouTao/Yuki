@@ -1056,7 +1056,11 @@ class AgentToolService:
                         }:
                             return self._result(
                                 error=str(social_result.get("error") or "delivery_uncertain"),
-                                detail="发送未确认成功，不要重复发送；请根据实际工具结果说明情况",
+                                detail=(
+                                    "文件已发送成功，附带文字未确认发送；不要重发文件"
+                                    if social_result.get("error") == "file_sent_caption_unconfirmed"
+                                    else "发送未确认成功，不要重复发送；请根据实际工具结果说明情况"
+                                ),
                                 data=social_result,
                             )
                         return self._result(data=social_result)
