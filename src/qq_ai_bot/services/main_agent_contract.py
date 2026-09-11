@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 from copy import deepcopy
 from typing import Any
@@ -18,12 +20,13 @@ class MainAgentContract:
         self.chat, self.automation, self.state = chat, automation, state
         self.automation_names: dict[str, str] = {}
         self._tools: tuple[ChatTool, ...] | None = None
+        self.revision = ""
         self._lock = asyncio.Lock()
 
     async def definitions(self) -> tuple[ChatTool, ...]:
         async with self._lock:
             if self._tools is not None:
-                return self._tools
+                return deepcopy(self._tools)
             from qq_ai_bot.services.chat import _SET_REPLY_TARGET_TOOL
 
             # No event/person/group can affect declaration. This runtime is NEVER used to execute.
@@ -45,14 +48,17 @@ class MainAgentContract:
             if self.automation._registry is not None:
                 for capability in self.automation._registry.list():
                     if not capability.name.startswith("yuki."):
-                        matching = [
-                            tool
-                            for tool in tools
-                            if tool.parameters == capability.input_schema
-                            and tool.description == capability.description
-                        ]
-                        if len(matching) == 1:
-                            self.automation_names[capability.name] = matching[0].name
+                        if capability.model_tool_name:
+                            matching = [t for t in tools if t.name == capability.model_tool_name]
+                            if len(matching) != 1 or (
+                                matching[0].parameters != capability.input_schema
+                                or matching[0].description != capability.description
+                                or matching[0].result_cacheable != capability.result_cacheable
+                            ):
+                                raise ValueError(
+                                    f"invalid explicit tool mapping: {capability.name}"
+                                )
+                            self.automation_names[capability.name] = capability.model_tool_name
                             continue
                         self.automation_names[capability.name] = (
                             self.automation._registry.agent_tool_name(capability.name)
@@ -69,10 +75,30 @@ class MainAgentContract:
             if len(names) != len(set(names)):
                 raise ValueError("duplicate Main Agent manifest tool")
             self._tools = deepcopy(tuple(sorted(tools, key=lambda item: item.name)))
+            self.revision = hashlib.sha256(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "tools": [
+                            {
+                                "name": t.name,
+                                "description": t.description,
+                                "parameters": t.parameters,
+                                "result_cacheable": t.result_cacheable,
+                            }
+                            for t in self._tools
+                        ],
+                        "automation_names": self.automation_names,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
             logging.getLogger(__name__).info(
-                "main_agent_manifest_frozen tools=%d", len(self._tools)
+                "main_agent_manifest_frozen tools=%d revision=%s", len(self._tools), self.revision
             )
-            return self._tools
+            return deepcopy(self._tools)
 
 
 class ShortStateOnlyBackend:

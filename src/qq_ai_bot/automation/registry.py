@@ -197,13 +197,14 @@ class AutomationCapability:
     retry_policy: RetryPolicy
     allowed_origins: frozenset[TurnOrigin]
     schema_version: CapabilitySchemaVersion = 1
-    result_cacheable: bool = True
     argument_schema: dict[str, object] | None = None
     argument_validator: CapabilityArgumentValidator | None = field(default=None, repr=False)
     provider_plugin_id: str | None = None
     provider_version: str | None = None
     provider_manifest_hash: str | None = None
     handler: CapabilityHandler | None = field(default=None, repr=False)
+    result_cacheable: bool = True
+    model_tool_name: str = ""
 
     @property
     def input_schema(self) -> dict[str, object]:

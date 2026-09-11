@@ -68,6 +68,12 @@ async def run_short_state_cases(database, tmp_path, context):
     chat._agent_runner.main_contract = contract
     chat._tools.short_state = state
     declared = await contract.definitions()
+    revision = contract.revision
+    assert len(revision) == 64
+    copied = await contract.definitions()
+    copied[0].parameters["injected"] = True
+    assert await contract.definitions() == declared
+    assert contract.revision == revision
     assert contract.automation_names["social.send_group_message"] == "send_group_message"
     assert contract.automation_names["workspace.write"] == "workspace_write"
     assert {"update_short_state", "call_onebot_api", "decline_reply", "set_reply_layout"} <= {
