@@ -1,33 +1,36 @@
-"""Read-only core tool bridge used by isolated plugin Agent runs."""
+"""Read-only core tool bridge for invocation-bound plugin Main Agent runs."""
 
 from __future__ import annotations
 
 import json
-import uuid
 from typing import Any, cast
 
 from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import (
     ChatTool,
     InboundMessage,
-    SenderIdentity,
     ToolCall,
 )
 from qq_ai_bot.services.agent_runner import AgentRuntime
 from qq_ai_bot.services.agent_tools import AgentToolService, OneBotToolGateway, ToolRuntime
+from yuki_plugin_sdk.errors import PluginPermissionError
 
 
 class PluginAgentToolBackend:
     """Expose a runtime-approved subset of existing read-only Agent tools.
 
     Plugin code never receives the core service or a transport object.  The Host
-    constructs a synthetic, authority-bearing message envelope from the bound
-    invocation and validates every requested scope before delegating.
+    binds the real inbound message to a fresh backend per invocation and validates
+    every requested scope before delegating. The shared service keeps no actor.
     """
 
-    def __init__(self, service: AgentToolService) -> None:
+    def __init__(self, service: AgentToolService, *, inbound: InboundMessage | None = None) -> None:
         self._service = service
+        self._inbound = inbound
+
+    def bind_source(self, inbound: InboundMessage) -> PluginAgentToolBackend:
+        """Return an independent execution view without mutating the shared backend."""
+        return PluginAgentToolBackend(self._service, inbound=inbound)
 
     def definitions(
         self,
@@ -102,20 +105,18 @@ class PluginAgentToolBackend:
     def post_commit_recovery_text(self) -> str | None:
         return None
 
-    @staticmethod
-    def _tool_runtime(runtime: AgentRuntime) -> ToolRuntime:
-        scope_type = ScopeType.GROUP if runtime.current_group_id else ScopeType.PRIVATE
-        inbound = InboundMessage(
-            message_id=f"plugin-agent-{uuid.uuid4()}",
-            event_type="plugin_agent",
-            scope_type=scope_type,
-            sender=SenderIdentity(user_id=runtime.actor_user_id),
-            text="",
-            bot_user_id=runtime.bot_user_id,
-            group_id=runtime.current_group_id,
-            conversation_id=runtime.canonical_conversation_id,
-            presence_id=_authoritative_presence_id(runtime),
-        )
+    def _tool_runtime(self, runtime: AgentRuntime) -> ToolRuntime:
+        inbound = self._inbound
+        if (
+            inbound is None
+            or not inbound.conversation_id
+            or not inbound.presence_id
+            or inbound.conversation_id != runtime.canonical_conversation_id
+            or inbound.sender.user_id != runtime.actor_user_id
+            or inbound.bot_user_id != runtime.bot_user_id
+            or inbound.group_id != runtime.current_group_id
+        ):
+            raise PluginPermissionError("plugin tool source does not match the Main Agent runtime")
         return ToolRuntime(
             inbound=inbound,
             gateway=cast(OneBotToolGateway | None, runtime.gateway),
@@ -123,14 +124,20 @@ class PluginAgentToolBackend:
             allow_admin_actions=False,
             allow_automation=False,
             conversation_key=runtime.conversation_key,
-            # Unique provenance only. event_type=plugin_agent is the identity boundary.
-            trigger_message_id="plugin-agent",
+            trigger_message_id=inbound.message_id,
             actor_user_id=runtime.actor_user_id,
             actor_is_superuser=runtime.actor_is_superuser,
             current_group_id=runtime.current_group_id,
             runtime_config=runtime.runtime_config,
             origin=TurnOrigin.PLUGIN_SESSION,
             read_only=True,
+            conversation_id=inbound.conversation_id,
+            presence_id=inbound.presence_id,
+            person_id=inbound.person_id,
+            space_id=inbound.space_id,
+            bot_user_id=inbound.bot_user_id,
+            scope_type=inbound.scope_type,
+            before_model_request=runtime.before_model_request,
         )
 
     @staticmethod
@@ -183,19 +190,6 @@ class PluginAgentToolBackend:
                 arguments["user_id"] = runtime.actor_user_id
             return json.dumps(arguments, ensure_ascii=False), None
         return arguments_json, None
-
-
-def _authoritative_presence_id(runtime: AgentRuntime) -> str | None:
-    """Copy Presence only when AgentRuntime already carries a Host-stamped value."""
-
-    fields = getattr(type(runtime), "__dataclass_fields__", {})
-    for name in ("ingress_presence_id", "presence_id"):
-        if name not in fields:
-            continue
-        value = getattr(runtime, name)
-        if isinstance(value, str) and value.strip():
-            return value
-    return None
 
 
 def _text(value: Any) -> str:

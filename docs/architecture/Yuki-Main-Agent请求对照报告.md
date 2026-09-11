@@ -24,7 +24,7 @@
 | 自主群回复 | 已入账群消息，自主协调 token | 2 | 使用正常聊天生成和测试投递 |
 | SDK generate | 真实 Host 入站绑定，纯生成 | 3 | 共享声明与状态；发送拒绝，未调用发送处理器 |
 | SDK generate_with_context | current_user 有限资料 | 2 | 不扩大历史读取，资料位于动态区 |
-| SDK agent.run | 真实 Host 入站绑定，能力交集为空 | 2 | 使用共享编译与执行入口 |
+| SDK agent.run | 真实 Host 入站绑定，允许个人记忆读取 | 2 | 使用共享编译与执行入口，真实来源绑定到独立工具后端 |
 
 所有场景显式使用函数联网模式 Tavily；不以 Provider 不支持原生工具而静默忽略的配置模拟原生策略已经解决。
 
@@ -36,6 +36,7 @@
 - 续轮及拒绝后的最终请求保留相同声明；`tool_choice` 是执行控制字段，不纳入固定字段相等断言。
 - 验证命令：`.venv/Scripts/python.exe -m pytest tests/unit/test_automation_runtime.py tests/unit/test_deepseek_responses.py -q --tb=short`。48 项定向测试通过；本批修改源模块类型检查与 Ruff 通过。未运行全量。
 - SDK 扩展验证：`.venv/Scripts/python.exe -m pytest tests/unit/test_automation_runtime.py tests/unit/test_plugin_facades.py -q`，44 项通过，4 个源模块类型与 Ruff 检查通过。缺失/错误来源、私聊读取群资料、generation 失效和递归生成均在 HTTP 请求前拒绝；不将这些拒绝用例算作额外 HTTP 请求。
+- 插件工具来源验证：同一矩阵的 SDK agent 使用非空能力交集，工具后端直接保留真实 inbound、原消息 ID 和 canonical 身份。辅助场景验证共享后端未绑定时拒绝、运行人物不匹配时拒绝、两份绑定互不污染、复核失败时核心读取处理器零调用。25 项自动化定向测试及 2 个源模块类型检查通过；这些场景没有额外发送或模型请求。
 
 ## 尚未证明的范围
 

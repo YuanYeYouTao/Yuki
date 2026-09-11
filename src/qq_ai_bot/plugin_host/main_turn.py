@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, cast
 
 from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.llm.base import LLMInvalidRequestError
+from qq_ai_bot.plugin_host.agent_backend import PluginAgentToolBackend
 from qq_ai_bot.services.agent_runner import AgentRunResult, AgentRuntime, AgentToolBackend
 from qq_ai_bot.services.context_assembler import AssembledContext, ContextMetrics
 from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
@@ -101,6 +102,8 @@ async def run_plugin_main_turn(
         read_version=version,
     )
     main = cast(MainAgentTurnService, contract.chat._main_turns)
+    if isinstance(tools, PluginAgentToolBackend):
+        tools = tools.bind_source(inbound)
     marker = _ACTIVE.set(True)
     try:
         async with contract.chat._turn_coordinator.hold(invocation.conversation_key):
