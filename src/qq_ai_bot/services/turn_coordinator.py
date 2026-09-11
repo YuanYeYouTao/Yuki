@@ -216,15 +216,39 @@ class ConversationTurnCoordinator:
             state = self._states.setdefault(conversation_key, _TurnState())
             if self._occupied(state):
                 return None
-            state.version += 1
-            state.origin = TurnOrigin.PLUGIN_BACKGROUND
-            state.mutation_started = False
-            state.protected_version = None
-            return TurnToken(
-                conversation_key,
-                state.version,
-                TurnOrigin.PLUGIN_BACKGROUND,
-            )
+            return self._background_token(conversation_key, state)
+
+    @staticmethod
+    def _background_token(conversation_key: str, state: _TurnState) -> TurnToken:
+        state.version += 1
+        state.origin = TurnOrigin.PLUGIN_BACKGROUND
+        state.mutation_started = False
+        state.protected_version = None
+        return TurnToken(conversation_key, state.version, TurnOrigin.PLUGIN_BACKGROUND)
+
+    @asynccontextmanager
+    async def background_turn(self, conversation_key: str) -> AsyncIterator[TurnToken | None]:
+        """Atomically check idle and reserve until the background attempt returns."""
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("background turn requires an asyncio task")
+        async with self._guard:
+            state = self._states.setdefault(conversation_key, _TurnState())
+            if self._occupied(state):
+                token = None
+            else:
+                token = self._background_token(conversation_key, state)
+                state.holders[task] = state.holders.get(task, 0) + 1
+        try:
+            yield token
+        finally:
+            if token is not None:
+                async with self._guard:
+                    count = state.holders.get(task, 0)
+                    if count > 1:
+                        state.holders[task] = count - 1
+                    else:
+                        state.holders.pop(task, None)
 
     async def cancel_interruptible(self, conversation_key: str) -> bool:
         """Explicitly cancel registered admission/generation/reply work for `/ai stop`."""

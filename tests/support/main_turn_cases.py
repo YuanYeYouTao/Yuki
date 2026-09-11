@@ -113,3 +113,27 @@ async def coordinator_reservation_cases():
     with pytest.raises(asyncio.CancelledError):
         await task
     assert await turns.begin_background("cancelled") is not None
+    entered.clear()
+
+    async def reserved_background():
+        async with turns.background_turn("race") as claimed:
+            assert claimed is not None
+            entered.set()
+            await asyncio.Event().wait()
+
+    winner = asyncio.create_task(reserved_background())
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    async with turns.background_turn("race") as loser:
+        assert loser is None
+    assert await turns.begin_background("race") is None
+    winner.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await winner
+    async with turns.background_turn("race") as next_attempt:
+        assert next_attempt is not None
+        async with turns.hold("race"):
+            assert await turns.begin_background("race") is None
+    assert await turns.begin_background("race") is not None
+    from tests.support.background_reservation_cases import background_attempt_reservation
+
+    await background_attempt_reservation()

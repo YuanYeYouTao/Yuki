@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from contextlib import AsyncExitStack
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
@@ -159,6 +160,16 @@ class PluginBackgroundTurnWorker:
     ) -> None:
         """Execute from persisted Conversation + current Presence. No raw QQ fallback."""
 
+        async with AsyncExitStack() as attempt:
+            await self._execute_reserved(job, resolved_key, attempt)
+
+    async def _execute_reserved(
+        self,
+        job: BackgroundTurnJobRecord,
+        resolved_key: list[str] | None,
+        attempt: AsyncExitStack,
+    ) -> None:
+
         try:
             context = await self._repository.load_background_context(job)
         except BackgroundTurnFenceError:
@@ -238,7 +249,7 @@ class PluginBackgroundTurnWorker:
         conversation_key = context.primary_alias
         if resolved_key is not None:
             resolved_key[0] = conversation_key
-        token = await self._turns.begin_background(conversation_key)
+        token = await attempt.enter_async_context(self._turns.background_turn(conversation_key))
         if token is None:
             try:
                 await self._repository.validate_turn_attempt(
