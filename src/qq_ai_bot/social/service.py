@@ -39,6 +39,7 @@ class SocialContext:
     call_id: str
     conversation_id: str
     person_refs: dict[str, str] = field(default_factory=dict)
+    account_refs: dict[str, str] = field(default_factory=dict)
     space_id: str | None = None
     # Backend-only proof from the current private inbound event, never tool arguments.
     reply_message_id: str | None = None
@@ -241,24 +242,119 @@ class SocialService:
             route_generation=0,
         )
 
+    async def person_binding(
+        self,
+        target: SocialTarget,
+        args: dict[str, Any],
+        context: SocialContext,
+        *,
+        private_route: ResolvedSend | None = None,
+    ) -> IdentityBindingModel:
+        async with self.database.sessions() as session:
+            bindings = list(
+                await session.scalars(
+                    select(IdentityBindingModel).where(
+                        IdentityBindingModel.person_id == str(target.id),
+                        IdentityBindingModel.platform == "qq",
+                        IdentityBindingModel.status == "active",
+                    )
+                )
+            )
+        if args.get("binding_id"):
+            bindings = [b for b in bindings if b.id == str(args["binding_id"])]
+        account = context.account_refs.get(str(args.get("subject_ref", "")))
+        if account is not None:
+            bindings = [b for b in bindings if b.external_account_id == account]
+        if private_route is not None:
+            bindings = [b for b in bindings if b.id == private_route.binding_id]
+        if len(bindings) != 1:
+            raise SocialError("binding_ambiguous" if bindings else "binding_unavailable")
+        return bindings[0]
+
+    async def require_member(self, route: ResolvedSend, account: str) -> None:
+        try:
+            result = await self._call(
+                route,
+                "get_group_member_info",
+                {
+                    "group_id": int(route.external_target_id),
+                    "user_id": int(account),
+                    "no_cache": True,
+                },
+            )
+        except Exception as exc:
+            raise SocialError("group_member_unavailable") from exc
+        if not isinstance(result, dict) or str(result.get("user_id")) != account:
+            raise SocialError("group_member_unavailable")
+
     async def execute(
         self, name: str, args: dict[str, Any], context: SocialContext
     ) -> dict[str, Any]:
         if name == "find_contacts":
             kind = str(args.get("kind", "person"))
+            items: list[dict[str, Any]]
             if args.get("target_id") or args.get("subject_ref"):
                 target = await self.target(kind, args, context)
-                return {"target_id": str(target.id), "kind": target.kind}
-            return {"items": await self.contacts(kind, str(args.get("display_name", "")))}
+                items = [{"target_id": str(target.id), "kind": target.kind}]
+            else:
+                items = [
+                    dict(item)
+                    for item in await self.contacts(kind, str(args.get("display_name", "")))
+                ]
+            async with self.database.sessions() as session:
+                for item in items:
+                    if kind == "person":
+                        bindings = (
+                            await session.scalars(
+                                select(IdentityBindingModel)
+                                .where(
+                                    IdentityBindingModel.person_id == item["target_id"],
+                                    IdentityBindingModel.platform == "qq",
+                                    IdentityBindingModel.status == "active",
+                                )
+                                .order_by(IdentityBindingModel.id)
+                            )
+                        ).all()
+                        item["bindings"] = [
+                            {"binding_id": b.id, "user_id": b.external_account_id} for b in bindings
+                        ]
+                    else:
+                        spaces = (
+                            await session.scalars(
+                                select(SpaceBindingModel)
+                                .where(
+                                    SpaceBindingModel.space_id == item["target_id"],
+                                    SpaceBindingModel.platform == "qq",
+                                    SpaceBindingModel.status == "active",
+                                )
+                                .order_by(SpaceBindingModel.id)
+                            )
+                        ).all()
+                        item["bindings"] = [
+                            {"binding_id": b.id, "group_id": b.external_space_id} for b in spaces
+                        ]
+            return (
+                items[0] if args.get("target_id") or args.get("subject_ref") else {"items": items}
+            )
         if name == "recall_own_message":
             return await self._recall(args, context)
         kind = "space" if name in {"send_group_message", "get_group_members"} else "person"
         target = await self.target(kind, args, context)
         if name == "get_group_members":
-            route = await self.route(target)
-            rows = await self._call(
-                route, "get_group_member_list", {"group_id": int(route.external_target_id)}
+            routes = await self.router.accessible_group_connections(
+                str(target.id), binding_id=args.get("space_binding_id")
             )
+            rows = None
+            for route in routes:
+                try:
+                    result = await self._call(
+                        route, "get_group_member_list", {"group_id": int(route.external_target_id)}
+                    )
+                    if isinstance(result, list):
+                        rows = result
+                        break
+                except Exception:
+                    continue
             if not isinstance(rows, list):
                 raise SocialError("invalid_provider_result")
             offset = int(args.get("cursor") or 0)
@@ -289,7 +385,7 @@ class SocialService:
                 {
                     key: value
                     for key, value in args.items()
-                    if key in {"text", "artifact_id", "attachment_kind"}
+                    if key in {"text", "artifact_id", "attachment_kind", "mentions"}
                 }
             )
         )
@@ -308,27 +404,15 @@ class SocialService:
         route = await self.send_route(route_target, context)
         params: dict[str, Any]
         if name == "poke_person":
-            async with self.database.sessions() as session:
-                binding = await session.scalar(
-                    select(IdentityBindingModel).where(
-                        IdentityBindingModel.person_id == str(target.id),
-                        IdentityBindingModel.platform == route.platform,
-                        IdentityBindingModel.status == "active",
-                    )
-                )
-            if binding is None:
-                raise SocialError("target_not_found")
+            binding = await self.person_binding(
+                target,
+                args,
+                context,
+                private_route=route if route_target.kind == "person" else None,
+            )
             params = {"user_id": int(binding.external_account_id)}
             if route_target.kind == "space":
-                await self._call(
-                    route,
-                    "get_group_member_info",
-                    {
-                        "group_id": int(route.external_target_id),
-                        "user_id": params["user_id"],
-                        "no_cache": True,
-                    },
-                )
+                await self.require_member(route, binding.external_account_id)
                 params["group_id"] = int(route.external_target_id)
             action = "send_poke"
         else:
@@ -338,6 +422,17 @@ class SocialService:
                 "user_id" if target.kind == "person" else "group_id": int(route.external_target_id),
                 "message": [{"type": "text", "data": {"text": message.text}}],
             }
+            if message.mentions:
+                if target.kind != "space":
+                    raise SocialError("mentions_require_group")
+                segments = []
+                for mention in message.mentions:
+                    selectors = mention.model_dump(mode="json", exclude_none=True)
+                    person = await self.target("person", selectors, context)
+                    member = await self.person_binding(person, selectors, context)
+                    await self.require_member(route, member.external_account_id)
+                    segments.append({"type": "at", "data": {"qq": member.external_account_id}})
+                params["message"] = segments + params["message"]
         if message is not None and message.artifact_id is not None:
             prior = await self.receipts.find(context.turn_id, context.call_id)
             if prior is not None and prior.status is not OperationStatus.PREPARED:
@@ -353,7 +448,7 @@ class SocialService:
                 )
                 return (
                     await self._file_result(prior.operation_id)
-                    if message.attachment_kind == "file" and message.text
+                    if message.attachment_kind == "file" and (message.text or message.mentions)
                     else prior.model_dump(mode="json")
                 )
             if self.transfer is None:
@@ -391,9 +486,18 @@ class SocialService:
                         if message.attachment_kind == "file"
                         else message.text or f"[图片: {metadata['name']}]"
                     ),
-                    ledger_segments=ledger_segments,
+                    ledger_segments=(
+                        tuple(params["message"])
+                        if message.attachment_kind == "image"
+                        else ledger_segments
+                    ),
                     route_target=route_target,
                     caption=message.text if message.attachment_kind == "file" else "",
+                    caption_segments=(
+                        [*segments, {"type": "text", "data": {"text": message.text}}]
+                        if message.mentions and message.attachment_kind == "file"
+                        else None
+                    ),
                 )
         return await self._effect(
             name,
@@ -421,6 +525,7 @@ class SocialService:
         ledger_segments: tuple[dict[str, Any], ...] | None = None,
         route_target: SocialTarget | None = None,
         caption: str = "",
+        caption_segments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         receipt = await self.receipts.prepare(
             source_turn_id=context.turn_id,
@@ -433,14 +538,18 @@ class SocialService:
         if receipt.status is not OperationStatus.PREPARED:
             return (
                 await self._file_result(receipt.operation_id)
-                if caption
+                if caption or caption_segments
                 else receipt.model_dump(mode="json")
             )
         async with self._lock:
             await self.check_target(target, sending=name.startswith("send_"))
             if route_target is not None:
                 await self.check_target(route_target, sending=True)
-            fresh = await self.send_route(route_target or target, context)
+            fresh = (
+                await self.router.resolve_presence(route.presence_id)
+                if name == "recall_own_message"
+                else await self.send_route(route_target or target, context)
+            )
             if (
                 fresh.presence_id,
                 fresh.binding_id,
@@ -498,7 +607,7 @@ class SocialService:
             if not await self.receipts.claim(receipt.operation_id, presence_id=route.presence_id):
                 return (
                     await self._file_result(receipt.operation_id)
-                    if caption
+                    if caption or caption_segments
                     else (await self.receipts.get(receipt.operation_id)).model_dump(mode="json")
                 )
         try:
@@ -560,7 +669,7 @@ class SocialService:
             if not isinstance(exc, Exception):
                 raise
         completed = await self.receipts.get(receipt.operation_id)
-        if caption:
+        if caption or caption_segments:
             if completed.status is OperationStatus.SUCCEEDED:
                 caption_context = replace(
                     context, turn_id=f"social-caption:{receipt.operation_id}", call_id="caption"
@@ -568,7 +677,7 @@ class SocialService:
                 try:
                     await self._effect(
                         "send_file_caption",
-                        {"text": caption},
+                        {"text": caption, "segments": caption_segments},
                         caption_context,
                         target,
                         route,
@@ -577,7 +686,8 @@ class SocialService:
                             "user_id" if target.kind == "person" else "group_id": int(
                                 route.external_target_id
                             ),
-                            "message": [{"type": "text", "data": {"text": caption}}],
+                            "message": caption_segments
+                            or [{"type": "text", "data": {"text": caption}}],
                         },
                         content=caption,
                         route_target=route_target,
@@ -648,9 +758,7 @@ class SocialService:
                 id=UUID(conversation.person_id or conversation.space_id or ""),
             )
         await self.check_target(target)
-        route = await self.route(target)
-        if route.presence_id != event.author_presence_id:
-            raise SocialError("original_presence_unavailable")
+        route = await self.router.resolve_presence(event.author_presence_id)
         return await self._effect(
             "recall_own_message",
             args,

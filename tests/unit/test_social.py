@@ -204,6 +204,8 @@ async def test_social_gateway_delivery_and_fail_closed(database: Database, tmp_p
                 raise TimeoutError()
             if action == "get_group_member_list":
                 return [{"user_id": 10001, "nickname": "known"}]
+            if action == "get_group_member_info":
+                return {"user_id": params["user_id"]}
             return {"message_id": 1000 + len(self.calls)}
 
     bot = Bot()

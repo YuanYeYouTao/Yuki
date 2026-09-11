@@ -1079,6 +1079,14 @@ class AgentToolService:
                                 "已生成的工作区文件仍保留"
                             ),
                             "route_paused": "该操作所需路由已暂停，未执行；不会自动换路或解暂停",
+                            "binding_ambiguous": (
+                                "目标有多个有效 QQ Binding；查询联系人后明确指定 Binding，未执行"
+                            ),
+                            "binding_unavailable": "指定的 QQ Binding 无效或不属于目标，未执行",
+                            "original_presence_unavailable": "原消息发送账号当前不可用，未撤回",
+                            "group_unavailable": "当前没有可访问该群的连接，未执行",
+                            "group_member_unavailable": "无法确认目标 QQ 账号属于该群，未执行",
+                            "mentions_require_group": "结构化 @成员只支持群消息",
                             "invalid_space_id": (
                                 "space_id 必须是 canonical 群 UUID，不是 QQ 群号；当前群可省略"
                             ),

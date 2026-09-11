@@ -144,6 +144,34 @@ isolation. When prerequisites fail, keep the tools visible but return unavailabl
 
 ## Deployment and rollback
 
+### Social account and group resolution
+
+Recall resolves the original outbound ledger event's enabled Presence and rechecks
+that exact connection before claiming the operation. Pausing, deleting or switching
+the active send route does not prevent recall; another account cannot substitute.
+Member reads use live group membership and active QQ group bindings independently
+of outbound routes. Multiple group bindings require `space_binding_id`; read failure
+may try another accessible connection to that same group without changing any pin.
+
+`find_contacts` includes active QQ binding IDs. Group pokes and mentions resolve an
+explicit `binding_id`, or the account behind an inbound `subject_ref`, or a unique
+active binding. Ambiguous bindings are rejected. Private pokes use the binding of
+the resolved private route and reject conflicting selectors. Ordinary delegated
+group pokes may target known members only inside the automation's bound group;
+private and other-group overrides remain forbidden.
+
+`send_group_message.mentions` is an array of person selectors with optional
+`binding_id`. Each member is verified against the selected group, then serialized
+as a real OneBot `at` segment before the text. Plain `@name` text does not notify.
+Text, image and separately receipted file captions preserve these segments in the
+ledger. No `@all` or arbitrary raw QQ selector is exposed. Schemas remain identical
+between chat and delegated automation within this deployment.
+
+中文：撤回绑定原消息 Presence；成员查询依据真实群连接，不受主动发送路由暂停影响。
+多 QQ Binding 有歧义时拒绝，须明确选择；当前事件引用保留具体 QQ 账号。
+普通群自动化只能在绑定群内戳已认识且确认在群内的人，不能改为私聊或跨群。
+群消息的 `mentions` 生成真实 `at` 段，图片及文件说明均保留结构化 @ 和独立回执。
+
 Schema 0052 adds only social operation receipts. Back up the database, configuration
 and current image before applying it. Build locally, replace only Bot and observe;
 do not restart SnowLuma or silently erase unknown backups. Disabling the manager

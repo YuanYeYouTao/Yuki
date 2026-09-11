@@ -26,16 +26,26 @@ class SocialTarget(BaseModel):
     id: UUID
 
 
+class SocialMention(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    target_id: UUID | None = None
+    display_name: str | None = Field(default=None, max_length=128)
+    subject_ref: str | None = None
+    binding_id: UUID | None = None
+
+
 class SocialMessage(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     text: str = Field(default="", max_length=4000, repr=False)
     artifact_id: UUID | None = None
     attachment_kind: Literal["image", "file"] | None = None
+    mentions: list[SocialMention] = Field(default_factory=list, max_length=20)
 
     @model_validator(mode="after")
     def validate_content(self) -> "SocialMessage":
-        if not self.text.strip() and self.artifact_id is None:
+        if not self.text.strip() and self.artifact_id is None and not self.mentions:
             raise ValueError("message_empty")
         if (self.artifact_id is None) != (self.attachment_kind is None):
             raise ValueError("attachment_kind_required")

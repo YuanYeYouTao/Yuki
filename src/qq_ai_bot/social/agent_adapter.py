@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from qq_ai_bot.capabilities.invocation import current_invocation
 from qq_ai_bot.identity.db_models import IdentityBindingModel
+from qq_ai_bot.identity.routing import RouteSendError
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.social.models import SocialError
 from qq_ai_bot.social.service import SocialContext, SocialService
@@ -40,6 +41,7 @@ async def invoke_social(
             await session.scalars(
                 select(IdentityBindingModel).where(
                     IdentityBindingModel.platform == "qq",
+                    IdentityBindingModel.status == "active",
                     IdentityBindingModel.external_account_id.in_(refs.values()),
                 )
             )
@@ -53,12 +55,15 @@ async def invoke_social(
         call_id=invocation.call_id,
         conversation_id=conversation_id,
         person_refs={key: by_account[value] for key, value in refs.items() if value in by_account},
+        account_refs={key: value for key, value in refs.items() if value in by_account},
         space_id=runtime.space_id or getattr(inbound, "space_id", None),
         reply_message_id=inbound.message_id if inbound.scope_type == "private" else None,
         reply_presence_id=inbound.presence_id if inbound.scope_type == "private" else None,
     )
     try:
         return await service.execute(name, arguments, context)
+    except RouteSendError as exc:
+        raise SocialError(exc.category) from exc
     except ValidationError as exc:
         # Field names only: never expose input values or raw Pydantic payloads.
         fields = {str(error["loc"][0]) for error in exc.errors() if error["loc"]}

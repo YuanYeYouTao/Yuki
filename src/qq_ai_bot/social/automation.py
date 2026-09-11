@@ -144,7 +144,11 @@ class SocialAutomationAdapter:
                         if kind == "space"
                         else context.canonical_target_person_id
                     )
-                    if str(target.id) != expected:
+                    group_poke = tool_name == "poke_person" and context.canonical_target_space_id
+                    if group_poke:
+                        if args.get("scene", "current") != "current":
+                            raise SocialError("delegated_target_not_allowed")
+                    elif str(target.id) != expected:
                         raise SocialError("delegated_target_not_allowed")
                     if (
                         tool_name == "poke_person"

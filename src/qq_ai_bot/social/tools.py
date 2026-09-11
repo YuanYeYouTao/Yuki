@@ -62,7 +62,28 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
         tool(
             "send_group_message",
             "Yuki 可自主向启用且允许主动发言的群发送。目标只选一种；不解暂停、不换号试发。",
-            message,
+            {
+                **message,
+                "mentions": {
+                    "type": "array",
+                    "maxItems": 20,
+                    "description": (
+                        "真实 @成员，按顺序放在正文前；每项只选一种人物标识。不能用文字 @名字代替。"
+                    ),
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            **selector,
+                            "binding_id": {
+                                "type": "string",
+                                "format": "uuid",
+                                "description": "多 QQ 账号时明确指定有效 Binding",
+                            },
+                        },
+                    },
+                },
+            },
         ),
         tool(
             "poke_person",
@@ -70,6 +91,11 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
             "scene=private 可明确选择私聊。群戳不依赖对方私聊主动路由。失败不连续重试。",
             {
                 **selector,
+                "binding_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "人物的 QQ Binding；多账号有歧义时必须明确",
+                },
                 "space_id": {
                     "type": "string",
                     "format": "uuid",
@@ -83,6 +109,11 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
             "分页查询 Yuki 当前实际可访问群的成员，不会提供私聊历史。",
             {
                 **selector,
+                "space_binding_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "多个 QQ 群 Binding 时必须明确",
+                },
                 "cursor": {"type": "string"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100},
             },
