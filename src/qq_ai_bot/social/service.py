@@ -27,6 +27,7 @@ from qq_ai_bot.identity.routing import PresenceRouter, ResolvedSend
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from qq_ai_bot.sandbox.progress import current_progress
 from qq_ai_bot.social.db_models import SocialOperationModel
 from qq_ai_bot.social.models import OperationStatus, SocialError, SocialMessage, SocialTarget
 from qq_ai_bot.social.repository import SocialOperationRepository
@@ -617,6 +618,9 @@ class SocialService:
                     else (await self.receipts.get(receipt.operation_id)).model_dump(mode="json")
                 )
         try:
+            progress = current_progress.get()
+            if progress is not None and name.startswith("send_"):
+                await progress.reserve_message()
             result = await self._call(route, action, params)
             reference = (
                 str(result["message_id"])

@@ -6,6 +6,9 @@ serialized; the entries after it are an ordered delta, never regrouped by role.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass
 from uuid import uuid4
@@ -19,6 +22,25 @@ class TranscriptRequest:
     messages: tuple[ChatMessage, ...]
     continuation: ProviderContinuation | None
     items: tuple[ChatMessage | FunctionCallOutput, ...]
+
+
+_DISPATCH_REQUEST: ContextVar[TranscriptRequest | None] = ContextVar(
+    "main_agent_dispatch_request", default=None
+)
+
+
+def dispatch_request() -> TranscriptRequest | None:
+    """The exact ordered input currently undergoing post-admission validation."""
+    return _DISPATCH_REQUEST.get()
+
+
+@contextmanager
+def validating_request(request: TranscriptRequest) -> Iterator[None]:
+    token = _DISPATCH_REQUEST.set(request)
+    try:
+        yield
+    finally:
+        _DISPATCH_REQUEST.reset(token)
 
 
 class TurnTranscript:

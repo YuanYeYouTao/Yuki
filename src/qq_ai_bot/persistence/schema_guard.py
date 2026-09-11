@@ -13,6 +13,12 @@ from qq_ai_bot.conversation.projection_schema import PROJECTION_TRIGGERS_0054
 CANONICAL_SCHEMA_REVISION = "0054"
 
 _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
+    "sandbox_task_runs": frozenset(
+        {"request_id", "progress_json", "source_json", "completion_json"}
+    ),
+    "sandbox_task_continuations": frozenset(
+        {"request_id", "state", "claim_token", "attempts", "reason", "outcome_json", "updated_at"}
+    ),
     "prompt_projections": frozenset(
         {
             "view_key",

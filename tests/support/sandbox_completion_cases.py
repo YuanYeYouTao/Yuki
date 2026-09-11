@@ -73,6 +73,13 @@ async def completion_delivery_cases(root):
     page = await manager.handle(request)
     assert len(page["events"]) == 1 and page["has_more"]
     assert len(json.dumps(page).encode()) <= PAGE_BYTES
+    next_page = manager.completions.pending(after=page["next_cursor"])
+    assert next_page["events"][0]["run_id"] != page["events"][0]["run_id"]
+    assert next_page["next_cursor"] > page["next_cursor"]
+    # Merely scanning past an unacknowledged event does not remove it.
+    assert manager.completions.pending()["events"] == page["events"]
+    for invalid in (-1, True, "1"):
+        assert manager.completions.pending(after=invalid)["error"] == "invalid_arguments"
     for invalid in (0, 21, True, "1"):
         assert manager.completions.pending(invalid)["error"] == "invalid_arguments"
     with manager.db:

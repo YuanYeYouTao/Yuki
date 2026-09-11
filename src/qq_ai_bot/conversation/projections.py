@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, select, text, update
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.conversation.projection_models import PromptProjectionModel
@@ -61,12 +61,14 @@ class PromptProjectionRepository:
         max_context_characters: int,
         total_bytes: int = 16 * 1024 * 1024,
         maximum_views: int = 128,
+        reclaim: bool = False,
     ) -> None:
         if min(max_context_characters, total_bytes, maximum_views) <= 0:
             raise ValueError("invalid projection budget")
         self.database = database
         self.view_bytes = min(max_context_characters * 4, 1024 * 1024)
         self.total_bytes, self.maximum_views = total_bytes, maximum_views
+        self.reclaim = reclaim
 
     async def read(self, view_key: str) -> ProjectionSnapshot | None:
         async with self.database.sessions() as session:
@@ -195,6 +197,53 @@ class PromptProjectionRepository:
                     ).where(PromptProjectionModel.view_key != view_key)
                 )
             ).one()
+            if self.reclaim:
+                others = list(
+                    (
+                        await session.scalars(
+                            select(PromptProjectionModel)
+                            .where(PromptProjectionModel.view_key != view_key)
+                            .order_by(
+                                PromptProjectionModel.updated_at, PromptProjectionModel.view_key
+                            )
+                        )
+                    ).all()
+                )
+                count = sum(row.invalidated_reason is None for row in others)
+                for victim in others:
+                    if used + size <= self.total_bytes and count < self.maximum_views:
+                        break
+                    if victim.invalidated_reason is not None:
+                        if used + size > self.total_bytes:
+                            used -= victim.byte_size
+                            await session.delete(victim)
+                        continue
+                    used -= victim.byte_size - 2
+                    count -= 1
+                    victim.payload_json, victim.byte_size = "[]", 2
+                    victim.invalidated_reason = "capacity"
+                    victim.revision += 1
+                    # Keep the eviction boundary until marker retention expires.
+                    victim.updated_at = datetime.now(UTC)
+                await session.flush()
+                markers = list(
+                    (
+                        await session.scalars(
+                            select(PromptProjectionModel)
+                            .where(
+                                PromptProjectionModel.view_key != view_key,
+                                PromptProjectionModel.invalidated_reason.is_not(None),
+                            )
+                            .order_by(
+                                PromptProjectionModel.updated_at.desc(),
+                                PromptProjectionModel.view_key,
+                            )
+                        )
+                    ).all()
+                )
+                for marker in markers[self.maximum_views :]:
+                    used -= marker.byte_size
+                    await session.delete(marker)
             if used + size > self.total_bytes or count >= self.maximum_views:
                 raise ProjectionCapacityError("projection global budget exceeded")
             row = old or PromptProjectionModel(view_key=view_key, conversation_id=conversation_id)
@@ -220,6 +269,26 @@ class PromptProjectionRepository:
                 )
             )
             await session.commit()
+
+    async def invalidate_view(self, view_key: str, *, reason: str) -> None:
+        """Retire an input representation while keeping its next-epoch reason."""
+        if reason not in REBUILD_REASONS:
+            raise ValueError("invalid projection rebuild reason")
+        async with self.database.sessions() as session, session.begin():
+            await session.execute(
+                update(PromptProjectionModel)
+                .where(
+                    PromptProjectionModel.view_key == view_key,
+                    PromptProjectionModel.invalidated_reason.is_(None),
+                )
+                .values(
+                    payload_json="[]",
+                    byte_size=2,
+                    invalidated_reason=reason,
+                    revision=PromptProjectionModel.revision + 1,
+                    updated_at=datetime.now(UTC),
+                )
+            )
 
 
 def _snapshot(row: PromptProjectionModel) -> ProjectionSnapshot:

@@ -474,15 +474,24 @@ class ScopedEventLedgerUnitOfWork:
             raise CanonicalIdentityError("causal_source_required")
         if caused_by_event_id is None:
             return
-        if not plugin_outbound:
+        task_outbound = (
+            origin == "system_task" and direction == "outbound" and event_kind == "message"
+        )
+        if not plugin_outbound and not task_outbound:
             raise CanonicalIdentityError("causal_source_not_allowed")
         source = await session.get(ChatEventModel, caused_by_event_id)
         if (
             source is None
             or source.canonical_conversation_id != conversation_id
-            or source.event_kind != "external_event"
-            or source.direction != "external"
-            or source.origin != "plugin_background"
+            or (
+                plugin_outbound
+                and (
+                    source.event_kind != "external_event"
+                    or source.direction != "external"
+                    or source.origin != "plugin_background"
+                )
+            )
+            or (task_outbound and (source.event_kind != "message" or source.direction != "inbound"))
             or source.suppression_status != "keeper"
         ):
             raise CanonicalIdentityError("causal_source_invalid")

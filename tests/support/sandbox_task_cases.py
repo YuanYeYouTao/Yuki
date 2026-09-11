@@ -91,6 +91,9 @@ async def task_receipt_cases(database, tmp_path):
 
     async with database.sessions() as session:
         assert await session.scalar(select(func.count()).select_from(SandboxTaskRunModel)) == 1
+    from tests.support.sandbox_resume_cases import resume_cases
+
+    await resume_cases(database, env, tasks, source)
     await message_source_cases(database, tasks, source, event)
     writer = SimpleNamespace(write=Mock(), drain=AsyncMock(), close=Mock(), wait_closed=AsyncMock())
     reader = SimpleNamespace(readline=AsyncMock(return_value=b'{"pending":true}\n'))
@@ -116,6 +119,31 @@ async def task_receipt_cases(database, tmp_path):
                 "run_python", {"code": "different"}, request_id="before-send", source=source
             )
         writer.write.assert_not_called()
+    # A lost submission response performs only an idempotency lookup, never a second run.
+    rediscovered_run = str(uuid4())
+    recovered_result = {"run_id": rediscovered_run, "status": "succeeded", "pending": False}
+    recovery_reader = SimpleNamespace(
+        readline=AsyncMock(
+            side_effect=[OSError("lost response"), json.dumps(recovered_result).encode() + b"\n"]
+        )
+    )
+    recovery_writer = SimpleNamespace(
+        write=Mock(), drain=AsyncMock(), close=Mock(), wait_closed=AsyncMock()
+    )
+    with patch.object(
+        asyncio,
+        "open_unix_connection",
+        AsyncMock(return_value=(recovery_reader, recovery_writer)),
+        create=True,
+    ):
+        recovered = await client.execute(
+            "run_python", arguments, request_id="uncertain-submit", source=source
+        )
+    assert recovered == recovered_result
+    methods = [json.loads(call.args[0])["method"] for call in recovery_writer.write.call_args_list]
+    assert methods == ["run_python", "get_code_run_by_request"]
+    assert (await tasks.get("uncertain-submit")).run_id == rediscovered_run
+
     # Rejecting an unknown record must not starve a valid record in the same page.
     execute = transport.execute
 
@@ -156,6 +184,61 @@ async def task_receipt_cases(database, tmp_path):
         assert not (await receiver.health())["running"]
     assert await receiver.drain_once() == 1
     assert (await receiver.health())["acknowledged_this_process"] == 1
+    cursors = []
+    acknowledgements = []
+
+    async def paginated(name, args, *, request_id):
+        if name == "list_code_completions":
+            cursors.append(args["after"])
+            if args["after"] == 0:
+                return {
+                    "events": [{**event, "request_id": "unknown"}] * 20,
+                    "has_more": True,
+                    "next_cursor": 20,
+                }
+            return {"events": [event], "has_more": False, "next_cursor": 21}
+        acknowledgements.append(args["run_id"])
+        return {"acknowledged": True, "run_id": args["run_id"]}
+
+    scanner = CompletionReceiver(transport, tasks)
+    with patch.object(transport, "execute", paginated):
+        with pytest.raises(ValueError, match="unknown_task_completion"):
+            await scanner.drain_once()
+        assert await scanner.drain_once() == 1
+        with pytest.raises(ValueError, match="unknown_task_completion"):
+            await scanner.drain_once()
+    assert cursors == [0, 20, 0] and acknowledgements == [run_id]
+    from qq_ai_bot.sandbox.continuations import SandboxContinuationRepository
+
+    continuations = SandboxContinuationRepository(database)
+    claims = await asyncio.gather(continuations.claim("request"), continuations.claim("request"))
+    assert sum(token is not None for token in claims) == 1
+    token = next(token for token in claims if token is not None)
+    assert not await continuations.settle("request", "stale", state="finished", reason="sent")
+    assert await continuations.settle("request", token, state="ready", reason="conversation_busy")
+    second_token = await continuations.claim("request")
+    assert second_token is not None and second_token != token
+    assert not await continuations.settle("request", token, state="finished", reason="late")
+    assert await continuations.settle(
+        "request", second_token, state="uncertain", reason="delivery_interrupted"
+    )
+    # Neither a repeated Manager event nor a new Bot repository resets an
+    # uncertain attempt to ready. It must not automatically send again.
+    await tasks.receive(event)
+    restarted = SandboxContinuationRepository(database)
+    assert await restarted.claim("request") is None
+    assert (await restarted.get("request")).state == "uncertain"
+    observed_run = str(uuid4())
+    await tasks.prepare("observed-request", arguments, source)
+    await tasks.receive(
+        {
+            "request_id": "observed-request",
+            "run_id": observed_run,
+            "result": {**event["result"], "run_id": observed_run},
+        }
+    )
+    assert await restarted.observed("observed-request")
+    assert await restarted.claim("observed-request") is None
     from tests.support.sandbox_automation_recovery_cases import automation_recovery_cases
 
     await automation_recovery_cases(database, tasks)

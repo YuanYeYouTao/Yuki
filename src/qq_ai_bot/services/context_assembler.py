@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import UTC
 from typing import Any
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
@@ -58,7 +59,7 @@ from qq_ai_bot.persistence.repositories import (
     RelationshipRepository,
 )
 from qq_ai_bot.prompting import ContextBudgeter, ContextContribution
-from qq_ai_bot.runtime.trigger import ExternalEventTurnTrigger
+from qq_ai_bot.runtime.trigger import ExternalEventTurnTrigger, SandboxTaskTurnTrigger
 from qq_ai_bot.time.formatting import local_iso
 from qq_ai_bot.time.models import TimeContext
 from qq_ai_bot.time.service import TimeContextService
@@ -106,6 +107,10 @@ class AssembledContext:
     prompt_rollup_revision: int = 0
     prompt_raw_tail_end_event_id: int = 0
     read_version: ConversationReadVersion | None = None
+    history_fragments: tuple[tuple[tuple[int, ...], ChatMessage], ...] = ()
+    history_event_fragments: tuple[tuple[tuple[int, ...], ChatMessage], ...] = ()
+    current_event_id: int | None = None
+    projection_scope: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +122,8 @@ class _BoundedMessages:
     history_anchor_event_id: int | None
     raw_history_window_shifted: bool
     visible_event_ids: frozenset[int] = frozenset()
+    history_fragments: tuple[tuple[tuple[int, ...], ChatMessage], ...] = ()
+    history_event_fragments: tuple[tuple[tuple[int, ...], ChatMessage], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +137,7 @@ class _HistoryPromptWindow:
     rollup: ConversationRollupState | None
     rollup_mode: str | None
     starts_after_event_id: int = 0
+    read_version: ConversationReadVersion | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,7 +240,8 @@ class ContextAssembler:
             bot_display_name=settings.bot_display_name,
             timezone=context.timezone,
         )
-        history = tuple(message for _, _, message in renderer.main_agent_history(rows))
+        rendered_history = renderer.main_agent_history(rows)
+        history = tuple(message for _, _, message in rendered_history)
         trigger = {
             "origin": context.authority.origin.value,
             "content_trust": "untrusted_automation_input",
@@ -267,6 +276,23 @@ class ContextAssembler:
             ),
             visible_event_ids=frozenset(row.id for row in rows),
             read_version=read_version,
+            projection_scope=json.dumps(
+                [
+                    "automation",
+                    context.automation_id,
+                    context.creator_user_id,
+                    profile,
+                    declared.model_dump(mode="json"),
+                ],
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            history_fragments=tuple((ids, message) for _, ids, message in rendered_history),
+            history_event_fragments=tuple(
+                (ids, message)
+                for row in rows
+                for _, ids, message in renderer.main_agent_history((row,))
+            ),
         )
 
     async def assemble(
@@ -286,7 +312,7 @@ class ContextAssembler:
         memory_retrieval: MemoryRetrievalResult | None = None,
         persist_memory_exposure: bool = True,
         external_event: EventRecord | None = None,
-        external_trigger: ExternalEventTurnTrigger | None = None,
+        external_trigger: ExternalEventTurnTrigger | SandboxTaskTurnTrigger | None = None,
     ) -> AssembledContext:
         """Build one bounded snapshot without persisting model-only metadata."""
 
@@ -567,6 +593,7 @@ class ContextAssembler:
             uncovered_events,
             over_budget,
         )
+        await self._validate_history_source(snapshot, current_event)
         return AssembledContext(
             metadata_payload=metadata_payload,
             history_messages=history_messages,
@@ -589,24 +616,35 @@ class ContextAssembler:
             prompt_effective_coverage=snapshot.coverage_end,
             prompt_rollup_revision=snapshot.revision,
             prompt_raw_tail_end_event_id=(recent[-1].id if recent else snapshot.coverage_end),
+            read_version=snapshot.read_version,
+            history_fragments=bounded_messages.history_fragments,
+            history_event_fragments=bounded_messages.history_event_fragments,
+            current_event_id=current_event.id,
         )
 
     async def _assemble_actorless_turn(
         self,
         *,
         event: EventRecord,
-        trigger: ExternalEventTurnTrigger,
+        trigger: ExternalEventTurnTrigger | SandboxTaskTurnTrigger,
         identity: ConversationScope,
         turn: ConversationTurnSnapshot,
         runtime: RuntimeConfigSnapshot,
     ) -> AssembledContext:
         """Use the canonical Main-Agent window with actor-neutral memory targets."""
 
+        sandbox = isinstance(trigger, SandboxTaskTurnTrigger)
         if (
             event.id != trigger.source_event_id
-            or event.source_plugin_id != trigger.plugin_id
-            or event.event_kind != "external_event"
             or event.canonical_conversation_id is None
+            or (sandbox and (event.direction != "inbound" or event.event_kind != "message"))
+            or (
+                not sandbox
+                and (
+                    event.source_plugin_id != trigger.plugin_id
+                    or event.event_kind != "external_event"
+                )
+            )
         ):
             raise ConversationCoverageError("external wakeup source does not match trigger")
         if identity.key != turn.transport_scope_key:
@@ -619,9 +657,11 @@ class ContextAssembler:
         snapshot = await self._load_history_snapshot(
             identity,
             turn=turn,
-            before_event_id=event.id,
+            before_event_id=None if sandbox else event.id,
         )
-        if event.id <= snapshot.coverage_end or event.id <= snapshot.starts_after_event_id:
+        if (
+            not sandbox and event.id <= snapshot.coverage_end
+        ) or event.id <= snapshot.starts_after_event_id:
             raise ConversationCoverageError("external trigger is already covered")
         recent = snapshot.recent
         retrieval = await self._memory_context.retrieve_for_targets(
@@ -753,6 +793,7 @@ class ContextAssembler:
             if event.group_id is None
             else self._time.current_default()
         )
+        await self._validate_history_source(snapshot, event)
         return AssembledContext(
             metadata_payload=metadata_payload,
             history_messages=history,
@@ -780,12 +821,16 @@ class ContextAssembler:
             prompt_effective_coverage=snapshot.coverage_end,
             prompt_rollup_revision=snapshot.revision,
             prompt_raw_tail_end_event_id=(recent[-1].id if recent else snapshot.coverage_end),
+            read_version=snapshot.read_version,
+            history_fragments=bounded_messages.history_fragments,
+            history_event_fragments=bounded_messages.history_event_fragments,
+            current_event_id=event.id,
         )
 
     @staticmethod
     def _actorless_memory_targets(
         event: EventRecord,
-        trigger: ExternalEventTurnTrigger,
+        trigger: ExternalEventTurnTrigger | SandboxTaskTurnTrigger,
     ) -> tuple[MemoryEntityTarget, ...]:
         targets = [
             MemoryEntityTarget(
@@ -824,12 +869,16 @@ class ContextAssembler:
     @staticmethod
     def _external_wakeup_message(
         event: EventRecord,
-        trigger: ExternalEventTurnTrigger,
+        trigger: ExternalEventTurnTrigger | SandboxTaskTurnTrigger,
     ) -> ChatMessage:
-        summary = " ".join(event.content.split())[:1_200]
+        summary = " ".join(event.content.split())[
+            : (12_000 if isinstance(trigger, SandboxTaskTurnTrigger) else 1_200)
+        ]
         intent = " ".join(trigger.agent_intent.split())[:1_000]
         payload = {
-            "kind": "external_event_wakeup",
+            "kind": "sandbox_completion"
+            if isinstance(trigger, SandboxTaskTurnTrigger)
+            else "external_event_wakeup",
             "trust": "external_untrusted",
             "source": event.external_source or "external",
             "event_type": event.external_event_type or "event",
@@ -837,6 +886,8 @@ class ContextAssembler:
             "summary": summary,
             "agent_intent": intent,
         }
+        if isinstance(trigger, SandboxTaskTurnTrigger):
+            payload["completion"] = trigger.completion_payload
         return ChatMessage(
             role="user",
             content=(
@@ -1361,6 +1412,38 @@ class ContextAssembler:
             view.rendered_characters <= max(0, character_budget - view.current_characters)
         )
 
+    async def _validate_history_source(
+        self,
+        snapshot: _HistoryPromptWindow,
+        event: EventRecord,
+    ) -> None:
+        if snapshot.read_version is None:
+            return
+        if not await self._ledger.read_version_matches(snapshot.read_version):
+            raise ConversationCoverageError("history source changed while assembling context")
+        current = await self._ledger.get_event(event.id)
+        # SQLite reloads UTC timestamps without tzinfo; compare their instants
+        # without treating that storage representation as a source mutation.
+        if current is not None:
+            current = replace(
+                current,
+                occurred_at=(
+                    current.occurred_at.replace(tzinfo=UTC)
+                    if current.occurred_at.tzinfo is None
+                    else current.occurred_at
+                ),
+            )
+        event = replace(
+            event,
+            occurred_at=(
+                event.occurred_at.replace(tzinfo=UTC)
+                if event.occurred_at.tzinfo is None
+                else event.occurred_at
+            ),
+        )
+        if current != event:
+            raise ConversationCoverageError("trigger event changed while assembling context")
+
     async def _load_history_snapshot(
         self,
         scope: ConversationScope,
@@ -1389,6 +1472,17 @@ class ContextAssembler:
             rollup=rollup,
             rollup_mode=rollup.summary_kind.value if rollup is not None else None,
             starts_after_event_id=loaded.scope.starts_after_event_id,
+            read_version=(
+                ConversationReadVersion(
+                    scope,
+                    loaded.conversation_id,
+                    loaded.scope.generation,
+                    loaded.scope.starts_after_event_id,
+                    loaded.prompt_source_revision,
+                )
+                if loaded.conversation_id is not None
+                else None
+            ),
         )
 
     def _uncovered_prompt_view(
@@ -1623,6 +1717,12 @@ class ContextAssembler:
         event_ids = tuple(event_id for _, ids, _ in rendered for event_id in ids)
         return _BoundedMessages(
             history_messages=tuple(item for _, _, item in rendered),
+            history_fragments=tuple((ids, item) for _, ids, item in rendered),
+            history_event_fragments=tuple(
+                (ids, item)
+                for row in history_rows
+                for _, ids, item in renderer.main_agent_history((row,))
+            ),
             current_message=current_message,
             history_anchor_event_id=(
                 rendered[0][0]

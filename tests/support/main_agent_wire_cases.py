@@ -211,6 +211,56 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             sender = MemorySender()
             result = await harness.processor.handle(message, sender)
             assert result.reason == "chat" and sender.messages
+            if name == "private":
+                from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
+
+                # Reopen the projection service to prove reuse comes from SQLite,
+                # including the old dynamic envelope, rather than in-memory state.
+                chat._main_turns = MainAgentTurnService(
+                    chat._prompt_composer, chat._agent_runner, database
+                )
+                from qq_ai_bot.domain.messages import AttachmentKind, OutboundMedia, OutboundMessage
+
+                for kind, label in (
+                    (AttachmentKind.IMAGE, "wire-image"),
+                    (AttachmentKind.FILE, "wire-file"),
+                    (AttachmentKind.AUDIO, "wire-voice"),
+                ):
+                    await chat._deliver_and_record(
+                        message,
+                        sender,
+                        OutboundMessage(
+                            text=label, media=(OutboundMedia(kind=kind, summary=label),)
+                        ),
+                        None,
+                        origin=TurnOrigin.USER_MESSAGE.value,
+                    )
+                await chat._deliver_and_record(
+                    message,
+                    sender,
+                    OutboundMessage(text="wire-file-caption"),
+                    None,
+                    origin=TurnOrigin.USER_MESSAGE.value,
+                )
+                current_entry = "private-followup"
+                followup = replace(
+                    message,
+                    message_id=f"wire-{protocol.value}-private-followup",
+                    sender=SenderIdentity(user, nickname="新的昵称"),
+                    text="接着记录下一条",
+                )
+                result = await harness.processor.handle(followup, sender)
+                assert result.reason == "chat"
+                following = captured.pop("private-followup")
+                sequence_key = "input" if protocol is ModelProtocol.RESPONSES else "messages"
+                old_input = captured["private"][-1][sequence_key]
+                assert following[0][sequence_key][: len(old_input)] == old_input
+                assert following[0]["tools"] == captured["private"][0]["tools"]
+                serialized = json.dumps(following[0], ensure_ascii=False)
+                assert all(
+                    label in serialized
+                    for label in ("wire-image", "wire-file", "wire-voice", "wire-file-caption")
+                )
 
         plugin = HostPluginContext(
             plugin_id="wire.plugin",
@@ -232,6 +282,79 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             bot_user_id="9999", platform_message_id=f"wire-{protocol.value}-private"
         )
         assert observed is not None
+        from types import SimpleNamespace
+        from uuid import uuid4
+
+        from qq_ai_bot.gateway.providers import builtin_provider_catalog
+        from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
+        from qq_ai_bot.identity.routing import PresenceRouter
+        from qq_ai_bot.sandbox.continuation_worker import SandboxContinuationWorker
+        from qq_ai_bot.sandbox.progress import TaskProgress
+        from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
+        from tests.support.social_identity_cases import Bot
+
+        registry = GatewayConnectionRegistry(providers=builtin_provider_catalog())
+
+        class WireBot(Bot):
+            async def call_api(self, action, **params):
+                result = await super().call_api(action, **params)
+                return {**result, "message_id": f"sandbox-{protocol.value}"}
+
+        bot = WireBot("9999")
+        registry.connect(bot, provider_id="snowluma", presence_id=observed.ingress_presence_id)
+        sandbox_tasks = SandboxTaskRepository(database)
+        task_id = f"wire-resume-{protocol.value}"
+        scope_state = await chat._conversation_scopes.get(ConversationScope.private("9999", "1001"))
+        await sandbox_tasks.prepare(
+            task_id,
+            {"code": "print(1)"},
+            {
+                "conversation_id": observed.canonical_conversation_id,
+                "origin": "user_message",
+                "actor_user_id": "1001",
+                "trigger_id": observed.platform_message_id,
+                "trigger_event_id": observed.id,
+                "generation": scope_state.generation,
+                "bot_user_id": "9999",
+                "presence_id": observed.ingress_presence_id,
+            },
+        )
+        progress = TaskProgress(6, 6)
+        await progress.bind(sandbox_tasks, task_id)
+        await progress.checkpoint(models=1, tools=1)
+        await progress.finish("yielded")
+        run_id = str(uuid4())
+        await sandbox_tasks.receive(
+            {
+                "request_id": task_id,
+                "run_id": run_id,
+                "result": {
+                    "run_id": run_id,
+                    "status": "succeeded",
+                    "pending": False,
+                    "output": "ready",
+                },
+            }
+        )
+        worker = SandboxContinuationWorker(
+            SimpleNamespace(
+                database=database,
+                sandbox_tasks=sandbox_tasks,
+                ledger=harness.ledger,
+                presence_router=PresenceRouter(database, registry),
+                runtime_config=chat._runtime_config,
+                conversation_scopes=chat._conversation_scopes,
+                turn_coordinator=chat._turn_coordinator,
+                chat=chat,
+            )
+        )
+        current_entry = "sandbox-resume"
+        await worker._drain_request(task_id)
+        assert (await worker.repository.get(task_id)).state == "finished"
+        assert bot.calls[-1][0] == "send_private_msg"
+        await worker._drain_request(task_id)
+        assert len(captured[current_entry]) == 2
+
         from tests.support.projection_cases import projection_storage_cases
 
         await projection_storage_cases(database, observed.canonical_conversation_id)
@@ -270,6 +393,23 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
                     answer = result.data["text"]
                     assert result.data["capabilities"] == ["get_person_memories"]
                 assert answer == "已完成"
+        current_entry = "sdk-followup"
+        with plugin.bind(invocation):
+            assert await plugin.llm.generate("继续记录") == "已完成"
+        repeated = captured.pop("sdk-followup")
+        sequence_key = "input" if protocol is ModelProtocol.RESPONSES else "messages"
+        old_input = captured["sdk-generate"][-1][sequence_key]
+        assert repeated[0][sequence_key][: len(old_input)] == old_input
+        # Narrowing the same SDK method's context profile must not retain the
+        # prior current_user material, despite sharing the canonical Conversation.
+        current_entry = "sdk-narrow"
+        with plugin.bind(invocation):
+            assert (
+                await plugin.llm.generate_with_context("只看本条", context_profile="none")
+                == "已完成"
+            )
+        narrowed = captured.pop("sdk-narrow")
+        assert "requested_context" not in json.dumps(narrowed[0][sequence_key])
         with plugin.bind(invocation):
             _, base = await _agent_dependencies(plugin, invocation)
         source_backend = plugin._services.agent_tools
@@ -393,6 +533,42 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
         )
         assert result.text == "已完成"
 
+        # A source edit after assembly (including while awaiting model admission)
+        # must stop dispatch, not submit the already compiled stale history.
+        from qq_ai_bot.persistence.models import ChatEventModel
+        from qq_ai_bot.services.turn_coordinator import TurnSupersededError
+
+        async def edit_before_dispatch():
+            async with database.sessions() as session, session.begin():
+                row = await session.get(ChatEventModel, appended.event.id)
+                row.content = "changed after context assembly"
+
+        request_count = sum(map(len, captured.values()))
+        try:
+            with pytest.raises(TurnSupersededError, match="context source changed"):
+                await chat.generate_main_agent_wakeup(
+                    event=appended.event,
+                    trigger=ExternalEventTurnTrigger(
+                        plugin_id="wire-plugin",
+                        source_event_id=appended.event.id,
+                        target_type="private",
+                        target_id="1001",
+                        agent_intent="记录这轮结果",
+                    ),
+                    identity=scope,
+                    runtime=await chat._runtime_config.snapshot(),
+                    turn_token=token,
+                    turn_snapshot=snapshot,
+                    gateway=None,
+                    conversation_id=appended.event.canonical_conversation_id,
+                    before_model_request=edit_before_dispatch,
+                )
+            assert sum(map(len, captured.values())) == request_count
+        finally:
+            async with database.sessions() as session, session.begin():
+                row = await session.get(ChatEventModel, appended.event.id)
+                row.content = appended.event.content
+
         current_entry = "autonomous-group"
         message = InboundMessage(
             message_id=f"wire-{protocol.value}-autonomous",
@@ -430,7 +606,7 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
         assert sender.messages
 
     forbidden_send.assert_not_awaited()
-    assert len(captured) == 9
+    assert len(captured) == 10
     fixed = None
     for name, chain in captured.items():
         assert len(chain) == (3 if name in {"automation-generate", "sdk-generate"} else 2), (
@@ -444,10 +620,14 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
         if protocol is ModelProtocol.RESPONSES:
             assert second["instructions"] == first["instructions"]
             old, new = first["input"], second["input"]
-            outputs = [item["output"] for item in new if item.get("type") == "function_call_output"]
+            outputs = [
+                item["output"]
+                for item in new[len(old) :]
+                if item.get("type") == "function_call_output"
+            ]
         else:
             old, new = first["messages"], second["messages"]
-            outputs = [item["content"] for item in new if item.get("role") == "tool"]
+            outputs = [item["content"] for item in new[len(old) :] if item.get("role") == "tool"]
         assert new[: len(old)] == old
         assert len(outputs) == (2 if name in {"automation-generate", "sdk-generate"} else 1)
         assert json.loads(outputs[0])["ok"] is True

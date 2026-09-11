@@ -325,8 +325,14 @@ class TaskModelExecutor:
         if any(message.images for message in request.messages):
             required.add(ModelCapability.IMAGE_INPUT)
         _route, profile = self._router.route(task, required_capabilities=frozenset(required))
-        if request.continuation is not None:
-            continuation = request.continuation
+        for continuation in (
+            *((request.continuation,) if request.continuation is not None else ()),
+            *(
+                message.response_item
+                for message in request.messages
+                if message.response_item is not None
+            ),
+        ):
             if (
                 continuation.profile_id != profile.id
                 or continuation.provider != profile.provider.casefold()
@@ -625,6 +631,16 @@ class TaskModelExecutor:
     def profile_id(self, task: ModelTask) -> str:
         route, _profile = self._router.route(task)
         return route.profile_id
+
+    def profile_revision(self, task: ModelTask) -> str:
+        """Fingerprint routing/serialization settings without exposing configuration."""
+        route, profile = self._router.route(task)
+        return _json_hash(
+            {
+                "route": route.model_dump(mode="json"),
+                "profile": profile.model_dump(mode="json"),
+            }
+        )
 
     def model_name(self, task: ModelTask) -> str:
         _route, profile = self._router.route(task)

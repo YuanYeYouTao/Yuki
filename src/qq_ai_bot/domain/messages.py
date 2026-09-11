@@ -256,6 +256,7 @@ class ChatMessage:
     tool_call_id: str | None = None
     reasoning_content: str | None = None
     images: tuple[ChatImage, ...] = field(default=(), repr=False)
+    response_item: ProviderContinuation | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)

@@ -34,22 +34,26 @@ class CompletionOutbox:
             (run_id, json.dumps({"run_id": run_id, "request_id": request_id, "result": result})),
         )
 
-    def pending(self, limit: object = 20) -> dict[str, Any]:
-        if type(limit) is not int or not 1 <= limit <= 20:
+    def pending(self, limit: object = 20, after: object = 0) -> dict[str, Any]:
+        if type(limit) is not int or not 1 <= limit <= 20 or type(after) is not int or after < 0:
             return {"error": "invalid_arguments"}
         rows = self.db.execute(
-            "SELECT payload FROM completion_outbox ORDER BY sequence LIMIT ?", (limit + 1,)
+            "SELECT sequence,payload FROM completion_outbox WHERE sequence > ? "
+            "ORDER BY sequence LIMIT ?",
+            (after, limit + 1),
         ).fetchall()
         events: list[dict[str, Any]] = []
+        cursor = after
         for row in rows[:limit]:
-            event = json.loads(row[0])
-            candidate = {"events": [*events, event], "has_more": True}
+            event = json.loads(row[1])
+            candidate = {"events": [*events, event], "has_more": True, "next_cursor": row[0]}
             if len(json.dumps(candidate).encode()) > PAGE_BYTES:
                 if not events:
                     return {"error": "completion_too_large"}
                 break
             events.append(event)
-        return {"events": events, "has_more": len(rows) > len(events)}
+            cursor = row[0]
+        return {"events": events, "has_more": len(rows) > len(events), "next_cursor": cursor}
 
     def acknowledge(self, run_id: str) -> dict[str, Any]:
         # Safe to repeat after an acknowledgement response was lost. Consumers

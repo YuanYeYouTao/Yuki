@@ -3,8 +3,10 @@
 import asyncio
 
 import pytest
+from sqlalchemy import func, select
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+from qq_ai_bot.conversation.projection_models import PromptProjectionModel
 from qq_ai_bot.conversation.projections import (
     ProjectionCapacityError,
     ProjectionConflict,
@@ -14,6 +16,43 @@ from qq_ai_bot.conversation.projections import (
 
 
 async def projection_storage_cases(database, conversation_id):
+    from qq_ai_bot.conversation.frozen_fragments import FrozenFragments
+    from qq_ai_bot.domain.messages import ChatMessage, ProviderContinuation
+
+    frozen = FrozenFragments.load([]).append_current(
+        1, ChatMessage(role="user", content="old dynamic\n旧名字：第一条")
+    )
+    # A newly rendered group includes an old event with a changed display name.
+    # Only the new event's separately rendered fragment may be appended.
+    extended = frozen.extend_history(
+        (((1, 2), ChatMessage(role="user", content="新名字：第一条\n第二条")),),
+        (
+            ((1,), ChatMessage(role="user", content="新名字：第一条")),
+            ((2,), ChatMessage(role="user", content="新名字：第二条")),
+        ),
+    ).append_current(3, ChatMessage(role="user", content="new dynamic\n第三条"))
+    assert extended.items[:1] == frozen.items
+    assert extended.messages()[1].content == "新名字：第二条"
+    assert extended.event_ids == {1, 2, 3}
+    with pytest.raises(ProjectionConflict, match="coverage is incomplete"):
+        frozen.extend_history((((1, 2), ChatMessage(role="user", content="merged")),), ())
+    with pytest.raises(ProjectionConflict, match="trigger already exists"):
+        extended.append_current(3, ChatMessage(role="user", content="duplicate"))
+    for unsafe in (
+        {"type": "reasoning", "content": "must not persist"},
+        {"type": "unknown_provider_item", "content": "unknown"},
+        {"type": "message", "content": [{"type": "input_image", "image_url": "secret"}]},
+    ):
+        with pytest.raises(ProjectionConflict, match="explicit boundary"):
+            extended.append_responses(
+                ProviderContinuation(
+                    provider="deepseek",
+                    protocol="responses",
+                    profile_id="wire",
+                    payload=(unsafe,),
+                )
+            )
+
     async with database.sessions() as session:
         source = await session.get(CanonicalConversationModel, conversation_id)
         generation, starts = source.generation, source.starts_after_event_id
@@ -28,6 +67,23 @@ async def projection_storage_cases(database, conversation_id):
         context_key="b" * 64,
         contract_revision="c" * 64,
     )
+    saved = await repository.commit(**args, items=list(extended.items), rebuild_reason="bootstrap")
+    assert FrozenFragments.load(saved.items()).messages() == extended.messages()
+    await repository.invalidate_view(args["view_key"], reason="protocol_changed")
+    assert await repository.read(args["view_key"]) is None
+    assert await repository.invalidation_reason(args["view_key"]) == "protocol_changed"
+    with pytest.raises(ProjectionConflict, match="revision changed"):
+        await repository.commit(
+            **args,
+            items=list(extended.items),
+            expected_epoch=saved.epoch_id,
+            expected_revision=saved.revision,
+        )
+    replacement = await repository.commit(
+        **args, items=list(extended.items), rebuild_reason="protocol_changed"
+    )
+    assert replacement.epoch_id != saved.epoch_id
+    await repository.invalidate(conversation_id)
     first = await repository.commit(**args, items=[{"text": "旧名字"}], rebuild_reason="bootstrap")
     copied = first.items()
     copied[0]["text"] = "mutated"
@@ -93,7 +149,13 @@ async def projection_storage_cases(database, conversation_id):
             source.generation = generation
         await repository.invalidate(conversation_id)
         args["expected_source_revision"] = source_revision + 2
-    tiny = PromptProjectionRepository(database, max_context_characters=128, total_bytes=45)
+    async with database.sessions() as session:
+        existing_bytes = await session.scalar(
+            select(func.coalesce(func.sum(PromptProjectionModel.byte_size), 0))
+        )
+    tiny = PromptProjectionRepository(
+        database, max_context_characters=128, total_bytes=int(existing_bytes) + 45
+    )
     results = await asyncio.gather(
         *(
             tiny.commit(
@@ -111,3 +173,29 @@ async def projection_storage_cases(database, conversation_id):
     from tests.support.projection_invalidation_cases import projection_invalidation_cases
 
     await projection_invalidation_cases(database, repository, args)
+    reclaiming = PromptProjectionRepository(
+        database, max_context_characters=128, maximum_views=1, reclaim=True
+    )
+    first_key, second_key = "8" * 64, "9" * 64
+    first = await reclaiming.commit(
+        **{**args, "view_key": first_key}, items=[{"text": "first"}], rebuild_reason="bootstrap"
+    )
+    await reclaiming.commit(
+        **{**args, "view_key": second_key}, items=[{"text": "second"}], rebuild_reason="bootstrap"
+    )
+    assert await reclaiming.read(first_key) is None
+    assert await reclaiming.invalidation_reason(first_key) == "capacity"
+    with pytest.raises(ProjectionConflict, match="revision changed"):
+        await reclaiming.commit(
+            **{**args, "view_key": first_key},
+            items=[{"text": "stale"}],
+            expected_epoch=first.epoch_id,
+            expected_revision=first.revision,
+        )
+    rebuilt = await reclaiming.commit(
+        **{**args, "view_key": first_key}, items=[{"text": "rebuilt"}], rebuild_reason="capacity"
+    )
+    assert rebuilt.epoch_id != first.epoch_id
+    async with database.sessions() as session:
+        assert await session.scalar(select(func.count()).select_from(PromptProjectionModel)) <= 2
+    await reclaiming.invalidate(conversation_id)

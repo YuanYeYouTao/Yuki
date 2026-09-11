@@ -213,8 +213,9 @@ class DeepSeekResponsesProvider(LLMProvider):
         )
         return payload
 
-    @staticmethod
+    @classmethod
     def _convert_messages(
+        cls,
         messages: tuple[ChatMessage, ...],
         *,
         leading_instructions: bool = True,
@@ -226,6 +227,8 @@ class DeepSeekResponsesProvider(LLMProvider):
             and index < len(messages)
             and messages[index].role in {"system", "developer"}
         ):
+            if messages[index].response_item is not None:
+                raise LLMInvalidRequestError("Responses replay cannot become instructions")
             if messages[index].images:
                 raise LLMInvalidRequestError("images must be attached to a user message")
             content = messages[index].content
@@ -234,6 +237,11 @@ class DeepSeekResponsesProvider(LLMProvider):
             index += 1
         inputs: list[dict[str, Any]] = []
         for message in messages[index:]:
+            if message.response_item is not None:
+                if message.images or message.tool_calls or message.tool_call_id:
+                    raise LLMInvalidRequestError("mixed Responses replay representation")
+                inputs.extend(cls._continuation_items(message.response_item))
+                continue
             if message.tool_calls or message.tool_call_id:
                 raise LLMInvalidRequestError(
                     "Responses requests must use continuation and function_call_output items"

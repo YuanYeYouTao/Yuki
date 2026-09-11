@@ -126,6 +126,47 @@ async def automation_recovery_cases(database, tasks):
     ) == (2, 3, 1)
     with pytest.raises(AutomationExecutionError, match="capability_not_delegated"):
         await recovered.context.revalidate_authority("social.send_private_message")
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from qq_ai_bot.automation.handlers import AutomationCapabilityHandlers
+    from qq_ai_bot.llm.fake import FakeLLMProvider
+    from qq_ai_bot.sandbox.continuation_worker import SandboxContinuationWorker
+    from qq_ai_bot.sandbox.progress import TaskProgress
+    from tests.conftest import build_harness
+
+    provider = FakeLLMProvider(lambda _: "已完成下载")
+    harness = build_harness(database, settings, provider)
+    chat = harness.processor._chat
+    handlers = object.__new__(AutomationCapabilityHandlers)
+    handlers._settings, handlers._registry = settings, registry
+    handlers._runtime_config, handlers._ledger = chat._runtime_config, harness.ledger
+    handlers._memories, handlers._relationships = chat._memories, harness.relationships
+    handlers._time, handlers._agent_runner = chat._time, chat._agent_runner
+    denied_gateway = SimpleNamespace(send_private=AsyncMock(), send_group=AsyncMock())
+    handlers._gateway_factory = lambda _: denied_gateway
+    worker = SandboxContinuationWorker(
+        SimpleNamespace(
+            database=database,
+            sandbox_tasks=tasks,
+            automation_executor=executor,
+            turn_coordinator=chat._turn_coordinator,
+            _automation_handlers=handlers,
+        )
+    )
+    progress = TaskProgress(3, 3)
+    await progress.bind(tasks, "scheduled")
+    await progress.checkpoint(models=2, tools=2)
+    await progress.finish("yielded")
+    await worker._automation("scheduled")
+    assert (await worker.repository.get("scheduled")).state == "finished"
+    assert len(provider.requests) == 1
+    assert any(
+        "Sandbox completion" in (message.content or "") for message in provider.requests[0].messages
+    )
+    denied_gateway.send_private.assert_not_called()
+    denied_gateway.send_group.assert_not_called()
+
     for status in ("paused", "cancelled", "blocked"):
         async with database.sessions() as session, session.begin():
             (await session.get(AutomationModel, automation.id)).status = status

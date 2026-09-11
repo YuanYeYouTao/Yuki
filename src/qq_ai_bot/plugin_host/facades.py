@@ -1524,6 +1524,7 @@ class _LLMFacade:
             runtime=runtime,
             tools=None,
             permission=permission,
+            context_profile=context_profile,
         )
         return result.text.strip()[:maximum]
 

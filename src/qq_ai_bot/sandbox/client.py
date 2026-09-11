@@ -92,6 +92,11 @@ class SandboxClient:
             # Must commit before any socket write, including uncertain submissions.
             # Source never crosses into the execution container/Manager payload.
             await self.tasks.prepare(request_id, args, source)
+            from qq_ai_bot.sandbox.progress import current_progress
+
+            progress = current_progress.get()
+            if progress is not None:
+                await progress.bind(self.tasks, request_id)
         try:
             async with asyncio.timeout(7):
                 connect = getattr(asyncio, "open_unix_connection", None)
@@ -104,9 +109,56 @@ class SandboxClient:
                     result = json.loads(await reader.readline())
                     if not isinstance(result, dict):
                         raise ValueError("invalid_response")
+                    if name == "run_python" and self.tasks is not None and result.get("run_id"):
+                        await self.tasks.bind_run(request_id, result["run_id"])
+                    await self._stage_result(name, request_id, result)
                     return result
                 finally:
                     writer.close()
                     await writer.wait_closed()
         except (OSError, ValueError, TimeoutError, NotImplementedError):
+            if name == "run_python":
+                recovered = await self.execute(
+                    "get_code_run_by_request",
+                    {"request_id": request_id},
+                    request_id=request_id,
+                )
+                if recovered.get("run_id"):
+                    if self.tasks is not None:
+                        await self.tasks.bind_run(request_id, recovered["run_id"])
+                    await self._stage_result(name, request_id, recovered)
+                    return recovered
+                return {
+                    "error": "sandbox_submission_unknown",
+                    "retryable": False,
+                    "request_id": request_id,
+                }
             return {"error": "sandbox_unavailable", "retryable": False}
+
+    async def _stage_result(self, name: str, request_id: str, result: dict[str, Any]) -> None:
+        if self.tasks is None or name not in {"run_python", "get_code_run", "cancel_code_run"}:
+            return
+        if result.get("pending") is not False or result.get("status") not in {
+            "succeeded",
+            "failed",
+            "cancelled",
+        }:
+            return
+        row = (
+            await self.tasks.get(request_id)
+            if name == "run_python"
+            else await self.tasks.by_run(str(result.get("run_id")))
+        )
+        if row is None:
+            return
+        await self.tasks.receive(
+            {"request_id": row.request_id, "run_id": result["run_id"], "result": result}
+        )
+        from qq_ai_bot.sandbox.progress import current_progress
+
+        progress = current_progress.get()
+        if (
+            progress is not None
+            and json.loads(row.progress_json).get("group_id") == progress.group_id
+        ):
+            progress.stage_observed(self.tasks, row.request_id)

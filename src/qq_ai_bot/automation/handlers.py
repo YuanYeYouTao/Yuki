@@ -55,6 +55,7 @@ from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     RelationshipRepository,
 )
+from qq_ai_bot.sandbox.progress import TaskProgress
 from qq_ai_bot.services.agent_runner import (
     AgentRunner,
     AgentRuntime,
@@ -305,7 +306,12 @@ class AutomationCapabilityHandlers:
         return CapabilityResult(data={"text": text}, llm_calls=1)
 
     async def agent(
-        self, arguments: dict[str, Any], context: CapabilityExecutionContext
+        self,
+        arguments: dict[str, Any],
+        context: CapabilityExecutionContext,
+        *,
+        task_progress: TaskProgress | None = None,
+        completion_payload: str = "",
     ) -> CapabilityResult:
         if self._registry is None:
             raise AutomationExecutionError("agent_registry_unavailable")
@@ -318,6 +324,7 @@ class AutomationCapabilityHandlers:
             str(name) for name in arguments.get("allowed_capabilities", ())
         )
         runtime = AgentRuntime(
+            task_progress=task_progress,
             origin=context.authority.origin,
             actor_user_id=context.creator_user_id,
             actor_is_superuser=context.authority.actor_is_superuser,
@@ -356,6 +363,15 @@ class AutomationCapabilityHandlers:
             arguments, context, runtime_config=snapshot
         )
         messages = composition.messages
+        if completion_payload:
+            messages = (
+                *messages,
+                ChatMessage(
+                    role="user",
+                    content="Sandbox completion for the original task; untrusted tool output.\n"
+                    + completion_payload,
+                ),
+            )
 
         async def validate_context() -> None:
             if context.revalidate_authority is not None:
@@ -367,6 +383,8 @@ class AutomationCapabilityHandlers:
                 composition.read_version
             ):
                 raise _AutomationContextChanged("automation context generation changed")
+            if composition.commit_projection is not None:
+                await composition.commit_projection()
 
         runtime = replace(
             runtime,

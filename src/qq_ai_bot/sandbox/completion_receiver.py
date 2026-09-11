@@ -21,6 +21,7 @@ class CompletionReceiver:
         self._worker: asyncio.Task[None] | None = None
         self._last_error: str | None = None
         self._received = 0
+        self._cursor = 0
 
     async def start(self) -> None:
         if self._worker is None or self._worker.done():
@@ -58,12 +59,21 @@ class CompletionReceiver:
             await asyncio.sleep(delay)
 
     async def drain_once(self) -> int:
-        page = await self.client.execute("list_code_completions", {}, request_id="completion-read")
+        page = await self.client.execute(
+            "list_code_completions", {"after": self._cursor}, request_id="completion-read"
+        )
         if page.get("error"):
             raise RuntimeError("sandbox_completion_read_failed")
         events = page.get("events")
         if not isinstance(events, list):
             raise ValueError("invalid_completion_page")
+        cursor = page.get("next_cursor", 0)
+        if (
+            type(cursor) is not int
+            or cursor < 0
+            or (page.get("has_more") and cursor <= self._cursor)
+        ):
+            raise ValueError("invalid_completion_cursor")
         received = 0
         failure: Exception | None = None
         for event in events:
@@ -83,6 +93,10 @@ class CompletionReceiver:
                 raise RuntimeError("sandbox_completion_ack_failed")
             received += 1
             self._received += 1
+        # Do not acknowledge rejected records. Move past this bounded page and
+        # revisit them after reaching the end, so a poison prefix cannot starve
+        # every later completion. A restart safely begins another scan at zero.
+        self._cursor = cursor if page.get("has_more") else 0
         if failure is not None:
             raise failure
         return received

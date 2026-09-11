@@ -174,9 +174,17 @@ class Manager:
         if not isinstance(args, dict):
             return {"error": "invalid_arguments"}
         if method == "list_code_completions":
-            return self.completions.pending(args.get("limit", 20))
+            return self.completions.pending(args.get("limit", 20), args.get("after", 0))
         if method == "ack_code_completion":
             return self.completions.acknowledge(identifier(args.get("run_id")))
+        if method == "get_code_run_by_request":
+            original_id = args.get("request_id")
+            if not isinstance(original_id, str) or not 1 <= len(original_id) <= 256:
+                return {"error": "invalid_request_id"}
+            prior = self.db.execute(
+                "SELECT id FROM jobs WHERE request_id=?", (original_id,)
+            ).fetchone()
+            return self.get(prior["id"]) if prior else {"error": "unknown_request"}
         if method in {"get_code_run", "cancel_code_run"}:
             identity = identifier(args.get("run_id"))
             if method == "get_code_run":

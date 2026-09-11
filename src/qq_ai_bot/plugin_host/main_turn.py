@@ -31,6 +31,7 @@ async def run_plugin_main_turn(
     runtime: AgentRuntime,
     tools: AgentToolBackend | None,
     permission: PluginPermission,
+    context_profile: str = "none",
 ) -> AgentRunResult:
     """Keep SDK reads/effects narrow; never synthesize a user or transport target."""
     if _ACTIVE.get():
@@ -100,6 +101,17 @@ async def run_plugin_main_turn(
             raw_history_window_shifted=False,
         ),
         read_version=version,
+        projection_scope=json.dumps(
+            [
+                "plugin-sdk",
+                host.plugin_id,
+                invocation.actor_user_id,
+                permission.value,
+                context_profile,
+                sorted(runtime.allowed_capabilities),
+            ],
+            separators=(",", ":"),
+        ),
     )
     main = cast(MainAgentTurnService, contract.chat._main_turns)
     if isinstance(tools, PluginAgentToolBackend):
@@ -117,12 +129,18 @@ async def run_plugin_main_turn(
                 scope_type=inbound.scope_type,
                 include_plugin_context=False,
             )
+
+            async def validate_and_commit() -> None:
+                await validate()
+                if composition.commit_projection is not None:
+                    await composition.commit_projection()
+
             return await main.run(
                 composition.messages,
                 replace(
                     runtime,
                     conversation_key=invocation.conversation_key,
-                    before_model_request=validate,
+                    before_model_request=validate_and_commit,
                 ),
                 tools,
             )

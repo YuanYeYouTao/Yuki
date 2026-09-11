@@ -315,6 +315,9 @@ class ApplicationContainer:
         )
         self.plugin_agent_tools = conversation.plugin_agent_tools
         self.chat = conversation.chat
+        from qq_ai_bot.sandbox.continuation_worker import SandboxContinuationWorker
+
+        self.sandbox_continuations = SandboxContinuationWorker(self)
         self.chat.register_tool_provider(self.mcp_tools)
         self.memory_mutations = conversation.memory_mutations
         self.memory_auditor = conversation.memory_auditor
@@ -846,6 +849,12 @@ class ApplicationContainer:
             start=self.sandbox_completions.start,
             close=self.sandbox_completions.close,
             health=self.sandbox_completions.health,
+        )
+        self.lifecycle.register(
+            "sandbox_continuations",
+            start=self.sandbox_continuations.start,
+            close=self.sandbox_continuations.close,
+            health=self.sandbox_continuations.health,
         )
         self.lifecycle.register(
             "plugin_background_turns",

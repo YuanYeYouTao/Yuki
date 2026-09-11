@@ -113,6 +113,8 @@ class OpenAICompatibleProvider(LLMProvider):
     async def _post(self, request: ChatRequest) -> httpx.Response:
         messages: list[dict[str, Any]] = []
         for message in request.messages:
+            if message.response_item is not None:
+                raise LLMInvalidRequestError("Responses replay cannot use Chat Completions")
             item: dict[str, Any] = {"role": message.role, "content": message.content}
             if message.images:
                 if message.role != "user":

@@ -51,7 +51,7 @@ async def invoke_social(
     if not conversation_id or not runtime.trigger_message_id:
         raise SocialError("missing_call_context")
     context = SocialContext(
-        turn_id=f"{conversation_id}:{runtime.trigger_message_id}",
+        turn_id=f"{conversation_id}:{runtime.execution_id or runtime.trigger_message_id}",
         call_id=invocation.call_id,
         conversation_id=conversation_id,
         person_refs={key: by_account[value] for key, value in refs.items() if value in by_account},

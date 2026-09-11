@@ -39,10 +39,11 @@ from qq_ai_bot.llm.base import (
 )
 from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
 from qq_ai_bot.model_runtime.models import ModelTask
+from qq_ai_bot.sandbox.progress import TaskProgress, current_progress
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.evidence_observation import EVIDENCE_TOOLS, EvidenceObservation
 from qq_ai_bot.services.native_tool_binder import NativeToolBinder
-from qq_ai_bot.services.turn_transcript import TurnTranscript
+from qq_ai_bot.services.turn_transcript import TranscriptRequest, TurnTranscript, validating_request
 from qq_ai_bot.time.models import TimeContext
 from qq_ai_bot.web.models import WebMode
 
@@ -77,6 +78,7 @@ class AgentRuntime:
     before_model_request: Callable[[], Awaitable[None]] | None = None
     canonical_conversation_id: str | None = None
     dynamic_context_prepared: bool = False
+    task_progress: TaskProgress | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +140,26 @@ class AgentRunner:
         self.main_contract: MainAgentContract | None = None
 
     async def run(
+        self,
+        initial_messages: tuple[ChatMessage, ...],
+        runtime: AgentRuntime,
+        tools: AgentToolBackend | None,
+    ) -> AgentRunResult:
+        progress = runtime.task_progress or TaskProgress(
+            runtime.max_model_requests, runtime.max_tool_calls
+        )
+        token = current_progress.set(progress)
+        try:
+            result = await self._run(initial_messages, runtime, tools)
+            await progress.finish("yielded")
+            return result
+        except BaseException:
+            await progress.finish("uncertain")
+            raise
+        finally:
+            current_progress.reset(token)
+
+    async def _run(
         self,
         initial_messages: tuple[ChatMessage, ...],
         runtime: AgentRuntime,
@@ -302,20 +324,30 @@ class AgentRunner:
 
                 async def dispatch(
                     execute: Callable[[], Awaitable[ChatResponse]] = execute,
+                    sequence: TranscriptRequest = sequence,
+                    request_count: int = request_index + 1,
+                    prior_tools: int = calls_used,
                 ) -> ChatResponse:
                     # Admission can wait behind other conversations. Validate
                     # only after acquiring the slot, immediately before execution.
                     if runtime.before_model_request is not None:
                         try:
-                            await runtime.before_model_request()
+                            with validating_request(sequence):
+                                await runtime.before_model_request()
                         except LLMError as exc:
                             raise _RequestNotStarted(exc) from exc
+                    progress = current_progress.get()
+                    if progress is not None:
+                        await progress.checkpoint(models=request_count, tools=prior_tools)
                     return await execute()
 
                 response = await self._concurrency.run_llm(
                     runtime.conversation_key,
                     dispatch,
                 )
+                progress = current_progress.get()
+                if progress is not None:
+                    await progress.confirm_observed()
                 # A prepared request may be cancelled while waiting for the LLM
                 # slot or rejected by the transport budget before dispatch.
                 # Confirm conservatively only after a response was received.
@@ -604,6 +636,13 @@ class AgentRunner:
                     )
                 )
             tooling = getattr(runtime.runtime_config, "tooling", None)
+            progress = current_progress.get()
+            if progress is not None:
+                await progress.checkpoint(
+                    models=request_index + 1,
+                    tools=calls_used
+                    + min(len(response.tool_calls), max(0, runtime.max_tool_calls - calls_used)),
+                )
             coordinated = await self._execute_tool_batch(
                 response.tool_calls,
                 tools,

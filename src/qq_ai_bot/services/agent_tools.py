@@ -71,6 +71,7 @@ from qq_ai_bot.persistence.repositories import (
     RelationshipRepository,
     WebSearchSourceRepository,
 )
+from qq_ai_bot.sandbox.progress import TaskProgress
 from qq_ai_bot.services.evidence_state import evidence_state
 from qq_ai_bot.services.reply_target import ReplyTargetControl
 from qq_ai_bot.services.turn_coordinator import TurnToken
@@ -183,6 +184,10 @@ class ToolRuntime:
     selection_query: str = ""
     scheduled_automation_intent: bool = False
     max_model_requests_override: int | None = None
+    max_tool_calls_override: int | None = None
+    task_progress: TaskProgress | None = None
+    sandbox_source: dict[str, Any] | None = None
+    execution_id: str = ""
     memory_turn_id: str = ""
     memory_exposures: tuple[MemoryExposure, ...] = ()
     memory_exposure_registry: MemoryExposureRegistry | None = None
@@ -1020,15 +1025,23 @@ class AgentToolService:
                     from hashlib import sha256
 
                     request_id = sha256(
-                        f"{runtime.conversation_id}:{runtime.trigger_message_id}:{invocation.call_id}".encode()
+                        (
+                            f"{runtime.conversation_id}:"
+                            f"{runtime.execution_id or runtime.trigger_message_id}:"
+                            f"{invocation.call_id}"
+                        ).encode()
                     ).hexdigest()
                     result = await self.sandbox_client.execute(
                         name,
                         arguments,
                         request_id=request_id,
-                        source={
+                        source=runtime.sandbox_source
+                        or {
                             "conversation_id": runtime.effective_conversation_id,
                             "origin": runtime.origin.value,
+                            "allow_admin_actions": runtime.allow_admin_actions,
+                            "allow_automation": runtime.allow_automation,
+                            "actor_is_superuser": runtime.actor_is_superuser,
                             "actor_user_id": runtime.actor_user_id,
                             "trigger_id": runtime.trigger_message_id,
                             "bot_user_id": runtime.effective_bot_user_id,

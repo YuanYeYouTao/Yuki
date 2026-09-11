@@ -106,6 +106,7 @@ from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.targets import MemoryTargetResolver
 from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
 from qq_ai_bot.model_runtime.models import ModelProtocol, ModelTask
+from qq_ai_bot.persistence.event_repository import ConversationReadVersion
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     PeopleRepository,
@@ -118,7 +119,8 @@ from qq_ai_bot.runtime.contracts import DeliverySummary
 from qq_ai_bot.runtime.delivery import DeliveryStatus
 from qq_ai_bot.runtime.observability import identifier_hash
 from qq_ai_bot.runtime.origin import TurnOrigin as RuntimeTurnOrigin
-from qq_ai_bot.runtime.trigger import ExternalEventTurnTrigger
+from qq_ai_bot.runtime.trigger import ExternalEventTurnTrigger, SandboxTaskTurnTrigger
+from qq_ai_bot.sandbox.progress import TaskProgress
 from qq_ai_bot.services.agent_runner import (
     AgentRunner,
     AgentRunResult,
@@ -375,6 +377,7 @@ def _trusted_conversation_write_kwargs(inbound: InboundMessage) -> _TrustedConve
 class _CompletedAgentRun:
     result: AgentRunResult
     memory_exposures: tuple[MemoryExposure, ...]
+    progress: TaskProgress
 
 
 class _ChatAgentBackend(AgentToolBackend):
@@ -1529,7 +1532,9 @@ class ChatService:
                 rollup_service=rollup_service,
             )
         self._prompt_composer = prompt_composer or PromptComposer(settings)
-        self._main_turns = MainAgentTurnService(self._prompt_composer, self._agent_runner)
+        self._main_turns = MainAgentTurnService(
+            self._prompt_composer, self._agent_runner, self._ledger._database
+        )
         self._turn_coordinator = turn_coordinator or ConversationTurnCoordinator(
             cancel_replies_on_new_message=settings.reply_sequence_cancel_on_new_message,
             interrupt_autonomous_on_new_message=(
@@ -1904,6 +1909,8 @@ class ChatService:
                 tuple[MemoryExposure, ...],
                 MemoryQueryIntent | None,
                 PromptRequestDiagnostics,
+                ConversationReadVersion | None,
+                Callable[[], Awaitable[None]] | None,
             ]:
                 return await self._build_messages(
                     inbound,
@@ -1928,6 +1935,8 @@ class ChatService:
                 automatic_memory_exposures,
                 memory_intent,
                 prompt_diagnostics,
+                read_version,
+                commit_projection,
             ) = await self._run_effect(turn_snapshot, build_messages)
             exclusive_write = memory_session is not None and memory_session.exclusive_write
             scheduled_automation_allowed = bool(scheduled_automation_intent and not exclusive_write)
@@ -1981,12 +1990,18 @@ class ChatService:
                 memory_intent=memory_intent,
                 memory_session=memory_session,
                 prompt_diagnostics=prompt_diagnostics,
+                before_model_request=self._context_validator(
+                    read_version, commit_projection=commit_projection
+                ),
             )
             if turn_token is not None:
                 async with self._turn_coordinator.track(turn_token, "generation"):
                     completed_agent = await self._run_agent(conversation_key, messages, runtime)
             else:
                 completed_agent = await self._run_agent(conversation_key, messages, runtime)
+            from qq_ai_bot.sandbox.budget_sender import BudgetSender
+
+            sender = BudgetSender(sender, completed_agent.progress)
             agent_result = completed_agent.result
             if agent_result.suppress_delivery:
 
@@ -2737,6 +2752,8 @@ class ChatService:
         tuple[MemoryExposure, ...],
         MemoryQueryIntent | None,
         PromptRequestDiagnostics,
+        ConversationReadVersion | None,
+        Callable[[], Awaitable[None]] | None,
     ]:
         retrieval = None
         persist_exposure = True
@@ -2824,7 +2841,25 @@ class ChatService:
                 prompt_snapshot_fingerprint=(composition.metrics.prompt_snapshot_fingerprint),
                 static_prompt_revision=composition.metrics.stable_prefix_hash,
             ),
+            composition.read_version,
+            composition.commit_projection,
         )
+
+    def _context_validator(
+        self,
+        version: ConversationReadVersion | None,
+        upstream: Callable[[], Awaitable[None]] | None = None,
+        commit_projection: Callable[[], Awaitable[None]] | None = None,
+    ) -> Callable[[], Awaitable[None]]:
+        async def validate() -> None:
+            if upstream is not None:
+                await upstream()
+            if version is not None and not await self._ledger.read_version_matches(version):
+                raise TurnSupersededError("context source changed before model invocation")
+            if commit_projection is not None:
+                await commit_projection()
+
+        return validate
 
     async def _resolve_reply_target(
         self,
@@ -2888,6 +2923,11 @@ class ChatService:
             if runtime.inbound is not None
             else self._time.current_default()
         )
+        progress = runtime.task_progress or TaskProgress(
+            config.agent.max_model_requests,
+            config.agent.max_tool_calls,
+            max_messages=config.reply.hard_max_messages,
+        )
         backend = _ChatAgentBackend(self, runtime)
 
         async def before_model_request() -> None:
@@ -2911,7 +2951,10 @@ class ChatService:
                 runtime_config=config,
                 current_time=current_time,
                 allowed_capabilities=self._prefix_web_capabilities(config),
-                max_tool_calls=config.agent.max_tool_calls,
+                max_tool_calls=min(config.agent.max_tool_calls, runtime.max_tool_calls_override)
+                if runtime.max_tool_calls_override is not None
+                else config.agent.max_tool_calls,
+                task_progress=progress,
                 max_model_requests=(
                     min(
                         config.agent.max_model_requests,
@@ -2929,6 +2972,7 @@ class ChatService:
         return _CompletedAgentRun(
             result=result,
             memory_exposures=exposure_registry.snapshot(),
+            progress=progress,
         )
 
     async def _validate_turn_snapshot(self, snapshot: ConversationTurnSnapshot) -> bool:
@@ -2994,7 +3038,7 @@ class ChatService:
         self,
         *,
         event: EventRecord,
-        trigger: ExternalEventTurnTrigger,
+        trigger: ExternalEventTurnTrigger | SandboxTaskTurnTrigger,
         identity: ConversationScope,
         runtime: RuntimeConfigSnapshot,
         turn_token: TurnToken,
@@ -3005,6 +3049,7 @@ class ChatService:
         presence_id: str | None = None,
         conversation_id: str | None = None,
         before_model_request: Callable[[], Awaitable[None]] | None = None,
+        source_runtime: ToolRuntime | None = None,
     ) -> AgentRunResult:
         """Wake the normal Main Agent without inventing a message or Person actor."""
 
@@ -3060,7 +3105,9 @@ class ChatService:
                 prompt_snapshot_fingerprint=(composition.metrics.prompt_snapshot_fingerprint),
                 static_prompt_revision=composition.metrics.stable_prefix_hash,
             ),
-            before_model_request=before_model_request,
+            before_model_request=self._context_validator(
+                composition.read_version, before_model_request, composition.commit_projection
+            ),
             scope_type=event.scope_type,
             bot_user_id=event.bot_user_id,
             conversation_id=conversation_id,
@@ -3069,6 +3116,18 @@ class ChatService:
             space_id=space_id,
             external_target_id=trigger.target_id,
         )
+        if source_runtime is not None:
+            if not isinstance(trigger, SandboxTaskTurnTrigger):
+                raise ValueError("source runtime requires a sandbox completion")
+            tool_runtime = replace(
+                source_runtime,
+                runtime_config=runtime,
+                before_model_request=tool_runtime.before_model_request,
+                prompt_diagnostics=tool_runtime.prompt_diagnostics,
+                turn_token=turn_token,
+                turn_snapshot=turn_snapshot,
+                selection_query=tool_runtime.selection_query,
+            )
         completed = await self._run_agent(conversation_key, composition.messages, tool_runtime)
         result = completed.result
         try:

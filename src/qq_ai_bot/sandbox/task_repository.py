@@ -5,14 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import update
+from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.sandbox.db_models import SandboxTaskRunModel
+from qq_ai_bot.sandbox.db_models import SandboxTaskContinuationModel, SandboxTaskRunModel
 
 
 def canonical_json(value: Any, *, limit: int) -> str:
@@ -74,6 +74,40 @@ class SandboxTaskRepository:
         async with self.database.sessions() as session:
             return await session.get(SandboxTaskRunModel, request_id)
 
+    async def by_run(self, run_id: str) -> SandboxTaskRunModel | None:
+        async with self.database.sessions() as session:
+            return cast(
+                SandboxTaskRunModel | None,
+                await session.scalar(
+                    select(SandboxTaskRunModel).where(SandboxTaskRunModel.run_id == run_id)
+                ),
+            )
+
+    async def checkpoint(self, request_id: str, progress: dict[str, Any]) -> None:
+        payload = canonical_json(progress, limit=16384)
+        async with self.database.sessions() as session, session.begin():
+            await session.execute(
+                update(SandboxTaskRunModel)
+                .where(SandboxTaskRunModel.request_id == request_id)
+                .values(progress_json=payload)
+            )
+
+    async def bind_run(self, request_id: str, run_id: str) -> None:
+        """Keep a returned/rediscovered Manager identity without changing the source."""
+        run_id = str(UUID(run_id))
+        async with self.database.sessions() as session, session.begin():
+            changed = await session.execute(
+                update(SandboxTaskRunModel)
+                .where(
+                    SandboxTaskRunModel.request_id == request_id,
+                    or_(SandboxTaskRunModel.run_id.is_(None), SandboxTaskRunModel.run_id == run_id),
+                )
+                .values(run_id=run_id)
+                .returning(SandboxTaskRunModel.request_id)
+            )
+            if changed.scalar_one_or_none() is None:
+                raise ValueError("sandbox_task_run_binding_conflict")
+
     async def receive(self, event: dict[str, Any]) -> None:
         """Persist a completion before the caller may acknowledge it to Manager."""
         run_id = str(UUID(event["run_id"]))
@@ -93,6 +127,7 @@ class SandboxTaskRepository:
                 .where(
                     SandboxTaskRunModel.request_id == request_id,
                     SandboxTaskRunModel.status == "waiting",
+                    or_(SandboxTaskRunModel.run_id.is_(None), SandboxTaskRunModel.run_id == run_id),
                 )
                 .values(
                     run_id=run_id,
@@ -103,6 +138,15 @@ class SandboxTaskRepository:
                 .returning(SandboxTaskRunModel.request_id)
             )
             if changed.scalar_one_or_none() is not None:
+                session.add(
+                    SandboxTaskContinuationModel(
+                        request_id=request_id,
+                        state="blocked" if result["status"] == "cancelled" else "ready",
+                        attempts=0,
+                        reason="task_cancelled" if result["status"] == "cancelled" else None,
+                        updated_at=datetime.now(UTC),
+                    )
+                )
                 return
             existing = await session.get(SandboxTaskRunModel, request_id)
             if existing is None:

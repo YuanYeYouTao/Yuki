@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -35,6 +36,7 @@ class PromptComposition:
     messages: tuple[ChatMessage, ...]
     metrics: PromptMetrics
     read_version: ConversationReadVersion | None = None
+    commit_projection: Callable[[], Awaitable[None]] | None = None
 
 
 class PromptComposer:
