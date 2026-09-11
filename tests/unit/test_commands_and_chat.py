@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 from tests.conftest import MemorySender, build_harness, make_settings
@@ -37,6 +38,84 @@ from qq_ai_bot.services.processor import (
     ProcessResult,
     _vision_failure_message,
 )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["artifact_transfer_unavailable", "uncertain"])
+async def test_delivery_failure_keeps_normal_answer(database: Database, failure: str) -> None:
+    from dataclasses import replace
+
+    from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
+    from qq_ai_bot.domain.messages import ToolCall, ToolFunction
+    from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence
+    from qq_ai_bot.social.models import SocialError
+
+    calls = 0
+    model_calls = 0
+
+    def respond(request: ChatRequest) -> str | ChatResponse:
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == 1:
+            return ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(
+                    ToolCall(
+                        id="delivery",
+                        function=ToolFunction(
+                            name="send_private_message",
+                            arguments=json.dumps(
+                                {"subject_ref": "current_speaker", "text": "hello"}
+                            ),
+                        ),
+                    ),
+                ),
+            )
+        if model_calls == 2:
+            results = [m.content or "" for m in request.messages if m.role == "tool"]
+            assert any(
+                "artifact_transfer_unavailable" in r or "delivery_uncertain" in r for r in results
+            ), results
+            return "文件已生成，但未确认发送成功。"
+        return "可以正常聊天。"
+
+    class Delivery:
+        def __init__(self):
+            self.database = database
+
+        async def execute(self, *args: object):
+            nonlocal calls
+            calls += 1
+            if failure == "uncertain":
+                return {"status": "uncertain", "operation_id": "test-operation"}
+            raise SocialError(failure)
+
+    harness = build_harness(database, make_settings(database.url), FakeLLMProvider(respond))
+    harness.processor._chat._tools.social_service = Delivery()
+    async with database.sessions() as session, session.begin():
+        person = await ensure_person(session, "1001")
+        presence = await ensure_presence(session, "9999")
+        conversation = await ensure_canonical_conversation(
+            session, kind="private", primary_scope_key="private:9999:1001", person_id=person
+        )
+    message = replace(
+        inbound("发给我", message_id="send-failure"),
+        conversation_id=conversation.conversation_id,
+        legacy_conversation_key="private:9999:1001",
+        person_id=person,
+        presence_id=presence,
+    )
+    sender = MemorySender()
+    result = await harness.processor.handle(message, sender)
+    assert result.reason == "chat" and calls == 1
+    assert "文件已生成，但未确认发送成功。" in [m.text for m in sender.messages]
+    assert all(not m.text.startswith("操作未完成：") for m in sender.messages)
+    following = MemorySender()
+    await harness.processor.handle(
+        replace(message, text="聊聊天", message_id="after-failure"), following
+    )
+    assert calls == 1 and following.messages[0].text == "可以正常聊天。"
 
 
 def inbound(

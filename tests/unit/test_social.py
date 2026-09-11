@@ -24,6 +24,34 @@ from qq_ai_bot.workspace.service import workspace_tools
 
 
 @pytest.mark.asyncio
+async def test_transfer_permission_failure_preserves_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qq_ai_bot.social.transfer import ArtifactTransfer
+    from qq_ai_bot.workspace.store import WorkspaceStore
+
+    store = WorkspaceStore(tmp_path / "workspace")
+    artifact = store.write("hello.txt", b"hello")
+    transfer = ArtifactTransfer(store, tmp_path / "transfer", "/transfer")
+    original = Path.mkdir
+
+    def denied(path: Path, *args: Any, **kwargs: Any) -> None:
+        if path == transfer.root:
+            raise PermissionError("private path must not leak")
+        original(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "mkdir", denied)
+        with pytest.raises(SocialError, match=r"^artifact_transfer_unavailable$"):
+            async with transfer.prepare(artifact["artifact_id"]):
+                pytest.fail("must not invoke gateway")
+    assert store.read(artifact["artifact_id"])["text"] == "hello"
+    async with transfer.prepare(artifact["artifact_id"]):
+        assert len(list(transfer.root.iterdir())) == 1
+    assert list(transfer.root.iterdir()) == []
+
+
+@pytest.mark.asyncio
 async def test_social_receipt_claim_replay_and_interrupted_delivery(database: Database) -> None:
     definitions = (*social_tool_definitions(), *workspace_tools(), *sandbox_tools())
     assert definitions == (*social_tool_definitions(), *workspace_tools(), *sandbox_tools())

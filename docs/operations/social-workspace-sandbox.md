@@ -23,6 +23,20 @@ limits apply to both paths, with a final connection check before execution.
 Use `subject_ref=current_speaker` for the current sender; `target_id` is a canonical
 UUID, not a QQ number. Attachment IDs require `attachment_kind=image|file`.
 Validation/route failures do not delete already generated workspace artifacts.
+Failed core platform sends remain tool evidence for the normal final answer, rather
+than replacing it with an admin-command error sentence. Remaining tool execution
+is closed for that turn (including uncertain delivery); no automatic resend is added.
+Administrative mutations retain their existing terminal-receipt behavior.
+
+The dedicated `social-transfer` host directory must be owned by Bot UID 10001,
+mode 0755. Bot mounts it read-write at `/app/social-transfer`; providers mount the
+same directory read-only at `/yuki-transfer`. Do not place the Bot's transfer path
+under a gateway login directory whose parent cannot be traversed by the Bot UID.
+Adding this mount to an existing provider container requires a planned recreation;
+preserve every existing login/config mount. Do not widen login-directory permissions.
+Files are published mode 0444, read only by the gateway, and removed after use.
+Preparation errors report `artifact_transfer_unavailable` before contacting the
+gateway; cleanup errors are logged without overwriting a confirmed send result.
 
 `send_private_message` and `send_group_message` accept text or workspace artifacts.
 Images may include text. File uploads are one operation and cannot include a separate

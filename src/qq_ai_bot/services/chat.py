@@ -1035,6 +1035,16 @@ class _ChatAgentBackend(AgentToolBackend):
                 and isinstance(data.get("automation_id"), int)
             )
         if self._is_mutating_call(call):
+            if (
+                effective_descriptor.trust_source is CapabilityTrustSource.CORE
+                and effective_descriptor.effect is CapabilityEffect.PLATFORM_SEND
+                and not bool(decoded.get("ok"))
+            ):
+                # Delivery failure is evidence for the normal answer, not an admin
+                # command response. Stop more effects, but don't replace that answer.
+                self._tools_closed = True
+                self._admin_retry_constraint = None
+                return result
             if bool(decoded.get("ok")):
                 self._admin_retry_constraint = None
                 self._admin_terminal_failure = None

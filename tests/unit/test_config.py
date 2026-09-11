@@ -47,18 +47,15 @@ def test_deepseek_reasoning_effort_accepts_supported_values(effort: ReasoningEff
         )
 
 
-@pytest.mark.parametrize(
-    "removed_key",
-    [
+def test_removed_history_configuration_is_explicitly_rejected() -> None:
+    for removed_key in (
         "_".join(("conversation", "history", "rollup", "max", "attempts")),
         "_".join(("conversation", "history", "rollup", "l0", "min", "events")),
         "_".join(("conversation", "history", "rollup", "fan", "in")),
         "_".join(("conversation", "history", "rollup", "max", "level")),
-    ],
-)
-def test_removed_history_configuration_is_explicitly_rejected(removed_key: str) -> None:
-    with pytest.raises(ValidationError, match=r"removed 3\.6 conversation history"):
-        Settings.model_validate({removed_key: 3})
+    ):
+        with pytest.raises(ValidationError, match=r"removed 3\.6 conversation history"):
+            Settings.model_validate({removed_key: 3})
 
 
 def test_memory_dream_absolute_output_budget_cannot_exceed_contract() -> None:

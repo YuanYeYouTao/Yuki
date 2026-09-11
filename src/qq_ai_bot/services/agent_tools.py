@@ -1050,9 +1050,21 @@ class AgentToolService:
                         social_result = await invoke_social(
                             self.social_service, name, arguments, runtime
                         )
+                        if social_result.get("error") or social_result.get("status") in {
+                            "failed",
+                            "uncertain",
+                        }:
+                            return self._result(
+                                error=str(social_result.get("error") or "delivery_uncertain"),
+                                detail="发送未确认成功，不要重复发送；请根据实际工具结果说明情况",
+                                data=social_result,
+                            )
                         return self._result(data=social_result)
                     except SocialError as exc:
                         detail = {
+                            "artifact_transfer_unavailable": (
+                                "文件已存在工作区，但中转不可用，尚未发送；本轮不要重复发送"
+                            ),
                             "invalid_target_id": (
                                 "target_id 必须是联系人查询返回的 UUID；"
                                 "当前私聊用 subject_ref=current_speaker"
