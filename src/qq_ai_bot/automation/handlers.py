@@ -881,6 +881,8 @@ class _AutomationAgentBackend(AgentToolBackend):
             return cast(str, await self.short_state.execute(arguments_json))
         capability_name = self._name_map.get(name)
         if capability_name is None:
+            if self.main_contract and name in self.main_contract.automation_names.values():
+                return json.dumps({"ok": False, "error": "capability_not_allowed"})
             return json.dumps({"ok": False, "error": "unknown_tool"})
         definition = self._registry.require(capability_name)
         if definition.handler is None:

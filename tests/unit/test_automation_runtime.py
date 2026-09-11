@@ -310,6 +310,9 @@ async def test_generation_keeps_dynamic_automation_data_out_of_system_messages(
     from tests.support.short_state_cases import run_short_state_cases
 
     await run_short_state_cases(database, tmp_path, context)
+    from tests.support.main_agent_wire_cases import run_main_agent_wire_cases
+
+    await run_main_agent_wire_cases(database, tmp_path, context)
 
 
 def test_create_tool_description_does_not_embed_capability_catalog(database) -> None:
