@@ -922,6 +922,30 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
             group_runtime,
         )
     )
+    actual_record = EventRecord(
+        id=123,
+        visual_summary="",
+        occurred_at=datetime.now(UTC),
+        bot_user_id="8000",
+        platform_message_id="history-attachment",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="1001",
+        group_id="group-100",
+        direction="inbound",
+        content="render this",
+        segments=({"type": "video", "data": {"name": "clip.mp4"}},),
+    )
+    tools._ledger.list_scope_around = AsyncMock(return_value=(actual_record, (), ()))
+    actual_history = json.loads(
+        await tools.execute(
+            "get_chat_history_around", json.dumps({"event_id": actual_record.id}), group_runtime
+        )
+    )
+    assert actual_history["ok"]
+    assert actual_history["data"]["events"][0]["attachments"] == [
+        {"attachment_index": 0, "kind": "video", "name": "clip.mp4"}
+    ]
+    tools._ledger.list_scope_around = AsyncMock(return_value=(None, (), ()))
     around = json.loads(
         await tools.execute("get_chat_history_around", '{"event_id":999}', group_runtime)
     )

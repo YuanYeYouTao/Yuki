@@ -223,15 +223,29 @@ def test_image_turns_deny_writes_and_platform_mutate() -> None:
         risk=CapabilityRisk.MUTATE,
     )
     read = _descriptor("get_person_memories", namespace="memory.person.read")
+    environment = tuple(
+        _descriptor(
+            name,
+            namespace="sandbox.run",
+            effect=CapabilityEffect.WRITE_STATE,
+            risk=CapabilityRisk.MUTATE,
+        )
+        for name in ("terminal_exec", "run_python", "workspace_write")
+    )
     visible = CapabilityPolicyEngine().visible(
-        (write, mutate, read),
+        (write, mutate, read, *environment),
         CapabilityPolicyContext(
             authority=AuthorityContext(actor_user_id="u1", is_superuser=False),
             origin=TurnOrigin.USER_MESSAGE,
             contains_images=True,
         ),
     )
-    assert [item.model_name for item in visible] == ["get_person_memories"]
+    assert [item.model_name for item in visible] == [
+        "get_person_memories",
+        "terminal_exec",
+        "run_python",
+        "workspace_write",
+    ]
 
 
 def test_exclusive_write_hides_other_business_writes() -> None:
