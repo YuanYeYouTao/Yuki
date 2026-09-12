@@ -269,7 +269,7 @@ class PersistentManager(Manager):
                 "--pids-limit",
                 "128",
                 "--restart",
-                "unless-stopped",
+                "no",
                 "--security-opt",
                 "no-new-privileges",
                 "--init",
@@ -296,6 +296,10 @@ class PersistentManager(Manager):
                 raise RuntimeError("environment_create_failed")
             current = await self.inspect_container()
         assert current is not None
+        # Docker must not auto-start this bind-mounted container before the home
+        # filesystem is mounted at boot. The ordered Manager owns recovery.
+        if current.get("HostConfig", {}).get("RestartPolicy", {}).get("Name") != "no":
+            await self.command("docker", "update", "--restart=no", self.name)
         if not current["State"]["Running"]:
             code, _ = await self.command("docker", "start", self.name)
             if code:
