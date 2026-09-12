@@ -1,4 +1,4 @@
-"""Transactional expiring artifact index with immutable, non-followed blobs."""
+"""Transactional artifact snapshots; persistent by default, with bounded storage."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ class WorkspaceStore:
         self,
         root: Path,
         *,
-        ttl: int = 86400,
+        ttl: int = 0,
         capacity: int = 512 * 1024 * 1024,
         max_file: int = 200 * 1024 * 1024,
         max_objects: int = 1000,
@@ -52,6 +52,8 @@ class WorkspaceStore:
                 "revision INTEGER NOT NULL, created_at REAL NOT NULL, "
                 "modified_at REAL NOT NULL, expires_at REAL NOT NULL)"
             )
+            db.execute("CREATE TABLE IF NOT EXISTS artifact_snapshots (id TEXT PRIMARY KEY)")
+            db.commit()
             db.execute("BEGIN IMMEDIATE")
             try:
                 yield db
@@ -77,7 +79,11 @@ class WorkspaceStore:
         return self.root / name
 
     def _row(self, db: sqlite3.Connection, artifact_id: str) -> sqlite3.Row:
-        row = db.execute("SELECT * FROM artifacts WHERE id=?", (self._id(artifact_id),)).fetchone()
+        row = db.execute(
+            "SELECT *, EXISTS(SELECT 1 FROM artifact_snapshots s WHERE s.id=artifacts.id) "
+            "AS immutable FROM artifacts WHERE id=?",
+            (self._id(artifact_id),),
+        ).fetchone()
         if row is None:
             raise WorkspaceError("artifact_not_found")
         if row["expires_at"] <= time.time():
@@ -94,10 +100,14 @@ class WorkspaceStore:
             "revision": row["revision"],
             "created_at": row["created_at"],
             "modified_at": row["modified_at"],
-            "expires_at": row["expires_at"],
+            "expires_at": None if row["expires_at"] >= 253402300799 else row["expires_at"],
+            "immutable": bool(row["immutable"]),
         }
 
     def _cleanup(self, db: sqlite3.Connection) -> int:
+        if self.ttl == 0:
+            # Existing, still-present files become persistent on first activation.
+            db.execute("UPDATE artifacts SET expires_at=253402300799 WHERE expires_at<253402300799")
         count = db.execute("DELETE FROM artifacts WHERE expires_at<=?", (time.time(),)).rowcount
         referenced = {row[0] for row in db.execute("SELECT blob FROM artifacts")}
         for path in self.root.glob("*.blob"):
@@ -107,6 +117,7 @@ class WorkspaceStore:
             path = self._blob(row["blob"])
             if not path.exists() or path.is_symlink() or path.stat().st_nlink != 1:
                 db.execute("DELETE FROM artifacts WHERE id=?", (row["id"],))
+        db.execute("DELETE FROM artifact_snapshots WHERE id NOT IN (SELECT id FROM artifacts)")
         return count
 
     def cleanup(self) -> int:
@@ -134,6 +145,8 @@ class WorkspaceStore:
         with self._transaction() as db:
             self._cleanup(db)
             old = self._row(db, artifact_id) if artifact_id else None
+            if old is not None and old["immutable"]:
+                raise WorkspaceError("artifact_is_immutable")
             if old is not None and expected_revision != old["revision"]:
                 raise WorkspaceError("version_conflict")
             if old is None and expected_revision is not None:
@@ -162,7 +175,9 @@ class WorkspaceStore:
             now = time.time()
             identity = artifact_id or str(uuid4())
             db.execute(
-                "INSERT OR REPLACE INTO artifacts VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO artifacts "
+                "(id,name,blob,sha256,size,revision,created_at,modified_at,expires_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
                 (
                     identity,
                     name,
@@ -172,7 +187,7 @@ class WorkspaceStore:
                     old["revision"] + 1 if old else 1,
                     old["created_at"] if old else now,
                     now,
-                    now + self.ttl,
+                    now + self.ttl if self.ttl else 253402300799,
                 ),
             )
             # Obsolete blobs are reclaimed after commit by the next cleanup.
@@ -208,7 +223,9 @@ class WorkspaceStore:
                     os.fsync(stream.fileno())
                 now = time.time()
                 db.execute(
-                    "INSERT INTO artifacts VALUES (?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO artifacts "
+                    "(id,name,blob,sha256,size,revision,created_at,modified_at,expires_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
                     (
                         identity,
                         name,
@@ -218,9 +235,10 @@ class WorkspaceStore:
                         1,
                         now,
                         now,
-                        now + self.ttl,
+                        now + self.ttl if self.ttl else 253402300799,
                     ),
                 )
+                db.execute("INSERT INTO artifact_snapshots VALUES (?)", (identity,))
                 identities.append(identity)
             return [self._metadata(self._row(db, identity)) for identity in identities]
 
@@ -241,6 +259,77 @@ class WorkspaceStore:
             if len(data) != row["size"] or hashlib.sha256(data).hexdigest() != row["sha256"]:
                 raise WorkspaceError("artifact_corrupt")
             return self._metadata(row), data
+
+    def snapshot(
+        self, descriptor: int, name: str, *, artifact_id: str | None = None
+    ) -> dict[str, Any]:
+        """Stream an already safely opened workspace file into an immutable artifact."""
+        if not name or len(name) > 128 or any(c in name for c in "\\/:\x00"):
+            raise WorkspaceError("invalid_artifact_name")
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > self.max_file:
+            raise WorkspaceError("artifact_too_large")
+        identity, blob = self._id(artifact_id) if artifact_id else str(uuid4()), f"{uuid4()}.blob"
+        with self._transaction() as db:
+            if (
+                artifact_id
+                and db.execute("SELECT 1 FROM artifacts WHERE id=?", (identity,)).fetchone()
+            ):
+                existing = self._row(db, identity)
+                if not existing["immutable"]:
+                    raise WorkspaceError("snapshot_identity_conflict")
+                return self._metadata(existing)
+        path = self.root / f"{identity}.pending"
+        digest = hashlib.sha256()
+        total = 0
+        try:
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            with path.open("xb") as output:
+                while chunk := os.read(descriptor, 65536):
+                    total += len(chunk)
+                    if total > self.max_file:
+                        raise WorkspaceError("artifact_too_large")
+                    digest.update(chunk)
+                    output.write(chunk)
+                output.flush()
+                os.fsync(output.fileno())
+            after = os.fstat(descriptor)
+            if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+            ):
+                raise WorkspaceError("file_changed_during_publish")
+            with self._transaction() as db:
+                size, count = db.execute(
+                    "SELECT coalesce(sum(size),0),count(*) FROM artifacts"
+                ).fetchone()
+                if size + total > self.capacity or count >= self.max_objects:
+                    raise WorkspaceError("workspace_full")
+                os.replace(path, self._blob(blob))
+                now = time.time()
+                db.execute(
+                    "INSERT INTO artifacts "
+                    "(id,name,blob,sha256,size,revision,created_at,modified_at,expires_at) "
+                    "VALUES (?,?,?,?,?,1,?,?,?)",
+                    (
+                        identity,
+                        name,
+                        blob,
+                        digest.hexdigest(),
+                        total,
+                        now,
+                        now,
+                        now + self.ttl if self.ttl else 253402300799,
+                    ),
+                )
+                db.execute("INSERT INTO artifact_snapshots VALUES (?)", (identity,))
+                result = self._metadata(self._row(db, identity))
+            return result
+        except BaseException:
+            path.unlink(missing_ok=True)
+            self._blob(blob).unlink(missing_ok=True)
+            raise
 
     def read(self, artifact_id: str) -> dict[str, Any]:
         metadata, data = self.read_bytes(artifact_id)
@@ -268,7 +357,8 @@ class WorkspaceStore:
             raise WorkspaceError("invalid_limit")
         with self._transaction() as db:
             rows = db.execute(
-                "SELECT * FROM artifacts WHERE expires_at>? AND id>? ORDER BY id LIMIT ?",
+                "SELECT *, EXISTS(SELECT 1 FROM artifact_snapshots s WHERE s.id=artifacts.id) "
+                "AS immutable FROM artifacts WHERE expires_at>? AND id>? ORDER BY id LIMIT ?",
                 (time.time(), cursor, limit + 1),
             ).fetchall()
             return {

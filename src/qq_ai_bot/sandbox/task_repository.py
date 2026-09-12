@@ -108,6 +108,23 @@ class SandboxTaskRepository:
             if changed.scalar_one_or_none() is None:
                 raise ValueError("sandbox_task_run_binding_conflict")
 
+    async def reject(self, request_id: str, result: dict[str, Any]) -> None:
+        """A definitive admission rejection has no execution or continuation to recover."""
+        async with self.database.sessions() as session, session.begin():
+            await session.execute(
+                update(SandboxTaskRunModel)
+                .where(
+                    SandboxTaskRunModel.request_id == request_id,
+                    SandboxTaskRunModel.status == "waiting",
+                    SandboxTaskRunModel.run_id.is_(None),
+                )
+                .values(
+                    status="completed",
+                    completion_json=canonical_json(result, limit=16384),
+                    updated_at=datetime.now(UTC),
+                )
+            )
+
     async def receive(self, event: dict[str, Any]) -> None:
         """Persist a completion before the caller may acknowledge it to Manager."""
         run_id = str(UUID(event["run_id"]))

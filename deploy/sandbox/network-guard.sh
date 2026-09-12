@@ -11,6 +11,9 @@ ensure() { table="$1"; shift; ipt -C "$table" "$@" 2>/dev/null || ipt -I "$table
 # Code must never access the host, even on a Docker internal network.
 ensure INPUT -i yuki-sandbox0 -j DROP
 ensure INPUT -i yuki-egress0 -j DROP
+# Replies to the host Manager's authenticated execd connections only.
+# NEW connections from the environment to the host still hit the DROP above.
+ensure INPUT -i yuki-sandbox0 -p tcp --sport 44772 -m conntrack --ctstate ESTABLISHED -j ACCEPT
 # Only the proxy port on the internal bridge is usable by job containers.
 ipt -N YUKI-SANDBOX 2>/dev/null || true
 ipt -F YUKI-SANDBOX

@@ -8,6 +8,9 @@ python3 -c 'import sys; assert sys.version_info >= (3,12)'
 getent group 10001 >/dev/null || groupadd --gid 10001 yuki-sandbox
 install -d -o 10001 -g 10001 -m 700 /opt/yuki-qqbot/workspace
 install -m 644 /opt/yuki-sandbox/deploy/sandbox/yuki-sandbox.service /etc/systemd/system/yuki-sandbox.service
+install -m 644 /opt/yuki-sandbox/deploy/sandbox/yuki-environment-storage.service /etc/systemd/system/yuki-environment-storage.service
+test -x /opt/yuki-sandbox/venv/bin/python
+/opt/yuki-sandbox/venv/bin/python -c 'import websockets; assert websockets.__version__ == "15.0.1"'
 systemctl daemon-reload
 systemctl enable --now yuki-sandbox
 systemctl is-active yuki-sandbox

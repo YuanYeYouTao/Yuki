@@ -308,6 +308,7 @@ class ApplicationContainer:
         self.sandbox_tasks = SandboxTaskRepository(self.database)
         self.sandbox_client = SandboxClient(settings.sandbox_socket, tasks=self.sandbox_tasks)
         self.sandbox_completions = CompletionReceiver(self.sandbox_client, self.sandbox_tasks)
+        self.workspace_service.sandbox = self.sandbox_client
         self.agent_tools.sandbox_client = self.sandbox_client
         from qq_ai_bot.social.transfer import ArtifactTransfer
 

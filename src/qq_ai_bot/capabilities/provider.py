@@ -20,30 +20,36 @@ from qq_ai_bot.capabilities.models import (
 )
 from qq_ai_bot.capabilities.search_aliases import merge_search_terms
 from qq_ai_bot.domain.messages import ChatTool
+from qq_ai_bot.sandbox.environment_tools import READ_TOOLS, SANDBOX_TOOLS
+from qq_ai_bot.workspace.tools import WORKSPACE_READ_TOOLS, WORKSPACE_TOOLS
 
 _ALL_ORIGINS = frozenset(TurnOrigin)
 _DIRECT_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP})
 _DECLINE_REPLY_ORIGINS = frozenset({TurnOrigin.AUTONOMOUS_GROUP, TurnOrigin.PLUGIN_BACKGROUND})
 _REPLY_LAYOUT_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP})
 _SOCIAL_ORIGINS = _DIRECT_ORIGINS | frozenset({TurnOrigin.SCHEDULED_AUTOMATION})
-_RESIDENT_YUKI_TOOLS = frozenset(
-    {
-        "find_contacts",
-        "send_private_message",
-        "send_group_message",
-        "poke_person",
-        "get_group_members",
-        "read_conversation_history",
-        "recall_own_message",
-        "workspace_list",
-        "workspace_read",
-        "workspace_write",
-        "workspace_import_attachment",
-        "workspace_delete",
-        "run_python",
-        "get_code_run",
-        "cancel_code_run",
-    }
+_RESIDENT_YUKI_TOOLS = (
+    frozenset(
+        {
+            "find_contacts",
+            "send_private_message",
+            "send_group_message",
+            "poke_person",
+            "get_group_members",
+            "read_conversation_history",
+            "recall_own_message",
+            "workspace_list",
+            "workspace_read",
+            "workspace_write",
+            "workspace_import_attachment",
+            "workspace_delete",
+            "run_python",
+            "get_code_run",
+            "cancel_code_run",
+        }
+    )
+    | SANDBOX_TOOLS
+    | WORKSPACE_TOOLS
 )
 _ORIGIN_OVERRIDES: dict[str, frozenset[TurnOrigin]] = {
     **{name: _SOCIAL_ORIGINS for name in _RESIDENT_YUKI_TOOLS},
@@ -61,6 +67,24 @@ _ORIGIN_OVERRIDES: dict[str, frozenset[TurnOrigin]] = {
 }
 
 _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
+    **{
+        name: (
+            "sandbox.read" if name in READ_TOOLS else "sandbox.run",
+            CapabilityEffect.READ_STATE if name in READ_TOOLS else CapabilityEffect.WRITE_STATE,
+            CapabilityRisk.READ if name in READ_TOOLS else CapabilityRisk.MUTATE,
+        )
+        for name in SANDBOX_TOOLS
+    },
+    **{
+        name: (
+            "workspace.read" if name in WORKSPACE_READ_TOOLS else "workspace.write",
+            CapabilityEffect.READ_STATE
+            if name in WORKSPACE_READ_TOOLS
+            else CapabilityEffect.WRITE_STATE,
+            CapabilityRisk.READ if name in WORKSPACE_READ_TOOLS else CapabilityRisk.MUTATE,
+        )
+        for name in WORKSPACE_TOOLS
+    },
     "workspace_list": ("workspace.read", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
     "workspace_read": ("workspace.read", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
     "workspace_write": ("workspace.write", CapabilityEffect.WRITE_STATE, CapabilityRisk.MUTATE),

@@ -3,12 +3,13 @@
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 from tests.support.sandbox_completion_cases import completion_delivery_cases, pending_job
 
-from qq_ai_bot.sandbox.client import sandbox_tools
+from qq_ai_bot.sandbox.client import SandboxClient, sandbox_tools
 from qq_ai_bot.sandbox.manager import Manager
 from qq_ai_bot.workspace.store import WorkspaceError, WorkspaceStore
 
@@ -73,7 +74,7 @@ async def test_sandbox_bounded_request_lifecycle_and_publication(tmp_path: Path,
     assert command[-3:] == ("fixed-python:test", "python", "/inputs/code.py")
     with pytest.raises(ValueError):
         manager.docker_args("../../escape")
-    assert [tool.name for tool in sandbox_tools()] == [
+    assert [tool.name for tool in sandbox_tools()][:3] == [
         "run_python",
         "get_code_run",
         "cancel_code_run",
@@ -130,3 +131,69 @@ async def test_sandbox_bounded_request_lifecycle_and_publication(tmp_path: Path,
     from tests.support.sandbox_task_cases import task_receipt_cases
 
     await task_receipt_cases(database, tmp_path / "bot-receipts")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["terminal_exec", "environment_packages"])
+async def test_new_execution_tools_persist_source_before_dispatch_and_stage_canonical_receipt(
+    tmp_path, monkeypatch, method
+):
+    import asyncio
+
+    order = []
+    identity = str(uuid4())
+    result = {"run_id": identity, "pending": False, "status": "succeeded", "output": "full"}
+    received = []
+    row = SimpleNamespace(request_id="request", progress_json="{}")
+
+    class Tasks:
+        async def prepare(self, request_id, arguments, source):
+            assert arguments["tool"] == method
+            assert source == {"trusted": True}
+            order.append("persist")
+
+        async def bind_run(self, request_id, run_id):
+            assert run_id == identity
+
+        async def get(self, request_id):
+            return row
+
+        async def by_run(self, run_id):
+            return row
+
+        async def receive(self, event):
+            received.append(event)
+
+    class Stream:
+        def write(self, data):
+            assert order == ["persist"]
+            order.append("dispatch")
+
+        async def drain(self):
+            pass
+
+        async def readline(self):
+            return json.dumps(result).encode() + b"\n"
+
+        def close(self):
+            pass
+
+        async def wait_closed(self):
+            pass
+
+    async def connect(*args, **kwargs):
+        return Stream(), Stream()
+
+    monkeypatch.setattr(asyncio, "open_unix_connection", connect, raising=False)
+    client = SandboxClient(tmp_path / "socket", tasks=Tasks())
+    await client.execute(method, {}, request_id="request", source={"trusted": True})
+    await client._stage_result(
+        "terminal_read",
+        "observer",
+        {
+            **result,
+            "output": "different cursor",
+            "completion": result,
+        },
+    )
+    assert received[0] == received[1]

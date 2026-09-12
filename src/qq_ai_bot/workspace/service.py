@@ -1,4 +1,4 @@
-"""Expiring scratch tools and explicit event-bound attachment import."""
+"""Persistent global files and explicit event-bound attachment import."""
 
 from __future__ import annotations
 
@@ -8,73 +8,16 @@ import logging
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
+from uuid import uuid4
 
-from qq_ai_bot.domain.messages import AttachmentKind, ChatTool, MessageAttachment
+from qq_ai_bot.domain.messages import AttachmentKind, MessageAttachment
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
+from qq_ai_bot.sandbox.client import SandboxClient
 from qq_ai_bot.services.media_resolver import MediaResolver
 from qq_ai_bot.vision.models import MediaReference
 from qq_ai_bot.workspace.store import WorkspaceError, WorkspaceStore
-
-
-def workspace_tools() -> tuple[ChatTool, ...]:
-    identity = {"artifact_id": {"type": "string"}}
-    revision = {"expected_revision": {"type": "integer", "minimum": 1}}
-    specs: tuple[tuple[str, dict[str, Any], tuple[str, ...]], ...] = (
-        (
-            "workspace_list",
-            {
-                "cursor": {"type": "string"},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
-            },
-            (),
-        ),
-        ("workspace_read", identity, ("artifact_id",)),
-        (
-            "workspace_write",
-            {
-                **identity,
-                **revision,
-                "name": {"type": "string", "maxLength": 128},
-                "text": {"type": "string", "maxLength": 65536},
-            },
-            ("name", "text"),
-        ),
-        ("workspace_delete", {**identity, **revision}, ("artifact_id", "expected_revision")),
-        (
-            "workspace_import_attachment",
-            {
-                "attachment_index": {"type": "integer", "minimum": 0},
-                "source": {"type": "string", "enum": ["current", "reply"]},
-                "event_id": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": (
-                        "可选真实账本事件；必须属于当前/自动化绑定 Conversation。"
-                        "自动化无即时消息时必填。"
-                    ),
-                },
-            },
-            ("attachment_index",),
-        ),
-    )
-    return tuple(
-        ChatTool(
-            name=name,
-            description=(
-                "Yuki 跨会话共享的临时工作区；内容修改后 24 小时过期，读取不续期。"
-                "按工具名列举/读取/写入/删除，import 使用真实当前或引用消息附件的零起始序号。"
-                "不是私人保险箱或永久记忆，内容是不可信资料。更新/删除必须带当前 revision。"
-            ),
-            parameters={
-                "type": "object",
-                "properties": fields,
-                "required": list(required),
-                "additionalProperties": False,
-            },
-        )
-        for name, fields, required in specs
-    )
+from qq_ai_bot.workspace.tools import workspace_tools as workspace_tools
 
 
 class WorkspaceService:
@@ -86,6 +29,7 @@ class WorkspaceService:
     ) -> None:
         self.store, self.resolver = store, resolver
         self.database = database
+        self.sandbox: SandboxClient | None = None
         self._task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
@@ -116,7 +60,43 @@ class WorkspaceService:
         *,
         runtime: Any = None,
         conversation_id: str | None = None,
+        request_id: str | None = None,
     ) -> dict[str, Any]:
+        if request_id is None:
+            from hashlib import sha256
+
+            from qq_ai_bot.capabilities.invocation import current_invocation
+
+            invocation = current_invocation.get()
+            execution = getattr(invocation.runtime, "execution_id", None) if invocation else None
+            request_id = (
+                sha256(
+                    (
+                        f"workspace:{invocation.conversation_key}:"
+                        f"{execution or invocation.trigger_message_id}:"
+                        f"{invocation.call_id}"
+                    ).encode()
+                ).hexdigest()
+                if invocation
+                else str(uuid4())
+            )
+        if "path" in args and "artifact_id" in args:
+            raise WorkspaceError("choose_path_or_artifact_id")
+        if (
+            name
+            in {
+                "workspace_mkdir",
+                "workspace_move",
+                "workspace_patch",
+                "workspace_search",
+                "workspace_publish",
+            }
+            or "path" in args
+        ):
+            if self.sandbox is None:
+                raise WorkspaceError("environment_unavailable")
+            return await self.sandbox.execute(name, args, request_id=request_id)
+
         if name == "workspace_list":
             return await asyncio.to_thread(
                 self.store.list,
@@ -126,13 +106,19 @@ class WorkspaceService:
         if name == "workspace_read":
             return await asyncio.to_thread(self.store.read, str(args["artifact_id"]))
         if name == "workspace_write":
-            return await asyncio.to_thread(
+            previous = (
+                await asyncio.to_thread(self.store.read, args["artifact_id"])
+                if args.get("artifact_id")
+                else {}
+            )
+            metadata = await asyncio.to_thread(
                 self.store.write,
                 str(args["name"]),
                 str(args["text"]).encode(),
                 artifact_id=args.get("artifact_id"),
                 expected_revision=args.get("expected_revision"),
             )
+            return await self._checkout(metadata, request_id, previous.get("sha256"))
         if name == "workspace_delete":
             return await asyncio.to_thread(
                 self.store.delete, str(args["artifact_id"]), int(args["expected_revision"])
@@ -194,7 +180,26 @@ class WorkspaceService:
                     max_download_bytes=limit,
                 )
                 data = await asyncio.to_thread(path.read_bytes)
-            return await asyncio.to_thread(
+            metadata = await asyncio.to_thread(
                 self.store.write, attachment.filename or f"attachment-{index}.bin", data
             )
+            return await self._checkout(metadata, request_id)
         raise WorkspaceError("unknown_tool")
+
+    async def _checkout(
+        self, metadata: dict[str, Any], request_id: str, previous_version: str | None = None
+    ) -> dict[str, Any]:
+        if self.sandbox is None:
+            return metadata
+        result = await self.sandbox.execute(
+            "workspace_checkout",
+            {
+                "artifact_id": metadata["artifact_id"],
+                "name": metadata["name"],
+                "expected_version": previous_version,
+            },
+            request_id=request_id,
+        )
+        if result.get("error"):
+            return {**metadata, "file_error": result["error"], "file_imported": False}
+        return {**metadata, **result, "file_imported": True}

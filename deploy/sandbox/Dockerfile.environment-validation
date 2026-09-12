@@ -1,0 +1,9 @@
+# Trusted local test harness only. Never deployed as the execution environment.
+FROM docker:28-cli AS docker
+FROM yuki-environment:20260912
+USER root
+COPY --from=docker /usr/local/bin/docker /usr/local/bin/docker
+RUN pip install --no-cache-dir websockets==15.0.1 pytest==8.4.2 pytest-asyncio==0.26.0
+ENV PYTHONPATH=/src/src
+WORKDIR /src
+ENTRYPOINT ["python"]

@@ -501,12 +501,32 @@ async def main() -> None:
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--socket", type=Path, required=True)
     parser.add_argument("--image", required=True)
+    parser.add_argument("--persistent-home", type=Path)
+    parser.add_argument("--migrate-only", action="store_true")
     parser.add_argument("--network", default="yuki-sandbox-internal")
     parser.add_argument("--proxy", default="http://172.30.251.2:3128")
     args = parser.parse_args()
-    manager = Manager(
-        args.root, WorkspaceStore(args.workspace), args.image, args.network, args.proxy
-    )
+    from qq_ai_bot.sandbox.persistent import PersistentManager
+
+    manager: Manager
+    if args.persistent_home:
+        manager = PersistentManager(
+            args.root,
+            WorkspaceStore(args.workspace),
+            args.image,
+            args.network,
+            args.proxy,
+            args.persistent_home,
+        )
+    else:
+        manager = Manager(
+            args.root, WorkspaceStore(args.workspace), args.image, args.network, args.proxy
+        )
+    if args.migrate_only:
+        if not isinstance(manager, PersistentManager):
+            raise ValueError("persistent_home_required")
+        print(json.dumps(manager.migrate_files()))
+        return
     await manager.recover()
     args.socket.parent.mkdir(parents=True, exist_ok=True)
     if args.socket.exists():
@@ -521,6 +541,7 @@ async def main() -> None:
     worker = asyncio.create_task(manager.worker())
     task = asyncio.current_task()
     assert task is not None
+    worker.add_done_callback(lambda completed: task.cancel() if not completed.cancelled() else None)
     asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, task.cancel)
     try:
         async with server:
@@ -528,10 +549,15 @@ async def main() -> None:
     except asyncio.CancelledError:
         pass
     finally:
+        failure = worker.exception() if worker.done() and not worker.cancelled() else None
         worker.cancel()
         await asyncio.gather(worker, return_exceptions=True)
-        if manager.current:
+        if isinstance(manager, PersistentManager):
+            await manager.close()
+        elif manager.current:
             await manager.cleanup(manager.current)
+        if failure is not None:
+            raise RuntimeError("sandbox_worker_failed") from failure
 
 
 if __name__ == "__main__":

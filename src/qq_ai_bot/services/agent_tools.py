@@ -71,6 +71,7 @@ from qq_ai_bot.persistence.repositories import (
     RelationshipRepository,
     WebSearchSourceRepository,
 )
+from qq_ai_bot.sandbox.environment_tools import EXECUTION_TOOLS, READ_TOOLS, SANDBOX_TOOLS
 from qq_ai_bot.sandbox.progress import TaskProgress
 from qq_ai_bot.services.evidence_state import evidence_state
 from qq_ai_bot.services.reply_target import ReplyTargetControl
@@ -87,6 +88,7 @@ from qq_ai_bot.web.models import (
     WebSearchTimeRange,
     WebSearchTopic,
 )
+from qq_ai_bot.workspace.tools import WORKSPACE_READ_TOOLS
 
 _URL_IN_TEXT = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
 _CQ_CODE = re.compile(r"\[CQ:([a-zA-Z0-9_-]+)(?:,[^\]]*)?\]", re.IGNORECASE)
@@ -1010,14 +1012,14 @@ class AgentToolService:
             try:
                 from qq_ai_bot.social.tools import social_tool_definitions
 
-                if name in {"run_python", "get_code_run", "cancel_code_run"}:
+                if name in SANDBOX_TOOLS:
                     from qq_ai_bot.capabilities.invocation import current_invocation
 
                     invocation = current_invocation.get()
                     if (
                         runtime.origin not in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}
                         or runtime.tools_closed
-                        or (runtime.read_only and name != "get_code_run")
+                        or (runtime.read_only and name not in READ_TOOLS)
                     ):
                         return self._result(error="permission_denied", detail="本轮未授权沙箱操作")
                     if self.sandbox_client is None or invocation is None:
@@ -1053,7 +1055,7 @@ class AgentToolService:
                             if runtime.turn_snapshot
                             else None,
                         }
-                        if name == "run_python"
+                        if name in EXECUTION_TOOLS
                         else None,
                     )
                     return self._result(data=result)
@@ -1063,7 +1065,7 @@ class AgentToolService:
 
                     if (
                         runtime.origin not in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}
-                        or (runtime.read_only and name not in {"workspace_read", "workspace_list"})
+                        or (runtime.read_only and name not in WORKSPACE_READ_TOOLS)
                         or runtime.tools_closed
                     ):
                         return self._result(
@@ -1080,7 +1082,7 @@ class AgentToolService:
                         category = (
                             str(exc) if isinstance(exc, WorkspaceError) else type(exc).__name__
                         )
-                        return self._result(error=category, detail="临时文件操作未完成")
+                        return self._result(error=category, detail="工作区操作未完成")
 
                 if name in {tool.name for tool in social_tool_definitions()}:
                     from qq_ai_bot.social.agent_adapter import invoke_social

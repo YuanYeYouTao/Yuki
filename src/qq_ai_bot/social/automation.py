@@ -20,16 +20,18 @@ from qq_ai_bot.automation.registry import (
 )
 from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.sandbox.client import SandboxClient, sandbox_tools
+from qq_ai_bot.sandbox.environment_tools import EXECUTION_TOOLS, READ_TOOLS, SANDBOX_TOOLS
 from qq_ai_bot.social.models import SocialError
 from qq_ai_bot.social.service import SocialContext, SocialService
 from qq_ai_bot.social.tools import social_tool_definitions
 from qq_ai_bot.workspace.service import WorkspaceService, workspace_tools
+from qq_ai_bot.workspace.tools import WORKSPACE_READ_TOOLS
 
 
 def automation_name(name: str) -> str:
     if name.startswith("workspace_"):
         return "workspace." + name.removeprefix("workspace_")
-    if name in {"run_python", "get_code_run", "cancel_code_run"}:
+    if name in SANDBOX_TOOLS:
         return "sandbox." + name
     return "social." + name
 
@@ -72,6 +74,7 @@ def register_social_automation(
             "workspace_read",
             "get_code_run",
         }
+        read = read or tool.name in READ_TOOLS | WORKSPACE_READ_TOOLS
         send = tool.name in {"send_private_message", "send_group_message", "poke_person"}
         registry.register(
             AutomationCapability(
@@ -112,10 +115,13 @@ class SocialAutomationAdapter:
                     raise SocialError("capability_denied")
                 if tool_name.startswith("workspace_"):
                     result = await self.workspace.execute(
-                        tool_name, args, conversation_id=context.canonical_conversation_id
+                        tool_name,
+                        args,
+                        conversation_id=context.canonical_conversation_id,
+                        request_id=f"workspace:{context.automation_run_id}:{context.step_id}",
                     )
                     return CapabilityResult(data=result)
-                if tool_name in {"run_python", "get_code_run", "cancel_code_run"}:
+                if tool_name in SANDBOX_TOOLS:
                     from hashlib import sha256
 
                     result = await self.sandbox.execute(
@@ -147,7 +153,7 @@ class SocialAutomationAdapter:
                             "target_person_id": context.canonical_target_person_id,
                             "target_space_id": context.canonical_target_space_id,
                         }
-                        if tool_name == "run_python"
+                        if tool_name in EXECUTION_TOOLS
                         else None,
                     )
                     return CapabilityResult(data=result)
