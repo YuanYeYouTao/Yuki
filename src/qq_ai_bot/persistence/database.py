@@ -35,6 +35,9 @@ class Database:
         self.engine: AsyncEngine = create_async_engine(url, pool_pre_ping=True)
         if url.startswith("sqlite+aiosqlite:///"):
             event.listen(self.engine.sync_engine, "connect", self._configure_sqlite_connection)
+            from qq_ai_bot.persistence.sqlite_diagnostics import install_sqlite_diagnostics
+
+            install_sqlite_diagnostics(self.engine.sync_engine)
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False, class_=AsyncSession)
 
     @staticmethod

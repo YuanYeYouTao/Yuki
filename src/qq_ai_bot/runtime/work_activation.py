@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import Any
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
+
+logger = logging.getLogger(__name__)
+
 
 current_work_control: ContextVar[WorkControl | None] = ContextVar(
     "current_work_control", default=None
@@ -99,5 +105,15 @@ async def activate_work(
                         if pending
                         else "activation_ended_without_completion",
                     )
+        except SQLAlchemyError as exc:
+            # Accepted delivery and its durable journal must not become a second
+            # user-facing failure. The next fenced activation reconciles state.
+            logger.warning("work_cleanup_deferred stage=settle category=%s", type(exc).__name__)
         finally:
-            await repository.release(lease)
+            try:
+                await repository.release(lease)
+            except SQLAlchemyError as exc:
+                # Leases expire independently; never resend or reset work here.
+                logger.warning(
+                    "work_cleanup_deferred stage=release category=%s", type(exc).__name__
+                )

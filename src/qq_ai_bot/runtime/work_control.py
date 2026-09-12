@@ -135,6 +135,27 @@ class WorkControl:
             return []
         return await self.repository.pending(self.lease, work_id=self.current["id"])
 
+    async def reconcile_completed_children(self) -> None:
+        if self.current is None:
+            return
+        run_ids = list(
+            dict.fromkeys(
+                effect["run_id"]
+                for effect in self.known_effects
+                if isinstance(effect.get("run_id"), str)
+                and (effect.get("pending") or effect.get("uncertain"))
+            )
+        )
+        for result in await self.repository.completed_children(
+            self.lease, self.current["id"], run_ids
+        ):
+            self.observe_result(
+                "sandbox_completion",
+                json.dumps({"ok": True, "data": result}),
+                True,
+                side_effecting=False,
+            )
+
     async def take_inputs(self, attempt: str) -> tuple[ChatMessage, ...]:
         pending = await self.pending()
         deadline = time.monotonic() + 15
@@ -177,6 +198,7 @@ class WorkControl:
                 )
             )
         if selected:
+            await self.reconcile_completed_children()
             await self.repository.stage(self.lease, selected, attempt)
             self.staged_attempt = attempt
             self.ending = None
@@ -369,6 +391,7 @@ class WorkControl:
             await self.repository.checkpoint(self.lease, self.current["id"], {"reason": reason})
             self.ending = "waiting_user" if action == "need_input" else "failed"
         elif action == "complete":
+            await self.reconcile_completed_children()
             if any(
                 effect.get("pending") or effect.get("uncertain") for effect in self.known_effects
             ):
