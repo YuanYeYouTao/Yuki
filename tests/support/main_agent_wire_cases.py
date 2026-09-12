@@ -291,79 +291,6 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             bot_user_id="9999", platform_message_id=f"wire-{protocol.value}-private"
         )
         assert observed is not None
-        from types import SimpleNamespace
-        from uuid import uuid4
-
-        from qq_ai_bot.gateway.providers import builtin_provider_catalog
-        from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
-        from qq_ai_bot.identity.routing import PresenceRouter
-        from qq_ai_bot.sandbox.continuation_worker import SandboxContinuationWorker
-        from qq_ai_bot.sandbox.progress import TaskProgress
-        from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
-        from tests.support.social_identity_cases import Bot
-
-        registry = GatewayConnectionRegistry(providers=builtin_provider_catalog())
-
-        class WireBot(Bot):
-            async def call_api(self, action, **params):
-                result = await super().call_api(action, **params)
-                return {**result, "message_id": f"sandbox-{protocol.value}"}
-
-        bot = WireBot("9999")
-        registry.connect(bot, provider_id="snowluma", presence_id=observed.ingress_presence_id)
-        sandbox_tasks = SandboxTaskRepository(database)
-        task_id = f"wire-resume-{protocol.value}"
-        scope_state = await chat._conversation_scopes.get(ConversationScope.private("9999", "1001"))
-        await sandbox_tasks.prepare(
-            task_id,
-            {"code": "print(1)"},
-            {
-                "conversation_id": observed.canonical_conversation_id,
-                "origin": "user_message",
-                "actor_user_id": "1001",
-                "trigger_id": observed.platform_message_id,
-                "trigger_event_id": observed.id,
-                "generation": scope_state.generation,
-                "bot_user_id": "9999",
-                "presence_id": observed.ingress_presence_id,
-            },
-        )
-        progress = TaskProgress(6, 6)
-        await progress.bind(sandbox_tasks, task_id)
-        await progress.checkpoint(models=1, tools=1)
-        await progress.finish("yielded")
-        run_id = str(uuid4())
-        await sandbox_tasks.receive(
-            {
-                "request_id": task_id,
-                "run_id": run_id,
-                "result": {
-                    "run_id": run_id,
-                    "status": "succeeded",
-                    "pending": False,
-                    "output": "ready",
-                },
-            }
-        )
-        worker = SandboxContinuationWorker(
-            SimpleNamespace(
-                database=database,
-                sandbox_tasks=sandbox_tasks,
-                ledger=harness.ledger,
-                presence_router=PresenceRouter(database, registry),
-                runtime_config=chat._runtime_config,
-                conversation_scopes=chat._conversation_scopes,
-                turn_coordinator=chat._turn_coordinator,
-                chat=chat,
-            )
-        )
-        current_entry = "sandbox-resume"
-        await worker._drain_request(task_id)
-        assert (await worker.repository.get(task_id)).state == "finished"
-        assert bot.calls[-1][0] == "send_private_msg"
-        await worker._drain_request(task_id)
-        assert len(captured[current_entry]) == 2
-
         from tests.support.projection_cases import projection_storage_cases
 
         await projection_storage_cases(database, observed.canonical_conversation_id)
@@ -615,7 +542,7 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
         assert sender.messages
 
     forbidden_send.assert_not_awaited()
-    assert len(captured) == 10
+    assert len(captured) == 9
     fixed = None
     for name, chain in captured.items():
         assert len(chain) == (3 if name in {"automation-generate", "sdk-generate"} else 2), (

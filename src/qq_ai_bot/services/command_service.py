@@ -316,6 +316,10 @@ class CommandService:
                 f"服务版本：{__version__}"
             )
         elif command is CommandName.STOP:
+            if message.conversation_id:
+                from qq_ai_bot.runtime.work_repository import WorkRepository
+
+                await WorkRepository(self._people._database).cancel(message.conversation_id)
             cancelled = await self._concurrency.cancel(conversation_key)
             if self._turn_coordinator is not None:
                 cancelled = (

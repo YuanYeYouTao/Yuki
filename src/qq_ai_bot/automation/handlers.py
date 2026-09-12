@@ -345,6 +345,7 @@ class AutomationCapabilityHandlers:
                 int(arguments["max_model_requests"]), snapshot.agent.max_model_requests
             ),
             canonical_conversation_id=context.canonical_conversation_id,
+            execution_id=f"automation:{context.automation_run_id}:{context.step_id}:{context.automation_script_hash}",
         )
         context = replace(
             context,
@@ -404,6 +405,13 @@ class AutomationCapabilityHandlers:
                 tool_calls=1 + backend.failed_tool_calls,
                 messages_sent=backend.messages_sent,
             ) from exc
+        if result.work_state not in {None, "completed"}:
+            raise AutomationExecutionError(
+                "agent_work_incomplete",
+                llm_calls=result.model_requests + backend.nested_llm_calls,
+                tool_calls=1 + result.tool_calls_used + backend.nested_tool_calls,
+                messages_sent=backend.messages_sent,
+            )
         return CapabilityResult(
             data={"text": result.text, "tool_calls_used": result.tool_calls_used},
             llm_calls=result.model_requests + backend.nested_llm_calls,

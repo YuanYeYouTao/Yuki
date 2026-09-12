@@ -322,6 +322,9 @@ class ApplicationContainer:
         from qq_ai_bot.sandbox.continuation_worker import SandboxContinuationWorker
 
         self.sandbox_continuations = SandboxContinuationWorker(self)
+        from qq_ai_bot.runtime.work_scheduler import WorkScheduler
+
+        self.work_scheduler = WorkScheduler(self)
         self.chat.register_tool_provider(self.mcp_tools)
         self.memory_mutations = conversation.memory_mutations
         self.memory_auditor = conversation.memory_auditor
@@ -860,6 +863,12 @@ class ApplicationContainer:
             start=self.sandbox_continuations.start,
             close=self.sandbox_continuations.close,
             health=self.sandbox_continuations.health,
+        )
+        self.lifecycle.register(
+            "runtime_work",
+            start=self.work_scheduler.start,
+            close=self.work_scheduler.close,
+            health=self.work_scheduler.health,
         )
         self.lifecycle.register(
             "plugin_background_turns",

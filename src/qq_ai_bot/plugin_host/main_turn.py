@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from contextvars import ContextVar
 from dataclasses import replace
@@ -135,14 +136,27 @@ async def run_plugin_main_turn(
                 if composition.commit_projection is not None:
                     await composition.commit_projection()
 
-            return await main.run(
+            result = await main.run(
                 composition.messages,
                 replace(
                     runtime,
                     conversation_key=invocation.conversation_key,
+                    execution_id=(
+                        f"plugin:{host.plugin_id}:{invocation.source_event_id}:"
+                        + hashlib.sha256(
+                            (permission.value + instruction + context_data).encode()
+                        ).hexdigest()
+                    )
+                    if invocation.source_event_id is not None
+                    else None,
                     before_model_request=validate_and_commit,
                 ),
                 tools,
             )
+            if result.work_state not in {None, "completed"}:
+                from yuki_plugin_sdk.errors import PluginError
+
+                raise PluginError("main_agent_work_incomplete")
+            return result
     finally:
         _ACTIVE.reset(marker)

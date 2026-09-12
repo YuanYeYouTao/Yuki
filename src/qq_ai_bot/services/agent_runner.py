@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import logging
@@ -39,6 +40,8 @@ from qq_ai_bot.llm.base import (
 )
 from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
 from qq_ai_bot.model_runtime.models import ModelTask
+from qq_ai_bot.runtime.work_control import WORK_CONTROL_NAMES, WorkControl, WorkInputsPreparing
+from qq_ai_bot.runtime.work_repository import WorkCapacityError
 from qq_ai_bot.sandbox.progress import TaskProgress, current_progress
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.evidence_observation import EVIDENCE_TOOLS, EvidenceObservation
@@ -79,6 +82,8 @@ class AgentRuntime:
     canonical_conversation_id: str | None = None
     dynamic_context_prepared: bool = False
     task_progress: TaskProgress | None = None
+    work_control: WorkControl | None = None
+    execution_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +96,7 @@ class AgentRunResult:
     citations: tuple[ResponseCitation, ...] = ()
     response_status: ModelResponseStatus = ModelResponseStatus.COMPLETED
     suppress_delivery: bool = False
+    work_state: str | None = None
 
 
 class AgentToolBackend(Protocol):
@@ -153,6 +159,16 @@ class AgentRunner:
             result = await self._run(initial_messages, runtime, tools)
             await progress.finish("yielded")
             return result
+        except WorkCapacityError:
+            if runtime.work_control is not None:
+                runtime.work_control.ending = "suspended"
+            await progress.finish("yielded")
+            return AgentRunResult(
+                text="当前任务的上下文已达到保存上限，任务尚未完成，已保留执行回执并暂停。",
+                tool_calls_used=progress.tools_used,
+                model_requests=progress.models_used,
+                web_was_used=False,
+            )
         except BaseException:
             await progress.finish("uncertain")
             raise
@@ -195,7 +211,65 @@ class AgentRunner:
         reusable_tool_results: dict[tuple[str, str], str] = {}
         finalization_prompt_added = False
         await self._prepare_tools(tools, runtime)
+        if runtime.work_control is not None:
+            from dataclasses import asdict
+
+            from qq_ai_bot.runtime.work_session import WorkSession
+
+            profile_revision = getattr(self._models, "profile_revision", None)
+            contract = hashlib.sha256(
+                json.dumps(
+                    [
+                        repr(fixed_definitions),
+                        asdict(runtime.runtime_config.llm),
+                        asdict(runtime.runtime_config.web),
+                        profile_revision(self._task) if callable(profile_revision) else "legacy",
+                        [(m.role, m.content) for m in initial_messages if m.role == "system"],
+                    ],
+                    sort_keys=True,
+                    default=str,
+                ).encode()
+            ).hexdigest()
+            runtime.work_control.session = WorkSession(runtime.work_control, contract)
+            transcript = await runtime.work_control.session.restore(transcript)
+            if runtime.work_control.session.recovered_delivery:
+                return AgentRunResult(
+                    text="",
+                    tool_calls_used=0,
+                    model_requests=0,
+                    web_was_used=False,
+                    suppress_delivery=True,
+                )
         for request_index in range(runtime.max_model_requests):
+            control = runtime.work_control
+            if control is not None:
+                try:
+                    added = await control.take_inputs(f"{transcript.chain_id}:{request_index}")
+                except WorkInputsPreparing:
+                    control.ending = "suspended"
+                    return AgentRunResult(
+                        text="新的附件还在准备，当前工作已保留。",
+                        tool_calls_used=calls_used,
+                        model_requests=request_index,
+                        web_was_used=web_was_used,
+                    )
+                for message in added:
+                    transcript.append(message)
+            if (
+                control is not None
+                and control.current is not None
+                and (
+                    control.current["model_requests"] >= runtime.max_model_requests
+                    or control.current["active_seconds"] >= 1800
+                )
+            ):
+                control.ending = "suspended"
+                return AgentRunResult(
+                    text="这项工作已达到本次累计执行预算，尚未完成，已暂停。",
+                    tool_calls_used=calls_used,
+                    model_requests=request_index,
+                    web_was_used=web_was_used,
+                )
             definitions = (
                 tools.definitions(runtime, web_was_used=web_was_used) if tools is not None else ()
             )
@@ -339,12 +413,18 @@ class AgentRunner:
                     progress = current_progress.get()
                     if progress is not None:
                         await progress.checkpoint(models=request_count, tools=prior_tools)
+                    if runtime.work_control is not None:
+                        await runtime.work_control.reserve_request()
+                        if runtime.work_control.session is not None:
+                            await runtime.work_control.session.save("dispatched")
                     return await execute()
 
                 response = await self._concurrency.run_llm(
                     runtime.conversation_key,
                     dispatch,
                 )
+                if runtime.work_control is not None:
+                    await runtime.work_control.confirm_inputs()
                 progress = current_progress.get()
                 if progress is not None:
                     await progress.confirm_observed()
@@ -508,6 +588,56 @@ class AgentRunner:
                 continue
             if not response.tool_calls:
                 content = response.content
+                control = runtime.work_control
+                if control is not None and await control.pending():
+                    if response.continuation is None:
+                        transcript.append(ChatMessage(role="assistant", content=content))
+                    transcript.append(
+                        ChatMessage(
+                            role="system",
+                            content=(
+                                "上一段回复尚未发送；有新的用户输入到达，请先处理新增内容再继续。"
+                            ),
+                        )
+                    )
+                    continue
+                if control is not None and control.current is None and control.chat_answer is None:
+                    if control.corrections == 0 and request_index + 1 < runtime.max_model_requests:
+                        control.corrections += 1
+                        if response.continuation is None:
+                            transcript.append(ChatMessage(role="assistant", content=content))
+                        transcript.append(
+                            ChatMessage(
+                                role="system",
+                                content=(
+                                    "上一段正文尚未发送。先明确本轮处置："
+                                    "工作请求使用 task_control.accept"
+                                    "后执行；闲聊/知识回答使用 task_control.answer 返回正文。"
+                                    "不能用普通最终回复承诺稍后执行一项尚未登记的工作。"
+                                ),
+                            )
+                        )
+                        continue
+                    content = "这次没有开始执行工作，请重新明确要处理的事情。"
+                if control is not None and control.current is not None and control.ending is None:
+                    if control.corrections == 0 and request_index + 1 < runtime.max_model_requests:
+                        control.corrections += 1
+                        if response.continuation is None:
+                            transcript.append(ChatMessage(role="assistant", content=content))
+                        transcript.append(
+                            ChatMessage(
+                                role="system",
+                                content=(
+                                    "当前工作尚未结束。上一段文字尚未发送，不代表已经执行。"
+                                    "需要过程发言请用 report_progress 后继续；继续必要工具，"
+                                    "或者通过 task_control 明确等待、受阻或提出完成。"
+                                    "不得只承诺稍后做。"
+                                ),
+                            )
+                        )
+                        continue
+                    control.ending = "failed"
+                    content = "这项工作还没有完成，我没有继续执行下去。"
                 if "[提及" in content:
                     if (
                         not mention_recovery_used
@@ -635,6 +765,8 @@ class AgentRunner:
                         reasoning_content=response.reasoning_content,
                     )
                 )
+            if runtime.work_control is not None and runtime.work_control.session is not None:
+                await runtime.work_control.session.save("response", response.tool_calls)
             tooling = getattr(runtime.runtime_config, "tooling", None)
             progress = current_progress.get()
             if progress is not None:
@@ -647,7 +779,17 @@ class AgentRunner:
                 response.tool_calls,
                 tools,
                 runtime,
-                remaining_calls=max(0, runtime.max_tool_calls - calls_used),
+                remaining_calls=max(
+                    0,
+                    runtime.max_tool_calls
+                    - max(
+                        calls_used,
+                        runtime.work_control.current["tool_calls"]
+                        if runtime.work_control is not None
+                        and runtime.work_control.current is not None
+                        else 0,
+                    ),
+                ),
                 max_parallel_calls=tooling.max_parallel_calls if tooling is not None else 1,
                 reusable_results=reusable_tool_results,
                 cacheable_names=frozenset(t.name for t in definitions if t.result_cacheable),
@@ -689,6 +831,29 @@ class AgentRunner:
                     not _was_executed,
                 )
                 transcript.append_result(call.id, result)
+                if runtime.work_control is not None:
+                    runtime.work_control.observe_result(
+                        call.function.name,
+                        result,
+                        _was_executed,
+                        side_effecting=self._is_side_effecting(tools, call, runtime),
+                        arguments=call.function.arguments,
+                    )
+            if runtime.work_control is not None and runtime.work_control.session is not None:
+                await runtime.work_control.session.save("paired")
+            if runtime.work_control is not None and runtime.work_control.chat_answer is not None:
+                content = runtime.work_control.chat_answer
+                if tools is not None:
+                    content = tools.finalize(content, runtime)
+                return AgentRunResult(
+                    text=content,
+                    tool_calls_used=calls_used,
+                    model_requests=request_index + 1,
+                    web_was_used=web_was_used,
+                    native_tool_events=tuple(native_events),
+                    citations=tuple(citations),
+                    response_status=response_status,
+                )
             if tools is not None:
                 declined = getattr(tools, "declined_reply", None)
                 if callable(declined) and declined():
@@ -809,6 +974,69 @@ class AgentRunner:
         declared_names: frozenset[str],
     ) -> CoordinatedToolResult:
         """Execute each semantic call once and fan its result out to duplicate IDs."""
+
+        control = runtime.work_control
+        if control is not None and await control.pending():
+            result = json.dumps(
+                {"ok": False, "error": "new_input_before_execution", "executed": False}
+            )
+            return CoordinatedToolResult(
+                calls=tuple((call, result, False) for call in calls),
+                executed_count=0,
+                reused_count=0,
+            )
+
+        control_calls = [call for call in calls if call.function.name in WORK_CONTROL_NAMES]
+        if control_calls:
+            if len(calls) != 1:
+                result = json.dumps({"ok": False, "error": "work_control_requires_single_call"})
+                return CoordinatedToolResult(
+                    calls=tuple((call, result, False) for call in calls),
+                    executed_count=0,
+                    reused_count=0,
+                )
+            call = calls[0]
+            control = runtime.work_control
+            allowed = getattr(tools, "work_control_allowed", None)
+            if (
+                call.function.name not in declared_names
+                or control is None
+                or (callable(allowed) and not allowed(call.function.name))
+            ):
+                result = json.dumps({"ok": False, "error": "work_control_unavailable"})
+                executed = False
+            else:
+                try:
+                    arguments = json.loads(call.function.arguments)
+                    if not isinstance(arguments, dict):
+                        raise ValueError("arguments must be an object")
+                except (ValueError, TypeError):
+                    result = json.dumps({"ok": False, "error": "invalid_work_arguments"})
+                    executed = False
+                else:
+                    result = await control.execute(
+                        call.function.name,
+                        arguments,
+                        control.session.call_key(call.id)
+                        if control.session
+                        else f"{control.lease.owner}:{call.id}",
+                    )
+                    executed = True
+            return CoordinatedToolResult(
+                calls=((call, result, executed),),
+                # Lifecycle controls use the model and message budgets, not
+                # the caller's delegated business-tool execution allowance.
+                executed_count=0,
+                reused_count=0,
+            )
+
+        if (
+            control is not None
+            and control.current is None
+            and any(self._is_side_effecting(tools, call, runtime) for call in calls)
+        ):
+            result = json.dumps({"ok": False, "error": "accept_work_before_execution"})
+            return CoordinatedToolResult(tuple((call, result, False) for call in calls), 0)
 
         signatures = {call.id: self._tool_call_signature(call) for call in calls}
         first_call_by_signature: dict[tuple[str, str], ToolCall] = {}

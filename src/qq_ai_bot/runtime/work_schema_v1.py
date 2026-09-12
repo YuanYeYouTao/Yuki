@@ -28,11 +28,14 @@ work = sa.Table(
     sa.Column("source_key", sa.String(256), nullable=False, unique=True),
     sa.Column("source_json", sa.Text, nullable=False),
     sa.Column("goal", sa.Text, nullable=False),
+    sa.Column("output_kind", sa.String(20), nullable=False, server_default="state_change"),
+    sa.Column("deliver_artifacts", sa.Boolean, nullable=False, server_default="1"),
     sa.Column("revision", sa.Integer, nullable=False, server_default="1"),
     sa.Column("state", sa.String(24), nullable=False),
     sa.Column("reason", sa.String(128)),
     sa.Column("model_requests", sa.Integer, nullable=False, server_default="0"),
     sa.Column("tool_calls", sa.Integer, nullable=False, server_default="0"),
+    sa.Column("active_seconds", sa.Float, nullable=False, server_default="0"),
     sa.Column("sent_messages", sa.Integer, nullable=False, server_default="0"),
     sa.Column("checkpoint_json", sa.Text, nullable=False, server_default="{}"),
     sa.Column("created", sa.Float, nullable=False),
@@ -78,6 +81,9 @@ inputs = sa.Table(
     sa.Column("kind", sa.String(24), nullable=False),
     sa.Column("state", sa.String(16), nullable=False, server_default="pending"),
     sa.Column("attempt_id", sa.String(36)),
+    sa.Column("ready", sa.Boolean, nullable=False, server_default="1"),
+    sa.Column("prepare_owner", sa.String(36)),
+    sa.Column("payload_json", sa.Text, nullable=False, server_default="{}"),
     sa.Column("created", sa.Float, nullable=False),
     sa.CheckConstraint(
         "state IN ('pending','staged','consumed','cancelled')", name="ck_runtime_work_input_state"
@@ -100,4 +106,16 @@ effects = sa.Table(
     ),
 )
 
-TABLES = (work, scope, inputs, effects)
+journal = sa.Table(
+    "runtime_work_journal",
+    Base.metadata,
+    sa.Column("work_id", sa.ForeignKey("runtime_work.id", ondelete="RESTRICT"), primary_key=True),
+    sa.Column("chain_id", sa.String(36), nullable=False),
+    sa.Column("contract", sa.String(64), nullable=False),
+    sa.Column("source_revision", sa.Integer, nullable=False),
+    sa.Column("phase", sa.String(24), nullable=False),
+    sa.Column("payload_json", sa.Text, nullable=False),
+    sa.Column("updated", sa.Float, nullable=False),
+)
+
+TABLES = (work, scope, inputs, effects, journal)

@@ -211,23 +211,11 @@ async def task_receipt_cases(database, tmp_path):
     from qq_ai_bot.sandbox.continuations import SandboxContinuationRepository
 
     continuations = SandboxContinuationRepository(database)
-    claims = await asyncio.gather(continuations.claim("request"), continuations.claim("request"))
-    assert sum(token is not None for token in claims) == 1
-    token = next(token for token in claims if token is not None)
-    assert not await continuations.settle("request", "stale", state="finished", reason="sent")
-    assert await continuations.settle("request", token, state="ready", reason="conversation_busy")
-    second_token = await continuations.claim("request")
-    assert second_token is not None and second_token != token
-    assert not await continuations.settle("request", token, state="finished", reason="late")
-    assert await continuations.settle(
-        "request", second_token, state="uncertain", reason="delivery_interrupted"
-    )
-    # Neither a repeated Manager event nor a new Bot repository resets an
-    # uncertain attempt to ready. It must not automatically send again.
+    # Old detached jobs are retired and duplicate Manager delivery cannot revive them.
+    assert (await continuations.get("request")).state == "blocked"
     await tasks.receive(event)
     restarted = SandboxContinuationRepository(database)
-    assert await restarted.claim("request") is None
-    assert (await restarted.get("request")).state == "uncertain"
+    assert (await restarted.get("request")).state == "blocked"
     observed_run = str(uuid4())
     await tasks.prepare("observed-request", arguments, source)
     await tasks.receive(
@@ -238,7 +226,4 @@ async def task_receipt_cases(database, tmp_path):
         }
     )
     assert await restarted.observed("observed-request")
-    assert await restarted.claim("observed-request") is None
-    from tests.support.sandbox_automation_recovery_cases import automation_recovery_cases
-
-    await automation_recovery_cases(database, tasks)
+    assert (await restarted.get("observed-request")).state == "observed"

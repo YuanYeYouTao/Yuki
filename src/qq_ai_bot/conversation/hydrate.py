@@ -259,6 +259,9 @@ async def bump_canonical_generation(
     row.uncovered_character_count = 0
     row.revision += 1
     row.updated_at = now
+    from qq_ai_bot.runtime.work_repository import WorkRepository
+
+    await WorkRepository.cancel_in_session(session, conversation_id, generation=int(row.generation))
     await delete_canonical_rollup_projections(session, conversation_id)
     await session.flush()
     return int(row.generation)

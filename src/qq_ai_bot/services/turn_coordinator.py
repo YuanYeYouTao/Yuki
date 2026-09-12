@@ -84,12 +84,15 @@ class ConversationTurnCoordinator:
         *,
         observation: bool = False,
         protect_from_observations: bool = False,
+        preserve_active: bool = False,
     ) -> TurnToken:
         """Advance input version while keeping direct group turns above observations."""
 
         to_cancel: set[asyncio.Task[object]] = set()
         async with self._guard:
             state = self._states.setdefault(conversation_key, _TurnState())
+            if preserve_active:
+                return TurnToken(conversation_key, state.version, state.origin)
             if observation and state.protected_version == state.version:
                 return TurnToken(conversation_key, state.version, state.origin)
             previous_origin = state.origin

@@ -8,13 +8,18 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import and_, select, update
+from sqlalchemy import and_, delete, func, or_, select, true, update
 from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.runtime.work_schema_v1 import WORK_STATES, effects, inputs, scope, work
+from qq_ai_bot.runtime.work_schema_v1 import WORK_STATES, effects, inputs, journal, scope, work
 
 TERMINAL = frozenset({"completed", "failed", "cancelled"})
+
+
+class WorkCapacityError(ValueError):
+    """A bounded private checkpoint cannot grow without a new context boundary."""
 
 
 class WorkConflict(RuntimeError):
@@ -129,13 +134,31 @@ class WorkRepository:
             raise WorkConflict("work_activation_obsolete")
 
     async def accept(
-        self, lease: WorkLease, *, source_key: str, source: dict[str, Any], goal: str
+        self,
+        lease: WorkLease,
+        *,
+        source_key: str,
+        source: dict[str, Any],
+        goal: str,
+        output_kind: str = "state_change",
+        deliver_artifacts: bool = True,
     ) -> dict[str, Any]:
         if not 1 <= len(goal) <= 8192 or not 1 <= len(source_key) <= 256:
             raise ValueError("invalid_work_goal")
+        if output_kind not in {"answer", "artifact", "state_change"}:
+            raise ValueError("invalid_work_output_kind")
         source_json, now = bounded_json(source), time.time()
         async with self.database.sessions() as session, session.begin():
             await self._assert_lease(session, lease)
+            existing = await session.scalar(
+                select(work.c.id).where(work.c.source_key == source_key)
+            )
+            if existing is None:
+                count = await session.scalar(
+                    select(func.count()).select_from(work).where(work.c.state.not_in(TERMINAL))
+                )
+                if int(count or 0) >= 128:
+                    raise WorkCapacityError("active_work_capacity")
             await session.execute(
                 insert(work)
                 .values(
@@ -145,6 +168,8 @@ class WorkRepository:
                     source_key=source_key,
                     source_json=source_json,
                     goal=goal,
+                    output_kind=output_kind,
+                    deliver_artifacts=deliver_artifacts,
                     state="running",
                     created=now,
                     updated=now,
@@ -162,7 +187,18 @@ class WorkRepository:
                 or row["source_json"] != source_json
             ):
                 raise WorkConflict("work_source_conflict")
+            if row["state"] in TERMINAL:
+                raise WorkConflict("work_already_terminal")
             return dict(row)
+
+    async def by_source(self, source_key: str) -> dict[str, Any] | None:
+        async with self.database.sessions() as session:
+            row = (
+                (await session.execute(select(work).where(work.c.source_key == source_key)))
+                .mappings()
+                .first()
+            )
+            return dict(row) if row else None
 
     async def get(self, identity: str) -> dict[str, Any] | None:
         async with self.database.sessions() as session:
@@ -243,15 +279,17 @@ class WorkRepository:
         self,
         lease: WorkLease,
         identity: str,
-        payload: dict[str, Any],
+        payload: dict[str, Any] | None,
         *,
         models: int = 0,
         tools: int = 0,
         messages: int = 0,
+        active_seconds: float = 0,
+        evidence: list[dict[str, Any]] | None = None,
     ) -> None:
-        if min(models, tools, messages) < 0:
+        if min(models, tools, messages, active_seconds) < 0:
             raise ValueError("invalid_work_usage")
-        serialized = bounded_json(payload, 1024 * 1024)
+        serialized = bounded_json(payload, 1024 * 1024) if payload is not None else None
         async with self.database.sessions() as session, session.begin():
             await self._assert_lease(session, lease)
             row = (
@@ -264,11 +302,22 @@ class WorkRepository:
                         work.c.state.not_in(TERMINAL),
                     )
                     .values(
-                        checkpoint_json=serialized,
+                        checkpoint_json=serialized
+                        if serialized is not None
+                        else (
+                            func.json_set(
+                                work.c.checkpoint_json,
+                                "$.execution_evidence",
+                                func.json(bounded_json(evidence)),
+                            )
+                            if evidence is not None
+                            else work.c.checkpoint_json
+                        ),
                         updated=time.time(),
                         model_requests=work.c.model_requests + models,
                         tool_calls=work.c.tool_calls + tools,
                         sent_messages=work.c.sent_messages + messages,
+                        active_seconds=work.c.active_seconds + active_seconds,
                     )
                     .returning(work.c.id)
                 )
@@ -285,10 +334,27 @@ class WorkRepository:
         kind: str,
         event_id: int | None = None,
         work_id: str | None = None,
+        ready: bool = True,
     ) -> int:
+        from qq_ai_bot.sandbox.progress import PROCESS_ID
+
         if not 1 <= len(source_key) <= 256 or kind not in {"message", "completion", "control"}:
             raise ValueError("invalid_work_input")
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.immediate_session() as session:
+            existing = await session.scalar(
+                select(inputs.c.id).where(inputs.c.source_key == source_key)
+            )
+            if existing is None:
+                count = await session.scalar(
+                    select(func.count())
+                    .select_from(inputs)
+                    .where(
+                        inputs.c.conversation_id == conversation_id,
+                        inputs.c.state.in_(("pending", "staged")),
+                    )
+                )
+                if int(count or 0) >= 128:
+                    raise WorkCapacityError("work_input_capacity")
             await session.execute(
                 insert(inputs)
                 .values(
@@ -298,6 +364,8 @@ class WorkRepository:
                     kind=kind,
                     event_id=event_id,
                     work_id=work_id,
+                    ready=ready,
+                    prepare_owner=None if ready else PROCESS_ID,
                     created=time.time(),
                 )
                 .on_conflict_do_nothing(index_elements=[inputs.c.source_key])
@@ -320,7 +388,22 @@ class WorkRepository:
                 raise WorkConflict("work_input_conflict")
             return int(row["id"])
 
-    async def pending(self, lease: WorkLease, *, limit: int = 8) -> list[dict[str, Any]]:
+    async def prepare_input(self, identity: int, payload: dict[str, Any]) -> None:
+        serialized = bounded_json(payload, 32768)
+        async with self.database.sessions() as session, session.begin():
+            await session.execute(
+                update(inputs)
+                .where(
+                    inputs.c.id == identity,
+                    inputs.c.state == "pending",
+                    inputs.c.ready.is_(False),
+                )
+                .values(payload_json=serialized, ready=True)
+            )
+
+    async def pending(
+        self, lease: WorkLease, *, limit: int = 8, work_id: str | None = None
+    ) -> list[dict[str, Any]]:
         async with self.database.sessions() as session:
             rows = (
                 (
@@ -330,6 +413,7 @@ class WorkRepository:
                             inputs.c.conversation_id == lease.conversation_id,
                             inputs.c.generation == lease.generation,
                             inputs.c.state == "pending",
+                            inputs.c.work_id == work_id if work_id else true(),
                         )
                         .order_by(inputs.c.id)
                         .limit(min(32, max(1, limit)))
@@ -375,40 +459,209 @@ class WorkRepository:
                 .values(state="consumed")
             )
 
-    async def cancel(self, conversation_id: str, *, generation: int | None = None) -> None:
+    async def cancel(
+        self,
+        conversation_id: str,
+        *,
+        generation: int | None = None,
+        session: AsyncSession | None = None,
+    ) -> None:
         """Hard boundary only; ordinary arrivals never revoke activation leases."""
-        async with self.database.sessions() as session, session.begin():
-            values: dict[str, Any] = {
-                "cancel_epoch": scope.c.cancel_epoch + 1,
-                "fence": scope.c.fence + 1,
-                "owner": None,
-                "lease_until": 0,
+        if session is None:
+            async with self.database.sessions() as owned, owned.begin():
+                await self.cancel(conversation_id, generation=generation, session=owned)
+            return
+        await self.cancel_in_session(session, conversation_id, generation=generation)
+
+    @staticmethod
+    async def cancel_in_session(
+        session: AsyncSession,
+        conversation_id: str,
+        *,
+        generation: int | None = None,
+    ) -> None:
+        values: dict[str, Any] = {
+            "cancel_epoch": scope.c.cancel_epoch + 1,
+            "fence": scope.c.fence + 1,
+            "owner": None,
+            "lease_until": 0,
+        }
+        if generation is not None:
+            values["generation"] = generation
+        await session.execute(
+            update(scope).where(scope.c.conversation_id == conversation_id).values(**values)
+        )
+        await session.execute(
+            update(work)
+            .where(
+                work.c.conversation_id == conversation_id,
+                work.c.state.not_in(TERMINAL),
+            )
+            .values(
+                state="cancelled",
+                reason="hard_boundary",
+                revision=work.c.revision + 1,
+                updated=time.time(),
+            )
+        )
+        await session.execute(
+            update(inputs)
+            .where(
+                inputs.c.conversation_id == conversation_id,
+                inputs.c.state.in_(("pending", "staged")),
+            )
+            .values(state="cancelled")
+        )
+
+    @staticmethod
+    async def purge_scope(session: AsyncSession, conversation_id: str) -> None:
+        """Privacy cleanup runs in the canonical deletion transaction.
+
+        Affected group work can contain the deleted person's quoted content too,
+        so discard its snapshots instead of trying to redact model projections.
+        """
+        identities = select(work.c.id).where(work.c.conversation_id == conversation_id)
+        await session.execute(delete(journal).where(journal.c.work_id.in_(identities)))
+        await session.execute(delete(effects).where(effects.c.work_id.in_(identities)))
+        await session.execute(delete(inputs).where(inputs.c.conversation_id == conversation_id))
+        await session.execute(delete(work).where(work.c.conversation_id == conversation_id))
+        await session.execute(delete(scope).where(scope.c.conversation_id == conversation_id))
+
+    async def route_child_completion(self, request_id: str) -> None:
+        """Atomically hand a child receipt to its parent, or retire an unparented receipt."""
+        from datetime import UTC, datetime
+
+        from qq_ai_bot.sandbox.db_models import SandboxTaskContinuationModel, SandboxTaskRunModel
+
+        async with self.database.immediate_session() as session:
+            task = await session.get(SandboxTaskRunModel, request_id)
+            receipt = await session.get(SandboxTaskContinuationModel, request_id)
+            if task is None or receipt is None or receipt.state != "ready":
+                return
+            source = json.loads(task.source_json)
+            if not source.get("work_id"):
+                receipt.state, receipt.reason = "blocked", "legacy_continuation_retired"
+                receipt.updated_at = datetime.now(UTC)
+                return
+            parent = (
+                (await session.execute(select(work).where(work.c.id == source.get("work_id"))))
+                .mappings()
+                .first()
+            )
+            if parent is None or parent["state"] in TERMINAL:
+                receipt.state, receipt.reason = "blocked", "work_terminal_or_deleted"
+                return
+            if (
+                task.source_conversation_id != parent["conversation_id"]
+                or source.get("generation") != parent["generation"]
+            ):
+                raise WorkConflict("work_child_source_mismatch")
+            completion = json.loads(task.completion_json or "{}")
+            payload = {
+                "kind": "sandbox_completion",
+                "request_id": request_id,
+                "run_id": task.run_id,
+                "status": completion.get("status"),
+                "pending": False,
+                "exit_code": completion.get("exit_code"),
+                "detail": "查询原 run_id 的输出与产物，不能重跑原命令。",
             }
-            if generation is not None:
-                values["generation"] = generation
             await session.execute(
-                update(scope).where(scope.c.conversation_id == conversation_id).values(**values)
+                insert(inputs)
+                .values(
+                    conversation_id=parent["conversation_id"],
+                    generation=parent["generation"],
+                    source_key=f"completion:{request_id}",
+                    work_id=parent["id"],
+                    kind="completion",
+                    ready=True,
+                    payload_json=bounded_json({"text": json.dumps(payload, ensure_ascii=False)}),
+                    created=time.time(),
+                )
+                .on_conflict_do_nothing(index_elements=[inputs.c.source_key])
             )
             await session.execute(
                 update(work)
                 .where(
-                    work.c.conversation_id == conversation_id,
-                    work.c.state.not_in(TERMINAL),
+                    work.c.id == parent["id"],
+                    work.c.state == "waiting_external",
                 )
-                .values(
-                    state="cancelled",
-                    reason="hard_boundary",
-                    revision=work.c.revision + 1,
-                    updated=time.time(),
+                .values(state="queued", revision=work.c.revision + 1, updated=time.time())
+            )
+            receipt.state, receipt.reason = "observed", "forwarded_to_parent_work"
+            receipt.updated_at = datetime.now(UTC)
+
+    async def repair_abandoned_inputs(self, process_id: str) -> None:
+        from qq_ai_bot.persistence.models import ChatEventModel
+
+        async with self.database.immediate_session() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(inputs)
+                        .where(
+                            inputs.c.state == "pending",
+                            inputs.c.ready.is_(False),
+                            or_(
+                                inputs.c.prepare_owner != process_id,
+                                inputs.c.created < time.time() - 120,
+                            ),
+                        )
+                        .limit(128)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            for row in rows:
+                event = (
+                    await session.get(ChatEventModel, row["event_id"]) if row["event_id"] else None
+                )
+                if event is None:
+                    await session.execute(
+                        update(inputs).where(inputs.c.id == row["id"]).values(state="cancelled")
+                    )
+                else:
+                    content = (
+                        "[输入准备因重启中断；附件尚未读取，按 event_id 查询原消息]\n"
+                        f"{event.content[:5000]}"
+                    )
+                    await session.execute(
+                        update(inputs)
+                        .where(inputs.c.id == row["id"])
+                        .values(
+                            ready=True,
+                            payload_json=bounded_json({"text": content}, 32768),
+                        )
+                    )
+
+    async def reclaim_terminal(self) -> None:
+        """Keep the latest 128 terminal work receipts; never evict an active work."""
+        async with self.database.immediate_session() as session:
+            selected = list(
+                await session.scalars(
+                    select(work.c.id)
+                    .where(
+                        work.c.state.in_(TERMINAL),
+                    )
+                    .order_by(work.c.updated.desc())
+                    .offset(128)
+                    .limit(256)
                 )
             )
+            if not selected:
+                return
+            await session.execute(delete(journal).where(journal.c.work_id.in_(selected)))
+            await session.execute(delete(inputs).where(inputs.c.work_id.in_(selected)))
+            await session.execute(delete(effects).where(effects.c.work_id.in_(selected)))
+            await session.execute(delete(work).where(work.c.id.in_(selected)))
+
+    async def discard_input(self, identity: int) -> None:
+        async with self.database.sessions() as session, session.begin():
             await session.execute(
                 update(inputs)
-                .where(
-                    inputs.c.conversation_id == conversation_id,
-                    inputs.c.state.in_(("pending", "staged")),
-                )
-                .values(state="cancelled")
+                .where(inputs.c.id == identity, inputs.c.state == "pending")
+                .values(state="cancelled", payload_json="{}")
             )
 
     async def prepare_effect(self, lease: WorkLease, identity: str, key: str, kind: str) -> bool:
@@ -469,6 +722,19 @@ class WorkRepository:
                     .mappings()
                     .first()
                 )
+                if existing and existing["state"] == "accepted":
+                    previous = json.loads(existing["receipt_json"])
+                    if state == "unknown":
+                        return  # Later bookkeeping failure cannot undo transport acceptance.
+                    if state == "accepted" and all(
+                        receipt.get(k) == v for k, v in previous.items()
+                    ):
+                        await session.execute(
+                            update(effects)
+                            .where(effects.c.effect_key == key)
+                            .values(receipt_json=serialized, updated=time.time())
+                        )
+                        return
                 if (
                     not existing
                     or existing["state"] != state

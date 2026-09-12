@@ -59,7 +59,11 @@ from qq_ai_bot.persistence.repositories import (
     RelationshipRepository,
 )
 from qq_ai_bot.prompting import ContextBudgeter, ContextContribution
-from qq_ai_bot.runtime.trigger import ExternalEventTurnTrigger, SandboxTaskTurnTrigger
+from qq_ai_bot.runtime.trigger import (
+    ExternalEventTurnTrigger,
+    SandboxTaskTurnTrigger,
+    WorkResumeTrigger,
+)
 from qq_ai_bot.time.formatting import local_iso
 from qq_ai_bot.time.models import TimeContext
 from qq_ai_bot.time.service import TimeContextService
@@ -312,7 +316,10 @@ class ContextAssembler:
         memory_retrieval: MemoryRetrievalResult | None = None,
         persist_memory_exposure: bool = True,
         external_event: EventRecord | None = None,
-        external_trigger: ExternalEventTurnTrigger | SandboxTaskTurnTrigger | None = None,
+        external_trigger: ExternalEventTurnTrigger
+        | SandboxTaskTurnTrigger
+        | WorkResumeTrigger
+        | None = None,
     ) -> AssembledContext:
         """Build one bounded snapshot without persisting model-only metadata."""
 
@@ -626,14 +633,14 @@ class ContextAssembler:
         self,
         *,
         event: EventRecord,
-        trigger: ExternalEventTurnTrigger | SandboxTaskTurnTrigger,
+        trigger: ExternalEventTurnTrigger | SandboxTaskTurnTrigger | WorkResumeTrigger,
         identity: ConversationScope,
         turn: ConversationTurnSnapshot,
         runtime: RuntimeConfigSnapshot,
     ) -> AssembledContext:
         """Use the canonical Main-Agent window with actor-neutral memory targets."""
 
-        sandbox = isinstance(trigger, SandboxTaskTurnTrigger)
+        sandbox = isinstance(trigger, (SandboxTaskTurnTrigger, WorkResumeTrigger))
         if (
             event.id != trigger.source_event_id
             or event.canonical_conversation_id is None
@@ -830,7 +837,7 @@ class ContextAssembler:
     @staticmethod
     def _actorless_memory_targets(
         event: EventRecord,
-        trigger: ExternalEventTurnTrigger | SandboxTaskTurnTrigger,
+        trigger: ExternalEventTurnTrigger | SandboxTaskTurnTrigger | WorkResumeTrigger,
     ) -> tuple[MemoryEntityTarget, ...]:
         targets = [
             MemoryEntityTarget(
@@ -869,7 +876,7 @@ class ContextAssembler:
     @staticmethod
     def _external_wakeup_message(
         event: EventRecord,
-        trigger: ExternalEventTurnTrigger | SandboxTaskTurnTrigger,
+        trigger: ExternalEventTurnTrigger | SandboxTaskTurnTrigger | WorkResumeTrigger,
     ) -> ChatMessage:
         summary = " ".join(event.content.split())[
             : (12_000 if isinstance(trigger, SandboxTaskTurnTrigger) else 1_200)
@@ -886,6 +893,8 @@ class ContextAssembler:
             "summary": summary,
             "agent_intent": intent,
         }
+        if isinstance(trigger, WorkResumeTrigger):
+            payload["kind"] = "work_resume"
         if isinstance(trigger, SandboxTaskTurnTrigger):
             payload["completion"] = trigger.completion_payload
         return ChatMessage(
@@ -1479,6 +1488,7 @@ class ContextAssembler:
                     loaded.scope.generation,
                     loaded.scope.starts_after_event_id,
                     loaded.prompt_source_revision,
+                    tuple(event.id for event in loaded.raw_events),
                 )
                 if loaded.conversation_id is not None
                 else None

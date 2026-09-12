@@ -351,6 +351,7 @@ class Settings(BaseSettings):
     mcp_artifact_retention_seconds: int = 86400
 
     conversation_autonomous_enabled: bool = True
+    runtime_work_enabled: bool = False
     conversation_autonomous_debounce_seconds: float = 3.0
     conversation_autonomous_admission_threshold: int = 80
     conversation_autonomous_batch_limit: int = 8

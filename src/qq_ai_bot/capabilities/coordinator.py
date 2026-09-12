@@ -80,10 +80,26 @@ class ToolInvocationCoordinator:
 
         async def execute_one(call: ToolCall) -> None:
             async with semaphore:
-                results[call.id] = await backend.execute(
-                    call.function.name,
-                    call.function.arguments,
-                    runtime,
+
+                async def invoke() -> str:
+                    return await backend.execute(
+                        call.function.name, call.function.arguments, runtime
+                    )
+
+                control = getattr(runtime, "work_control", None)
+                session = getattr(control, "session", None)
+                check_effect = getattr(backend, "is_side_effecting", None)
+                side_effecting = not callable(check_effect) or bool(
+                    check_effect(
+                        call.function.name,
+                        call.function.arguments,
+                        runtime,
+                    )
+                )
+                results[call.id] = (
+                    await session.execute(call, invoke, side_effecting=side_effecting)
+                    if session
+                    else await invoke()
                 )
 
         def is_parallel_safe(call: ToolCall) -> bool:

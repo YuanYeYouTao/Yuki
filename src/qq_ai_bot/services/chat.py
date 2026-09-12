@@ -119,7 +119,11 @@ from qq_ai_bot.runtime.contracts import DeliverySummary
 from qq_ai_bot.runtime.delivery import DeliveryStatus
 from qq_ai_bot.runtime.observability import identifier_hash
 from qq_ai_bot.runtime.origin import TurnOrigin as RuntimeTurnOrigin
-from qq_ai_bot.runtime.trigger import ExternalEventTurnTrigger, SandboxTaskTurnTrigger
+from qq_ai_bot.runtime.trigger import (
+    ExternalEventTurnTrigger,
+    SandboxTaskTurnTrigger,
+    WorkResumeTrigger,
+)
 from qq_ai_bot.sandbox.progress import TaskProgress
 from qq_ai_bot.services.agent_runner import (
     AgentRunner,
@@ -467,6 +471,20 @@ class _ChatAgentBackend(AgentToolBackend):
             return False
         return runtime.consume_provider_chain_restart()
 
+    def work_control_allowed(self, name: str) -> bool:
+        # Lifecycle tools are declared globally, but remain subject to the
+        # currently executing backend's mutation and delivery restrictions.
+        if name == "task_control":
+            # Recording lifecycle state grants no business or send authority.
+            # Even a restricted calculation must be able to answer or stop.
+            return True
+        return not (
+            self._prompt_tools_closed()
+            or self._exclusive_write()
+            or self._runtime.read_only
+            or self._admin_retry_constraint is not None
+        )
+
     def _prompt_tools_closed(self) -> bool:
         if self._tools_closed:
             return True
@@ -696,6 +714,11 @@ class _ChatAgentBackend(AgentToolBackend):
         self._batch = list(calls)
 
     def has_prior_reply_effects(self) -> bool:
+        from qq_ai_bot.runtime.work_activation import current_work_control
+
+        work = current_work_control.get()
+        if work is not None and work.progress_count:
+            return True
         control = self._runtime.reply_control
         return bool(
             control is not None
@@ -739,6 +762,15 @@ class _ChatAgentBackend(AgentToolBackend):
                     {"ok": False, "error": "tool_batch_state_mismatch"}, ensure_ascii=False
                 )
             call = self._batch.pop(call_index)
+        control = runtime.work_control
+        if (
+            control is not None
+            and self.is_side_effecting(name, arguments_json, runtime)
+            and await control.pending()
+        ):
+            return json.dumps(
+                {"ok": False, "error": "new_input_before_execution", "executed": False}
+            )
         if name == "update_short_state" and self._service._agent_runner.main_contract is not None:
             return await self._service._agent_runner.main_contract.state.execute(arguments_json)
         if name == _SET_REPLY_TARGET_NAME:
@@ -901,6 +933,20 @@ class _ChatAgentBackend(AgentToolBackend):
                 try:
 
                     async def invoke_binding() -> ToolExecutionResult:
+                        from qq_ai_bot.runtime.work_activation import current_work_control
+
+                        work = current_work_control.get()
+                        if work is not None:
+                            await work.validate()
+                            if not await work.repository.valid(work.lease):
+                                raise TurnSupersededError("work activation changed")
+                            if await work.pending():
+                                return ToolExecutionResult(
+                                    ok=False,
+                                    error_code="new_input_before_execution",
+                                    public_message="新要求已到达，此调用未执行，请按新要求继续。",
+                                    retryable=True,
+                                )
                         return await binding.invoke(
                             {str(key): value for key, value in parsed.items()},
                             ToolInvocationContext(
@@ -1545,6 +1591,10 @@ class ChatService:
         self._main_turns = MainAgentTurnService(
             self._prompt_composer, self._agent_runner, self._ledger._database
         )
+        from qq_ai_bot.runtime.work_repository import WorkRepository
+
+        self._work_repository = WorkRepository(self._ledger._database)
+        self._active_work: dict[str, Any] = {}
         self._turn_coordinator = turn_coordinator or ConversationTurnCoordinator(
             cancel_replies_on_new_message=settings.reply_sequence_cancel_on_new_message,
             interrupt_autonomous_on_new_message=(
@@ -1836,6 +1886,57 @@ class ChatService:
 
         self._event_publisher = publisher
 
+    async def discard_work_input(self, identity: int | None) -> None:
+        if identity is not None:
+            await self._work_repository.discard_input(identity)
+
+    def work_is_active(self, conversation_key: str) -> bool:
+        control = self._active_work.get(conversation_key)
+        return bool(control is not None and control.current is not None)
+
+    async def stage_work_input(
+        self,
+        conversation_key: str,
+        inbound: InboundMessage,
+        event_id: int,
+    ) -> int | None:
+        control = self._active_work.get(conversation_key)
+        if (
+            control is None
+            or control.current is None
+            or control.source.get("actor_user_id") != inbound.sender.user_id
+        ):
+            return None
+        from qq_ai_bot.runtime.work_repository import WorkCapacityError
+
+        try:
+            return await self._work_repository.enqueue(
+                control.lease.conversation_id,
+                control.lease.generation,
+                f"message:{control.lease.conversation_id}:{inbound.message_id}",
+                kind="message",
+                event_id=event_id,
+                work_id=control.current["id"],
+                ready=False,
+            )
+        except WorkCapacityError:
+            # The canonical message remains in the ordinary conversation queue.
+            return None
+
+    async def ready_work_input(
+        self,
+        conversation_key: str,
+        identity: int,
+        text: str,
+        images: tuple[ChatImage, ...] = (),
+    ) -> bool:
+        await self._work_repository.prepare_input(identity, {"text": text[:7000]})
+        control = self._active_work.get(conversation_key)
+        if control is not None:
+            control.input_images[identity] = images
+        # The durable parent owns this input even if its activation just yielded.
+        return True
+
     async def respond(
         self,
         inbound: InboundMessage,
@@ -1869,6 +1970,99 @@ class ChatService:
             self._concurrency.conversation(conversation_key),
             AsyncExitStack() as memory_cleanup,
         ):
+            work_control = None
+            if self._settings.runtime_work_enabled and inbound.conversation_id and turn_snapshot:
+                from qq_ai_bot.runtime.work_activation import activate_work, current_work_control
+
+                async def validate_work() -> None:
+                    if not await self._validate_turn_snapshot(turn_snapshot):
+                        raise TurnSupersededError("work authority changed")
+
+                async def progress_delivery(text: str, key: str) -> dict[str, Any]:
+                    outbound = OutboundMessage(text=text)
+
+                    async def send_progress() -> dict[str, Any]:
+                        receipt = await sender.send(outbound)
+                        if not isinstance(receipt, OutboundSendReceipt):
+                            raise TypeError("progress sender returned no receipt")
+                        await self._work_repository.record_effect(
+                            key,
+                            "accepted",
+                            {
+                                "transport_accepted": True,
+                                "text": text,
+                                "message_id": receipt.platform_message_id,
+                            },
+                        )
+                        recorded = await self._record_outbound_message(
+                            inbound,
+                            outbound,
+                            receipt,
+                            origin=turn_origin.value,
+                        )
+                        return {
+                            "transport_accepted": True,
+                            "text": text,
+                            "message_id": receipt.platform_message_id,
+                            "ledger_recorded": bool(recorded),
+                        }
+
+                    return await self._run_effect(turn_snapshot, send_progress)
+
+                async def resolve_child(run_id: str) -> dict[str, Any] | None:
+                    client = self._tools.sandbox_client
+                    if client is None or client.tasks is None:
+                        return None
+                    child = await client.tasks.by_run(run_id)
+                    control = current_work_control.get()
+                    if child is None or control is None or control.current is None:
+                        return None
+                    source = json.loads(child.source_json)
+                    if (
+                        child.source_conversation_id != inbound.conversation_id
+                        or source.get("work_id") != control.current["id"]
+                    ):
+                        return None
+                    return cast(
+                        dict[str, Any],
+                        await client.execute(
+                            "get_code_run", {"run_id": run_id}, request_id=f"work-check:{run_id}"
+                        ),
+                    )
+
+                work_control = await memory_cleanup.enter_async_context(
+                    activate_work(
+                        self._work_repository,
+                        inbound.conversation_id,
+                        turn_snapshot.generation,
+                        f"message:{inbound.conversation_id}:{inbound.message_id}",
+                        {
+                            "actor_user_id": inbound.sender.user_id,
+                            "origin": turn_origin.value,
+                            "trigger_event_id": turn_snapshot.trigger_event_id,
+                            "trigger_id": inbound.message_id,
+                            "bot_user_id": inbound.bot_user_id,
+                            "generation": turn_snapshot.generation,
+                            "conversation_id": inbound.conversation_id,
+                            "allow_admin_actions": inbound.sender.user_id
+                            in self._settings.superusers,
+                            "allow_automation": True,
+                            "actor_is_superuser": inbound.sender.user_id
+                            in self._settings.superusers,
+                            "presence_id": inbound.presence_id,
+                        },
+                        validate_work,
+                        progress_delivery,
+                        resolve_child,
+                    )
+                )
+                self._active_work[conversation_key] = work_control
+
+                def release_work_registration() -> None:
+                    if self._active_work.get(conversation_key) is work_control:
+                        self._active_work.pop(conversation_key, None)
+
+                memory_cleanup.callback(release_work_registration)
             runtime_config = runtime_snapshot or await self._runtime_config.snapshot(
                 user_id=inbound.sender.user_id,
                 group_id=inbound.group_id,
@@ -1911,6 +2105,11 @@ class ChatService:
                 )
                 and is_scheduled_automation_request(content)
             )
+
+            if work_control is not None:
+                from qq_ai_bot.runtime.work_delivery import repair_receipt_ledger
+
+                await repair_receipt_ledger(work_control, self._ledger)
 
             async def build_messages() -> tuple[
                 tuple[ChatMessage, ...],
@@ -2011,6 +2210,10 @@ class ChatService:
                 completed_agent = await self._run_agent(conversation_key, messages, runtime)
             from qq_ai_bot.sandbox.budget_sender import BudgetSender
 
+            if work_control is not None:
+                from qq_ai_bot.runtime.work_delivery import WorkDeliverySender
+
+                sender = WorkDeliverySender(sender, work_control)
             sender = BudgetSender(sender, completed_agent.progress)
             agent_result = completed_agent.result
             if agent_result.suppress_delivery:
@@ -2381,6 +2584,10 @@ class ChatService:
                     )
 
                 await self._run_effect(turn_snapshot, finish_delivery)
+                if work_control is not None:
+                    work_control.final_delivery = agent_body_delivered and not sequence.cancelled
+                    if work_control.final_delivery and work_control.session is not None:
+                        await work_control.session.save("delivered")
                 return sequence.sent_messages
             chunks = self._render_chunks(rendered, runtime_config) if rendered else ()
             legacy_messages = [
@@ -2550,6 +2757,10 @@ class ChatService:
                 delivered=agent_body_delivered,
                 cancelled=False,
             )
+            if work_control is not None:
+                work_control.final_delivery = agent_body_delivered
+                if work_control.final_delivery and work_control.session is not None:
+                    await work_control.session.save("delivered")
             return sent_count
 
     def _open_memory_session(
@@ -2861,12 +3072,30 @@ class ChatService:
         upstream: Callable[[], Awaitable[None]] | None = None,
         commit_projection: Callable[[], Awaitable[None]] | None = None,
     ) -> Callable[[], Awaitable[None]]:
+        from qq_ai_bot.runtime.work_activation import current_work_control
+        from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
+
+        active = current_work_control.get()
+        if version is not None and active is not None:
+            trigger_id = active.source.get("trigger_event_id")
+            if isinstance(trigger_id, int):
+                version = replace(
+                    version,
+                    visible_event_ids=tuple(sorted({*version.visible_event_ids, trigger_id})),
+                )
+        source_guard = WorkSourceGuard(version) if version is not None else None
+
         async def validate() -> None:
             if upstream is not None:
                 await upstream()
-            if version is not None and not await self._ledger.read_version_matches(version):
+            control = current_work_control.get()
+            if control is not None and source_guard is not None:
+                valid = await source_guard.check(control)
+            else:
+                valid = version is None or await self._ledger.read_version_matches(version)
+            if not valid:
                 raise TurnSupersededError("context source changed before model invocation")
-            if commit_projection is not None:
+            if commit_projection is not None and control is None:
                 await commit_projection()
 
         return validate
@@ -2976,6 +3205,7 @@ class ChatService:
                 prompt_diagnostics=runtime.prompt_diagnostics,
                 before_model_request=before_model_request,
                 canonical_conversation_id=runtime.effective_conversation_id,
+                execution_id=runtime.execution_id or runtime.trigger_message_id,
             ),
             backend,
         )
@@ -3048,7 +3278,7 @@ class ChatService:
         self,
         *,
         event: EventRecord,
-        trigger: ExternalEventTurnTrigger | SandboxTaskTurnTrigger,
+        trigger: ExternalEventTurnTrigger | SandboxTaskTurnTrigger | WorkResumeTrigger,
         identity: ConversationScope,
         runtime: RuntimeConfigSnapshot,
         turn_token: TurnToken,
@@ -3127,7 +3357,7 @@ class ChatService:
             external_target_id=trigger.target_id,
         )
         if source_runtime is not None:
-            if not isinstance(trigger, SandboxTaskTurnTrigger):
+            if not isinstance(trigger, (SandboxTaskTurnTrigger, WorkResumeTrigger)):
                 raise ValueError("source runtime requires a sandbox completion")
             tool_runtime = replace(
                 source_runtime,
