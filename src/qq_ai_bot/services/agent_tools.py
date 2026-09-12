@@ -3235,7 +3235,7 @@ class AgentToolService:
                 }
                 for index, segment in enumerate(
                     segment
-                    for segment in json.loads(row.segments_json)
+                    for segment in row.segments
                     if isinstance(segment, dict)
                     and segment.get("type") in {"image", "video", "file", "audio", "record"}
                     and isinstance(segment.get("data"), dict)
