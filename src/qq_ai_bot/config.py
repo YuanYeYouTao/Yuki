@@ -316,8 +316,8 @@ class Settings(BaseSettings):
     memory_rebuild_review_page_size: int = 20
     memory_rebuild_source_excerpt_characters: int = 500
     memory_rebuild_max_events_per_run: int | None = None
-    agent_max_tool_calls: int = 12
-    agent_max_model_requests: int = 13
+    agent_max_tool_calls: int = 32
+    agent_max_model_requests: int = 24
     agent_tool_result_max_characters: int = 8000
 
     # Generous initial Tool Kernel budgets keep schemas bounded without reducing authority;
@@ -352,6 +352,8 @@ class Settings(BaseSettings):
 
     conversation_autonomous_enabled: bool = True
     runtime_work_enabled: bool = False
+    subagents_enabled: bool = False
+    subagent_context_token_limit: int = Field(default=131072, ge=8192)
     conversation_autonomous_debounce_seconds: float = 3.0
     conversation_autonomous_admission_threshold: int = 80
     conversation_autonomous_batch_limit: int = 8

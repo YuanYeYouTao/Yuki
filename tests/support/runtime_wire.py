@@ -20,7 +20,7 @@ from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
 from qq_ai_bot.model_runtime.routes import ModelRouter
 
 
-def install_wire(chat, fake, protocol):
+def install_wire(chat, fake, protocol, *, native=False):
     captured = []
 
     def transport(request):
@@ -69,6 +69,10 @@ def install_wire(chat, fake, protocol):
     provider_type = (
         DeepSeekResponsesProvider if protocol == "responses" else OpenAICompatibleProvider
     )
+    if native:
+        from qq_ai_bot.llm.openai_responses import OpenAIResponsesProvider
+
+        provider_type = OpenAIResponsesProvider
     provider = provider_type(
         base_url="https://runtime.example",
         api_key="test",
@@ -84,7 +88,7 @@ def install_wire(chat, fake, protocol):
     fake.complete = complete
     profile = ModelProfile(
         id="runtime-wire",
-        provider="deepseek",
+        provider="openai" if native else "deepseek",
         protocol=ModelProtocol(protocol),
         base_url="https://runtime.example",
         api_key_env="UNUSED",

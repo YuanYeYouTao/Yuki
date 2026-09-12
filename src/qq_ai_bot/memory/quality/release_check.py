@@ -29,7 +29,7 @@ from qq_ai_bot.memory.quality.report import write_reports
 from qq_ai_bot.memory.quality.runner import MemoryQualityRunner
 from qq_ai_bot.persistence.database import Database
 
-_ALEMBIC_HEAD = "0056"
+_ALEMBIC_HEAD = "0057"
 _EXPECTED_RELEASE_VERSION = "3.8.2"
 
 
@@ -198,6 +198,7 @@ class MemoryReleaseCheck:
             "0054_prompt_projections.py",
             "0055_audio_transcripts.py",
             "0056_runtime_work.py",
+            "0057_subagents.py",
         }
         missing = sorted(required - versions)
         return self._item(

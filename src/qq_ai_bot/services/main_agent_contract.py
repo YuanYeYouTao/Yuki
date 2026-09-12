@@ -92,7 +92,10 @@ class MainAgentContract:
                                 result_cacheable=capability.result_cacheable,
                             )
                         )
+            from qq_ai_bot.runtime.subagent_tools import subagent_tools
+
             tools.extend(work_control_tools())
+            tools.extend(subagent_tools())
             names = [tool.name for tool in tools]
             if len(names) != len(set(names)):
                 raise ValueError("duplicate Main Agent manifest tool")
