@@ -24,6 +24,54 @@ from qq_ai_bot.workspace.service import workspace_tools
 
 
 @pytest.mark.asyncio
+async def test_group_directory_miss_refreshes_without_group_message(database: Database) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from sqlalchemy import select
+
+    from qq_ai_bot.identity.canonical_repository import ensure_space
+    from qq_ai_bot.identity.db_models import CanonicalSpaceModel
+    from qq_ai_bot.memory.read_scope import MemoryReadScopeResolver
+    from qq_ai_bot.persistence.repositories import UserProfileRepository
+    from qq_ai_bot.social.service import SocialService
+
+    async with database.sessions.begin() as session:
+        await ensure_presence(session, "80001")
+        space_id = await ensure_space(session, "2001", name="旧群名")
+    await UserProfileRepository(database).observe(user_id="1001", nickname="远野", group_id="2001")
+    router = SimpleNamespace(resolve_presence=AsyncMock(return_value=object()))
+    service = SocialService(database, router, None)
+    service._call = AsyncMock(
+        return_value=[
+            {"group_id": 2001, "group_name": "数字生命研究所"},
+            {"group_id": 9988776655, "group_name": "未登记群"},
+        ]
+    )
+    assert await service.contacts("space", "数字生命研究所", exact=True) == [
+        {"target_id": space_id, "display_name": "数字生命研究所", "kind": "space"}
+    ]
+    assert service._call.call_args.args[1:] == ("get_group_list", {"no_cache": True})
+    assert await MemoryReadScopeResolver(database).groups_named("1001", "数字生命研究所") == (
+        "2001",
+    )
+    assert await MemoryReadScopeResolver(database).groups_named("99999", "数字生命研究所") == ()
+    first_refresh_calls = service._call.call_count
+    assert await service.contacts("space", "未登记群", exact=True) == []
+    assert service._call.call_count == first_refresh_calls
+    service._directory_checked_at -= 31
+    service._call.side_effect = TimeoutError()
+    assert await service.contacts("space", "另一个名字", exact=True) == []
+    async with database.sessions() as session:
+        assert (
+            await session.scalar(
+                select(CanonicalSpaceModel.name).where(CanonicalSpaceModel.id == space_id)
+            )
+            == "数字生命研究所"
+        )
+
+
+@pytest.mark.asyncio
 async def test_transfer_permission_failure_preserves_artifact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

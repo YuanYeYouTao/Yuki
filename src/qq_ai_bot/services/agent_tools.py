@@ -2195,8 +2195,15 @@ class AgentToolService:
         if requester is None:
             return _ToolFailure("permission_denied", "历史群名查询需要真实用户主体")
         matches = await self._memory_reads.groups_named(requester, value)
+        if not matches and self.social_service is not None:
+            await self.social_service.refresh_space_names()
+            matches = await self._memory_reads.groups_named(requester, value)
         if not matches:
-            return _ToolFailure("group_not_found", "授权历史群中没有精确匹配的群名")
+            return _ToolFailure(
+                "group_not_found",
+                "授权历史群中没有精确匹配的群名；这不证明聊天记录不存在。"
+                "群记忆不是聊天记录，解析到目标群后用 read_conversation_history 读取近期记录。",
+            )
         if len(matches) > 1:
             return _ToolFailure(
                 "ambiguous_group",
