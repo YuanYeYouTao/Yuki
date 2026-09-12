@@ -22,13 +22,13 @@ class OneBotUserProfileResolver:
         self._bot = bot
 
     async def resolve_group_name(self, group_id: str) -> str:
-        """Fetch a group name once when the group is first observed."""
+        """Refresh group metadata; the processor bounds lookup frequency."""
 
         try:
             payload = await self._bot.call_api(
                 "get_group_info",
                 group_id=int(group_id),
-                no_cache=False,
+                no_cache=True,
             )
         except Exception as exc:
             logger.warning(

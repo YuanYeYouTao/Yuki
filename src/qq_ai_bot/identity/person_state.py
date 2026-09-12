@@ -432,7 +432,7 @@ async def observe_canonical_space(
     if space is None:
         raise CanonicalIdentityError("unclassified")
     binding.last_seen_at = now
-    if name:
+    if name and (binding.display_name != name[:128] or space.name != name[:128]):
         binding.display_name = name[:128]
         binding.updated_at = now
         binding.revision += 1
