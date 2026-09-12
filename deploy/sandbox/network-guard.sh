@@ -31,3 +31,8 @@ done
 ipt -A YUKI-EGRESS -p tcp -m multiport --dports 80,443 -j RETURN
 ipt -A YUKI-EGRESS -j DROP
 ensure DOCKER-USER -i yuki-egress0 -j YUKI-EGRESS
+# Optional root-owned host proxy relay. This admits only the trusted egress
+# container to its dedicated bridge listener, never the execution environment.
+if [ -x /etc/yuki-sandbox/upstream-firewall.sh ]; then
+    /etc/yuki-sandbox/upstream-firewall.sh
+fi
