@@ -154,6 +154,45 @@ async def test_untriggered_enabled_group_message_updates_identity(database: Data
 
 
 @pytest.mark.asyncio
+async def test_group_rename_refreshes_existing_name_without_changing_identity(
+    database: Database,
+) -> None:
+    from qq_ai_bot.identity.db_models import SpaceBindingModel
+    from qq_ai_bot.memory.read_scope import MemoryReadScopeResolver
+    from qq_ai_bot.services.policies import EffectiveGroupPolicy
+
+    harness = build_harness(database, make_settings(database.url))
+    await harness.profiles.observe(
+        user_id="1001", nickname="远野", group_id="2001", group_name="旧群名"
+    )
+    async with database.sessions() as session:
+        original = await session.scalar(
+            select(SpaceBindingModel.space_id).where(SpaceBindingModel.external_space_id == "2001")
+        )
+    bot = FakeOneBot({"group_name": "数字生命研究所"})
+    resolver = OneBotUserProfileResolver(cast(Any, bot))
+    message = inbound("普通消息", message_id="renamed-group", group_id="2001")
+    policy = EffectiveGroupPolicy(enabled=True)
+    await harness.processor._observe_group_metadata(message, policy, resolver)
+    assert bot.calls == [("get_group_info", {"group_id": 2001, "no_cache": True})]
+    assert await MemoryReadScopeResolver(database).groups_named("1001", "数字生命研究所") == (
+        "2001",
+    )
+    await harness.processor._observe_group_metadata(message, policy, resolver)
+    assert len(bot.calls) == 1
+    harness.processor._group_name_refreshes["2001"] -= 301
+    bot.payload = {}
+    await harness.processor._observe_group_metadata(message, policy, resolver)
+    assert len(bot.calls) == 2
+    setting = await harness.groups.get("2001")
+    assert setting is not None and setting.name == "数字生命研究所"
+    async with database.sessions() as session:
+        assert original == await session.scalar(
+            select(SpaceBindingModel.space_id).where(SpaceBindingModel.external_space_id == "2001")
+        )
+
+
+@pytest.mark.asyncio
 async def test_onebot_resolver_queries_only_when_event_fields_are_missing() -> None:
     complete_bot = FakeOneBot()
     complete = inbound(

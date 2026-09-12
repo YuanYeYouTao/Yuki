@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
@@ -341,6 +343,7 @@ class MessageProcessor:
         self._conversation_rollups = conversation_rollups
         self._effect_gate = effect_gate
         self._groups = groups
+        self._group_name_refreshes: OrderedDict[str, float] = OrderedDict()
         self._private_users = private_users
         self._user_profiles = user_profiles
         self._chat = chat
@@ -1278,13 +1281,22 @@ class MessageProcessor:
     ) -> None:
         if message.group_id is None or policy is None or not policy.enabled:
             return
-        existing = await self._groups.get(message.group_id)
         group_name = ""
         method = getattr(resolver, "resolve_group_name", None)
-        if (existing is None or not existing.name) and callable(method):
+        now = time.monotonic()
+        refresh_at = self._group_name_refreshes.get(message.group_id, float("-inf"))
+        if callable(method) and now - refresh_at >= 300:
+            # Reserve before awaiting: concurrent messages must not fan out lookups.
+            # Bound both successful and failed refresh attempts; never erase a name
+            # when a gateway returns no metadata. Network I/O precedes DB writes.
+            self._group_name_refreshes[message.group_id] = now
+            self._group_name_refreshes.move_to_end(message.group_id)
+            while len(self._group_name_refreshes) > 256:
+                self._group_name_refreshes.popitem(last=False)
             resolve_name = cast(Callable[[str], Awaitable[str]], method)
             try:
-                group_name = sanitize_profile_name(await resolve_name(message.group_id))
+                async with asyncio.timeout(3):
+                    group_name = sanitize_profile_name(await resolve_name(message.group_id))
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 logger.warning(
                     "group_name_resolve_failed exception_category=%s",
