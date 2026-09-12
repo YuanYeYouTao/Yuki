@@ -348,6 +348,13 @@ class AgentToolService:
         self.workspace_service: Any = None
         self.sandbox_client: Any = None
 
+    @staticmethod
+    def _work_source() -> dict[str, str]:
+        from qq_ai_bot.runtime.work_activation import current_work_control
+
+        control = current_work_control.get()
+        return {"work_id": control.current["id"]} if control and control.current else {}
+
     def definitions(self, runtime: ToolRuntime) -> tuple[ChatTool, ...]:
         bot_name = self._settings.bot_display_name
         tools = [
@@ -1033,12 +1040,21 @@ class AgentToolService:
                             f"{invocation.call_id}"
                         ).encode()
                     ).hexdigest()
+                    from qq_ai_bot.runtime.work_activation import current_work_control
+
+                    work_control = current_work_control.get()
+                    if work_control is not None and work_control.session is not None:
+                        request_id = sha256(
+                            work_control.session.call_key(invocation.call_id).encode()
+                        ).hexdigest()
                     result = await self.sandbox_client.execute(
                         name,
                         arguments,
                         request_id=request_id,
-                        source=runtime.sandbox_source
-                        or {
+                        source={**runtime.sandbox_source, **self._work_source()}
+                        if runtime.sandbox_source and name in EXECUTION_TOOLS
+                        else {
+                            **self._work_source(),
                             "conversation_id": runtime.effective_conversation_id,
                             "origin": runtime.origin.value,
                             "allow_admin_actions": runtime.allow_admin_actions,

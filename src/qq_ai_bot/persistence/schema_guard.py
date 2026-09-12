@@ -10,9 +10,35 @@ from sqlalchemy.pool import NullPool
 
 from qq_ai_bot.asr.schema import PROJECTION_TRIGGERS_0055
 
-CANONICAL_SCHEMA_REVISION = "0055"
+CANONICAL_SCHEMA_REVISION = "0056"
 
 _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
+    "runtime_work": frozenset(
+        {
+            "id",
+            "conversation_id",
+            "generation",
+            "state",
+            "revision",
+            "model_requests",
+            "tool_calls",
+            "sent_messages",
+            "active_seconds",
+            "output_kind",
+            "deliver_artifacts",
+            "checkpoint_json",
+        }
+    ),
+    "runtime_work_scopes": frozenset(
+        {"conversation_id", "generation", "cancel_epoch", "fence", "owner", "lease_until"}
+    ),
+    "runtime_work_inputs": frozenset(
+        {"id", "work_id", "state", "ready", "prepare_owner", "payload_json"}
+    ),
+    "runtime_work_effects": frozenset({"effect_key", "work_id", "state", "receipt_json"}),
+    "runtime_work_journal": frozenset(
+        {"work_id", "contract", "source_revision", "phase", "payload_json"}
+    ),
     "sandbox_task_runs": frozenset(
         {"request_id", "progress_json", "source_json", "completion_json"}
     ),

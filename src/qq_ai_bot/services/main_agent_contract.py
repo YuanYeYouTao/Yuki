@@ -11,6 +11,7 @@ from typing import Any
 
 from qq_ai_bot.capabilities.request import request_tools_definition
 from qq_ai_bot.domain.messages import ChatTool
+from qq_ai_bot.runtime.work_control import work_control_tools
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.workspace.short_state import STATE_TOOL, ShortState
 
@@ -91,6 +92,7 @@ class MainAgentContract:
                                 result_cacheable=capability.result_cacheable,
                             )
                         )
+            tools.extend(work_control_tools())
             names = [tool.name for tool in tools]
             if len(names) != len(set(names)):
                 raise ValueError("duplicate Main Agent manifest tool")

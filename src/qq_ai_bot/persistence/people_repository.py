@@ -521,6 +521,9 @@ class PeopleRepository:
                 and scope.private_peer_user_id in owner_externals
             )
             if conversation is not None:
+                from qq_ai_bot.runtime.work_repository import WorkRepository
+
+                await WorkRepository.purge_scope(session, conversation.id)
                 await delete_canonical_rollup_projections(session, conversation.id)
                 if not is_private_target:
                     conversation.generation += 1

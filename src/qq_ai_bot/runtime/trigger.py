@@ -86,6 +86,22 @@ class SandboxTaskTurnTrigger:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkResumeTrigger:
+    """Host scheduling signal referencing the original admitted message."""
+
+    source_event_id: int
+    target_type: str
+    target_id: str
+    agent_intent: str = "Resume the existing work from its durable inputs and execution receipts."
+    origin: TurnOrigin = field(default=TurnOrigin.SYSTEM_TASK, init=False)
+    plugin_id: None = field(default=None, init=False)
+
+    def __post_init__(self) -> None:
+        if self.source_event_id <= 0 or self.target_type not in _TARGET_TYPES or not self.target_id:
+            raise InvalidTurnTriggerError("invalid work resume trigger")
+
+
+@dataclass(frozen=True, slots=True)
 class ScheduledTurnTrigger:
     """A turn caused by a due scheduled automation."""
 
@@ -125,6 +141,7 @@ TurnTrigger = (
     MessageTurnTrigger
     | ExternalEventTurnTrigger
     | SandboxTaskTurnTrigger
+    | WorkResumeTrigger
     | ScheduledTurnTrigger
     | PluginSessionTurnTrigger
 )

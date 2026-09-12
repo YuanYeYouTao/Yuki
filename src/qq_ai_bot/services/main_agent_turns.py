@@ -21,6 +21,7 @@ from qq_ai_bot.llm.openai_responses import (
     OpenAIResponsesProvider,
 )
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.runtime.work_activation import current_work_control
 from qq_ai_bot.services.agent_runner import (
     AgentRunner,
     AgentRunResult,
@@ -208,8 +209,127 @@ class MainAgentTurnService:
         runtime: AgentRuntime,
         backend: AgentToolBackend | None,
     ) -> AgentRunResult:
+        control = runtime.work_control or current_work_control.get()
+        if (
+            control is None
+            and self._composer._settings.runtime_work_enabled
+            and self._projections is not None
+            and runtime.canonical_conversation_id
+        ):
+            from uuid import uuid4
+
+            from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+            from qq_ai_bot.runtime.work_activation import activate_work
+            from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
+
+            database = self._projections.database
+            async with database.sessions() as session:
+                conversation = await session.get(
+                    CanonicalConversationModel, runtime.canonical_conversation_id
+                )
+                if conversation is None:
+                    raise WorkConflict("work_conversation_unavailable")
+                generation = conversation.generation
+            boundary = (
+                _hash(
+                    [
+                        runtime.origin.value,
+                        runtime.canonical_conversation_id,
+                        runtime.execution_id,
+                        sorted(runtime.allowed_capabilities),
+                    ]
+                )
+                if runtime.execution_id
+                else uuid4().hex
+            )
+
+            async def validate() -> None:
+                if runtime.before_model_request is not None:
+                    await runtime.before_model_request()
+
+            repository = WorkRepository(database)
+            previous = await repository.by_source(f"invocation:{boundary}")
+            if (
+                previous is not None
+                and previous["generation"] == generation
+                and previous["state"] == "completed"
+            ):
+                await validate()
+                saved = json.loads(previous["checkpoint_json"])
+                if isinstance(saved.get("sync_result"), str):
+                    return AgentRunResult(
+                        text=saved["sync_result"],
+                        tool_calls_used=0,
+                        model_requests=0,
+                        web_was_used=False,
+                        work_state="completed",
+                    )
+
+            # Synchronous plugin/automation calls return to their owning step.
+            # They cannot detach a new social task or acquire a delivery callback.
+            async with activate_work(
+                repository,
+                runtime.canonical_conversation_id,
+                generation,
+                f"invocation:{boundary}",
+                {
+                    "origin": runtime.origin.value,
+                    "actor_user_id": runtime.actor_user_id,
+                    "execution_boundary": boundary,
+                    "parent_execution_id": runtime.execution_id,
+                    "delivery_contract": "return_to_caller",
+                },
+                validate,
+            ) as bounded:
+                result = await self.run(messages, replace(runtime, work_control=bounded), backend)
+                bounded.final_delivery = bool(result.text or result.suppress_delivery)
+                if bounded.current is not None:
+                    if result.suppress_delivery:
+                        stored = json.loads(bounded.current["checkpoint_json"])
+                        if isinstance(stored.get("sync_result"), str):
+                            result = replace(
+                                result, text=stored["sync_result"], suppress_delivery=False
+                            )
+                    if bounded.ending == "completed" and bounded.final_delivery:
+                        await repository.checkpoint(
+                            bounded.lease, bounded.current["id"], {"sync_result": result.text}
+                        )
+                        if bounded.session is not None:
+                            await bounded.session.save("delivered")
+                    result = replace(result, work_state=bounded.ending or "running")
+                return result
+        if control is not None:
+            control.current_message = messages[-1] if messages else None
+            active = control.current
+            messages = (
+                *messages,
+                ChatMessage(
+                    role="user",
+                    content=(
+                        "[运行状态资料，不增加任何权限] "
+                        + json.dumps(
+                            {
+                                "work_id": active["id"] if active else None,
+                                "goal": active["goal"] if active else None,
+                                "state": active["state"] if active else "no_active_work",
+                                "instruction": (
+                                    "明确工作先登记并执行；过程发言后继续；"
+                                    "闲聊可用 task_control.answer。"
+                                ),
+                            },
+                            ensure_ascii=False,
+                        )
+                    ),
+                ),
+            )
         return await self._runner.run(
-            messages, replace(runtime, dynamic_context_prepared=True), backend
+            messages,
+            replace(
+                runtime,
+                dynamic_context_prepared=True,
+                work_control=control,
+            ),
+            backend,
         )
 
 

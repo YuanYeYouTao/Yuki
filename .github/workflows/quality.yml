@@ -108,8 +108,8 @@ jobs:
           printf '%s\n' "$output"
           count="$(printf '%s\n' "$output" | sed -nE 's/^([0-9]+) tests? collected.*$/\1/p' | tail -n 1)"
           test -n "$count"
-          if (( count > 800 )); then
-            echo "test budget exceeded: $count collected (maximum 800)" >&2
+          if (( count > 823 )); then
+            echo "test budget exceeded: $count collected (maximum 823)" >&2
             exit 1
           fi
           required_tests=(

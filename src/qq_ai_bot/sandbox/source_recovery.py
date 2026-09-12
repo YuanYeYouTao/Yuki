@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy import select
 
@@ -51,9 +52,23 @@ async def recover_message_source(database: Database, request_id: str) -> Message
         if json.loads(task.completion_json).get("status") == "cancelled":
             raise ValueError("task_cancelled")
         source = json.loads(task.source_json)
+    return await recover_source(
+        database, task.source_conversation_id, source, request_id=request_id
+    )
+
+
+async def recover_source(
+    database: Database,
+    conversation_id: str,
+    source: dict[str, Any],
+    *,
+    request_id: str,
+) -> MessageTaskSource:
+    """Shared canonical validation for a persisted message-origin work source."""
+    async with database.sessions() as session:
         if source.get("origin") not in {"user_message", "autonomous_group"}:
             raise ValueError("not_a_message_task")
-        conversation = await session.get(CanonicalConversationModel, task.source_conversation_id)
+        conversation = await session.get(CanonicalConversationModel, conversation_id)
         generation = source.get("generation")
         if (
             conversation is None
