@@ -18,6 +18,7 @@ from qq_ai_bot.memory.dream import db_models as _memory_dream_db_models  # noqa:
 from qq_ai_bot.model_runtime import db_models as _model_runtime_db_models  # noqa: F401
 from qq_ai_bot.persistence.models import Base
 from qq_ai_bot.plugin_host import db_models as _plugin_db_models  # noqa: F401
+from qq_ai_bot.runtime import work_schema_v1 as _work_schema_v1  # noqa: F401
 from qq_ai_bot.sandbox import db_models as _sandbox_db_models  # noqa: F401
 from qq_ai_bot.social import db_models as _social_db_models  # noqa: F401
 from qq_ai_bot.speech import db_models as _speech_db_models  # noqa: F401
