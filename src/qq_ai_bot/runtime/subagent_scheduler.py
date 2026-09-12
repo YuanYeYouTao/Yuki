@@ -65,6 +65,13 @@ class SubagentScheduler:
         if self.app.database.subagents_enabled and self.app.settings.global_llm_concurrency < 2:
             raise ValueError("subagents_require_foreground_model_slot")
         if self.app.settings.runtime_work_enabled and self.task is None:
+            self.definitions = tuple(
+                t
+                for t in await self.app.main_agent_contract.definitions()
+                if t.name in WORKER_NAMES
+            )
+            if frozenset(t.name for t in self.definitions) != WORKER_NAMES:
+                raise ValueError("incomplete_worker_tool_manifest")
             self.task = asyncio.create_task(self.loop(), name="subagent-scheduler")
 
     async def close(self) -> None:

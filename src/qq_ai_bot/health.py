@@ -29,6 +29,7 @@ class HealthPayload(TypedDict):
     sandbox_completions: dict[str, object]
     sandbox_continuations: dict[str, object]
     runtime_work: dict[str, object]
+    subagents: dict[str, object]
     main_agent_manifest: dict[str, object]
     emoji_enabled: bool
     emoji_worker_running: bool
@@ -109,6 +110,7 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
         sandbox_completions=await container.sandbox_completions.health(),
         sandbox_continuations=await container.sandbox_continuations.health(),
         runtime_work=await container.work_scheduler.health(),
+        subagents=await container.subagent_scheduler.health(),
         main_agent_manifest=container.main_agent_contract.health(),
         emoji_enabled=container.settings.emoji_enabled,
         emoji_worker_running=(
