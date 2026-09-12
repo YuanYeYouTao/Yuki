@@ -13,12 +13,13 @@ import termios
 import time
 import tty
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 SEGMENT = 4 * 1024 * 1024
 
 
-def atomic(path: Path, value: dict) -> None:
+def atomic(path: Path, value: dict[str, Any]) -> None:
     temporary = path.with_suffix(".pending")
     with temporary.open("w") as stream:
         json.dump(value, stream)
@@ -90,8 +91,8 @@ def main() -> int:
     if original:
         tty.setraw(0)
     requested: list[int] = []
-    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-        signal.signal(sig, lambda value, _frame: requested.append(value))
+    for handled_signal in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(handled_signal, lambda value, _frame: requested.append(value))
     start = time.time()
     offset = 0
     last_save = 0.0
