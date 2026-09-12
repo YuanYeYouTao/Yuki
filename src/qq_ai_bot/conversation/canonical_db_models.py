@@ -221,6 +221,9 @@ class CanonicalConversationModel(Base):
     primary_alias_id: Mapped[str] = mapped_column(String(36), nullable=False)
     primary_marker: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    prompt_source_revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
     starts_after_event_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_event_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_generation_change_event_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

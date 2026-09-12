@@ -13,11 +13,9 @@ def request_tools_definition() -> ChatTool:
     return ChatTool(
         name=REQUEST_TOOLS_NAME,
         description=(
-            "当完成当前请求所需的工具没有出现在本轮工具列表中时，按自然语言能力描述"
-            "向后端请求加载。它只加载当前真实用户、来源和场景原本有权调用、但因"
-            "Schema 预算未预载的工具；不能越过真实权限。返回后应在"
-            "下一步直接调用 loaded_tools 中的真实工具，不要猜测、改写或虚构工具名。"
-            "已有合适工具时不要调用。"
+            "按自然语言查找本轮有权执行的能力及真实工具名。工具清单在部署内固定；"
+            "本工具只返回可用性与使用信息，不添加 schema，也不能扩大权限。"
+            "已有合适工具时直接调用，不必先查询。"
         ),
         parameters={
             "type": "object",

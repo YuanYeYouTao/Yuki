@@ -7,7 +7,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
-from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, text, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -563,6 +563,9 @@ class ConversationRollupRepository:
         """Load scope, checkpoint, and the exact continuous raw suffix in one transaction."""
 
         async with self._database.sessions() as session, session.begin():
+            # sqlite3's legacy mode does not BEGIN on SELECT. Establish a real
+            # read transaction before loading the version, checkpoint and tail.
+            await session.execute(text("BEGIN"))
             return await self._load_prompt_snapshot_canonical(
                 session, scope, before_event_id=before_event_id
             )
@@ -1006,6 +1009,8 @@ class ConversationRollupRepository:
             raw_tail_end_event_id=tail_end,
             overlay=overlay_state,
             rewrite_pending=overlay_state is not None,
+            conversation_id=conversation.id,
+            prompt_source_revision=conversation.prompt_source_revision,
         )
 
     async def _claim_next_canonical_job(

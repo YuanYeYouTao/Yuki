@@ -8,9 +8,46 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-CANONICAL_SCHEMA_REVISION = "0051"
+from qq_ai_bot.asr.schema import PROJECTION_TRIGGERS_0055
+
+CANONICAL_SCHEMA_REVISION = "0055"
 
 _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
+    "sandbox_task_runs": frozenset(
+        {"request_id", "progress_json", "source_json", "completion_json"}
+    ),
+    "sandbox_task_continuations": frozenset(
+        {"request_id", "state", "claim_token", "attempts", "reason", "outcome_json", "updated_at"}
+    ),
+    "prompt_projections": frozenset(
+        {
+            "view_key",
+            "conversation_id",
+            "generation",
+            "source_revision",
+            "starts_after_event_id",
+            "epoch_id",
+            "context_key",
+            "contract_revision",
+            "revision",
+            "rebuild_reason",
+            "invalidated_reason",
+            "payload_json",
+            "byte_size",
+            "updated_at",
+        }
+    ),
+    "social_operation_receipts": frozenset(
+        {
+            "id",
+            "source_turn_id",
+            "tool_call_id",
+            "payload_hash",
+            "status",
+            "target_id",
+            "presence_id",
+        }
+    ),
     "memory_recall_receipts": frozenset(
         {
             "consumer",
@@ -49,11 +86,12 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
         }
     ),
     "presences": frozenset({"id", "platform", "external_account_id", "enabled"}),
-    "canonical_conversations": frozenset({"id", "kind", "generation"}),
+    "canonical_conversations": frozenset({"id", "kind", "generation", "prompt_source_revision"}),
     "conversation_legacy_aliases": frozenset({"id", "conversation_id", "scope_key", "is_primary"}),
     "chat_events": frozenset(
         {
             "canonical_event_id",
+            "audio_transcript",
             "canonical_conversation_id",
             "author_kind",
             "caused_by_event_id",
@@ -134,5 +172,15 @@ async def require_canonical_schema(database_url: str) -> None:
             foreign_key_rows = await connection.execute(text("PRAGMA foreign_key_check"))
             if foreign_key_rows.first() is not None:
                 raise CanonicalSchemaError("database canonical foreign-key integrity check failed")
+            trigger_rows = await connection.execute(
+                text("SELECT name, sql FROM sqlite_master WHERE type='trigger'")
+            )
+            triggers = {str(row[0]): str(row[1]) for row in trigger_rows}
+            for name, expected in PROJECTION_TRIGGERS_0055.items():
+                actual = triggers.get(name, "").replace("IF NOT EXISTS ", "")
+                if " ".join(actual.split()) != " ".join(expected.split()):
+                    raise CanonicalSchemaError(
+                        "database projection invalidation trigger is missing or changed"
+                    )
     finally:
         await engine.dispose()

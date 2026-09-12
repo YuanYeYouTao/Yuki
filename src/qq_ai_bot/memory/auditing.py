@@ -256,7 +256,7 @@ class MemoryAuditCoordinator:
                 new_content=decision.corrected_content,
                 reason=decision.reason,
                 confidence=decision.confidence,
-                evidence_quote=event.content[:500],
+                evidence_quote=event.evidence_content[:500],
                 review_state=review_state,
             ),
             MemoryMutationContext(

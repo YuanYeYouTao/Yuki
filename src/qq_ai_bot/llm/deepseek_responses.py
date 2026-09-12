@@ -48,6 +48,7 @@ from qq_ai_bot.llm.base import (
     LLMUnavailableError,
     RetryableProviderError,
 )
+from qq_ai_bot.llm.wire_diagnostics import WireRequestObserver
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,9 @@ _CONTINUATION_TYPES = frozenset(
 class DeepSeekResponsesProvider(LLMProvider):
     """Translate Yuki's compatibility models to DeepSeek Responses items."""
 
+    provider_name = "deepseek"
+    supports_tool_choice = False
+
     def __init__(
         self,
         *,
@@ -68,6 +72,7 @@ class DeepSeekResponsesProvider(LLMProvider):
         max_retries: int,
         client: httpx.AsyncClient | None = None,
     ) -> None:
+        self._wire_observer = WireRequestObserver()
         self._api_key = api_key
         self._max_retries = max_retries
         self._owns_client = client is None
@@ -109,6 +114,12 @@ class DeepSeekResponsesProvider(LLMProvider):
                         correlation.turn_id if correlation else "unbound",
                         attempt.retry_state.attempt_number,
                     )
+                    self._wire_observer.observe(
+                        payload,
+                        "responses",
+                        chain_id=request.request_chain_id,
+                        provider=self.provider_name,
+                    )
                     response = await self._post(payload)
         except httpx.TimeoutException as exc:
             raise LLMTimeoutError("LLM request timed out") from exc
@@ -118,8 +129,8 @@ class DeepSeekResponsesProvider(LLMProvider):
         latency = time.perf_counter() - started
         parsed = self._parse_response(
             response,
-            request.continuation,
-            function_outputs=request.function_outputs,
+            self._request_continuation(request),
+            function_outputs=(),
             allowed_tool_names=frozenset(tool.name for tool in request.tools),
             latency=latency,
         )
@@ -128,11 +139,12 @@ class DeepSeekResponsesProvider(LLMProvider):
         )
         failed = sum(event.status is NativeToolStatus.FAILED for event in parsed.native_tool_events)
         logger.info(
-            "responses_request_completed provider=deepseek protocol=responses success=true "
+            "responses_request_completed provider=%s protocol=responses success=true "
             "response_status=%s latency_seconds=%.3f input_tokens=%s output_tokens=%s "
             "reasoning_tokens=%s cached_tokens=%s function_call_count=%d "
             "native_web_used=%s native_action_count=%d native_completed_count=%d "
             "native_failed_count=%d citation_count=%d incomplete_reason=%s",
+            self.provider_name,
             parsed.status.value,
             latency,
             parsed.prompt_tokens,
@@ -150,19 +162,15 @@ class DeepSeekResponsesProvider(LLMProvider):
         return parsed
 
     def _build_payload(self, request: ChatRequest) -> dict[str, Any]:
+        if request.native_tools and request.tool_choice == "none" and not self.supports_tool_choice:
+            raise LLMInvalidRequestError(
+                "provider cannot disable declared native tools for this request"
+            )
         instructions, inputs = self._convert_messages(request.messages)
-        continuation_items = self._continuation_items(request.continuation)
-        function_outputs = [
-            {
-                "type": "function_call_output",
-                "call_id": output.call_id,
-                "output": output.output,
-            }
-            for output in request.function_outputs
-        ]
+        continuation_items = self._continuation_items(self._request_continuation(request))
         payload: dict[str, Any] = {
             "model": request.model,
-            "input": [*inputs, *continuation_items, *function_outputs],
+            "input": [*inputs, *continuation_items],
             "stream": False,
         }
         if instructions:
@@ -195,8 +203,9 @@ class DeepSeekResponsesProvider(LLMProvider):
         if request.response_format is not None:
             payload["text"] = {"format": request.response_format}
         logger.info(
-            "responses_request_started provider=deepseek protocol=responses model=%s "
+            "responses_request_started provider=%s protocol=responses model=%s "
             "native_tool_types=%s function_tool_count=%d continuation=%s",
+            self.provider_name,
             request.model,
             ",".join(tool.type.value for tool in request.native_tools) or "none",
             len(request.tools),
@@ -204,13 +213,22 @@ class DeepSeekResponsesProvider(LLMProvider):
         )
         return payload
 
-    @staticmethod
+    @classmethod
     def _convert_messages(
+        cls,
         messages: tuple[ChatMessage, ...],
+        *,
+        leading_instructions: bool = True,
     ) -> tuple[str, list[dict[str, Any]]]:
         leading: list[str] = []
         index = 0
-        while index < len(messages) and messages[index].role in {"system", "developer"}:
+        while (
+            leading_instructions
+            and index < len(messages)
+            and messages[index].role in {"system", "developer"}
+        ):
+            if messages[index].response_item is not None:
+                raise LLMInvalidRequestError("Responses replay cannot become instructions")
             if messages[index].images:
                 raise LLMInvalidRequestError("images must be attached to a user message")
             content = messages[index].content
@@ -219,6 +237,11 @@ class DeepSeekResponsesProvider(LLMProvider):
             index += 1
         inputs: list[dict[str, Any]] = []
         for message in messages[index:]:
+            if message.response_item is not None:
+                if message.images or message.tool_calls or message.tool_call_id:
+                    raise LLMInvalidRequestError("mixed Responses replay representation")
+                inputs.extend(cls._continuation_items(message.response_item))
+                continue
             if message.tool_calls or message.tool_call_id:
                 raise LLMInvalidRequestError(
                     "Responses requests must use continuation and function_call_output items"
@@ -244,11 +267,47 @@ class DeepSeekResponsesProvider(LLMProvider):
                 inputs.append({"role": message.role, "content": message.content})
         return "\n\n".join(leading), inputs
 
-    @staticmethod
-    def _continuation_items(continuation: ProviderContinuation | None) -> list[dict[str, Any]]:
+    @classmethod
+    def _request_continuation(cls, request: ChatRequest) -> ProviderContinuation | None:
+        if request.continuation_items and (
+            request.function_outputs or request.continuation_messages
+        ):
+            raise LLMInvalidRequestError("mixed ordered and legacy continuation inputs")
+        delta = request.continuation_items or (
+            *request.function_outputs,
+            *request.continuation_messages,
+        )
+        if not request.continuation and not delta:
+            return None
+        items = cls._continuation_items(request.continuation)
+        for item in delta:
+            if isinstance(item, FunctionCallOutput):
+                items = list(
+                    cls._merge_continuation(
+                        ProviderContinuation(
+                            provider=cls.provider_name, protocol="responses", payload=tuple(items)
+                        ),
+                        (item,),
+                        [],
+                    )
+                )
+            else:
+                # Tail controls stay input messages, including system/developer roles.
+                # Never promote a leading control delta into top-level instructions.
+                _, converted = cls._convert_messages((item,), leading_instructions=False)
+                items.extend({"type": "message", **value} for value in converted)
+        return ProviderContinuation(
+            provider=cls.provider_name,
+            protocol="responses",
+            payload=tuple(items),
+            profile_id=request.continuation.profile_id if request.continuation else "",
+        )
+
+    @classmethod
+    def _continuation_items(cls, continuation: ProviderContinuation | None) -> list[dict[str, Any]]:
         if continuation is None:
             return []
-        if continuation.provider != "deepseek" or continuation.protocol != "responses":
+        if continuation.provider != cls.provider_name or continuation.protocol != "responses":
             raise LLMInvalidRequestError("continuation belongs to another provider or protocol")
         if not isinstance(continuation.payload, tuple) or not all(
             isinstance(item, dict) for item in continuation.payload
@@ -369,7 +428,7 @@ class DeepSeekResponsesProvider(LLMProvider):
         if not content and not calls and response_status is ModelResponseStatus.COMPLETED:
             raise LLMEmptyResponseError("provider returned no final message or function call")
         continuation = ProviderContinuation(
-            provider="deepseek",
+            provider=cls.provider_name,
             protocol="responses",
             payload=cls._merge_continuation(previous, function_outputs, continuation_output),
         )
@@ -616,6 +675,12 @@ class DeepSeekResponsesProvider(LLMProvider):
                 continue
             identity = cls._item_identity(item)
             if identity in seen:
+                if item.get("type") == "function_call_output" and any(
+                    cls._item_identity(previous_item) == identity
+                    and previous_item.get("output") != item.get("output")
+                    for previous_item in merged
+                ):
+                    raise LLMInvalidRequestError("conflicting results for the same tool call")
                 continue
             seen.add(identity)
             merged.append(dict(item))

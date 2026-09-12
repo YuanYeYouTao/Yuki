@@ -40,6 +40,7 @@ from qq_ai_bot.automation.templates import TemplateError, resolve_templates
 from qq_ai_bot.config import Settings
 from qq_ai_bot.control_plane.principal import ControlPrincipal, PrincipalSource
 from qq_ai_bot.conversation.canonical_db_models import (
+    CanonicalConversationModel,
     PersonActiveRouteModel,
     SpaceActiveRouteModel,
 )
@@ -56,6 +57,9 @@ _SEND_CAPABILITIES = frozenset(
     {
         "onebot.send_private_message",
         "onebot.send_group_message",
+        "social.send_private_message",
+        "social.send_group_message",
+        "social.poke_person",
         "speech.send_private",
         "speech.send_group",
         "emoji.send",
@@ -151,6 +155,23 @@ class AutomationExecutor:
             delegated_authority=authority,
             allowed_capabilities=allowed,
         )
+
+        async def revalidate_authority(capability: str | None) -> None:
+            fresh = await self._begin_execution(automation)
+            if isinstance(fresh, ExecutionResult):
+                raise AutomationExecutionError(
+                    fresh.error_category or "delegated_authority_revoked"
+                )
+            if (
+                fresh.record.script_hash != automation.script_hash
+                or fresh.record.authority_snapshot != automation.authority_snapshot
+            ):
+                raise AutomationExecutionError("automation_changed")
+            if capability is not None and (
+                capability not in allowed or capability not in fresh.allowed
+            ):
+                raise AutomationExecutionError("capability_not_delegated")
+
         builtins: dict[str, Any] = {
             "creator_user_id": automation.creator_user_id,
             "bot_user_id": automation.bot_user_id,
@@ -166,11 +187,17 @@ class AutomationExecutor:
         web_was_used = False
         conversation_key = f"automation:{automation.id}"
         conversation_id = None
+        conversation_generation = None
         try:
             async with self._repository._database.sessions() as session:
                 conversation_key, conversation_id = await bind_automation_conversation(
                     session, automation
                 )
+                if conversation_id is not None:
+                    conversation = await session.get(CanonicalConversationModel, conversation_id)
+                    if conversation is None:
+                        raise AutomationBindError("conversation_not_found")
+                    conversation_generation = conversation.generation
         except AutomationBindError as exc:
             return ExecutionResult(
                 status=RunStatus.BLOCKED,
@@ -210,6 +237,10 @@ class AutomationExecutor:
                         canonical_target_person_id=automation.canonical_target_person_id,
                         canonical_target_space_id=automation.canonical_target_space_id,
                         canonical_conversation_id=conversation_id,
+                        conversation_generation=conversation_generation,
+                        automation_script_hash=automation.script_hash,
+                        source_step_id=step.id,
+                        revalidate_authority=revalidate_authority,
                     )
                     if self._gateway_factory is not None:
                         context = replace(
@@ -330,7 +361,7 @@ class AutomationExecutor:
         )
 
     async def _begin_execution(
-        self, claimed: AutomationRecord
+        self, claimed: AutomationRecord, *, allow_completed: bool = False
     ) -> _ExecutionSnapshot | ExecutionResult:
         async with self._repository._database.sessions() as session:
             current = await self._repository.get(claimed.id, session=session)
@@ -346,7 +377,9 @@ class AutomationExecutor:
                     error_category="state_mismatch",
                     summary={"reason": "claimed canonical identity is stale"},
                 )
-            if current.status is not AutomationStatus.ACTIVE:
+            if current.status is not AutomationStatus.ACTIVE and not (
+                allow_completed and current.status is AutomationStatus.COMPLETED
+            ):
                 return ExecutionResult(
                     status=RunStatus.BLOCKED,
                     error_category="automation_inactive",
@@ -511,6 +544,8 @@ class AutomationExecutor:
         attempts = 2 if definition.retry_policy is RetryPolicy.TRANSIENT_ONCE else 1
         for attempt in range(attempts):
             try:
+                if context.revalidate_authority is not None:
+                    await context.revalidate_authority(definition.name)
                 return await definition.handler(arguments, context)
             except ProactiveGatewayError as exc:
                 raise AutomationExecutionError(exc.category, uncertain=exc.uncertain) from exc

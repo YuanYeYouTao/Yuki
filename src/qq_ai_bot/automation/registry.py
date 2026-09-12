@@ -177,6 +177,14 @@ class CapabilityExecutionContext:
     canonical_target_person_id: str | None = None
     canonical_target_space_id: str | None = None
     canonical_conversation_id: str | None = None
+    conversation_generation: int | None = None
+    automation_script_hash: str = ""
+    source_step_id: str = ""
+    agent_instruction: str | None = None
+    agent_context_profile: str = "none"
+    revalidate_authority: Callable[[str | None], Awaitable[None]] | None = field(
+        default=None, repr=False, compare=False
+    )
 
 
 CapabilityHandler = Callable[
@@ -203,6 +211,8 @@ class AutomationCapability:
     provider_version: str | None = None
     provider_manifest_hash: str | None = None
     handler: CapabilityHandler | None = field(default=None, repr=False)
+    result_cacheable: bool = True
+    model_tool_name: str = ""
 
     @property
     def input_schema(self) -> dict[str, object]:
@@ -513,4 +523,7 @@ def build_capability_registry(
                 handler=bound.get(name),
             )
         )
+    from qq_ai_bot.social.automation import register_social_automation
+
+    register_social_automation(registry, bound)
     return registry

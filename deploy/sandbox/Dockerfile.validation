@@ -1,0 +1,16 @@
+# Local-only nested Docker test host. Never deployed as the execution sandbox.
+FROM docker:28-dind
+RUN apk add --no-cache python3 curl tar bzip2 \
+    && mkdir /tmp/gvisor-download \
+    && cd /tmp/gvisor-download \
+    && curl -fsSLO https://storage.googleapis.com/gvisor/releases/release/latest/x86_64/gvisor.tar.bz2 \
+    && curl -fsSLO https://storage.googleapis.com/gvisor/releases/release/latest/x86_64/gvisor.tar.bz2.sha512 \
+    && sha512sum -c gvisor.tar.bz2.sha512 \
+    && tar -xjf gvisor.tar.bz2 -C /usr/local/bin \
+    && rm -rf /tmp/gvisor-download
+COPY src/qq_ai_bot/__init__.py /opt/yuki/src/qq_ai_bot/__init__.py
+COPY src/qq_ai_bot/sandbox /opt/yuki/src/qq_ai_bot/sandbox
+COPY src/qq_ai_bot/workspace /opt/yuki/src/qq_ai_bot/workspace
+COPY deploy/sandbox /opt/yuki/deploy/sandbox
+ENV PYTHONPATH=/opt/yuki/src
+CMD ["--add-runtime", "runsc=/usr/local/bin/runsc"]

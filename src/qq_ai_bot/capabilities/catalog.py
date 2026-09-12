@@ -29,6 +29,7 @@ def descriptor_content_fingerprint(descriptor: CapabilityDescriptor) -> str:
         "input_schema": descriptor.input_schema,
         "output_schema": descriptor.output_schema,
         "effect": descriptor.effect.value,
+        "exposure": descriptor.exposure.value,
         "risk": descriptor.risk.value,
         "trust_source": descriptor.trust_source.value,
         "allowed_origins": sorted(origin.value for origin in descriptor.allowed_origins),

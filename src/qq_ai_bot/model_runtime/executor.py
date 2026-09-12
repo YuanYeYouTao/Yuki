@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 from typing import Protocol
 
 from qq_ai_bot.domain.messages import ChatRequest, ChatResponse, minimum_reasoning_effort
+from qq_ai_bot.llm.base import LLMUnsupportedFeatureError
 from qq_ai_bot.model_runtime.models import (
     ModelCapability,
     ModelExecutionPriority,
@@ -39,7 +40,7 @@ def _json_hash(value: object) -> str:
 
 @dataclass(frozen=True, slots=True)
 class ProviderCacheShapeDiagnostics:
-    """Content-free hashes of the actual normalized cache-relevant request."""
+    """Pre-provider projection hashes; final HTTP diagnostics are authoritative."""
 
     provider_shape_hash: str
     instructions_hash: str
@@ -81,10 +82,14 @@ def provider_cache_shape_diagnostics(
 ) -> ProviderCacheShapeDiagnostics:
     """Hash the normalized provider request while excluding the current user tail."""
 
-    instructions = [
-        _diagnostic_message(message) for message in request.messages if message.role == "system"
-    ]
-    inputs = [message for message in request.messages if message.role != "system"]
+    boundary = 0
+    while boundary < len(request.messages) and request.messages[boundary].role in {
+        "system",
+        "developer",
+    }:
+        boundary += 1
+    instructions = [_diagnostic_message(message) for message in request.messages[:boundary]]
+    inputs = request.messages[boundary:]
     current_tail_index = next(
         (index for index in range(len(inputs) - 1, -1, -1) if inputs[index].role == "user"),
         None,
@@ -312,12 +317,22 @@ class TaskModelExecutor:
         if request.structured_output or request.response_format is not None:
             required.add(ModelCapability.STRUCTURED_OUTPUT)
         if request.native_tools:
+            if ModelCapability.NATIVE_WEB_SEARCH not in self.capabilities(task):
+                raise LLMUnsupportedFeatureError(
+                    "native web search is unavailable in the effective model contract"
+                )
             required.add(ModelCapability.NATIVE_WEB_SEARCH)
         if any(message.images for message in request.messages):
             required.add(ModelCapability.IMAGE_INPUT)
         _route, profile = self._router.route(task, required_capabilities=frozenset(required))
-        if request.continuation is not None:
-            continuation = request.continuation
+        for continuation in (
+            *((request.continuation,) if request.continuation is not None else ()),
+            *(
+                message.response_item
+                for message in request.messages
+                if message.response_item is not None
+            ),
+        ):
             if (
                 continuation.profile_id != profile.id
                 or continuation.provider != profile.provider.casefold()
@@ -347,6 +362,9 @@ class TaskModelExecutor:
             native_tools=request.native_tools,
             continuation=request.continuation,
             function_outputs=request.function_outputs,
+            continuation_messages=request.continuation_messages,
+            continuation_items=request.continuation_items,
+            request_chain_id=request.request_chain_id,
             conversation_prefix_hash=request.conversation_prefix_hash,
             request_shape_hash=request_shape_hash(
                 request,
@@ -371,7 +389,8 @@ class TaskModelExecutor:
                 provider_shape_hash=provider_cache_shape.provider_shape_hash,
             )
             logger.info(
-                "prompt_request_diagnostics task=%s conversation_prefix_hash=%s "
+                "prompt_request_diagnostics stage=normalized_projection task=%s "
+                "conversation_prefix_hash=%s "
                 "request_shape_hash=%s provider_cache_shape_hash=%s "
                 "provider_instructions_hash=%s provider_tools_hash=%s "
                 "provider_input_prefix_hash=%s prompt_snapshot_fingerprint=%s",
@@ -612,6 +631,16 @@ class TaskModelExecutor:
     def profile_id(self, task: ModelTask) -> str:
         route, _profile = self._router.route(task)
         return route.profile_id
+
+    def profile_revision(self, task: ModelTask) -> str:
+        """Fingerprint routing/serialization settings without exposing configuration."""
+        route, profile = self._router.route(task)
+        return _json_hash(
+            {
+                "route": route.model_dump(mode="json"),
+                "profile": profile.model_dump(mode="json"),
+            }
+        )
 
     def model_name(self, task: ModelTask) -> str:
         _route, profile = self._router.route(task)

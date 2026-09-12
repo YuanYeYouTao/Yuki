@@ -88,6 +88,7 @@ class CapabilityDescriptor:
     aliases: tuple[str, ...] = ()
     use_when: tuple[str, ...] = ()
     generation: str = ""
+    result_cacheable: bool = True
 
     @property
     def capability_id(self) -> str:
@@ -135,6 +136,7 @@ class CapabilityDescriptor:
             use_when=self.use_when,
             tags=self.tags,
             schema_version=self.schema_version,
+            result_cacheable=self.result_cacheable,
         )
 
 

@@ -69,6 +69,23 @@ class ExternalEventTurnTrigger:
 
 
 @dataclass(frozen=True, slots=True)
+class SandboxTaskTurnTrigger:
+    """A real backend completion, with authority retained by its original source."""
+
+    source_event_id: int
+    target_type: str
+    target_id: str
+    completion_payload: str = ""
+    agent_intent: str = "Continue the original task using the completed sandbox results."
+    origin: TurnOrigin = field(default=TurnOrigin.SYSTEM_TASK, init=False)
+    plugin_id: None = field(default=None, init=False)
+
+    def __post_init__(self) -> None:
+        if self.source_event_id <= 0 or self.target_type not in _TARGET_TYPES or not self.target_id:
+            raise InvalidTurnTriggerError("invalid sandbox completion trigger")
+
+
+@dataclass(frozen=True, slots=True)
 class ScheduledTurnTrigger:
     """A turn caused by a due scheduled automation."""
 
@@ -105,5 +122,9 @@ class PluginSessionTurnTrigger:
 
 
 TurnTrigger = (
-    MessageTurnTrigger | ExternalEventTurnTrigger | ScheduledTurnTrigger | PluginSessionTurnTrigger
+    MessageTurnTrigger
+    | ExternalEventTurnTrigger
+    | SandboxTaskTurnTrigger
+    | ScheduledTurnTrigger
+    | PluginSessionTurnTrigger
 )

@@ -14,6 +14,10 @@ services:
       APP_HOST: 0.0.0.0
       APP_PORT: 8080
       DATABASE_URL: sqlite+aiosqlite:////app/data/qq_ai_bot.db
+      WORKSPACE_DIRECTORY: /app/workspace
+      SOCIAL_TRANSFER_DIRECTORY: /app/social-transfer
+      SOCIAL_GATEWAY_TRANSFER_DIRECTORY: /yuki-transfer
+      SANDBOX_SOCKET: /run/yuki-sandbox/manager.sock
       NAPCAT_CONFIG_OUTPUT: /app/napcat-config/onebot11.json
       NAPCAT_REVERSE_WS_URL: ws://bot:8080/onebot/v11/ws
       SNOWLUMA_CONFIG_OUTPUT: /app/snowluma-data/config/onebot.json
@@ -25,6 +29,9 @@ services:
       - "8080"
     volumes:
       - ./data:/app/data
+      - ./workspace:/app/workspace
+      - ./social-transfer:/app/social-transfer
+      - /run/yuki-sandbox:/run/yuki-sandbox:ro
       - ./data/speech:/data/speech
       - speech-runtime:/run/yuki-speech
       - ./napcat-config:/app/napcat-config
@@ -105,6 +112,7 @@ services:
       - ./napcat-data:/app/.config/QQ
       - ./napcat-config:/app/napcat/config
       - ./napcat-plugins:/app/napcat/plugins
+      - ./social-transfer:/yuki-transfer:ro
     networks:
       - qq-ai-bot-network
     stop_grace_period: 30s
@@ -142,6 +150,7 @@ services:
       - ./snowluma-qq-config:/app/.config
       - ./snowluma-qq-data:/app/.local/share
       - ./snowluma-extra-accounts:/app/qq-accounts
+      - ./social-transfer:/yuki-transfer:ro
     networks:
       - qq-ai-bot-network
     stop_grace_period: 30s

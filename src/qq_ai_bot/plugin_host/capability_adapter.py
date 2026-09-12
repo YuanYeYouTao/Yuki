@@ -62,10 +62,13 @@ class PluginCapabilityAdapter:
         result: list[ChatTool] = []
         for item in self._registry.list(kind=ExtensionKind.TOOL):
             registration = cast(ToolRegistration, item.registration)
-            if not self._is_running(item.plugin_id) or not self._allowed_for_turn(
-                registration,
-                runtime,
-                web_was_used,
+            if not self._is_running(item.plugin_id) or (
+                not runtime.declaration_only
+                and not self._allowed_for_turn(
+                    registration,
+                    runtime,
+                    web_was_used,
+                )
             ):
                 continue
             assert item.model_name is not None

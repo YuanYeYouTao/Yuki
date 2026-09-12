@@ -475,6 +475,18 @@ class EmojiSettings(DomainSettings):
     emoji_preview_max_dimension: int = Field(gt=0)
 
 
+class ASRSettings(DomainSettings):
+    asr_enabled: bool
+    asr_base_url: str
+    asr_api_key: str = Field(repr=False)
+    asr_model: str = Field(min_length=1)
+    asr_timeout_seconds: float = Field(gt=0, le=180)
+    asr_max_download_bytes: int = Field(gt=0, le=20_971_520)
+    asr_max_duration_seconds: int = Field(gt=0, le=300)
+    asr_global_concurrency: int = Field(ge=1, le=16)
+    asr_queue_max_pending: int = Field(ge=1, le=64)
+
+
 class SpeechSettings(DomainSettings):
     speech_enabled: bool
     speech_provider: str

@@ -146,7 +146,12 @@ class SDKMCPConnection:
                     if not operation.future.done():
                         operation.future.set_result(None)
                     break
-                await self._serve_operation(operation, session)
+                try:
+                    await self._serve_operation(operation, session)
+                finally:
+                    # The owner stays suspended at queue.get() while idle. Its last
+                    # operation otherwise retains arguments, results and tracebacks.
+                    del operation
         except asyncio.CancelledError:
             if not ready.done():
                 ready.cancel()

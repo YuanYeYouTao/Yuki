@@ -338,6 +338,12 @@ class ConversationModule:
             ),
             process_lock=memory_maintenance_lock,
             compaction_active=lambda: memory_evidence_compaction_worker.holding_lock,
+            compaction_error=lambda: (
+                "worker_not_running"
+                if settings.memory_evidence_compaction_enabled
+                and not memory_evidence_compaction_worker.running
+                else memory_evidence_compaction_worker.last_error_category
+            ),
         )
         relationship_worker = RelationshipWorker(
             settings=settings,

@@ -71,6 +71,8 @@ from qq_ai_bot.persistence.repositories import (
     RelationshipRepository,
     WebSearchSourceRepository,
 )
+from qq_ai_bot.sandbox.environment_tools import EXECUTION_TOOLS, READ_TOOLS, SANDBOX_TOOLS
+from qq_ai_bot.sandbox.progress import TaskProgress
 from qq_ai_bot.services.evidence_state import evidence_state
 from qq_ai_bot.services.reply_target import ReplyTargetControl
 from qq_ai_bot.services.turn_coordinator import TurnToken
@@ -86,6 +88,7 @@ from qq_ai_bot.web.models import (
     WebSearchTimeRange,
     WebSearchTopic,
 )
+from qq_ai_bot.workspace.tools import WORKSPACE_READ_TOOLS
 
 _URL_IN_TEXT = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
 _CQ_CODE = re.compile(r"\[CQ:([a-zA-Z0-9_-]+)(?:,[^\]]*)?\]", re.IGNORECASE)
@@ -160,6 +163,7 @@ class ToolRuntime:
     inbound: InboundMessage | None
     gateway: OneBotToolGateway | None
     allow_generic_onebot: bool
+    declaration_only: bool = False
     allow_admin_actions: bool = False
     allow_automation: bool = False
     conversation_key: str = ""
@@ -182,6 +186,10 @@ class ToolRuntime:
     selection_query: str = ""
     scheduled_automation_intent: bool = False
     max_model_requests_override: int | None = None
+    max_tool_calls_override: int | None = None
+    task_progress: TaskProgress | None = None
+    sandbox_source: dict[str, Any] | None = None
+    execution_id: str = ""
     memory_turn_id: str = ""
     memory_exposures: tuple[MemoryExposure, ...] = ()
     memory_exposure_registry: MemoryExposureRegistry | None = None
@@ -335,6 +343,10 @@ class AgentToolService:
             config_registry=self._runtime_config.registry,
         )
         self._voice_preferences = voice_preferences
+        self.social_service: Any = None
+        self.short_state: Any = None
+        self.workspace_service: Any = None
+        self.sandbox_client: Any = None
 
     def definitions(self, runtime: ToolRuntime) -> tuple[ChatTool, ...]:
         bot_name = self._settings.bot_display_name
@@ -362,6 +374,7 @@ class AgentToolService:
             ),
             ChatTool(
                 name="get_recent_chat_history",
+                result_cacheable=False,
                 description=(
                     "直接从当前 QQ/OneBot Provider 读取私聊或群聊最近 20 条消息。"
                     "当用户问刚才说了什么、当前对话历史或人物上下文时使用。"
@@ -572,7 +585,9 @@ class AgentToolService:
                     ),
                 )
             )
-        if self._memory_mutations is not None and runtime.origin in _MEMORY_CHANGE_ORIGINS:
+        if self._memory_mutations is not None and (
+            runtime.declaration_only or runtime.origin in _MEMORY_CHANGE_ORIGINS
+        ):
             tools.append(
                 ChatTool(
                     name="memory_change",
@@ -814,7 +829,7 @@ class AgentToolService:
                     ),
                 )
             )
-        if runtime.allow_generic_onebot:
+        if runtime.declaration_only or runtime.allow_generic_onebot:
             tools.append(
                 ChatTool(
                     name="call_onebot_api",
@@ -831,7 +846,7 @@ class AgentToolService:
                     ),
                 )
             )
-        if self._voice_available_for_turn(runtime):
+        if runtime.declaration_only or self._voice_available_for_turn(runtime):
             tools.append(
                 ChatTool(
                     name="send_voice",
@@ -861,7 +876,7 @@ class AgentToolService:
                     ),
                 )
             )
-        if self._emoji_available_for_turn(runtime):
+        if runtime.declaration_only or self._emoji_available_for_turn(runtime):
             tools.append(
                 ChatTool(
                     name="send_emoji",
@@ -887,7 +902,7 @@ class AgentToolService:
                     ),
                 )
             )
-        if (
+        if runtime.declaration_only or (
             self._voice_available_for_turn(runtime)
             and not runtime.read_only
             and runtime.origin in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}
@@ -910,7 +925,10 @@ class AgentToolService:
                     ),
                 )
             )
-        if runtime.origin in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}:
+        if runtime.declaration_only or runtime.origin in {
+            TurnOrigin.USER_MESSAGE,
+            TurnOrigin.AUTONOMOUS_GROUP,
+        }:
             tools.append(
                 ChatTool(
                     name="set_reply_layout",
@@ -935,7 +953,10 @@ class AgentToolService:
                     ),
                 )
             )
-        if runtime.origin in {TurnOrigin.AUTONOMOUS_GROUP, TurnOrigin.PLUGIN_BACKGROUND}:
+        if runtime.declaration_only or runtime.origin in {
+            TurnOrigin.AUTONOMOUS_GROUP,
+            TurnOrigin.PLUGIN_BACKGROUND,
+        }:
             tools.append(
                 ChatTool(
                     name="decline_reply",
@@ -959,7 +980,11 @@ class AgentToolService:
                     ),
                 )
             )
-        return tuple(tools)
+        from qq_ai_bot.sandbox.client import sandbox_tools
+        from qq_ai_bot.social.tools import social_tool_definitions
+        from qq_ai_bot.workspace.service import workspace_tools
+
+        return (*tools, *social_tool_definitions(), *workspace_tools(), *sandbox_tools())
 
     async def execute(
         self,
@@ -985,6 +1010,158 @@ class AgentToolService:
             if not isinstance(arguments, dict):
                 return self._result(error="invalid_arguments", detail="工具参数必须是对象")
             try:
+                from qq_ai_bot.social.tools import social_tool_definitions
+
+                if name in SANDBOX_TOOLS:
+                    from qq_ai_bot.capabilities.invocation import current_invocation
+
+                    invocation = current_invocation.get()
+                    if (
+                        runtime.origin not in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}
+                        or runtime.tools_closed
+                        or (runtime.read_only and name not in READ_TOOLS)
+                    ):
+                        return self._result(error="permission_denied", detail="本轮未授权沙箱操作")
+                    if self.sandbox_client is None or invocation is None:
+                        return self._result(error="sandbox_unavailable", detail="沙箱未连接")
+                    from hashlib import sha256
+
+                    request_id = sha256(
+                        (
+                            f"{runtime.conversation_id}:"
+                            f"{runtime.execution_id or runtime.trigger_message_id}:"
+                            f"{invocation.call_id}"
+                        ).encode()
+                    ).hexdigest()
+                    result = await self.sandbox_client.execute(
+                        name,
+                        arguments,
+                        request_id=request_id,
+                        source=runtime.sandbox_source
+                        or {
+                            "conversation_id": runtime.effective_conversation_id,
+                            "origin": runtime.origin.value,
+                            "allow_admin_actions": runtime.allow_admin_actions,
+                            "allow_automation": runtime.allow_automation,
+                            "actor_is_superuser": runtime.actor_is_superuser,
+                            "actor_user_id": runtime.actor_user_id,
+                            "trigger_id": runtime.trigger_message_id,
+                            "bot_user_id": runtime.effective_bot_user_id,
+                            "presence_id": runtime.effective_presence_id,
+                            "generation": runtime.turn_snapshot.generation
+                            if runtime.turn_snapshot
+                            else None,
+                            "trigger_event_id": runtime.turn_snapshot.trigger_event_id
+                            if runtime.turn_snapshot
+                            else None,
+                        }
+                        if name in EXECUTION_TOOLS
+                        else None,
+                    )
+                    return self._result(data=result)
+
+                if name.startswith("workspace_"):
+                    from qq_ai_bot.workspace.store import WorkspaceError
+
+                    if (
+                        runtime.origin not in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}
+                        or (runtime.read_only and name not in WORKSPACE_READ_TOOLS)
+                        or runtime.tools_closed
+                    ):
+                        return self._result(
+                            error="permission_denied", detail="本轮未授权工作区操作"
+                        )
+                    if self.workspace_service is None:
+                        return self._result(error="workspace_unavailable", detail="工作区未连接")
+                    try:
+                        workspace_result = await self.workspace_service.execute(
+                            name, arguments, runtime=runtime
+                        )
+                        return self._result(data=workspace_result)
+                    except (WorkspaceError, ValueError, OSError) as exc:
+                        category = (
+                            str(exc) if isinstance(exc, WorkspaceError) else type(exc).__name__
+                        )
+                        return self._result(error=category, detail="工作区操作未完成")
+
+                if name in {tool.name for tool in social_tool_definitions()}:
+                    from qq_ai_bot.social.agent_adapter import invoke_social
+                    from qq_ai_bot.social.models import SocialError
+
+                    if self.social_service is None:
+                        return self._result(error="social_unavailable", detail="社交服务尚未连接")
+                    try:
+                        social_result = await invoke_social(
+                            self.social_service, name, arguments, runtime
+                        )
+                        if social_result.get("error") or social_result.get("status") in {
+                            "failed",
+                            "uncertain",
+                        }:
+                            return self._result(
+                                error=str(social_result.get("error") or "delivery_uncertain"),
+                                detail=(
+                                    "读取账号不明确；从 presences 选择 presence_id，勿换号试读"
+                                    if name == "read_conversation_history"
+                                    else "文件已发送成功，附带文字未确认发送；不要重发文件"
+                                    if social_result.get("error") == "file_sent_caption_unconfirmed"
+                                    else "发送未确认成功，不要重复发送；请根据实际工具结果说明情况"
+                                ),
+                                data=social_result,
+                            )
+                        return self._result(data=social_result)
+                    except SocialError as exc:
+                        detail = {
+                            "history_receipt_unavailable": (
+                                "该回执不属于当前来源会话，或没有可核验的发送账号"
+                            ),
+                            "history_anchor_unavailable": (
+                                "无法从回执确定原始会话；请明确指定目标、Binding 和 Presence"
+                            ),
+                            "history_presence_unavailable": "原账号不可用，未换号读取",
+                            "history_provider_failed": "网关读取失败，不表示没有消息",
+                            "invalid_history_result": "网关历史返回格式无效，不能据此判断会话内容",
+                            "artifact_transfer_unavailable": (
+                                "文件已存在工作区，但中转不可用，尚未发送；本轮不要重复发送"
+                            ),
+                            "invalid_target_id": (
+                                "target_id 必须是联系人查询返回的 UUID；"
+                                "当前私聊用 subject_ref=current_speaker"
+                            ),
+                            "invalid_message_arguments": (
+                                "检查 text、artifact_id 和 attachment_kind；"
+                                "文件必须指定 file 类型。"
+                                "已生成的工作区文件仍保留"
+                            ),
+                            "route_paused": "该操作所需路由已暂停，未执行；不会自动换路或解暂停",
+                            "binding_ambiguous": (
+                                "目标有多个有效 QQ Binding；查询联系人后明确指定 Binding，未执行"
+                            ),
+                            "binding_unavailable": "指定的 QQ Binding 无效或不属于目标，未执行",
+                            "original_presence_unavailable": "原消息发送账号当前不可用，未撤回",
+                            "group_unavailable": "当前没有可访问该群的连接，未执行",
+                            "group_member_unavailable": "无法确认目标 QQ 账号属于该群，未执行",
+                            "mentions_require_group": "结构化 @成员只支持群消息",
+                            "group_target_required": (
+                                "顶层目标是群，当前群请省略；要 @ 的人放在 mentions 中，"
+                                "如 mentions=[{subject_ref:current_speaker}]"
+                            ),
+                            "subject_ref_unavailable": (
+                                "该人物引用不在当前事件中；当前发言人用 current_speaker，"
+                                "其他人物先 find_contacts，不要猜测引用或映射故障"
+                            ),
+                            "target_not_found": (
+                                "名称未精确匹配；先 find_contacts。群发送顶层是群目标，"
+                                "人物应放在 mentions；未找到不代表账号映射损坏"
+                            ),
+                            "invalid_space_id": (
+                                "space_id 必须是 canonical 群 UUID，不是 QQ 群号；当前群可省略"
+                            ),
+                            "invalid_poke_scene": (
+                                "scene 只允许 current 或 private；私聊场景不能同时指定群"
+                            ),
+                        }.get(str(exc), "社交操作未执行或结果不确定，请勿盲重试")
+                        return self._result(error=str(exc), detail=detail)
                 if name in {"get_person_memories", "get_group_memories", "get_self_memories"}:
                     self._log_memory_read_intent(arguments, parse_memory_tool_intent(arguments))
                 if name == "get_my_capabilities":
@@ -3042,7 +3219,7 @@ class AgentToolService:
             "scope": row.scope_type.value,
             "group_id": row.group_id,
             "direction": row.direction,
-            "content": row.content,
+            "content": row.perceived_content,
             "occurred_at": local_iso(row.occurred_at, self._settings.default_timezone),
         }
 

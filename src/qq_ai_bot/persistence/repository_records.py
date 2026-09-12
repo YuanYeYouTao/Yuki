@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from qq_ai_bot.domain.audio import transcript_context
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.domain.messages import sanitize_display_name
@@ -56,6 +57,7 @@ class EventRecord:
     visual_summary: str
     segments: tuple[dict[str, Any], ...]
     occurred_at: datetime
+    audio_transcript: str = ""
     sender_nickname: str = ""
     sender_group_card: str = ""
     group_id: str | None = None
@@ -93,6 +95,23 @@ class EventRecord:
             self.bot_user_id,
             self.private_peer_user_id or self.sender_user_id,
         )
+
+    @property
+    def perceived_content(self) -> str:
+        """Original text plus labelled ASR, keeping the ingress text immutable."""
+        return (
+            f"{self.content}\n{transcript_context(self.audio_transcript)}".strip()
+            if self.audio_transcript
+            else self.content
+        )
+
+    @property
+    def evidence_content(self) -> str:
+        """Quoted speech is context, never evidence authored by this event's sender."""
+        if not self.audio_transcript:
+            return self.content
+        speech = transcript_context(self.audio_transcript, include_replies=False)
+        return f"{self.content}\n{speech}".strip()
 
     def author_is_yuki(self) -> bool:
         return event_author_is_yuki(author_kind=self.author_kind)

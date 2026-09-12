@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -20,6 +21,8 @@ from qq_ai_bot.memory.mutation.models import (
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.receipt import MemoryRecallRepository
 from qq_ai_bot.memory.service import MemoryFactService
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,8 +65,12 @@ class MemoryMaintenanceWorker:
         return self._task is not None and not self._task.done()
 
     async def start(self) -> None:
-        if self._task is None:
-            self._task = asyncio.create_task(self._run(), name="memory-maintenance-worker")
+        if self.running:
+            return
+        if self._task is not None:
+            await asyncio.gather(self._task, return_exceptions=True)
+        self._stop.clear()
+        self._task = asyncio.create_task(self._run(), name="memory-maintenance-worker")
 
     async def close(self) -> None:
         self._stop.set()
@@ -86,13 +93,31 @@ class MemoryMaintenanceWorker:
                 pass
             self._wake.clear()
             if not self._stop.is_set() and runtime.enabled:
-                await self.process_once()
+                try:
+                    await self.process_once()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "memory_maintenance_failed error_category=%s", type(exc).__name__
+                    )
 
     async def process_once(self, *, session: AsyncSession | None = None) -> int:
         runtime = await self._snapshot()
         if not runtime.enabled:
             return 0
         now = datetime.now(UTC)
+        if session is not None:
+            await self._facts.repository.repair_missing_activation(
+                limit=runtime.batch_limit, session=session
+            )
+        else:
+            async with self._facts.repository.transaction() as repair_session:
+                repaired = await self._facts.repository.repair_missing_activation(
+                    limit=runtime.batch_limit, session=repair_session
+                )
+            if repaired:
+                logger.info("memory_activation_states_repaired count=%d", repaired)
         if self._receipts is not None and session is None:
             cleaned = await self._receipts.cleanup_expired(
                 now=now,

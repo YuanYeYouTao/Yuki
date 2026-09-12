@@ -248,6 +248,38 @@ class TurnCapabilityRuntime:
         self._notify_searched(query, hits, started)
         return hits
 
+    def discover_declared(
+        self,
+        query: CapabilityQuery,
+        declared_names: frozenset[str],
+    ) -> dict[str, object]:
+        """Read the frozen directory without loading schemas or changing grants."""
+        started = time.perf_counter()
+        hits = tuple(
+            hit
+            for hit in self._search_local(query, limit=query.limit)
+            if hit.capability_id in declared_names
+        )
+        self._notify_searched(query, hits, started)
+        entries = [self._authorized.catalog.by_model_name(hit.capability_id) for hit in hits]
+        available = [
+            {
+                "name": entry.descriptor.model_name,
+                "namespace": entry.descriptor.namespace_id,
+                "description": entry.compact_description,
+            }
+            for entry in entries
+            if entry is not None
+        ]
+        return {
+            "ok": bool(available),
+            "data": {
+                "available_tools": available,
+                "instruction": "这些工具已在固定清单中；查询不会加载 Schema 或扩大执行权限。",
+            },
+            **({} if available else {"error": "capability_not_found"}),
+        }
+
     async def request_tools(self, query: CapabilityQuery) -> dict[str, object]:
         hits = await self.search(query)
         authorized_hits = tuple(

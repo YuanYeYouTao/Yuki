@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.config import Settings
@@ -13,6 +15,7 @@ from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage
 from qq_ai_bot.domain.relationships import RelationshipSnapshot, style_policy
 from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE, entity_memory_rule
+from qq_ai_bot.persistence.event_repository import ConversationReadVersion
 from qq_ai_bot.prompting import (
     CORE_CONTRACT,
     PromptChannel,
@@ -32,6 +35,8 @@ from qq_ai_bot.vision.models import VisualObservation
 class PromptComposition:
     messages: tuple[ChatMessage, ...]
     metrics: PromptMetrics
+    read_version: ConversationReadVersion | None = None
+    commit_projection: Callable[[], Awaitable[None]] | None = None
 
 
 class PromptComposer:
@@ -66,6 +71,10 @@ class PromptComposer:
         visual_observation: VisualObservation | None,
         visual_failure: bool,
         scope_type: ScopeType | None = None,
+        include_plugin_context: bool = True,
+        short_state: list[dict[str, Any]] | None = None,
+        memory_exclusive_write: bool = False,
+        scheduled_automation_intent: bool = False,
     ) -> PromptComposition:
         contributions: list[PromptContribution] = [
             static_text(
@@ -101,6 +110,36 @@ class PromptComposer:
                 required=True,
             ),
         ]
+        if short_state:
+            contributions.append(
+                PromptContribution(
+                    id="runtime.short_state",
+                    channel=PromptChannel.RUNTIME,
+                    trust=PromptTrust.UNTRUSTED,
+                    priority=-9_999,
+                    payload=short_state,
+                    required=True,
+                )
+            )
+        for identity, enabled, data in (
+            ("runtime.memory_mutation", memory_exclusive_write, {"exclusive_write": True}),
+            (
+                "runtime.automation_intent",
+                scheduled_automation_intent and not memory_exclusive_write,
+                {"scheduled_automation_intent": True},
+            ),
+        ):
+            if enabled:
+                contributions.append(
+                    PromptContribution(
+                        id=identity,
+                        channel=PromptChannel.RUNTIME,
+                        trust=PromptTrust.TRUSTED,
+                        priority=90,
+                        payload=data,
+                        required=True,
+                    )
+                )
         if inbound is not None and inbound.sender.user_id in self._settings.superusers:
             contributions.append(
                 PromptContribution(
@@ -162,7 +201,9 @@ class PromptComposer:
                     required=True,
                 )
             )
-        plugin_context = self._registry.render(target=PromptTarget.AGENT)
+        plugin_context = (
+            self._registry.render(target=PromptTarget.AGENT) if include_plugin_context else ()
+        )
         if plugin_context:
             contributions.append(
                 PromptContribution(
@@ -210,13 +251,19 @@ class PromptComposer:
                     payload={"available": True},
                 )
             )
+        history = self._conversation_history(context)
+        remaining = (
+            self._settings.max_context_characters
+            + runtime.plugins.max_total_prompt_characters
+            - sum(len(message.content or "") for message in history)
+            - len(context.current_message.content or "")
+            - (2 if context.current_message.content else 0)
+        )
         compiled = self._compiler.compile(
             PromptProgram(contributions=tuple(contributions)),
-            history=self._conversation_history(context),
+            history=history,
             current_message=context.current_message,
-            dynamic_character_budget=(
-                self._settings.max_context_characters + runtime.plugins.max_total_prompt_characters
-            ),
+            dynamic_character_budget=max(0, remaining),
         )
         return self._finalize(context, compiled)
 
@@ -253,7 +300,9 @@ class PromptComposer:
                 ).hexdigest()
             }
         )
-        return PromptComposition(messages=compiled.messages, metrics=metrics)
+        return PromptComposition(
+            messages=compiled.messages, metrics=metrics, read_version=context.read_version
+        )
 
     @staticmethod
     def relationship_policy(

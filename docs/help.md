@@ -152,6 +152,15 @@ Memory。
 - [Memory 质量运维](operations/memory-quality.md)
 - [Memory 重建](architecture/memory-v2-rebuild.md)
 
+## 接收语音
+
+私聊可以直接发送 QQ 语音。群聊仍按原有启用状态、@、引用和触发规则决定是否回复；
+不会把群里的每条语音都提交识别。触发回复的消息可以包含语音，也可以引用一条语音。
+Yuki 会根据转写内容回复，之后可以回忆或搜索这条语音。识别不成功会明确提示，不会猜测。
+
+`ASR_ENABLED` 独立于发送语音的 `SPEECH_ENABLED`。默认使用 `qwen3-asr-flash`，复用现有千问
+连接。缺少可用连接时会说明服务未配置。详见 [配置与验收](speech/recognition.md)。
+
 ## 工具、权限与控制面
 
 主 Agent 只看到当前 Principal 被授予且本轮允许的工具。Capability 决定 metadata、外部 ID、

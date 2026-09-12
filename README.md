@@ -8,7 +8,7 @@
 
 <p>
   <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.1"><img src="https://img.shields.io/badge/Release-3.8.1-blue" alt="Yuki 3.8.1 release"></a>
-  <img src="https://img.shields.io/badge/Schema-0051-blue" alt="Alembic head 0051">
+  <img src="https://img.shields.io/badge/Schema-0055-blue" alt="Alembic head 0055">
   <img src="https://img.shields.io/badge/Plugin%20API-2.0-8A2BE2" alt="Plugin API 2.0">
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
@@ -24,7 +24,7 @@ Provider，并在权限边界内持续记住人与共同经历。
 
 最新已发布版本为 **3.8.1**；当前源码基线为 **3.8.2（发布准备中）**，包含插件唤醒、Memory P1
 治理、意图读取与记忆可靠性修复。3.8 只运行
-canonical schema，Alembic head 为 `0051`。
+canonical schema，Alembic head 为 `0055`。
 
 ## 3.8 核心合同
 
@@ -42,6 +42,23 @@ canonical schema，Alembic head 为 `0051`。
 | 管理能力 | transport-neutral Control Plane 是未来 WebUI 的唯一业务后端边界 |
 
 完整结构见 [Yuki 3.8 canonical runtime](docs/architecture/canonical-runtime.md)。
+
+### 社交工具与持久工作环境
+
+所有 Main Agent 入口使用相同完整工具声明，支持 QQ 社交、工作区文件、终端、软件包及服务管理。
+工作区全会话共享并持久保存，与终端实时共用；文件可发布为不可变 artifact 后发送。
+Linux 环境预装 Python、Node.js 和编译工具，pip/npm 依赖长期保留，apt 安装后保存检查点。
+后台任务和已登记服务有独立回执与恢复机制，发送和自动化仍遵循原有委托边界。
+环境依赖宿主 Manager 与 gVisor，未安装时返回不可用，不在 Bot 进程内执行代码。
+详见 [持久环境部署与恢复](docs/operations/persistent-environment.zh-CN.md)
+和 [English operations guide](docs/operations/persistent-environment.md)。
+
+### 接收语音识别
+
+私聊语音、触发回复的群聊语音和引用语音会自动经 Qwen ASR 转写，再进入同一个 Main Agent。
+默认复用现有千问连接；无需安装本地识别模型，也不依赖 Genie-TTS。转写保存在消息历史中，
+供后续聊天、历史搜索和 Rollup 使用；被引用语音不作为当前发言者的记忆证据。
+配置与限制见 [语音识别](docs/speech/recognition.md)。
 
 ### 记忆读取与自动保存
 
@@ -211,11 +228,12 @@ docker compose up -d
 
 3.8 的数据库合同：
 
-- fresh install：无父 revision 的 `0048` canonical baseline，随后升级到 `0049 -> 0050 -> 0051`。
+- fresh install：无父 revision 的 `0048` canonical baseline，随后升级到 `0049 -> 0050 -> 0051 -> 0052`。
 - historical bridge：只接受已完成 canonical v2 的旧 `0048` 数据库。
 - pre-3.8、v1、dual-write、backfill/cutover 中间态数据库不受支持，启动时失败关闭。
 - `0049` 仍是不提供 downgrade 的 canonical bridge；`0050` 增加主动回复因果列和索引，`0051`
   只增加 Memory recall 评估与主动读取结果的无正文观测列。
+  `0052` 增加社交操作回执，防止不确定发送被重试；社交工具仍在开发，不代表已经可用。
   生产数据的可靠回退方式仍是恢复升级前同一时点的 DB/WAL/SHM 快照。
 
 升级前必须停止 Bot 与 Provider，并把以下文件作为一组保存：
@@ -272,7 +290,7 @@ uv run mypy src
 uv run pytest
 ```
 
-涉及 schema 或发布时还要验证 fresh `0048 -> 0049 -> 0050 -> 0051`、populated `0050 -> 0051`、SQLite
+涉及 schema 或发布时还要验证 fresh `0048 -> 0049 -> 0050 -> 0051 -> 0052`、populated `0051 -> 0052`、SQLite
 `foreign_key_check`、FTS/trigger、release smoke 和 Docker Compose 配置。
 
 ## 文档

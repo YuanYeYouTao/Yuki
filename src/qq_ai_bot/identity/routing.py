@@ -179,6 +179,81 @@ class PresenceRouter:
             sender_account_id=resolution.snapshot.external_account_id,
         )
 
+    async def resolve_presence(self, presence_id: str) -> ResolvedSend:
+        """Resolve an exact enabled account without consulting an outbound route."""
+        async with self._database.sessions() as session:
+            presence = await session.get(PresenceModel, presence_id)
+        if presence is None or not presence.enabled or presence.platform != "qq":
+            raise RouteSendError("original_presence_unavailable")
+        try:
+            resolution = self._registry.resolve_active(presence_id)
+        except RegistryClosed as exc:
+            raise RouteSendError("original_presence_unavailable") from exc
+        return ResolvedSend(
+            presence_id=presence.id,
+            binding_id="",
+            platform=presence.platform,
+            external_target_id="",
+            route_generation=resolution.snapshot.generation,
+            connection=resolution,
+            kind="account",
+            sender_account_id=presence.external_account_id,
+        )
+
+    async def accessible_group_connections(
+        self, space_id: str, *, binding_id: str | None = None
+    ) -> list[ResolvedSend]:
+        """Read-only reachability; neither outbound nor ingest pins govern reads."""
+        async with self._database.sessions() as session:
+            bindings = list(
+                await session.scalars(
+                    select(SpaceBindingModel).where(
+                        SpaceBindingModel.space_id == space_id,
+                        SpaceBindingModel.platform == "qq",
+                        SpaceBindingModel.status == "active",
+                    )
+                )
+            )
+            presences = list(
+                await session.scalars(
+                    select(PresenceModel)
+                    .where(
+                        PresenceModel.platform == "qq",
+                        PresenceModel.enabled.is_(True),
+                    )
+                    .order_by(PresenceModel.id)
+                )
+            )
+        if binding_id is not None:
+            bindings = [binding for binding in bindings if binding.id == binding_id]
+        if len(bindings) != 1:
+            raise RouteSendError("binding_ambiguous" if bindings else "binding_unavailable")
+        binding = bindings[0]
+        connections = []
+        for presence in presences:
+            try:
+                route = await self.resolve_presence(presence.id)
+            except RouteSendError:
+                continue
+            if await self._probe(
+                route.connection.bot, binding.external_space_id, presence.external_account_id
+            ):
+                connections.append(
+                    ResolvedSend(
+                        presence_id=route.presence_id,
+                        binding_id=binding.id,
+                        platform="qq",
+                        external_target_id=binding.external_space_id,
+                        route_generation=route.route_generation,
+                        connection=route.connection,
+                        kind="space",
+                        sender_account_id=route.sender_account_id,
+                    )
+                )
+        if not connections:
+            raise RouteSendError("group_unavailable")
+        return connections
+
     async def resolve_send_for_target(
         self,
         *,

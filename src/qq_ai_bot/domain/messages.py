@@ -256,6 +256,7 @@ class ChatMessage:
     tool_call_id: str | None = None
     reasoning_content: str | None = None
     images: tuple[ChatImage, ...] = field(default=(), repr=False)
+    response_item: ProviderContinuation | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,6 +288,8 @@ class ChatTool:
     use_when: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
     schema_version: str = "1"
+    # Host-only policy: read-only operations may still observe changing state.
+    result_cacheable: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -353,8 +356,11 @@ class ChatRequest:
     native_tools: tuple[NativeToolDefinition, ...] = ()
     continuation: ProviderContinuation | None = None
     function_outputs: tuple[FunctionCallOutput, ...] = ()
+    continuation_messages: tuple[ChatMessage, ...] = ()
+    continuation_items: tuple[ChatMessage | FunctionCallOutput, ...] = ()
     conversation_prefix_hash: str = ""
     request_shape_hash: str = ""
+    request_chain_id: str = ""
     prompt_snapshot_fingerprint: str = ""
     static_prompt_revision: str = ""
 

@@ -200,7 +200,7 @@ class MemoryWorker:
             return await self._process_jobs(jobs, correlation.turn_id)
 
     async def _process_jobs(self, jobs: tuple[MemoryJob, ...], batch_id: str) -> int:
-        characters = sum(len(job.event.content) for job in jobs)
+        characters = sum(len(job.event.evidence_content) for job in jobs)
         oldest = min(job.created_at for job in jobs)
         age = max(0, int((datetime.now(UTC) - oldest.replace(tzinfo=UTC)).total_seconds()))
         trigger = jobs[0].batch_trigger or "manual"

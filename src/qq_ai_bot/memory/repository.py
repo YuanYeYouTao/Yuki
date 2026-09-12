@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import and_, case, delete, func, or_, select, update
+from sqlalchemy import and_, case, delete, func, literal, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -202,6 +202,57 @@ class MemoryFactRepository:
     @property
     def database(self) -> Database:
         return self._database
+
+    async def repair_missing_activation(self, *, limit: int, session: AsyncSession) -> int:
+        """Initialize missing states only; retain original age and no invented usage."""
+        if limit <= 0:
+            raise ValueError("activation repair limit must be positive")
+        initial = case(
+            (
+                or_(
+                    MemoryFactModel.source_type == "explicit",
+                    MemoryFactModel.authority == "explicit",
+                ),
+                0.95,
+            ),
+            (MemoryFactModel.kind == "preference", 0.80),
+            (and_(MemoryFactModel.kind == "episode", MemoryFactModel.importance >= 4), 0.75),
+            (MemoryFactModel.kind == "episode", 0.65),
+            else_=0.70,
+        )
+        source = (
+            select(
+                MemoryFactModel.id,
+                initial,
+                MemoryFactModel.created_at,
+                literal(None),
+                literal(0),
+                literal(0),
+            )
+            .where(
+                ~select(MemoryActivationStateModel.fact_id)
+                .where(MemoryActivationStateModel.fact_id == MemoryFactModel.id)
+                .exists()
+            )
+            .order_by(case((MemoryFactModel.status == "active", 0), else_=1), MemoryFactModel.id)
+            .limit(limit)
+        )
+        result = await session.execute(
+            insert(MemoryActivationStateModel)
+            .from_select(
+                [
+                    "fact_id",
+                    "activation",
+                    "activation_updated_at",
+                    "last_recalled_at",
+                    "recall_count",
+                    "revision",
+                ],
+                source,
+            )
+            .on_conflict_do_nothing(index_elements=["fact_id"])
+        )
+        return int(cast(CursorResult[Any], result).rowcount or 0)
 
     async def _execute_facts_with_count(
         self,
@@ -1427,7 +1478,10 @@ class MemoryJobRepository:
                         MemoryJobModel.next_attempt_at,
                         MemoryJobModel.created_at,
                         MemoryJobModel.updated_at,
-                        func.length(ChatEventModel.content),
+                        (
+                            func.length(ChatEventModel.content)
+                            + func.length(ChatEventModel.audio_transcript)
+                        ),
                         MemoryJobModel.error_category,
                     )
                     .join(ChatEventModel, ChatEventModel.id == MemoryJobModel.event_id)
@@ -1603,7 +1657,12 @@ class MemoryJobRepository:
                 else_=0,
             )
         )
-        character_count = func.coalesce(func.sum(func.length(ChatEventModel.content)), 0)
+        character_count = func.coalesce(
+            func.sum(
+                func.length(ChatEventModel.content) + func.length(ChatEventModel.audio_transcript)
+            ),
+            0,
+        )
         oldest_job = func.min(MemoryJobModel.created_at)
         first_job_id = func.min(MemoryJobModel.id)
         xor_owner = or_(
@@ -1694,7 +1753,7 @@ class MemoryJobRepository:
                         row.error_category = "missing_canonical_owner"
                         row.updated_at = claimed_at
                         continue
-                event_characters = len(event.content)
+                event_characters = len(event.evidence_content)
                 if jobs and characters + event_characters > max(1, max_characters):
                     break
                 characters += event_characters

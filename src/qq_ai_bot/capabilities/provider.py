@@ -9,7 +9,7 @@ from typing import Any, Protocol
 
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities.binding import InProcessToolBinding
-from qq_ai_bot.capabilities.invocation import ToolInvocationContext
+from qq_ai_bot.capabilities.invocation import ToolInvocationContext, current_invocation
 from qq_ai_bot.capabilities.models import (
     CapabilityDescriptor,
     CapabilityEffect,
@@ -20,12 +20,45 @@ from qq_ai_bot.capabilities.models import (
 )
 from qq_ai_bot.capabilities.search_aliases import merge_search_terms
 from qq_ai_bot.domain.messages import ChatTool
+from qq_ai_bot.sandbox.environment_tools import READ_TOOLS, SANDBOX_TOOLS
+from qq_ai_bot.workspace.tools import WORKSPACE_READ_TOOLS, WORKSPACE_TOOLS
 
 _ALL_ORIGINS = frozenset(TurnOrigin)
 _DIRECT_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP})
 _DECLINE_REPLY_ORIGINS = frozenset({TurnOrigin.AUTONOMOUS_GROUP, TurnOrigin.PLUGIN_BACKGROUND})
 _REPLY_LAYOUT_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP})
+_SOCIAL_ORIGINS = _DIRECT_ORIGINS | frozenset({TurnOrigin.SCHEDULED_AUTOMATION})
+_RESIDENT_YUKI_TOOLS = (
+    frozenset(
+        {
+            "find_contacts",
+            "send_private_message",
+            "send_group_message",
+            "poke_person",
+            "get_group_members",
+            "read_conversation_history",
+            "recall_own_message",
+            "workspace_list",
+            "workspace_read",
+            "workspace_write",
+            "workspace_import_attachment",
+            "workspace_delete",
+            "run_python",
+            "get_code_run",
+            "cancel_code_run",
+        }
+    )
+    | SANDBOX_TOOLS
+    | WORKSPACE_TOOLS
+)
 _ORIGIN_OVERRIDES: dict[str, frozenset[TurnOrigin]] = {
+    **{name: _SOCIAL_ORIGINS for name in _RESIDENT_YUKI_TOOLS},
+    "find_contacts": _SOCIAL_ORIGINS,
+    "send_private_message": _SOCIAL_ORIGINS,
+    "send_group_message": _SOCIAL_ORIGINS,
+    "poke_person": _SOCIAL_ORIGINS,
+    "get_group_members": _SOCIAL_ORIGINS,
+    "recall_own_message": _SOCIAL_ORIGINS,
     "decline_reply": _DECLINE_REPLY_ORIGINS,
     "set_voice_preference": _DIRECT_ORIGINS,
     "set_reply_layout": _REPLY_LAYOUT_ORIGINS,
@@ -34,6 +67,51 @@ _ORIGIN_OVERRIDES: dict[str, frozenset[TurnOrigin]] = {
 }
 
 _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
+    **{
+        name: (
+            "sandbox.read" if name in READ_TOOLS else "sandbox.run",
+            CapabilityEffect.READ_STATE if name in READ_TOOLS else CapabilityEffect.WRITE_STATE,
+            CapabilityRisk.READ if name in READ_TOOLS else CapabilityRisk.MUTATE,
+        )
+        for name in SANDBOX_TOOLS
+    },
+    **{
+        name: (
+            "workspace.read" if name in WORKSPACE_READ_TOOLS else "workspace.write",
+            CapabilityEffect.READ_STATE
+            if name in WORKSPACE_READ_TOOLS
+            else CapabilityEffect.WRITE_STATE,
+            CapabilityRisk.READ if name in WORKSPACE_READ_TOOLS else CapabilityRisk.MUTATE,
+        )
+        for name in WORKSPACE_TOOLS
+    },
+    "workspace_list": ("workspace.read", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
+    "workspace_read": ("workspace.read", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
+    "workspace_write": ("workspace.write", CapabilityEffect.WRITE_STATE, CapabilityRisk.MUTATE),
+    "workspace_delete": ("workspace.write", CapabilityEffect.WRITE_STATE, CapabilityRisk.MUTATE),
+    "workspace_import_attachment": (
+        "workspace.write",
+        CapabilityEffect.WRITE_STATE,
+        CapabilityRisk.MUTATE,
+    ),
+    "run_python": ("sandbox.run", CapabilityEffect.WRITE_STATE, CapabilityRisk.MUTATE),
+    "get_code_run": ("sandbox.read", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
+    "cancel_code_run": ("sandbox.cancel", CapabilityEffect.WRITE_STATE, CapabilityRisk.MUTATE),
+    "find_contacts": ("social.contacts", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
+    "send_private_message": ("social.send", CapabilityEffect.PLATFORM_SEND, CapabilityRisk.MUTATE),
+    "send_group_message": ("social.send", CapabilityEffect.PLATFORM_SEND, CapabilityRisk.MUTATE),
+    "poke_person": ("social.poke", CapabilityEffect.PLATFORM_MUTATE, CapabilityRisk.MUTATE),
+    "get_group_members": ("social.members", CapabilityEffect.EXTERNAL_READ, CapabilityRisk.READ),
+    "read_conversation_history": (
+        "social.history",
+        CapabilityEffect.EXTERNAL_READ,
+        CapabilityRisk.READ,
+    ),
+    "recall_own_message": (
+        "social.recall",
+        CapabilityEffect.PLATFORM_MUTATE,
+        CapabilityRisk.MUTATE,
+    ),
     "get_my_capabilities": (
         "kernel.authority.read",
         CapabilityEffect.READ_STATE,
@@ -331,8 +409,13 @@ class ChatToolCapabilityProvider:
                 if risk is CapabilityRisk.READ
                 else CapabilityIdempotency.CONDITIONAL
             ),
-            exposure=CapabilityExposure.PLANNED,
+            exposure=(
+                CapabilityExposure.DIRECT_ALWAYS
+                if self._source is CapabilityTrustSource.CORE and tool.name in _RESIDENT_YUKI_TOOLS
+                else CapabilityExposure.PLANNED
+            ),
             schema_version=str(tool.schema_version),
+            result_cacheable=tool.result_cacheable,
             tags=tuple(dict.fromkeys(tags)),
         )
 
@@ -412,11 +495,13 @@ class InProcessToolProvider:
             arguments: dict[str, object],
             context: ToolInvocationContext,
         ) -> object:
-            return await self._execute(
-                tool.name,
-                json.dumps(arguments, ensure_ascii=False),
-                context.runtime,
-            )
+            token = current_invocation.set(context)
+            try:
+                return await self._execute(
+                    tool.name, json.dumps(arguments, ensure_ascii=False), context.runtime
+                )
+            finally:
+                current_invocation.reset(token)
 
         search_tags = (
             _CORE_SEARCH_TAGS.get(tool.name, ())

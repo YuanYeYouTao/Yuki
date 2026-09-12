@@ -43,6 +43,7 @@ class _TurnState:
     mutation_started: bool = False
     protected_version: int | None = None
     tasks: dict[TurnStage, asyncio.Task[object]] = field(default_factory=dict)
+    holders: dict[asyncio.Task[object], int] = field(default_factory=dict)
 
 
 class ConversationTurnCoordinator:
@@ -117,6 +118,33 @@ class ConversationTurnCoordinator:
         return token
 
     @asynccontextmanager
+    async def hold(self, conversation_key: str) -> AsyncIterator[None]:
+        """Keep a whole turn occupied across generation/delivery stage gaps.
+
+        This is an idle-admission guard, not a mutex or cancellation policy.
+        Nested users share a counted reservation owned by the calling task.
+        """
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("conversation reservation requires an asyncio task")
+        async with self._guard:
+            state = self._states.setdefault(conversation_key, _TurnState())
+            state.holders[task] = state.holders.get(task, 0) + 1
+        try:
+            yield
+        finally:
+            async with self._guard:
+                count = state.holders.get(task, 0)
+                if count > 1:
+                    state.holders[task] = count - 1
+                else:
+                    state.holders.pop(task, None)
+
+    @staticmethod
+    def _occupied(state: _TurnState) -> bool:
+        return any(not task.done() for task in (*state.tasks.values(), *state.holders))
+
+    @asynccontextmanager
     async def track(self, token: TurnToken, stage: TurnStage) -> AsyncIterator[None]:
         """Register the current coroutine as one observable turn stage."""
 
@@ -164,7 +192,7 @@ class ConversationTurnCoordinator:
             state = self._states.get(token.conversation_key)
             if state is None or state.version != token.version:
                 return None
-            if any(not task.done() for task in state.tasks.values()):
+            if self._occupied(state):
                 return None
             state.origin = TurnOrigin.AUTONOMOUS_GROUP
             state.mutation_started = False
@@ -186,17 +214,41 @@ class ConversationTurnCoordinator:
 
         async with self._guard:
             state = self._states.setdefault(conversation_key, _TurnState())
-            if any(not task.done() for task in state.tasks.values()):
+            if self._occupied(state):
                 return None
-            state.version += 1
-            state.origin = TurnOrigin.PLUGIN_BACKGROUND
-            state.mutation_started = False
-            state.protected_version = None
-            return TurnToken(
-                conversation_key,
-                state.version,
-                TurnOrigin.PLUGIN_BACKGROUND,
-            )
+            return self._background_token(conversation_key, state)
+
+    @staticmethod
+    def _background_token(conversation_key: str, state: _TurnState) -> TurnToken:
+        state.version += 1
+        state.origin = TurnOrigin.PLUGIN_BACKGROUND
+        state.mutation_started = False
+        state.protected_version = None
+        return TurnToken(conversation_key, state.version, TurnOrigin.PLUGIN_BACKGROUND)
+
+    @asynccontextmanager
+    async def background_turn(self, conversation_key: str) -> AsyncIterator[TurnToken | None]:
+        """Atomically check idle and reserve until the background attempt returns."""
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("background turn requires an asyncio task")
+        async with self._guard:
+            state = self._states.setdefault(conversation_key, _TurnState())
+            if self._occupied(state):
+                token = None
+            else:
+                token = self._background_token(conversation_key, state)
+                state.holders[task] = state.holders.get(task, 0) + 1
+        try:
+            yield token
+        finally:
+            if token is not None:
+                async with self._guard:
+                    count = state.holders.get(task, 0)
+                    if count > 1:
+                        state.holders[task] = count - 1
+                    else:
+                        state.holders.pop(task, None)
 
     async def cancel_interruptible(self, conversation_key: str) -> bool:
         """Explicitly cancel registered admission/generation/reply work for `/ai stop`."""

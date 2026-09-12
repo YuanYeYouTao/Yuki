@@ -47,18 +47,15 @@ def test_deepseek_reasoning_effort_accepts_supported_values(effort: ReasoningEff
         )
 
 
-@pytest.mark.parametrize(
-    "removed_key",
-    [
+def test_removed_history_configuration_is_explicitly_rejected() -> None:
+    for removed_key in (
         "_".join(("conversation", "history", "rollup", "max", "attempts")),
         "_".join(("conversation", "history", "rollup", "l0", "min", "events")),
         "_".join(("conversation", "history", "rollup", "fan", "in")),
         "_".join(("conversation", "history", "rollup", "max", "level")),
-    ],
-)
-def test_removed_history_configuration_is_explicitly_rejected(removed_key: str) -> None:
-    with pytest.raises(ValidationError, match=r"removed 3\.6 conversation history"):
-        Settings.model_validate({removed_key: 3})
+    ):
+        with pytest.raises(ValidationError, match=r"removed 3\.6 conversation history"):
+            Settings.model_validate({removed_key: 3})
 
 
 def test_memory_dream_absolute_output_budget_cannot_exceed_contract() -> None:
@@ -86,16 +83,13 @@ def test_system_prompt_file_overrides_inline_prompt(tmp_path: Path) -> None:
     assert settings.system_prompt == "# Role\n\nExternal prompt"
 
 
-def test_system_prompt_file_must_exist(tmp_path: Path) -> None:
+def test_system_prompt_file_must_exist_and_not_be_empty(tmp_path: Path) -> None:
     with pytest.raises(ValidationError, match="cannot read SYSTEM_PROMPT_FILE"):
         Settings.model_validate(
             {
                 "system_prompt_file": tmp_path / "missing.md",
             }
         )
-
-
-def test_system_prompt_file_must_not_be_empty(tmp_path: Path) -> None:
     prompt_file = tmp_path / "empty.md"
     prompt_file.write_text(" \n", encoding="utf-8")
 
@@ -146,7 +140,7 @@ def test_yuki_persona_file_must_exist_and_not_be_empty(tmp_path: Path) -> None:
         )
 
 
-def test_legacy_prompt_without_placeholder_is_not_duplicated(tmp_path: Path) -> None:
+def test_persona_aliases_do_not_modify_prompt_without_placeholder(tmp_path: Path) -> None:
     persona_file = tmp_path / "persona.md"
     persona_file.write_text("shared persona", encoding="utf-8")
     prompt_file = tmp_path / "legacy.md"
@@ -160,6 +154,15 @@ def test_legacy_prompt_without_placeholder_is_not_duplicated(tmp_path: Path) -> 
     )
 
     assert settings.system_prompt == "legacy prompt already contains its persona"
+
+    persona_file.write_text("Mika 的独立共享人格", encoding="utf-8")
+    original_prompt = "# 私有系统提示词\n\n这里不包含任何人格占位符。"
+    prompt_file.write_text(original_prompt, encoding="utf-8")
+    settings = Settings.model_validate(
+        {"BOT_PERSONA_FILE": persona_file, "system_prompt_file": prompt_file}
+    )
+    assert settings.bot_persona == "Mika 的独立共享人格"
+    assert settings.system_prompt == original_prompt
 
 
 def test_bot_identity_is_configurable_and_aliases_are_stably_deduplicated() -> None:
@@ -175,26 +178,6 @@ def test_bot_identity_is_configurable_and_aliases_are_stably_deduplicated() -> N
     assert settings.bot_aliases == ("Mika", "米卡")
     assert settings.bot_voice_name == "みか"
     assert settings.bot_identity.display_name == "Mika"
-
-
-def test_bot_persona_does_not_modify_prompt_without_legacy_placeholder(
-    tmp_path: Path,
-) -> None:
-    persona_file = tmp_path / "persona.md"
-    persona_file.write_text("Mika 的独立共享人格", encoding="utf-8")
-    prompt_file = tmp_path / "system_prompt.md"
-    original_prompt = "# 私有系统提示词\n\n这里不包含任何人格占位符。"
-    prompt_file.write_text(original_prompt, encoding="utf-8")
-
-    settings = Settings.model_validate(
-        {
-            "BOT_PERSONA_FILE": persona_file,
-            "system_prompt_file": prompt_file,
-        }
-    )
-
-    assert settings.bot_persona == "Mika 的独立共享人格"
-    assert settings.system_prompt == original_prompt
 
 
 def test_example_system_prompt_is_complete_and_preserves_mode_boundaries() -> None:
@@ -218,7 +201,7 @@ def test_example_system_prompt_is_complete_and_preserves_mode_boundaries() -> No
     assert all(fragment in prompt for fragment in required_fragments)
 
 
-def test_rollup_event_watermarks_must_fit_local_event_limit() -> None:
+def test_rollup_event_and_batch_watermarks_are_consistent() -> None:
     with pytest.raises(ValidationError, match="must not exceed LOCAL_CONTEXT_EVENT_LIMIT"):
         Settings(
             _env_file=None,
@@ -226,9 +209,6 @@ def test_rollup_event_watermarks_must_fit_local_event_limit() -> None:
             conversation_rollup_raw_tail_events=768,
             conversation_rollup_trigger_events=512,
         )
-
-
-def test_rollup_batches_must_cover_one_trigger_window() -> None:
     with pytest.raises(ValidationError, match="must cover one CONVERSATION_ROLLUP_TRIGGER_EVENTS"):
         Settings(
             _env_file=None,
@@ -282,20 +262,16 @@ def test_memory_embedding_disabled_needs_no_secret_but_enabled_does() -> None:
     assert "test-only-key" not in repr(enabled)
 
 
-@pytest.mark.parametrize(
-    ("override", "error"),
-    [
+def test_memory_embedding_rejects_unsupported_profiles() -> None:
+    invalid_profiles = (
         ({"memory_embedding_provider": "other"}, "must be qwen_dashscope"),
         ({"memory_embedding_dimensions": 768}, "supports 1024 dimensions"),
         ({"memory_embedding_output_type": "sparse"}, "must be dense"),
         ({"memory_embedding_document_template_version": 2}, "unsupported"),
-    ],
-)
-def test_memory_embedding_rejects_unsupported_profiles(
-    override: dict[str, object], error: str
-) -> None:
-    with pytest.raises(ValidationError, match=error):
-        Settings.model_validate(override)
+    )
+    for override, error in invalid_profiles:
+        with pytest.raises(ValidationError, match=error):
+            Settings.model_validate(override)
 
 
 def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps() -> None:
@@ -410,9 +386,8 @@ def test_legacy_self_reflection_session_limit_env_alias_is_supported() -> None:
     assert settings.memory_self_reflection_max_batches_per_run == 5
 
 
-@pytest.mark.parametrize(
-    ("override", "error"),
-    [
+def test_self_reflection_watermarks_must_be_ordered() -> None:
+    for override, error in [
         (
             {
                 "memory_self_reflection_low_event_threshold": 31,
@@ -421,10 +396,7 @@ def test_legacy_self_reflection_session_limit_env_alias_is_supported() -> None:
             "low event watermark cannot exceed high watermark",
         ),
         (
-            {
-                "memory_self_reflection_event_threshold": 51,
-                "memory_self_reflection_max_events": 50,
-            },
+            {"memory_self_reflection_event_threshold": 51, "memory_self_reflection_max_events": 50},
             "high event watermark cannot exceed batch event limit",
         ),
         (
@@ -441,9 +413,11 @@ def test_legacy_self_reflection_session_limit_env_alias_is_supported() -> None:
             },
             "high character watermark cannot exceed batch character limit",
         ),
-    ],
-)
-def test_self_reflection_watermarks_must_be_ordered(
+    ]:
+        _check_self_reflection_watermarks_must_be_ordered(override, error)
+
+
+def _check_self_reflection_watermarks_must_be_ordered(
     override: dict[str, object], error: str
 ) -> None:
     with pytest.raises(ValidationError, match=error):
@@ -602,9 +576,8 @@ def test_vision_enabled_requires_complete_provider_configuration() -> None:
     assert settings.vision_configured
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
+def test_vision_numeric_domain_constraints_are_validated() -> None:
+    for field, value in [
         ("vision_max_prepared_bytes", 0),
         ("vision_timeout_seconds", 0),
         ("vision_queue_max_pending", 0),
@@ -612,9 +585,11 @@ def test_vision_enabled_requires_complete_provider_configuration() -> None:
         ("vision_media_download_timeout_seconds", 0),
         ("vision_max_retries", 0),
         ("vision_low_confidence_retry_threshold", 1.1),
-    ],
-)
-def test_vision_numeric_domain_constraints_are_validated(field: str, value: int | float) -> None:
+    ]:
+        _check_vision_numeric_domain_constraints_are_validated(field, value)
+
+
+def _check_vision_numeric_domain_constraints_are_validated(field: str, value: int | float) -> None:
     with pytest.raises(ValidationError):
         Settings.model_validate({field: value})
 

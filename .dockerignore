@@ -14,5 +14,9 @@ __pycache__
 .pytest_cache
 .mypy_cache
 .ruff_cache
+.cache
+workspace
+social-transfer
+sandbox-runtime
 tests
 tmp

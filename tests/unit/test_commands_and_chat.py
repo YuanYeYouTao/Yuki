@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 from tests.conftest import MemorySender, build_harness, make_settings
@@ -31,12 +32,99 @@ from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.runtime.contracts import MemoryCapabilityView
 from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.services.chat import _with_memory_mutation_contract
 from qq_ai_bot.services.processor import (
     MENTION_ONLY_CONTEXT,
     ProcessResult,
     _vision_failure_message,
 )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool_name,failure",
+    [("send_private_message", "artifact_transfer_unavailable"), ("poke_person", "route_paused")],
+)
+async def test_delivery_failure_keeps_normal_answer(
+    database: Database, tool_name: str, failure: str
+) -> None:
+    from dataclasses import replace
+
+    from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
+    from qq_ai_bot.domain.messages import ToolCall, ToolFunction
+    from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence
+    from qq_ai_bot.social.models import SocialError
+
+    calls = 0
+    model_calls = 0
+
+    def respond(request: ChatRequest) -> str | ChatResponse:
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == 1:
+            return ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(
+                    ToolCall(
+                        id="delivery",
+                        function=ToolFunction(
+                            name=tool_name,
+                            arguments=json.dumps(
+                                {
+                                    "subject_ref": "current_speaker",
+                                    **(
+                                        {"text": "hello"}
+                                        if tool_name == "send_private_message"
+                                        else {}
+                                    ),
+                                }
+                            ),
+                        ),
+                    ),
+                ),
+            )
+        if model_calls == 2:
+            results = [m.content or "" for m in request.messages if m.role == "tool"]
+            assert any(failure in r for r in results), results
+            return "文件已生成，但未确认发送成功。"
+        return "可以正常聊天。"
+
+    class Delivery:
+        def __init__(self):
+            self.database = database
+
+        async def execute(self, *args: object):
+            nonlocal calls
+            calls += 1
+            if failure == "uncertain":
+                return {"status": "uncertain", "operation_id": "test-operation"}
+            raise SocialError(failure)
+
+    harness = build_harness(database, make_settings(database.url), FakeLLMProvider(respond))
+    harness.processor._chat._tools.social_service = Delivery()
+    async with database.sessions() as session, session.begin():
+        person = await ensure_person(session, "1001")
+        presence = await ensure_presence(session, "9999")
+        conversation = await ensure_canonical_conversation(
+            session, kind="private", primary_scope_key="private:9999:1001", person_id=person
+        )
+    message = replace(
+        inbound("发给我", message_id="send-failure"),
+        conversation_id=conversation.conversation_id,
+        legacy_conversation_key="private:9999:1001",
+        person_id=person,
+        presence_id=presence,
+    )
+    sender = MemorySender()
+    result = await harness.processor.handle(message, sender)
+    assert result.reason == "chat" and calls == 1
+    assert "文件已生成，但未确认发送成功。" in [m.text for m in sender.messages]
+    assert all(not m.text.startswith("操作未完成：") for m in sender.messages)
+    following = MemorySender()
+    await harness.processor.handle(
+        replace(message, text="聊聊天", message_id="after-failure"), following
+    )
+    assert calls == 1 and following.messages[0].text == "可以正常聊天。"
 
 
 def inbound(
@@ -100,22 +188,55 @@ def test_capability_view_owns_first_round_memory_scope() -> None:
     )
 
 
-def test_only_mutation_access_appends_the_write_receipt_contract() -> None:
-    messages = (ChatMessage(role="user", content="更新测试配置"),)
+@pytest.mark.asyncio
+async def test_only_mutation_access_appends_the_write_receipt_contract(database) -> None:
+    from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
+    from qq_ai_bot.prompting.contracts import CORE_CONTRACT
+    from qq_ai_bot.prompting.serializer import strip_dynamic_prefix
+    from qq_ai_bot.services.context_assembler import AssembledContext, ContextMetrics
 
-    mutation_messages = _with_memory_mutation_contract(messages, True)
+    harness = build_harness(database, make_settings(database.url))
+    chat = harness.processor._chat
+    runtime = await chat._runtime_config.snapshot()
+    for history in ((), (ChatMessage(role="assistant", content="past"),)):
+        context = AssembledContext(
+            metadata_payload={},
+            history_messages=history,
+            current_message=ChatMessage(role="user", content="更新测试配置"),
+            recent_delivery=(),
+            current_time=chat._time.current_default(),
+            current_relationship=None,
+            metrics=ContextMetrics(0, 0, len(history), 6, False),
+        )
+        variants = []
+        for exclusive, scheduled in ((False, False), (True, False), (False, True), (True, True)):
+            composed = await chat._main_turns.compose(
+                inbound=None,
+                context=context,
+                runtime=runtime,
+                visual_observation=None,
+                visual_failure=False,
+                memory_exclusive_write=exclusive,
+                scheduled_automation_intent=scheduled,
+            )
+            variants.append(composed.messages)
+            tail = composed.messages[-1].content
+            assert strip_dynamic_prefix(tail) == context.current_message.content
+            assert ('"exclusive_write":true' in tail) == exclusive
+            assert ('"scheduled_automation_intent":true' in tail) == (scheduled and not exclusive)
+            assert composed.metrics.total_characters == sum(
+                len(message.content or "") for message in composed.messages
+            )
+        instructions = [DeepSeekResponsesProvider._convert_messages(v)[0] for v in variants]
+        assert all(text == instructions[0] for text in instructions)
+        assert CORE_CONTRACT in instructions[0]
+        assert all(messages[1:-1] == history for messages in variants)
+        assert "真实工具回执" in CORE_CONTRACT
+        assert "管理员能力" in CORE_CONTRACT
 
-    assert len(mutation_messages) == 2
-    assert mutation_messages[-1] is messages[-1]
-    assert mutation_messages[-2].role == "system"
-    assert "真实工具回执" in (mutation_messages[-2].content or "")
-    assert "管理员能力" in (mutation_messages[-2].content or "")
-    assert _with_memory_mutation_contract(messages, False) is messages
 
-
-@pytest.mark.parametrize(
-    ("error_code", "expected"),
-    [
+def test_visual_failures_have_distinct_user_messages() -> None:
+    for error_code, expected in [
         ("media_download_timeout", "图片下载超时"),
         ("get_image_failed", "QQ 网关未能取得图片资源"),
         ("private_url", "图片资源下载失败"),
@@ -124,9 +245,11 @@ def test_only_mutation_access_appends_the_write_receipt_contract() -> None:
         ("queue_timeout", "图片识别任务较多"),
         ("timeout", "视觉模型响应超时"),
         ("provider_unavailable", "视觉模型暂时不可用"),
-    ],
-)
-def test_visual_failures_have_distinct_user_messages(
+    ]:
+        _check_visual_failures_have_distinct_user_messages(error_code, expected)
+
+
+def _check_visual_failures_have_distinct_user_messages(
     error_code: str,
     expected: str,
 ) -> None:
@@ -186,11 +309,13 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     )
     admin_text = admin_sender.messages[0].text
     assert "当前权限：超级管理员" in admin_text
-    assert "可修改运行时配置参数：227 项" in admin_text
+    assert "可修改运行时配置参数：239 项" in admin_text
     assert "管理员业务接口：44 项，其中修改型 33 项" in admin_text
     assert "conversation.autonomous_batch_limit" in admin_text
     assert "relationship.set_affection" in admin_text
-    assert "受保护配置（12 项，不可修改）" in admin_text
+    assert "受保护配置（13 项，不可修改）" in admin_text
+    assert "asr.enabled" in admin_text
+    assert "asr.api_key" in admin_text
     assert "QQ/OneBot Provider 通用全接口网关：1 项" in admin_text
     assert "call_onebot_api:any_public_action" in admin_text
 
@@ -556,6 +681,30 @@ async def test_empty_model_response_is_user_safe(database: Database) -> None:
     assert result.reason == "empty_llm_response"
     assert "空内容" in sender.messages[0].text
 
+    # History mention annotations are not transport instructions. Correct once
+    # within the existing request budget; never leak the placeholder as a fake @.
+    for repair in (False, True):
+
+        def mention_response(request: ChatRequest, repair: bool = repair) -> str:
+            if repair and any("已拦截且未发送" in str(m.content) for m in request.messages):
+                return "请先确认要提醒的具体账号。"
+            return "[提及ICE] 喊你呢\n\n@完了"
+
+        mention_provider = FakeLLMProvider(mention_response)
+        mention_harness = build_harness(database, make_settings(database.url), mention_provider)
+        mention_sender = MemorySender()
+        await mention_harness.processor.handle(
+            inbound("at ice", message_id=f"mention-placeholder-{repair}"), mention_sender
+        )
+        assert len(mention_provider.requests) == 2
+        assert mention_provider.requests[0].tools == mention_provider.requests[1].tools
+        assert all("[提及" not in str(message.text) for message in mention_sender.messages)
+        assert all("@完了" not in str(message.text) for message in mention_sender.messages)
+        assert any(
+            ("确认" if repair else "没有形成有效") in str(message.text)
+            for message in mention_sender.messages
+        )
+
 
 @pytest.mark.asyncio
 async def test_keyerror_during_chat_sends_retry_text(database: Database) -> None:
@@ -653,7 +802,9 @@ async def test_unused_planner_fallback_no_longer_blocks_the_agent(
 
 
 @pytest.mark.asyncio
-async def test_ordinary_chat_always_assembles_agent_context(database: Database) -> None:
+async def test_ordinary_chat_always_assembles_agent_context(
+    database: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
     provider = FakeLLMProvider(lambda _request: "表情也要先走 Main Agent")
     harness = build_harness(
         database,
@@ -662,12 +813,28 @@ async def test_ordinary_chat_always_assembles_agent_context(database: Database) 
     )
     sender = MemorySender()
 
+    chat = harness.processor._chat
+    send_sequence = chat._reply_sequence.send
+    checked = []
+
+    async def inspect_handoff(**kwargs):
+        key = kwargs["token"].conversation_key
+        # The real Main Agent has finished; reply tracking has not started yet.
+        assert not chat._turn_coordinator._states[key].tasks
+        assert await chat._turn_coordinator.begin_background(key) is None
+        checked.append(key)
+        return await send_sequence(**kwargs)
+
+    monkeypatch.setattr(chat._reply_sequence, "send", inspect_handoff)
+
     result = await harness.processor.handle(
         inbound("发个表情", message_id="emoji-still-calls-agent"),
         sender,
     )
 
     assert result.reason == "chat"
+    assert len(checked) == 1
+    assert await chat._turn_coordinator.begin_background(checked[0]) is not None
     assert len(provider.requests) == 1
     assert sender.messages[0].text == "表情也要先走 Main Agent"
     request = provider.requests[0]

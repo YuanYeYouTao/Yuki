@@ -16,6 +16,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from qq_ai_bot.domain.messages import ReasoningEffort, minimum_reasoning_effort
 from qq_ai_bot.settings_domains import (
     AppSettings,
+    ASRSettings,
     AutomationSettings,
     ConversationSettings,
     EmojiSettings,
@@ -79,6 +80,14 @@ class Settings(BaseSettings):
     app_port: int = 8080
     log_level: str = "INFO"
     log_message_content: bool = False
+    workspace_directory: Path = Path("workspace")
+    social_send_per_target_per_minute: int = Field(default=3, ge=1)
+    social_send_global_per_minute: int = Field(default=10, ge=1)
+    social_poke_per_target_per_minute: int = Field(default=1, ge=1)
+    social_poke_global_per_minute: int = Field(default=5, ge=1)
+    social_transfer_directory: Path = Path("social-transfer")
+    social_gateway_transfer_directory: str = ""
+    sandbox_socket: Path = Path("/run/yuki-sandbox/manager.sock")
 
     onebot_access_token: str = ""
     superusers_csv: str = Field(default="", validation_alias="SUPERUSERS")
@@ -488,6 +497,16 @@ class Settings(BaseSettings):
 
     # Local speech uses a separate, network-isolated Genie-TTS worker.  Optional
     # limits deliberately use None to mean "no speech-specific limit".
+    asr_enabled: bool = True
+    asr_base_url: str = ""
+    asr_api_key: str = Field(default="", repr=False)
+    asr_model: str = "qwen3-asr-flash"
+    asr_timeout_seconds: float = Field(default=60, gt=0, le=180)
+    asr_max_download_bytes: int = Field(default=10_485_760, gt=0, le=20_971_520)
+    asr_max_duration_seconds: int = Field(default=180, gt=0, le=300)
+    asr_global_concurrency: int = Field(default=2, ge=1, le=16)
+    asr_queue_max_pending: int = Field(default=8, ge=1, le=64)
+
     speech_enabled: bool = False
     speech_provider: str = "genie"
     speech_socket_path: Path = Path("/run/yuki-speech/genie.sock")
@@ -837,6 +856,7 @@ class Settings(BaseSettings):
             self.vision,
             self.emoji,
             self.speech,
+            self.asr,
             self.automation,
             self.tooling,
             self.mcp,
@@ -915,6 +935,22 @@ class Settings(BaseSettings):
     @cached_property
     def speech(self) -> SpeechSettings:
         return SpeechSettings.model_validate(self)
+
+    @cached_property
+    def asr(self) -> ASRSettings:
+        return ASRSettings.model_validate(self)
+
+    @property
+    def asr_credentials(self) -> tuple[str, str]:
+        """Reuse one complete Qwen connection, never mix a DeepSeek key and ASR URL."""
+        if self.asr_base_url.strip() or self.asr_api_key.strip():
+            return self.asr_base_url.strip(), self.asr_api_key.strip()
+        if self.vision_provider.casefold() == "qwen":
+            if self.vision_base_url.strip() and self.vision_api_key.strip():
+                return self.vision_base_url.strip(), self.vision_api_key.strip()
+        if "qwen" in self.llm_model.casefold():
+            return self.llm_base_url.strip(), self.llm_api_key.strip()
+        return "", ""
 
     @cached_property
     def automation(self) -> AutomationSettings:

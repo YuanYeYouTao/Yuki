@@ -7,6 +7,7 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from weakref import WeakValueDictionary
 
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 
@@ -34,7 +35,8 @@ class ConversationEffectGate:
     """Own one asyncio lock per bot-aware conversation scope."""
 
     def __init__(self) -> None:
-        self._locks: dict[str, asyncio.Lock] = {}
+        # Never evict a live lock: its holders and waiters own strong references.
+        self._locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
         self._guard = asyncio.Lock()
         self.superseded_rejections = 0
 

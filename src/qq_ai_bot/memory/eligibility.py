@@ -76,7 +76,7 @@ class MemoryEventEligibilityPolicy:
             return "bot_sender"
         if not suppression_is_canonical_live(event.suppression_status):
             return "suppressed_duplicate"
-        if not event.content.strip():
+        if not event.evidence_content.strip():
             return "blank_content"
         if event.origin not in self.allowed_origins:
             return "unsupported_origin"
@@ -108,7 +108,10 @@ class MemoryEventEligibilityPolicy:
             ChatEventModel.direction == "inbound",
             person_author,
             not_suppressed,
-            func.length(func.trim(ChatEventModel.content)) > 0,
+            or_(
+                func.length(func.trim(ChatEventModel.content)) > 0,
+                ChatEventModel.audio_transcript.contains('"source":"current"'),
+            ),
             ChatEventModel.origin.in_(tuple(self.allowed_origins)),
             ChatEventModel.scope_type.in_(("private", "group")),
             or_(ChatEventModel.scope_type != "group", ChatEventModel.group_id.is_not(None)),

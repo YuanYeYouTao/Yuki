@@ -138,6 +138,8 @@ class ConversationPromptSnapshot:
     raw_tail_end_event_id: int
     overlay: ConversationRollupState | None = None
     rewrite_pending: bool = False
+    conversation_id: str | None = None
+    prompt_source_revision: int = 0
 
 
 @dataclass(frozen=True, slots=True)

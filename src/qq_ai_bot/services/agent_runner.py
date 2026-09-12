@@ -8,7 +8,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import partial
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.authority import DelegatedAuthority
@@ -21,13 +21,12 @@ from qq_ai_bot.capabilities.coordinator import (
 from qq_ai_bot.domain.messages import (
     ChatMessage,
     ChatRequest,
+    ChatResponse,
     ChatTool,
-    FunctionCallOutput,
     ModelResponseStatus,
     NativeToolDefinition,
     NativeToolEvent,
     PromptRequestDiagnostics,
-    ProviderContinuation,
     ResponseCitation,
     ToolCall,
 )
@@ -40,13 +39,24 @@ from qq_ai_bot.llm.base import (
 )
 from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
 from qq_ai_bot.model_runtime.models import ModelTask
+from qq_ai_bot.sandbox.progress import TaskProgress, current_progress
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.evidence_observation import EVIDENCE_TOOLS, EvidenceObservation
 from qq_ai_bot.services.native_tool_binder import NativeToolBinder
+from qq_ai_bot.services.turn_transcript import TranscriptRequest, TurnTranscript, validating_request
 from qq_ai_bot.time.models import TimeContext
 from qq_ai_bot.web.models import WebMode
 
+if TYPE_CHECKING:
+    from qq_ai_bot.services.main_agent_contract import MainAgentContract
+
 logger = logging.getLogger(__name__)
+
+
+class _RequestNotStarted(Exception):
+    def __init__(self, cause: LLMError) -> None:
+        self.cause = cause
+        super().__init__(str(cause))
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +77,8 @@ class AgentRuntime:
     prompt_diagnostics: PromptRequestDiagnostics | None = None
     before_model_request: Callable[[], Awaitable[None]] | None = None
     canonical_conversation_id: str | None = None
+    dynamic_context_prepared: bool = False
+    task_progress: TaskProgress | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +137,7 @@ class AgentRunner:
         self._task = task
         self._tool_coordinator = ToolInvocationCoordinator()
         self._native_tools = NativeToolBinder()
+        self.main_contract: MainAgentContract | None = None
 
     async def run(
         self,
@@ -132,14 +145,43 @@ class AgentRunner:
         runtime: AgentRuntime,
         tools: AgentToolBackend | None,
     ) -> AgentRunResult:
-        messages = list(initial_messages)
+        progress = runtime.task_progress or TaskProgress(
+            runtime.max_model_requests, runtime.max_tool_calls
+        )
+        token = current_progress.set(progress)
+        try:
+            result = await self._run(initial_messages, runtime, tools)
+            await progress.finish("yielded")
+            return result
+        except BaseException:
+            await progress.finish("uncertain")
+            raise
+        finally:
+            current_progress.reset(token)
+
+    async def _run(
+        self,
+        initial_messages: tuple[ChatMessage, ...],
+        runtime: AgentRuntime,
+        tools: AgentToolBackend | None,
+    ) -> AgentRunResult:
+        fixed_definitions = None
+        if self.main_contract is not None:
+            fixed_definitions = await self.main_contract.definitions()
+            if not runtime.dynamic_context_prepared:
+                # Legacy raw-message integrations await their explicit migration.
+                initial_messages = await self.main_contract.state.inject(initial_messages)
+            if tools is None:
+                from qq_ai_bot.services.main_agent_contract import ShortStateOnlyBackend
+
+                tools = ShortStateOnlyBackend(self.main_contract.state)
+        transcript = TurnTranscript(initial_messages)
         evidence_observation = EvidenceObservation(runtime.origin.value)
         staged_evidence_results = 0
         calls_used = 0
         web_was_used = False
         empty_retries = 0
-        continuation: ProviderContinuation | None = None
-        pending_function_outputs: tuple[FunctionCallOutput, ...] = ()
+        mention_recovery_used = False
         native_events: list[NativeToolEvent] = []
         citations: list[ResponseCitation] = []
         response_status = ModelResponseStatus.COMPLETED
@@ -157,6 +199,8 @@ class AgentRunner:
             definitions = (
                 tools.definitions(runtime, web_was_used=web_was_used) if tools is not None else ()
             )
+            if fixed_definitions is not None:
+                definitions = fixed_definitions
             web_config = getattr(runtime.runtime_config, "web", None)
             try:
                 web_mode = WebMode(getattr(web_config, "mode", WebMode.DISABLED.value))
@@ -174,7 +218,7 @@ class AgentRunner:
                 if web_search_selected
                 else ()
             )
-            if web_mode is WebMode.NATIVE:
+            if web_mode is WebMode.NATIVE and fixed_definitions is None:
                 # Native-only deliberately excludes external search. Mixed mode
                 # keeps the pinned Tavily function alongside the native tool;
                 # availability must not depend on a preceding native failure.
@@ -182,11 +226,10 @@ class AgentRunner:
                     item for item in definitions if item.name not in {"web_search", "read_webpage"}
                 )
             restart_chain = getattr(tools, "consume_provider_chain_restart", None)
-            if callable(restart_chain) and restart_chain():
-                continuation = None
-                continuation_tools = ()
-                continuation_native_tools = ()
-            if continuation is not None:
+            if callable(restart_chain):
+                # Discovery/execution policy cannot discard a submitted request prefix.
+                restart_chain()
+            if transcript.continuation is not None:
                 # Responses continuations are one cumulative request chain.
                 # Tools may be added after request_tools, but removing a tool
                 # previously declared in the chain makes some providers reject
@@ -202,11 +245,11 @@ class AgentRunner:
                 # Chat Completions can omit tools entirely. Responses continuations
                 # must retain every previously declared schema, so keep those
                 # definitions but force tool_choice=none below.
-                if continuation is None:
+                if transcript.continuation is None and fixed_definitions is None:
                     definitions = ()
                     native_definitions = ()
                 if not finalization_prompt_added:
-                    messages.append(
+                    transcript.append(
                         ChatMessage(
                             role="system",
                             content=(
@@ -217,18 +260,27 @@ class AgentRunner:
                         )
                     )
                     finalization_prompt_added = True
-            if incomplete_recovery_used and continuation is None:
+            if (
+                incomplete_recovery_used
+                and transcript.continuation is None
+                and fixed_definitions is None
+            ):
                 definitions = ()
                 native_definitions = ()
-            if no_progress_recovery and continuation is None:
+            if (
+                no_progress_recovery
+                and transcript.continuation is None
+                and fixed_definitions is None
+            ):
                 definitions = ()
                 native_definitions = ()
             try:
-                if runtime.before_model_request is not None:
-                    await runtime.before_model_request()
                 diagnostics = runtime.prompt_diagnostics
+                sequence = transcript.request()
                 request = ChatRequest(
-                    messages=tuple(messages),
+                    messages=sequence.messages,
+                    request_chain_id=transcript.chain_id,
+                    continuation_items=sequence.items,
                     model=runtime.runtime_config.llm.model or "fake",
                     temperature=runtime.runtime_config.llm.temperature,
                     max_output_tokens=runtime.runtime_config.llm.max_output_tokens,
@@ -236,12 +288,12 @@ class AgentRunner:
                     tools=definitions,
                     tool_choice=(
                         "none"
-                        if finalization_only and (definitions or native_definitions)
+                        if (finalization_only or incomplete_recovery_used or no_progress_recovery)
+                        and (definitions or native_definitions)
                         else ("auto" if definitions or native_definitions else None)
                     ),
                     native_tools=native_definitions,
-                    continuation=continuation,
-                    function_outputs=pending_function_outputs,
+                    continuation=sequence.continuation,
                     conversation_prefix_hash=(
                         diagnostics.conversation_prefix_hash if diagnostics else ""
                     ),
@@ -269,10 +321,33 @@ class AgentRunner:
                     if runtime.canonical_conversation_id is not None
                     else partial(self._models.execute, self._task, request)
                 )
+
+                async def dispatch(
+                    execute: Callable[[], Awaitable[ChatResponse]] = execute,
+                    sequence: TranscriptRequest = sequence,
+                    request_count: int = request_index + 1,
+                    prior_tools: int = calls_used,
+                ) -> ChatResponse:
+                    # Admission can wait behind other conversations. Validate
+                    # only after acquiring the slot, immediately before execution.
+                    if runtime.before_model_request is not None:
+                        try:
+                            with validating_request(sequence):
+                                await runtime.before_model_request()
+                        except LLMError as exc:
+                            raise _RequestNotStarted(exc) from exc
+                    progress = current_progress.get()
+                    if progress is not None:
+                        await progress.checkpoint(models=request_count, tools=prior_tools)
+                    return await execute()
+
                 response = await self._concurrency.run_llm(
                     runtime.conversation_key,
-                    execute,
+                    dispatch,
                 )
+                progress = current_progress.get()
+                if progress is not None:
+                    await progress.confirm_observed()
                 # A prepared request may be cancelled while waiting for the LLM
                 # slot or rejected by the transport budget before dispatch.
                 # Confirm conservatively only after a response was received.
@@ -298,6 +373,11 @@ class AgentRunner:
                     source_count=len(response.citations),
                 )
                 staged_evidence_results = 0
+            except _RequestNotStarted as exc:
+                self._record_failure_usage(
+                    tools, tool_calls=calls_used, model_requests=request_index
+                )
+                raise exc.cause from exc
             except (LLMTimeoutError, LLMUnavailableError) as exc:
                 recovered = self._recover_committed_mutation(
                     tools,
@@ -354,7 +434,7 @@ class AgentRunner:
                     empty_retries,
                     calls_used,
                 )
-                messages.append(
+                transcript.append(
                     ChatMessage(
                         role="system",
                         content=(
@@ -382,7 +462,6 @@ class AgentRunner:
                     tools, tool_calls=calls_used, model_requests=request_index + 1
                 )
                 raise
-            pending_function_outputs = ()
             native_events.extend(response.native_tool_events)
             citations.extend(response.citations)
             response_status = response.status
@@ -392,7 +471,7 @@ class AgentRunner:
                 if callable(mark_native_web):
                     mark_native_web()
             if response.continuation is not None:
-                continuation = response.continuation
+                transcript.accept(response.continuation)
                 continuation_tools = definitions
                 continuation_native_tools = native_definitions
             if response.status is ModelResponseStatus.INCOMPLETE:
@@ -413,7 +492,7 @@ class AgentRunner:
                         "provider response remained incomplete after bounded recovery"
                     )
                 incomplete_recovery_used = True
-                messages.append(
+                transcript.append(
                     ChatMessage(
                         role="system",
                         content=(
@@ -429,6 +508,28 @@ class AgentRunner:
                 continue
             if not response.tool_calls:
                 content = response.content
+                if "[提及" in content:
+                    if (
+                        not mention_recovery_used
+                        and calls_used == 0
+                        and not finalization_only
+                        and request_index + 2 < runtime.max_model_requests
+                        and any(tool.name == "send_group_message" for tool in definitions)
+                    ):
+                        mention_recovery_used = True
+                        transcript.append(
+                            ChatMessage(
+                                role="system",
+                                content=(
+                                    "上一回复含 [提及…] 历史占位标记，已拦截且未发送；"
+                                    "本轮尚未调用工具，不能声称已 @。若用户要求提醒成员，"
+                                    "先明确人物，再用 send_group_message.mentions 发送；"
+                                    "普通正文和 @名字都不能触发提醒。无法执行时如实说明。"
+                                ),
+                            )
+                        )
+                        continue
+                    content = "这段回复没有形成有效的 @ 提醒。"
                 if tools is not None:
                     content = tools.finalize(content, runtime)
                 has_visible_effects = bool(
@@ -457,7 +558,7 @@ class AgentRunner:
                         empty_retries,
                         calls_used,
                     )
-                    messages.append(
+                    transcript.append(
                         ChatMessage(
                             role="system",
                             content=(
@@ -526,7 +627,7 @@ class AgentRunner:
                 )
             responses_path = response.continuation is not None
             if not responses_path:
-                messages.append(
+                transcript.append(
                     ChatMessage(
                         role="assistant",
                         content=response.content or None,
@@ -535,6 +636,13 @@ class AgentRunner:
                     )
                 )
             tooling = getattr(runtime.runtime_config, "tooling", None)
+            progress = current_progress.get()
+            if progress is not None:
+                await progress.checkpoint(
+                    models=request_index + 1,
+                    tools=calls_used
+                    + min(len(response.tool_calls), max(0, runtime.max_tool_calls - calls_used)),
+                )
             coordinated = await self._execute_tool_batch(
                 response.tool_calls,
                 tools,
@@ -542,6 +650,8 @@ class AgentRunner:
                 remaining_calls=max(0, runtime.max_tool_calls - calls_used),
                 max_parallel_calls=tooling.max_parallel_calls if tooling is not None else 1,
                 reusable_results=reusable_tool_results,
+                cacheable_names=frozenset(t.name for t in definitions if t.result_cacheable),
+                declared_names=frozenset(t.name for t in definitions),
             )
             batch, executed = coordinated.calls, coordinated.executed_count
             calls_used += executed
@@ -578,13 +688,7 @@ class AgentRunner:
                     ),
                     not _was_executed,
                 )
-                if responses_path:
-                    pending_function_outputs = (
-                        *pending_function_outputs,
-                        FunctionCallOutput(call_id=call.id, output=result),
-                    )
-                else:
-                    messages.append(ChatMessage(role="tool", content=result, tool_call_id=call.id))
+                transcript.append_result(call.id, result)
             if tools is not None:
                 declined = getattr(tools, "declined_reply", None)
                 if callable(declined) and declined():
@@ -624,7 +728,8 @@ class AgentRunner:
                 (call.function.name, self._tool_call_signature(call)[1], result)
                 for call, result, _was_executed in batch
             )
-            if fingerprint and fingerprint == previous_batch_fingerprint:
+            pending_work = any(self._tool_result_pending(result) for _, result, _ in batch)
+            if fingerprint and fingerprint == previous_batch_fingerprint and not pending_work:
                 repeated_batch_count += 1
             else:
                 repeated_batch_count = 0
@@ -643,8 +748,8 @@ class AgentRunner:
                     repeated_batch_count,
                     calls_used,
                 )
-                if continuation is None:
-                    messages.append(
+                if transcript.continuation is None:
+                    transcript.append(
                         ChatMessage(
                             role="system",
                             content=(
@@ -700,18 +805,34 @@ class AgentRunner:
         remaining_calls: int,
         max_parallel_calls: int,
         reusable_results: dict[tuple[str, str], str],
+        cacheable_names: frozenset[str],
+        declared_names: frozenset[str],
     ) -> CoordinatedToolResult:
         """Execute each semantic call once and fan its result out to duplicate IDs."""
 
         signatures = {call.id: self._tool_call_signature(call) for call in calls}
         first_call_by_signature: dict[tuple[str, str], ToolCall] = {}
         reused_by_id: dict[str, str] = {}
+        rejected_by_id: dict[str, str] = {}
         aliases: dict[str, str] = {}
         unique_calls: list[ToolCall] = []
         for call in calls:
+            if call.function.name not in declared_names:
+                rejected_by_id[call.id] = json.dumps(
+                    {
+                        "ok": False,
+                        "error": "tool_not_declared",
+                        "detail": "Tool is not part of this request's declared manifest.",
+                    }
+                )
+                continue
             signature = signatures[call.id]
             side_effecting = self._is_side_effecting(tools, call, runtime)
-            cached = None if side_effecting else reusable_results.get(signature)
+            cached = (
+                reusable_results.get(signature)
+                if not side_effecting and call.function.name in cacheable_names
+                else None
+            )
             if cached is not None:
                 reused_by_id[call.id] = cached
                 continue
@@ -778,6 +899,9 @@ class AgentRunner:
 
         ordered: list[tuple[ToolCall, str, bool]] = []
         for call in calls:
+            if call.id in rejected_by_id:
+                ordered.append((call, rejected_by_id[call.id], False))
+                continue
             if call.id in reused_by_id:
                 ordered.append((call, reused_by_id[call.id], False))
                 continue
@@ -803,7 +927,10 @@ class AgentRunner:
             signature = signatures[call.id]
             if self._successful_side_effect(tools, call, result, runtime):
                 reusable_results.clear()
-            elif not self._is_side_effecting(tools, call, runtime):
+            elif (
+                not self._is_side_effecting(tools, call, runtime)
+                and call.function.name in cacheable_names
+            ):
                 reusable_results[signature] = result
 
         return CoordinatedToolResult(
@@ -828,7 +955,18 @@ class AgentRunner:
         return call.function.name, normalized
 
     @staticmethod
-    def _tool_result_reusable(result: str) -> bool:
+    def _tool_result_pending(result: str) -> bool:
+        try:
+            payload = json.loads(result)
+        except json.JSONDecodeError:
+            return False
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            return False
+        data = payload.get("data")
+        return isinstance(data, dict) and data.get("pending") is True
+
+    @classmethod
+    def _tool_result_reusable(cls, result: str) -> bool:
         try:
             payload = json.loads(result)
         except json.JSONDecodeError:
@@ -837,6 +975,7 @@ class AgentRunner:
             isinstance(payload, dict)
             and payload.get("ok") is True
             and payload.get("retryable") is not True
+            and not cls._tool_result_pending(result)
         )
 
     @staticmethod

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from contextlib import AsyncExitStack
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
@@ -79,6 +80,7 @@ class PluginBackgroundTurnWorker:
         self._stop = asyncio.Event()
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
+        self._last_error: str | None = None
 
     async def start(self) -> None:
         if self._task is None or self._task.done():
@@ -98,17 +100,45 @@ class PluginBackgroundTurnWorker:
     def wake(self) -> None:
         self._wake.set()
 
+    async def health(self) -> dict[str, object]:
+        return {
+            "running": self._task is not None and not self._task.done(),
+            "last_error_category": self._last_error,
+        }
+
     async def _run(self) -> None:
         while not self._stop.is_set():
-            job = await self._repository.claim_turn()
-            if job is None:
-                self._wake.clear()
-                try:
-                    await asyncio.wait_for(self._wake.wait(), timeout=1.0)
-                except TimeoutError:
-                    pass
-                continue
-            await self._execute(job)
+            self._wake.clear()
+            job = None
+            try:
+                job = await self._repository.claim_turn()
+                if job is not None:
+                    await self._execute(job)
+                    self._last_error = None
+                    continue
+                self._last_error = None
+            except Exception as exc:
+                # Claims and pre-generation admission can fail too. A retained
+                # task exception must not silently abandon the durable queue.
+                self._last_error = type(exc).__name__
+                logger.error(
+                    "plugin_background_worker_iteration_failed exception_category=%s",
+                    self._last_error,
+                )
+                if job is not None:
+                    try:
+                        await self._repository.fail_turn(
+                            job.id, attempt=job.attempts, error_category=self._last_error
+                        )
+                    except Exception as persist_error:
+                        logger.error(
+                            "plugin_background_worker_recovery_failed exception_category=%s",
+                            type(persist_error).__name__,
+                        )
+            try:
+                await asyncio.wait_for(self._wake.wait(), timeout=1.0)
+            except TimeoutError:
+                pass
 
     async def _execute(self, job: BackgroundTurnJobRecord) -> None:
         """Bind one fresh runtime turn correlation per background job attempt."""
@@ -158,6 +188,16 @@ class PluginBackgroundTurnWorker:
         resolved_key: list[str] | None = None,
     ) -> None:
         """Execute from persisted Conversation + current Presence. No raw QQ fallback."""
+
+        async with AsyncExitStack() as attempt:
+            await self._execute_reserved(job, resolved_key, attempt)
+
+    async def _execute_reserved(
+        self,
+        job: BackgroundTurnJobRecord,
+        resolved_key: list[str] | None,
+        attempt: AsyncExitStack,
+    ) -> None:
 
         try:
             context = await self._repository.load_background_context(job)
@@ -238,7 +278,7 @@ class PluginBackgroundTurnWorker:
         conversation_key = context.primary_alias
         if resolved_key is not None:
             resolved_key[0] = conversation_key
-        token = await self._turns.begin_background(conversation_key)
+        token = await attempt.enter_async_context(self._turns.background_turn(conversation_key))
         if token is None:
             try:
                 await self._repository.validate_turn_attempt(

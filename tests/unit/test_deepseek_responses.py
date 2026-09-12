@@ -59,6 +59,9 @@ def _request(**overrides: object) -> ChatRequest:
 
 @pytest.mark.asyncio
 async def test_request_mapping_is_responses_native_and_flat() -> None:
+    from tests.support.openai_responses_cases import standard_responses_cases
+
+    await standard_responses_cases()
     image = ChatImage(data_url="data:image/png;base64,aW1hZ2U=")
     instructions, parts = DeepSeekResponsesProvider._convert_messages(
         (
@@ -196,9 +199,9 @@ async def test_non_thinking_request_omits_unsupported_tool_choice() -> None:
         )
 
 
-@pytest.mark.parametrize(
-    ("thinking_enabled", "reasoning_effort", "expected_reasoning"),
-    [
+@pytest.mark.asyncio
+async def test_responses_reasoning_payload_matches_thinking_preference() -> None:
+    for thinking_enabled, reasoning_effort, expected_reasoning in [
         (True, ReasoningEffort.NONE, {"effort": "none"}),
         (True, ReasoningEffort.MINIMAL, {"effort": "minimal"}),
         (True, ReasoningEffort.LOW, {"effort": "low"}),
@@ -208,10 +211,13 @@ async def test_non_thinking_request_omits_unsupported_tool_choice() -> None:
         (True, ReasoningEffort.MAX, {"effort": "max"}),
         (False, None, None),
         (None, None, None),
-    ],
-)
-@pytest.mark.asyncio
-async def test_responses_reasoning_payload_matches_thinking_preference(
+    ]:
+        await _check_responses_reasoning_payload_matches_thinking_preference(
+            thinking_enabled, reasoning_effort, expected_reasoning
+        )
+
+
+async def _check_responses_reasoning_payload_matches_thinking_preference(
     thinking_enabled: bool | None,
     reasoning_effort: ReasoningEffort | None,
     expected_reasoning: dict[str, str] | None,
@@ -310,9 +316,13 @@ async def test_responses_reasoning_payload_matches_thinking_preference(
         )
 
 
-@pytest.mark.parametrize("model", ["deepseek-v4-flash", "gpt-5.6-luna"])
 @pytest.mark.asyncio
-async def test_responses_omit_temperature_for_provider_defaults(model: str) -> None:
+async def test_responses_omit_temperature_for_provider_defaults() -> None:
+    for model in ["deepseek-v4-flash", "gpt-5.6-luna"]:
+        await _check_responses_omit_temperature_for_provider_defaults(model)
+
+
+async def _check_responses_omit_temperature_for_provider_defaults(model: str) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
         assert payload["model"] == model
@@ -341,8 +351,25 @@ async def test_responses_omit_temperature_for_provider_defaults(model: str) -> N
 
 
 @pytest.mark.asyncio
-async def test_function_output_follows_cumulative_continuation() -> None:
+async def test_function_output_follows_cumulative_continuation(caplog) -> None:
+    from qq_ai_bot.llm.wire_diagnostics import WireRequestObserver, wire_hash
+    from qq_ai_bot.services.turn_transcript import TurnTranscript
+
+    caplog.set_level("INFO", logger="qq_ai_bot.llm.wire_diagnostics")
+
     requests: list[dict[str, object]] = []
+    declared = (ChatTool(name="lookup", description="fixed", parameters={"type": "object"}),)
+    transcript = TurnTranscript(_request().messages)
+
+    def current_request():
+        sequence = transcript.request()
+        return _request(
+            messages=sequence.messages,
+            request_chain_id=transcript.chain_id,
+            tools=declared,
+            continuation=sequence.continuation,
+            continuation_items=sequence.items,
+        )
 
     def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
@@ -364,18 +391,16 @@ async def test_function_output_follows_cumulative_continuation() -> None:
             max_retries=0,
             client=client,
         )
-        first = await provider.complete(_request())
+        first = await provider.complete(current_request())
         assert [call.id for call in first.tool_calls] == ["call_fixture_1", "call_fixture_2"]
         assert first.continuation is not None
-        await provider.complete(
-            _request(
-                continuation=first.continuation,
-                function_outputs=(
-                    FunctionCallOutput(call_id="call_fixture_1", output='{"ok":true}'),
-                    FunctionCallOutput(call_id="call_fixture_2", output='{"ok":true}'),
-                ),
-            )
-        )
+        transcript.accept(first.continuation)
+        transcript.append_result("call_fixture_1", '{"ok":true}')
+        transcript.append(ChatMessage(role="system", content="control between results"))
+        transcript.append_result("call_fixture_2", '{"ok":true}')
+        second = await provider.complete(current_request())
+        transcript.accept(second.continuation)
+        await provider.complete(current_request())
 
     second_inputs = requests[1]["input"]
     assert isinstance(second_inputs, list)
@@ -384,9 +409,99 @@ async def test_function_output_follows_cumulative_continuation() -> None:
         "function_call",
         "function_call",
         "function_call_output",
+        "message",
         "function_call_output",
     ]
-    assert second_inputs[-2]["call_id"] == "call_fixture_1"
+    assert second_inputs[-3]["call_id"] == "call_fixture_1"
+
+    assert second_inputs[-2]["content"] == "control between results"
+    assert second_inputs[-1]["call_id"] == "call_fixture_2"
+    assert requests[2]["input"][: len(second_inputs)] == second_inputs
+    assert requests[0]["tools"] == requests[1]["tools"] == requests[2]["tools"]
+    assert requests[0]["tools"]
+    with pytest.raises(LLMInvalidRequestError, match="conflicting results"):
+        provider._build_payload(
+            _request(
+                continuation=second.continuation,
+                continuation_items=(
+                    FunctionCallOutput(call_id="call_fixture_1", output="different"),
+                ),
+            )
+        )
+    with pytest.raises(LLMInvalidRequestError, match="mixed ordered"):
+        provider._build_payload(
+            _request(
+                continuation=second.continuation,
+                continuation_items=(ChatMessage(role="system", content="tail"),),
+                function_outputs=(
+                    FunctionCallOutput(call_id="call_fixture_1", output="different"),
+                ),
+            )
+        )
+    assert requests[0]["instructions"] == requests[1]["instructions"] == requests[2]["instructions"]
+
+    observations = [
+        json.loads(record.getMessage().split(" ", 1)[1])
+        for record in caplog.records
+        if record.name == "qq_ai_bot.llm.wire_diagnostics"
+    ]
+    assert [o["relation"] for o in observations] == ["first_observation", "append", "append"]
+    for payload, observation in zip(requests, observations, strict=True):
+        assert observation["tools_hash"] == wire_hash(payload["tools"])
+        assert observation["instructions_hash"] == wire_hash(payload["instructions"])
+        assert observation["input_items"] == len(payload["input"])
+        assert observation["changed_fields"] == []
+    encoded = json.dumps(observations)
+    assert "trusted system" not in encoded
+    assert "control between results" not in encoded
+    assert "call_fixture_1" not in encoded
+
+    observer = WireRequestObserver()
+    observer.observe(requests[1], "responses", chain_id="independent")
+    rewritten = {**requests[1], "input": [*requests[1]["input"]]}
+    rewritten["input"][1] = {"type": "message", "role": "user", "content": "changed"}
+    difference = observer.observe(rewritten, "responses", chain_id="independent")
+    assert difference["relation"] == "input_rewritten"
+    assert difference["first_difference_index"] == 1
+    assert (
+        observer.observe(rewritten, "responses", chain_id="other")["relation"]
+        == "first_observation"
+    )
+    without_tools = {**rewritten, "tools": []}
+    assert observer.observe(without_tools, "responses", chain_id="independent")[
+        "changed_fields"
+    ] == ["tools"]
+    assert len({item["contract_revision"] for item in observations}) == 1
+    assert [item["contract_change"] for item in observations] == [
+        "first_observation",
+        "unchanged",
+        "unchanged",
+    ]
+    native = {
+        **requests[0],
+        "tools": [*requests[0]["tools"], {"type": "web_search"}],
+        "tool_choice": "auto",
+    }
+    first = observer.observe(native, "responses", chain_id="native", provider="openai")
+    final = observer.observe(
+        {**native, "tool_choice": "none"}, "responses", chain_id="native", provider="openai"
+    )
+    assert final["contract_revision"] == first["contract_revision"]
+    assert final["contract_change"] == "unchanged"
+    assert final["execution_controls_changed"] is True
+    assert final["changed_fields"] == ["settings"]
+    for field, value in (
+        ("model", "another-model"),
+        ("instructions", "new static contract"),
+        ("tools", requests[0]["tools"]),
+        ("max_output_tokens", 999),
+    ):
+        change = observer.observe({**native, field: value}, "responses", provider="openai")
+        assert change["contract_revision"] != first["contract_revision"], field
+    isolated = observer.observe(native, "responses", chain_id="native", provider="deepseek")
+    assert isolated["contract_change"] == "first_observation"
+    assert isolated["contract_revision"] != first["contract_revision"]
+    assert "new static contract" not in json.dumps(change)
 
 
 @pytest.mark.asyncio
@@ -636,16 +751,17 @@ async def test_failed_and_malformed_responses_are_not_normal_answers() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("status", "error"),
-    [
+async def test_http_errors_remain_distinguishable() -> None:
+    for status, error in [
         (400, LLMInvalidRequestError),
         (401, LLMAuthenticationError),
         (403, LLMAuthenticationError),
         (429, LLMRateLimitError),
-    ],
-)
-async def test_http_errors_remain_distinguishable(status: int, error: type[Exception]) -> None:
+    ]:
+        await _check_http_errors_remain_distinguishable(status, error)
+
+
+async def _check_http_errors_remain_distinguishable(status: int, error: type[Exception]) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(status, request=request, json={"error": "sanitized"})
 

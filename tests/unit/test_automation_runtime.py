@@ -195,9 +195,23 @@ def test_create_tool_exposes_high_level_task_spec(database) -> None:
 
 
 @pytest.mark.asyncio
-async def test_generation_keeps_dynamic_automation_data_out_of_system_messages(database) -> None:
+async def test_generation_keeps_dynamic_automation_data_out_of_system_messages(
+    database, tmp_path
+) -> None:
     handlers = object.__new__(AutomationCapabilityHandlers)
     handlers._settings = make_settings(database.url, automation_enabled=True)
+    from tests.conftest import build_harness
+
+    from qq_ai_bot.prompting.serializer import strip_dynamic_prefix
+
+    harness = build_harness(database, handlers._settings)
+    chat = harness.processor._chat
+    handlers._runtime_config = chat._runtime_config
+    handlers._ledger = harness.ledger
+    handlers._memories = SimpleNamespace()
+    handlers._relationships = harness.relationships
+    handlers._time = chat._time
+    handlers._agent_runner = chat._agent_runner
     context = CapabilityExecutionContext(
         authority=AuthorityContext(
             origin=TurnOrigin.SCHEDULED_AUTOMATION,
@@ -223,13 +237,82 @@ async def test_generation_keeps_dynamic_automation_data_out_of_system_messages(d
         {"instruction": instruction, "context_profile": "none"},
         context,
     )
-    assert [message.role for message in messages] == ["system", "system", "user"]
+    assert [message.role for message in messages] == ["system", "user"]
     assert all(
         instruction not in message.content for message in messages if message.role == "system"
     )
-    payload = json.loads(messages[-1].content)
+    payload = json.loads(strip_dynamic_prefix(messages[-1].content))
     assert payload["instruction"] == instruction
     assert payload["content_trust"] == "untrusted_automation_input"
+    from unittest.mock import AsyncMock
+
+    from qq_ai_bot.conversation.rollup.repository import ConversationCoverageError
+    from qq_ai_bot.services.context_assembler import ContextAssembler
+
+    ledger = SimpleNamespace(
+        read_scope_context=AsyncMock(return_value=(None, ())),
+        list_canonical_recent=AsyncMock(return_value=()),
+    )
+    read_context = replace(
+        context,
+        canonical_conversation_id="different-target-conversation",
+        automation_context=AutomationContext(scene="creator_private", history_limit=3),
+    )
+    await ContextAssembler.assemble_automation(
+        settings=handlers._settings,
+        ledger=ledger,
+        memories=SimpleNamespace(),
+        relationships=SimpleNamespace(),
+        context=read_context,
+        instruction="bounded",
+        profile="creator_private",
+        current_time=chat._time.current_default(),
+    )
+    ledger.read_scope_context.assert_awaited_once_with(
+        ConversationScope.private("7777", "10001"),
+        limit=3,
+        message_only=True,
+    )
+    ledger.list_canonical_recent.assert_not_awaited()
+    ledger.read_scope_context.reset_mock()
+    group_context = replace(
+        read_context,
+        current_group_id="2001",
+        automation_context=AutomationContext(scene="current_group", history_limit=2),
+    )
+    await ContextAssembler.assemble_automation(
+        settings=handlers._settings,
+        ledger=ledger,
+        memories=SimpleNamespace(),
+        relationships=SimpleNamespace(),
+        context=group_context,
+        instruction="bounded",
+        profile="current_group",
+        current_time=chat._time.current_default(),
+    )
+    ledger.read_scope_context.assert_awaited_once_with(
+        ConversationScope.group("7777", "2001"),
+        limit=2,
+        message_only=True,
+    )
+    ledger.list_canonical_recent.assert_not_awaited()
+    with pytest.raises(ConversationCoverageError, match="exceeds declaration"):
+        await ContextAssembler.assemble_automation(
+            settings=handlers._settings,
+            ledger=ledger,
+            memories=SimpleNamespace(),
+            relationships=SimpleNamespace(),
+            context=read_context,
+            instruction="bounded",
+            profile="current_group",
+            current_time=chat._time.current_default(),
+        )
+    from tests.support.short_state_cases import run_short_state_cases
+
+    await run_short_state_cases(database, tmp_path, context)
+    from tests.support.main_agent_wire_cases import run_main_agent_wire_cases
+
+    await run_main_agent_wire_cases(database, tmp_path, context)
 
 
 def test_create_tool_description_does_not_embed_capability_catalog(database) -> None:
@@ -613,6 +696,18 @@ async def test_superuser_authority_revocation_blocks_old_task(database) -> None:
         time_service=TimeContextService(database, clock=clock),
     ).execute(row, run)
     assert result.status.value == "blocked"
+
+    from tests.support.automation_live_authority_cases import authority_between_attempts
+
+    await authority_between_attempts(
+        database,
+        settings,
+        registry,
+        repository,
+        row,
+        run,
+        TimeContextService(database, clock=clock),
+    )
 
 
 @pytest.mark.asyncio

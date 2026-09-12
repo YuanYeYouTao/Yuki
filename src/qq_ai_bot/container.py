@@ -201,6 +201,9 @@ class ApplicationContainer:
             lifecycle=self.lifecycle,
             provider=vision_provider,
         ).build()
+        from qq_ai_bot.application.modules.asr import build_asr
+
+        self.asr = build_asr(settings, self.lifecycle)
         self.media = media
         self.vision_provider = media.provider
         self.media_resolver = media.resolver
@@ -284,8 +287,41 @@ class ApplicationContainer:
         self.deduplication = conversation.deduplication
         self.rate_limiter = conversation.rate_limiter
         self.agent_tools = conversation.agent_tools
+        from qq_ai_bot.social.service import SocialService
+
+        self.social_service = SocialService(
+            self.database, self.presence_router, persistence.scoped_events
+        )
+        self.agent_tools.social_service = self.social_service
+        self.social_service.runtime_config = self.runtime_config
+        from qq_ai_bot.workspace.service import WorkspaceService
+        from qq_ai_bot.workspace.store import WorkspaceStore
+
+        self.workspace_service = WorkspaceService(
+            WorkspaceStore(settings.workspace_directory), self.media_resolver, self.database
+        )
+        self.agent_tools.workspace_service = self.workspace_service
+        from qq_ai_bot.sandbox.client import SandboxClient
+        from qq_ai_bot.sandbox.completion_receiver import CompletionReceiver
+        from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
+
+        self.sandbox_tasks = SandboxTaskRepository(self.database)
+        self.sandbox_client = SandboxClient(settings.sandbox_socket, tasks=self.sandbox_tasks)
+        self.sandbox_completions = CompletionReceiver(self.sandbox_client, self.sandbox_tasks)
+        self.workspace_service.sandbox = self.sandbox_client
+        self.agent_tools.sandbox_client = self.sandbox_client
+        from qq_ai_bot.social.transfer import ArtifactTransfer
+
+        self.social_service.transfer = ArtifactTransfer(
+            self.workspace_service.store,
+            settings.social_transfer_directory,
+            settings.social_gateway_transfer_directory,
+        )
         self.plugin_agent_tools = conversation.plugin_agent_tools
         self.chat = conversation.chat
+        from qq_ai_bot.sandbox.continuation_worker import SandboxContinuationWorker
+
+        self.sandbox_continuations = SandboxContinuationWorker(self)
         self.chat.register_tool_provider(self.mcp_tools)
         self.memory_mutations = conversation.memory_mutations
         self.memory_auditor = conversation.memory_auditor
@@ -365,6 +401,17 @@ class ApplicationContainer:
         self.automation_bundle = automation
         self.automation_repository = automation.repository
         self._automation_handlers = automation.handlers
+        from qq_ai_bot.social.automation import SocialAutomationAdapter
+
+        self.social_automation = SocialAutomationAdapter(
+            self.social_service, self.workspace_service, self.sandbox_client
+        )
+        for capability_name, handler in self.social_automation.mapping().items():
+            from dataclasses import replace
+
+            definition = automation.registry.require(capability_name)
+            automation.registry.unregister(capability_name)
+            automation.registry.register(replace(definition, handler=handler))
         self.automation_registry = automation.registry
         self.automation = automation.service
         self.automation_tools = automation.tools
@@ -446,6 +493,15 @@ class ApplicationContainer:
         self.voice_profile_service.set_event_publisher(self.plugin_events)
         self.emoji_selector.set_plugin_signals(self.plugin_emoji_signals)
         self.chat.set_plugin_tools(self.plugin_tools)
+        from qq_ai_bot.services.main_agent_contract import MainAgentContract
+        from qq_ai_bot.workspace.short_state import ShortState
+
+        self.main_agent_contract = MainAgentContract(
+            self.chat, self._automation_handlers, ShortState(self.workspace_service.store)
+        )
+        self.agent_tools.short_state = self.main_agent_contract.state
+        self.chat._agent_runner.main_contract = self.main_agent_contract
+        self._automation_handlers._agent_runner = self.chat._agent_runner
         self.autonomous_groups = AutonomousGroupService(
             chat=self.chat,
             runtime_config=self.runtime_config,
@@ -492,6 +548,7 @@ class ApplicationContainer:
             config=self.conversation_rollups.config,
         )
         self.processor = MessageProcessor(
+            asr_service=self.asr,
             attachment_inputs=(
                 AttachmentInputService(
                     self.media_resolver,
@@ -773,6 +830,12 @@ class ApplicationContainer:
 
     def _register_lifecycle(self) -> None:
         self.lifecycle.register(
+            "social_recovery", start=self.social_service.receipts.recover_interrupted
+        )
+        self.lifecycle.register(
+            "workspace", start=self.workspace_service.start, close=self.workspace_service.close
+        )
+        self.lifecycle.register(
             "memory_embeddings",
             start=self.memory_embeddings.start,
             close=self.memory_embeddings.close,
@@ -784,12 +847,26 @@ class ApplicationContainer:
             start=self.plugin_notification_outbox.start,
             close=self.plugin_notification_outbox.close,
         )
+        self.plugin_module.register_lifecycle(self.plugins, self.lifecycle)
+        self.lifecycle.register("main_agent_manifest", start=self._freeze_main_manifest)
+        self.lifecycle.register(
+            "sandbox_completions",
+            start=self.sandbox_completions.start,
+            close=self.sandbox_completions.close,
+            health=self.sandbox_completions.health,
+        )
+        self.lifecycle.register(
+            "sandbox_continuations",
+            start=self.sandbox_continuations.start,
+            close=self.sandbox_continuations.close,
+            health=self.sandbox_continuations.health,
+        )
         self.lifecycle.register(
             "plugin_background_turns",
             start=self.plugin_background_turns.start,
             close=self.plugin_background_turns.close,
+            health=self.plugin_background_turns.health,
         )
-        self.plugin_module.register_lifecycle(self.plugins, self.lifecycle)
         self.lifecycle.register("application_event", start=self._publish_started)
         if self.settings.speech_enabled:
             self.lifecycle.register("speech_startup", start=self._start_speech)
@@ -801,6 +878,10 @@ class ApplicationContainer:
         self.conversation_module.register_workers(self.conversation, self.lifecycle)
         self.emoji_module.register_worker(self.emoji_bundle, self.lifecycle)
         self.automation_module.register_lifecycle(self.automation_bundle, self.lifecycle)
+
+    async def _freeze_main_manifest(self) -> None:
+        # Finish plugin registration before queued background turns can freeze a partial catalog.
+        await self.main_agent_contract.definitions()
 
     async def _publish_started(self) -> None:
         await publish_notification(

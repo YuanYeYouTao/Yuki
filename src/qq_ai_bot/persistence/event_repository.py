@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -62,6 +62,29 @@ async def _conversation_id_for_scope(session: AsyncSession, scope: ConversationS
                 ConversationLegacyAliasModel.scope_key == scope.key
             )
         ),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationReadVersion:
+    scope: ConversationScope
+    conversation_id: str | None
+    generation: int
+    starts_after_event_id: int
+    prompt_source_revision: int = 0
+
+
+async def _read_version(session: AsyncSession, scope: ConversationScope) -> ConversationReadVersion:
+    from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+
+    identity = await _conversation_id_for_scope(session, scope)
+    row = await session.get(CanonicalConversationModel, identity) if identity else None
+    return ConversationReadVersion(
+        scope,
+        identity,
+        int(row.generation) if row else 0,
+        int(row.starts_after_event_id) if row else 0,
+        int(row.prompt_source_revision) if row else 0,
     )
 
 
@@ -312,6 +335,30 @@ class EventLedgerRepository:
         async with self._database.sessions() as session:
             row = await session.get(ChatEventModel, event_id)
         return _event_record(row) if row is not None else None
+
+    async def read_scope_context(
+        self, scope: ConversationScope, *, limit: int, message_only: bool = False
+    ) -> tuple[ConversationReadVersion, tuple[EventRecord, ...]]:
+        """Read the current generation, retaining its version for dispatch validation."""
+        async with self._database.sessions() as session:
+            version = await _read_version(session, scope)
+            if version.conversation_id is None:
+                return version, ()
+            query = select(ChatEventModel).where(
+                ChatEventModel.canonical_conversation_id == version.conversation_id,
+                keeper_event_clause(),
+                ChatEventModel.id > version.starts_after_event_id,
+            )
+            if message_only:
+                query = query.where(ChatEventModel.event_kind == "message")
+            rows = list(
+                (await session.scalars(query.order_by(ChatEventModel.id.desc()).limit(limit))).all()
+            )
+        return version, tuple(_event_record(row) for row in reversed(rows))
+
+    async def read_version_matches(self, version: ConversationReadVersion) -> bool:
+        async with self._database.sessions() as session:
+            return await _read_version(session, version.scope) == version
 
     async def list_scope_recent(
         self,
@@ -635,7 +682,8 @@ class EventLedgerRepository:
             if not has_search_bound:
                 raise ValueError("short history searches require a QQ, group, or time bound")
             sql = text(
-                "SELECT ce.* FROM chat_events AS ce WHERE ce.content LIKE :pattern"
+                "SELECT ce.* FROM chat_events AS ce WHERE "
+                "(ce.content LIKE :pattern OR ce.audio_transcript LIKE :pattern)"
                 + prefix
                 + " ORDER BY ce.occurred_at DESC, ce.id DESC LIMIT :limit"
             )
@@ -651,6 +699,11 @@ class EventLedgerRepository:
         """Attach one compact derived observation to its immutable source event."""
 
         return await self._writer.set_visual_summary(event_id, summary)
+
+    async def set_audio_transcript(
+        self, event_id: int, transcript: str, *, generation: int
+    ) -> bool:
+        return await self._writer.set_audio_transcript(event_id, transcript, generation=generation)
 
 
 class AgentActionRepository:

@@ -22,6 +22,10 @@ data/speech/*
 data/speech/japanese_frontend/models/*
 !data/speech/japanese_frontend/models/.gitkeep
 logs/
+/workspace/
+/social-transfer/
+/sandbox-runtime/
+.cache/
 config/system_prompt.md
 config/model_profiles.toml
 config/mcp.json

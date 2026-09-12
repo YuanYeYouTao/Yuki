@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
 
@@ -16,6 +16,7 @@ from qq_ai_bot.conversation.canonical_db_models import (
 )
 from qq_ai_bot.conversation.db_models import ReplyEffectEventModel
 from qq_ai_bot.conversation.hydrate import delete_canonical_rollup_projections
+from qq_ai_bot.domain.audio import parse_transcripts, serialize_transcripts
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.emoji.db_models import EmojiAssetModel, EmojiUsageEventModel
@@ -238,6 +239,7 @@ class PeopleRepository:
                             ChatEventModel.private_peer_user_id == user_id,
                             ChatEventModel.content.contains(user_id),
                             ChatEventModel.visual_summary.contains(user_id),
+                            ChatEventModel.audio_transcript.contains(user_id),
                             ChatEventModel.segments_json.contains(user_id),
                         )
                     )
@@ -485,6 +487,7 @@ class PeopleRepository:
             ChatEventModel.private_peer_user_id.in_(owner_externals),
             *[ChatEventModel.content.contains(item) for item in owner_externals],
             *[ChatEventModel.visual_summary.contains(item) for item in owner_externals],
+            *[ChatEventModel.audio_transcript.contains(item) for item in owner_externals],
             *[ChatEventModel.segments_json.contains(item) for item in owner_externals],
         )
         private_scope_keys = tuple(
@@ -550,6 +553,10 @@ class PeopleRepository:
                     or_(
                         *[ChatEventModel.content.contains(item) for item in owner_externals],
                         *[ChatEventModel.visual_summary.contains(item) for item in owner_externals],
+                        *[
+                            ChatEventModel.audio_transcript.contains(item)
+                            for item in owner_externals
+                        ],
                         *[ChatEventModel.segments_json.contains(item) for item in owner_externals],
                     ),
                 )
@@ -559,6 +566,12 @@ class PeopleRepository:
             for owner in owner_externals:
                 event.content = event.content.replace(owner, marker)
                 event.visual_summary = event.visual_summary.replace(owner, marker)
+                event.audio_transcript = serialize_transcripts(
+                    tuple(
+                        replace(item, text=item.text.replace(owner, marker))
+                        for item in parse_transcripts(event.audio_transcript)
+                    )
+                )
                 event.segments_json = event.segments_json.replace(owner, marker)
         await session.execute(
             delete(RuntimeConfigOverrideModel).where(
@@ -962,6 +975,7 @@ class PeopleRepository:
                         ChatEventModel.private_peer_user_id == user_id,
                         ChatEventModel.content.contains(user_id),
                         ChatEventModel.visual_summary.contains(user_id),
+                        ChatEventModel.audio_transcript.contains(user_id),
                         ChatEventModel.segments_json.contains(user_id),
                     )
                 )
