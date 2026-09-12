@@ -1,8 +1,10 @@
 """Real search evidence, restart cache, unrestricted fallback and wiring contracts."""
 
+import hashlib
 import json
 import sqlite3
-from dataclasses import replace
+from dataclasses import asdict, replace
+from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -53,7 +55,19 @@ async def test_bridge_real_evidence_restart_cache_and_request_budget(tmp_path):
 
     control = SimpleNamespace(validate=AsyncMock(), reserve_request=AsyncMock())
     token = current_work_control.set(control)
-    request = WebSearchRequest("official docs", extract_max_results=0)
+    request = WebSearchRequest(
+        "today's news",
+        topic="news",
+        time_range="day",
+        start_date=date(2026, 9, 13),
+        end_date=date(2026, 9, 13),
+        extract_max_results=0,
+    )
+    # Old fallback cache entries must not bypass a recovered primary backend.
+    key = hashlib.sha256(
+        json.dumps(asdict(request), sort_keys=True, default=str).encode()
+    ).hexdigest()
+    BridgeState(tmp_path / "cache.db").access(key, RESPONSE)
     try:
         for _ in range(2):
             bridge = DeepSeekSearchBridge(
@@ -71,6 +85,9 @@ async def test_bridge_real_evidence_restart_cache_and_request_budget(tmp_path):
         assert requests[0]["model"] == "deepseek-flash"
         assert len(requests[0]["messages"]) == 1
         assert json.loads(requests[0]["messages"][0]["content"])["query"] == request.query
+        constraints = json.loads(requests[0]["messages"][0]["content"])
+        assert constraints["time_range"] == "day" and constraints["topic"] == "news"
+        assert constraints["start_date"] == constraints["end_date"] == "2026-09-13"
         control.reserve_request.assert_awaited_once_with(auxiliary=True)
     finally:
         current_work_control.reset(token)
@@ -113,9 +130,17 @@ async def test_bridge_fallback_has_no_daily_cap_and_rejects_fake_evidence(tmp_pa
             ).provider == "tavily"
         assert len(fallback.search_requests) == 16
         await bridge.search(WebSearchRequest("unique query 15"))
-        assert len(fallback.search_requests) == 16
-        await bridge.search(WebSearchRequest("dated", time_range="week"))
-        assert fallback.search_requests[-1].time_range == "week"
+        assert len(fallback.search_requests) == 17
+        responses.append(evidence())
+        recovered = await bridge.search(WebSearchRequest("unique query 15", extract_max_results=0))
+        assert recovered.provider == "deepseek_anthropic"
+        assert len(fallback.search_requests) == 17
+        responses.append(evidence())
+        dated = await bridge.search(
+            WebSearchRequest("dated", time_range="week", extract_max_results=0)
+        )
+        assert dated.provider == "deepseek_anthropic"
+        assert len(fallback.search_requests) == 17
     finally:
         await bridge.close()
     assert fallback.closed

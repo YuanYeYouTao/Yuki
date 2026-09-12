@@ -1,7 +1,8 @@
 # Yuki 3.8 canonical runtime
 
 本文描述 Yuki 3.8 的现行架构合同，不是迁移任务书。3.8 运行时只支持 canonical schema，
-Alembic head 为 `0052`。
+数据库版本以 `persistence/schema_guard.py` 和新增迁移链为准；当前迁移至 `0057`。
+跨模块开发遵循 [共同架构约束](development-contract.md)。
 
 ## 永久主体与身份
 
@@ -28,6 +29,10 @@ OneBot 原始消息先投影正文、附件、按位置保序的 mention 和 rep
 Presence 与 canonical Conversation。事件账本保留平台 message ID、sender/group 外部 ID、Provider
 和 Gateway provenance，以便幂等、审计和故障定位；这些字段不再承担业务所有权。
 
+入账后沿运行时快照和工作来源传递内部 `trigger_event_id` / `source_event_id`，按
+`chat_events.id` 定位并核验会话。不得用平台 message ID 反查已有内部事件或猜测来源。
+`canonical_event_id` 是另一种关联标识，不能与整数账本主键混用。
+
 历史 alias 只用于稳定兼容键。多个 alias 可以指向一个 canonical Conversation，插件 API 2.0
 始终读取固化的 primary alias。换 QQ、换 Provider、连接重建或路由接管都不得更改 Conversation
 generation。
@@ -43,9 +48,9 @@ Rollup、raw history、Memory、Prompt compiler、工具 schema 和模型 profil
 仍是普通 outbound `message`，并通过 `caused_by_event_id` 永久指向来源 external event。模型历史与
 Rollup source projection 会显示有界因果标签，平台正文不被改写。
 
-## 三类持久路由
+## 三类平台收发路由
 
-运行时只保留三类业务路由：
+平台收发使用三类持久路由；这不是根据问题内容选择模型或搜索服务的路由器：
 
 1. Person 主动路由：决定主动私聊通过哪个 IdentityBinding 和 Presence 发送。
 2. SpaceBinding ingest 路由：决定一个外部群的唯一入站 Presence，阻止多账号扇出重复处理。
@@ -120,15 +125,18 @@ QQ 消息证明伪造成 Web 请求。分页使用 opaque cursor；mutation 使�
 
 ## 数据库与安全边界
 
-- 新数据库从无父 revision 的 `0048` canonical baseline 创建最终表，再升级到 `0049 -> 0050 -> 0051 -> 0052`。
+- 新数据库从无父 revision 的 `0048` canonical baseline 创建表，再依次执行后续迁移至当前 head。
 - 历史桥接只接受已经完成 canonical v2 的旧 `0048` 数据库；更早或过渡态数据库失败关闭。
 - 运行时没有 v1、dual-write、backfill 或 cutover 分支。
 - `0049` 不提供 downgrade；`0050` 追加事件因果引用，`0051` 仅追加 recall 评估观测列。
-  不修改事实、证据、身份、正文或路由；历史 used=false 保持未知口径。生产回退仍须
-  停止写入并恢复升级前同一时点的 DB/WAL/SHM 快照。
+  不修改事实、证据、身份、正文或路由；历史 used=false 保持未知口径。
+- 代码回退必须核验数据库兼容性，保留新写入的消息、文件、预算和回执。恢复旧数据库是
+  独立的数据恢复操作，必须停止写入并评估恢复点之后的数据损失，不能作为默认回退步骤。
 - `/healthz` 保持公开瘦载荷；管理健康和连接详情只能通过授权后的控制面查询。
 - `0052` 增加无正文社交操作回执；发出后结果不确定时禁止自动重发，不提供丢弃回执的 downgrade。
+- `0053` 增加沙箱任务记录，`0054` 增加提示投影，`0055` 增加语音转写，
+  `0056` 增加持久工作运行时，`0057` 增加子 Agent。已发布迁移不能原地修改。
 - secret 永不回读；日志与错误不输出 token、Cookie、完整外部 ID、消息正文或本地敏感路径。
 
 部署与数据升级分别见 [SnowLuma Provider 部署与切换](../deployment/snowluma.md) 和
-[Yuki 3.8.1 升级指南](../upgrade-3.8.1.md)。
+[Yuki 3.8.2 升级指南](../upgrade-3.8.2.md)。

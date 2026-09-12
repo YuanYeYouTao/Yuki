@@ -24,7 +24,7 @@ plugin.toml
 
 ## Conversation Runtime 主聊天
 
-主聊天由 Conversation Runtime 做确定性准入，再调用单一 Main Agent。私聊、@ 与回复机器人直接进入 Agent；群自主插话先评分，再决定是否回复。Runtime 不能授予权限；工具可见性由本轮能力检索决定。
+主聊天由 Conversation Runtime 做确定性准入，再调用单一 Main Agent。私聊、@ 与回复机器人直接进入 Agent；群自主插话先评分，再决定是否回复。Runtime 不能授予权限；主 Agent 使用启动时冻结的完整工具声明，真实权限在执行处检查。参见 [共同架构约束](../architecture/development-contract.md)。
 
 插件可以贡献有界 `AdmissionSignal`，但只影响自主群评分，且总和会被 Host 裁剪。确定性 `/ai` 命令仍绕过该评分。
 

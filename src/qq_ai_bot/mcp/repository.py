@@ -13,7 +13,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.correlation import (
-    load_unique_live_chat_event,
+    load_correlated_chat_event,
     require_live_conversation,
     stamp_conversation_correlation,
 )
@@ -218,6 +218,7 @@ class MCPRepository:
         artifact_created: bool,
         error_category: str | None,
         trigger_message_id: str = "",
+        trigger_event_id: int | None = None,
         bot_user_id: str = "",
         result_excerpt: str = "",
         canonical_conversation_id: str | None = None,
@@ -237,14 +238,16 @@ class MCPRepository:
                 error_category=error_category[:128] if error_category else None,
                 created_at=now,
             )
-            session.add(invocation)
+            # Keep this row transient while resolving identity and receipt owners.
+            # Adding it now makes the following SELECTs autoflush an INSERT/UPDATE
+            # and retain SQLite's only writer lock throughout all remaining reads.
             await stamp_conversation_correlation(session, invocation, canonical_conversation_id)
-            event = await load_unique_live_chat_event(
+            event = await load_correlated_chat_event(
                 session,
-                platform_message_id=trigger_message_id,
+                trigger_event_id=trigger_event_id,
+                canonical_conversation_id=canonical_conversation_id,
                 bot_user_id=bot_user_id,
                 ingress_presence_id=ingress_presence_id,
-                require_bot_or_presence=True,
             )
             if event is not None:
                 await stamp_conversation_correlation(
@@ -283,6 +286,8 @@ class MCPRepository:
                         expires_at=now + timedelta(days=self._reflection_retention_days),
                     )
                 )
+            # No more queries after staging the two rows: flush once at commit.
+            session.add(invocation)
 
     @staticmethod
     def _metadata(row: MCPToolCacheModel) -> MCPToolMetadata:

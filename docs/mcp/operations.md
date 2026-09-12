@@ -8,8 +8,7 @@ Capability Search 的自然语言检索，但仍经过同一 Manager、结果归
 `/ai status` 还显示最近调用时间和最近错误类别。调用指标位于 `tool_invocations`，不保存参数、结果或
 用户消息；`conversation_key` 只保存 SHA-256。
 
-变更 `.mcp.json` 后执行 `/ai mcp refresh <server>` 或重启 Bot。只重建 Bot 可保留 NapCat 登录：
-
-```bash
-docker compose up -d --build bot
-```
+`/ai mcp refresh <server>` 刷新目录元数据，不重写已冻结的主 Agent 声明。
+变更工具定义或启用清单后，重启 Bot 形成新合同。需要更新镜像时按
+[版本化部署流程](../operations/versioned-docker-release.md) 在本地构建，沿用生产 Compose
+组合更新 Bot；不在服务器临时构建，不为工具刷新重启 QQ 网关。

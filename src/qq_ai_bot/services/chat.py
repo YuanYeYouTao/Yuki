@@ -354,6 +354,7 @@ class ToolInvocationRecorder(Protocol):
         artifact_created: bool,
         error_category: str | None,
         trigger_message_id: str,
+        trigger_event_id: int | None = None,
         bot_user_id: str,
         result_excerpt: str,
         canonical_conversation_id: str | None = None,
@@ -2240,6 +2241,7 @@ class ChatService:
                 async def save_native_response() -> None:
                     await self._save_native_web_response(
                         inbound=inbound,
+                        trigger_event_id=turn_snapshot.trigger_event_id if turn_snapshot else None,
                         conversation_key=conversation_key,
                         response=native_response,
                         max_runs=runtime_config.web.source_max_runs_per_conversation,
@@ -2852,6 +2854,7 @@ class ChatService:
         self,
         *,
         inbound: InboundMessage,
+        trigger_event_id: int | None,
         conversation_key: str,
         response: WebSearchResponse,
         max_runs: int,
@@ -2859,6 +2862,7 @@ class ChatService:
         await self._web_sources.save_response(
             conversation_key=conversation_key,
             trigger_message_id=inbound.message_id,
+            trigger_event_id=trigger_event_id,
             provider="deepseek_native",
             response=response,
             max_runs=max_runs,
@@ -2890,6 +2894,7 @@ class ChatService:
             artifact_created=artifact_created,
             error_category=error_category,
             trigger_message_id=runtime.trigger_message_id,
+            trigger_event_id=runtime.effective_trigger_event_id,
             bot_user_id=runtime.effective_bot_user_id or "bot",
             result_excerpt=result_excerpt,
             canonical_conversation_id=runtime.effective_conversation_id,

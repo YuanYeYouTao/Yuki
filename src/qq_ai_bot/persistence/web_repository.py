@@ -9,8 +9,8 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.engine import CursorResult
 
 from qq_ai_bot.conversation.correlation import (
+    load_correlated_chat_event,
     require_live_conversation,
-    resolve_conversation_id_for_chat_event,
     stamp_conversation_correlation,
 )
 from qq_ai_bot.persistence.database import Database
@@ -51,6 +51,7 @@ class WebSearchSourceRepository:
         *,
         conversation_key: str,
         trigger_message_id: str,
+        trigger_event_id: int | None = None,
         provider: str,
         response: WebSearchResponse,
         max_runs: int,
@@ -71,17 +72,23 @@ class WebSearchSourceRepository:
                 created_at=now,
                 partial_failure=response.partial_failure,
             )
-            session.add(run)
-            await session.flush()
+            # Resolve the trusted event and owner before the first write, so
+            # identity reads do not retain SQLite's writer lock.
             await stamp_conversation_correlation(session, run, canonical_conversation_id)
             if infer_trigger_event:
-                proven = await resolve_conversation_id_for_chat_event(
+                event = await load_correlated_chat_event(
                     session,
-                    platform_message_id=trigger_message_id[:128],
+                    trigger_event_id=trigger_event_id,
+                    canonical_conversation_id=canonical_conversation_id,
                     bot_user_id=bot_user_id,
                     ingress_presence_id=ingress_presence_id,
                 )
-                await stamp_conversation_correlation(session, run, proven)
+                if event is not None:
+                    await stamp_conversation_correlation(
+                        session, run, event.canonical_conversation_id
+                    )
+            session.add(run)
+            await session.flush()
             seen: set[str] = set()
             ordinal = 0
             for source in response.sources:

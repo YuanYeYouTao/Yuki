@@ -123,6 +123,9 @@ docker compose exec bot qq-ai-bot-cli gateway doctor --provider snowluma
 
 ## 架构与开发
 
+开发前阅读 [共同架构约束](docs/architecture/development-contract.md) 与
+[架构文档索引](docs/architecture/README.md)。历史任务书不替代现行合同。
+
 一个数据库对应一个长期存在的 Yuki。人物、群空间、QQ 账号和网关连接分别建模，聊天历史与关系不绑定在某一次登录连接上。工具由后端执行权限、预算、幂等和审计检查。
 
 目前提供 QQ 交互、CLI 和供管理界面复用的 Control Plane 业务层，**尚未提供 Yuki 管理 WebUI 或管理 HTTP API**。
@@ -141,6 +144,7 @@ uv run pytest
 | --- | --- |
 | [使用帮助](docs/help.md) | 聊天、命令与日常操作 |
 | [架构说明](docs/architecture/canonical-runtime.md) | 人物、空间、账号和会话的关系 |
+| [开发约束](docs/architecture/development-contract.md) | 事件 ID、解耦边界、固定工具、续跑和事务原则 |
 | [Rollup](docs/architecture/conversation-rollup.md) | 长会话的历史压缩 |
 | [Memory](docs/architecture/memory-v2.md) | 记忆提取、检索和权限 |
 | [Plugin API 2.0](docs/plugin-development/index.md) | 插件开发与能力边界 |

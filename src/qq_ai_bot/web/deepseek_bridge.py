@@ -81,18 +81,18 @@ class DeepSeekSearchBridge:
         ).hexdigest()
         async with self.slot:
             cached = await asyncio.to_thread(self.state.access, key)
-            if isinstance(cached, WebSearchResponse):
+            if isinstance(cached, WebSearchResponse) and cached.provider == self.name:
                 return cached
             try:
-                # Date filters need provider support; instructions are not equivalent.
-                if request.time_range or request.start_date or request.end_date:
-                    raise WebSearchError("unsupported_filter", "日期筛选需要 Tavily 后端")
                 result = await self._search(replace(request, query=query))
             except WebSearchError as exc:
                 if self.fallback is None:
                     raise
                 logger.info("deepseek_search_fallback category=%s", exc.code)
-                result = await self.fallback.search(request)
+                # A fallback must not pin later queries to the fallback provider.
+                # Ignore legacy fallback cache entries above and retry the primary
+                # on the next invocation, even for an identical query.
+                return await self.fallback.search(request)
             await asyncio.to_thread(self.state.access, key, result)
             return result
 
@@ -103,7 +103,8 @@ class DeepSeekSearchBridge:
             "model": "deepseek-flash",
             "max_tokens": 4096,
             "system": (
-                "你是检索服务。只搜索提供的问题，遵守主题限制。"
+                "你是检索服务。只搜索提供的问题，优先查找符合日期和主题要求的来源。"
+                "无法核实来源日期时不要宣称已满足日期限制。"
                 "必须调用 web_search，最多两次；不要猜测来源，最后用一句话结束。"
             ),
             "messages": [
@@ -256,14 +257,14 @@ class DeepSeekSearchBridge:
         key = hashlib.sha256(f"page:{normalized}:{query}".encode()).hexdigest()
         async with self.slot:
             cached = await asyncio.to_thread(self.state.access, key)
-            if isinstance(cached, WebSearchResponse):
+            if isinstance(cached, WebSearchResponse) and cached.provider == "direct_http":
                 return cached.sources[0]
             try:
                 source = await self._extract(normalized, query)
             except WebSearchError:
                 if self.fallback is None:
                     raise
-                source = await self.fallback.extract(normalized, query)
+                return await self.fallback.extract(normalized, query)
             await asyncio.to_thread(
                 self.state.access,
                 key,

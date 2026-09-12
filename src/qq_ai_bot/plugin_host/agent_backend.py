@@ -125,6 +125,11 @@ class PluginAgentToolBackend:
             allow_automation=False,
             conversation_key=runtime.conversation_key,
             trigger_message_id=inbound.message_id,
+            trigger_event_id=(
+                runtime.work_control.source.get("trigger_event_id")
+                if runtime.work_control is not None
+                else None
+            ),
             actor_user_id=runtime.actor_user_id,
             actor_is_superuser=runtime.actor_is_superuser,
             current_group_id=runtime.current_group_id,
