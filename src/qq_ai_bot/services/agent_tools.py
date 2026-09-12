@@ -3028,6 +3028,7 @@ class AgentToolService:
             provider_request_id=None,
             latency_seconds=0,
             partial_failure=False,
+            provider=source.provider,
         )
         await self._persist_web_response(response, runtime, sources)
         return self._web_result(data=self._web_response_json(response))
@@ -3072,7 +3073,7 @@ class AgentToolService:
         await repository.save_response(
             conversation_key=runtime.conversation_key,
             trigger_message_id=runtime.trigger_message_id,
-            provider="tavily",
+            provider=response.provider,
             response=response,
             max_runs=self._runtime().web.source_max_runs_per_conversation,
             canonical_conversation_id=runtime.effective_conversation_id,

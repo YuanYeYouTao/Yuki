@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from datetime import UTC, datetime, timedelta
@@ -190,7 +191,17 @@ class ApplicationContainer:
         self.model_router = model_runtime.router
         self.models = model_runtime.executor
         self.provider = model_runtime.chat_provider
-        self.web_bundle = WebModule(settings.web, lifecycle=self.lifecycle).build()
+        _, search_profile = self.model_router.route(ModelTask.CHAT_AGENT)
+        search_key = {
+            "LLM_API_KEY": settings.llm_api_key,
+            "LLM_FLASH_API_KEY": settings.llm_flash_api_key,
+        }.get(search_profile.api_key_env, os.getenv(search_profile.api_key_env, ""))
+        self.web_bundle = WebModule(
+            settings.web,
+            lifecycle=self.lifecycle,
+            search_profile=search_profile,
+            search_api_key=search_key,
+        ).build()
         self.web_provider = self.web_bundle.provider
         media = MediaModule(
             settings=settings.vision,
