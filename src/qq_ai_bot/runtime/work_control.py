@@ -29,7 +29,9 @@ def work_control_tools() -> tuple[ChatTool, ...]:
             name="task_control",
             result_cacheable=False,
             description=(
-                "管理当前持续工作。明确工作请求先 accept 登记目标，再执行；"
+                "管理当前持续工作。没有 work_id 而需要执行操作时，第一步单独调用 "
+                "action=accept，并填写 goal、output_kind；成功后下一步才调用执行工具。"
+                "已有 work_id 的同一工作直接继续，不重复 accept；不要先试执行再补登记。"
                 "普通聊天用 answer 和 text 直接回复，不建立长期工作。"
                 "新输入另提独立工作时再次 accept 排队，不能用 update 覆盖旧目标；"
                 "update 仅修正当前目标；wait 必须有真实待完成 run_id；"

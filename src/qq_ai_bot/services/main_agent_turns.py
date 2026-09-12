@@ -312,10 +312,6 @@ class MainAgentTurnService:
                                 "work_id": active["id"] if active else None,
                                 "goal": active["goal"] if active else None,
                                 "state": active["state"] if active else "no_active_work",
-                                "instruction": (
-                                    "明确工作先登记并执行；过程发言后继续；"
-                                    "闲聊可用 task_control.answer。"
-                                ),
                             },
                             ensure_ascii=False,
                         )
