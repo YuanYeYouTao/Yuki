@@ -136,6 +136,9 @@ class ToolResultBudgeter:
                 summary["important_fields"] = important
             summary["truncated"] = True
             summary["original_characters"] = len(text)
+        progress = _workspace_progress(result)
+        if progress:
+            summary["progress"] = progress
         rendered = json.dumps(summary, ensure_ascii=False, default=str)
         if self._max_characters is not None and len(rendered) > self._max_characters:
             minimal = {
@@ -151,6 +154,7 @@ class ToolResultBudgeter:
                 "root_type": summary.get("root_type"),
                 "available_operations": summary.get("available_operations"),
                 "important_fields": (important or None) if not artifact_id else None,
+                "progress": progress or None,
             }
             rendered = json.dumps(
                 {key: value for key, value in minimal.items() if value is not None},
@@ -161,6 +165,48 @@ class ToolResultBudgeter:
             artifact_id=artifact_id,
             truncated=True,
         )
+
+
+def _workspace_progress(result: ToolExecutionResult) -> dict[str, Any]:
+    """Keep execution receipts visible even when the full output becomes an artifact."""
+    from qq_ai_bot.sandbox.environment_tools import SANDBOX_TOOLS
+    from qq_ai_bot.workspace.tools import WORKSPACE_TOOLS
+
+    if (
+        result.provider_id != "core"
+        or result.tool_name not in SANDBOX_TOOLS | WORKSPACE_TOOLS
+        or not isinstance(result.data, dict)
+    ):
+        return {}
+    data = result.data
+    progress = {
+        key: value
+        for key in (
+            "run_id",
+            "status",
+            "pending",
+            "exit_code",
+            "cursor",
+            "next_cursor",
+            "output_offset",
+            "output_lost",
+            "truncated",
+            "path",
+            "version",
+            "artifact_id",
+            "error",
+            "retryable",
+        )
+        if key in data
+        and (value := data[key]) is not None
+        and isinstance(value, (str, int, float, bool))
+        and (not isinstance(value, str) or len(value) <= 512)
+    }
+    output = data.get("output", data.get("text"))
+    if isinstance(output, str):
+        progress["output_preview"] = output[:1000]
+        progress["preview_truncated"] = len(output) > 1000
+    return progress
 
 
 def normalize_legacy_result(

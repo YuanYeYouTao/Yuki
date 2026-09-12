@@ -1058,7 +1058,7 @@ class AgentToolService:
                         if name in EXECUTION_TOOLS
                         else None,
                     )
-                    return self._result(data=result)
+                    return self._result(data=result, defer_budget=True)
 
                 if name.startswith("workspace_"):
                     from qq_ai_bot.workspace.store import WorkspaceError
@@ -1077,7 +1077,7 @@ class AgentToolService:
                         workspace_result = await self.workspace_service.execute(
                             name, arguments, runtime=runtime
                         )
-                        return self._result(data=workspace_result)
+                        return self._result(data=workspace_result, defer_budget=True)
                     except (WorkspaceError, ValueError, OSError) as exc:
                         category = (
                             str(exc) if isinstance(exc, WorkspaceError) else type(exc).__name__
@@ -3230,6 +3230,7 @@ class AgentToolService:
         error: str | None = None,
         detail: str = "",
         retryable: bool = False,
+        defer_budget: bool = False,
     ) -> str:
         if error:
             payload = {
@@ -3244,7 +3245,9 @@ class AgentToolService:
             payload = {"ok": True, "data": data}
         rendered = json.dumps(payload, ensure_ascii=False, default=str)
         limit = self._runtime().agent.tool_result_max_characters
-        if len(rendered) <= limit:
+        # File/terminal responses are already bounded by their transport. Preserve
+        # the original value for the shared budgeter and its pageable artifacts.
+        if defer_budget or len(rendered) <= limit:
             return rendered
         return json.dumps(
             {

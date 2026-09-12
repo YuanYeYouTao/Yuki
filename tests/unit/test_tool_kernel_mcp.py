@@ -421,6 +421,9 @@ async def test_result_budget_keeps_valid_summary_and_pages_full_artifact(
     assert page is not None
     assert page["next_offset"] == 80
     assert "content" in page
+    from tests.support.terminal_result_cases import check_terminal_result_recovery
+
+    await check_terminal_result_recovery(database, tmp_path)
 
 
 @pytest.mark.asyncio
