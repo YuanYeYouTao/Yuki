@@ -23,6 +23,20 @@ class MainAgentContract:
         self.revision = ""
         self._lock = asyncio.Lock()
 
+    def health(self) -> dict[str, object]:
+        """Inspect the deployed declaration without refreshing tools or their metadata."""
+        from qq_ai_bot.sandbox.environment_tools import SANDBOX_TOOLS
+        from qq_ai_bot.workspace.tools import WORKSPACE_TOOLS
+
+        names = {tool.name for tool in self._tools or ()}
+        return {
+            "frozen": self._tools is not None,
+            "revision": self.revision,
+            "tool_count": len(names),
+            "persistent_environment_tools_complete": (SANDBOX_TOOLS | WORKSPACE_TOOLS) <= names,
+            "netease_tools_present": any("netease" in name.casefold() for name in names),
+        }
+
     async def definitions(self) -> tuple[ChatTool, ...]:
         async with self._lock:
             if self._tools is not None:

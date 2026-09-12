@@ -26,6 +26,9 @@ class HealthPayload(TypedDict):
     plugin_system_enabled: bool
     plugin_running_count: int
     plugin_background_turns: dict[str, object]
+    sandbox_completions: dict[str, object]
+    sandbox_continuations: dict[str, object]
+    main_agent_manifest: dict[str, object]
     emoji_enabled: bool
     emoji_worker_running: bool
     emoji_asset_count: int
@@ -102,6 +105,9 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
         plugin_system_enabled=container.settings.plugin_system_enabled,
         plugin_running_count=plugin_running_count,
         plugin_background_turns=background_health,
+        sandbox_completions=await container.sandbox_completions.health(),
+        sandbox_continuations=await container.sandbox_continuations.health(),
+        main_agent_manifest=container.main_agent_contract.health(),
         emoji_enabled=container.settings.emoji_enabled,
         emoji_worker_running=(
             container.emoji_worker is not None and container.emoji_worker.running
