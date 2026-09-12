@@ -106,9 +106,8 @@ async def test_qwen_wire_and_no_leaked_credentials():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "status,payload,code",
-    [
+async def test_provider_failures_are_sanitized_and_not_retried() -> None:
+    for status, payload, code in [
         (401, {}, "not_configured"),
         (429, {}, "rate_limited"),
         (500, {}, "provider_failed"),
@@ -116,9 +115,11 @@ async def test_qwen_wire_and_no_leaked_credentials():
         (200, {"choices": [1]}, "invalid_response"),
         (200, {"choices": [{"finish_reason": "length"}]}, "incomplete_transcript"),
         (200, {"choices": [{"finish_reason": "stop", "message": {"content": " "}}]}, "no_speech"),
-    ],
-)
-async def test_provider_failures_are_sanitized_and_not_retried(status, payload, code):
+    ]:
+        await _check_provider_failures_are_sanitized_and_not_retried(status, payload, code)
+
+
+async def _check_provider_failures_are_sanitized_and_not_retried(status, payload, code):
     calls = []
 
     def handle(request):

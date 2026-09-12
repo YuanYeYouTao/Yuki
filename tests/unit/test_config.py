@@ -386,9 +386,8 @@ def test_legacy_self_reflection_session_limit_env_alias_is_supported() -> None:
     assert settings.memory_self_reflection_max_batches_per_run == 5
 
 
-@pytest.mark.parametrize(
-    ("override", "error"),
-    [
+def test_self_reflection_watermarks_must_be_ordered() -> None:
+    for override, error in [
         (
             {
                 "memory_self_reflection_low_event_threshold": 31,
@@ -397,10 +396,7 @@ def test_legacy_self_reflection_session_limit_env_alias_is_supported() -> None:
             "low event watermark cannot exceed high watermark",
         ),
         (
-            {
-                "memory_self_reflection_event_threshold": 51,
-                "memory_self_reflection_max_events": 50,
-            },
+            {"memory_self_reflection_event_threshold": 51, "memory_self_reflection_max_events": 50},
             "high event watermark cannot exceed batch event limit",
         ),
         (
@@ -417,9 +413,11 @@ def test_legacy_self_reflection_session_limit_env_alias_is_supported() -> None:
             },
             "high character watermark cannot exceed batch character limit",
         ),
-    ],
-)
-def test_self_reflection_watermarks_must_be_ordered(
+    ]:
+        _check_self_reflection_watermarks_must_be_ordered(override, error)
+
+
+def _check_self_reflection_watermarks_must_be_ordered(
     override: dict[str, object], error: str
 ) -> None:
     with pytest.raises(ValidationError, match=error):
@@ -578,9 +576,8 @@ def test_vision_enabled_requires_complete_provider_configuration() -> None:
     assert settings.vision_configured
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
+def test_vision_numeric_domain_constraints_are_validated() -> None:
+    for field, value in [
         ("vision_max_prepared_bytes", 0),
         ("vision_timeout_seconds", 0),
         ("vision_queue_max_pending", 0),
@@ -588,9 +585,11 @@ def test_vision_enabled_requires_complete_provider_configuration() -> None:
         ("vision_media_download_timeout_seconds", 0),
         ("vision_max_retries", 0),
         ("vision_low_confidence_retry_threshold", 1.1),
-    ],
-)
-def test_vision_numeric_domain_constraints_are_validated(field: str, value: int | float) -> None:
+    ]:
+        _check_vision_numeric_domain_constraints_are_validated(field, value)
+
+
+def _check_vision_numeric_domain_constraints_are_validated(field: str, value: int | float) -> None:
     with pytest.raises(ValidationError):
         Settings.model_validate({field: value})
 

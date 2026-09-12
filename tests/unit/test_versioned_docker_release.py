@@ -36,8 +36,12 @@ def test_release_identity_matches_all_version_surfaces() -> None:
     assert validate_release_identity(ROOT, "v3.8.2") == VERSION
 
 
-@pytest.mark.parametrize("tag", ["3.8.2", "v3.5", "v3.5.3-rc1", "v03.5.3", "latest"])
-def test_release_identity_rejects_non_final_tags(tag: str) -> None:
+def test_release_identity_rejects_non_final_tags() -> None:
+    for tag in ["3.8.2", "v3.5", "v3.5.3-rc1", "v03.5.3", "latest"]:
+        _check_release_identity_rejects_non_final_tags(tag)
+
+
+def _check_release_identity_rejects_non_final_tags(tag: str) -> None:
     with pytest.raises(ReleaseValidationError, match=r"vX\.Y\.Z"):
         validate_release_identity(ROOT, tag)
 

@@ -98,8 +98,12 @@ async def test_autonomous_replaces_old_event_and_releases_finished_batch(monkeyp
         await service.close()
 
 
-@pytest.mark.parametrize("failing", [False, True])
-async def test_autonomous_disabled_or_failed_snapshot_does_not_spin(failing: bool) -> None:
+async def test_autonomous_disabled_or_failed_snapshot_does_not_spin() -> None:
+    for failing in [False, True]:
+        await _check_autonomous_disabled_or_failed_snapshot_does_not_spin(failing)
+
+
+async def _check_autonomous_disabled_or_failed_snapshot_does_not_spin(failing: bool) -> None:
     calls = 0
 
     async def snapshot(**kwargs: Any) -> Any:

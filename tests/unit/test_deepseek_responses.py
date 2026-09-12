@@ -199,9 +199,9 @@ async def test_non_thinking_request_omits_unsupported_tool_choice() -> None:
         )
 
 
-@pytest.mark.parametrize(
-    ("thinking_enabled", "reasoning_effort", "expected_reasoning"),
-    [
+@pytest.mark.asyncio
+async def test_responses_reasoning_payload_matches_thinking_preference() -> None:
+    for thinking_enabled, reasoning_effort, expected_reasoning in [
         (True, ReasoningEffort.NONE, {"effort": "none"}),
         (True, ReasoningEffort.MINIMAL, {"effort": "minimal"}),
         (True, ReasoningEffort.LOW, {"effort": "low"}),
@@ -211,10 +211,13 @@ async def test_non_thinking_request_omits_unsupported_tool_choice() -> None:
         (True, ReasoningEffort.MAX, {"effort": "max"}),
         (False, None, None),
         (None, None, None),
-    ],
-)
-@pytest.mark.asyncio
-async def test_responses_reasoning_payload_matches_thinking_preference(
+    ]:
+        await _check_responses_reasoning_payload_matches_thinking_preference(
+            thinking_enabled, reasoning_effort, expected_reasoning
+        )
+
+
+async def _check_responses_reasoning_payload_matches_thinking_preference(
     thinking_enabled: bool | None,
     reasoning_effort: ReasoningEffort | None,
     expected_reasoning: dict[str, str] | None,
@@ -313,9 +316,13 @@ async def test_responses_reasoning_payload_matches_thinking_preference(
         )
 
 
-@pytest.mark.parametrize("model", ["deepseek-v4-flash", "gpt-5.6-luna"])
 @pytest.mark.asyncio
-async def test_responses_omit_temperature_for_provider_defaults(model: str) -> None:
+async def test_responses_omit_temperature_for_provider_defaults() -> None:
+    for model in ["deepseek-v4-flash", "gpt-5.6-luna"]:
+        await _check_responses_omit_temperature_for_provider_defaults(model)
+
+
+async def _check_responses_omit_temperature_for_provider_defaults(model: str) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
         assert payload["model"] == model
@@ -744,16 +751,17 @@ async def test_failed_and_malformed_responses_are_not_normal_answers() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("status", "error"),
-    [
+async def test_http_errors_remain_distinguishable() -> None:
+    for status, error in [
         (400, LLMInvalidRequestError),
         (401, LLMAuthenticationError),
         (403, LLMAuthenticationError),
         (429, LLMRateLimitError),
-    ],
-)
-async def test_http_errors_remain_distinguishable(status: int, error: type[Exception]) -> None:
+    ]:
+        await _check_http_errors_remain_distinguishable(status, error)
+
+
+async def _check_http_errors_remain_distinguishable(status: int, error: type[Exception]) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(status, request=request, json={"error": "sanitized"})
 

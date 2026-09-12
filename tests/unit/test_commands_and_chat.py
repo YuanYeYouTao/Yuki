@@ -235,9 +235,8 @@ async def test_only_mutation_access_appends_the_write_receipt_contract(database)
         assert "管理员能力" in CORE_CONTRACT
 
 
-@pytest.mark.parametrize(
-    ("error_code", "expected"),
-    [
+def test_visual_failures_have_distinct_user_messages() -> None:
+    for error_code, expected in [
         ("media_download_timeout", "图片下载超时"),
         ("get_image_failed", "QQ 网关未能取得图片资源"),
         ("private_url", "图片资源下载失败"),
@@ -246,9 +245,11 @@ async def test_only_mutation_access_appends_the_write_receipt_contract(database)
         ("queue_timeout", "图片识别任务较多"),
         ("timeout", "视觉模型响应超时"),
         ("provider_unavailable", "视觉模型暂时不可用"),
-    ],
-)
-def test_visual_failures_have_distinct_user_messages(
+    ]:
+        _check_visual_failures_have_distinct_user_messages(error_code, expected)
+
+
+def _check_visual_failures_have_distinct_user_messages(
     error_code: str,
     expected: str,
 ) -> None:

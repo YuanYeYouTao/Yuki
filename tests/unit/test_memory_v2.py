@@ -291,14 +291,15 @@ def test_backend_does_not_infer_bot_subject_from_text() -> None:
     assert result.ok
 
 
-@pytest.mark.parametrize(
-    ("text", "content"),
-    [
+def test_validator_does_not_parse_named_other_from_prose() -> None:
+    for text, content in [
         ("江环是魅魔", "江环是魅魔"),
         ("廉政这爱好倒是挺稳定的，六年前到现在都没变", "廉政的爱好很稳定"),
-    ],
-)
-def test_validator_does_not_parse_named_other_from_prose(
+    ]:
+        _check_validator_does_not_parse_named_other_from_prose(text, content)
+
+
+def _check_validator_does_not_parse_named_other_from_prose(
     text: str,
     content: str,
 ) -> None:
@@ -317,11 +318,12 @@ def test_validator_does_not_parse_named_other_from_prose(
     )
 
 
-@pytest.mark.parametrize(
-    "text",
-    ["我喜欢猫娘", "最近喜欢猫娘", "爱好是摄影", "大家叫我队长"],
-)
-def test_validator_keeps_first_person_and_subjectless_self_reports(text: str) -> None:
+def test_validator_keeps_first_person_and_subjectless_self_reports() -> None:
+    for text in ["我喜欢猫娘", "最近喜欢猫娘", "爱好是摄影", "大家叫我队长"]:
+        _check_validator_keeps_first_person_and_subjectless_self_reports(text)
+
+
+def _check_validator_keeps_first_person_and_subjectless_self_reports(text: str) -> None:
     event = replace(_event(scope_type=ScopeType.GROUP, group_id="3001"), content=text)
 
     assert (
@@ -352,14 +354,17 @@ def test_memory_kind_comes_from_model_declaration() -> None:
     assert validated.fact.kind is MemoryKind.PREFERENCE
 
 
-@pytest.mark.parametrize(
-    ("text", "basis", "expected_reason"),
-    [
+def test_quality_policy_never_falls_second_person_or_yuki_back_to_speaker() -> None:
+    for text, basis, expected_reason in [
         ("你今天花了 5.36", MemorySubjectBasis.ADDRESSED_SECOND_PERSON, "speaker_basis"),
         ("Yuki 是 CI runner", MemorySubjectBasis.ABOUT_YUKI, "self_candidate"),
-    ],
-)
-def test_quality_policy_never_falls_second_person_or_yuki_back_to_speaker(
+    ]:
+        _check_quality_policy_never_falls_second_person_or_yuki_back_to_speaker(
+            text, basis, expected_reason
+        )
+
+
+def _check_quality_policy_never_falls_second_person_or_yuki_back_to_speaker(
     text: str,
     basis: MemorySubjectBasis,
     expected_reason: str,
@@ -378,15 +383,18 @@ def test_quality_policy_never_falls_second_person_or_yuki_back_to_speaker(
     assert expected_reason in result.reason_code
 
 
-@pytest.mark.parametrize(
-    ("text", "retention", "style", "reason"),
-    [
+def test_quality_policy_filters_temporary_and_generated_activity() -> None:
+    for text, retention, style, reason in [
         ("我去跑步了", MemoryRetention.TRANSIENT, MemorySourceStyle.NATURAL_STATEMENT, "transient"),
         ("请你这轮扮演猫娘", MemoryRetention.DURABLE, MemorySourceStyle.ROLEPLAY, "roleplay"),
         ("获得 36 XP", MemoryRetention.DURABLE, MemorySourceStyle.GENERATED_RESULT, "generated"),
-    ],
-)
-def test_quality_policy_filters_temporary_and_generated_activity(
+    ]:
+        _check_quality_policy_filters_temporary_and_generated_activity(
+            text, retention, style, reason
+        )
+
+
+def _check_quality_policy_filters_temporary_and_generated_activity(
     text: str,
     retention: MemoryRetention,
     style: MemorySourceStyle,

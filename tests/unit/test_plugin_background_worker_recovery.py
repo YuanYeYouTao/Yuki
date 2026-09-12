@@ -14,8 +14,12 @@ from qq_ai_bot.plugin_host.notification_delivery import PluginNotificationOutbox
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("fail_claim", [True, False])
-async def test_worker_recovers_claim_and_admission_failures(fail_claim):
+async def test_worker_recovers_claim_and_admission_failures() -> None:
+    for fail_claim in [True, False]:
+        await _check_worker_recovers_claim_and_admission_failures(fail_claim)
+
+
+async def _check_worker_recovers_claim_and_admission_failures(fail_claim):
     job = SimpleNamespace(id=7, attempts=1)
     repository = SimpleNamespace(claim_turn=AsyncMock(), fail_turn=AsyncMock())
     worker = PluginBackgroundTurnWorker(
@@ -53,10 +57,12 @@ async def test_worker_recovers_claim_and_admission_failures(fail_claim):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "worker_type", [PluginNotificationOutboxWorker, EmojiWorker, MemoryReflectionWorker]
-)
-async def test_durable_workers_resume_after_database_lock(worker_type):
+async def test_durable_workers_resume_after_database_lock() -> None:
+    for worker_type in [PluginNotificationOutboxWorker, EmojiWorker, MemoryReflectionWorker]:
+        await _check_durable_workers_resume_after_database_lock(worker_type)
+
+
+async def _check_durable_workers_resume_after_database_lock(worker_type):
     worker = object.__new__(worker_type)
     worker._stop = asyncio.Event()
     calls = 0
