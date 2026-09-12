@@ -1,7 +1,7 @@
 """Private bounded protocol checkpoints, separate from conversation evidence.
 
 Opaque provider items retain their order and are never logged or fed into memory.
-Images stay ephemeral: a checkpoint containing inline media is not recoverable.
+Media is stored separately by immutable content hash and hydrated on demand.
 """
 
 from __future__ import annotations
@@ -16,12 +16,15 @@ from sqlalchemy.dialects.sqlite import insert
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.domain.messages import (
+    ChatImage,
     ChatMessage,
     FunctionCallOutput,
     ProviderContinuation,
     ToolCall,
     ToolFunction,
 )
+from qq_ai_bot.runtime.subagent_schema import media, media_refs
+from qq_ai_bot.runtime.work_media import externalize, hydrate, references
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkLease, WorkRepository, bounded_json
 from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, journal
 from qq_ai_bot.services.turn_transcript import TurnTranscript
@@ -41,8 +44,6 @@ def encode_transcript(transcript: TurnTranscript) -> dict[str, Any]:
     request = transcript.request()
     items: list[dict[str, Any]] = []
     for item in (*request.messages, *request.items):
-        if isinstance(item, ChatMessage) and item.images:
-            raise ValueError("work_checkpoint_ephemeral_media")
         items.append(
             {
                 "kind": "message" if isinstance(item, ChatMessage) else "result",
@@ -64,8 +65,7 @@ def decode_transcript(value: dict[str, Any]) -> TurnTranscript:
         if encoded["kind"] == "result":
             items.append(FunctionCallOutput(**data))
             continue
-        if data.pop("images", ()):
-            raise ValueError("work_checkpoint_ephemeral_media")
+        data["images"] = tuple(ChatImage(**image) for image in data.get("images", ()))
         data["tool_calls"] = tuple(
             ToolCall(id=call["id"], type=call["type"], function=ToolFunction(**call["function"]))
             for call in data.get("tool_calls", ())
@@ -105,10 +105,21 @@ class WorkJournal:
             if (
                 not row
                 or row["contract"] != contract
-                or row["source_revision"] != source.prompt_source_revision
+                or (not lease.work_id and row["source_revision"] != source.prompt_source_revision)
             ):
                 return None
-            return dict(row)
+            result = dict(row)
+            payload = json.loads(result["payload_json"])
+            refs = references(payload)
+            if refs:
+                blobs = {
+                    str(item.sha256): bytes(item.content)
+                    for item in (
+                        await session.execute(select(media).where(media.c.sha256.in_(refs)))
+                    ).all()
+                }
+                result["payload_json"] = json.dumps(hydrate(payload, blobs), ensure_ascii=False)
+            return result
 
     async def save(
         self,
@@ -122,17 +133,35 @@ class WorkJournal:
         source_revision: int,
         metadata: dict[str, Any],
     ) -> None:
+        blobs: dict[str, bytes] = {}
         payload = bounded_json(
-            {"transcript": encode_transcript(transcript), "pending": pending, "metadata": metadata},
-            1024 * 1024,
+            externalize(
+                {
+                    "transcript": encode_transcript(transcript),
+                    "pending": pending,
+                    "metadata": metadata,
+                },
+                blobs,
+            ),
+            4 * 1024 * 1024,
         )
         async with self.repository.database.sessions() as session, session.begin():
             await self.repository._assert_lease(session, lease)
             source = await session.get(CanonicalConversationModel, lease.conversation_id)
             if source is None or source.generation != lease.generation:
                 raise WorkConflict("work_journal_generation_changed")
-            if source.prompt_source_revision != source_revision:
+            if not lease.work_id and source.prompt_source_revision != source_revision:
                 raise WorkConflict("work_journal_source_changed")
+            for digest, content in blobs.items():
+                await session.execute(
+                    insert(media).values(sha256=digest, content=content).on_conflict_do_nothing()
+                )
+            await session.execute(delete(media_refs).where(media_refs.c.work_id == work_id))
+            for digest in blobs:
+                await session.execute(insert(media_refs).values(work_id=work_id, sha256=digest))
+            await session.execute(
+                delete(media).where(media.c.sha256.not_in(select(media_refs.c.sha256)))
+            )
             other_bytes = await session.scalar(
                 select(
                     func.coalesce(
@@ -140,7 +169,13 @@ class WorkJournal:
                     )
                 ).where(journal.c.work_id != work_id)
             )
-            if int(other_bytes or 0) + len(payload.encode()) > 16 * 1024 * 1024:
+            media_bytes = await session.scalar(
+                select(func.coalesce(func.sum(func.length(media.c.content)), 0))
+            )
+            if (
+                int(other_bytes or 0) + int(media_bytes or 0) + len(payload.encode())
+                > 64 * 1024 * 1024
+            ):
                 raise ValueError("work_journal_capacity")
             values = dict(
                 work_id=work_id,
@@ -164,6 +199,10 @@ class WorkJournal:
         async with self.repository.database.sessions() as session, session.begin():
             await self.repository._assert_lease(session, lease)
             await session.execute(delete(journal).where(journal.c.work_id == work_id))
+            await session.execute(delete(media_refs).where(media_refs.c.work_id == work_id))
+            await session.execute(
+                delete(media).where(media.c.sha256.not_in(select(media_refs.c.sha256)))
+            )
 
     async def recovered_inputs(self, lease: WorkLease, included: list[int], work_id: str) -> None:
         """The restored transcript contains staged inputs; consume without appending again."""

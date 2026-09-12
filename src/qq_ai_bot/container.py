@@ -301,6 +301,12 @@ class ApplicationContainer:
             WorkspaceStore(settings.workspace_directory), self.media_resolver, self.database
         )
         self.agent_tools.workspace_service = self.workspace_service
+        if self.vision_provider is not None:
+            from qq_ai_bot.workspace.inspect import WorkspaceInspector
+
+            self.workspace_service.visual_inspector = WorkspaceInspector(
+                self.workspace_service.store, self.image_preprocessor, self.vision_provider
+            )
         from qq_ai_bot.sandbox.client import SandboxClient
         from qq_ai_bot.sandbox.completion_receiver import CompletionReceiver
         from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
@@ -325,6 +331,10 @@ class ApplicationContainer:
         from qq_ai_bot.runtime.work_scheduler import WorkScheduler
 
         self.work_scheduler = WorkScheduler(self)
+        from qq_ai_bot.runtime.subagent_scheduler import SubagentScheduler
+
+        self.database.subagents_enabled = self.settings.subagents_enabled
+        self.subagent_scheduler = SubagentScheduler(self)
         self.chat.register_tool_provider(self.mcp_tools)
         self.memory_mutations = conversation.memory_mutations
         self.memory_auditor = conversation.memory_auditor
@@ -869,6 +879,12 @@ class ApplicationContainer:
             start=self.work_scheduler.start,
             close=self.work_scheduler.close,
             health=self.work_scheduler.health,
+        )
+        self.lifecycle.register(
+            "subagents",
+            start=self.subagent_scheduler.start,
+            close=self.subagent_scheduler.close,
+            health=self.subagent_scheduler.health,
         )
         self.lifecycle.register(
             "plugin_background_turns",

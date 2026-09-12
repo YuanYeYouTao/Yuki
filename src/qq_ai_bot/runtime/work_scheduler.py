@@ -16,6 +16,7 @@ from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.runtime.origin import TurnOrigin
+from qq_ai_bot.runtime.subagent_schema import children
 from qq_ai_bot.runtime.trigger import WorkResumeTrigger
 from qq_ai_bot.runtime.work_activation import activate_work
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
@@ -107,6 +108,7 @@ class WorkScheduler:
                         )
                         .where(
                             work.c.state.in_(("queued", "running")),
+                            work.c.id.not_in(select(children.c.work_id)),
                             or_(scope.c.owner.is_(None), scope.c.lease_until <= time.time()),
                         )
                         .order_by(work.c.updated)

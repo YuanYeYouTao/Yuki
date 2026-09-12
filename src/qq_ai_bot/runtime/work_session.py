@@ -26,9 +26,10 @@ class WorkSession:
         self.pending: list[dict[str, Any]] = []
         self.event_ids: list[int] = []
         self.input_ids: list[int] = []
-        self.recoverable = True
         self.sequence = 0
         self.recovered_delivery: str | None = None
+        self.progress: dict[str, Any] = {}
+        self.initial: TurnTranscript | None = None
 
     async def restore(self, initial: TurnTranscript) -> TurnTranscript:
         control = self.control
@@ -43,6 +44,7 @@ class WorkSession:
             else None
         )
         self.transcript = initial
+        self.initial = initial
         if not row and control.current and control.current["model_requests"]:
             evidence = json.loads(control.current["checkpoint_json"]).get("execution_evidence", [])
             control.known_effects = list(evidence)
@@ -50,7 +52,7 @@ class WorkSession:
                 ChatMessage(
                     role="user",
                     content=(
-                        "[持续工作恢复：来源、模型合同或临时媒体发生变化，建立新上下文。"
+                        "[持续工作恢复：来源或模型合同发生变化，建立新上下文。"
                         "以下为已记录执行证据；先查询原 run_id，不能盲目重跑或重复发送。]\n"
                         + json.dumps(evidence, ensure_ascii=False)
                     ),
@@ -60,6 +62,7 @@ class WorkSession:
             value = json.loads(row["payload_json"])
             self.transcript = decode_transcript(value["transcript"])
             metadata = value.get("metadata", {})
+            self.progress = dict(metadata.get("progress", {}))
             self.sequence = int(metadata.get("sequence", 0))
             self.event_ids = list(metadata.get("event_ids", []))
             self.input_ids = list(metadata.get("input_ids", []))
@@ -96,6 +99,67 @@ class WorkSession:
         await control.reconcile_completed_children()
         return self.transcript
 
+    async def needs_compaction(self) -> bool:
+        if not self.control.lease.work_id or self.control.current is None:
+            return False
+        from sqlalchemy import LargeBinary, func, select
+
+        from qq_ai_bot.runtime.work_schema_v1 import journal
+
+        async with self.control.repository.database.sessions() as session:
+            size = await session.scalar(
+                select(func.length(journal.c.payload_json.cast(LargeBinary))).where(
+                    journal.c.work_id == self.control.current["id"]
+                )
+            )
+            total = await session.scalar(
+                select(
+                    func.coalesce(
+                        func.sum(func.length(journal.c.payload_json.cast(LargeBinary))), 0
+                    )
+                )
+            )
+        return (
+            bool(self.progress.get("compacting"))
+            or int(size or 0) >= 3 * 1024 * 1024
+            or (int(total or 0) >= 56 * 1024 * 1024 and int(size or 0) >= 128 * 1024)
+        )
+
+    async def compact(self, summary: str) -> TurnTranscript:
+        if not summary.strip() or len(summary.encode()) > 65536:
+            raise ValueError("invalid_worker_compaction_summary")
+        assert self.transcript is not None and self.initial is not None
+        previous = self.transcript.chain_id
+        # Stable system contract and original task brief survive verbatim.
+        self.transcript = TurnTranscript(self.initial.request().messages[:2])
+        self.transcript.append(
+            ChatMessage(
+                role="user",
+                content=json.dumps(
+                    {
+                        "kind": "explicit_context_compaction",
+                        "previous_chain_id": previous,
+                        "summary": summary,
+                        "execution_evidence": self.control.known_effects,
+                        "instruction": "继续原目标；先核对原执行 ID，不能因压缩重跑或重复发布。",
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        )
+        self.progress["compacting"] = False
+        self.progress["context_tokens"] = 0
+        self.progress["chain_links"] = [
+            *self.progress.get("chain_links", []),
+            {
+                "from": previous,
+                "to": self.transcript.chain_id,
+                "reason": "capacity_or_context",
+            },
+        ][-64:]
+        await self.save("paired")
+        return self.transcript
+
     def call_key(self, call_id: str) -> str:
         assert self.transcript is not None
         return f"{self.transcript.chain_id}:{self.sequence}:{call_id}"
@@ -109,8 +173,6 @@ class WorkSession:
             None,
             evidence=self.control.known_effects,
         )
-        if not self.recoverable:
-            return
         assert self.transcript is not None
         self.pending = [
             {"id": call.id, "name": call.function.name, "arguments": call.function.arguments}
@@ -131,18 +193,13 @@ class WorkSession:
                     "input_ids": self.input_ids[-256:],
                     "effects": self.control.known_effects,
                     "ending": self.control.ending,
+                    "progress": self.progress,
                 },
             )
         except ValueError as exc:
             if str(exc) in {"work_record_too_large", "work_journal_capacity"}:
-                await self.journal.invalidate(self.control.lease, self.control.current["id"])
                 raise WorkCapacityError("work_checkpoint_capacity") from exc
-            if str(exc) != "work_checkpoint_ephemeral_media":
-                raise
-            await self.journal.invalidate(self.control.lease, self.control.current["id"])
-            # Inline media is not persisted. Keep operating while in memory;
-            # recovery must explicitly rehydrate the canonical attachment.
-            self.recoverable = False
+            raise
 
     async def execute(
         self, call: ToolCall, invoke: Callable[[], Awaitable[str]], *, side_effecting: bool = True
@@ -170,7 +227,21 @@ class WorkSession:
             control.lease, control.current["id"], key, "tool"
         ):
             return await self.journal.effect_result(key)
-        await control.charge_tools(1)
+        from qq_ai_bot.runtime.work_budget import WorkBudgetExceeded
+
+        try:
+            await control.charge_tools(1)
+        except WorkBudgetExceeded:
+            await control.repository.record_effect(
+                key,
+                "accepted",
+                {
+                    "result": json.dumps(
+                        {"ok": False, "executed": False, "error": "work_total_budget_exhausted"}
+                    )
+                },
+            )
+            raise
         try:
             result = await invoke()
         except BaseException:

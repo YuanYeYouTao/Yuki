@@ -27,6 +27,7 @@ class Database:
 
     def __init__(self, url: str) -> None:
         self.url = url
+        self.subagents_enabled = False
         self._ensure_sqlite_parent(url)
         # Runtime configuration mutations share one process-wide database owner.
         # Keeping the lock here prevents separately constructed service facades from

@@ -242,9 +242,14 @@ class WorkspaceStore:
                 identities.append(identity)
             return [self._metadata(self._row(db, identity)) for identity in identities]
 
-    def read_bytes(self, artifact_id: str) -> tuple[dict[str, Any], bytes]:
+    def read_bytes(
+        self, artifact_id: str, *, max_bytes: int | None = None
+    ) -> tuple[dict[str, Any], bytes]:
         with self._transaction() as db:
             row = self._row(db, artifact_id)
+            limit = self.max_file if max_bytes is None else min(self.max_file, max_bytes)
+            if limit < 0 or row["size"] > limit:
+                raise WorkspaceError("artifact_too_large")
             path = self._blob(row["blob"])
             descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
             with os.fdopen(descriptor, "rb") as stream:
@@ -255,7 +260,9 @@ class WorkspaceStore:
                     or info.st_size > self.max_file
                 ):
                     raise WorkspaceError("unsafe_artifact")
-                data = stream.read(self.max_file + 1)
+                if info.st_size > limit:
+                    raise WorkspaceError("artifact_too_large")
+                data = stream.read(limit + 1)
             if len(data) != row["size"] or hashlib.sha256(data).hexdigest() != row["sha256"]:
                 raise WorkspaceError("artifact_corrupt")
             return self._metadata(row), data

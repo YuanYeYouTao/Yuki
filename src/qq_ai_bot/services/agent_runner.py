@@ -84,6 +84,8 @@ class AgentRuntime:
     task_progress: TaskProgress | None = None
     work_control: WorkControl | None = None
     execution_id: str | None = None
+    fixed_tools: tuple[ChatTool, ...] | None = None
+    context_token_limit: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,14 +153,33 @@ class AgentRunner:
         runtime: AgentRuntime,
         tools: AgentToolBackend | None,
     ) -> AgentRunResult:
+        from qq_ai_bot.runtime.work_budget import WorkBudgetExceeded
+
         progress = runtime.task_progress or TaskProgress(
             runtime.max_model_requests, runtime.max_tool_calls
         )
         token = current_progress.set(progress)
         try:
-            result = await self._run(initial_messages, runtime, tools)
+            try:
+                result = await self._run(initial_messages, runtime, tools)
+            except ExceptionGroup as exc:
+                budget_errors, other_errors = exc.split(WorkBudgetExceeded)
+                if budget_errors is not None and other_errors is None:
+                    raise WorkBudgetExceeded("work_total_budget_exhausted") from exc
+                raise
             await progress.finish("yielded")
             return result
+        except WorkBudgetExceeded:
+            if runtime.work_control is not None:
+                runtime.work_control.ending = "suspended"
+            await progress.finish("yielded")
+            return AgentRunResult(
+                text="这项工作的累计预算已用完，进度和产物已保留，尚未完成。",
+                tool_calls_used=progress.tools_used,
+                model_requests=progress.models_used,
+                web_was_used=False,
+                work_state="suspended",
+            )
         except WorkCapacityError:
             if runtime.work_control is not None:
                 runtime.work_control.ending = "suspended"
@@ -182,7 +203,9 @@ class AgentRunner:
         tools: AgentToolBackend | None,
     ) -> AgentRunResult:
         fixed_definitions = None
-        if self.main_contract is not None:
+        if runtime.fixed_tools is not None:
+            fixed_definitions = runtime.fixed_tools
+        elif self.main_contract is not None:
             fixed_definitions = await self.main_contract.definitions()
             if not runtime.dynamic_context_prepared:
                 # Legacy raw-message integrations await their explicit migration.
@@ -232,6 +255,7 @@ class AgentRunner:
             ).hexdigest()
             runtime.work_control.session = WorkSession(runtime.work_control, contract)
             transcript = await runtime.work_control.session.restore(transcript)
+            repeated_batch_count = int(runtime.work_control.session.progress.get("repeats", 0))
             if runtime.work_control.session.recovered_delivery:
                 return AgentRunResult(
                     text="",
@@ -242,6 +266,12 @@ class AgentRunner:
                 )
         for request_index in range(runtime.max_model_requests):
             control = runtime.work_control
+            if (
+                control is not None
+                and control.current is not None
+                and control.requests_started >= runtime.max_model_requests
+            ):
+                break
             if control is not None:
                 try:
                     added = await control.take_inputs(f"{transcript.chain_id}:{request_index}")
@@ -258,10 +288,7 @@ class AgentRunner:
             if (
                 control is not None
                 and control.current is not None
-                and (
-                    control.current["model_requests"] >= runtime.max_model_requests
-                    or control.current["active_seconds"] >= 1800
-                )
+                and control.current["model_requests"] >= 120
             ):
                 control.ending = "suspended"
                 return AgentRunResult(
@@ -313,7 +340,7 @@ class AgentRunner:
                     continuation_native_tools, native_definitions
                 )
             finalization_only = force_finalization or (
-                request_index + 1 >= runtime.max_model_requests
+                runtime.work_control is None and request_index + 1 >= runtime.max_model_requests
             )
             if finalization_only:
                 # Chat Completions can omit tools entirely. Responses continuations
@@ -348,6 +375,31 @@ class AgentRunner:
             ):
                 definitions = ()
                 native_definitions = ()
+            compacting = False
+            if (
+                control is not None
+                and control.session is not None
+                and control.lease.work_id
+                and control.ending is None
+            ):
+                compacting = await control.session.needs_compaction() or bool(
+                    runtime.context_token_limit
+                    and control.session.progress.get("context_tokens", 0)
+                    >= runtime.context_token_limit * 0.85
+                )
+                if compacting and not control.session.progress.get("compacting"):
+                    control.session.progress["compacting"] = True
+                    transcript.append(
+                        ChatMessage(
+                            role="user",
+                            content=(
+                                "[显式容量压缩] 本次只输出供原工作继续执行的摘要，不调用工具。"
+                                "完整保留目标、追加要求、关键证据、文件/artifact 引用、验证结论、"
+                                "待回答问题、未完成操作及原 run_id。区分已完成、失败和结果不确定，"
+                                "不能把计划当成事实。控制在 16000 字以内。"
+                            ),
+                        )
+                    )
             try:
                 diagnostics = runtime.prompt_diagnostics
                 sequence = transcript.request()
@@ -362,7 +414,12 @@ class AgentRunner:
                     tools=definitions,
                     tool_choice=(
                         "none"
-                        if (finalization_only or incomplete_recovery_used or no_progress_recovery)
+                        if (
+                            compacting
+                            or finalization_only
+                            or incomplete_recovery_used
+                            or no_progress_recovery
+                        )
                         and (definitions or native_definitions)
                         else ("auto" if definitions or native_definitions else None)
                     ),
@@ -552,6 +609,33 @@ class AgentRunner:
                     mark_native_web()
             if response.continuation is not None:
                 transcript.accept(response.continuation)
+            if control is not None and control.session is not None:
+                if control.lease.work_id:
+                    last_tokens = control.session.progress.get("context_tokens", 0)
+                    samples = control.session.progress.setdefault("cache_samples", [])
+                    samples.append(
+                        {
+                            "sequence": control.session.sequence,
+                            "chain_id": transcript.chain_id,
+                            "kind": "compaction"
+                            if compacting
+                            else ("resume" if request_index == 0 and last_tokens else "execution"),
+                            "input": response.prompt_tokens,
+                            "cached": response.cached_prompt_tokens,
+                            "warm_candidate": bool(
+                                response.prompt_tokens
+                                and last_tokens >= response.prompt_tokens * 0.95
+                            ),
+                        }
+                    )
+                if response.prompt_tokens is not None:
+                    control.session.progress["context_tokens"] = response.prompt_tokens
+                if compacting:
+                    if response.tool_calls or response.status != ModelResponseStatus.COMPLETED:
+                        raise ValueError("worker_compaction_incomplete")
+                    transcript = await control.session.compact(response.content)
+                    control.session.progress["context_tokens"] = 0
+                    continue
                 continuation_tools = definitions
                 continuation_native_tools = native_definitions
             if response.status is ModelResponseStatus.INCOMPLETE:
@@ -699,6 +783,16 @@ class AgentRunner:
                         )
                     )
                     continue
+                if control is not None and control.session is not None:
+                    if response.continuation is None:
+                        transcript.append(
+                            ChatMessage(
+                                role="assistant",
+                                content=response.content,
+                                reasoning_content=response.reasoning_content,
+                            )
+                        )
+                    await control.session.save("paired")
                 return AgentRunResult(
                     text=content,
                     tool_calls_used=calls_used,
@@ -784,7 +878,7 @@ class AgentRunner:
                     runtime.max_tool_calls
                     - max(
                         calls_used,
-                        runtime.work_control.current["tool_calls"]
+                        runtime.work_control.tools_started
                         if runtime.work_control is not None
                         and runtime.work_control.current is not None
                         else 0,
@@ -840,7 +934,39 @@ class AgentRunner:
                         arguments=call.function.arguments,
                     )
             if runtime.work_control is not None and runtime.work_control.session is not None:
+                batch_hash = hashlib.sha256(
+                    json.dumps(
+                        [
+                            (call.function.name, self._tool_call_signature(call)[1], result)
+                            for call, result, _ in batch
+                        ],
+                        sort_keys=True,
+                    ).encode()
+                ).hexdigest()
+                persisted_progress = runtime.work_control.session.progress
+                repeats = (
+                    int(persisted_progress.get("repeats", 0)) + 1
+                    if (
+                        batch
+                        and persisted_progress.get("fingerprint") == batch_hash
+                        and not any(self._tool_result_pending(result) for _, result, _ in batch)
+                    )
+                    else 0
+                )
+                persisted_progress.update(fingerprint=batch_hash, repeats=repeats)
                 await runtime.work_control.session.save("paired")
+                if runtime.work_control.lease.work_id and runtime.work_control.ending in {
+                    "waiting_user",
+                    "waiting_external",
+                }:
+                    return AgentRunResult(
+                        text="",
+                        tool_calls_used=calls_used,
+                        model_requests=request_index + 1,
+                        web_was_used=web_was_used,
+                        suppress_delivery=True,
+                        work_state=runtime.work_control.ending,
+                    )
             if runtime.work_control is not None and runtime.work_control.chat_answer is not None:
                 content = runtime.work_control.chat_answer
                 if tools is not None:
@@ -899,6 +1025,8 @@ class AgentRunner:
             else:
                 repeated_batch_count = 0
             previous_batch_fingerprint = fingerprint
+            if runtime.work_control is not None and runtime.work_control.session is not None:
+                repeated_batch_count = int(runtime.work_control.session.progress.get("repeats", 0))
             if coordinated.reused_count == len(batch) and batch:
                 logger.info(
                     "agent_tool_batch_reused reused_calls=%d tool_calls_used=%d",
@@ -923,8 +1051,9 @@ class AgentRunner:
                             ),
                         )
                     )
-            if calls_used >= runtime.max_tool_calls or (
-                request_index + 2 >= runtime.max_model_requests
+            if runtime.work_control is None and (
+                calls_used >= runtime.max_tool_calls
+                or (request_index + 2 >= runtime.max_model_requests)
             ):
                 force_finalization = True
                 logger.info(
@@ -936,6 +1065,24 @@ class AgentRunner:
                 effect_probe = getattr(tools, "did_use_web", None)
                 if callable(effect_probe) and effect_probe():
                     web_was_used = True
+            if (
+                runtime.work_control is not None
+                and runtime.work_control.tools_started >= runtime.max_tool_calls
+            ):
+                break
+        if runtime.work_control is not None and runtime.work_control.current is not None:
+            runtime.work_control.yield_segment = True
+            runtime.work_control.ending = "queued"
+            if runtime.work_control.session is not None:
+                await runtime.work_control.session.save("paired")
+            return AgentRunResult(
+                text="",
+                tool_calls_used=calls_used,
+                model_requests=runtime.work_control.requests_started,
+                web_was_used=web_was_used,
+                suppress_delivery=True,
+                work_state="queued",
+            )
         recovered = self._recover_committed_mutation(
             tools,
             calls_used=calls_used,

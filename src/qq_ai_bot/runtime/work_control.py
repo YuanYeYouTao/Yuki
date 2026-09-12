@@ -16,7 +16,9 @@ if TYPE_CHECKING:
     from qq_ai_bot.runtime.work_session import WorkSession
 
 
-WORK_CONTROL_NAMES = frozenset({"task_control", "report_progress"})
+WORK_CONTROL_NAMES = frozenset(
+    {"task_control", "report_progress", "subagent_start", "subagent_control", "subagent_message"}
+)
 
 
 class WorkInputsPreparing(RuntimeError):
@@ -116,6 +118,8 @@ class WorkControl:
     final_delivery: bool = False
     chat_answer: str | None = None
     requests_started: int = 0
+    tools_started: int = 0
+    yield_segment: bool = False
     staged_attempt: str | None = None
     input_images: dict[int, tuple[ChatImage, ...]] = field(default_factory=dict)
 
@@ -138,6 +142,35 @@ class WorkControl:
     async def reconcile_completed_children(self) -> None:
         if self.current is None:
             return
+        if not self.lease.work_id:
+            from qq_ai_bot.runtime.subagent_repository import SubagentRepository
+
+            for child in await SubagentRepository(self.repository).list(self.current["id"]):
+                if child["state"] != "completed":
+                    continue
+                evidence = (
+                    json.loads(child["result_json"])
+                    .get("checkpoint", {})
+                    .get("execution_evidence", [])
+                )
+                self.known_effects[:] = [
+                    e for e in self.known_effects if e.get("child_id") != child["work_id"]
+                ]
+                self.known_effects.append(
+                    {
+                        "child_id": child["work_id"],
+                        "ok": True,
+                        "tool": "subagent_result",
+                        "artifacts": list(
+                            dict.fromkeys(
+                                a for e in evidence if e.get("ok") for a in e.get("artifacts", [])
+                            )
+                        ),
+                        "side_effecting": any(
+                            e.get("ok") and e.get("side_effecting") for e in evidence
+                        ),
+                    }
+                )
         run_ids = list(
             dict.fromkeys(
                 effect["run_id"]
@@ -211,15 +244,16 @@ class WorkControl:
             await self.repository.consume(self.lease, self.staged_attempt)
             self.staged_attempt = None
 
-    async def reserve_request(self) -> None:
+    async def reserve_request(self, *, auxiliary: bool = False) -> None:
         self.requests_started += 1
-        if self.session is not None:
+        if self.session is not None and not auxiliary:
             self.session.sequence += 1
         if self.current is not None:
             await self.repository.checkpoint(self.lease, self.current["id"], None, models=1)
             self.current["model_requests"] += 1
 
     async def charge_tools(self, count: int) -> None:
+        self.tools_started += count
         if self.current is not None and count:
             await self.repository.checkpoint(self.lease, self.current["id"], None, tools=count)
             self.current["tool_calls"] += count
@@ -310,6 +344,10 @@ class WorkControl:
                 result = await self._progress(args, call_key)
             elif name == "task_control":
                 result = await self._control(args, call_key)
+            elif name.startswith("subagent_"):
+                from qq_ai_bot.runtime.subagent_tools import execute_subagent
+
+                result = await execute_subagent(self, name, args, call_key)
             else:
                 raise ValueError("unknown_work_control")
             return json.dumps({"ok": True, **result}, ensure_ascii=False)
@@ -320,6 +358,21 @@ class WorkControl:
         action = args.get("action")
         if not isinstance(action, str):
             raise ValueError("work_action_required")
+        if self.lease.work_id:
+            if action == "accept":
+                raise ValueError("worker_already_registered")
+            if action in {"answer", "need_input"}:
+                from qq_ai_bot.runtime.subagent_tools import execute_subagent
+
+                return await execute_subagent(
+                    self,
+                    "subagent_message",
+                    {
+                        "text": args.get("text") if action == "answer" else args.get("reason"),
+                        "ask": action == "need_input",
+                    },
+                    call_key,
+                )
         if action == "answer":
             text = args.get("text")
             if self.current is not None:
@@ -378,6 +431,24 @@ class WorkControl:
                 if isinstance(identity, str) and self.resolve_child
                 else None
             )
+            if (
+                not child
+                and isinstance(identity, str)
+                and self.current is not None
+                and not self.lease.work_id
+            ):
+                from qq_ai_bot.runtime.subagent_repository import SubagentRepository
+
+                try:
+                    row = await SubagentRepository(self.repository).related(
+                        self.current["id"], identity
+                    )
+                    child = {
+                        "pending": row["state"]
+                        in {"queued", "running", "waiting_external", "waiting_user"}
+                    }
+                except ValueError:
+                    pass
             if not child or not child.get("pending"):
                 raise ValueError("waiting_requires_owned_pending_execution")
             await self.repository.checkpoint(
@@ -391,6 +462,14 @@ class WorkControl:
             await self.repository.checkpoint(self.lease, self.current["id"], {"reason": reason})
             self.ending = "waiting_user" if action == "need_input" else "failed"
         elif action == "complete":
+            if not self.lease.work_id:
+                from qq_ai_bot.runtime.subagent_repository import SubagentRepository
+
+                children = await SubagentRepository(self.repository).list(self.current["id"])
+                if any(
+                    row["state"] not in {"completed", "failed", "cancelled"} for row in children
+                ):
+                    raise ValueError("work_has_unfinished_subagents")
             await self.reconcile_completed_children()
             if any(
                 effect.get("pending") or effect.get("uncertain") for effect in self.known_effects
@@ -530,6 +609,15 @@ class WorkControl:
     async def settle(self, *, delivered: bool, pending_inputs: bool) -> None:
         """Host calls only after actual final delivery, never on a model claim."""
         if self.current is None or self.ending is None:
+            return
+        if self.yield_segment:
+            self.current = await self.repository.transition(
+                self.lease,
+                self.current["id"],
+                self.current["revision"],
+                "queued",
+                reason="segment_budget_yield",
+            )
             return
         if pending_inputs:
             self.ending = None

@@ -8,11 +8,12 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import and_, delete, func, or_, select, true, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.runtime.subagent_schema import children, media, media_refs
 from qq_ai_bot.runtime.work_schema_v1 import WORK_STATES, effects, inputs, journal, scope, work
 
 TERMINAL = frozenset({"completed", "failed", "cancelled"})
@@ -33,6 +34,7 @@ class WorkLease:
     cancel_epoch: int
     fence: int
     owner: str
+    work_id: str | None = None
 
 
 def bounded_json(value: Any, limit: int = 65536) -> str:
@@ -47,7 +49,29 @@ class WorkRepository:
         self.database = database
 
     @staticmethod
+    def _lease_table(lease: WorkLease) -> Any:
+        return children if lease.work_id else scope
+
+    @staticmethod
     def _fence(lease: WorkLease) -> Any:
+        if lease.work_id:
+            from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+
+            return and_(
+                children.c.work_id == lease.work_id,
+                children.c.cancel_epoch == lease.cancel_epoch,
+                children.c.fence == lease.fence,
+                children.c.owner == lease.owner,
+                children.c.lease_until > time.time(),
+                children.c.archived_at.is_(None),
+                select(CanonicalConversationModel.id)
+                .where(
+                    CanonicalConversationModel.id == lease.conversation_id,
+                    CanonicalConversationModel.generation == lease.generation,
+                )
+                .exists(),
+                children.c.root_id.in_(select(work.c.id).where(work.c.state.not_in(TERMINAL))),
+            )
         return and_(
             scope.c.conversation_id == lease.conversation_id,
             scope.c.generation == lease.generation,
@@ -109,23 +133,27 @@ class WorkRepository:
         async with self.database.sessions() as session, session.begin():
             return (
                 await session.execute(
-                    update(scope)
+                    update(self._lease_table(lease))
                     .where(self._fence(lease))
                     .values(lease_until=time.time() + seconds)
-                    .returning(scope.c.fence)
+                    .returning(self._lease_table(lease).c.fence)
                 )
             ).first() is not None
 
     async def release(self, lease: WorkLease) -> None:
         async with self.database.sessions() as session, session.begin():
             await session.execute(
-                update(scope).where(self._fence(lease)).values(owner=None, lease_until=0)
+                update(self._lease_table(lease))
+                .where(self._fence(lease))
+                .values(owner=None, lease_until=0)
             )
 
     async def valid(self, lease: WorkLease) -> bool:
         async with self.database.sessions() as session:
             return (
-                await session.execute(select(scope.c.fence).where(self._fence(lease)))
+                await session.execute(
+                    select(self._lease_table(lease).c.fence).where(self._fence(lease))
+                )
             ).first() is not None
 
     async def _assert_lease(self, session: Any, lease: WorkLease) -> None:
@@ -133,10 +161,10 @@ class WorkRepository:
         # cancel/acquire from interleaving between validation and the mutation.
         row = (
             await session.execute(
-                update(scope)
+                update(self._lease_table(lease))
                 .where(self._fence(lease))
-                .values(fence=scope.c.fence)
-                .returning(scope.c.fence)
+                .values(fence=self._lease_table(lease).c.fence)
+                .returning(self._lease_table(lease).c.fence)
             )
         ).first()
         if row is None:
@@ -238,6 +266,7 @@ class WorkRepository:
                             work.c.conversation_id == conversation_id,
                             work.c.generation == generation,
                             work.c.state.not_in(TERMINAL),
+                            work.c.id.not_in(select(children.c.work_id)),
                         )
                         .order_by(work.c.created)
                         .limit(32)
@@ -272,6 +301,17 @@ class WorkRepository:
             values["goal"] = goal
         async with self.database.sessions() as session, session.begin():
             await self._assert_lease(session, lease)
+            if lease.work_id and state in {"completed", "waiting_user", "waiting_external"}:
+                mailbox = await session.scalar(
+                    select(inputs.c.id)
+                    .where(
+                        inputs.c.work_id == identity,
+                        inputs.c.state.in_(("pending", "staged")),
+                    )
+                    .limit(1)
+                )
+                if mailbox is not None:
+                    values.update(state="queued", reason="worker_mail_arrived")
             row = (
                 (
                     await session.execute(
@@ -311,6 +351,10 @@ class WorkRepository:
         serialized = bounded_json(payload, 1024 * 1024) if payload is not None else None
         async with self.database.sessions() as session, session.begin():
             await self._assert_lease(session, lease)
+            if models or tools:
+                from qq_ai_bot.runtime.work_budget import charge
+
+                await charge(session, identity, models=models, tools=tools)
             row = (
                 await session.execute(
                     update(work)
@@ -423,6 +467,9 @@ class WorkRepository:
     async def pending(
         self, lease: WorkLease, *, limit: int = 8, work_id: str | None = None
     ) -> list[dict[str, Any]]:
+        if lease.work_id and work_id not in {None, lease.work_id}:
+            raise WorkConflict("worker_mail_not_owned")
+        target = work_id or lease.work_id
         async with self.database.sessions() as session:
             rows = (
                 (
@@ -432,7 +479,12 @@ class WorkRepository:
                             inputs.c.conversation_id == lease.conversation_id,
                             inputs.c.generation == lease.generation,
                             inputs.c.state == "pending",
-                            inputs.c.work_id == work_id if work_id else true(),
+                            inputs.c.work_id == target
+                            if target
+                            else or_(
+                                inputs.c.work_id.is_(None),
+                                inputs.c.work_id.not_in(select(children.c.work_id)),
+                            ),
                         )
                         .order_by(inputs.c.id)
                         .limit(min(32, max(1, limit)))
@@ -511,6 +563,15 @@ class WorkRepository:
             update(scope).where(scope.c.conversation_id == conversation_id).values(**values)
         )
         await session.execute(
+            update(children)
+            .where(
+                children.c.work_id.in_(
+                    select(work.c.id).where(work.c.conversation_id == conversation_id)
+                )
+            )
+            .values(owner=None, lease_until=0, cancel_epoch=children.c.cancel_epoch + 1)
+        )
+        await session.execute(
             update(work)
             .where(
                 work.c.conversation_id == conversation_id,
@@ -543,7 +604,11 @@ class WorkRepository:
         await session.execute(delete(journal).where(journal.c.work_id.in_(identities)))
         await session.execute(delete(effects).where(effects.c.work_id.in_(identities)))
         await session.execute(delete(inputs).where(inputs.c.conversation_id == conversation_id))
+        await session.execute(delete(children).where(children.c.work_id.in_(identities)))
         await session.execute(delete(work).where(work.c.conversation_id == conversation_id))
+        await session.execute(
+            delete(media).where(media.c.sha256.not_in(select(media_refs.c.sha256)))
+        )
         await session.execute(delete(scope).where(scope.c.conversation_id == conversation_id))
 
     async def route_child_completion(self, request_id: str) -> None:
@@ -701,6 +766,8 @@ class WorkRepository:
                     select(work.c.id)
                     .where(
                         work.c.state.in_(TERMINAL),
+                        work.c.id.not_in(select(children.c.work_id)),
+                        work.c.id.not_in(select(children.c.root_id)),
                     )
                     .order_by(work.c.updated.desc())
                     .offset(128)

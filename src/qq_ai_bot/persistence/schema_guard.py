@@ -10,9 +10,24 @@ from sqlalchemy.pool import NullPool
 
 from qq_ai_bot.asr.schema import PROJECTION_TRIGGERS_0055
 
-CANONICAL_SCHEMA_REVISION = "0056"
+CANONICAL_SCHEMA_REVISION = "0057"
 
 _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
+    "runtime_subagents": frozenset(
+        {
+            "work_id",
+            "root_id",
+            "brief_json",
+            "result_json",
+            "owner",
+            "fence",
+            "lease_until",
+            "archived_at",
+        }
+    ),
+    "runtime_work_budgets": frozenset({"root_id", "models", "tools", "model_limit", "tool_limit"}),
+    "runtime_work_media": frozenset({"sha256", "content"}),
+    "runtime_work_media_refs": frozenset({"work_id", "sha256"}),
     "runtime_work": frozenset(
         {
             "id",

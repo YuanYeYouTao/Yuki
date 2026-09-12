@@ -30,6 +30,7 @@ class WorkspaceService:
         self.store, self.resolver = store, resolver
         self.database = database
         self.sandbox: SandboxClient | None = None
+        self.visual_inspector: Any = None
         self._task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
@@ -62,6 +63,12 @@ class WorkspaceService:
         conversation_id: str | None = None,
         request_id: str | None = None,
     ) -> dict[str, Any]:
+        if name == "workspace_inspect":
+            if self.visual_inspector is None:
+                raise WorkspaceError("visual_inspection_unavailable")
+            return dict(
+                await self.visual_inspector(str(args["artifact_id"]), str(args["question"]))
+            )
         if request_id is None:
             from hashlib import sha256
 
