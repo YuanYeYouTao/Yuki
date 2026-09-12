@@ -147,7 +147,12 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
         )
         harness = build_harness(
             database,
-            make_settings(database.url, automation_enabled=True, web_mode="tavily"),
+            make_settings(
+                database.url,
+                automation_enabled=True,
+                web_mode="tavily",
+                tavily_api_key="wire-test-key",
+            ),
             provider,
         )
         chat = harness.processor._chat

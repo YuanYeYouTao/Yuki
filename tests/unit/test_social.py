@@ -66,7 +66,7 @@ async def test_social_receipt_claim_replay_and_interrupted_delivery(database: Da
     descriptors = ChatToolCapabilityProvider(
         definitions, source=CapabilityTrustSource.CORE
     ).descriptors()
-    assert len(descriptors) == 15
+    assert len(descriptors) == 27
     assert all(
         descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS for descriptor in descriptors
     )
