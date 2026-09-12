@@ -240,6 +240,7 @@ class SubagentScheduler:
                 current_group_id=original.group_id,
                 conversation_key=f"worker:{identity}",
                 trigger_message_id=original.platform_message_id,
+                trigger_event_id=original.id,
                 runtime_config=config,
                 origin=TurnOrigin(recovered.origin),
                 execution_id=identity,

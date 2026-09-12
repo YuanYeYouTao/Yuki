@@ -22,11 +22,15 @@ Binding 路径，不存在按品牌编写的执行分支。
 目录后，桥接层会原子替换该 Server 的动态定义；Schema 改变时旧快照不再匹配，禁用 Server 或
 删除允许项时定义会消失。两种情况都会由既有执行器阻止旧任务，而不是把新能力自动补授给它。
 
-普通聊天没有命中 MCP 工具时不注入 MCP Schema，也不会为了健康检查连接 lazy Server。
+启动时准备已启用 MCP 工具，再冻结主 Agent 的完整工具声明。普通聊天即使未调用 MCP，
+声明也保持一致；`request_tools` 只查询目录，不动态注入 Schema。元数据刷新与自动化定义
+更新不直接改写已冻结的主 Agent 清单；工具合同变化需要重启形成新合同。
+参见 [共同架构约束](../architecture/development-contract.md)。
 
 Gateway 不拥有目标工具的风险。`call` 必须经过 `resolve_tool` 取得当前已启用、已发现并通过
 include/exclude 的元数据，再用目标 Descriptor 进入现有 `CapabilityPolicyEngine` 和
-`MCPToolBinding`；只读模式、图片/联网限制、scope 与本轮选择都按目标工具检查。search 不执行，
+`MCPToolBinding`；只读模式、图片/联网限制、scope 与委托权限都在执行处按目标工具检查，
+不能通过动态裁剪固定声明代替授权。search 不执行，
 describe 只返回定义。
 
 `yuki.toolBundles` 可把一个 Server 的多项工具声明为不可拆分的 semantic namespace，一个工具也可

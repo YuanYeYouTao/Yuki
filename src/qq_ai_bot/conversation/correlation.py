@@ -110,6 +110,29 @@ async def load_unique_live_chat_event(
     return rows[0] if len(rows) == 1 else None
 
 
+async def load_correlated_chat_event(
+    session: AsyncSession,
+    *,
+    trigger_event_id: int | None,
+    canonical_conversation_id: str | None,
+    bot_user_id: str | None = None,
+    ingress_presence_id: str | None = None,
+) -> ChatEventModel | None:
+    """Use the trusted ledger primary key; never reconstruct it from a QQ id."""
+    if trigger_event_id is None:
+        return None
+    event = await session.get(ChatEventModel, trigger_event_id)
+    if event is None or event.suppression_status not in {None, "keeper"}:
+        return None
+    if (
+        (canonical_conversation_id and event.canonical_conversation_id != canonical_conversation_id)
+        or (bot_user_id and event.bot_user_id != bot_user_id)
+        or (ingress_presence_id and event.ingress_presence_id != ingress_presence_id)
+    ):
+        raise CanonicalIdentityError("trigger_event_correlation_mismatch")
+    return event
+
+
 async def resolve_conversation_id_for_chat_event(
     session: AsyncSession,
     *,
@@ -133,6 +156,7 @@ async def resolve_conversation_id_for_chat_event(
 __all__ = [
     "CANONICAL_KIND_MISMATCH",
     "MISSING_CANONICAL_CONVERSATION",
+    "load_correlated_chat_event",
     "load_unique_live_chat_event",
     "require_live_conversation",
     "resolve_conversation_id_for_chat_event",

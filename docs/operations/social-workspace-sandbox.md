@@ -1,4 +1,4 @@
-# Social tools, scratch workspace and Python jobs
+# Social delivery and persistent workspace integration
 
 All Yuki Main Agent entrypoints share a sorted function-tool manifest, frozen after
 plugin startup and before background turns for the running deployment. Normal/private/group turns, plugin wakeups,
@@ -32,8 +32,10 @@ is not persistence.
 
 Responses recovery/finalization messages follow prior function outputs at the true
 input tail. They no longer get inserted ahead of existing continuation items.
-History recompilation across separate turns still has its existing limits; this
-change does not promise a fully append-only lifetime conversation or a cache hit.
+Ordinary durable-work wakeups continue the stored request chain. Explicit chain
+boundaries, compression and provider cache eviction remain distinct from normal
+continuation; see the [development contract](../architecture/development-contract.md)
+and [persistent workers](../architecture/persistent-subagents.md).
 
 ## Social operations
 
@@ -162,12 +164,12 @@ between chat and delegated automation within this deployment.
 普通群自动化只能在绑定群内戳已认识且确认在群内的人，不能改为私聊或跨群。
 群消息的 `mentions` 生成真实 `at` 段，图片及文件说明均保留结构化 @ 和独立回执。
 
-Schema 0052 adds only social operation receipts. Back up the database, configuration
-and current image before applying it. Build locally, replace only Bot and observe;
-do not restart SnowLuma or silently erase unknown backups. Disabling the manager
-leaves social/workspace functionality independent. An old binary may reject 0052:
-rehearse the rollback using the pre-upgrade snapshot; never overwrite newer messages
-with an old database without assessing data loss.
+Social receipts originated in migration 0052; current deployments must apply the
+complete migration chain required by the running binary. Follow the
+[versioned release procedure](versioned-docker-release.md): take a consistent backup,
+build locally and update the required components without restarting the QQ gateway.
+Code rollback must preserve newer files, messages and execution receipts. Restoring
+an older database is a separate recovery operation with explicit data-loss assessment.
 
 ## 中文摘要
 

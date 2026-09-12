@@ -1,12 +1,11 @@
 # Token 使用
 
-MCP Token 消耗主要来自实际注入主 Agent 的完整工具 Schema，而不是已配置 Server 数量。普通聊天
-没有命中 MCP 工具时增加的 MCP Schema Token 为 **0**。Capability Search 只使用本地短描述做
-检索，不会把完整 Schema 交给检索器。
+MCP Token 消耗包括冻结清单中的完整工具 Schema。普通聊天未调用 MCP 也会携带这些声明，
+不能按零 Token 估算。固定前缀可以复用 Provider 缓存，但实际命中与计费须读取 Provider 指标。
+Capability Search 使用本地目录检索，不替代主 Agent 的固定完整声明。
 
-可用 `TOOLING_SELECTED_TOOL_LIMIT`、`TOOLING_SCHEMA_TOKEN_BUDGET` 约束统一目录，使用
-`MCP_SELECTED_TOOL_LIMIT`、`MCP_SCHEMA_TOKEN_BUDGET` 单独约束 MCP 部分。留空表示不增加该项
-限制。预算器只选择能完整容纳的 Schema，不截断或修改参数结构。
+目录检索的数量和 Schema 预算不应用来逐轮裁剪主 Agent 清单。移除不再使用的 Server 或工具
+属于显式部署配置变更，需要生成新工具合同；不能为了节省本轮 Token 临时改变声明。
 
-需要更多连续操作时提高 `AGENT_MAX_TOOL_CALLS` 和 `AGENT_MAX_MODEL_REQUESTS`，并同步评估模型
-费用与延迟。
+复杂任务按分段与根任务总预算管理，休眠和继续不重置总额。参见
+[持久工作者](../architecture/persistent-subagents.md)，不要只提高单轮限制而忽略总预算。

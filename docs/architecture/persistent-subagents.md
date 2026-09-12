@@ -15,7 +15,9 @@
 工作者能运行代码、安装依赖、发布文件、管理内部服务、使用外部联网工具，
 并沿父任务原有授权读取聊天历史与记忆。不能发送 QQ、撤回、戳人、写长期记忆、
 修改 short_state、创建自动化或递归派生。主 Agent 负责最终交付。
-不修改用户的 `system_prompt.md`。主、子 Agent 保持 Flash；不启用 Flash 原生联网。
+不修改用户的 `system_prompt.md`。主、子 Agent 保持 Flash，Responses 主链不声明内置联网工具。
+外部 `web_search` 可通过 [Anthropic 搜索适配器](../deepseek-search-bridge.md) 调用搜索；
+这是工具执行中的独立请求，不切换主链协议或 continuation。
 
 ## 生命周期
 

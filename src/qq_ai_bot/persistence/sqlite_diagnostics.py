@@ -50,7 +50,9 @@ def install_sqlite_diagnostics(engine: Engine) -> None:
             task = asyncio.current_task()
             value = {
                 "token": id(conn),
-                "since": started,
+                # The statement may itself have waited for a different writer.
+                # Do not report that wait as time this connection held the lock.
+                "since": time.monotonic(),
                 "operation": operation,
                 "coroutine": getattr(task.get_coro(), "__qualname__", "unknown")
                 if task

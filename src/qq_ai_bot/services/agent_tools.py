@@ -168,6 +168,7 @@ class ToolRuntime:
     allow_automation: bool = False
     conversation_key: str = ""
     trigger_message_id: str = ""
+    trigger_event_id: int | None = None
     source_display_requested: bool = False
     actor_user_id: str = ""
     actor_is_superuser: bool = False
@@ -205,6 +206,12 @@ class ToolRuntime:
     space_id: str | None = None
     external_target_id: str | None = None
     memory_read_cache: dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
+
+    @property
+    def effective_trigger_event_id(self) -> int | None:
+        if self.turn_snapshot is not None:
+            return self.turn_snapshot.trigger_event_id
+        return self.trigger_event_id
 
     @property
     def effective_scope_type(self) -> ScopeType:
@@ -2523,11 +2530,8 @@ class AgentToolService:
                 error="invalid_memory_change",
                 detail=(f"记忆变更参数无效：{location}:{first.get('type', 'validation_error')}"),
             )
-        trigger_message_id = runtime.trigger_message_id or runtime.require_inbound().message_id
-        event = await self._ledger.find_by_platform_message(
-            bot_user_id=runtime.effective_bot_user_id or "bot",
-            platform_message_id=trigger_message_id,
-        )
+        trigger_event_id = runtime.effective_trigger_event_id
+        event = await self._ledger.get_event(trigger_event_id) if trigger_event_id else None
         if event is None:
             return self._result(
                 error="trigger_event_not_found",
@@ -2538,6 +2542,16 @@ class AgentToolService:
             or event.sender_user_id != runtime.require_inbound().sender.user_id
             or event.group_id != runtime.current_group_id
             or event.direction != "inbound"
+            or event.bot_user_id != (runtime.effective_bot_user_id or "bot")
+            or event.suppression_status not in {None, "keeper"}
+            or (
+                runtime.effective_conversation_id is not None
+                and event.canonical_conversation_id != runtime.effective_conversation_id
+            )
+            or (
+                runtime.effective_presence_id is not None
+                and event.ingress_presence_id != runtime.effective_presence_id
+            )
         ):
             return self._result(
                 error="untrusted_trigger_event",
@@ -3073,6 +3087,7 @@ class AgentToolService:
         await repository.save_response(
             conversation_key=runtime.conversation_key,
             trigger_message_id=runtime.trigger_message_id,
+            trigger_event_id=runtime.effective_trigger_event_id,
             provider=response.provider,
             response=response,
             max_runs=self._runtime().web.source_max_runs_per_conversation,

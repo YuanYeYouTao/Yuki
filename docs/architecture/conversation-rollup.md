@@ -136,5 +136,6 @@ Rollup 健康应区分 backlog、processing lease、model failure、policy-ineli
 source mismatch，不输出正文。重建或维护命令必须默认 dry-run，并受 Control Plane capability
 和审计约束。
 
-Rollup schema 属于 3.8 canonical database，当前 head 为 `0051`。`0049` 不提供 downgrade；
-数据库问题必须停止所有写入并恢复升级前同一时点 DB/WAL/SHM 快照。
+Rollup schema 属于 canonical database，当前版本以 schema guard 和迁移链为准。
+代码回退保留新写入的事件和工作回执；旧数据库恢复须单独评估数据损失并停止所有写入。
+跨模块约束见 [开发合同](development-contract.md)。
