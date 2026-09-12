@@ -2015,7 +2015,10 @@ async def test_bot_event_cannot_become_user_memory_evidence(database: Database) 
 
 
 @pytest.mark.asyncio
-async def test_agent_tool_and_worker_share_one_claim_receipt(database: Database) -> None:
+@pytest.mark.parametrize("has_event_id", [True, False])
+async def test_agent_tool_and_worker_share_one_claim_receipt(
+    database: Database, has_event_id: bool
+) -> None:
     service, facts, ledger, processor = _service(database)
     event = await _event(
         ledger,
@@ -2045,6 +2048,7 @@ async def test_agent_tool_and_worker_share_one_claim_receipt(database: Database)
         allow_generic_onebot=False,
         conversation_key="private:1001",
         trigger_message_id=event.platform_message_id,
+        trigger_event_id=event.id if has_event_id else None,
         actor_user_id=event.sender_user_id,
         origin=TurnOrigin.USER_MESSAGE,
     )
@@ -2070,6 +2074,14 @@ async def test_agent_tool_and_worker_share_one_claim_receipt(database: Database)
             runtime,
         )
     )
+    if not has_event_id:
+        assert response["error"] == "trigger_event_not_found"
+        async with database.sessions() as session:
+            assert (
+                await session.scalar(select(func.count()).select_from(MemoryMutationReceiptModel))
+                == 0
+            )
+        return
     assert response["ok"]
     assert response["data"]["outcome"] == "committed"
 
@@ -2254,6 +2266,7 @@ async def test_fact_id_tool_operation_infers_target_and_defaults_reason(
         allow_generic_onebot=False,
         conversation_key="private:1001",
         trigger_message_id=delete_event.platform_message_id,
+        trigger_event_id=delete_event.id,
         actor_user_id=delete_event.sender_user_id,
         origin=TurnOrigin.USER_MESSAGE,
     )
@@ -2319,6 +2332,7 @@ async def test_user_message_turn_can_create_self_memory_from_current_event(
         allow_generic_onebot=False,
         conversation_key="group:3001:user:1001",
         trigger_message_id=event.platform_message_id,
+        trigger_event_id=event.id,
         actor_user_id=event.sender_user_id,
         current_group_id=event.group_id,
         origin=TurnOrigin.USER_MESSAGE,
@@ -2443,6 +2457,7 @@ async def test_autonomous_group_turn_can_change_memory_like_user(database: Datab
         allow_generic_onebot=False,
         conversation_key="group:3001:user:1001",
         trigger_message_id=event.platform_message_id,
+        trigger_event_id=event.id,
         actor_user_id=event.sender_user_id,
         current_group_id=event.group_id,
         origin=TurnOrigin.AUTONOMOUS_GROUP,
@@ -2673,6 +2688,7 @@ async def test_named_member_fuzzy_candidates_can_be_selected_by_agent(database: 
         allow_generic_onebot=False,
         conversation_key="group:3001",
         trigger_message_id=event.platform_message_id,
+        trigger_event_id=event.id,
         actor_user_id="1001",
         current_group_id="3001",
         origin=TurnOrigin.USER_MESSAGE,
