@@ -431,76 +431,32 @@ def test_release_workflow_has_bootstrap_quality_smoke_and_all_assets() -> None:
         assert f'"dist/{asset}"' in workflow
 
 
-def test_installers_are_fixed_orchestrators_without_a_docker_socket_mount() -> None:
+def test_installers_are_fixed_orchestrators_without_a_docker_socket_mount(tmp_path) -> None:
     shell = (ROOT / "install.sh").read_text(encoding="utf-8")
     powershell = (ROOT / "install.ps1").read_text(encoding="utf-8")
     for installer in (shell, powershell):
         assert "docker.sock" not in installer
         assert "SHA256SUMS" in installer
-        assert "qq-ai-bot-cli" in installer
         assert "setup --deployment-root /deploy" in installer
-        assert "docker compose" in installer
-        assert "apply-pending" in installer
-        assert "setup verify" in installer
-        assert "restart-required" in installer
-        assert "speech-action" in installer
-        assert "gateway-action.json" in installer
-        assert "SnowLuma.md" in installer
-        assert "Yuki-$VERSION-Upgrade.md" in installer or "Yuki-$Version-Upgrade.md" in installer
-        assert "Updated release-managed deployment files" in installer
-        assert "qq_ai_bot.db" in installer
-        assert "qq_ai_bot.db-wal" in installer
-        assert "qq_ai_bot.db-shm" in installer
-        assert "plugin_artifacts" in installer
-        assert "recount-uncovered" in installer
-        assert "--apply-legacy-import" in installer
+        assert "Configuration saved." in installer
+        for forbidden in (
+            "docker compose stop",
+            "docker compose up",
+            "docker compose restart",
+            "docker compose rm",
+            "init-db",
+            "recount-uncovered",
+            "apply-pending",
+            "gateway-action.json",
+            "copy_upgrade_file",
+            "Updated release-managed",
+        ):
+            assert forbidden not in installer
     assert '--user "$(id -u):$(id -g)"' in shell
-    assert "docker compose stop bot" in shell
-    assert "docker compose stop bot" in powershell
-    assert "docker compose pull bot" in shell
-    assert "docker compose pull bot" in powershell
-    assert "--no-deps --no-build --force-recreate bot" in shell
-    assert "--no-deps --no-build --force-recreate bot" in powershell
-    assert "gateway_added" in shell
-    assert "$GatewayAdded" in powershell
-    assert "docker compose ps --all -q bot" in shell
-    assert "docker compose ps --all -q bot" in powershell
-    assert "wait_for_service genie-tts-worker" in shell
-    assert shell.index("conversation recount-uncovered") < shell.index("docker compose up -d")
-    assert shell.index("conversation recount-uncovered --check") < shell.index(
-        "docker compose up -d"
-    )
-    assert shell.index("--apply-legacy-import") < shell.index("docker compose up -d")
-    assert shell.index('stop "$service"') < shell.index("docker compose up -d")
-    assert shell.index("docker compose up -d") < shell.index('rm -f "$gateway_action"')
-    assert shell.index('download "$base/$archive"') < shell.index('if [ "$existing" = false ]')
     assert "icacls" in powershell
-    assert 'Wait-ForService "genie-tts-worker"' in powershell
-    assert powershell.index("conversation recount-uncovered") < powershell.index(
-        "docker compose up -d"
-    )
-    assert powershell.index("conversation recount-uncovered --check") < powershell.index(
-        "docker compose up -d"
-    )
-    assert powershell.index("--apply-legacy-import") < powershell.index("docker compose up -d")
-    assert powershell.index("stop $Service") < powershell.index("docker compose up -d")
-    assert powershell.index("docker compose up -d") < powershell.index(
-        "Remove-Item -LiteralPath $GatewayActionPath"
-    )
-    assert powershell.index('Invoke-WebRequest -Uri "$Base/$ArchiveName"') < powershell.index(
-        "if (-not $Existing)"
-    )
-    assert shell.index('copy_upgrade_file "$INSTALL_DIR/docker-compose.yml"') < shell.index(
-        'cp "$source/$relative" "$INSTALL_DIR/$relative.yuki-new"'
-    )
-    assert powershell.index('@{ Source = (Join-Path $InstallDir "docker-compose.yml")') < (
-        powershell.index("Copy-Item -LiteralPath $SourceFile -Destination $TemporaryTarget")
-    )
-    for installer in (shell, powershell):
-        assert "source_image" in installer
-        assert "source_image_id" in installer
-        assert "source_digest" in installer
-        assert "target_version" in installer
+    from tests.support.installer_configuration_cases import verify_existing_configuration_only
+
+    verify_existing_configuration_only(ROOT, tmp_path)
 
 
 def _git(root: Path, *arguments: str) -> None:

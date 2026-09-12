@@ -7,7 +7,7 @@
 <p>面向个人部署、以长期关系和长期记忆为核心的 QQ AI Agent</p>
 
 <p>
-  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.1"><img src="https://img.shields.io/badge/Release-3.8.1-blue" alt="Yuki 3.8.1 release"></a>
+  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.2"><img src="https://img.shields.io/badge/Release-3.8.2-blue" alt="Yuki 3.8.2 release"></a>
   <img src="https://img.shields.io/badge/Schema-0055-blue" alt="Alembic head 0055">
   <img src="https://img.shields.io/badge/Plugin%20API-2.0-8A2BE2" alt="Plugin API 2.0">
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
@@ -22,8 +22,7 @@ Yuki 不是给 QQ 套一层模型回复的问答机器人。它把 Conversation�
 Automation、Plugin 与 QQ 登录账号和 Gateway 连接分开，让同一个长期角色能够换账号、换
 Provider，并在权限边界内持续记住人与共同经历。
 
-最新已发布版本为 **3.8.1**；当前源码基线为 **3.8.2（发布准备中）**，包含插件唤醒、Memory P1
-治理、意图读取与记忆可靠性修复。3.8 只运行
+当前版本为 **3.8.2**，包含统一主 Agent、语音转写、持久化工作环境与记忆可靠性修复。3.8 只运行
 canonical schema，Alembic head 为 `0055`。
 
 ## 3.8 核心合同
@@ -166,7 +165,7 @@ action 或宿主机；工具调用由后端进行权限、预算、幂等和审�
 - NapCat/SnowLuma 多 Provider、多 Presence、确定性路由与连接健康投影。
 - transport-neutral Control Plane；3.8 本身不开放管理 HTTP API，也不包含 WebUI。
 
-## 快速安装
+## 配置与启动
 
 要求：
 
@@ -178,7 +177,7 @@ action 或宿主机；工具调用由后端进行权限、预算、幂等和审�
 Linux：
 
 ```bash
-curl -fLO https://github.com/YuanYeYouTao/Yuki-QQbot/releases/download/v3.8.1/install.sh
+curl -fLO https://github.com/YuanYeYouTao/Yuki-QQbot/releases/download/v3.8.2/install.sh
 chmod +x install.sh
 ./install.sh
 ```
@@ -186,22 +185,17 @@ chmod +x install.sh
 Windows PowerShell：
 
 ```powershell
-Invoke-WebRequest -Uri https://github.com/YuanYeYouTao/Yuki-QQbot/releases/download/v3.8.1/install.ps1 -OutFile install.ps1
+Invoke-WebRequest -Uri https://github.com/YuanYeYouTao/Yuki-QQbot/releases/download/v3.8.2/install.ps1 -OutFile install.ps1
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-上述下载命令仍指向已发布的 `3.8.1`；当前源码安装器默认 `3.8.2`，须等待对应 Release 资产
-发布后使用，不能将未发布版本视为可下载。安装器会校验 Release bundle、固定镜像版本、备份已有部署、受控更新
-内置插件，并在 Bot 启动前执行离线 recount/check 与队列 doctor。任一门禁失败都保持
-Bot 停止。密钥输入不回显，安装器不会在线试用 API key。
+`install.sh` / `install.ps1` 现在只负责：空目录下载并校验部署包，然后运行配置向导。
+已有部署仅进入配置向导，保留 Compose、插件、数据库和登录目录；向导确认后备份并写入配置。
+它不会停服、执行数据库升级、替换部署文件或自动切换 QQ 网关。密钥输入不回显，也不会在线试用 Key。
 
-源码验证：
-
-```bash
-cp .env.example .env
-docker compose config --quiet
-docker compose up -d
-```
+配置完成后，按 [3.8.2 升级与首次启动指南](docs/upgrade-3.8.2.md) 手动启动。
+也可以直接下载部署压缩包、编辑 `.env` 和模型配置，无需使用向导。
+持久沙箱是独立宿主组件，见 [持久环境部署说明](docs/operations/persistent-environment.zh-CN.md)。
 
 不要提交 `.env`、`data/`、Gateway 登录目录或 SnowLuma/NapCat Cookie。
 
@@ -228,15 +222,15 @@ docker compose up -d
 
 3.8 的数据库合同：
 
-- fresh install：无父 revision 的 `0048` canonical baseline，随后升级到 `0049 -> 0050 -> 0051 -> 0052`。
+- fresh install：无父 revision 的 `0048` canonical baseline，随后逐步升级到 `0055`。
 - historical bridge：只接受已完成 canonical v2 的旧 `0048` 数据库。
 - pre-3.8、v1、dual-write、backfill/cutover 中间态数据库不受支持，启动时失败关闭。
 - `0049` 仍是不提供 downgrade 的 canonical bridge；`0050` 增加主动回复因果列和索引，`0051`
   只增加 Memory recall 评估与主动读取结果的无正文观测列。
-  `0052` 增加社交操作回执，防止不确定发送被重试；社交工具仍在开发，不代表已经可用。
-  生产数据的可靠回退方式仍是恢复升级前同一时点的 DB/WAL/SHM 快照。
+  `0052` 增加社交操作回执，`0053` 增加工作任务记录，`0054` 增加提示词投影，`0055` 增加语音转写历史。
+  数据库回退需要匹配版本的同一时点 DB/WAL/SHM 快照；必须先保全升级后的新增数据。
 
-升级前必须停止 Bot 与 Provider，并把以下文件作为一组保存：
+升级前停止 Bot；使用持久化环境时同时停止 Manager 写入，并把以下文件作为一组保存：
 
 - `data/qq_ai_bot.db`
 - `data/qq_ai_bot.db-wal`
@@ -244,7 +238,7 @@ docker compose up -d
 - `.env`、`config/`、Compose 文件与镜像 digest
 - `plugins/github-monitor/` 与 `data/plugin_artifacts/`；Bot 镜像不包含 Compose 挂载的插件代码
 
-完整步骤见 [Yuki 3.8.1 升级指南](docs/upgrade-3.8.1.md)。不满足桥接前提时，新建 3.8 部署，
+持久化环境还需保存家目录、任务回执与 Manager 配置。完整步骤见 [Yuki 3.8.2 升级指南](docs/upgrade-3.8.2.md)。不满足桥接前提时，新建 3.8 部署，
 不要让 3.8 自动猜测或修复旧身份数据。
 
 ## 未来 WebUI
@@ -290,7 +284,7 @@ uv run mypy src
 uv run pytest
 ```
 
-涉及 schema 或发布时还要验证 fresh `0048 -> 0049 -> 0050 -> 0051 -> 0052`、populated `0051 -> 0052`、SQLite
+涉及 schema 或发布时还要验证 fresh `0048 -> 0055`、已有数据的增量迁移、SQLite
 `foreign_key_check`、FTS/trigger、release smoke 和 Docker Compose 配置。
 
 ## 文档
@@ -306,7 +300,7 @@ uv run pytest
 - [SnowLuma Provider](docs/deployment/snowluma.md)
 - [3.8.1 升级指南](docs/upgrade-3.8.1.md)
 - [3.8.1 发布说明](docs/releases/v3.8.1.md)
-- [3.8.2 发布准备说明](docs/releases/v3.8.2.md)
+- [3.8.2 发布说明](docs/releases/v3.8.2.md)
 - [3.8.2 升级指南](docs/upgrade-3.8.2.md)
 - [版本化 Docker Release](docs/operations/versioned-docker-release.md)
 - [CHANGELOG](CHANGELOG.md)

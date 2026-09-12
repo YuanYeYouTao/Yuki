@@ -7,7 +7,7 @@ REPOSITORY="YuanYeYouTao/Yuki-QQbot"
 BOT_IMAGE="ghcr.io/yuanyeyoutao/yuki-qqbot"
 
 usage() {
-    printf '%s\n' "Usage: install.sh [--dir PATH] [--version X.Y.Z]"
+    printf '%s\n' "Usage: install.sh [--dir PATH] [--version X.Y.Z] (configure only)"
 }
 
 fail() {
@@ -40,6 +40,8 @@ done
 printf '%s\n' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || \
     fail "version must use X.Y.Z"
 
+[ -t 0 ] && [ -t 1 ] || fail "configuration requires an interactive terminal"
+
 command -v docker >/dev/null 2>&1 || fail "Docker is not installed"
 docker compose version >/dev/null 2>&1 || fail "the Docker Compose CLI plugin is not available"
 docker info >/dev/null 2>&1 || fail "Docker Engine is not running"
@@ -70,40 +72,41 @@ elif [ -n "$(find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/nul
     fail "installation directory is not empty and is not a Yuki deployment"
 fi
 
-temporary=$(mktemp -d "${TMPDIR:-/tmp}/yuki-install.XXXXXX")
-trap 'rm -rf "$temporary"' EXIT HUP INT TERM
-
-download() {
-    url=$1
-    output=$2
-    if command -v curl >/dev/null 2>&1; then
-        curl --fail --silent --show-error --location "$url" --output "$output"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q "$url" -O "$output"
-    else
-        fail "curl or wget is required to download the release"
-    fi
-}
-
-base="https://github.com/$REPOSITORY/releases/download/v$VERSION"
-archive="yuki-$VERSION-deploy.tar.gz"
-download "$base/$archive" "$temporary/$archive"
-download "$base/SHA256SUMS" "$temporary/SHA256SUMS"
-expected=$(awk -v name="$archive" '$2 == name {print $1}' "$temporary/SHA256SUMS")
-[ -n "$expected" ] || fail "release checksum does not list $archive"
-if command -v sha256sum >/dev/null 2>&1; then
-    actual=$(sha256sum "$temporary/$archive" | awk '{print $1}')
-elif command -v shasum >/dev/null 2>&1; then
-    actual=$(shasum -a 256 "$temporary/$archive" | awk '{print $1}')
-else
-    fail "sha256sum or shasum is required"
-fi
-[ "$actual" = "$expected" ] || fail "release archive checksum mismatch"
-tar -xzf "$temporary/$archive" -C "$temporary"
-source="$temporary/yuki-$VERSION-deploy"
-[ -d "$source" ] || fail "release archive layout is invalid"
-
+# Bootstrap only an empty directory; existing deployments keep every managed file.
 if [ "$existing" = false ]; then
+    temporary=$(mktemp -d "${TMPDIR:-/tmp}/yuki-install.XXXXXX")
+    trap 'rm -rf "$temporary"' EXIT HUP INT TERM
+
+    download() {
+        url=$1
+        output=$2
+        if command -v curl >/dev/null 2>&1; then
+            curl --fail --silent --show-error --location "$url" --output "$output"
+        elif command -v wget >/dev/null 2>&1; then
+            wget -q "$url" -O "$output"
+        else
+            fail "curl or wget is required to download the release"
+        fi
+    }
+
+    base="https://github.com/$REPOSITORY/releases/download/v$VERSION"
+    archive="yuki-$VERSION-deploy.tar.gz"
+    download "$base/$archive" "$temporary/$archive"
+    download "$base/SHA256SUMS" "$temporary/SHA256SUMS"
+    expected=$(awk -v name="$archive" '$2 == name {print $1}' "$temporary/SHA256SUMS")
+    [ -n "$expected" ] || fail "release checksum does not list $archive"
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual=$(sha256sum "$temporary/$archive" | awk '{print $1}')
+    elif command -v shasum >/dev/null 2>&1; then
+        actual=$(shasum -a 256 "$temporary/$archive" | awk '{print $1}')
+    else
+        fail "sha256sum or shasum is required"
+    fi
+    [ "$actual" = "$expected" ] || fail "release archive checksum mismatch"
+    tar -xzf "$temporary/$archive" -C "$temporary"
+    source="$temporary/yuki-$VERSION-deploy"
+    [ -d "$source" ] || fail "release archive layout is invalid"
+
     cp -R "$source/." "$INSTALL_DIR/"
 fi
 
@@ -111,108 +114,6 @@ image="$BOT_IMAGE:$VERSION"
 printf '%s\n' "Pulling $image"
 docker pull "$image"
 
-if [ "$existing" = true ]; then
-    cd "$INSTALL_DIR"
-    old_container=$(docker compose ps --all -q bot 2>/dev/null | sed -n '1p')
-    source_image_json=null
-    source_image_id=""
-    source_digest=""
-    if [ -n "$old_container" ]; then
-        source_image_json=$(docker inspect --format '{{json .Config.Image}}' "$old_container")
-        source_image_id=$(docker inspect --format '{{.Image}}' "$old_container")
-        source_digest=$(docker image inspect --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' "$source_image_id" 2>/dev/null || true)
-    fi
-    old_running=$(docker compose ps -q bot 2>/dev/null || true)
-    if [ -n "$old_running" ]; then
-        docker compose stop bot || fail "unable to stop the old Bot container"
-        still_running=$(docker inspect --format '{{.State.Running}}' "$old_running" 2>/dev/null || printf '%s\n' false)
-        [ "$still_running" = "false" ] || fail "old Bot container is still writing the database"
-    fi
-    stamp=$(date -u +%Y%m%dT%H%M%SZ)
-    snap="$INSTALL_DIR/.yuki/backups/pre-upgrade/$stamp"
-    mkdir -p "$snap/data" "$snap/config" || fail "unable to create the upgrade snapshot directory"
-    copy_upgrade_file() {
-        source=$1
-        target=$2
-        if [ -f "$source" ]; then
-            mkdir -p "$(dirname "$target")"
-            cp -p "$source" "$target" || fail "unable to snapshot $source"
-        fi
-    }
-    copy_upgrade_file "$INSTALL_DIR/.env" "$snap/.env"
-    copy_upgrade_file "$INSTALL_DIR/.mcp.json" "$snap/.mcp.json"
-    copy_upgrade_file "$INSTALL_DIR/config/model_profiles.toml" "$snap/config/model_profiles.toml"
-    copy_upgrade_file "$INSTALL_DIR/docker-compose.yml" "$snap/docker-compose.yml"
-    copy_upgrade_file "$INSTALL_DIR/data/qq_ai_bot.db" "$snap/data/qq_ai_bot.db"
-    copy_upgrade_file "$INSTALL_DIR/data/qq_ai_bot.db-wal" "$snap/data/qq_ai_bot.db-wal"
-    copy_upgrade_file "$INSTALL_DIR/data/qq_ai_bot.db-shm" "$snap/data/qq_ai_bot.db-shm"
-    if [ -d "$INSTALL_DIR/data/plugin_artifacts" ]; then
-        cp -Rp "$INSTALL_DIR/data/plugin_artifacts" "$snap/data/plugin_artifacts" \
-            || fail "unable to snapshot plugin media artifacts"
-    fi
-    printf '%s\n' "{\"source_image\":$source_image_json,\"source_image_id\":\"$source_image_id\",\"source_digest\":\"$source_digest\",\"target_version\":\"$VERSION\",\"created_at\":\"$stamp\"}" > "$snap/manifest.json" \
-        || fail "unable to write the upgrade snapshot manifest"
-    verify_snapshot='
-import hashlib, pathlib, sqlite3
-root = pathlib.Path("/snapshot")
-rows = []
-for path in sorted(p for p in root.rglob("*") if p.is_file() and p.name != "SHA256SUMS"):
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    rows.append(f"{digest}  {path.relative_to(root).as_posix()}")
-(root / "SHA256SUMS").write_text("\n".join(rows) + "\n", encoding="utf-8")
-for line in rows:
-    expected, relative = line.split("  ", 1)
-    actual = hashlib.sha256((root / relative).read_bytes()).hexdigest()
-    if actual != expected:
-        raise SystemExit(f"checksum mismatch: {relative}")
-db = root / "data/qq_ai_bot.db"
-if db.is_file():
-    connection = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
-    status = connection.execute("PRAGMA integrity_check").fetchone()[0]
-    connection.close()
-    if status != "ok":
-        raise SystemExit("sqlite integrity_check failed")
-'
-    docker run --rm \
-        --user "$(id -u):$(id -g)" \
-        --entrypoint python \
-        --volume "$snap:/snapshot" \
-        "$image" -c "$verify_snapshot" \
-        || fail "upgrade snapshot checksum or database verification failed"
-
-    managed_backup="$INSTALL_DIR/.yuki/backups/installer-$stamp"
-    for relative in docker-compose.yml .env.example install.sh install.ps1 SnowLuma.md "Yuki-$VERSION-Upgrade.md"; do
-        [ -f "$source/$relative" ] || fail "release bundle is missing $relative"
-        if [ -f "$INSTALL_DIR/$relative" ]; then
-            mkdir -p "$managed_backup/$(dirname "$relative")"
-            cp "$INSTALL_DIR/$relative" "$managed_backup/$relative"
-        fi
-        cp "$source/$relative" "$INSTALL_DIR/$relative.yuki-new"
-        mv -f "$INSTALL_DIR/$relative.yuki-new" "$INSTALL_DIR/$relative"
-    done
-    mkdir -p "$INSTALL_DIR/plugins" "$managed_backup/plugins"
-    for plugin_source in "$source"/plugins/*; do
-        [ -d "$plugin_source" ] || continue
-        [ -f "$plugin_source/plugin.toml" ] || fail "release bundle contains an invalid plugin"
-        plugin_id=$(basename "$plugin_source")
-        plugin_target="$INSTALL_DIR/plugins/$plugin_id"
-        plugin_staged="$INSTALL_DIR/plugins/.$plugin_id.yuki-new-$stamp"
-        [ ! -e "$plugin_staged" ] || fail "staged plugin path already exists"
-        cp -R "$plugin_source" "$plugin_staged" || fail "unable to stage built-in plugin $plugin_id"
-        if [ -e "$plugin_target" ]; then
-            mv "$plugin_target" "$managed_backup/plugins/$plugin_id" \
-                || fail "unable to back up built-in plugin $plugin_id"
-        fi
-        if ! mv "$plugin_staged" "$plugin_target"; then
-            [ ! -e "$managed_backup/plugins/$plugin_id" ] \
-                || mv "$managed_backup/plugins/$plugin_id" "$plugin_target" || true
-            fail "unable to install built-in plugin $plugin_id"
-        fi
-    done
-    printf '%s\n' "Updated release-managed deployment files; mutable data and configuration were preserved."
-fi
-
-[ -t 0 ] && [ -t 1 ] || fail "guided setup requires an interactive terminal"
 docker run --rm -it \
     --user "$(id -u):$(id -g)" \
     --entrypoint qq-ai-bot-cli \
@@ -220,159 +121,6 @@ docker run --rm -it \
     --workdir /deploy \
     "$image" setup --deployment-root /deploy
 
-cd "$INSTALL_DIR"
-docker compose config --quiet
-if [ "$existing" = true ]; then
-    YUKI_VERSION="$VERSION" docker compose pull bot
-else
-    YUKI_VERSION="$VERSION" docker compose pull
-fi
-old_bot=$(docker compose ps --all -q bot 2>/dev/null || true)
-
-printf '%s\n' "Running stopped-database upgrade gates with Yuki $VERSION"
-YUKI_VERSION="$VERSION" docker compose run --rm --no-deps \
-    --entrypoint qq-ai-bot-cli bot init-db \
-    || fail "target database initialization failed; Bot remains stopped"
-YUKI_VERSION="$VERSION" docker compose run --rm --no-deps \
-    --entrypoint qq-ai-bot-cli bot conversation recount-uncovered \
-    || fail "conversation recount failed; Bot remains stopped"
-YUKI_VERSION="$VERSION" docker compose run --rm --no-deps \
-    --entrypoint qq-ai-bot-cli bot conversation recount-uncovered --check \
-    || fail "conversation coverage check failed; Bot remains stopped"
-YUKI_VERSION="$VERSION" docker compose run --rm --no-deps \
-    --entrypoint python bot /app/plugins/github-monitor/doctor.py --apply-legacy-import \
-    || fail "GitHub Monitor queue preflight failed; Bot remains stopped"
-
-gateway_action="data/setup/gateway-action.json"
-gateway_target=""
-gateway_added=""
-if [ -f "$gateway_action" ]; then
-    gateway_reader='import json, pathlib
-path = pathlib.Path("/deploy/data/setup/gateway-action.json")
-payload = json.loads(path.read_text(encoding="utf-8"))
-allowed = {"napcat", "snowluma"}
-previous = payload.get("previous")
-target = payload.get("target")
-if payload.get("schema_version") != 1 or not isinstance(previous, list) or not isinstance(target, list):
-    raise SystemExit("invalid gateway action")
-if not target or any(type(item) is not str or item not in allowed for item in [*previous, *target]):
-    raise SystemExit("invalid gateway provider")
-if len(set(previous)) != len(previous) or len(set(target)) != len(target):
-    raise SystemExit("duplicate gateway provider")
-print("removed=" + " ".join(item for item in previous if item not in target))
-print("added=" + " ".join(item for item in target if item not in previous))
-print("target=" + " ".join(target))'
-    if ! gateway_plan=$(docker run --rm \
-        --user "$(id -u):$(id -g)" \
-        --entrypoint python \
-        --volume "$INSTALL_DIR:/deploy:ro" \
-        "$image" -c "$gateway_reader"); then
-        fail "pending QQ Gateway action is invalid"
-    fi
-    gateway_removed=$(printf '%s\n' "$gateway_plan" | sed -n 's/^removed=//p')
-    gateway_added=$(printf '%s\n' "$gateway_plan" | sed -n 's/^added=//p')
-    gateway_target=$(printf '%s\n' "$gateway_plan" | sed -n 's/^target=//p')
-    [ -n "$gateway_target" ] || fail "pending QQ Gateway action has no target"
-    for service in $gateway_removed; do
-        docker compose --profile napcat --profile snowluma stop "$service" \
-            || fail "unable to stop old QQ Gateway Provider"
-        docker compose --profile napcat --profile snowluma rm -f "$service" \
-            || fail "unable to remove old QQ Gateway Provider"
-        remaining=$(docker compose --profile napcat --profile snowluma \
-            ps --all --quiet "$service" 2>/dev/null || true)
-        [ -z "$remaining" ] || fail "old QQ Gateway Provider is still present"
-    done
-fi
-
-if [ "$existing" = true ]; then
-    YUKI_VERSION="$VERSION" docker compose up -d \
-        --no-deps --no-build --force-recreate bot
-    for service in $gateway_added; do
-        docker compose --profile napcat --profile snowluma \
-            up -d --no-deps "$service" \
-            || fail "unable to start new QQ Gateway Provider"
-    done
-else
-    YUKI_VERSION="$VERSION" docker compose up -d
-fi
-
-wait_for_bot() {
-    deadline=$(( $(date +%s) + 180 ))
-    while [ "$(date +%s)" -lt "$deadline" ]; do
-        container=$(docker compose ps -q bot 2>/dev/null || true)
-        if [ -n "$container" ]; then
-            status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container" 2>/dev/null || true)
-            [ "$status" = healthy ] && return 0
-            [ "$status" = exited ] && return 1
-        fi
-        sleep 2
-    done
-    return 1
-}
-
-wait_for_service() {
-    service=$1
-    deadline=$(( $(date +%s) + 180 ))
-    while [ "$(date +%s)" -lt "$deadline" ]; do
-        container=$(docker compose --profile speech ps -q "$service" 2>/dev/null || true)
-        if [ -n "$container" ]; then
-            status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container" 2>/dev/null || true)
-            [ "$status" = healthy ] && return 0
-            [ "$status" = exited ] && return 1
-        fi
-        sleep 2
-    done
-    return 1
-}
-
-wait_for_gateway() {
-    service=$1
-    deadline=$(( $(date +%s) + 180 ))
-    while [ "$(date +%s)" -lt "$deadline" ]; do
-        container=$(docker compose --profile napcat --profile snowluma \
-            ps -q "$service" 2>/dev/null || true)
-        if [ -n "$container" ]; then
-            status=$(docker inspect --format '{{.State.Status}}' "$container" 2>/dev/null || true)
-            [ "$status" = running ] && return 0
-            [ "$status" = exited ] && return 1
-        fi
-        sleep 2
-    done
-    return 1
-}
-
-wait_for_bot || fail "Bot did not become healthy within 180 seconds"
-if [ -f "$gateway_action" ]; then
-    for service in $gateway_target; do
-        wait_for_gateway "$service" || fail "QQ Gateway Provider did not start"
-    done
-    rm -f "$gateway_action"
-fi
-new_bot=$(docker compose ps -q bot 2>/dev/null || true)
-if [ -f "data/setup/restart-required" ] && [ "$old_bot" != "$new_bot" ]; then
-    rm -f "data/setup/restart-required"
-fi
-if [ -f "data/setup/speech-action" ]; then
-    speech_action=$(tr -d '\r\n' < "data/setup/speech-action")
-    case "$speech_action" in
-        start)
-            docker compose --profile speech up -d --no-deps genie-tts-worker
-            wait_for_service genie-tts-worker || fail "Speech Worker did not become healthy"
-            ;;
-        stop)
-            docker compose --profile speech stop genie-tts-worker
-            docker compose --profile speech rm -f genie-tts-worker
-            ;;
-        *) fail "unknown pending Speech action" ;;
-    esac
-    rm -f "data/setup/speech-action"
-fi
-if [ -f "data/setup/pending.json" ]; then
-    docker compose exec -T bot qq-ai-bot-cli setup apply-pending --deployment-root /app --no-color
-fi
-if [ -f "data/setup/restart-required" ]; then
-    docker compose restart bot
-    wait_for_bot || fail "Bot did not become healthy after applying configuration"
-    rm -f "data/setup/restart-required"
-fi
-docker compose exec -T bot qq-ai-bot-cli setup verify --deployment-root /app --no-color
+printf '%s\n' "Configuration saved. No services were stopped or started and no database was upgraded."
+printf '%s\n' "Review $INSTALL_DIR/Yuki-$VERSION-Upgrade.md before starting or upgrading the deployment."
+printf '%s\n' "Upgrade guide: https://github.com/$REPOSITORY/blob/v$VERSION/docs/upgrade-$VERSION.md"
