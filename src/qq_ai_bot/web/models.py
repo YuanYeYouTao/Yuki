@@ -52,6 +52,7 @@ class WebSearchSource:
     relevant_content: str
     published_at: datetime | None = None
     provider_score: float | None = None
+    provider: str = "tavily"
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,3 +64,4 @@ class WebSearchResponse:
     provider_request_id: str | None
     latency_seconds: float
     partial_failure: bool = False
+    provider: str = "tavily"

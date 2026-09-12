@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -377,6 +378,8 @@ class WebSettings(DomainSettings):
     web_enabled: bool
     web_mode: WebMode | None = None
     tavily_api_key: str
+    web_search_backend: Literal["tavily", "deepseek_anthropic"] = "tavily"
+    web_search_bridge_state_path: Path = Path("data/web-search-bridge.sqlite3")
     web_search_depth: str
     web_search_max_results: int = Field(gt=0)
     web_extract_max_results: int = Field(gt=0)
@@ -390,7 +393,11 @@ class WebSettings(DomainSettings):
 
     @model_validator(mode="after")
     def _credentials(self) -> WebSettings:
-        if self.mode in {WebMode.TAVILY, WebMode.BOTH} and not (self.tavily_api_key):
+        if (
+            self.web_search_backend == "tavily"
+            and self.mode in {WebMode.TAVILY, WebMode.BOTH}
+            and not self.tavily_api_key
+        ):
             raise ValueError("TAVILY_API_KEY is required for tavily and both web modes")
         return self
 

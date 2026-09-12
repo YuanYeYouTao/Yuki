@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import Self
+from typing import Literal, Self
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import AliasChoices, Field, PrivateAttr, field_validator, model_validator
@@ -425,6 +425,8 @@ class Settings(BaseSettings):
     web_enabled: bool = False
     web_mode: WebMode | None = None
     tavily_api_key: str = Field(default="", repr=False)
+    web_search_backend: Literal["tavily", "deepseek_anthropic"] = "tavily"
+    web_search_bridge_state_path: Path = Path("data/web-search-bridge.sqlite3")
     web_search_depth: str = "advanced"
     web_search_max_results: int = 5
     web_extract_max_results: int = 3
@@ -1027,7 +1029,12 @@ class Settings(BaseSettings):
 
         mode = self.web.mode
         return bool(
-            mode is not WebMode.DISABLED and (mode is WebMode.NATIVE or bool(self.tavily_api_key))
+            mode is not WebMode.DISABLED
+            and (
+                mode is WebMode.NATIVE
+                or self.web_search_backend == "deepseek_anthropic"
+                or bool(self.tavily_api_key)
+            )
         )
 
     @property
