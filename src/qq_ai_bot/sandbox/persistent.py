@@ -655,9 +655,13 @@ class PersistentManager(Manager):
                 "active_run_ids": [row["id"] for row in active],
                 "retryable": False,
             }
-        if method == "environment_packages" and (
-            self.layer_bytes >= PACKAGE_BUDGET
-            or (not self.testing and shutil.disk_usage(self.root).free < 2 * 1024**3)
+        if (
+            method == "environment_packages"
+            and args["action"] == "install"
+            and (
+                self.layer_bytes >= PACKAGE_BUDGET
+                or (not self.testing and shutil.disk_usage(self.root).free < 2 * 1024**3)
+            )
         ):
             return {
                 "error": "package_budget_exhausted",
@@ -1081,7 +1085,10 @@ class PersistentManager(Manager):
                     not self.testing and shutil.disk_usage(self.root).free < 1024**3
                 ):
                     for row in self.active():
-                        if row["kind"] == "environment_packages":
+                        if (
+                            row["kind"] == "environment_packages"
+                            and json.loads(row["payload"]).get("action") == "install"
+                        ):
                             await self.control(row["id"], "cancel")
             if self.ready:
                 await self.restore_services()
