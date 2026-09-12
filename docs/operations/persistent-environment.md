@@ -47,10 +47,13 @@ start marker adds another duplicate-execution guard. Container start time is par
 of the generation identity: interrupted ordinary jobs fail with explicit receipts;
 registered services recover according to their policy. Uncertain submissions are
 queried by request ID, never blindly retried. Rejected admission creates no continuation.
+Docker restart policy is `no` for this container. The enabled Manager starts it only
+after the storage unit has mounted both filesystems; Bot or Manager restarts leave
+the existing container and its processes running.
 
 `environment_service` registers, starts, stops and inspects at most two internal
 services. Stop disables recovery before signaling the process. Repeated failures use
-backoff and a five-start limit; explicit start resets it. `environment_packages`
+backoff and a five-start limit; a healthy minute or explicit start resets it. `environment_packages`
 serializes apt install/remove/repair as root **inside** the container. Successful
 installs record dpkg versions and a Docker image checkpoint. The current and previous
 checkpoint are retained. Package growth is monitored against a cumulative 1 GiB
@@ -92,6 +95,8 @@ Validate healthz, OneBot connection, RSS, completion/continuation workers, tool 
 and real gVisor resources/network/file operations. Retain the prior image and latest
 consistent backup. NetEase MCP/music-sign and the unused hardware services are disabled;
 RSS, QQ, proxy, Docker and system maintenance remain enabled.
+Disable NetEase in both its file configuration and persisted `mcp_server_states`
+entry before freezing the tool manifest; the persisted switch takes precedence.
 
 Rollback changes images/units, not the current database/home. Keep the persistent
 environment running if rolling back Bot alone; its label is excluded from legacy
@@ -111,3 +116,6 @@ checkpoints, service recovery, interrupted installation, OOM and network failure
 The validation image has Docker access solely as a local trusted harness; never deploy
 it as the execution container. Server acceptance uses a separate named gVisor container
 and small ext4 test filesystems without Bot/QQ mounts or actual message sending.
+
+See the [2026-09-12 deployment and acceptance record](persistent-environment-validation-20260912.md)
+for deployed revisions, measurements and the retained restore point.
