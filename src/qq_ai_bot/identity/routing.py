@@ -9,6 +9,7 @@ from typing import Protocol
 from uuid import uuid4
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import (
     PersonActiveRouteModel,
@@ -621,21 +622,32 @@ class PresenceRouter:
         event_presence_id: str,
     ) -> str:
         async with self._database.sessions() as session:
-            route = await session.get(SpaceBindingIngestRouteModel, space_binding_id)
-            if route is None:
-                return "not_ingest"
-            if route.paused:
-                return "paused"
-            if route.ingest_presence_id != event_presence_id:
-                return "not_ingest"
-            presence = await session.get(PresenceModel, route.ingest_presence_id)
-            if presence is None or not presence.enabled or not presence.ingest_eligible:
-                return "not_ingest"
-            try:
-                self._registry.resolve_active(presence.id)
-            except RegistryClosed:
-                return "paused"
-            return "ok"
+            return await self.ingest_status_in_session(
+                session, space_binding_id=space_binding_id, event_presence_id=event_presence_id
+            )
+
+    async def ingest_status_in_session(
+        self, session: AsyncSession, *, space_binding_id: str, event_presence_id: str
+    ) -> str:
+        """Recheck the ingress fence using only the caller's transaction and registry."""
+        binding = await session.get(SpaceBindingModel, space_binding_id)
+        if binding is None or binding.status != "active":
+            return "not_ingest"
+        route = await session.get(SpaceBindingIngestRouteModel, space_binding_id)
+        if route is None:
+            return "not_ingest"
+        if route.paused:
+            return "paused"
+        if route.ingest_presence_id != event_presence_id:
+            return "not_ingest"
+        presence = await session.get(PresenceModel, route.ingest_presence_id)
+        if presence is None or not presence.enabled or not presence.ingest_eligible:
+            return "not_ingest"
+        try:
+            self._registry.resolve_active(presence.id)
+        except RegistryClosed:
+            return "paused"
+        return "ok"
 
     async def _apply_person_takeover(
         self,

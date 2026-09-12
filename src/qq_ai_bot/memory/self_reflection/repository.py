@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
@@ -272,6 +273,20 @@ class SelfReflectionRepository:
     async def scan_new_events(self, *, limit: int = 5000) -> int:
         """Accumulate only post-deployment events; first startup establishes a baseline."""
 
+        total = 0
+        remaining = max(1, limit)
+        while remaining:
+            page_size = min(100, remaining)
+            count = await self._scan_event_batch(limit=page_size)
+            total += count
+            remaining -= count
+            if count < page_size:
+                break
+            # Release SQLite's writer between bounded, independently committed pages.
+            await asyncio.sleep(0)
+        return total
+
+    async def _scan_event_batch(self, *, limit: int) -> int:
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
             await session.execute(

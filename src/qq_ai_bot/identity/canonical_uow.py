@@ -99,12 +99,24 @@ class CanonicalIngressUnitOfWork:
         )
         now = _utcnow()
         created = True
+        if message.scope_type is ScopeType.GROUP:
+            if admitted.space_binding_id is None:
+                raise CanonicalIdentityError("unclassified")
+            # Membership probes and route provisioning may perform network I/O
+            # or open their own write transaction. Never hold the append lock.
+            fence = await self._router.evaluate_ingest(
+                space_binding_id=admitted.space_binding_id,
+                event_presence_id=admitted.presence_id,
+            )
+            if fence != "ok":
+                raise CanonicalIdentityError(fence)
         async with self._database.immediate_session() as session:
             trip("before_fence_recheck")
             if message.scope_type is ScopeType.GROUP:
                 if admitted.space_binding_id is None or admitted.presence_id is None:
                     raise CanonicalIdentityError("unclassified")
-                fence = await self._router.evaluate_ingest(
+                fence = await self._router.ingest_status_in_session(
+                    session,
                     space_binding_id=admitted.space_binding_id,
                     event_presence_id=admitted.presence_id,
                 )
