@@ -93,6 +93,7 @@ class WorkSession:
             await self.journal.recovered_inputs(
                 control.lease, self.input_ids, control.current["id"]
             )
+        await control.reconcile_completed_children()
         return self.transcript
 
     def call_key(self, call_id: str) -> str:

@@ -610,6 +610,45 @@ class WorkRepository:
             receipt.state, receipt.reason = "observed", "forwarded_to_parent_work"
             receipt.updated_at = datetime.now(UTC)
 
+    async def completed_children(
+        self, lease: WorkLease, work_id: str, run_ids: list[str]
+    ) -> list[dict[str, Any]]:
+        """Read only terminal host receipts belonging to this fenced parent."""
+        from qq_ai_bot.sandbox.db_models import SandboxTaskRunModel
+
+        if not run_ids:
+            return []
+        async with self.database.sessions() as session:
+            if await session.scalar(select(scope.c.fence).where(self._fence(lease))) is None:
+                raise WorkConflict("work_activation_obsolete")
+            rows = await session.scalars(
+                select(SandboxTaskRunModel).where(
+                    SandboxTaskRunModel.source_conversation_id == lease.conversation_id,
+                    SandboxTaskRunModel.run_id.in_(run_ids[:32]),
+                    SandboxTaskRunModel.completion_json.is_not(None),
+                )
+            )
+            results = []
+            for row in rows:
+                source = json.loads(row.source_json)
+                if source.get("work_id") != work_id or source.get("generation") != lease.generation:
+                    continue
+                value = json.loads(row.completion_json or "{}")
+                if value.get("status") not in {"completed", "succeeded", "failed", "cancelled"}:
+                    continue
+                results.append(
+                    {
+                        "run_id": row.run_id,
+                        "pending": False,
+                        **{
+                            key: value[key]
+                            for key in ("status", "exit_code", "error", "artifact_id", "artifacts")
+                            if key in value
+                        },
+                    }
+                )
+            return results
+
     async def repair_abandoned_inputs(self, process_id: str) -> None:
         from qq_ai_bot.persistence.models import ChatEventModel
 
