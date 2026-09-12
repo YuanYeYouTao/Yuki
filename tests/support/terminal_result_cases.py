@@ -106,3 +106,30 @@ async def check_terminal_result_recovery(database, tmp_path):
                 assert restored["data"]["output"] == output
                 assert restored["mutation_committed"] is (name == "terminal_exec")
         assert calls[-2:] == ["terminal_exec", "terminal_read"]
+
+        from qq_ai_bot.workspace.store import WorkspaceError
+
+        async def import_attachment(name, args, **kwargs):
+            if "event_id" not in args:
+                raise WorkspaceError("attachment_not_found")
+            return {"path": "/workspace/imported.png", "artifact_id": "imported-file"}
+
+        chat._tools.workspace_service = SimpleNamespace(execute=import_attachment)
+        for index, args in enumerate(
+            ({"attachment_index": 0}, {"event_id": 123, "attachment_index": 0})
+        ):
+            call = ToolCall(
+                id=f"import-{index}",
+                function=ToolFunction(
+                    name="workspace_import_attachment", arguments=json.dumps(args)
+                ),
+            )
+            backend.begin_batch((call,), runtime)
+            payload = json.loads(
+                await backend.execute(call.function.name, call.function.arguments, runtime)
+            )
+            assert payload["ok"] is bool(index), payload
+            assert not backend._tools_closed
+            assert backend.finalize("can continue", runtime) == "can continue"
+            if not index:
+                assert "event_id" in payload["public_message"]

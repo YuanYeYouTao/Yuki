@@ -68,7 +68,7 @@ async def sample_video(
                 "-select_streams",
                 "v:0",
                 "-show_entries",
-                "stream=width,height,avg_frame_rate:format=duration",
+                "stream=width,height,avg_frame_rate,duration:format=duration",
                 "-of",
                 "json",
                 str(path),
@@ -81,6 +81,14 @@ async def sample_video(
         width, height = int(streams[0].get("width", 0)), int(streams[0].get("height", 0))
         if min(width, height) <= 0 or max(width, height) > 4096:
             raise VisionProcessingError("video_limit", "视频分辨率超过限制")
+        try:
+            video_duration = float(streams[0].get("duration", duration))
+        except (TypeError, ValueError):
+            video_duration = duration
+        if math.isfinite(video_duration) and video_duration > 0:
+            # Audio can extend past the last video frame. Seeking against the
+            # container duration then succeeds with no image output at EOF.
+            duration = min(duration, video_duration)
         count = min(maximum, max(1, math.ceil(duration / sample_interval_seconds) + 1))
         try:
             frame_rate = float(Fraction(streams[0].get("avg_frame_rate", "0/1")))
@@ -118,7 +126,7 @@ async def sample_video(
                 "-frames:v",
                 "1",
                 "-vf",
-                "scale=768:768:force_original_aspect_ratio=decrease",
+                "scale=768:768:force_original_aspect_ratio=decrease:out_range=full,format=yuvj420p",
                 "-threads",
                 "1",
                 "-q:v",

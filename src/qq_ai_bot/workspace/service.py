@@ -142,7 +142,9 @@ class WorkspaceService:
                     segments = json.loads(event.segments_json)
                 attachments = tuple(
                     MessageAttachment(
-                        kind=AttachmentKind(segment["type"]),
+                        kind=AttachmentKind(
+                            "audio" if segment["type"] == "record" else segment["type"]
+                        ),
                         label=segment["type"],
                         file=segment["data"].get("file"),
                         url=segment["data"].get("url"),
@@ -150,7 +152,7 @@ class WorkspaceService:
                     )
                     for segment in segments
                     if isinstance(segment, dict)
-                    and segment.get("type") in {"image", "video", "file", "audio"}
+                    and segment.get("type") in {"image", "video", "file", "audio", "record"}
                     and isinstance(segment.get("data"), dict)
                 )
             else:

@@ -1033,6 +1033,16 @@ class _ChatAgentBackend(AgentToolBackend):
         if self._is_mutating_call(call):
             if (
                 effective_descriptor.trust_source is CapabilityTrustSource.CORE
+                and name == "workspace_import_attachment"
+                and decoded.get("error_code", decoded.get("error")) == "attachment_not_found"
+            ):
+                # Selection failed before any import/write. Keep history lookup and
+                # a corrected event selection available; never re-run effects here.
+                self._admin_retry_constraint = None
+                self._admin_terminal_failure = None
+                return result
+            if (
+                effective_descriptor.trust_source is CapabilityTrustSource.CORE
                 and effective_descriptor.namespace_id
                 in {"social.send", "social.poke", "social.recall"}
                 and not bool(decoded.get("ok"))

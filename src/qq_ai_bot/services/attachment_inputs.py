@@ -73,10 +73,23 @@ class AttachmentInputService:
                 documents: list[str] = []
                 text_remaining = 20_000
                 size = 0
-                kinds = {AttachmentKind.IMAGE, AttachmentKind.VIDEO, AttachmentKind.FILE}
+                kinds = {
+                    AttachmentKind.IMAGE,
+                    AttachmentKind.VIDEO,
+                    AttachmentKind.FILE,
+                    AttachmentKind.FORWARD,
+                }
                 current = tuple(a for a in message.attachments if a.kind in kinds)
                 replied = tuple(a for a in message.reply_attachments if a.kind in kinds)
-                for attachment in (current or replied)[: runtime.max_images_per_turn]:
+                selected = current or replied
+                if any(a.kind is AttachmentKind.FORWARD for a in selected):
+                    from qq_ai_bot.services.forwarded_inputs import expand_forwarded
+
+                    selected, forward_text = await expand_forwarded(selected, gateway)
+                    if forward_text:
+                        documents.append(forward_text)
+                        text_remaining -= len(forward_text)
+                for attachment in selected[: runtime.max_images_per_turn]:
                     reference = MediaReference(
                         file=attachment.file,
                         url=attachment.url,
@@ -236,7 +249,7 @@ class AttachmentInputService:
                         if size > self._max_bytes:
                             raise VisionProcessingError("too_large", "处理后图片超过本轮预算")
                         images.append(ChatImage(data_url=frame.data_url, source=reference.source))
-                if len(current or replied) > runtime.max_images_per_turn:
+                if len(selected) > runtime.max_images_per_turn:
                     documents.append("[其余附件未读取：超过本轮附件数量上限]")
                 if not images and not documents:
                     raise VisionProcessingError("no_images", "没有可读取图片")

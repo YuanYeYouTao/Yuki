@@ -951,6 +951,7 @@ async def test_native_images_use_full_chat_without_external_vision(
             assert "-protocol_whitelist" in args and "-format_whitelist" in args
             if args[0] == "ffprobe":
                 return b'{"streams":[{"width":32,"height":32}],"format":{"duration":"4"}}'
+            assert "out_range=full,format=yuvj420p" in args[args.index("-vf") + 1]
             Image.new("RGB", (32, 32), "blue").save(Path(args[-1]), format="JPEG")
             return b""
 
@@ -1054,6 +1055,13 @@ async def test_native_images_use_full_chat_without_external_vision(
         assert "不可信资料" in provider.requests[-1].messages[-1].content
         assert all(not path.parent.exists() for path in decoded_paths)
 
+        from tests.support.forwarded_input_cases import check_forwarded_inputs
+
+        snapshot = await harness.processor._runtime_config.snapshot()
+        await check_forwarded_inputs(
+            harness.processor._native_images, message, snapshot.vision, image_data
+        )
+
         import asyncio
 
         from qq_ai_bot.services.video_frames import sample_video
@@ -1070,6 +1078,19 @@ async def test_native_images_use_full_chat_without_external_vision(
         capped = await sample_video(media, source="current", maximum=3, sample_interval_seconds=1)
         assert len(sparse) == 2 and len(dense) == 5 and len(capped) == 3
         assert capped[-1].video_timestamp_seconds == pytest.approx(3.0)
+
+        async def longer_audio_decoder(*args: str) -> bytes:
+            if args[0] == "ffprobe":
+                return (
+                    b'{"streams":[{"width":32,"height":32,"duration":"3"}],'
+                    b'"format":{"duration":"4"}}'
+                )
+            return await decoder(*args)
+
+        monkeypatch.setattr("qq_ai_bot.services.video_frames._run", longer_audio_decoder)
+        video_end = await sample_video(media, source="current", maximum=3)
+        assert video_end[-1].video_timestamp_seconds == pytest.approx(2.0)
+        monkeypatch.setattr("qq_ai_bot.services.video_frames._run", decoder)
         assert all(not path.parent.exists() for path in decoded_paths)
         from qq_ai_bot.services.vision_service import VisionProcessingError
 

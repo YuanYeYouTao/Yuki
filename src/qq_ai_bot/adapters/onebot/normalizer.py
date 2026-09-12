@@ -109,7 +109,7 @@ def _attachment_from_segment(
         label=segment.type,
         segment_index=segment_index,
         source=source,
-        file=_optional_string(data.get("file")),
+        file=_optional_string(data.get("id") if segment.type == "forward" else data.get("file")),
         url=url or _optional_string(data.get("url")),
         summary=summary or _optional_string(data.get("summary")),
         sub_type=_optional_string(data.get("sub_type")),

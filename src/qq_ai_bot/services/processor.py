@@ -966,9 +966,7 @@ class MessageProcessor:
             elif visual.images or visual.attachment_text:
                 content = "[当前消息包含附件，请依据本轮附件读取结果回应；未读取的部分不能猜测]"
             elif has_visual_input and visual.observation is not None:
-                content = (
-                    "[当前消息仅包含图片；后端视觉识别已成功，请根据本轮视觉观察直接回应图片内容]"
-                )
+                content = "[本轮附件内容已读取，请根据提供的附件资料和画面回应；未读取部分不要猜测]"
             elif has_visual_input:
                 text = _vision_failure_message(
                     visual.error_code,
@@ -1138,7 +1136,7 @@ class MessageProcessor:
         runtime: RuntimeConfigSnapshot,
     ) -> VisualTurnState:
         has_video = any(
-            a.kind.value in {"video", "file"}
+            a.kind.value in {"video", "file", "forward"}
             for a in (*message.attachments, *message.reply_attachments)
         )
         if not VisionService.has_visual_input(message) and not (
@@ -1156,13 +1154,16 @@ class MessageProcessor:
                 return VisualTurnState(images=prepared.images, attachment_text=prepared.documents)
             except Exception as exc:
                 logger.warning(
-                    "native_image_prepare_failed exception_category=%s", type(exc).__name__
+                    "native_image_prepare_failed exception_category=%s code=%s",
+                    type(exc).__name__,
+                    getattr(exc, "code", "resource_unavailable"),
                 )
                 code = getattr(exc, "code", "resource_unavailable")
                 allowed = {
                     "too_large",
                     "video_limit",
                     "unsupported_video",
+                    "invalid_video",
                     "video_unavailable",
                     "document_unreadable",
                     "frame_budget",

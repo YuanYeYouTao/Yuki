@@ -93,6 +93,20 @@ class PersistentManager(Manager):
         with self.db:
             self.db.execute("INSERT OR REPLACE INTO environment_state VALUES (?,?)", (key, value))
 
+    def resource_limits(self) -> dict[str, int]:
+        limits = {
+            "memory_mib": int(self.setting("resource_memory_mib", "512")),
+            "cpus": int(self.setting("resource_cpus", "1")),
+            "cpu_shares": int(self.setting("resource_cpu_shares", "1024")),
+        }
+        if not (
+            128 <= limits["memory_mib"] <= 16384
+            and 1 <= limits["cpus"] <= 16
+            and 2 <= limits["cpu_shares"] <= 262144
+        ):
+            raise ValueError("invalid_environment_resource_limits")
+        return limits
+
     @staticmethod
     def available_memory() -> int:
         for line in Path("/proc/meminfo").read_text().splitlines():
@@ -247,6 +261,7 @@ class PersistentManager(Manager):
         current = await self.inspect_container()
         if current is None:
             image = self.setting("checkpoint_image", self.image)
+            limits = self.resource_limits()
             args = [
                 "docker",
                 "create",
@@ -261,11 +276,13 @@ class PersistentManager(Manager):
                 "--user",
                 "10001:10001",
                 "--memory",
-                "512m",
+                f"{limits['memory_mib']}m",
                 "--memory-swap",
-                "640m",
+                f"{limits['memory_mib'] + 128}m",
                 "--cpus",
-                "1",
+                str(limits["cpus"]),
+                "--cpu-shares",
+                str(limits["cpu_shares"]),
                 "--pids-limit",
                 "128",
                 "--restart",
@@ -868,9 +885,8 @@ class PersistentManager(Manager):
             "checkpoint": self.setting("checkpoint_image", self.image),
             "host_available_bytes": self.available_memory(),
             "limits": {
-                "memory_mib": 512,
+                **self.resource_limits(),
                 "swap_mib": 128,
-                "cpus": 1,
                 "pids": 128,
                 "executions": 1,
                 "services": 2,

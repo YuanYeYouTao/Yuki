@@ -1082,7 +1082,14 @@ class AgentToolService:
                         category = (
                             str(exc) if isinstance(exc, WorkspaceError) else type(exc).__name__
                         )
-                        return self._result(error=category, detail="工作区操作未完成")
+                        detail = (
+                            "所选消息没有这个附件。先查询当前会话历史，使用真实 event_id"
+                            " 和从 0 开始的"
+                            " attachment_index 导入；新收到的附件不会自动加入已开始的一轮。"
+                            if category == "attachment_not_found"
+                            else "工作区操作未完成"
+                        )
+                        return self._result(error=category, detail=detail)
 
                 if name in {tool.name for tool in social_tool_definitions()}:
                     from qq_ai_bot.social.agent_adapter import invoke_social
@@ -3220,6 +3227,20 @@ class AgentToolService:
             "group_id": row.group_id,
             "direction": row.direction,
             "content": row.perceived_content,
+            "attachments": [
+                {
+                    "attachment_index": index,
+                    "kind": segment["type"],
+                    "name": str(segment["data"].get("name", ""))[:200],
+                }
+                for index, segment in enumerate(
+                    segment
+                    for segment in json.loads(row.segments_json)
+                    if isinstance(segment, dict)
+                    and segment.get("type") in {"image", "video", "file", "audio", "record"}
+                    and isinstance(segment.get("data"), dict)
+                )
+            ],
             "occurred_at": local_iso(row.occurred_at, self._settings.default_timezone),
         }
 
