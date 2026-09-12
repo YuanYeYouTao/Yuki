@@ -846,3 +846,79 @@ async def test_sync_main_entry_returns_result_without_acquiring_send_authority(
     repeated = await chat._main_turns.run((ChatMessage("user", "write answer"),), runtime, backend)
     assert repeated.text == "computed answer" and repeated.model_requests == 0
     assert len(provider.requests) == count
+
+
+@pytest.mark.asyncio
+async def test_independent_work_queues_without_overwriting_waiting_parent(database, tmp_path):
+    from qq_ai_bot.domain.conversations import ConversationScope
+    from qq_ai_bot.persistence.models import ChatEventModel
+    from qq_ai_bot.runtime.work_activation import activate_work
+
+    env = await social_env(database, tmp_path)
+    repo = WorkRepository(database)
+    lease = await repo.acquire(env.context.conversation_id, 1)
+    async with database.sessions() as session:
+        original_id = (await session.execute(select(ChatEventModel.id))).scalar_one()
+    source = {
+        "origin": "user_message",
+        "actor_user_id": "10001",
+        "trigger_event_id": original_id,
+        "trigger_id": "inbound",
+        "generation": 1,
+        "bot_user_id": "80001",
+        "presence_id": env.presence,
+        "conversation_id": env.context.conversation_id,
+    }
+    original = await repo.accept(lease, source_key="old-work", source=source, goal="draw original")
+    original = await repo.transition(
+        lease, original["id"], original["revision"], "waiting_external"
+    )
+    await env.service.writer.append(
+        scope=ConversationScope.group("80001", "20001"),
+        platform_message_id="independent-work",
+        sender_user_id="10001",
+        direction="inbound",
+        content="meanwhile write an answer",
+    )
+    # Read the actual canonical event regardless of the writer's append wrapper.
+    async with database.sessions() as session:
+        new_id = await session.scalar(
+            select(ChatEventModel.id).where(
+                ChatEventModel.platform_message_id == "independent-work"
+            )
+        )
+    newer_source = {**source, "trigger_event_id": new_id, "trigger_id": "independent-work"}
+
+    async def validate():
+        pass
+
+    control = WorkControl(repo, lease, "new-message", newer_source, validate)
+    control.current = original
+    result = json.loads(
+        await control.execute(
+            "task_control",
+            {
+                "action": "accept",
+                "goal": "write separate answer",
+                "output_kind": "answer",
+            },
+            "queue",
+        )
+    )
+    assert result["ok"] and result["state"] == "queued"
+    assert (await repo.get(original["id"]))["goal"] == "draw original"
+    assert (await repo.get(original["id"]))["state"] == "waiting_external"
+    queued = await repo.get(result["queued_work_id"])
+    assert queued["model_requests"] == 0 and queued["goal"] == "write separate answer"
+    await repo.release(lease)
+    async with activate_work(
+        repo,
+        lease.conversation_id,
+        1,
+        queued["source_key"],
+        json.loads(queued["source_json"]),
+        validate,
+        work_id=queued["id"],
+    ) as resumed:
+        assert resumed.current["id"] == queued["id"]
+        assert (await repo.get(original["id"]))["state"] == "waiting_external"

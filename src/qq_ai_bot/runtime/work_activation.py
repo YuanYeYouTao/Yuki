@@ -27,6 +27,8 @@ async def activate_work(
     validate: Callable[[], Awaitable[None]],
     deliver: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None,
     resolve_child: Callable[[str], Awaitable[dict[str, Any] | None]] | None = None,
+    *,
+    work_id: str | None = None,
 ) -> AsyncIterator[WorkControl]:
     lease = await repository.acquire(conversation_id, generation)
     if lease is None:
@@ -47,6 +49,8 @@ async def activate_work(
         # Authority is reconstructed by the caller, not copied out of a prior work.
         # A different actor cannot silently take over the original actor's goal.
         for candidate in await repository.active(conversation_id, generation):
+            if work_id is not None and candidate["id"] != work_id:
+                continue
             previous = json.loads(candidate["source_json"])
             if all(
                 previous.get(key) == source.get(key)

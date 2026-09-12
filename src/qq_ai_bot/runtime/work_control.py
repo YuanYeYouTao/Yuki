@@ -31,7 +31,8 @@ def work_control_tools() -> tuple[ChatTool, ...]:
             description=(
                 "管理当前持续工作。明确工作请求先 accept 登记目标，再执行；"
                 "普通聊天用 answer 和 text 直接回复，不建立长期工作。"
-                "update 更新当前目标；wait 必须有真实待完成 run_id；"
+                "新输入另提独立工作时再次 accept 排队，不能用 update 覆盖旧目标；"
+                "update 仅修正当前目标；wait 必须有真实待完成 run_id；"
                 "need_input 必须说明缺失信息；complete 仅提出结束，后端核对交付后提交。"
                 "不能把口头承诺当作开始或完成，不能在同批混合此工具与其他副作用。"
             ),
@@ -299,7 +300,7 @@ class WorkControl:
             return {"chat_answer_prepared": True}
         if action == "accept":
             if self.current is not None:
-                raise ValueError("work_already_active_use_update")
+                return await self._queue_work(args)
             goal = args.get("goal")
             if not isinstance(goal, str) or not goal.strip():
                 raise ValueError("work_goal_required")
@@ -403,6 +404,66 @@ class WorkControl:
             "state": self.current["state"],
             "revision": self.current["revision"],
             "ending_proposed": self.ending,
+        }
+
+    async def _queue_work(self, args: dict[str, Any]) -> dict[str, Any]:
+        from sqlalchemy import select
+
+        from qq_ai_bot.persistence.models import ChatEventModel
+
+        assert self.current is not None
+        if self.source.get("origin") != "user_message":
+            raise ValueError("independent_work_requires_new_user_input")
+        anchors = [self.source.get("trigger_event_id")]
+        if self.session is not None:
+            anchors.extend(self.session.event_ids)
+        event_id = max((value for value in anchors if isinstance(value, int)), default=0)
+        original = json.loads(self.current["source_json"])
+        if not event_id or event_id == original.get("trigger_event_id"):
+            raise ValueError("work_already_active_use_update")
+        async with self.repository.database.sessions() as session:
+            event = await session.scalar(
+                select(ChatEventModel).where(
+                    ChatEventModel.id == event_id,
+                    ChatEventModel.canonical_conversation_id == self.lease.conversation_id,
+                    ChatEventModel.direction == "inbound",
+                    ChatEventModel.event_kind == "message",
+                    ChatEventModel.sender_user_id == self.source.get("actor_user_id"),
+                )
+            )
+        if event is None:
+            raise ValueError("independent_work_source_invalid")
+        goal, kind = args.get("goal"), args.get("output_kind")
+        if (
+            not isinstance(goal, str)
+            or not goal.strip()
+            or not isinstance(kind, str)
+            or kind not in {"answer", "artifact", "state_change"}
+        ):
+            raise ValueError("work_goal_and_output_kind_required")
+        source = {
+            **self.source,
+            "trigger_event_id": event.id,
+            "trigger_id": event.platform_message_id,
+            "presence_id": event.ingress_presence_id,
+        }
+        queued = await self.repository.accept(
+            self.lease,
+            source_key=f"message:{self.lease.conversation_id}:{event.platform_message_id}",
+            source=source,
+            goal=goal,
+            output_kind=kind,
+            deliver_artifacts=args.get("deliver_artifacts") is not False,
+        )
+        if queued["state"] == "running":
+            queued = await self.repository.transition(
+                self.lease, queued["id"], queued["revision"], "queued"
+            )
+        return {
+            "queued_work_id": queued["id"],
+            "state": queued["state"],
+            "current_work_id": self.current["id"],
+            "instruction": "新工作已排队。当前目标不变；当前后台执行未结束时用 wait 让出执行位置。",
         }
 
     async def _progress(self, args: dict[str, Any], call_key: str) -> dict[str, Any]:

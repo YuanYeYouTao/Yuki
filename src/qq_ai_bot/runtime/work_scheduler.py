@@ -231,6 +231,7 @@ class WorkScheduler:
                 validate,
                 deliver,
                 child,
+                work_id=item["id"],
             ) as control:
                 if control.current is None or control.current["id"] != item["id"]:
                     raise WorkConflict("work_schedule_target_changed")
