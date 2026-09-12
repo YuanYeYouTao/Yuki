@@ -68,6 +68,7 @@ from qq_ai_bot.runtime.observability import (
     new_runtime_turn_id,
     record_observation_safely,
 )
+from qq_ai_bot.runtime.work_repository import WorkConflict
 from qq_ai_bot.services.admin.config_admin import ConfigAdminService
 from qq_ai_bot.services.admin.group_admin import GroupAdminService
 from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
@@ -861,7 +862,7 @@ class MessageProcessor:
                     started,
                     turn_snapshot,
                 )
-            except (TurnInterruptedError, TurnSupersededError):
+            except (TurnInterruptedError, TurnSupersededError, WorkConflict):
                 return ProcessResult(True, reason="turn_interrupted")
 
         if decision.command is not None:
@@ -885,7 +886,7 @@ class MessageProcessor:
                     started,
                     turn_snapshot,
                 )
-            except (TurnInterruptedError, TurnSupersededError):
+            except (TurnInterruptedError, TurnSupersededError, WorkConflict):
                 return ProcessResult(True, reason="turn_interrupted")
 
         audio = AudioInput()
@@ -914,7 +915,7 @@ class MessageProcessor:
                         if not stored:
                             return ProcessResult(True, reason="turn_interrupted")
                         record = await self._ledger.get_event(record.id) or record
-            except (TurnInterruptedError, TurnSupersededError):
+            except (TurnInterruptedError, TurnSupersededError, WorkConflict):
                 return ProcessResult(True, reason="turn_interrupted")
             if (
                 audio.error
@@ -1059,7 +1060,7 @@ class MessageProcessor:
                 turn_token=turn_token,
                 turn_snapshot=turn_snapshot,
             )
-        except (TurnInterruptedError, TurnSupersededError):
+        except (TurnInterruptedError, TurnSupersededError, WorkConflict):
             result = ProcessResult(True, reason="turn_interrupted")
         except RequestCancelledError:
             result = ProcessResult(True, reason="cancelled")

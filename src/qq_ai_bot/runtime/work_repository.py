@@ -63,7 +63,16 @@ class WorkRepository:
         if not 1 <= seconds <= 300:
             raise ValueError("invalid_work_lease_duration")
         now, owner = time.time(), str(uuid4())
-        async with self.database.sessions() as session, session.begin():
+        from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+
+        async with self.database.immediate_session() as session:
+            actual_generation = await session.scalar(
+                select(CanonicalConversationModel.generation).where(
+                    CanonicalConversationModel.id == conversation_id
+                )
+            )
+            if actual_generation != generation:
+                return None
             await session.execute(
                 insert(scope)
                 .values(
@@ -159,6 +168,16 @@ class WorkRepository:
                 )
                 if int(count or 0) >= 128:
                     raise WorkCapacityError("active_work_capacity")
+                scope_count = await session.scalar(
+                    select(func.count())
+                    .select_from(work)
+                    .where(
+                        work.c.state.not_in(TERMINAL),
+                        work.c.conversation_id == lease.conversation_id,
+                    )
+                )
+                if int(scope_count or 0) >= 16:
+                    raise WorkCapacityError("conversation_work_capacity")
             await session.execute(
                 insert(work)
                 .values(

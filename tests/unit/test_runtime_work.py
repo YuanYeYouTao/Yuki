@@ -85,6 +85,15 @@ async def test_expired_owner_cannot_release_or_mutate_replacement(database, tmp_
         await repository.transition(new, item["id"], done["revision"], "running")
     await repository.cancel(key, generation=2)
     assert await repository.acquire(key, 1) is None
+    assert await repository.acquire(key, 2) is None  # Canonical generation is authoritative.
+    from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+
+    async with database.sessions() as session, session.begin():
+        await session.execute(
+            update(CanonicalConversationModel)
+            .where(CanonicalConversationModel.id == key)
+            .values(generation=2)
+        )
     assert await repository.acquire(key, 2)
 
 
@@ -746,6 +755,22 @@ async def test_new_epoch_retains_execution_evidence_and_budget(database, tmp_pat
     assert control.known_effects[0]["run_id"] == "original"
     assert "original" in restored.request().messages[-1].content
     assert "恢复" in restored.request().messages[-1].content
+    # A steering message arriving at final delivery must resume, not repeatedly
+    # restore the suppressed-delivery marker and leave its input pending forever.
+    control.ending = "completed"
+    await second.save("delivery")
+    identity = await repo.enqueue(
+        lease.conversation_id,
+        lease.generation,
+        "late-steering",
+        kind="message",
+        work_id=control.current["id"],
+    )
+    await repo.prepare_input(identity, {"text": "change background"})
+    third = WorkSession(control, "new-contract")
+    await third.restore(TurnTranscript(()))
+    assert third.recovered_delivery is None
+    assert await control.pending()
 
 
 @pytest.mark.asyncio

@@ -67,6 +67,7 @@ class WorkSession:
             if (
                 row["phase"] in {"delivery", "delivered"}
                 and control.source.get("trigger_event_id") in self.event_ids
+                and not await control.pending()
             ):
                 self.recovered_delivery = row["phase"]
                 control.ending = (
