@@ -132,7 +132,35 @@ async def test_progress_continues_work_and_finish_waits_for_delivery(database, t
     assert persisted["state"] == "running"
     assert json.loads(persisted["checkpoint_json"])["transcript_ref"] == "preserved"
     assert not json.loads(await control.execute("task_control", {"action": "complete"}, "c2"))["ok"]
-    control.known_effects.append({"ok": True, "artifact_id": "verified-output"})
+    control.observe_result(
+        "terminal_exec",
+        json.dumps(
+            {
+                "ok": True,
+                "data": {
+                    "run_id": "verified-run",
+                    "pending": True,
+                },
+            }
+        ),
+        True,
+    )
+    control.observe_result(
+        "get_code_run",
+        json.dumps(
+            {
+                "ok": True,
+                "data": {
+                    "run_id": "verified-run",
+                    "pending": False,
+                    "exit_code": 0,
+                },
+            }
+        ),
+        True,
+        side_effecting=False,
+    )
+    assert control.known_effects[-1]["side_effecting"] is True
     assert json.loads(await control.execute("task_control", {"action": "complete"}, "c3"))["ok"]
     assert (await repository.get(identity))["state"] == "running"
     await control.settle(delivered=True, pending_inputs=True)
@@ -740,7 +768,7 @@ async def test_new_epoch_retains_execution_evidence_and_budget(database, tmp_pat
     async def validate():
         assert await repo.valid(lease)
 
-    control = WorkControl(repo, lease, "epoch", {}, validate)
+    control = WorkControl(repo, lease, "epoch", {"trigger_event_id": 123}, validate)
     control.current = await repo.accept(lease, source_key="epoch", source={}, goal="draw")
     await repo.checkpoint(lease, control.current["id"], None, models=3, tools=2, active_seconds=61)
     first = WorkSession(control, "old-contract")

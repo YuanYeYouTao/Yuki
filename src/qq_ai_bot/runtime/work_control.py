@@ -265,6 +265,12 @@ class WorkControl:
             or body.get("status") in {"uncertain", "unknown"},
         }
         if identity:
+            prior = [item for item in self.known_effects if item.get("run_id") == identity]
+            # A read receipt resolves the same execution; it does not erase
+            # the fact that the parent actually started a mutating job.
+            entry["side_effecting"] = side_effecting or any(
+                item.get("side_effecting", False) for item in prior
+            )
             self.known_effects[:] = [
                 item for item in self.known_effects if item.get("run_id") != identity
             ]
