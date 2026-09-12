@@ -70,7 +70,9 @@ class SubagentScheduler:
                 for t in await self.app.main_agent_contract.definitions()
                 if t.name in WORKER_NAMES
             )
-            if frozenset(t.name for t in self.definitions) != WORKER_NAMES:
+            if self.app.database.subagents_enabled and (
+                frozenset(t.name for t in self.definitions) != WORKER_NAMES
+            ):
                 raise ValueError("incomplete_worker_tool_manifest")
             self.task = asyncio.create_task(self.loop(), name="subagent-scheduler")
 

@@ -74,6 +74,23 @@ async def test_worker_independent_lease_messages_and_dormant_resume(database, tm
     assert len(mail) == 1 and "Use blue" in mail[0]["payload_json"]
     await repo.release(resumed)
     await repo.release(parent_lease)
+    # Feature-off installations need not configure every worker dependency.
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from qq_ai_bot.runtime.subagent_scheduler import SubagentScheduler
+
+    database.subagents_enabled = False
+    scheduler = SubagentScheduler(
+        SimpleNamespace(
+            database=database,
+            settings=SimpleNamespace(runtime_work_enabled=True, global_llm_concurrency=4),
+            main_agent_contract=SimpleNamespace(definitions=AsyncMock(return_value=())),
+        )
+    )
+    await scheduler.start()
+    assert (await scheduler.health())["running"]
+    await scheduler.close()
 
 
 @pytest.mark.asyncio
