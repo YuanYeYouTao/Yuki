@@ -4,175 +4,78 @@
 
 <h1>Yuki-QQbot</h1>
 
-<p>面向个人部署、以长期关系和长期记忆为核心的 QQ AI Agent</p>
+<p>有长期记忆、能使用工具与持久工作环境的 QQ AI Agent</p>
 
 <p>
-  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.2"><img src="https://img.shields.io/badge/Release-3.8.2-blue" alt="Yuki 3.8.2 release"></a>
-  <img src="https://img.shields.io/badge/Schema-0055-blue" alt="Alembic head 0055">
-  <img src="https://img.shields.io/badge/Plugin%20API-2.0-8A2BE2" alt="Plugin API 2.0">
+  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.2"><img src="https://img.shields.io/badge/Release-3.8.2-blue" alt="Yuki 3.8.2"></a>
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
   <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/actions/workflows/quality.yml"><img src="https://github.com/YuanYeYouTao/Yuki-QQbot/actions/workflows/quality.yml/badge.svg" alt="Quality"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow" alt="MIT License"></a>
 </p>
 
+[下载 3.8.2](https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.2) · [本版更新](docs/releases/v3.8.2.md) · [启动与升级](docs/upgrade-3.8.2.md) · [使用帮助](docs/help.md)
+
 </div>
 
-Yuki 不是给 QQ 套一层模型回复的问答机器人。它把 Conversation、Memory、Relationship、
-Automation、Plugin 与 QQ 登录账号和 Gateway 连接分开，让同一个长期角色能够换账号、换
-Provider，并在权限边界内持续记住人与共同经历。
+Yuki 可以在 QQ 私聊和群聊中交流，记住人与共同经历，读取图片、语音和文件，并通过工具搜索资料、发送消息、执行代码和处理后台任务。人格、记忆和关系保存在自己的数据库中，切换 QQ 账号或网关时可以继续沿用。
 
-当前版本为 **3.8.2**，包含统一主 Agent、语音转写、持久化工作环境与记忆可靠性修复。3.8 只运行
-canonical schema，Alembic head 为 `0055`。
+**3.8.2** 带来了持久工作环境、接收语音识别、统一的主 Agent 入口，以及成员提及、跨会话消息和任务恢复方面的修复。工作环境需要单独部署；WebUI 尚未提供。
 
-## 3.8 核心合同
+## Yuki 能做什么
 
-| 领域 | 现行合同 |
+| 能力 | 使用方式 |
 | --- | --- |
-| 永久 Yuki | 一个数据库对应一个永久 Yuki；人格、SELF、记忆、关系和设置不属于 QQ 或 Gateway |
-| 人物与空间 | Person 可有多个 IdentityBinding；Space 可有多个 SpaceBinding |
-| Yuki 账号 | Presence 只表示 Yuki 的平台账号，不是 Person |
-| Conversation | 私聊按 Person，群聊按 Space；换账号或 Provider 不重置会话 |
-| QQ Provider | NapCat 与 SnowLuma 同为正式 OneBot v11 Provider |
-| 连接冲突 | 不同 QQ 可并存；同一 QQ 的第二条活动连接被拒绝 |
-| 路由 | Person 主动路由、Space ingest 路由、Space 主动路由相互独立 |
-| Memory | SELF、PERSON、GROUP、PERSON_GROUP 按 canonical owner 隔离 |
-| Plugin | Plugin API 2.0；旧 conversation key 固定映射到 primary alias |
-| 管理能力 | transport-neutral Control Plane 是未来 WebUI 的唯一业务后端边界 |
+| 长期聊天与记忆 | 在群聊、私聊中持续交流，查询旧事，明确要求记住、纠正或删除事实 |
+| 图片、语音和附件 | 发送或引用图片、语音、视频、文档，让 Yuki 查看、转写或整理 |
+| QQ 社交操作 | 查询成员、结构化 @、发送群消息或私聊、撤回自己的消息；目标与权限由后端校验 |
+| 搜索与扩展 | 使用配置好的联网工具、MCP 服务和插件处理外部信息 |
+| 持久工作环境 | 保存项目与文件，运行 Python、Node.js 或 Shell，安装依赖并交付结果 |
+| 后台任务与自动化 | 启动作业后继续聊天，随后查询进度；按已授予的权限执行定时任务和续跑 |
+| 语音与表情 | 可选 Genie-TTS 语音发送，以及表情包检索、分类和发送 |
 
-完整结构见 [Yuki 3.8 canonical runtime](docs/architecture/canonical-runtime.md)。
+这些能力取决于部署配置、模型能力和授权范围。任务被接纳、执行完成和消息发送分别有状态记录；调用工具不等于结果已经交付。
 
-### 社交工具与持久工作环境
+## 持久工作环境
 
-所有 Main Agent 入口使用相同完整工具声明，支持 QQ 社交、工作区文件、终端、软件包及服务管理。
-工作区全会话共享并持久保存，与终端实时共用；文件可发布为不可变 artifact 后发送。
-Linux 环境预装 Python、Node.js 和编译工具，pip/npm 依赖长期保留，apt 安装后保存检查点。
-后台任务和已登记服务有独立回执与恢复机制，发送和自动化仍遵循原有委托边界。
-环境依赖宿主 Manager 与 gVisor，未安装时返回不可用，不在 Bot 进程内执行代码。
-详见 [持久环境部署与恢复](docs/operations/persistent-environment.zh-CN.md)
-和 [English operations guide](docs/operations/persistent-environment.md)。
+启用后，Yuki 拥有全会话共用的 Linux 工作目录，可以保存下载文件、Git 项目、脚本与依赖。文件工具和终端操作同一份文件，普通工作文件不再按 24 小时过期。
 
-### 接收语音识别
+- 预装 Bash、Python、Node.js、Git 和基础编译工具，支持 pip、npm，以及由 Manager 管理的 apt 安装和环境检查点。
+- 终端支持交互输入、增量输出、取消和后台执行。可以先启动一个任务，继续处理消息，再回来看结果。
+- Bot 或 Manager 重启时，环境进程可以继续运行；环境本身重启后，普通任务标记中断，已登记服务按策略恢复。
+- 选定文件发布为不可变快照后，通过 QQ 发送链路交付；旧 `artifact_id` 保持兼容。
 
-私聊语音、触发回复的群聊语音和引用语音会自动经 Qwen ASR 转写，再进入同一个 Main Agent。
-默认复用现有千问连接；无需安装本地识别模型，也不依赖 Genie-TTS。转写保存在消息历史中，
-供后续聊天、历史搜索和 Rollup 使用；被引用语音不作为当前发言者的记忆证据。
-配置与限制见 [语音识别](docs/speech/recognition.md)。
+默认家目录容量 2 GiB，容器内存上限 512 MiB，最多一个主要执行任务、四个终端会话和两个内部服务。环境没有浏览器或桌面，也不挂载 Bot 数据库、QQ 凭据或宿主 Docker 控制接口。
 
-### 记忆读取与自动保存
+这是一项**单独部署的可选能力**，需要 Linux 宿主、gVisor 和 Yuki Manager；普通 Bot 部署包不会自动安装。配置、资源限制与恢复方式见[持久环境说明](docs/operations/persistent-environment.zh-CN.md)（[English](docs/operations/persistent-environment.md)）。
 
-可以自然地询问本人或历史共同群友的记忆、指定旧群名查询群整体或某人在群里的记忆；
-同名时 Yuki 会要求澄清。权限取决于后端历史成员关系，不取决于当前登录的 Yuki 账号或旧群
-是否启用。**共同群关系可开放人物完整 Person 结构化事实（含私聊来源）**，但不开放原始
-私聊、他人 evidence/private SELF，也不改变写入权限。
+## 记忆与跨会话连续性
 
-普通自动提取最长等待一小时聚合，优先保存稳定事实、持续偏好和有意义的单次经历；
-没有值得保存的内容时空提取是正常结果。明确的记住、纠正和删除仍立即处理。
-详见唯一现行 [Memory 合同](docs/architecture/memory-v2.md)。
+长期记忆用于保存稳定事实、偏好和有意义的经历；普通自动提取会聚合消息，明确要求记住、纠正和删除时则即时处理。长会话通过 Rollup 压缩历史，原始历史仍有独立查询入口。
 
-### 原生看图与联网
+`short_state` 是全局共用、有界且会过期的短期记录区，用于暂存跨会话信息；它与长期记忆、持久文件分开。群聊和私聊不会自动拼成同一份完整聊天历史。
 
-DeepSeek V4.1 使用正式模型名 `deepseek-flash`。主模型 profile 声明 `image_input` 后，
-当前/引用图片经安全下载、限量抽帧直接进入完整 Main Agent，不再先调用 Qwen 描述图片。
-图片仅在本轮工具循环中保留，不把 Base64 写进历史；后续重新查看可引用原图片。
-视频查看（Issue #21）使用本地 FFmpeg 对真实消息/引用中的 MP4/MOV 视频抽帧，
-同时支持 QQ `video` 消息和以普通 `file` 附件发送的视频：
-默认最长 600 秒，按 5 秒期望间隔自适应取帧，最多 16 帧；达到帧数预算后均匀覆盖首尾。
-分别通过 `VISION_VIDEO_MAX_DURATION_SECONDS`、`VISION_VIDEO_SAMPLE_INTERVAL_SECONDS`、
-`VISION_VIDEO_MAX_FRAMES` 调整，也可通过对应 `vision.video_*` 运行时配置修改。
-视频仍与图片共享处理后帧数/字节预算，分辨率最长边 4096。
-视频下载独立使用 `VISION_VIDEO_MAX_DOWNLOAD_BYTES`，默认 200 MiB；普通图片继续使用
-`VISION_MAX_DOWNLOAD_BYTES`，默认 20 MiB。提高下载上限不提高模型输入帧数或压缩后预算。
-HTTP 视频流式写入受控临时文件，不将整个大视频缓存在内存；下载和抽帧期间继续受并发与超时限制。
-临时视频及 JPEG 在抽帧结束后立即删除（包括异常、超时与取消），不建立视频文件缓存；
-本轮模型循环结束后释放帧引用，不将帧 Base64 存入历史。进程强杀/主机故障无法执行清理，
-因此临时文件属于容器临时目录，不放入持久化数据目录。
-采样帧附带时间位置进入同一个 Main Agent，不使用额外看图模型；不分析音轨，
-不能保证看到所有瞬间。不支持视频网页链接解析、网关本地路径或仅有文件 ID 的视频。
-Docker 已包含 FFmpeg；源码运行需将 `ffmpeg`、`ffprobe` 加入 PATH。
+记忆读取仍有具体边界：历史共同群关系可以开放人物结构化事实，**其中可能包含私聊来源的事实**，但不开放他人的原始私聊或私有证据。部署前请阅读 [Memory 的范围与权限](docs/architecture/memory-v2.md)。模型提取和回忆可能出错，重要信息应核对来源。
 
-### 文件附件读取
+## 图片、语音、文件与联网
 
-发送或引用附件后可以直接要求 Yuki 查看，不需要另起文件问答 Agent。
-文件名只辅助选择预算；图片/视频、PDF、DOCX、XLSX 会检查实际内容格式。
-文本、Markdown、代码、CSV/TSV、JSON/YAML 等读取限量文本；源码只作为文本，不执行。
-PDF 提取文字（不含扫描页 OCR 和嵌入图片）；DOCX 提取段落/表格文字；XLSX 按工作簿顺序
-读取单元格原始值及已有公式缓存，不计算公式，不还原图表、样式或日期显示格式。
+- **图片与视频**：支持图片输入的模型可直接查看当前或引用图片。MP4/MOV 视频通过 FFmpeg 抽帧进入同一个主 Agent，不分析音轨，也不保证覆盖所有瞬间。
+- **接收语音**：私聊、符合回复策略的群聊及引用语音经 Qwen ASR 转写，进入聊天历史、搜索和 Rollup。可复用千问连接，与 Genie-TTS 语音发送独立配置。见[语音识别说明](docs/speech/recognition.md)。
+- **文件阅读**：支持文本、代码、CSV/JSON、PDF 文字、DOCX 和 XLSX 的有界提取。扫描 PDF 不做 OCR，表格公式不重算，宏和附件中的代码不会因阅读而执行。后续重新查看时可引用原附件。
+- **联网**：可配置 Provider 原生搜索或 Tavily。当前项目的 DeepSeek Responses 接入使用 Tavily 提供搜索，需要 `WEB_MODE=tavily` 和 `TAVILY_API_KEY`；`both` 保留两种工具，`disabled` 禁止联网。
 
-- 普通文件最多 20 MiB，已标记为 MP4/MOV 的视频使用独立 200 MiB 预算；改扩展名不会放宽非视频预算。
-- 每轮文档正文最多 20,000 字符；每份 PDF/工作簿最多 20 页/工作表，结果明确标记截断和读取范围。
-- 文件与图片共享本轮附件数量上限；默认最多 5 个，超出的附件会标为未读取。
-- 文档解析单进程串行、有超时；Linux 解析进程另设 384 MiB 地址空间和 CPU 时间限制。
-- 不执行宏、脚本、公式，不跟随文档内外链，不解压到用户路径，不读取任意本机路径；
-  加密、未知格式或损坏附件明确返回失败。普通 ZIP、旧二进制 DOC/XLS 暂不支持。
-- 提取内容仅放进当前完整 Main Agent 的请求尾部，标为不可信资料，不写入历史正文；
-  原附件引用仍保留。后续需要重新查看时请引用附件。临时下载/解码文件用完即删。
-
-### 表情包与搜索
-
-表情包入库分类、OCR/标签与去重仍走独立后台视觉任务，保留现有可配置 VisionProvider。
-`VISION_ENABLED` 控制该外接服务，不是原生看图的开关；无图片能力的 profile 不会被强行喂图。
-
-新版 DeepSeek Responses 忽略内置 `web_search`；使用 Tavily 可配置 `WEB_MODE=tavily`
-与 `TAVILY_API_KEY`。
-`web_search` 已在默认首轮常驻工具名单中。`both` 保留 Tavily
-函数工具，不再因原生工具可用而移除它；Agent 可直接选择 Tavily，无须先等待原生失败。
-`native` 仍表示仅原生，`disabled` 仍禁止联网；显式自定义工具名单保持有效。
-部署级工具结构不随消息关键词或域名切换。联网路由器及自动换后端重跑已删除；
-旧配置值 `native_with_tavily_fallback` 仅映射为 `both`。普通模型错误恢复和调用预算仍保留，
-不会因缺来源另起 Agent 循环。不能把“未报错”视为原生搜索成功。DeepSeek Responses 当前无原生搜索，Anthropic
-入口已独立实测可用，但本项目尚未接入该协议。
-
-## 消息主路径
-
-```text
-QQ event
-   |
-   v
-NapCat or SnowLuma provider-aware OneBot adapter
-   |
-   v
-Presence / Person / Space / canonical Conversation resolution
-   |
-   v
-ingest fence -> transport receipt -> immutable event ledger
-   |
-   v
-Conversation runtime + Rollup + Memory retrieval
-   |
-   v
-Capability-filtered Agent tools
-   |
-   v
-reply through ingress connection or deterministic active route
-```
-
-事件账本保留真实 OneBot provenance。模型不能直接访问数据库、token、Cookie、任意 OneBot
-action 或宿主机；工具调用由后端进行权限、预算、幂等和审计检查。
-
-## 功能
-
-- 私聊、群聊、回复与保序 mention 投影，多轮 Conversation 和 History Rollup。
-- Memory V2：证据、事实、混合召回、冲突、版本链、生命周期、Dream 与受控变更。
-- 按永久 Person 保存的好感度、信任度和偏好。
-- 有界 Agent 工具循环、联网搜索、MCP、自动化与 Plugin API 2.0。
-- 插件外部事件使用独立账本类型与有界不可信 digest，不进入普通历史，也不会把稳定前缀改写成
-  动态 system 消息。
-- 插件主动事件只负责唤醒正常 Main Agent：复用同一 Conversation snapshot、Rollup、历史、
-  Memory、工具 schema 和模型 profile；事件提醒只作为不落账的当前 user 尾部，主动回复通过
-  `caused_by_event_id` 保存因果。
-- 可选图片理解、表情资产管理和本地 Genie-TTS 语音。
-- NapCat/SnowLuma 多 Provider、多 Presence、确定性路由与连接健康投影。
-- transport-neutral Control Plane；3.8 本身不开放管理 HTTP API，也不包含 WebUI。
+聊天、插件唤醒、自动化和任务续跑使用统一主 Agent 与完整工具声明。工具结构在部署内保持固定，执行时再检查权限与预算；这减少请求前缀变化，但不保证 Provider 的缓存命中率。
 
 ## 配置与启动
 
-要求：
+基础部署需要：
 
-- Linux amd64，或在 Windows 上运行 Linux Containers 的 Docker Desktop
-- Docker Engine 与 Docker Compose v2
-- 一个可用的 OpenAI-compatible 模型配置
-- 至少一个 NapCat 或 SnowLuma QQ 登录账号
+- Linux amd64，或运行 Linux 容器的 Windows Docker Desktop；
+- Docker Engine 和 Docker Compose v2；
+- 可用的模型服务配置，支持项目接入的 Chat Completions 或 Responses 协议；
+- 至少一个 NapCat 或 SnowLuma QQ 网关及登录账号。
+
+从 [3.8.2 Release](https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.2) 下载部署包，解压后可以手动填写 `.env` 和模型配置，也可以使用配置向导。
 
 Linux：
 
@@ -189,92 +92,40 @@ Invoke-WebRequest -Uri https://github.com/YuanYeYouTao/Yuki-QQbot/releases/downl
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-`install.sh` / `install.ps1` 现在只负责：空目录下载并校验部署包，然后运行配置向导。
-已有部署仅进入配置向导，保留 Compose、插件、数据库和登录目录；向导确认后备份并写入配置。
-它不会停服、执行数据库升级、替换部署文件或自动切换 QQ 网关。密钥输入不回显，也不会在线试用 Key。
+**向导只负责配置。** 在空目录中下载并校验部署包，在已有部署中保留 Compose、插件和数据；确认后备份并写入配置。它不会停服、迁移数据库、启动服务或切换网关。
 
-配置完成后，按 [3.8.2 升级与首次启动指南](docs/upgrade-3.8.2.md) 手动启动。
-也可以直接下载部署压缩包、编辑 `.env` 和模型配置，无需使用向导。
-持久沙箱是独立宿主组件，见 [持久环境部署说明](docs/operations/persistent-environment.zh-CN.md)。
+首次部署在配置完成后，进入部署目录执行：
 
-不要提交 `.env`、`data/`、Gateway 登录目录或 SnowLuma/NapCat Cookie。
-
-## NapCat 与 SnowLuma
-
-两者处于同一 Provider 层：
-
-- NapCat QQ A 与 SnowLuma QQ B 可以同时在线。
-- 同一 QQ 无论同 Provider 还是跨 Provider，只允许一条活动连接。重复连接拒绝新的，保留旧的。
-- 切换同一 QQ 必须先停止旧 Provider并确认连接注销，再启动新 Provider。
-- 切换只改变 GatewayConnection 和 ConnectionGeneration；Presence、Conversation、Memory 和
-  RouteGeneration 保持不变。
-
-安装向导通过 Compose profiles 管理 `napcat`、`snowluma` 和可选 `speech`。SnowLuma noVNC
-和 WebUI 默认只绑定 `127.0.0.1`。只有明确需要远程访问时才将
-`SNOWLUMA_NOVNC_BIND_ADDRESS` 或 `SNOWLUMA_WEBUI_BIND_ADDRESS` 设为 `0.0.0.0`；此时必须配置
-强密码、主机防火墙和可信来源限制，不能暴露 OneBot HTTP/WS 或 VNC 原始端口。
-
-首次登录、持久目录和故障恢复见
-[SnowLuma Provider 部署与切换](docs/deployment/snowluma.md)。Yuki 不宣称任何 Provider 或切换
-方式能够降低腾讯账号风控风险。
-
-## 数据库与升级
-
-3.8 的数据库合同：
-
-- fresh install：无父 revision 的 `0048` canonical baseline，随后逐步升级到 `0055`。
-- historical bridge：只接受已完成 canonical v2 的旧 `0048` 数据库。
-- pre-3.8、v1、dual-write、backfill/cutover 中间态数据库不受支持，启动时失败关闭。
-- `0049` 仍是不提供 downgrade 的 canonical bridge；`0050` 增加主动回复因果列和索引，`0051`
-  只增加 Memory recall 评估与主动读取结果的无正文观测列。
-  `0052` 增加社交操作回执，`0053` 增加工作任务记录，`0054` 增加提示词投影，`0055` 增加语音转写历史。
-  数据库回退需要匹配版本的同一时点 DB/WAL/SHM 快照；必须先保全升级后的新增数据。
-
-升级前停止 Bot；使用持久化环境时同时停止 Manager 写入，并把以下文件作为一组保存：
-
-- `data/qq_ai_bot.db`
-- `data/qq_ai_bot.db-wal`
-- `data/qq_ai_bot.db-shm`
-- `.env`、`config/`、Compose 文件与镜像 digest
-- `plugins/github-monitor/` 与 `data/plugin_artifacts/`；Bot 镜像不包含 Compose 挂载的插件代码
-
-持久化环境还需保存家目录、任务回执与 Manager 配置。完整步骤见 [Yuki 3.8.2 升级指南](docs/upgrade-3.8.2.md)。不满足桥接前提时，新建 3.8 部署，
-不要让 3.8 自动猜测或修复旧身份数据。
-
-## 未来 WebUI
-
-未来 WebUI 必须只调用 `ControlPlaneBundle` 的 Query/Command 服务：
-
-```text
-WebUI/HTTP -> authentication adapter -> ControlPrincipal/DecisionContext
-           -> ControlPlaneBundle -> repositories/runtime registries
+```bash
+docker compose config --quiet
+docker compose pull
+docker compose run --rm --no-deps --entrypoint qq-ai-bot-cli bot init-db
+docker compose up -d
 ```
 
-WebUI 不得直接读取 ORM、数据库、Gateway 连接或 secret，也不得复用 QQ 消息中的 @/正文证明。
-3.8 已提供分页、Capability、乐观并发、幂等回执、审计和长任务投影；尚未实现 HTTP 管理 API、
-登录、Cookie、CSRF 或前端。
+还需完成 QQ 登录，并按所选插件和语音组件的说明进行初始化。完整步骤见[首次启动与升级指南](docs/upgrade-3.8.2.md)。已有部署请直接按该指南升级，保留原项目名、Compose 覆盖文件和挂载配置。
 
-## 日常运维
+正式镜像为 `ghcr.io/yuanyeyoutao/yuki-qqbot:3.8.2`；可选 TTS Worker 镜像为 `ghcr.io/yuanyeyoutao/yuki-genie-tts-worker:3.8.2`。发布包提供 `SHA256SUMS`。单独下载的环境模板附件名为 `default.env.example`，压缩包内仍为 `.env.example`。
+
+## 升级与日常维护
+
+3.8.2 使用数据库版本 **0055**、Plugin API **2.0**。较旧的数据库必须先满足迁移前提，不能通过 `stamp` 跳过迁移。旧插件的 `llm.generate` / `agent.run` 已统一到主入口，依赖旧独立生成语义的插件需要适配。
+
+升级前保存一致的数据库、配置、插件及文件备份；持久环境还需保存家目录与运行回执。暂停写入只涉及 Bot 和相关 Manager，不需要关闭整个 Docker 或 QQ 网关。回退时应先保全升级后的新消息、文件和回执，详见[升级指南](docs/upgrade-3.8.2.md)。
 
 ```bash
 docker compose ps
 docker compose logs --tail 200 bot
-docker compose pull
-docker compose up -d
-```
-
-Provider 状态：
-
-```bash
-docker compose --profile napcat --profile snowluma ps --all
-docker compose exec bot qq-ai-bot-cli gateway doctor --provider napcat
 docker compose exec bot qq-ai-bot-cli gateway doctor --provider snowluma
 ```
 
-`/healthz` 只返回公开瘦健康信息。连接明细、路由状态、完整 external ID、内容和管理健康必须经过
-Control Plane capability；secret 永远不可回读。
+使用 NapCat 时将最后一个参数改为 `napcat`；所有命令沿用部署时的 Compose 参数。同一 QQ 只允许一条活动连接，切换网关前需先停止旧连接。见 [SnowLuma 部署与切换](docs/deployment/snowluma.md)。
 
-## 开发验证
+## 架构与开发
+
+一个数据库对应一个长期存在的 Yuki。人物、群空间、QQ 账号和网关连接分别建模，聊天历史与关系不绑定在某一次登录连接上。工具由后端执行权限、预算、幂等和审计检查。
+
+目前提供 QQ 交互、CLI 和供管理界面复用的 Control Plane 业务层，**尚未提供 Yuki 管理 WebUI 或管理 HTTP API**。
 
 ```bash
 uv sync --extra dev
@@ -284,26 +135,19 @@ uv run mypy src
 uv run pytest
 ```
 
-涉及 schema 或发布时还要验证 fresh `0048 -> 0055`、已有数据的增量迁移、SQLite
-`foreign_key_check`、FTS/trigger、release smoke 和 Docker Compose 配置。
+开发时按改动范围选择定向验证；发布流程还会验证迁移、镜像和无源码部署。
 
-## 文档
-
-- [使用与运维帮助](docs/help.md)
-- [3.8 canonical runtime](docs/architecture/canonical-runtime.md)
-- [Conversation Rollup](docs/architecture/conversation-rollup.md)
-- [插件唤醒 Main Agent 与主动回复因果合同](docs/architecture/Yuki-插件唤醒Main-Agent与主动回复因果修复任务书.md)
-- [Memory V2](docs/architecture/memory-v2.md)
-- [Memory 变更合同](docs/architecture/memory-change.md)
-- [Plugin API 2.0](docs/plugin-development/index.md)
-- [MCP 架构](docs/mcp/architecture.md)
-- [SnowLuma Provider](docs/deployment/snowluma.md)
-- [3.8.1 升级指南](docs/upgrade-3.8.1.md)
-- [3.8.1 发布说明](docs/releases/v3.8.1.md)
-- [3.8.2 发布说明](docs/releases/v3.8.2.md)
-- [3.8.2 升级指南](docs/upgrade-3.8.2.md)
-- [版本化 Docker Release](docs/operations/versioned-docker-release.md)
-- [CHANGELOG](CHANGELOG.md)
+| 文档 | 内容 |
+| --- | --- |
+| [使用帮助](docs/help.md) | 聊天、命令与日常操作 |
+| [架构说明](docs/architecture/canonical-runtime.md) | 人物、空间、账号和会话的关系 |
+| [Rollup](docs/architecture/conversation-rollup.md) | 长会话的历史压缩 |
+| [Memory](docs/architecture/memory-v2.md) | 记忆提取、检索和权限 |
+| [Plugin API 2.0](docs/plugin-development/index.md) | 插件开发与能力边界 |
+| [MCP](docs/mcp/architecture.md) | 外部工具接入 |
+| [语音发送](docs/speech/operations.md) | Genie-TTS 部署与运维 |
+| [版本化发布](docs/operations/versioned-docker-release.md) | 镜像、下载包与发布流程 |
+| [CHANGELOG](CHANGELOG.md) | 历史变更 |
 
 ## License
 
