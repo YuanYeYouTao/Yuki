@@ -445,17 +445,26 @@ class PersistentManager(Manager):
             action = args["action"]
             packages = " ".join(shlex.quote(item) for item in args.get("packages", []))
             command = (
-                "dpkg --configure -a && apt-get -f install -y"
+                "/usr/bin/dpkg --configure -a && /usr/bin/apt-get -f install -y"
                 if action == "repair"
-                else f"apt-get update -qq && apt-get {action} -y --no-install-recommends {packages}"
+                else (
+                    f"/usr/bin/apt-get update -qq && /usr/bin/apt-get {action} "
+                    f"-y --no-install-recommends {packages}"
+                )
             )
             spec.update(
                 capture=True,
                 tty=False,
                 timeout_seconds=1800,
-                command="export DEBIAN_FRONTEND=noninteractive; "
-                + command
-                + " && apt-get clean && rm -rf /var/lib/apt/lists/*",
+                argv=[
+                    "/bin/bash",
+                    "--noprofile",
+                    "--norc",
+                    "-c",
+                    "export DEBIAN_FRONTEND=noninteractive; "
+                    + command
+                    + " && /usr/bin/apt-get clean && /bin/rm -rf /var/lib/apt/lists/*",
+                ],
             )
         (root / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
         (root / "spec.json").chmod(0o444)
@@ -478,7 +487,8 @@ class PersistentManager(Manager):
                 "/pty",
                 {
                     "cwd": spec["cwd"],
-                    "command": f"exec python /opt/yuki-runtime/supervisor.py {identity}",
+                    "command": "exec /usr/local/bin/python -I /opt/yuki-runtime/supervisor.py "
+                    + identity,
                 },
             )
             session = response["session_id"]
@@ -498,8 +508,17 @@ class PersistentManager(Manager):
                 "-d",
                 "-u",
                 "0:0",
+                "-e",
+                "HOME=/root",
+                "-e",
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "-e",
+                "PYTHONUSERBASE=/root/.local",
+                "-e",
+                "PYTHONPATH=",
                 self.name,
-                "python",
+                "/usr/local/bin/python",
+                "-I",
                 "/opt/yuki-runtime/supervisor.py",
                 identity,
             )
@@ -556,7 +575,7 @@ class PersistentManager(Manager):
             "-u",
             "0:0",
             self.name,
-            "dpkg-query",
+            "/usr/bin/dpkg-query",
             "-W",
             "-f=${Package}\t${Version}\n",
         )

@@ -43,14 +43,15 @@ canonical schema，Alembic head 为 `0055`。
 
 完整结构见 [Yuki 3.8 canonical runtime](docs/architecture/canonical-runtime.md)。
 
-### 社交工具与临时工作区
+### 社交工具与持久工作环境
 
-普通 Main Agent 固定暴露 QQ 社交、临时工作区和 Python 沙箱共十四个工具，
-也可显式注册到自动化。发送遵守已有 canonical 路由；不确定的网络结果不自动重发。
-工作区全会话共享，内容修改后 24 小时过期，不是永久文件库或私人保险箱。
-Python 通过独立 runsc 容器运行，可经代理访问公网 HTTP/HTTPS；宿主、内网和网关隔离。
-沙箱依赖额外宿主管理器，未安装时工具返回不可用，不能退回 Bot 内执行。
-部署与边界详见 [社交、工作区与沙箱](docs/operations/social-workspace-sandbox.md)。
+所有 Main Agent 入口使用相同完整工具声明，支持 QQ 社交、工作区文件、终端、软件包及服务管理。
+工作区全会话共享并持久保存，与终端实时共用；文件可发布为不可变 artifact 后发送。
+Linux 环境预装 Python、Node.js 和编译工具，pip/npm 依赖长期保留，apt 安装后保存检查点。
+后台任务和已登记服务有独立回执与恢复机制，发送和自动化仍遵循原有委托边界。
+环境依赖宿主 Manager 与 gVisor，未安装时返回不可用，不在 Bot 进程内执行代码。
+详见 [持久环境部署与恢复](docs/operations/persistent-environment.zh-CN.md)
+和 [English operations guide](docs/operations/persistent-environment.md)。
 
 ### 接收语音识别
 
