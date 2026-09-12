@@ -883,3 +883,57 @@ async def test_custom_policy_live_append_matches_recount_without_reading_ingress
         assert conversation is not None
         recounted_after = await recount_canonical_uncovered(session, conversation, policy)
     assert recounted_after == (len(after_snapshot.raw_events), after_expected)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pause_during_probe", [False, True])
+async def test_gateway_probe_releases_writer_and_rechecks_fence(
+    database: Database, pause_during_probe: bool
+) -> None:
+    import asyncio
+
+    from sqlalchemy import text
+
+    from qq_ai_bot.conversation.canonical_db_models import SpaceBindingIngestRouteModel
+
+    registry, resolver, uow = await _stack(database)
+    async with database.sessions() as session, session.begin():
+        presence = await ensure_v2_presence(session, "8000")
+        await ensure_v2_space(session, "2001")
+    bot = _Bot("8000")
+    registry.connect(bot)
+    registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
+    admitted = await resolver.pre_admit(bot, _message(message_id="slow-probe", group_id="2001"))
+    assert admitted is not None and not admitted.dropped
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def slow_probe(*args: object, **kwargs: object) -> bool:
+        entered.set()
+        await release.wait()
+        return True
+
+    uow._router._probe = slow_probe
+    pending = asyncio.create_task(uow.append_inbound(admitted.message, admitted))
+    try:
+        await asyncio.wait_for(entered.wait(), 3)
+        # A real concurrent writer must remain available while the gateway stalls.
+        async with database.sessions() as session:
+            await session.execute(text("PRAGMA busy_timeout=30"))
+            await session.execute(text("BEGIN IMMEDIATE"))
+            route = await session.get(SpaceBindingIngestRouteModel, admitted.space_binding_id)
+            assert route is not None
+            if pause_during_probe:
+                route.paused = True
+            await session.commit()
+    finally:
+        release.set()
+        if not pending.done():
+            await asyncio.wait({pending}, timeout=3)
+    if pause_during_probe:
+        with pytest.raises(CanonicalIdentityError) as failure:
+            await pending
+        assert failure.value.category == "paused"
+        async with database.sessions() as session:
+            assert not list(await session.scalars(select(ChatEventModel)))
+    else:
+        assert (await pending).created

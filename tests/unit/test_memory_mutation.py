@@ -3664,3 +3664,41 @@ async def test_deterministic_memory_admin_uses_unified_mutation_receipt(
     assert receipt.trigger_event_id == event.id
     assert receipt.decision_actor_type == "command"
     assert receipt.new_fact_id == row.id
+
+
+@pytest.mark.asyncio
+async def test_reflection_scan_commits_pages_and_resumes_without_double_count(
+    database: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from qq_ai_bot.persistence.models import MemorySelfReflectionStateModel
+
+    _, _, ledger, _ = _service(database, self_memory_enabled=True)
+    repository = SelfReflectionRepository(database)
+    await repository.scan_new_events()
+    for index in range(101):
+        await _event(
+            ledger,
+            message_id=f"paged-scan-{index}",
+            sender_user_id="1001",
+            content="page",
+            group_id="3001",
+        )
+    original = repository._scan_event_batch
+
+    async def interrupt_after_commit(*, limit: int) -> int:
+        count = await original(limit=limit)
+        assert count == 100
+        async with database.immediate_session() as session:
+            state = await session.scalar(select(MemorySelfReflectionStateModel))
+            assert state is not None and state.pending_events == 100
+        raise RuntimeError("simulated scan interruption")
+
+    monkeypatch.setattr(repository, "_scan_event_batch", interrupt_after_commit)
+    with pytest.raises(RuntimeError, match="simulated scan interruption"):
+        await repository.scan_new_events()
+    resumed = SelfReflectionRepository(database)
+    assert await resumed.scan_new_events() == 1
+    assert await resumed.scan_new_events() == 0
+    async with database.sessions() as session:
+        state = await session.scalar(select(MemorySelfReflectionStateModel))
+        assert state is not None and state.pending_events == 101
