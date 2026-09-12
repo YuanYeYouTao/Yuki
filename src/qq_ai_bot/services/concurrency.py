@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager
 from typing import Any, TypeVar
+from weakref import WeakValueDictionary
 
 T = TypeVar("T")
 
@@ -19,7 +20,8 @@ class ConcurrencyManager:
 
     def __init__(self, global_limit: int) -> None:
         self._semaphore = asyncio.Semaphore(global_limit)
-        self._locks: dict[str, asyncio.Lock] = {}
+        # Holders and waiters keep strong references; idle conversations need none.
+        self._locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
         self._locks_guard = asyncio.Lock()
         self._active: dict[str, asyncio.Task[Any]] = {}
         self._active_guard = asyncio.Lock()

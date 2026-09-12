@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections import deque
 from dataclasses import dataclass, field
 from typing import cast
 
@@ -58,9 +57,10 @@ def _authoritative_autonomous_observation_refs(
 
 @dataclass(slots=True)
 class _GroupState:
-    messages: deque[InboundMessage] = field(default_factory=lambda: deque(maxlen=100))
-    profiles: deque[UserProfileSnapshot] = field(default_factory=lambda: deque(maxlen=100))
-    senders: deque[OutboundSender] = field(default_factory=lambda: deque(maxlen=100))
+    # Admission uses the latest observation; durable history already lives in the ledger.
+    message: InboundMessage
+    profile: UserProfileSnapshot
+    sender: OutboundSender
     latest_token: TurnToken | None = None
     revision: int = 0
     changed: asyncio.Event = field(default_factory=asyncio.Event)
@@ -104,13 +104,17 @@ class AutonomousGroupService:
         turn_token: TurnToken | None = None,
     ) -> None:
         group_id = message.group_id
-        if group_id is None:
+        if self._closed or group_id is None:
             return
         scope_key = runtime_conversation_key(identity=message.scope(), inbound=message)
-        state = self._states.setdefault(scope_key, _GroupState())
-        state.messages.append(message)
-        state.profiles.append(profile)
-        state.senders.append(sender)
+        state = self._states.get(scope_key)
+        if state is None:
+            state = _GroupState(message=message, profile=profile, sender=sender)
+            self._states[scope_key] = state
+        else:
+            state.message = message
+            state.profile = profile
+            state.sender = sender
         state.latest_token = turn_token
         state.revision += 1
         state.changed.set()
@@ -153,17 +157,23 @@ class AutonomousGroupService:
         state.task = None
         # A message can arrive between the worker's final revision check and this
         # callback. Its event is the hand-off that prevents that update being lost.
-        if state.changed.is_set():
+        if state.changed.is_set() and not self._closed:
             self._ensure_task(scope_key, state)
+        else:
+            self._states.pop(scope_key, None)
 
     async def _after_silence(self, scope_key: str) -> None:
         while True:
             revision = -1
             try:
                 state = self._states.get(scope_key)
-                if state is None or not state.messages:
+                if state is None:
                     return
-                group_id = state.messages[-1].group_id
+                # Consume this update before the first await, including disabled/error
+                # exits. Only a newer observation may request another worker.
+                revision = state.revision
+                state.changed.clear()
+                group_id = state.message.group_id
                 if group_id is None:
                     return
                 runtime = await self._runtime_config.snapshot(group_id=group_id)
@@ -172,8 +182,6 @@ class AutonomousGroupService:
                     return
                 # One worker absorbs every update until the group has remained
                 # quiet for a full debounce interval.
-                state.changed.clear()
-                revision = state.revision
                 try:
                     await asyncio.wait_for(
                         state.changed.wait(),
@@ -232,7 +240,7 @@ class AutonomousGroupService:
         error_category: str | None = None
         observation_key = scope_key
         state = self._states.get(scope_key)
-        selected = state.messages[-1] if state is not None and state.messages else None
+        selected = state.message if state is not None else None
         canonical_conversation_id, canonical_space_id = _authoritative_autonomous_observation_refs(
             selected
         )
@@ -266,11 +274,11 @@ class AutonomousGroupService:
         runtime: RuntimeConfigSnapshot,
     ) -> None:
         state = self._states.get(scope_key)
-        if state is None or not state.messages:
+        if state is None:
             return
-        last = state.messages[-1]
-        profile = state.profiles[-1]
-        sender = state.senders[-1]
+        last = state.message
+        profile = state.profile
+        sender = state.sender
         token = state.latest_token
         if token is None:
             token = await self._coordinator.notify_message(
@@ -405,6 +413,7 @@ class AutonomousGroupService:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        self._states.clear()
 
 
 def _conversation_policy(runtime: object) -> ConversationRuntimeConfig:
