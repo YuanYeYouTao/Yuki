@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
@@ -56,6 +57,8 @@ class SocialService:
         self.writer = writer
         self.receipts = SocialOperationRepository(database)
         self._lock = asyncio.Lock()
+        self._directory_lock = asyncio.Lock()
+        self._directory_checked_at = float("-inf")
         self.runtime_config: RuntimeConfigService | None = None
         self.transfer: ArtifactTransfer | None = None
 
@@ -69,8 +72,86 @@ class SocialService:
         async with asyncio.timeout(30):
             return await provider.social_action(route.connection.bot, action, params)
 
+    async def refresh_space_names(self) -> None:
+        """Refresh known bindings through live gateways, without changing grants/routes."""
+        async with self._directory_lock:
+            if time.monotonic() - self._directory_checked_at < 30:
+                return
+            self._directory_checked_at = time.monotonic()
+            async with self.database.sessions() as session:
+                presences = list(
+                    await session.scalars(
+                        select(PresenceModel.id).where(
+                            PresenceModel.platform == "qq", PresenceModel.enabled.is_(True)
+                        )
+                    )
+                )
+
+            async def names_for(presence_id: str) -> dict[str, str]:
+                try:
+                    async with asyncio.timeout(3):
+                        route = await self.router.resolve_presence(presence_id)
+                        payload = await self._call(route, "get_group_list", {"no_cache": True})
+                    if isinstance(payload, dict):
+                        payload = payload.get("data", [])
+                    if not isinstance(payload, list):
+                        return {}
+                    from qq_ai_bot.services.user_profiles import sanitize_profile_name
+
+                    return {
+                        str(item["group_id"]): sanitize_profile_name(item["group_name"])
+                        for item in payload
+                        if isinstance(item, dict)
+                        and item.get("group_id") is not None
+                        and isinstance(item.get("group_name"), str)
+                        and item["group_name"].strip()
+                    }
+                except Exception as exc:
+                    logging.getLogger(__name__).warning(
+                        "group_directory_refresh_failed category=%s", type(exc).__name__
+                    )
+                    return {}
+
+            observed: dict[str, set[str]] = {}
+            for names in await asyncio.gather(*(names_for(pid) for pid in presences)):
+                for external_id, name in names.items():
+                    if name:
+                        observed.setdefault(external_id, set()).add(name)
+            names = {
+                key: next(iter(values)) for key, values in observed.items() if len(values) == 1
+            }
+            if not names:
+                return
+            now = datetime.now(UTC)
+            async with self.database.sessions.begin() as session:
+                rows = (
+                    await session.execute(
+                        select(SpaceBindingModel, CanonicalSpaceModel)
+                        .join(
+                            CanonicalSpaceModel,
+                            CanonicalSpaceModel.id == SpaceBindingModel.space_id,
+                        )
+                        .where(
+                            SpaceBindingModel.platform == "qq",
+                            SpaceBindingModel.status == "active",
+                            SpaceBindingModel.external_space_id.in_(names),
+                        )
+                    )
+                ).all()
+                # All reads are complete before staging writes. Never invent memberships.
+                for binding, space in rows:
+                    name = names[binding.external_space_id][:128]
+                    if binding.display_name != name:
+                        binding.display_name = name
+                        binding.updated_at = now
+                        binding.revision += 1
+                    if space.name != name:
+                        space.name = name
+                        space.updated_at = now
+                        space.revision += 1
+
     async def contacts(
-        self, kind: str, query: str = "", *, exact: bool = False
+        self, kind: str, query: str = "", *, exact: bool = False, _refresh: bool = True
     ) -> list[dict[str, str]]:
         async with self.database.sessions() as session:
             if kind == "person":
@@ -119,6 +200,9 @@ class SocialService:
                 ).all()
             else:
                 raise SocialError("invalid_target_kind")
+        if kind == "space" and query and not rows and _refresh:
+            await self.refresh_space_names()
+            return await self.contacts(kind, query, exact=exact, _refresh=False)
         return list(
             {
                 str(row[0]): {"target_id": str(row[0]), "display_name": str(row[1]), "kind": kind}

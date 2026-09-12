@@ -6,6 +6,9 @@ from typing import Any, cast
 
 
 class OneBotSocialOperations:
+    async def groups(self, handle: object, **params: Any) -> Any:
+        return await cast(Any, handle).call_api("get_group_list", **params)
+
     async def send_message(self, handle: object, **params: Any) -> Any:
         action = "send_group_msg" if "group_id" in params else "send_private_msg"
         return await cast(Any, handle).call_api(action, **params)
@@ -34,6 +37,7 @@ class OneBotSocialOperations:
 
     async def social_action(self, handle: object, action: str, params: dict[str, Any]) -> Any:
         operations = {
+            "get_group_list": self.groups,
             "send_private_msg": self.send_message,
             "send_group_msg": self.send_message,
             "upload_private_file": self.send_file,
