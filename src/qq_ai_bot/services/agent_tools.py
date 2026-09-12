@@ -3217,7 +3217,7 @@ class AgentToolService:
             "scope": row.scope_type.value,
             "group_id": row.group_id,
             "direction": row.direction,
-            "content": row.content,
+            "content": row.perceived_content,
             "occurred_at": local_iso(row.occurred_at, self._settings.default_timezone),
         }
 

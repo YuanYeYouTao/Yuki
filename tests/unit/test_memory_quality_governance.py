@@ -349,7 +349,7 @@ async def test_release_check_is_read_only_and_requires_explicit_database(tmp_pat
     assert load_gate_configuration(windows) == load_gate_configuration(original)
     report = await MemoryReleaseCheck(ROOT, artifact_directory=tmp_path).run()
     assert next(item for item in report.items if item.code == "baseline").status == "pass"
-    assert report.alembic_head == "0054"
+    assert report.alembic_head == "0055"
     database = next(item for item in report.items if item.code == "production_database")
     assert database.status == "warn"
     assert "--database-url" in database.detail

@@ -8,7 +8,7 @@
 
 <p>
   <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.1"><img src="https://img.shields.io/badge/Release-3.8.1-blue" alt="Yuki 3.8.1 release"></a>
-  <img src="https://img.shields.io/badge/Schema-0052-blue" alt="Alembic head 0052">
+  <img src="https://img.shields.io/badge/Schema-0055-blue" alt="Alembic head 0055">
   <img src="https://img.shields.io/badge/Plugin%20API-2.0-8A2BE2" alt="Plugin API 2.0">
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
@@ -24,7 +24,7 @@ Provider，并在权限边界内持续记住人与共同经历。
 
 最新已发布版本为 **3.8.1**；当前源码基线为 **3.8.2（发布准备中）**，包含插件唤醒、Memory P1
 治理、意图读取与记忆可靠性修复。3.8 只运行
-canonical schema，Alembic head 为 `0052`。
+canonical schema，Alembic head 为 `0055`。
 
 ## 3.8 核心合同
 
@@ -51,6 +51,13 @@ canonical schema，Alembic head 为 `0052`。
 Python 通过独立 runsc 容器运行，可经代理访问公网 HTTP/HTTPS；宿主、内网和网关隔离。
 沙箱依赖额外宿主管理器，未安装时工具返回不可用，不能退回 Bot 内执行。
 部署与边界详见 [社交、工作区与沙箱](docs/operations/social-workspace-sandbox.md)。
+
+### 接收语音识别
+
+私聊语音、触发回复的群聊语音和引用语音会自动经 Qwen ASR 转写，再进入同一个 Main Agent。
+默认复用现有千问连接；无需安装本地识别模型，也不依赖 Genie-TTS。转写保存在消息历史中，
+供后续聊天、历史搜索和 Rollup 使用；被引用语音不作为当前发言者的记忆证据。
+配置与限制见 [语音识别](docs/speech/recognition.md)。
 
 ### 记忆读取与自动保存
 

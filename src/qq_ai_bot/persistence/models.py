@@ -200,6 +200,19 @@ class ChatEventModel(Base):
     external_target_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False, default="")
     visual_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    audio_transcript: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+
+    @property
+    def evidence_content(self) -> str:
+        from qq_ai_bot.domain.audio import transcript_context
+
+        if not self.audio_transcript:
+            return self.content
+        speech = transcript_context(self.audio_transcript, include_replies=False)
+        return f"{self.content}\n{speech}".strip()
+
     segments_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     reply_to_message_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     origin: Mapped[str] = mapped_column(String(32), nullable=False, default="user_message")

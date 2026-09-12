@@ -18,6 +18,7 @@ class HealthPayload(TypedDict):
     llm_configured: bool
     web_configured: bool
     vision_configured: bool
+    asr: dict[str, object]
     onebot_connected: bool
     automation_enabled: bool
     automation_worker_running: bool
@@ -93,6 +94,7 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
         llm_configured=container.settings.llm_configured,
         web_configured=container.settings.web_configured,
         vision_configured=container.settings.vision_configured,
+        asr=container.asr.health(),
         onebot_connected=container.onebot_connected(),
         automation_enabled=container.settings.automation_enabled,
         automation_worker_running=container.automation_worker.running,

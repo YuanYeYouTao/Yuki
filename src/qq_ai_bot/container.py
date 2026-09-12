@@ -201,6 +201,9 @@ class ApplicationContainer:
             lifecycle=self.lifecycle,
             provider=vision_provider,
         ).build()
+        from qq_ai_bot.application.modules.asr import build_asr
+
+        self.asr = build_asr(settings, self.lifecycle)
         self.media = media
         self.vision_provider = media.provider
         self.media_resolver = media.resolver
@@ -544,6 +547,7 @@ class ApplicationContainer:
             config=self.conversation_rollups.config,
         )
         self.processor = MessageProcessor(
+            asr_service=self.asr,
             attachment_inputs=(
                 AttachmentInputService(
                     self.media_resolver,

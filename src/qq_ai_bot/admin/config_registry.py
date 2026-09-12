@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable
 
+from qq_ai_bot.admin.config_specs_asr import asr_config_specs
 from qq_ai_bot.admin.config_specs_emoji import emoji_config_specs
 from qq_ai_bot.admin.config_specs_future import future_config_specs
 from qq_ai_bot.admin.config_specs_hot import hot_config_specs
@@ -27,6 +28,7 @@ def _registered_specs() -> tuple[ConfigSpec, ...]:
         *future_config_specs(),
         *restart_config_specs(),
         *speech_config_specs(),
+        *asr_config_specs(),
         *social_config_specs(),
         *tooling_mcp_config_specs(),
         *protected_config_specs(),

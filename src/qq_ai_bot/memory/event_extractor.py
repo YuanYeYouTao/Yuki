@@ -139,23 +139,23 @@ class MemoryEventExtractor:
         *,
         context: tuple[EventRecord, ...] = (),
     ) -> MemoryExtractionResult:
-        if not event.content.strip():
+        if not event.evidence_content.strip():
             return MemoryExtractionResult(MemoryExtractionOutput(), 0)
         subject_context = await self._subjects.build(event)
         payload = MemoryExtractionInput(
             primary_event=PrimaryEvent(
                 scope_type=event.scope_type,
-                content=event.content,
+                content=event.evidence_content,
                 occurred_at=local_datetime(event.occurred_at, self._timezone),
             ),
             available_subjects=subject_context.available_subjects,
             conversation_context=tuple(
                 ConversationContextEvent(
                     speaker_role=self._speaker_role(event, row),
-                    content=row.content[:1000],
+                    content=row.evidence_content[:1000],
                 )
                 for row in context
-                if row.content.strip()
+                if row.evidence_content.strip()
             ),
         )
         output, response = await self._concurrency.run_llm(
@@ -193,14 +193,14 @@ class MemoryEventExtractor:
         context: tuple[EventRecord, ...] = (),
         max_output_tokens: int = 4096,
     ) -> BatchMemoryExtractionResult:
-        selected_events = tuple(event for event in events if event.content.strip())
+        selected_events = tuple(event for event in events if event.evidence_content.strip())
         contexts = await asyncio.gather(*(self._subjects.build(event) for event in selected_events))
         primary_events = tuple(
             BatchPrimaryEvent(
                 source_event_id=event.id,
                 scope_type=event.scope_type,
                 sender_label=self._sender_label(event)[:128],
-                content=event.content[:8000],
+                content=event.evidence_content[:8000],
                 occurred_at=local_datetime(event.occurred_at, self._timezone),
                 available_subjects=context.available_subjects,
             )
@@ -216,10 +216,10 @@ class MemoryEventExtractor:
                         "bot" if row.direction == "outbound" or row.author_is_yuki() else "member"
                     ),
                     sender_label=self._sender_label(row)[:128],
-                    content=row.content[:1000],
+                    content=row.evidence_content[:1000],
                 )
                 for row in context[:8]
-                if row.content.strip()
+                if row.evidence_content.strip()
             ),
         )
         output, response = await self._concurrency.run_llm(

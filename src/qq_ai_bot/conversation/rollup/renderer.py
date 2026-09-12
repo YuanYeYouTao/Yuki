@@ -29,7 +29,7 @@ def rollup_source_projection(
 
     timestamp = local_datetime(event.occurred_at, timezone).isoformat(timespec="seconds")
     sender = event.sender_display_name
-    body = event.content.strip()
+    body = event.perceived_content.strip()
     if event.visual_summary.strip():
         body = f"{body}\n[Visual summary: {event.visual_summary.strip()}]".strip()
     if event.event_kind == "external_event":

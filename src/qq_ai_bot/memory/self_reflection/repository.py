@@ -200,7 +200,7 @@ class SelfReflectionRepository:
         remaining = list(
             (await session.scalars(remaining_query.order_by(ChatEventModel.id.asc()))).all()
         )
-        nonempty = [item for item in remaining if item.content.strip()]
+        nonempty = [item for item in remaining if item.evidence_content.strip()]
         receipt_filter = self._owner_receipt_filter(
             state.canonical_person_id, state.canonical_space_id
         )
@@ -216,7 +216,7 @@ class SelfReflectionRepository:
         )
         state.last_event_id = processed_last_event_id
         state.pending_events = len(nonempty)
-        state.pending_characters = sum(len(item.content) for item in nonempty)
+        state.pending_characters = sum(len(item.evidence_content) for item in nonempty)
         state.pending_since = nonempty[0].occurred_at if nonempty else None
         state.has_yuki_reply = any(
             item.direction == "outbound" and event_author_is_yuki(author_kind=item.author_kind)
@@ -340,7 +340,7 @@ class SelfReflectionRepository:
                         self._owner_state_filter(person_id, space_id)
                     )
                 )
-                content = row.content.strip()
+                content = row.evidence_content.strip()
                 if state is None:
                     state = MemorySelfReflectionStateModel(
                         conversation_key_hash=key_hash,
@@ -473,7 +473,7 @@ class SelfReflectionRepository:
                 for item in candidate_rows:
                     if await refuse_legacy_live_event(session, item):
                         continue
-                    item_characters = len(item.content)
+                    item_characters = len(item.evidence_content)
                     if event_rows and input_characters + item_characters > max_characters:
                         break
                     event_rows.append(item)
@@ -593,7 +593,7 @@ class SelfReflectionRepository:
         characters = 0
         boundary: int | None = None
         for index, item in enumerate(rows[:-1], start=1):
-            characters += len(item.content)
+            characters += len(item.evidence_content)
             if index < low_event_threshold and characters < low_character_threshold:
                 continue
             gap_seconds = (rows[index].occurred_at - item.occurred_at).total_seconds()

@@ -315,13 +315,13 @@ def _serialize_segments(message: Message) -> tuple[dict[str, object], ...]:
     serialized: list[dict[str, object]] = []
     for segment in message:
         data = dict(segment.data)
-        if segment.type == "image":
+        if segment.type in {"image", "record"}:
             for key in ("file", "url", "base64"):
                 value = data.get(key)
                 if key == "base64" and value is not None:
                     data[key] = "[inline-image-omitted]"
                 elif isinstance(value, str) and value.lstrip().casefold().startswith(
-                    ("base64://", "data:image/")
+                    ("base64://", "data:image/", "data:audio/")
                 ):
                     data[key] = "[inline-image-omitted]"
         serialized.append(

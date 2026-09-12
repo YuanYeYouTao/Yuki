@@ -137,7 +137,7 @@ def source_event_fingerprint(event: EventRecord) -> str:
         "group_id": event.group_id,
         "private_peer_user_id": event.private_peer_user_id,
         "direction": event.direction,
-        "content": event.content,
+        "content": event.evidence_content,
         "segments": event.segments,
         "reply_to_message_id": event.reply_to_message_id,
         "mentioned_user_ids": event.mentioned_user_ids,

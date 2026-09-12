@@ -682,7 +682,8 @@ class EventLedgerRepository:
             if not has_search_bound:
                 raise ValueError("short history searches require a QQ, group, or time bound")
             sql = text(
-                "SELECT ce.* FROM chat_events AS ce WHERE ce.content LIKE :pattern"
+                "SELECT ce.* FROM chat_events AS ce WHERE "
+                "(ce.content LIKE :pattern OR ce.audio_transcript LIKE :pattern)"
                 + prefix
                 + " ORDER BY ce.occurred_at DESC, ce.id DESC LIMIT :limit"
             )
@@ -698,6 +699,11 @@ class EventLedgerRepository:
         """Attach one compact derived observation to its immutable source event."""
 
         return await self._writer.set_visual_summary(event_id, summary)
+
+    async def set_audio_transcript(
+        self, event_id: int, transcript: str, *, generation: int
+    ) -> bool:
+        return await self._writer.set_audio_transcript(event_id, transcript, generation=generation)
 
 
 class AgentActionRepository:

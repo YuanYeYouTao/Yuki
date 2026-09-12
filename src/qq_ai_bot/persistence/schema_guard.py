@@ -8,9 +8,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-from qq_ai_bot.conversation.projection_schema import PROJECTION_TRIGGERS_0054
+from qq_ai_bot.asr.schema import PROJECTION_TRIGGERS_0055
 
-CANONICAL_SCHEMA_REVISION = "0054"
+CANONICAL_SCHEMA_REVISION = "0055"
 
 _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
     "sandbox_task_runs": frozenset(
@@ -91,6 +91,7 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
     "chat_events": frozenset(
         {
             "canonical_event_id",
+            "audio_transcript",
             "canonical_conversation_id",
             "author_kind",
             "caused_by_event_id",
@@ -175,7 +176,7 @@ async def require_canonical_schema(database_url: str) -> None:
                 text("SELECT name, sql FROM sqlite_master WHERE type='trigger'")
             )
             triggers = {str(row[0]): str(row[1]) for row in trigger_rows}
-            for name, expected in PROJECTION_TRIGGERS_0054.items():
+            for name, expected in PROJECTION_TRIGGERS_0055.items():
                 actual = triggers.get(name, "").replace("IF NOT EXISTS ", "")
                 if " ".join(actual.split()) != " ".join(expected.split()):
                     raise CanonicalSchemaError(

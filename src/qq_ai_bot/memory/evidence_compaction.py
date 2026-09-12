@@ -419,7 +419,8 @@ class EvidenceCompactionService:
             await session.scalars(
                 select(ChatEventModel.id).where(
                     ChatEventModel.id.in_(tuple(row.event_id for row in event_rows)),
-                    func.length(func.trim(ChatEventModel.content)) > 0,
+                    (func.length(func.trim(ChatEventModel.content)) > 0)
+                    | ChatEventModel.audio_transcript.contains('"source":"current"'),
                 )
             )
         )

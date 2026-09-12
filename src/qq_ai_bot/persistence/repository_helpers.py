@@ -180,6 +180,7 @@ def _event_record(row: ChatEventModel | Mapping[str, Any]) -> EventRecord:
         direction=str(_row_value(row, "direction")),
         content=str(_row_value(row, "content") or ""),
         visual_summary=str(_row_value(row, "visual_summary") or ""),
+        audio_transcript=str(_row_value(row, "audio_transcript") or ""),
         segments=segments,
         occurred_at=occurred,
         group_id=_row_value(row, "group_id"),

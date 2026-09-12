@@ -1478,7 +1478,10 @@ class MemoryJobRepository:
                         MemoryJobModel.next_attempt_at,
                         MemoryJobModel.created_at,
                         MemoryJobModel.updated_at,
-                        func.length(ChatEventModel.content),
+                        (
+                            func.length(ChatEventModel.content)
+                            + func.length(ChatEventModel.audio_transcript)
+                        ),
                         MemoryJobModel.error_category,
                     )
                     .join(ChatEventModel, ChatEventModel.id == MemoryJobModel.event_id)
@@ -1654,7 +1657,12 @@ class MemoryJobRepository:
                 else_=0,
             )
         )
-        character_count = func.coalesce(func.sum(func.length(ChatEventModel.content)), 0)
+        character_count = func.coalesce(
+            func.sum(
+                func.length(ChatEventModel.content) + func.length(ChatEventModel.audio_transcript)
+            ),
+            0,
+        )
         oldest_job = func.min(MemoryJobModel.created_at)
         first_job_id = func.min(MemoryJobModel.id)
         xor_owner = or_(
@@ -1745,7 +1753,7 @@ class MemoryJobRepository:
                         row.error_category = "missing_canonical_owner"
                         row.updated_at = claimed_at
                         continue
-                event_characters = len(event.content)
+                event_characters = len(event.evidence_content)
                 if jobs and characters + event_characters > max(1, max_characters):
                     break
                 characters += event_characters

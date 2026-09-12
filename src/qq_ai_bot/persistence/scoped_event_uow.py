@@ -304,19 +304,61 @@ class ScopedEventLedgerUnitOfWork:
         lowered = normalized.casefold()
         if "data:image/" in lowered or "base64://" in lowered:
             raise ValueError("visual_summary must not contain image or Base64 payloads")
+        return await self._set_derived_text(event_id, normalized, audio=False)
+
+    async def set_audio_transcript(
+        self,
+        event_id: int,
+        transcript: str,
+        *,
+        generation: int,
+    ) -> bool:
+        """Save one bounded result only while its source generation is still live."""
+        normalized = transcript.strip()
+        from qq_ai_bot.domain.audio import parse_transcripts
+
+        if not parse_transcripts(normalized):
+            raise ValueError("audio transcript must not be empty")
+        return await self._set_derived_text(event_id, normalized, audio=True, generation=generation)
+
+    async def _set_derived_text(
+        self,
+        event_id: int,
+        normalized: str,
+        *,
+        audio: bool,
+        generation: int | None = None,
+    ) -> bool:
         now = datetime.now(UTC)
         signalled = False
         async with self._database.immediate_session() as session:
             row = await session.get(ChatEventModel, event_id)
             if row is None:
                 return False
+            if audio:
+                if not row.canonical_conversation_id:
+                    return False
+                conversation = await session.get(
+                    CanonicalConversationModel, row.canonical_conversation_id
+                )
+                if (
+                    conversation is None
+                    or conversation.generation != generation
+                    or row.id <= conversation.starts_after_event_id
+                ):
+                    return False
+                if row.audio_transcript:
+                    return row.audio_transcript == normalized
             old = _event_record(row)
             old_characters = durable_uncovered_event_characters(
                 old,
                 bot_display_name=self._config.bot_display_name,
                 timezone=self._config.timezone,
             )
-            row.visual_summary = normalized
+            if audio:
+                row.audio_transcript = normalized
+            else:
+                row.visual_summary = normalized
             await session.flush()
             new = _event_record(row)
             conversation_id = row.canonical_conversation_id
@@ -354,6 +396,24 @@ class ScopedEventLedgerUnitOfWork:
                             signal_canonical_rollup_if_needed,
                         )
 
+                        signalled = await signal_canonical_rollup_if_needed(
+                            session, conversation, self._config, force_existing=True
+                        )
+                    elif audio:
+                        # A busy group may have compacted the source during ASR.
+                        # Rebuild derived rollups from the retained ledger instead
+                        # of silently losing the newly understood speech.
+                        from qq_ai_bot.conversation.canonical_rollup import (
+                            signal_canonical_rollup_if_needed,
+                        )
+                        from qq_ai_bot.conversation.hydrate import (
+                            delete_canonical_rollup_projections,
+                        )
+
+                        await delete_canonical_rollup_projections(session, conversation.id)
+                        conversation.covered_through_event_id = conversation.starts_after_event_id
+                        conversation.revision += 1
+                        await recount_canonical_uncovered(session, conversation, self._config)
                         signalled = await signal_canonical_rollup_if_needed(
                             session, conversation, self._config, force_existing=True
                         )

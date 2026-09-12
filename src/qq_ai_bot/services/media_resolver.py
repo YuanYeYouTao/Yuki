@@ -117,6 +117,54 @@ class MediaResolver:
             raise MediaResolutionError("get_image_failed", "图片资源查询失败") from exc
         return await self._resolve_get_image_payload(payload)
 
+    async def resolve_audio(
+        self,
+        reference: MediaReference,
+        gateway: OneBotMediaGateway | None = None,
+    ) -> DownloadedMedia:
+        """Convert QQ SILK through the ingress gateway, preferring returned bytes.
+
+        get_record paths belong to the gateway container and are never opened by
+        the Bot. SnowLuma/NapCat extensions return base64 or a downloadable URL.
+        """
+        file_value = (reference.file or "").strip()
+        if file_value.startswith(("base64://", "data:audio/")):
+            return self._decode_inline(file_value, media_prefix="audio/")
+        active_gateway = gateway or self._gateway
+        gateway_error: MediaResolutionError | None = None
+        if file_value and active_gateway is not None:
+            try:
+                async with asyncio.timeout(self._timeout_seconds):
+                    payload = await active_gateway.call_api(
+                        "get_record", {"file": file_value, "out_format": "mp3"}
+                    )
+                if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
+                    payload = payload["data"]
+                if isinstance(payload, dict):
+                    for key in ("base64", "file"):
+                        value = payload.get(key)
+                        if not isinstance(value, str) or not value:
+                            continue
+                        if key == "base64" and not value.startswith(("base64://", "data:")):
+                            value = "base64://" + value
+                        if value.startswith(("base64://", "data:audio/")):
+                            return self._decode_inline(value, media_prefix="audio/")
+                    for key in ("url", "file"):
+                        value = payload.get(key)
+                        if isinstance(value, str) and _looks_like_http(value):
+                            return await self._download(value)
+            except MediaResolutionError:
+                raise
+            except Exception as exc:
+                gateway_error = MediaResolutionError("get_record_failed", "语音资源查询失败")
+                gateway_error.__cause__ = exc
+        for value in (reference.url, reference.file):
+            if value and _looks_like_http(value):
+                return await self._download(value)
+            if value and value.startswith("data:audio/"):
+                return self._decode_inline(value, media_prefix="audio/")
+        raise gateway_error or MediaResolutionError("resource_unavailable", "语音缺少可读取资源")
+
     async def download_attachment(
         self, reference: MediaReference, destination: Path, *, max_download_bytes: int
     ) -> None:
@@ -254,7 +302,7 @@ class MediaResolver:
         # HTTP stack to resolve the hostname a second time (DNS-rebinding TOCTOU).
         return normalized, _replace_url_host(normalized, validated_addresses[0]), host
 
-    def _decode_inline(self, value: str) -> DownloadedMedia:
+    def _decode_inline(self, value: str, *, media_prefix: str = "image/") -> DownloadedMedia:
         content_type: str | None = None
         if value.startswith("base64://"):
             encoded = value.removeprefix("base64://")
@@ -263,7 +311,7 @@ class MediaResolver:
             if not separator or ";base64" not in header.casefold():
                 raise MediaResolutionError("invalid_base64", "图片 data URL 必须使用 Base64")
             media_type = header[5:].split(";", 1)[0].casefold()
-            if not media_type.startswith("image/"):
+            if not media_type.startswith(media_prefix):
                 raise MediaResolutionError("invalid_media_type", "data URL 不是图片")
             content_type = media_type
         max_encoded_length = ((self._max_download_bytes + 2) // 3) * 4 + 4

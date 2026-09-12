@@ -148,13 +148,13 @@ class MemoryClaimValidator:
         *,
         subject_context: SubjectResolutionContext | None = None,
     ) -> ValidatedMemoryClaim:
-        if not event.content.strip():
+        if not event.evidence_content.strip():
             raise _MemoryClaimRejected("empty_event")
         raw_quote = claim.evidence_quote.strip()
-        if not raw_quote or raw_quote not in event.content:
+        if not raw_quote or raw_quote not in event.evidence_content:
             raise _MemoryClaimRejected("evidence_quote_not_in_event")
         quote = normalize_memory_text(raw_quote, maximum=500)
-        source = normalize_memory_text(event.content, maximum=4000)
+        source = normalize_memory_text(event.evidence_content, maximum=4000)
         if not quote or quote not in source:
             raise _MemoryClaimRejected("normalized_evidence_not_in_event")
         resolved = self._resolver.resolve(

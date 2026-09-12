@@ -128,7 +128,7 @@ class MemoryLineageService:
                         kind="reflection_window",
                         fact_id=fact_id,
                         event_id=event.id,
-                        excerpt=event.content,
+                        excerpt=event.evidence_content,
                     )
                     for event in events
                 )
