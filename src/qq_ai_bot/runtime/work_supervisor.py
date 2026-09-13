@@ -210,6 +210,8 @@ async def settle(control: WorkControl, *, delivered: bool, pending_inputs: bool)
         reason=reason.value,
         exit_reason=reason.value,
     )
+    if control.current["state"] == "queued" and state != "queued":
+        reason = ExitReason.INPUT
     control.outcome = ActivationOutcome(
         reason, control.current["id"], **activation_details(control)
     )

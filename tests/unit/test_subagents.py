@@ -471,6 +471,13 @@ async def test_finish_repair_root_resume_and_seven_day_archive(database, tmp_pat
     await workers.maintain()
     await workers.maintain()
     assert len(await repo.pending(lease, work_id=parent["id"])) == 1
+    from qq_ai_bot.runtime.work_schema_v1 import inputs
+
+    # The parent must consume its completion before it can become dormant.
+    async with database.immediate_session() as db:
+        await db.execute(
+            update(inputs).where(inputs.c.work_id == parent["id"]).values(state="consumed")
+        )
     parent = await repo.get(parent["id"])
     await repo.transition(lease, parent["id"], parent["revision"], "completed")
     reopened = await workers.reopen_parent(lease, identity, models=2)

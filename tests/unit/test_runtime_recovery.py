@@ -94,3 +94,22 @@ async def test_missing_used_history_is_not_a_fresh_chain(database, tmp_path):
     await control.repository.checkpoint(control.lease, control.current["id"], None, models=1)
     with pytest.raises(JournalUnavailable, match="work_journal_missing"):
         await WorkSession(control, "contract").restore(TurnTranscript(()))
+
+
+@pytest.mark.asyncio
+async def test_prepared_input_wins_race_with_wait_commit(database, tmp_path):
+    control = await setup(database, tmp_path)
+    identity = control.current["id"]
+    await control.repository.enqueue(
+        control.lease.conversation_id,
+        control.lease.generation,
+        "late-ready-input",
+        kind="message",
+        work_id=identity,
+        ready=True,
+    )
+    # The supervisor inspected the mailbox before preparation completed.
+    control.ending = "waiting_external"
+    await control.settle(delivered=False, pending_inputs=False)
+    assert control.current["state"] == "queued"
+    assert control.outcome.reason.value == "waiting_input"

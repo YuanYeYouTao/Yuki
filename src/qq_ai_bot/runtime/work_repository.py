@@ -325,17 +325,20 @@ class WorkRepository:
             values["goal"] = goal
         async with self.database.sessions() as session, session.begin():
             await self._assert_lease(session, lease)
-            if lease.work_id and state in {"completed", "waiting_user", "waiting_external"}:
+            if state in {"completed", "waiting_user", "waiting_external"}:
                 mailbox = await session.scalar(
                     select(inputs.c.id)
                     .where(
                         inputs.c.work_id == identity,
                         inputs.c.state.in_(("pending", "staged")),
+                        inputs.c.ready.is_(True),
                     )
                     .limit(1)
                 )
                 if mailbox is not None:
-                    values.update(state="queued", reason="worker_mail_arrived")
+                    values.update(state="queued", reason="work_input_arrived")
+                    if exit_reason is not None:
+                        exit_reason = "waiting_input"
             row = (
                 (
                     await session.execute(
