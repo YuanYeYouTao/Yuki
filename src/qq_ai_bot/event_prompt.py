@@ -225,7 +225,7 @@ class ChatEventPromptRenderer:
         self,
         row: EventRecord,
         *,
-        current_message_id: str = "",
+        current_event_id: int | None = None,
         current_content: str = "",
     ) -> ChatMessage:
         """Return the provider-neutral message produced by the shared event projection."""
@@ -234,7 +234,7 @@ class ChatEventPromptRenderer:
             role="assistant" if row.direction == "outbound" else "user",
             content=self.render_event(
                 row,
-                current_message_id=current_message_id,
+                current_event_id=current_event_id,
                 current_content=current_content,
             ),
         )
@@ -243,7 +243,7 @@ class ChatEventPromptRenderer:
         self,
         row: EventRecord,
         *,
-        current_message_id: str = "",
+        current_event_id: int | None = None,
         current_content: str = "",
     ) -> ChatMessage:
         """Return the compact stable-event projection used by conversational models."""
@@ -252,7 +252,7 @@ class ChatEventPromptRenderer:
             role="assistant" if row.direction == "outbound" else "user",
             content=self.render_reference_event(
                 row,
-                current_message_id=current_message_id,
+                current_event_id=current_event_id,
                 current_content=current_content,
             ),
         )
@@ -304,14 +304,14 @@ class ChatEventPromptRenderer:
         self,
         row: EventRecord,
         *,
-        current_message_id: str = "",
+        current_event_id: int | None = None,
         current_content: str = "",
     ) -> str:
         """Render content plus immutable sender, reply, and mention relationships."""
 
         content = self.event_content(
             row,
-            current_message_id,
+            current_event_id,
             current_content,
             yuki_account_ids=self._yuki_account_ids,
         )
@@ -330,14 +330,14 @@ class ChatEventPromptRenderer:
         self,
         row: EventRecord,
         *,
-        current_message_id: str = "",
+        current_event_id: int | None = None,
         current_content: str = "",
     ) -> str:
         """Render one main-Agent event with a stable local event reference."""
 
         content = self.event_content(
             row,
-            current_message_id,
+            current_event_id,
             current_content,
             yuki_account_ids=self._yuki_account_ids,
         )
@@ -346,7 +346,7 @@ class ChatEventPromptRenderer:
         if row.event_kind == "external_event":
             return self.render_event(
                 row,
-                current_message_id=current_message_id,
+                current_event_id=current_event_id,
                 current_content=current_content,
             )
         proactive_label = proactive_message_label(
@@ -426,14 +426,14 @@ class ChatEventPromptRenderer:
     @staticmethod
     def event_content(
         row: EventRecord,
-        current_message_id: str,
+        current_event_id: int | None,
         current_content: str,
         *,
         yuki_account_ids: frozenset[str] = frozenset(),
     ) -> str:
         """Return clean visible event content without internal transport markers."""
 
-        if row.platform_message_id == current_message_id:
+        if row.id == current_event_id:
             return current_content
         segment_types = {
             str(segment.get("type", "")) for segment in row.segments if isinstance(segment, dict)

@@ -52,13 +52,13 @@ class WebSearchSourceRepository:
         conversation_key: str,
         trigger_message_id: str,
         trigger_event_id: int | None = None,
+        execution_id: str | None = None,
         provider: str,
         response: WebSearchResponse,
         max_runs: int,
         canonical_conversation_id: str | None = None,
         bot_user_id: str | None = None,
         ingress_presence_id: str | None = None,
-        infer_trigger_event: bool = True,
     ) -> int:
         """Persist one successful tool run and prune older runs in this conversation."""
 
@@ -67,6 +67,8 @@ class WebSearchSourceRepository:
             run = WebSearchRunModel(
                 conversation_key=conversation_key[:255],
                 trigger_message_id=trigger_message_id[:128],
+                trigger_event_id=trigger_event_id,
+                execution_id=execution_id,
                 query=response.query[:400],
                 provider=provider[:32],
                 created_at=now,
@@ -75,7 +77,7 @@ class WebSearchSourceRepository:
             # Resolve the trusted event and owner before the first write, so
             # identity reads do not retain SQLite's writer lock.
             await stamp_conversation_correlation(session, run, canonical_conversation_id)
-            if infer_trigger_event:
+            if trigger_event_id is not None:
                 event = await load_correlated_chat_event(
                     session,
                     trigger_event_id=trigger_event_id,
@@ -83,10 +85,11 @@ class WebSearchSourceRepository:
                     bot_user_id=bot_user_id,
                     ingress_presence_id=ingress_presence_id,
                 )
-                if event is not None:
-                    await stamp_conversation_correlation(
-                        session, run, event.canonical_conversation_id
-                    )
+                if event is None:
+                    raise WebSearchError("missing_runtime", "联网来源事件已失效")
+                await stamp_conversation_correlation(session, run, event.canonical_conversation_id)
+            elif not execution_id:
+                raise WebSearchError("missing_runtime", "联网记录缺少内部执行身份")
             session.add(run)
             await session.flush()
             seen: set[str] = set()
@@ -132,7 +135,8 @@ class WebSearchSourceRepository:
         self,
         *,
         conversation_key: str,
-        trigger_message_id: str,
+        trigger_event_id: int | None,
+        execution_id: str | None = None,
     ) -> tuple[WebSearchSource, ...]:
         """Return only sources used by this trigger in this exact conversation."""
 
@@ -146,7 +150,7 @@ class WebSearchSourceRepository:
                     )
                     .where(
                         WebSearchRunModel.conversation_key == conversation_key[:255],
-                        WebSearchRunModel.trigger_message_id == trigger_message_id[:128],
+                        self._source_filter(trigger_event_id, execution_id),
                     )
                     .order_by(
                         WebSearchRunModel.created_at.asc(),
@@ -187,7 +191,8 @@ class WebSearchSourceRepository:
         self,
         *,
         conversation_key: str,
-        trigger_message_id: str,
+        trigger_event_id: int | None,
+        execution_id: str | None = None,
         url: str,
     ) -> bool:
         """Return whether a prior web search in this turn produced this URL."""
@@ -202,11 +207,21 @@ class WebSearchSourceRepository:
                 )
                 .where(
                     WebSearchRunModel.conversation_key == conversation_key[:255],
-                    WebSearchRunModel.trigger_message_id == trigger_message_id[:128],
+                    self._source_filter(trigger_event_id, execution_id),
                     WebSearchSourceModel.url == normalized,
                 )
             )
             return bool(count)
+
+    @staticmethod
+    def _source_filter(trigger_event_id: int | None, execution_id: str | None) -> Any:
+        if trigger_event_id is not None:
+            return WebSearchRunModel.trigger_event_id == trigger_event_id
+        if execution_id:
+            return (WebSearchRunModel.trigger_event_id.is_(None)) & (
+                WebSearchRunModel.execution_id == execution_id
+            )
+        raise WebSearchError("missing_runtime", "联网记录缺少内部事件或执行身份")
 
     async def cleanup_expired(
         self,

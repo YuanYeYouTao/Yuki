@@ -98,7 +98,7 @@ class MemoryQueryKernel(Protocol):
         self,
         *,
         conversation_key: str,
-        trigger_message_id: str,
+        source_key: str,
         origin: str,
         intent: MemoryQueryIntent | None,
         result: MemoryRetrievalResult,
@@ -231,7 +231,7 @@ class MemoryQueryPlane:
         consumer: MemoryReadConsumer,
         *,
         conversation_key: str,
-        trigger_message_id: str,
+        source_key: str,
         origin: str,
         intent: MemoryQueryIntent | None,
         result: MemoryRetrievalResult,
@@ -247,7 +247,7 @@ class MemoryQueryPlane:
         await self._kernel.mark_injected(result, injected_fact_ids)
         return await self._kernel.record_recall(
             conversation_key=conversation_key,
-            trigger_message_id=trigger_message_id,
+            source_key=source_key,
             origin=origin,
             intent=intent,
             result=result,

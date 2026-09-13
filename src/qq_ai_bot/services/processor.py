@@ -9,7 +9,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol, cast
 
 from pydantic import ValidationError
@@ -789,6 +789,7 @@ class MessageProcessor:
             scope_state = appended.scope
             if repairing_dedup_gap and created:
                 self._scoped_events.metrics.scoped_append_repairs += 1
+        message = replace(message, source_event_id=record.id)
         turn_snapshot = ConversationTurnSnapshot(
             scope_id=scope_state.id,
             scope_key=coordinator_key,

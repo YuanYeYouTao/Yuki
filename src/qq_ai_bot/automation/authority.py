@@ -24,6 +24,7 @@ class DelegatedAuthority(StrictModel):
     creator_user_id: str
     bot_user_id: str
     created_from_message_id: str
+    creation_source_key: str | None = None
     created_at: str
     permission_level: PermissionLevel
     granted_capabilities: tuple[str, ...]

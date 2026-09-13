@@ -76,6 +76,9 @@ class MemoryPreferenceTrigger:
     conversation_key: str
     decision_actor_type: str = "admin"
     decision_actor_id: str | None = None
+    trigger_event_id: int | None = None
+    canonical_conversation_id: str | None = None
+    ingress_presence_id: str | None = None
     actor_is_superuser: bool = False
 
 
@@ -917,11 +920,25 @@ class MemoryAdminService:
             raise RuntimeError("memory mutation dependencies are incomplete")
         if not actor.bot_user_id:
             raise RuntimeError("memory mutation is not bound to a real Bot event")
-        event = await self._ledger.find_by_platform_message(
-            bot_user_id=actor.bot_user_id,
-            platform_message_id=actor.trigger_message_id,
-        )
-        if event is None or event.sender_user_id != actor.user_id:
+        if actor.trigger_event_id is None:
+            raise RuntimeError("memory mutation requires a ledger event anchor")
+        event = await self._ledger.get_event(actor.trigger_event_id)
+        if (
+            event is None
+            or event.sender_user_id != actor.user_id
+            or event.bot_user_id != actor.bot_user_id
+            or event.direction != "inbound"
+            or event.event_kind != "message"
+            or event.suppression_status not in {None, "keeper"}
+            or (
+                actor.canonical_conversation_id is not None
+                and event.canonical_conversation_id != actor.canonical_conversation_id
+            )
+            or (
+                actor.ingress_presence_id is not None
+                and event.ingress_presence_id != actor.ingress_presence_id
+            )
+        ):
             raise RuntimeError("memory mutation trigger event cannot be verified")
         try:
             decision_actor_type = MemoryDecisionActorType(actor.decision_actor_type)

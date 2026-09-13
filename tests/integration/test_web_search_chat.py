@@ -415,9 +415,13 @@ async def test_native_web_sources_are_persisted_before_backend_rendering(
     assert sender.messages[0].text == (
         "公开文档确认了该信息：\n\n来源：\n1. Native docs\n   https://example.com/native-docs"
     )
+    source = await harness.ledger.find_by_platform_message(
+        bot_user_id="8000", platform_message_id="native-visible"
+    )
+    assert source is not None
     stored = await WebSearchSourceRepository(database).for_trigger(
         conversation_key="bot:8000:private:1001",
-        trigger_message_id="native-visible",
+        trigger_event_id=source.id,
     )
     assert [source.url for source in stored] == ["https://example.com/native-docs"]
 

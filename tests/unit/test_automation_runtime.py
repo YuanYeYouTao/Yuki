@@ -80,6 +80,7 @@ def _router(error_category: str | None = None) -> PresenceRouter:
 
 def _inbound(user_id: str = "10001") -> InboundMessage:
     return InboundMessage(
+        source_event_id=1,
         message_id="automation-create",
         event_type="private",
         scope_type=ScopeType.PRIVATE,
@@ -1169,6 +1170,7 @@ def _script_to(user_id: str, extra: str | None = None) -> AutomationScript:
 def _superuser_inbound(*targets: str) -> InboundMessage:
     text = "1秒后提醒 " + " ".join(targets)
     return InboundMessage(
+        source_event_id=1,
         message_id="automation-super",
         event_type="private",
         scope_type=ScopeType.PRIVATE,
@@ -1288,6 +1290,7 @@ async def test_unknown_person_and_space_targets_fail_closed(database) -> None:
             conversation_key="private:9000",
         )
     inbound = InboundMessage(
+        source_event_id=2,
         message_id="automation-space-unknown",
         event_type="group",
         scope_type=ScopeType.GROUP,
@@ -1361,6 +1364,7 @@ async def test_disabled_binding_fails_while_space_target_remains_canonical(datab
             conversation_key="private:9000",
         )
     inbound = InboundMessage(
+        source_event_id=2,
         message_id="automation-space-ok",
         event_type="group",
         scope_type=ScopeType.GROUP,

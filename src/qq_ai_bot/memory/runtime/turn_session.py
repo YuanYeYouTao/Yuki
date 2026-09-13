@@ -297,7 +297,7 @@ class TurnMemorySession:
             intent = self._prefetch_intent or MemoryQueryIntent(purpose=MemoryRecallPurpose.RECALL)
             recall = await self._memory_context.record_recall(
                 conversation_key=await self._memory_partition_key(),
-                trigger_message_id=self._inbound.message_id,
+                source_key=self._inbound.source_key,
                 origin=self._origin.value,
                 intent=intent,
                 result=empty,
@@ -340,7 +340,7 @@ class TurnMemorySession:
             recall = await self._query.publish_exposure(
                 MemoryReadConsumer.AUTOMATIC_CONTEXT,
                 conversation_key=await self._memory_partition_key(),
-                trigger_message_id=self._inbound.message_id,
+                source_key=self._inbound.source_key,
                 origin=self._origin.value,
                 intent=self._prefetch_intent,
                 result=self._prefetch_result,

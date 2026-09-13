@@ -129,6 +129,9 @@ class AdminActor:
     bot_user_id: str = ""
     decision_actor_type: str = "command"
     decision_actor_id: str | None = None
+    trigger_event_id: int | None = None
+    canonical_conversation_id: str | None = None
+    ingress_presence_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +144,9 @@ class ControlAuditRef:
     bot_user_id: str = ""
     decision_actor_type: str = "command"
     decision_actor_id: str | None = None
+    trigger_event_id: int | None = None
+    canonical_conversation_id: str | None = None
+    ingress_presence_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

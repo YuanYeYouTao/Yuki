@@ -191,6 +191,7 @@ class PluginCommandAdapter:
             allow_automation=False,
             conversation_key=plugin_conversation_key(message, identity),
             trigger_message_id=message.message_id,
+            trigger_event_id=message.source_event_id,
             actor_user_id=message.sender.user_id,
             actor_is_superuser=message.sender.user_id in self._superusers,
             current_group_id=message.group_id,

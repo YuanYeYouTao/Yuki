@@ -575,12 +575,11 @@ class WorkControl:
         source = {
             **self.source,
             "trigger_event_id": event.id,
-            "trigger_id": event.platform_message_id,
             "presence_id": event.ingress_presence_id,
         }
         queued = await self.repository.accept(
             self.lease,
-            source_key=f"message:{self.lease.conversation_id}:{event.platform_message_id}",
+            source_key=f"event:{self.lease.conversation_id}:{event.id}",
             source=source,
             goal=goal,
             output_kind=kind,

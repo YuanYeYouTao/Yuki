@@ -149,6 +149,7 @@ async def test_recall_receipt_tracks_zero_partial_evaluation_and_interruption(da
     memory_session = TurnMemorySession.open(
         inbound=InboundMessage(
             message_id="synthetic",
+            source_execution_id="memory-receipt-test",
             event_type="message:private:friend",
             scope_type=ScopeType.PRIVATE,
             sender=SenderIdentity(user_id="1001", nickname="test"),
@@ -218,7 +219,7 @@ async def test_recall_receipt_tracks_zero_partial_evaluation_and_interruption(da
         ).all() == [(first.id, 1, 0), (second.id, 0, 0)]
     pending = await receipts.record_initial(
         conversation_key="synthetic",
-        trigger_message_id="next",
+        source_key="event:next",
         origin="user_message",
         intent=MemoryQueryIntent(),
         result=result,

@@ -489,7 +489,8 @@ class AdminCapabilityService:
             not runtime.actor_is_superuser
             or runtime.actor_user_id != inbound.sender.user_id
             or runtime.actor_user_id not in self._settings.superusers
-            or runtime.trigger_message_id != inbound.message_id
+            or runtime.effective_trigger_event_id is None
+            or runtime.effective_trigger_event_id != inbound.source_event_id
             or runtime.current_group_id != inbound.group_id
             or tuple(runtime.mentioned_user_ids) != tuple(inbound.mentioned_user_ids)
         ):
@@ -498,6 +499,9 @@ class AdminCapabilityService:
             user_id=runtime.actor_user_id,
             is_superuser=runtime.actor_is_superuser,
             trigger_message_id=runtime.trigger_message_id,
+            trigger_event_id=runtime.effective_trigger_event_id,
+            canonical_conversation_id=runtime.effective_conversation_id,
+            ingress_presence_id=runtime.effective_presence_id,
             conversation_key=runtime.conversation_key,
             current_group_id=runtime.current_group_id,
             mentioned_user_ids=runtime.mentioned_user_ids,

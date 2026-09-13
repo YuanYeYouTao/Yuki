@@ -134,7 +134,7 @@ class SocialAutomationAdapter:
                             "conversation_id": context.canonical_conversation_id,
                             "origin": context.authority.origin.value,
                             "actor_user_id": context.authority.actor_user_id,
-                            "trigger_id": context.step_id,
+                            "step_id": context.step_id,
                             "bot_user_id": context.bot_user_id,
                             "automation_id": context.automation_id,
                             "automation_run_id": context.automation_run_id,

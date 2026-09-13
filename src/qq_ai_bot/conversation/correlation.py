@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
@@ -12,7 +11,6 @@ from qq_ai_bot.identity.canonical_repository import assert_same_shadow
 from qq_ai_bot.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel, PresenceModel
 from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.persistence.repository_helpers import keeper_event_clause
 
 CANONICAL_KIND_MISMATCH = "canonical_kind_mismatch"
 MISSING_CANONICAL_CONVERSATION = "missing_canonical_conversation"
@@ -83,33 +81,6 @@ async def resolve_conversation_id_for_event(
     return await try_live_conversation_id(session, event.canonical_conversation_id)
 
 
-async def load_unique_live_chat_event(
-    session: AsyncSession,
-    *,
-    platform_message_id: str | None,
-    bot_user_id: str | None = None,
-    ingress_presence_id: str | None = None,
-    require_bot_or_presence: bool = False,
-) -> ChatEventModel | None:
-    """Load a unique keeper event; ambiguity fails closed."""
-
-    message_id = _token(platform_message_id)
-    bot = _token(bot_user_id)
-    presence = _token(ingress_presence_id)
-    if message_id is None or (require_bot_or_presence and bot is None and presence is None):
-        return None
-    statement = select(ChatEventModel).where(
-        ChatEventModel.platform_message_id == message_id,
-        keeper_event_clause(),
-    )
-    if presence is not None:
-        statement = statement.where(ChatEventModel.ingress_presence_id == presence)
-    if bot is not None:
-        statement = statement.where(ChatEventModel.bot_user_id == bot)
-    rows = list(await session.scalars(statement))
-    return rows[0] if len(rows) == 1 else None
-
-
 async def load_correlated_chat_event(
     session: AsyncSession,
     *,
@@ -133,33 +104,11 @@ async def load_correlated_chat_event(
     return event
 
 
-async def resolve_conversation_id_for_chat_event(
-    session: AsyncSession,
-    *,
-    platform_message_id: str | None,
-    bot_user_id: str | None = None,
-    ingress_presence_id: str | None = None,
-    require_bot_or_presence: bool = False,
-) -> str | None:
-    event = await load_unique_live_chat_event(
-        session,
-        platform_message_id=platform_message_id,
-        bot_user_id=bot_user_id,
-        ingress_presence_id=ingress_presence_id,
-        require_bot_or_presence=require_bot_or_presence,
-    )
-    if event is None:
-        return None
-    return await try_live_conversation_id(session, event.canonical_conversation_id)
-
-
 __all__ = [
     "CANONICAL_KIND_MISMATCH",
     "MISSING_CANONICAL_CONVERSATION",
     "load_correlated_chat_event",
-    "load_unique_live_chat_event",
     "require_live_conversation",
-    "resolve_conversation_id_for_chat_event",
     "resolve_conversation_id_for_event",
     "stamp_conversation_correlation",
     "try_live_conversation_id",
