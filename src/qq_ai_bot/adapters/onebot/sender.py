@@ -18,6 +18,14 @@ logger = logging.getLogger(__name__)
 class OneBotSendError(RuntimeError):
     """Sanitized outbound transport failure."""
 
+    def __init__(self, message: str, *, dispatched: bool = True) -> None:
+        super().__init__(message)
+        self.dispatched = dispatched
+
+
+class ConfirmedQuoteRejection(OneBotSendError):
+    """Only an explicit gateway rejection proving nonacceptance permits quote fallback."""
+
 
 class OneBotSender:
     """Send plain text, optionally quoting one backend-validated message."""
@@ -50,7 +58,9 @@ class OneBotSender:
 
         try:
             return await self._deliver(message)
-        except OneBotSendError:
+        except OneBotSendError as exc:
+            if exc.dispatched:
+                raise
             replacement = self._same_presence_bot()
             if replacement is None or replacement is self._bot:
                 raise
@@ -58,10 +68,12 @@ class OneBotSender:
             return await self._deliver(message)
 
     async def _deliver(self, message: OutboundMessage) -> OutboundSendReceipt:
+        dispatched = False
         try:
             if not message.media and message.reply_to_message_id is None:
                 if not message.text:
                     raise ValueError("outbound message is empty")
+                dispatched = True
                 result = await self._bot.send(
                     event=self._event,
                     message=MessageSegment.text(message.text),
@@ -93,6 +105,7 @@ class OneBotSender:
                     raise ValueError("unsupported outbound media kind")
             if not payload:
                 raise ValueError("outbound message is empty")
+            dispatched = True
             result = await self._bot.send(event=self._event, message=payload)
             return parse_onebot_send_receipt(result)
         except asyncio.CancelledError:
@@ -101,7 +114,7 @@ class OneBotSender:
             raise
         except Exception as exc:
             logger.error("onebot_send_failed exception_category=%s", type(exc).__name__)
-            raise OneBotSendError("OneBot send failed") from exc
+            raise OneBotSendError("OneBot send failed", dispatched=dispatched) from exc
 
     def _same_presence_bot(self) -> Bot | None:
         from qq_ai_bot.gateway.registry import RegistryClosed, process_registry

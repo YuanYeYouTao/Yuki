@@ -72,7 +72,6 @@ from qq_ai_bot.persistence.repositories import (
     WebSearchSourceRepository,
 )
 from qq_ai_bot.sandbox.environment_tools import EXECUTION_TOOLS, READ_TOOLS, SANDBOX_TOOLS
-from qq_ai_bot.sandbox.progress import TaskProgress
 from qq_ai_bot.services.evidence_state import evidence_state
 from qq_ai_bot.services.reply_target import ReplyTargetControl
 from qq_ai_bot.services.turn_coordinator import TurnToken
@@ -188,7 +187,6 @@ class ToolRuntime:
     scheduled_automation_intent: bool = False
     max_model_requests_override: int | None = None
     max_tool_calls_override: int | None = None
-    task_progress: TaskProgress | None = None
     sandbox_source: dict[str, Any] | None = None
     execution_id: str = ""
     memory_turn_id: str = ""

@@ -9,7 +9,7 @@ import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, or_, select
 
 from qq_ai_bot.adapters.onebot.sender import parse_onebot_send_receipt
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
@@ -19,7 +19,8 @@ from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.subagent_schema import children
 from qq_ai_bot.runtime.trigger import WorkResumeTrigger
 from qq_ai_bot.runtime.work_activation import activate_work
-from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
+from qq_ai_bot.runtime.work_recovery_schema import deliveries, recovery
+from qq_ai_bot.runtime.work_repository import WorkConflict, WorkLease, WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import inputs, scope, work
 from qq_ai_bot.sandbox.source_recovery import recover_source
 from qq_ai_bot.services.agent_tools import ToolRuntime
@@ -40,7 +41,7 @@ class WorkScheduler:
 
     async def start(self) -> None:
         if self.app.settings.runtime_work_enabled and self._worker is None:
-            from qq_ai_bot.sandbox.progress import PROCESS_ID
+            from qq_ai_bot.runtime.execution_receipts import PROCESS_ID
 
             await self.repository.repair_abandoned_inputs(PROCESS_ID)
             self._worker = asyncio.create_task(self._loop(), name="runtime-work-scheduler")
@@ -74,30 +75,19 @@ class WorkScheduler:
         while True:
             try:
                 await self.drain_once()
-                self._last_error = None
             except Exception as exc:
                 self._last_error = type(exc).__name__
                 logger.warning("work_scheduler_failed category=%s", self._last_error)
             await asyncio.sleep(2)
 
     async def drain_once(self) -> None:
-        from qq_ai_bot.sandbox.progress import PROCESS_ID
+        from qq_ai_bot.runtime.execution_receipts import PROCESS_ID
 
         await self.repository.repair_abandoned_inputs(PROCESS_ID)
         if time.monotonic() - self._last_reclaim > 600:
             await self.repository.reclaim_terminal()
             self._last_reclaim = time.monotonic()
-        async with self.app.database.sessions() as session, session.begin():
-            await session.execute(
-                update(work)
-                .where(work.c.state == "waiting_external", work.c.updated < time.time() - 86400)
-                .values(
-                    state="suspended",
-                    reason="external_wait_expired",
-                    revision=work.c.revision + 1,
-                    updated=time.time(),
-                )
-            )
+        async with self.app.database.sessions() as session:
             rows = (
                 (
                     await session.execute(
@@ -106,10 +96,22 @@ class WorkScheduler:
                             scope,
                             scope.c.conversation_id == work.c.conversation_id,
                         )
+                        .outerjoin(recovery, recovery.c.work_id == work.c.id)
                         .where(
-                            work.c.state.in_(("queued", "running")),
+                            or_(
+                                work.c.state.in_(("queued", "running")),
+                                (work.c.state == "suspended")
+                                & work.c.id.in_(
+                                    select(deliveries.c.work_id).where(
+                                        deliveries.c.kind == "notice",
+                                        deliveries.c.state.in_(("planned", "blocked")),
+                                        deliveries.c.not_before <= time.time(),
+                                    )
+                                ),
+                            ),
                             work.c.id.not_in(select(children.c.work_id)),
                             or_(scope.c.owner.is_(None), scope.c.lease_until <= time.time()),
+                            or_(recovery.c.work_id.is_(None), recovery.c.not_before <= time.time()),
                         )
                         .order_by(work.c.updated)
                         .limit(8)
@@ -127,18 +129,32 @@ class WorkScheduler:
             except WorkConflict:
                 continue
             except Exception as exc:
+                from qq_ai_bot.runtime.activation_outcome import (
+                    WorkActivationHandled,
+                    WorkRecoveryDeferred,
+                )
+
+                self._last_error = type(exc).__name__
+
+                if isinstance(exc, (WorkActivationHandled, WorkRecoveryDeferred)):
+                    continue
                 lease = await self.repository.acquire(row["conversation_id"], row["generation"])
                 if lease is not None:
                     try:
                         current = await self.repository.get(row["id"])
                         if current and current["state"] in {"queued", "running"}:
-                            await self.repository.transition(
-                                lease,
-                                row["id"],
-                                current["revision"],
-                                "suspended",
-                                reason=type(exc).__name__,
+                            from qq_ai_bot.runtime.work_control import WorkControl
+
+                            async def validate(owned_lease: WorkLease | None = lease) -> None:
+                                assert owned_lease is not None
+                                if not await self.repository.valid(owned_lease):
+                                    raise WorkConflict("work_recovery_lease_lost")
+
+                            control = WorkControl(
+                                self.repository, lease, current["source_key"], source, validate
                             )
+                            control.current = current
+                            await control.recover_failure(exc)
                     finally:
                         await self.repository.release(lease)
 
@@ -181,23 +197,50 @@ class WorkScheduler:
                     raise ValueError("work_connection_changed")
 
             async def deliver(text: str, effect_key: str) -> dict[str, Any]:
+                from qq_ai_bot.domain.messages import OutboundMessage
+
+                return await deliver_message(OutboundMessage(text=text), effect_key)
+
+            async def deliver_message(message: Any, effect_key: str) -> dict[str, Any]:
                 async def send() -> dict[str, Any]:
                     await validate()
                     group = original.scope_type is ScopeType.GROUP
                     call_api = getattr(resolved.connection.bot, "call_api", None)
                     if not callable(call_api):
                         raise ValueError("work_gateway_unavailable")
+                    import base64
+
+                    payload = []
+                    if message.reply_to_message_id:
+                        payload.append(
+                            {"type": "reply", "data": {"id": message.reply_to_message_id}}
+                        )
+                    if message.text:
+                        payload.append({"type": "text", "data": {"text": message.text}})
+                    for media in message.media:
+                        kind = "record" if media.kind.value == "audio" else "image"
+                        if media.kind.value not in {"audio", "image"}:
+                            raise ValueError("unsupported_persisted_delivery_media")
+                        payload.append(
+                            {
+                                "type": kind,
+                                "data": {
+                                    "file": "base64://"
+                                    + base64.b64encode(media.content).decode("ascii")
+                                },
+                            }
+                        )
                     response = await call_api(
                         "send_group_msg" if group else "send_private_msg",
                         **{
                             "group_id" if group else "user_id": int(recovered.external_target_id),
-                            "message": [{"type": "text", "data": {"text": text}}],
+                            "message": payload,
                         },
                     )
                     receipt = parse_onebot_send_receipt(response)
                     outcome = {
                         "transport_accepted": True,
-                        "text": text,
+                        "text": message.text,
                         "message_id": receipt.platform_message_id,
                     }
                     await self.repository.record_effect(effect_key, "accepted", outcome)
@@ -207,7 +250,7 @@ class WorkScheduler:
                         scope_type=original.scope_type,
                         sender_user_id=recovered.bot_user_id,
                         direction="outbound",
-                        content=text,
+                        content=message.text,
                         group_id=original.group_id,
                         private_peer_user_id=None if group else recovered.external_target_id,
                         sender_is_bot=True,
@@ -237,6 +280,49 @@ class WorkScheduler:
             ) as control:
                 if control.current is None or control.current["id"] != item["id"]:
                     raise WorkConflict("work_schedule_target_changed")
+                if item["state"] == "suspended":
+                    from qq_ai_bot.runtime.delivery_intents import record, reserve
+
+                    async with self.app.database.sessions() as session:
+                        notices = (
+                            (
+                                await session.execute(
+                                    select(deliveries)
+                                    .where(
+                                        deliveries.c.work_id == item["id"],
+                                        deliveries.c.kind == "notice",
+                                        deliveries.c.state.in_(("planned", "blocked")),
+                                        deliveries.c.not_before <= time.time(),
+                                    )
+                                    .order_by(deliveries.c.created)
+                                    .limit(1)
+                                )
+                            )
+                            .mappings()
+                            .all()
+                        )
+                    control.ending = "suspended"
+                    for notice in notices:
+                        payload = json.loads(notice["payload_json"])
+                        from qq_ai_bot.runtime.activation_outcome import DeliveryDeferred
+
+                        try:
+                            await reserve(control, notice["id"], "notice", payload)
+                        except DeliveryDeferred:
+                            return
+                        if not await self.repository.prepare_effect(
+                            control.lease, item["id"], notice["id"], "progress"
+                        ):
+                            await record(control, notice["id"], "unknown", {})
+                            continue
+                        await record(control, notice["id"], "dispatching", {})
+                        try:
+                            outcome = await deliver(payload["text"], notice["id"])
+                        except BaseException:
+                            await record(control, notice["id"], "unknown", {})
+                            raise
+                        await record(control, notice["id"], "accepted", outcome)
+                    return
                 self.app.chat._active_work[key] = control
                 try:
                     from qq_ai_bot.runtime.work_delivery import repair_receipt_ledger
@@ -296,28 +382,27 @@ class WorkScheduler:
                             sandbox_source={**source, "work_id": item["id"]},
                         ),
                     )
-                    if result.text and not result.suppress_delivery:
-                        chain = (
-                            control.session.transcript.chain_id
-                            if control.session and control.session.transcript
-                            else control.lease.owner
-                        )
-                        effect_key = f"{chain}:{control.current['model_requests']}:final"
-                        if control.session is not None:
-                            await control.session.save("delivery")
-                        if await self.repository.prepare_effect(
-                            control.lease, item["id"], effect_key, "final"
-                        ):
-                            if control.current["sent_messages"] >= 16:
-                                raise ValueError("work_message_budget_exhausted")
-                            await self.repository.checkpoint(
-                                control.lease, item["id"], None, messages=1
-                            )
-                            control.current["sent_messages"] += 1
-                            outcome = await deliver(result.text, effect_key)
-                            control.final_delivery = bool(outcome.get("transport_accepted"))
-                            if control.final_delivery and control.session is not None:
-                                await control.session.save("delivered")
+                    self._last_error = (
+                        result.outcome.failure.code
+                        if result.outcome and result.outcome.failure
+                        else None
+                    )
+                    from qq_ai_bot.domain.messages import OutboundSendReceipt
+                    from qq_ai_bot.runtime.work_delivery import resume_delivery_plan
+
+                    class ResumeSender:
+                        async def send_prepared(
+                            self, message: Any, key: str
+                        ) -> OutboundSendReceipt:
+                            outcome = await deliver_message(message, key)
+                            return OutboundSendReceipt(str(outcome["message_id"]))
+
+                    if control.session and control.session.recovered_delivery == "delivery":
+                        await resume_delivery_plan(control, ResumeSender())
+                    elif result.text and not result.suppress_delivery:
+                        from qq_ai_bot.runtime.work_delivery import deliver_final_text
+
+                        await deliver_final_text(control, result.text, deliver)
                 finally:
                     if self.app.chat._active_work.get(key) is control:
                         self.app.chat._active_work.pop(key, None)

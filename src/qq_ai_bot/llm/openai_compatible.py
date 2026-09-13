@@ -25,6 +25,7 @@ from qq_ai_bot.llm.base import (
     LLMUnavailableError,
     RetryableProviderError,
 )
+from qq_ai_bot.llm.http_errors import check_provider_response
 from qq_ai_bot.llm.wire_diagnostics import WireRequestObserver
 
 logger = logging.getLogger(__name__)
@@ -72,7 +73,11 @@ class OpenAICompatibleProvider(LLMProvider):
             ):
                 with attempt:
                     from qq_ai_bot.runtime.observability import current_runtime_turn_correlation
+                    from qq_ai_bot.runtime.work_activation import current_work_control
 
+                    work = current_work_control.get()
+                    if work is not None and attempt.retry_state.attempt_number > 1:
+                        await work.reserve_request(auxiliary=True)
                     correlation = current_runtime_turn_correlation()
                     logger.info(
                         "model_transport_attempt protocol=chat_completions correlation_id=%s "
@@ -84,7 +89,9 @@ class OpenAICompatibleProvider(LLMProvider):
         except httpx.TimeoutException as exc:
             raise LLMTimeoutError("LLM request timed out") from exc
         except (httpx.TransportError, RetryableProviderError) as exc:
-            raise LLMUnavailableError("LLM is temporarily unavailable") from exc
+            raise LLMUnavailableError(
+                "LLM is temporarily unavailable", diagnostics=getattr(exc, "diagnostics", {})
+            ) from exc
 
         latency = time.perf_counter() - started
         logger.info("llm_request_complete latency_seconds=%.3f success=true", latency)
@@ -186,10 +193,7 @@ class OpenAICompatibleProvider(LLMProvider):
             json=payload,
             timeout=self._timeout,
         )
-        if response.status_code >= 500:
-            raise RetryableProviderError("provider returned a server error")
-        if response.status_code >= 400:
-            raise LLMError(f"provider rejected request with HTTP {response.status_code}")
+        check_provider_response(response)
         return response
 
     @staticmethod

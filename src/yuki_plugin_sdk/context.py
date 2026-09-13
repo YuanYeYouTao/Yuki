@@ -133,7 +133,9 @@ class LLMFacade(Protocol):
     explicitly independent computation. Context profiles do not grant history reads.
     """
 
-    async def generate(self, instruction: str, *, max_characters: int = 2_000) -> str: ...
+    async def generate(
+        self, instruction: str, *, max_characters: int = 2_000
+    ) -> str | PluginResult: ...
 
     async def generate_with_context(
         self,
@@ -141,7 +143,7 @@ class LLMFacade(Protocol):
         *,
         context_profile: str,
         max_characters: int = 2_000,
-    ) -> str: ...
+    ) -> str | PluginResult: ...
 
 
 class AgentFacade(Protocol):

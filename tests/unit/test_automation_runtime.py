@@ -605,7 +605,8 @@ async def test_delegated_followup_creation_is_owned_and_idempotent(database) -> 
 
 
 @pytest.mark.asyncio
-async def test_worker_executes_once_and_prevents_duplicate_claim(database) -> None:
+@pytest.mark.parametrize("resume_agent", [False, True])
+async def test_worker_executes_once_and_prevents_duplicate_claim(database, resume_agent) -> None:
     clock = FakeClock(datetime(2026, 7, 27, tzinfo=UTC))
     calls: list[dict[str, object]] = []
 
@@ -613,13 +614,23 @@ async def test_worker_executes_once_and_prevents_duplicate_claim(database) -> No
         calls.append(arguments)
         return CapabilityResult(data={"sent": True}, messages_sent=1)
 
+    agent_runs = []
+
+    async def agent(arguments, context):
+        agent_runs.append(context.automation_run_id)
+        if len(agent_runs) == 1:
+            return CapabilityResult(
+                data={}, llm_calls=1, tool_calls=0, pending_work_id="same-agent-work"
+            )
+        return CapabilityResult(data={"text": "done"}, llm_calls=1, tool_calls=1)
+
     settings = make_settings(
         database.url,
         automation_enabled=True,
         automation_poll_seconds=0.01,
         automation_lease_seconds=30,
     )
-    registry = build_capability_registry({"onebot.send_private_message": send})
+    registry = build_capability_registry({"onebot.send_private_message": send, "yuki.agent": agent})
     repository = AutomationRepository(database)
     time_service = TimeContextService(database, clock=clock)
     service = AutomationService(
@@ -628,7 +639,25 @@ async def test_worker_executes_once_and_prevents_duplicate_claim(database) -> No
         registry=registry,
         time_service=time_service,
     )
-    row = await service.create(_script(), inbound=_inbound(), conversation_key="private:10001")
+    script = _script()
+    if resume_agent:
+        raw = script.model_dump(mode="json")
+        raw["steps"].insert(
+            0,
+            {
+                "id": "work",
+                "call": "yuki.agent",
+                "arguments": {
+                    "instruction": "finish",
+                    "context_profile": "none",
+                    "max_model_requests": 1,
+                    "max_tool_calls": 0,
+                },
+            },
+        )
+        raw["limits"].update(max_steps=2, max_llm_calls=2, max_tool_calls=2)
+        script = AutomationScript.model_validate(raw)
+    row = await service.create(script, inbound=_inbound(), conversation_key="private:10001")
     clock.advance(2)
     first = await repository.claim_due(worker_id="first", now=clock.now(), lease_seconds=30)
     second = await repository.claim_due(worker_id="second", now=clock.now(), lease_seconds=30)
@@ -648,9 +677,25 @@ async def test_worker_executes_once_and_prevents_duplicate_claim(database) -> No
         ),
         time_service=time_service,
     )
+    completed_event = asyncio.Event()
+    original_finish = repository.finish_automation_run
+
+    async def finish_and_signal(*args, **kwargs):
+        result = await original_finish(*args, **kwargs)
+        completed_event.set()
+        return result
+
+    repository.finish_automation_run = finish_and_signal
     await worker.start()
-    await asyncio.sleep(0.08)
-    await worker.close()
+    try:
+        await asyncio.wait_for(completed_event.wait(), 5)
+    except TimeoutError:
+        pytest.fail(
+            f"automation did not finish: {await repository.run_history(row.id)}; "
+            f"agent runs={agent_runs}"
+        )
+    finally:
+        await worker.close()
 
     completed = await repository.get(row.id)
     assert completed is not None
@@ -659,6 +704,9 @@ async def test_worker_executes_once_and_prevents_duplicate_claim(database) -> No
     history = await repository.run_history(row.id)
     assert len(history) == 1
     assert history[0].messages_sent == 1
+    if resume_agent:
+        assert agent_runs == [history[0].id, history[0].id]
+        assert history[0].llm_calls == 2
     assert (
         await repository.create_run(
             row.id,

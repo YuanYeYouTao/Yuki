@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -184,6 +185,43 @@ class AutomationExecutor:
         }
         outputs: dict[str, Any] = {}
         steps_completed = llm_calls = tool_calls = messages_sent = 0
+        from qq_ai_bot.automation.work_cursor import load as load_cursor
+        from qq_ai_bot.automation.work_cursor import save as save_cursor
+
+        phase, cursor = await load_cursor(
+            self._repository._database, run.id, automation.script_hash
+        )
+        if phase in {"dispatching", "changed"}:
+            return ExecutionResult(
+                status=RunStatus.UNCERTAIN, error_category="step_outcome_requires_reconciliation"
+            )
+        outputs = cursor.get("outputs", {})
+        steps_completed = int(cursor.get("steps_completed", 0))
+        llm_calls = int(cursor.get("llm_calls", 0))
+        tool_calls = int(cursor.get("tool_calls", 0))
+        messages_sent = int(cursor.get("messages_sent", 0))
+        next_step = int(cursor.get("next_step", 0))
+        active_before = float(cursor.get("active_seconds", 0))
+        activated_at = time.monotonic()
+
+        async def checkpoint(phase: str, index: int, work_id: str | None = None) -> None:
+            await save_cursor(
+                self._repository._database,
+                run.id,
+                automation.script_hash,
+                phase,
+                {
+                    "outputs": outputs,
+                    "steps_completed": steps_completed,
+                    "llm_calls": llm_calls,
+                    "tool_calls": tool_calls,
+                    "messages_sent": messages_sent,
+                    "next_step": index,
+                    "work_id": work_id,
+                    "active_seconds": active_before + time.monotonic() - activated_at,
+                },
+            )
+
         web_was_used = False
         conversation_key = f"automation:{automation.id}"
         conversation_id = None
@@ -205,8 +243,12 @@ class AutomationExecutor:
                 summary={"reason": "canonical conversation hydrate failed"},
             )
         try:
-            async with asyncio.timeout(automation.script.limits.timeout_seconds):
-                for step in automation.script.steps:
+            async with asyncio.timeout(
+                max(0, automation.script.limits.timeout_seconds - active_before)
+            ):
+                for index, step in enumerate(automation.script.steps):
+                    if index < next_step:
+                        continue
                     definition = self._registry.require(step.call)
                     if step.call not in allowed:
                         raise AutomationExecutionError("capability_not_delegated")
@@ -248,6 +290,10 @@ class AutomationExecutor:
                             gateway=self._gateway_factory(context),
                         )
                     started = self._time.clock.now()
+                    await checkpoint(
+                        "agent" if step.call in {"yuki.agent", "yuki.generate"} else "dispatching",
+                        index,
+                    )
                     try:
                         result = await self._execute_capability(definition, arguments, context)
                     except AutomationExecutionError as exc:
@@ -278,6 +324,25 @@ class AutomationExecutor:
                         )
                         raise
                     finished = self._time.clock.now()
+                    if result.pending_work_id is not None:
+                        llm_calls += result.llm_calls
+                        tool_calls += result.tool_calls
+                        messages_sent += result.messages_sent
+                        self._enforce_runtime_limits(
+                            automation,
+                            llm_calls=llm_calls,
+                            tool_calls=tool_calls,
+                            messages_sent=messages_sent,
+                        )
+                        await checkpoint("agent", index, result.pending_work_id)
+                        return ExecutionResult(
+                            status=RunStatus.RUNNING,
+                            steps_completed=steps_completed,
+                            llm_calls=llm_calls,
+                            tool_calls=tool_calls,
+                            messages_sent=messages_sent,
+                            summary={"pending_work_id": result.pending_work_id},
+                        )
                     await self._repository.record_step(
                         run_id=run.id,
                         step_id=step.id,
@@ -313,6 +378,7 @@ class AutomationExecutor:
                         tool_calls=tool_calls,
                         messages_sent=messages_sent,
                     )
+                    await checkpoint("ready", index + 1)
         except TimeoutError:
             return ExecutionResult(
                 status=RunStatus.FAILED,
@@ -334,6 +400,7 @@ class AutomationExecutor:
                 "state_mismatch",
                 "target_missing",
                 "operation_unavailable",
+                "agent_work_blocked",
             }:
                 return ExecutionResult(
                     status=RunStatus.BLOCKED,
@@ -541,7 +608,12 @@ class AutomationExecutor:
     ) -> CapabilityResult:
         if definition.handler is None:
             raise AutomationExecutionError("capability_handler_unavailable")
-        attempts = 2 if definition.retry_policy is RetryPolicy.TRANSIENT_ONCE else 1
+        attempts = (
+            2
+            if definition.retry_policy is RetryPolicy.TRANSIENT_ONCE
+            and definition.name not in {"yuki.agent", "yuki.generate"}
+            else 1
+        )
         for attempt in range(attempts):
             try:
                 if context.revalidate_authority is not None:

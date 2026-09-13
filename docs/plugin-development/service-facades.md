@@ -111,3 +111,10 @@ OneBot `music` 消息段发送到触发插件的当前真实私聊或群聊。�
 绕过。
 
 独立长期故事、跑团或游戏状态使用 `agent_sessions`；不要把大量连续历史塞进一次 `llm.generate()`。
+
+## 持续调用的状态
+
+Runtime 升级后，`agent.run` 返回 `state`、`work_id`、`pending`。
+`llm.generate` / `generate_with_context` 成功仍返回字符串，未完成返回包含上述字段的 `PluginResult`。
+同一合法 invocation 用同样参数接回原工作；不要将等待结果当正文发送。
+需要脱离当前 invocation 的工作使用后台通知 API。详见 [恢复所有者与兼容变化](../operations/runtime-recovery-2026-09-13.md)。

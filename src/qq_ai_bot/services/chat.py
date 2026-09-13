@@ -12,6 +12,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass, replace
 from typing import Any, Protocol, TypedDict, TypeVar, cast
 
+from qq_ai_bot.adapters.onebot.sender import ConfirmedQuoteRejection
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.admin.permission_catalog import contains_internal_capability_payload
@@ -124,7 +125,6 @@ from qq_ai_bot.runtime.trigger import (
     SandboxTaskTurnTrigger,
     WorkResumeTrigger,
 )
-from qq_ai_bot.sandbox.progress import TaskProgress
 from qq_ai_bot.services.agent_runner import (
     AgentRunner,
     AgentRunResult,
@@ -382,7 +382,6 @@ def _trusted_conversation_write_kwargs(inbound: InboundMessage) -> _TrustedConve
 class _CompletedAgentRun:
     result: AgentRunResult
     memory_exposures: tuple[MemoryExposure, ...]
-    progress: TaskProgress
 
 
 class _ChatAgentBackend(AgentToolBackend):
@@ -400,7 +399,6 @@ class _ChatAgentBackend(AgentToolBackend):
         self._admin_retry_constraint: tuple[str, str] | None = None
         self._admin_terminal_failure: dict[str, object] | None = None
         self._completed_admin_mutations: set[tuple[str, str]] = set()
-        self._committed_mutation_messages: list[str] = []
         self._mutation_committed = False
         self._automation_persisted = False
         self._batch: list[ToolCall] = []
@@ -1105,7 +1103,6 @@ class _ChatAgentBackend(AgentToolBackend):
                 self._admin_terminal_failure = None
                 if mutation_identity is not None and mutation_committed:
                     self._completed_admin_mutations.add(mutation_identity)
-                    self._remember_committed_mutation(decoded)
                     self._mutation_committed = True
                     if self._exclusive_write():
                         self._tools_closed = True
@@ -1169,27 +1166,8 @@ class _ChatAgentBackend(AgentToolBackend):
         )
 
     def post_commit_recovery_text(self) -> str | None:
-        """Return a deterministic reply when model finalization fails after a commit."""
-
-        memory_text = self._memory_mutation_final_text()
-        if memory_text is not None:
-            return memory_text
-        if not self._committed_mutation_messages:
-            return None
-        return "\n".join(self._committed_mutation_messages)
-
-    def _remember_committed_mutation(self, result: dict[str, object]) -> None:
-        message = str(result.get("public_message") or "").strip()
-        if not message:
-            receipt = json.dumps(
-                result,
-                ensure_ascii=False,
-                default=str,
-                separators=(",", ":"),
-            )
-            message = f"操作已经提交。以下是工具返回的结果：\n{receipt}"
-        if message not in self._committed_mutation_messages:
-            self._committed_mutation_messages.append(message)
+        """Only an explicit domain receipt may supply user-facing recovery text."""
+        return self._memory_mutation_final_text()
 
     def exhausted(self, runtime: AgentRuntime) -> str:
         memory_text = self._memory_mutation_final_text()
@@ -2211,13 +2189,10 @@ class ChatService:
                     completed_agent = await self._run_agent(conversation_key, messages, runtime)
             else:
                 completed_agent = await self._run_agent(conversation_key, messages, runtime)
-            from qq_ai_bot.sandbox.budget_sender import BudgetSender
-
             if work_control is not None:
                 from qq_ai_bot.runtime.work_delivery import WorkDeliverySender
 
                 sender = WorkDeliverySender(sender, work_control)
-            sender = BudgetSender(sender, completed_agent.progress)
             agent_result = completed_agent.result
             if agent_result.suppress_delivery:
 
@@ -2460,6 +2435,8 @@ class ChatService:
                     _error: Exception,
                 ) -> DeliveryFailureRecovery:
                     nonlocal send_failure_notice_created
+                    if work_control is not None and work_control.current is not None:
+                        return DeliveryFailureRecovery(handled=False)
                     emoji_id = next(
                         (media.emoji_id for media in message.media if media.emoji_id),
                         None,
@@ -2528,7 +2505,9 @@ class ChatService:
                         receipt = await deliver_chunk(voice_message)
                     except Exception as exc:
                         retried = False
-                        if voice_message.reply_to_message_id is not None:
+                        if voice_message.reply_to_message_id is not None and isinstance(
+                            exc, ConfirmedQuoteRejection
+                        ):
                             voice_message = replace(voice_message, reply_to_message_id=None)
                             try:
                                 receipt = await deliver_chunk(voice_message)
@@ -2627,6 +2606,10 @@ class ChatService:
             legacy_fallback_ids = {id(message) for message in preparation_fallbacks}
             agent_body_delivered = False
             sent_count = 0
+            from qq_ai_bot.runtime.work_delivery import WorkDeliverySender
+
+            if isinstance(sender, WorkDeliverySender):
+                await sender.plan(legacy_messages)
             for index, outbound in enumerate(legacy_messages):
                 if len(legacy_messages) > 1 and index > 0:
                     delay = random.uniform(
@@ -2646,7 +2629,9 @@ class ChatService:
                         raise TypeError("outbound sender returned no delivery receipt")
                 except Exception as exc:
                     retry_succeeded = False
-                    if outbound.reply_to_message_id is not None:
+                    if outbound.reply_to_message_id is not None and isinstance(
+                        exc, ConfirmedQuoteRejection
+                    ):
                         outbound = replace(outbound, reply_to_message_id=None)
                         logger.warning(
                             "reply_quote_delivery_failed retry_without_quote=true "
@@ -2662,6 +2647,8 @@ class ChatService:
                         else:
                             retry_succeeded = True
                     if not retry_succeeded:
+                        if work_control is not None and work_control.current is not None:
+                            raise exc
                         if outbound.media and self._emoji_effects is not None:
                             await self._emoji_effects.record_failure(
                                 outbound,
@@ -3172,11 +3159,6 @@ class ChatService:
             if runtime.inbound is not None
             else self._time.current_default()
         )
-        progress = runtime.task_progress or TaskProgress(
-            config.agent.max_model_requests,
-            config.agent.max_tool_calls,
-            max_messages=config.reply.hard_max_messages,
-        )
         backend = _ChatAgentBackend(self, runtime)
 
         async def before_model_request() -> None:
@@ -3203,7 +3185,6 @@ class ChatService:
                 max_tool_calls=min(config.agent.max_tool_calls, runtime.max_tool_calls_override)
                 if runtime.max_tool_calls_override is not None
                 else config.agent.max_tool_calls,
-                task_progress=progress,
                 max_model_requests=(
                     min(
                         config.agent.max_model_requests,
@@ -3222,7 +3203,6 @@ class ChatService:
         return _CompletedAgentRun(
             result=result,
             memory_exposures=exposure_registry.snapshot(),
-            progress=progress,
         )
 
     async def _validate_turn_snapshot(self, snapshot: ConversationTurnSnapshot) -> bool:

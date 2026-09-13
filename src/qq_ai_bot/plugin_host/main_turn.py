@@ -153,10 +153,6 @@ async def run_plugin_main_turn(
                 ),
                 tools,
             )
-            if result.work_state not in {None, "completed"}:
-                from yuki_plugin_sdk.errors import PluginError
-
-                raise PluginError("main_agent_work_incomplete")
             return result
     finally:
         _ACTIVE.reset(marker)

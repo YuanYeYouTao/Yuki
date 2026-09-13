@@ -66,9 +66,12 @@ class Database:
 
     async def create_schema(self) -> None:
         """Create all tables for tests; deployments use Alembic migrations."""
+        from qq_ai_bot.conversation.rollup import signals as _signals  # noqa: F401
+        from qq_ai_bot.runtime import work_recovery_schema as _recovery
 
         async with self.engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
+            await connection.run_sync(_recovery.install_quota)
             await self._create_fts_schema(connection)
 
     @staticmethod
@@ -140,8 +143,16 @@ class Database:
                     await session.begin()
                 yield session
                 await session.commit()
-            except BaseException:
-                await session.rollback()
+            except BaseException as original:
+                try:
+                    await session.rollback()
+                except BaseException as cleanup:
+                    # Never replace the error that determines execution certainty.
+                    original.add_note(f"rollback_failed:{type(cleanup).__name__}")
+                    try:
+                        await session.invalidate()
+                    except BaseException as invalidation:
+                        original.add_note(f"invalidation_failed:{type(invalidation).__name__}")
                 raise
 
     async def close(self) -> None:

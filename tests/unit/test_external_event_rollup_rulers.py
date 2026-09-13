@@ -458,6 +458,9 @@ async def test_external_append_is_zero_prompt_chars_and_does_not_force_wake(
         content="seed-three",
         occurred_at=_NOW + timedelta(seconds=2),
     )
+    from qq_ai_bot.conversation.canonical_rollup import drain_rollup_signals
+
+    await drain_rollup_signals(database, policy)
     state, _rollup, job = await repository.status(scope)
     assert state is not None
     assert job is not None

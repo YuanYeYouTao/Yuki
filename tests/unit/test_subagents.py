@@ -58,6 +58,7 @@ async def test_foreground_answer_and_finalization_keep_worker_alive(database, tm
     await workers.cancel(lease, parent["id"], identity)
     assert await control.background_state() is None
     await control._control({"action": "fail", "reason": "已明确取消子任务"}, "cancelled")
+    control.settled = False  # A distinct activation owns the explicit cancellation.
     await control.settle(delivered=True, pending_inputs=False)
     assert (await repo.get(parent["id"]))["state"] == "failed"
 
@@ -65,30 +66,46 @@ async def test_foreground_answer_and_finalization_keep_worker_alive(database, tm
 @pytest.mark.asyncio
 async def test_worker_busy_retry_keeps_journal_evidence_and_budget(database, tmp_path):
     import sqlite3
-    from types import SimpleNamespace
 
     from sqlalchemy.exc import OperationalError
 
-    from qq_ai_bot.runtime.subagent_scheduler import SubagentScheduler
+    from qq_ai_bot.runtime.work_control import WorkControl
+    from qq_ai_bot.runtime.work_recovery_schema import recovery
 
     repo, workers, parent_lease, _parent, identity = await stack(database, tmp_path)
     lease = await workers.acquire(identity)
     evidence = {"execution_evidence": [{"run_id": "already-dispatched", "uncertain": True}]}
     await repo.checkpoint(lease, identity, evidence, models=2, tools=1)
-    scheduler = SubagentScheduler(SimpleNamespace(database=database))
+
+    async def valid():
+        assert await repo.valid(lease)
+
+    control = WorkControl(repo, lease, "worker", {}, valid)
     error = OperationalError("UPDATE", {}, sqlite3.OperationalError("database is locked"))
     for count in range(1, 4):
-        assert await scheduler._retry_busy(lease, error)
+        control.current = await repo.get(identity)
+        control.settled = False
+        await control.recover_failure(error)
         row = await repo.get(identity)
         assert row["state"] == "queued"
         checkpoint = json.loads(row["checkpoint_json"])
-        assert checkpoint["sqlite_busy_retries"] == count
+        async with database.sessions() as session:
+            saved = (
+                (await session.execute(select(recovery).where(recovery.c.work_id == identity)))
+                .mappings()
+                .one()
+            )
+        assert saved["attempts"] == count and saved["not_before"] > 0
         assert checkpoint["execution_evidence"] == evidence["execution_evidence"]
         assert row["model_requests"] == 2 and row["tool_calls"] == 1
-    assert not await scheduler._retry_busy(lease, error)
-    assert not await scheduler._retry_busy(
-        lease, OperationalError("SELECT", {}, sqlite3.OperationalError("no such table: missing"))
-    )
+    control.settled = False
+    await control.recover_failure(error)
+    assert control.current["state"] == "suspended"
+    from qq_ai_bot.runtime.activation_outcome import classify_failure
+
+    assert not classify_failure(
+        OperationalError("SELECT", {}, sqlite3.OperationalError("no such table: missing"))
+    ).retryable
     await repo.release(lease)
     await repo.release(parent_lease)
 
@@ -454,6 +471,13 @@ async def test_finish_repair_root_resume_and_seven_day_archive(database, tmp_pat
     await workers.maintain()
     await workers.maintain()
     assert len(await repo.pending(lease, work_id=parent["id"])) == 1
+    from qq_ai_bot.runtime.work_schema_v1 import inputs
+
+    # The parent must consume its completion before it can become dormant.
+    async with database.immediate_session() as db:
+        await db.execute(
+            update(inputs).where(inputs.c.work_id == parent["id"]).values(state="consumed")
+        )
     parent = await repo.get(parent["id"])
     await repo.transition(lease, parent["id"], parent["revision"], "completed")
     reopened = await workers.reopen_parent(lease, identity, models=2)

@@ -216,8 +216,6 @@ class MainAgentTurnService:
             and self._projections is not None
             and runtime.canonical_conversation_id
         ):
-            from uuid import uuid4
-
             from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
             from qq_ai_bot.runtime.work_activation import activate_work
             from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
@@ -230,17 +228,15 @@ class MainAgentTurnService:
                 if conversation is None:
                     raise WorkConflict("work_conversation_unavailable")
                 generation = conversation.generation
-            boundary = (
-                _hash(
-                    [
-                        runtime.origin.value,
-                        runtime.canonical_conversation_id,
-                        runtime.execution_id,
-                        sorted(runtime.allowed_capabilities),
-                    ]
-                )
-                if runtime.execution_id
-                else uuid4().hex
+            if not runtime.execution_id:
+                raise WorkConflict("invocation_execution_id_required")
+            boundary = _hash(
+                [
+                    runtime.origin.value,
+                    runtime.canonical_conversation_id,
+                    runtime.execution_id,
+                    sorted(runtime.allowed_capabilities),
+                ]
             )
 
             async def validate() -> None:
@@ -249,6 +245,35 @@ class MainAgentTurnService:
 
             repository = WorkRepository(database)
             previous = await repository.by_source(f"invocation:{boundary}")
+            if previous is not None:
+                await validate()
+                from sqlalchemy import select
+
+                from qq_ai_bot.runtime.work_recovery_schema import recovery
+
+                async with database.sessions() as session:
+                    wait_until = await session.scalar(
+                        select(recovery.c.not_before).where(recovery.c.work_id == previous["id"])
+                    )
+                import time
+
+                if (
+                    previous["generation"] != generation
+                    or previous["state"]
+                    in {"suspended", "failed", "cancelled", "waiting_user", "waiting_external"}
+                    or (wait_until and wait_until > time.time())
+                ):
+                    return AgentRunResult(
+                        text="",
+                        tool_calls_used=0,
+                        model_requests=0,
+                        web_was_used=False,
+                        suppress_delivery=True,
+                        work_state="cancelled"
+                        if previous["generation"] != generation
+                        else previous["state"],
+                        work_id=previous["id"],
+                    )
             if (
                 previous is not None
                 and previous["generation"] == generation
@@ -263,6 +288,7 @@ class MainAgentTurnService:
                         model_requests=0,
                         web_was_used=False,
                         work_state="completed",
+                        work_id=previous["id"],
                     )
 
             # Synchronous plugin/automation calls return to their owning step.
@@ -282,7 +308,7 @@ class MainAgentTurnService:
                 validate,
             ) as bounded:
                 result = await self.run(messages, replace(runtime, work_control=bounded), backend)
-                bounded.final_delivery = bool(result.text or result.suppress_delivery)
+                bounded.final_delivery = bool(result.text) and bounded.ending == "completed"
                 if bounded.current is not None:
                     if result.suppress_delivery:
                         stored = json.loads(bounded.current["checkpoint_json"])
@@ -296,8 +322,12 @@ class MainAgentTurnService:
                         )
                         if bounded.session is not None:
                             await bounded.session.save("delivered")
-                    result = replace(result, work_state=bounded.ending or "running")
-                return result
+                    result = replace(
+                        result,
+                        work_state=bounded.ending or "running",
+                        work_id=bounded.current["id"],
+                    )
+            return replace(result, outcome=bounded.outcome)
         if control is not None:
             control.current_message = messages[-1] if messages else None
             active = control.current
@@ -312,6 +342,9 @@ class MainAgentTurnService:
                                 "work_id": active["id"] if active else None,
                                 "goal": active["goal"] if active else None,
                                 "state": active["state"] if active else "no_active_work",
+                                "available_work": await control.available_work()
+                                if active is None
+                                else [],
                             },
                             ensure_ascii=False,
                         )

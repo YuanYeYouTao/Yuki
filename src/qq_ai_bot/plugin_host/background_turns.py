@@ -345,6 +345,20 @@ class PluginBackgroundTurnWorker:
                         generation=job.generation,
                     ),
                 )
+            if result.work_state in {"queued", "running", "waiting_external", "waiting_user"}:
+                await self._repository.defer_turn(
+                    job.id,
+                    attempt=job.attempts,
+                    error_category="runtime_work_pending",
+                    delay_seconds=2,
+                    preserve_budget=True,
+                )
+                return
+            if result.work_state in {"suspended", "failed", "cancelled"}:
+                await self._repository.fail_turn(
+                    job.id, attempt=job.attempts, error_category="runtime_work_blocked"
+                )
+                return
             completed = await self._repository.finish_turn(
                 job.id,
                 attempt=job.attempts,

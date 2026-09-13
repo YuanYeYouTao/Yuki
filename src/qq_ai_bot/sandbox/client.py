@@ -103,11 +103,6 @@ class SandboxClient:
             )
             if prepared is not None and prepared.status == "completed" and prepared.run_id is None:
                 return cast(dict[str, Any], json.loads(prepared.completion_json or "{}"))
-            from qq_ai_bot.sandbox.progress import current_progress
-
-            progress = current_progress.get()
-            if progress is not None:
-                await progress.bind(self.tasks, request_id)
         try:
             async with asyncio.timeout(7):
                 connect = getattr(asyncio, "open_unix_connection", None)
@@ -192,11 +187,11 @@ class SandboxClient:
         await self.tasks.receive(
             {"request_id": row.request_id, "run_id": result["run_id"], "result": result}
         )
-        from qq_ai_bot.sandbox.progress import current_progress
+        from qq_ai_bot.runtime.execution_receipts import current_receipts
+        from qq_ai_bot.runtime.work_activation import current_work_control
 
-        progress = current_progress.get()
-        if (
-            progress is not None
-            and json.loads(row.progress_json).get("group_id") == progress.group_id
-        ):
-            progress.stage_observed(self.tasks, row.request_id)
+        receipts = current_receipts.get()
+        control = current_work_control.get()
+        if receipts is not None and control is not None and control.current is not None:
+            if json.loads(row.source_json).get("work_id") == control.current["id"]:
+                receipts.staged[row.request_id] = self.tasks

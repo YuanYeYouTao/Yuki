@@ -6,6 +6,8 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from sqlalchemy.exc import IntegrityError
+
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.domain.messages import ChatMessage, ToolCall
 from qq_ai_bot.runtime.work_journal import WorkJournal, decode_transcript
@@ -30,6 +32,7 @@ class WorkSession:
         self.recovered_delivery: str | None = None
         self.progress: dict[str, Any] = {}
         self.initial: TurnTranscript | None = None
+        self.handoff_work_id: str | None = None
 
     async def restore(self, initial: TurnTranscript) -> TurnTranscript:
         control = self.control
@@ -38,11 +41,16 @@ class WorkSession:
             if source is None or source.generation != control.lease.generation:
                 raise WorkConflict("work_source_generation_changed")
             self.source_revision = source.prompt_source_revision
-        row = (
+        loaded = (
             await self.journal.load(control.lease, control.current["id"], self.contract)
             if control.current
             else None
         )
+        row = loaded.record if loaded else None
+        if loaded and loaded.reason in {"contract_changed", "source_changed"}:
+            self.progress["chain_links"] = [
+                {"from": loaded.previous_chain, "to": initial.chain_id, "reason": loaded.reason}
+            ]
         self.transcript = initial
         self.initial = initial
         if not row and control.current and control.current["model_requests"]:
@@ -62,6 +70,7 @@ class WorkSession:
             value = json.loads(row["payload_json"])
             self.transcript = decode_transcript(value["transcript"])
             metadata = value.get("metadata", {})
+            self.handoff_work_id = metadata.get("handoff_work_id")
             self.progress = dict(metadata.get("progress", {}))
             self.sequence = int(metadata.get("sequence", 0))
             self.event_ids = list(metadata.get("event_ids", []))
@@ -97,13 +106,25 @@ class WorkSession:
                 control.lease, self.input_ids, control.current["id"]
             )
         await control.reconcile_completed_children()
+        await control.restore_handoff(self.handoff_work_id)
+        if control.handoff_work_id is not None:
+            self.transcript.append(
+                ChatMessage(
+                    role="user",
+                    content=(
+                        f"[工作交接已提交：独立请求由 {control.handoff_work_id} 负责执行和交付。"
+                        "当前工作只保留自己的原目标，不得代做或重发该独立请求。]"
+                    ),
+                )
+            )
         return self.transcript
 
     async def needs_compaction(self) -> bool:
-        if not self.control.lease.work_id or self.control.current is None:
+        if self.control.current is None:
             return False
         from sqlalchemy import LargeBinary, func, select
 
+        from qq_ai_bot.runtime.work_recovery_schema import quota
         from qq_ai_bot.runtime.work_schema_v1 import journal
 
         async with self.control.repository.database.sessions() as session:
@@ -112,13 +133,7 @@ class WorkSession:
                     journal.c.work_id == self.control.current["id"]
                 )
             )
-            total = await session.scalar(
-                select(
-                    func.coalesce(
-                        func.sum(func.length(journal.c.payload_json.cast(LargeBinary))), 0
-                    )
-                )
-            )
+            total = await session.scalar(select(quota.c.bytes).where(quota.c.id == 1))
         return (
             bool(self.progress.get("compacting"))
             or int(size or 0) >= 3 * 1024 * 1024
@@ -131,7 +146,12 @@ class WorkSession:
         assert self.transcript is not None and self.initial is not None
         previous = self.transcript.chain_id
         # Stable system contract and original task brief survive verbatim.
-        self.transcript = TurnTranscript(self.initial.request().messages[:2])
+        initial_messages = self.initial.request().messages
+        boundary = next(
+            (index + 1 for index, message in enumerate(initial_messages) if message.role == "user"),
+            len(initial_messages),
+        )
+        self.transcript = TurnTranscript(initial_messages[:boundary])
         self.transcript.append(
             ChatMessage(
                 role="user",
@@ -167,13 +187,8 @@ class WorkSession:
     async def save(self, phase: str, calls: tuple[ToolCall, ...] = ()) -> None:
         if self.control.current is None:
             return
-        await self.control.repository.checkpoint(
-            self.control.lease,
-            self.control.current["id"],
-            None,
-            evidence=self.control.known_effects,
-        )
         assert self.transcript is not None
+        self.handoff_work_id = self.control.handoff_work_id or self.handoff_work_id
         self.pending = [
             {"id": call.id, "name": call.function.name, "arguments": call.function.arguments}
             for call in calls
@@ -194,8 +209,13 @@ class WorkSession:
                     "effects": self.control.known_effects,
                     "ending": self.control.ending,
                     "progress": self.progress,
+                    "handoff_work_id": self.handoff_work_id,
                 },
             )
+        except IntegrityError as exc:
+            if "ck_runtime_checkpoint_bytes" in str(exc.orig):
+                raise WorkCapacityError("work_checkpoint_capacity") from exc
+            raise
         except ValueError as exc:
             if str(exc) in {"work_record_too_large", "work_journal_capacity"}:
                 raise WorkCapacityError("work_checkpoint_capacity") from exc
@@ -244,10 +264,21 @@ class WorkSession:
             raise
         try:
             result = await invoke()
-        except BaseException:
-            await control.repository.record_effect(
-                key, "unknown", {"error": "execution_interrupted"}
-            )
+        except BaseException as exc:
+            from qq_ai_bot.runtime.activation_outcome import DeliveryDeferred
+
+            try:
+                await control.repository.record_effect(
+                    key,
+                    "failed" if isinstance(exc, DeliveryDeferred) else "unknown",
+                    {
+                        "error": "never_dispatched"
+                        if isinstance(exc, DeliveryDeferred)
+                        else "execution_interrupted"
+                    },
+                )
+            except Exception as secondary:
+                exc.add_note(f"effect receipt persistence deferred: {type(secondary).__name__}")
             raise
         await control.repository.record_effect(key, "accepted", {"result": result})
         return result

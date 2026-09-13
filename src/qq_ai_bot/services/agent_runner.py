@@ -7,7 +7,7 @@ import inspect
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from typing import TYPE_CHECKING, Protocol, cast
 
@@ -40,9 +40,10 @@ from qq_ai_bot.llm.base import (
 )
 from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
 from qq_ai_bot.model_runtime.models import ModelTask
+from qq_ai_bot.runtime.activation_outcome import ActivationOutcome
+from qq_ai_bot.runtime.execution_receipts import ExecutionReceipts, current_receipts
 from qq_ai_bot.runtime.work_control import WORK_CONTROL_NAMES, WorkControl, WorkInputsPreparing
 from qq_ai_bot.runtime.work_repository import WorkCapacityError
-from qq_ai_bot.sandbox.progress import TaskProgress, current_progress
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.evidence_observation import EVIDENCE_TOOLS, EvidenceObservation
 from qq_ai_bot.services.native_tool_binder import NativeToolBinder
@@ -81,7 +82,6 @@ class AgentRuntime:
     before_model_request: Callable[[], Awaitable[None]] | None = None
     canonical_conversation_id: str | None = None
     dynamic_context_prepared: bool = False
-    task_progress: TaskProgress | None = None
     work_control: WorkControl | None = None
     execution_id: str | None = None
     fixed_tools: tuple[ChatTool, ...] | None = None
@@ -99,6 +99,8 @@ class AgentRunResult:
     response_status: ModelResponseStatus = ModelResponseStatus.COMPLETED
     suppress_delivery: bool = False
     work_state: str | None = None
+    outcome: ActivationOutcome | None = None
+    work_id: str | None = None
 
 
 class AgentToolBackend(Protocol):
@@ -155,46 +157,54 @@ class AgentRunner:
     ) -> AgentRunResult:
         from qq_ai_bot.runtime.work_budget import WorkBudgetExceeded
 
-        progress = runtime.task_progress or TaskProgress(
-            runtime.max_model_requests, runtime.max_tool_calls
-        )
-        token = current_progress.set(progress)
+        receipts = ExecutionReceipts()
+        token = current_receipts.set(receipts)
+        control = runtime.work_control
+        if control is not None:
+            control.segment_model_limit = runtime.max_model_requests
         try:
             try:
                 result = await self._run(initial_messages, runtime, tools)
+                if control is not None and control.current is not None:
+                    result = replace(
+                        result,
+                        model_requests=control.requests_started,
+                        work_id=control.current["id"],
+                    )
+                return result
             except ExceptionGroup as exc:
                 budget_errors, other_errors = exc.split(WorkBudgetExceeded)
                 if budget_errors is not None and other_errors is None:
                     raise WorkBudgetExceeded("work_total_budget_exhausted") from exc
                 raise
-            await progress.finish("yielded")
-            return result
-        except WorkBudgetExceeded:
-            if runtime.work_control is not None:
-                runtime.work_control.ending = "suspended"
-            await progress.finish("yielded")
+        except (WorkBudgetExceeded, WorkCapacityError) as exc:
+            if control is None or control.current is None:
+                raise
+            outcome = await control.recover_failure(exc)
             return AgentRunResult(
-                text="这项工作的累计预算已用完，进度和产物已保留，尚未完成。",
-                tool_calls_used=progress.tools_used,
-                model_requests=progress.models_used,
+                text="",
+                tool_calls_used=control.tools_started,
+                model_requests=control.requests_started,
                 web_was_used=False,
-                work_state="suspended",
+                suppress_delivery=True,
+                work_state=control.ending,
+                outcome=outcome,
             )
-        except WorkCapacityError:
-            if runtime.work_control is not None:
-                runtime.work_control.ending = "suspended"
-            await progress.finish("yielded")
+        except Exception as exc:
+            if control is None or control.current is None:
+                raise
+            outcome = await control.recover_failure(exc)
             return AgentRunResult(
-                text="当前任务的上下文已达到保存上限，任务尚未完成，已保留执行回执并暂停。",
-                tool_calls_used=progress.tools_used,
-                model_requests=progress.models_used,
+                text="",
+                tool_calls_used=control.tools_started,
+                model_requests=control.requests_started,
                 web_was_used=False,
+                suppress_delivery=True,
+                work_state=control.ending,
+                outcome=outcome,
             )
-        except BaseException:
-            await progress.finish("uncertain")
-            raise
         finally:
-            current_progress.reset(token)
+            current_receipts.reset(token)
 
     async def _run(
         self,
@@ -256,7 +266,12 @@ class AgentRunner:
             runtime.work_control.session = WorkSession(runtime.work_control, contract)
             transcript = await runtime.work_control.session.restore(transcript)
             repeated_batch_count = int(runtime.work_control.session.progress.get("repeats", 0))
-            if runtime.work_control.session.recovered_delivery:
+            if runtime.work_control.handoff_work_id is not None:
+                await runtime.work_control.session.save("paired")
+            if (
+                runtime.work_control.session.recovered_delivery
+                or runtime.work_control.handoff_work_id is not None
+            ):
                 return AgentRunResult(
                     text="",
                     tool_calls_used=0,
@@ -276,27 +291,17 @@ class AgentRunner:
                 try:
                     added = await control.take_inputs(f"{transcript.chain_id}:{request_index}")
                 except WorkInputsPreparing:
-                    control.ending = "suspended"
+                    control.ending = "waiting_external"
                     return AgentRunResult(
-                        text="新的附件还在准备，当前工作已保留。",
+                        text="",
+                        suppress_delivery=True,
+                        work_state="waiting_external",
                         tool_calls_used=calls_used,
                         model_requests=request_index,
                         web_was_used=web_was_used,
                     )
                 for message in added:
                     transcript.append(message)
-            if (
-                control is not None
-                and control.current is not None
-                and control.current["model_requests"] >= 120
-            ):
-                control.ending = "suspended"
-                return AgentRunResult(
-                    text="这项工作已达到本次累计执行预算，尚未完成，已暂停。",
-                    tool_calls_used=calls_used,
-                    model_requests=request_index,
-                    web_was_used=web_was_used,
-                )
             definitions = (
                 tools.definitions(runtime, web_was_used=web_was_used) if tools is not None else ()
             )
@@ -379,13 +384,12 @@ class AgentRunner:
             if (
                 control is not None
                 and control.session is not None
-                and control.lease.work_id
+                and control.current is not None
                 and control.ending is None
             ):
                 compacting = await control.session.needs_compaction() or bool(
-                    runtime.context_token_limit
-                    and control.session.progress.get("context_tokens", 0)
-                    >= runtime.context_token_limit * 0.85
+                    control.session.progress.get("context_tokens", 0)
+                    >= (runtime.context_token_limit or 131072) * 0.85
                 )
                 if compacting and not control.session.progress.get("compacting"):
                     control.session.progress["compacting"] = True
@@ -467,9 +471,6 @@ class AgentRunner:
                                 await runtime.before_model_request()
                         except LLMError as exc:
                             raise _RequestNotStarted(exc) from exc
-                    progress = current_progress.get()
-                    if progress is not None:
-                        await progress.checkpoint(models=request_count, tools=prior_tools)
                     if runtime.work_control is not None:
                         await runtime.work_control.reserve_request()
                         if runtime.work_control.session is not None:
@@ -482,9 +483,9 @@ class AgentRunner:
                 )
                 if runtime.work_control is not None:
                     await runtime.work_control.confirm_inputs()
-                progress = current_progress.get()
-                if progress is not None:
-                    await progress.confirm_observed()
+                receipts = current_receipts.get()
+                if receipts is not None:
+                    await receipts.confirm()
                 # A prepared request may be cancelled while waiting for the LLM
                 # slot or rejected by the transport budget before dispatch.
                 # Confirm conservatively only after a response was received.
@@ -721,6 +722,10 @@ class AgentRunner:
                         )
                         continue
                     background = await control.background_state()
+                    if background is None:
+                        from qq_ai_bot.runtime.activation_outcome import WorkNoProgress
+
+                        raise WorkNoProgress("work_control_missing")
                     control.ending = background or "failed"
                     content = (
                         "后台任务仍在进行，我先继续处理聊天，结果回来后再接着处理。"
@@ -869,13 +874,6 @@ class AgentRunner:
             if runtime.work_control is not None and runtime.work_control.session is not None:
                 await runtime.work_control.session.save("response", response.tool_calls)
             tooling = getattr(runtime.runtime_config, "tooling", None)
-            progress = current_progress.get()
-            if progress is not None:
-                await progress.checkpoint(
-                    models=request_index + 1,
-                    tools=calls_used
-                    + min(len(response.tool_calls), max(0, runtime.max_tool_calls - calls_used)),
-                )
             coordinated = await self._execute_tool_batch(
                 response.tool_calls,
                 tools,
@@ -962,6 +960,30 @@ class AgentRunner:
                 )
                 persisted_progress.update(fingerprint=batch_hash, repeats=repeats)
                 await runtime.work_control.session.save("paired")
+                if runtime.work_control.handoff_work_id is not None:
+                    return AgentRunResult(
+                        text="",
+                        tool_calls_used=calls_used,
+                        model_requests=request_index + 1,
+                        web_was_used=web_was_used,
+                        suppress_delivery=True,
+                        work_state="suspended",
+                    )
+                if (
+                    runtime.work_control.ending == "completed"
+                    and runtime.work_control.completion_delivered
+                    and not await runtime.work_control.pending()
+                ):
+                    runtime.work_control.final_delivery = True
+                    await runtime.work_control.session.save("delivered")
+                    return AgentRunResult(
+                        text="",
+                        tool_calls_used=calls_used,
+                        model_requests=request_index + 1,
+                        web_was_used=web_was_used,
+                        suppress_delivery=True,
+                        work_state="completed",
+                    )
                 if runtime.work_control.lease.work_id and runtime.work_control.ending in {
                     "waiting_user",
                     "waiting_external",
@@ -1041,6 +1063,10 @@ class AgentRunner:
                     calls_used,
                 )
             if repeated_batch_count >= 2:
+                if runtime.work_control is not None and runtime.work_control.current is not None:
+                    from qq_ai_bot.runtime.activation_outcome import WorkNoProgress
+
+                    raise WorkNoProgress("repeated_tool_results")
                 no_progress_recovery = True
                 force_finalization = True
                 logger.warning(
@@ -1448,6 +1474,11 @@ class AgentRunner:
         response_status: ModelResponseStatus,
         exception_category: str,
     ) -> AgentRunResult | None:
+        from qq_ai_bot.runtime.work_activation import current_work_control
+
+        control = current_work_control.get()
+        if control is not None and control.current is not None:
+            return None
         recovery = getattr(tools, "post_commit_recovery_text", None)
         if not callable(recovery):
             return None

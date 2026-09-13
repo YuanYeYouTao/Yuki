@@ -1,5 +1,8 @@
 # 持久工作者与共享预算
 
+异常、分段、交付与检查点容量统一遵循 [Runtime 恢复合同](../operations/runtime-recovery-2026-09-13.md)。
+不再维护子 Agent 独有的 SQLite BUSY 重试或旧沙箱进度预算。
+
 主 Yuki 用 `subagent_start` 登记并派出子任务，继续处理聊天；通过
 `subagent_message` 补充要求，通过 `subagent_control` 查询、取消或恢复同一目标。
 派生本身已经登记工作，工作者无需再次 `task_control.accept`。

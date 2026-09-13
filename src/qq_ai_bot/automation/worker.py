@@ -125,7 +125,8 @@ class AutomationWorker:
             now,
             automation.timezone,
         )
-        if lateness > automation.misfire_grace_seconds:
+        existing = await self._repository.resumable_run(automation.id, scheduled_for)
+        if existing is None and lateness > automation.misfire_grace_seconds:
             run = await self._repository.create_run(
                 automation.id,
                 scheduled_for=scheduled_for,
@@ -152,7 +153,7 @@ class AutomationWorker:
                 max_consecutive_failures=self._settings.automation_max_consecutive_failures,
             )
             return
-        run = await self._repository.create_run(
+        run = existing or await self._repository.create_run(
             automation.id,
             scheduled_for=scheduled_for,
             actual_started_at=now,
@@ -163,6 +164,11 @@ class AutomationWorker:
             )
             return
         result = await self._executor.execute(automation, run)
+        if result.status is RunStatus.RUNNING:
+            await self._repository.release_claim(
+                automation.id, worker_id=self._worker_id, next_run_at=scheduled_for
+            )
+            return
         finished = self._time.clock.now()
         await self._repository.finish_run(
             run.id,

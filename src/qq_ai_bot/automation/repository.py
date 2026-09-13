@@ -532,6 +532,23 @@ class AutomationRepository:
         except IntegrityError:
             return None
 
+    async def resumable_run(
+        self, automation_id: int, scheduled_for: datetime
+    ) -> AutomationRunRecord | None:
+        from qq_ai_bot.runtime.work_recovery_schema import invocations
+
+        async with self._database.sessions() as session:
+            row = await session.scalar(
+                select(AutomationRunModel)
+                .join(invocations, invocations.c.run_id == AutomationRunModel.id)
+                .where(
+                    AutomationRunModel.automation_id == automation_id,
+                    AutomationRunModel.scheduled_for == _aware_utc(scheduled_for),
+                    AutomationRunModel.status == RunStatus.RUNNING.value,
+                )
+            )
+            return _run_record(row) if row else None
+
     async def record_step(
         self,
         *,

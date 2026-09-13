@@ -1510,6 +1510,9 @@ async def test_v2_emergency_overlay_does_not_mutate_semantic_checkpoint(
         )
         assert alias is not None
         conversation_id = alias.conversation_id
+    from qq_ai_bot.conversation.canonical_rollup import drain_rollup_signals
+
+    await drain_rollup_signals(database, policy)
     await _seed_job_last_error(database, conversation_id=conversation_id)
     claim, result = await _commit_overlay(repository, service, scope, owner="v2-overlay")
     assert claim.conversation_id

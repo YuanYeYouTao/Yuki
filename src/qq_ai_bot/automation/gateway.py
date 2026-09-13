@@ -13,7 +13,6 @@ from typing import Protocol
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.identity.routing import PresenceRouter, ResolvedSend, RouteSendError
 from qq_ai_bot.persistence.repositories import AgentActionRepository, EventLedgerRepository
-from qq_ai_bot.sandbox.progress import current_progress
 
 logger = logging.getLogger(__name__)
 
@@ -216,9 +215,6 @@ class OneBotProactiveGateway:
         call_api = getattr(bot, "call_api", None)
         if bot is None or not callable(call_api):
             raise ProactiveGatewayError("bot_unavailable")
-        progress = current_progress.get()
-        if progress is not None and (action.startswith("send_") or action.startswith("upload_")):
-            await progress.reserve_message()
         try:
             return await call_api(action, **bound), resolved
         except Exception as exc:

@@ -61,6 +61,7 @@ from qq_ai_bot.persistence.repositories import (
 )
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from qq_ai_bot.plugin_host.direct_command_router import DirectCommandMatch
+from qq_ai_bot.runtime.activation_outcome import WorkActivationHandled, WorkRecoveryDeferred
 from qq_ai_bot.runtime.keys import ResolvedMemoryScope
 from qq_ai_bot.runtime.observability import (
     RuntimeTurnCorrelation,
@@ -1066,6 +1067,8 @@ class MessageProcessor:
             )
         except (TurnInterruptedError, TurnSupersededError, WorkConflict):
             result = ProcessResult(True, reason="turn_interrupted")
+        except (WorkActivationHandled, WorkRecoveryDeferred):
+            result = ProcessResult(True, reason="work_recovery")
         except RequestCancelledError:
             result = ProcessResult(True, reason="cancelled")
         except LLMConfigurationError:
