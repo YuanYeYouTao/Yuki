@@ -1548,7 +1548,7 @@ class AgentToolService:
         )
 
     async def _recent_history(self, runtime: ToolRuntime) -> str:
-        if runtime.inbound is None:
+        if runtime.read_scope is not None or (runtime.inbound is None and runtime.gateway is None):
             rows = await self._ledger.list_scope_recent(
                 runtime.conversation_scope(),
                 limit=min(runtime.history_limit or 20, self._settings.recent_history_tool_limit),

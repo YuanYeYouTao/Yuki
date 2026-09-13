@@ -21,7 +21,11 @@ async def test_rollup_interrupt_reenters_main_contract(database, tmp_path, monke
     from qq_ai_bot.workspace.store import WorkspaceStore
 
     steps = iter(
-        [(None, None), (None, None), ("task_control", {"action": "answer", "text": "我叫Yuki"})]
+        [
+            ("request_tools", {"query": "读取记录"}),
+            ("request_tools", {"query": "读取记录"}),
+            (None, None),
+        ]
     )
 
     def respond(request):
