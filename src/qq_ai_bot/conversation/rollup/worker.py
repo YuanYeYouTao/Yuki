@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Callable
 from typing import NoReturn
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -67,6 +68,7 @@ class ConversationRollupWorker:
         self._wake = asyncio.Event()
         self._tasks: list[asyncio.Task[None]] = []
         self._owners: tuple[str, ...] = ()
+        self.on_finished: Callable[[str], None] | None = None
 
     def notify(self) -> None:
         self._wake.set()
@@ -186,6 +188,8 @@ class ConversationRollupWorker:
             finally:
                 heartbeat.cancel()
                 await asyncio.gather(heartbeat, return_exceptions=True)
+                if self.on_finished is not None and claim.conversation_id is not None:
+                    self.on_finished(claim.conversation_id)
 
     async def _summarize_or_emergency_overlay(
         self,

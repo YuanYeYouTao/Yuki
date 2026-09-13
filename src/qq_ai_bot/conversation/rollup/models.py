@@ -140,6 +140,7 @@ class ConversationPromptSnapshot:
     rewrite_pending: bool = False
     conversation_id: str | None = None
     prompt_source_revision: int = 0
+    rollup_stamp: tuple[int, int] = (0, 0)
 
 
 @dataclass(frozen=True, slots=True)

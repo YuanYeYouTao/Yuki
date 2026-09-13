@@ -73,6 +73,7 @@ class ConversationReadVersion:
     starts_after_event_id: int
     prompt_source_revision: int = 0
     visible_event_ids: tuple[int, ...] = field(default=(), compare=False)
+    rollup_stamp: tuple[int, int] = field(default=(0, 0), compare=False)
 
 
 async def _read_version(session: AsyncSession, scope: ConversationScope) -> ConversationReadVersion:

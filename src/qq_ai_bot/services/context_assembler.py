@@ -64,6 +64,7 @@ from qq_ai_bot.runtime.trigger import (
     SandboxTaskTurnTrigger,
     WorkResumeTrigger,
 )
+from qq_ai_bot.services.rollup_wakeup import rollup_wakeup_history, rollup_wakeup_watermark
 from qq_ai_bot.time.formatting import local_iso
 from qq_ai_bot.time.models import TimeContext
 from qq_ai_bot.time.service import TimeContextService
@@ -353,7 +354,7 @@ class ContextAssembler:
         snapshot = await self._load_history_snapshot(
             identity,
             turn=turn,
-            before_event_id=current_event.id,
+            before_event_id=None if rollup_wakeup_history.get() else current_event.id,
         )
         recent = snapshot.recent
         if memory_retrieval is not None:
@@ -1429,7 +1430,9 @@ class ContextAssembler:
         if snapshot.read_version is None:
             return
         if not await self._ledger.read_version_matches(snapshot.read_version):
-            raise ConversationCoverageError("history source changed while assembling context")
+            from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
+
+            raise HistorySourceChangedError(snapshot.read_version)
         current = await self._ledger.get_event(event.id)
         # SQLite reloads UTC timestamps without tzinfo; compare their instants
         # without treating that storage representation as a source mutation.
@@ -1464,6 +1467,8 @@ class ContextAssembler:
             scope,
             before_event_id=before_event_id,
         )
+        if rollup_wakeup_history.get():
+            rollup_wakeup_watermark.set(loaded.raw_tail_end_event_id)
         rollup = loaded.rollup
         if not turn_matches_hydrated_scope(
             turn,
@@ -1489,6 +1494,7 @@ class ContextAssembler:
                     loaded.scope.starts_after_event_id,
                     loaded.prompt_source_revision,
                     tuple(event.id for event in loaded.raw_events),
+                    loaded.rollup_stamp,
                 )
                 if loaded.conversation_id is not None
                 else None
@@ -1623,7 +1629,11 @@ class ContextAssembler:
             snapshot = await self._load_history_snapshot(
                 identity,
                 turn=turn,
-                before_event_id=current_event.id if current_event is not None else None,
+                before_event_id=(
+                    current_event.id
+                    if current_event is not None and not rollup_wakeup_history.get()
+                    else None
+                ),
             )
             recent = snapshot.recent
             rollup_text = snapshot.rollup_text

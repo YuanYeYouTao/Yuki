@@ -1014,6 +1014,10 @@ class ConversationRollupRepository:
             rewrite_pending=overlay_state is not None,
             conversation_id=conversation.id,
             prompt_source_revision=conversation.prompt_source_revision,
+            rollup_stamp=(
+                rollup_row.revision if rollup_row is not None else 0,
+                overlay_row.revision if overlay_row is not None else 0,
+            ),
         )
 
     async def _claim_next_canonical_job(
