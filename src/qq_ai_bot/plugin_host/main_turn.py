@@ -272,7 +272,8 @@ async def _execute_plugin_main_turn(
             scope_type=inbound.scope_type,
             before_model_request=validate,
         ),
-        allowed_tools=runtime.allowed_capabilities | {"update_short_state", "request_tools"},
+        allowed_tools=runtime.allowed_capabilities
+        | {"update_short_state", "request_tools", "read_tool_artifact"},
     )
     marker = _ACTIVE.set(True)
     try:
