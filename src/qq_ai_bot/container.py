@@ -517,6 +517,7 @@ class ApplicationContainer:
         self.voice_profile_service.set_event_publisher(self.plugin_events)
         self.emoji_selector.set_plugin_signals(self.plugin_emoji_signals)
         self.chat.set_plugin_tools(self.plugin_tools)
+        self.conversation_rollup_worker.on_finished = self.chat.rollup_wakeups.notify
         from qq_ai_bot.services.main_agent_contract import MainAgentContract
         from qq_ai_bot.workspace.short_state import ShortState
 
@@ -534,6 +535,7 @@ class ApplicationContainer:
             admission_signals=self.plugin_admission_signals,
             turn_observations=self.turn_observations,
         )
+        self.chat.rollup_wakeups.on_consumed = self.autonomous_groups.consume_rollup_history
         self.command_service = CommandService(
             settings=settings,
             rollups=self.conversation_rollups,
@@ -1044,6 +1046,7 @@ class ApplicationContainer:
                 EventName.SPEECH_WORKER_STOPPED,
                 {"reason": "application_stopping"},
             )
+        self.chat.rollup_wakeups.close()
         await self.lifecycle.close()
 
 

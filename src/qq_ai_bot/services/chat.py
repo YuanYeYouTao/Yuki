@@ -1531,6 +1531,9 @@ class ChatService:
 
         self._work_repository = WorkRepository(self._ledger._database)
         self._active_work: dict[str, Any] = {}
+        from qq_ai_bot.services.rollup_wakeup import RollupWakeups
+
+        self.rollup_wakeups = RollupWakeups(self._ledger._database)
         self._turn_coordinator = turn_coordinator or ConversationTurnCoordinator(
             cancel_replies_on_new_message=settings.reply_sequence_cancel_on_new_message,
             interrupt_autonomous_on_new_message=(
@@ -1874,6 +1877,99 @@ class ChatService:
         return True
 
     async def respond(
+        self,
+        inbound: InboundMessage,
+        identity: ConversationScope,
+        profile: UserProfileSnapshot,
+        content: str,
+        sender: OutboundSender,
+        *,
+        autonomous: bool = False,
+        runtime_snapshot: RuntimeConfigSnapshot | None = None,
+        visual_observation: VisualObservation | None = None,
+        visual_input_present: bool = False,
+        native_images: tuple[ChatImage, ...] = (),
+        attachment_text: str = "",
+        visual_failure: bool = False,
+        turn_token: TurnToken | None = None,
+        turn_snapshot: ConversationTurnSnapshot | None = None,
+        structured_memory_command: MemoryStructuredCommand = MemoryStructuredCommand.NONE,
+    ) -> int:
+        """Coalesce unowned chat retries; accepted work keeps its own recovery."""
+        from qq_ai_bot.runtime.activation_outcome import WorkActivationHandled, WorkRecoveryDeferred
+        from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
+
+        arguments: dict[str, Any] = dict(
+            autonomous=autonomous,
+            runtime_snapshot=runtime_snapshot,
+            visual_observation=visual_observation,
+            visual_input_present=visual_input_present,
+            native_images=native_images,
+            attachment_text=attachment_text,
+            visual_failure=visual_failure,
+            turn_token=turn_token,
+            turn_snapshot=turn_snapshot,
+            structured_memory_command=structured_memory_command,
+        )
+        ticket = self.rollup_wakeups.enter(inbound.conversation_id)
+        changed = None
+        original_event = None
+        try:
+            if turn_snapshot is not None:
+                original_event = await self._ledger.get_event(turn_snapshot.trigger_event_id)
+            result = await self._respond(inbound, identity, profile, content, sender, **arguments)
+        except HistorySourceChangedError as exc:
+            if self._turn_coordinator.can_retry_uncommitted(turn_token):
+                changed = exc.version
+            else:
+                logger.info("rollup_chat_wakeup_skipped reason=effect_or_superseded")
+        except (WorkActivationHandled, WorkRecoveryDeferred):
+            self.rollup_wakeups.handled(ticket)
+            raise
+        else:
+            self.rollup_wakeups.handled(ticket)
+            return result
+        finally:
+            self.rollup_wakeups.leave(ticket, deferred=changed is not None)
+        if changed is None or turn_snapshot is None:
+            self.rollup_wakeups.discard(ticket)
+            return 0
+        if not await self.rollup_wakeups.wait(changed, ticket):
+            return 0
+        if original_event is None or (
+            await self._ledger.get_event(original_event.id) != original_event
+        ):
+            logger.info("rollup_chat_wakeup_skipped reason=trigger_changed")
+            return 0
+        # Original actor/event/generation remain authoritative. Never replay ingress.
+        token = await self._turn_coordinator.begin_background(turn_snapshot.scope_key)
+        if token is None:
+            return 0
+        arguments["turn_token"] = token
+        arguments["turn_snapshot"] = replace(turn_snapshot, coordinator_version=token.version)
+        arguments["runtime_snapshot"] = None
+        from qq_ai_bot.services.rollup_wakeup import rollup_wakeup_history, rollup_wakeup_watermark
+
+        history_token = rollup_wakeup_history.set(True)
+        watermark_token = rollup_wakeup_watermark.set(0)
+        ticket = self.rollup_wakeups.enter(inbound.conversation_id)
+        try:
+            result = await self._respond(inbound, identity, profile, content, sender, **arguments)
+            self.rollup_wakeups.handled(ticket)
+            if self.rollup_wakeups.on_consumed is not None and inbound.conversation_id:
+                self.rollup_wakeups.on_consumed(
+                    inbound.conversation_id, rollup_wakeup_watermark.get()
+                )
+            return result
+        except HistorySourceChangedError:
+            logger.info("rollup_wakeup_deferred_again")
+            return 0
+        finally:
+            self.rollup_wakeups.leave(ticket)
+            rollup_wakeup_history.reset(history_token)
+            rollup_wakeup_watermark.reset(watermark_token)
+
+    async def _respond(
         self,
         inbound: InboundMessage,
         identity: ConversationScope,
@@ -3047,6 +3143,10 @@ class ChatService:
             else:
                 valid = version is None or await self._ledger.read_version_matches(version)
             if not valid:
+                from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
+
+                if version is not None:
+                    raise HistorySourceChangedError(version)
                 raise TurnSupersededError("context source changed before model invocation")
             if commit_projection is not None and control is None:
                 await commit_projection()

@@ -63,6 +63,7 @@ class _GroupState:
     sender: OutboundSender
     latest_token: TurnToken | None = None
     revision: int = 0
+    consumed_revision: int = -1
     changed: asyncio.Event = field(default_factory=asyncio.Event)
     task: asyncio.Task[None] | None = None
 
@@ -95,6 +96,16 @@ class AutonomousGroupService:
         """Return the process-local count of observed background task failures."""
 
         return self._task_failures
+
+    def consume_rollup_history(self, conversation_id: str, event_id: int) -> None:
+        """Do not schedule another observation for history a recovery already handled."""
+        for state in self._states.values():
+            if (
+                state.message.conversation_id == conversation_id
+                and state.message.source_event_id is not None
+                and state.message.source_event_id <= event_id
+            ):
+                state.consumed_revision = state.revision
 
     def observe(
         self,
@@ -173,6 +184,8 @@ class AutonomousGroupService:
                 # exits. Only a newer observation may request another worker.
                 revision = state.revision
                 state.changed.clear()
+                if state.consumed_revision >= revision:
+                    return
                 group_id = state.message.group_id
                 if group_id is None:
                     return
@@ -211,6 +224,10 @@ class AutonomousGroupService:
                     "autonomous_group_task_failed exception_category=%s",
                     type(exc).__name__,
                 )
+            state = self._states.get(scope_key)
+            if state is not None and state.consumed_revision >= state.revision:
+                state.changed.clear()
+                return
             if revision >= 0 and not self._is_latest(scope_key, revision):
                 continue
             return

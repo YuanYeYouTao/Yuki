@@ -7,11 +7,14 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.conversation.scope import runtime_conversation_key
 from qq_ai_bot.domain.messages import InboundMessage
+
+if TYPE_CHECKING:
+    from qq_ai_bot.persistence.event_repository import ConversationReadVersion
 
 TurnStage = Literal["admission", "generation", "reply"]
 
@@ -22,6 +25,14 @@ class TurnInterruptedError(RuntimeError):
 
 class TurnSupersededError(RuntimeError):
     """A turn token no longer represents the current conversation input."""
+
+
+class HistorySourceChangedError(TurnSupersededError):
+    """Source changed; the caller may recover only a verified rollup change."""
+
+    def __init__(self, version: ConversationReadVersion) -> None:
+        super().__init__("context source changed before model invocation or history assembly")
+        self.version = version
 
 
 class ReplySequenceCancelled(RuntimeError):
@@ -181,6 +192,13 @@ class ConversationTurnCoordinator:
             state = self._states.get(token.conversation_key)
             if state is not None and state.version == token.version:
                 state.mutation_started = True
+
+    def can_retry_uncommitted(self, token: TurnToken | None) -> bool:
+        """A fresh chat attempt must not replay a turn that started a mutation."""
+        if token is None:
+            return False
+        state = self._states.get(token.conversation_key)
+        return state is not None and state.version == token.version and not state.mutation_started
 
     async def begin_autonomous(self, token: TurnToken) -> TurnToken | None:
         """Promote an idle observed-message token to an interruptible autonomous turn.
