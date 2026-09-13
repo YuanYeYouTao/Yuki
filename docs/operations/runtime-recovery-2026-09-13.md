@@ -70,4 +70,26 @@ SDK 的 `agent.run` 返回 `state/work_id/pending`。
 QQ 网关、RSS、Manager、持久环境与已写文件不随 Bot 重建。
 回退需兼容 0059，并先停止新派发、核对活动执行；禁止用旧数据库覆盖上线后的文件、预算与回执。
 
-部署状态：尚未部署；等待最终相关回归、PR 和镜像流程。
+## 上线记录（2026-09-13）
+
+- [PR #84](https://github.com/YuanYeYouTao/Yuki-QQbot/pull/84) 已合并，运行代码为
+  `447578f02a63f6e71f5f083af86a50e826b6b3fe`；镜像为
+  `ghcr.io/yuanyeyoutao/yuki-qqbot:runtime-recovery-447578f`。
+- 合并后的 [CI](https://github.com/YuanYeYouTao/Yuki-QQbot/actions/runs/34748190249) 全部通过。
+  本地集中定向回归 94 项通过，另验证输入准备与任务结算竞态；Ruff、Linux 目标 mypy 通过。
+- 生产快照离线迁移约 19.5 秒，44,038 条聊天事件、237 条执行效果、189 条沙箱任务内容不变，
+  累计预算未清零。隔离快照中的 5 次合成事件追加，最长写事务约 89.2 ms，写事务内历史扫描为 0；
+  此项为隔离测量，不是线上延迟承诺。
+- 线上一致性备份：`/opt/yuki-qqbot/backups/pre-runtime-recovery-20260913T084845Z`。
+  数据库已升级至 0059，quick_check、外键及检查点增量额度核对通过。
+- Bot 于 08:49:09 UTC 启动，健康检查通过、重启次数 0；QQ 已连接，主任务、子任务、
+  自动化、Rollup、沙箱完成回执和续跑 worker 运行。主工具声明冻结为 174 项，工作者 36 项。
+  QQ 网关、RSS、Manager、持久环境保持原实例；Manager 为 active。
+- 模型仍为 DeepSeek Flash，联网仍为 `deepseek_anthropic`；段额度仍为 24/32。
+  初始上线观察已有 2 次成功主 Agent 请求，总输入 115,495 token、缓存 96,512 token（83.6%）。
+  这是包含上线初期请求的极小整体样本，不属于暖链验收，不能据此给出稳定命中率结论。
+- 保留 2 个旧暂停任务：原有 OperationalError 任务不自动重跑；旧数学题工作因预算归属含混暂停。
+  两者部署前已经暂停，文件与执行回执保留。
+- 启动后观察到一次记忆抽取结构化输出缺少预期工具调用（`StructuredTaskError`）；
+  同期主 Agent 请求成功，Runtime 与子任务健康检查无新错误。该记忆抽取异常单独记录，
+  不归为本次任务调度器故障，也不宣称上线期间所有后台请求均成功。
