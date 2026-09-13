@@ -10,7 +10,7 @@ from qq_ai_bot.domain.messages import ToolCall, ToolFunction
 from qq_ai_bot.mcp.repository import ToolArtifactRepository
 from qq_ai_bot.services.agent_runner import AgentRuntime
 from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.services.chat import _ChatAgentBackend
+from qq_ai_bot.services.main_agent_backend import MainAgentBackend
 from tests.conftest import build_harness, make_settings
 
 
@@ -72,7 +72,7 @@ async def check_terminal_result_recovery(database, tmp_path):
             max_tool_calls=4,
             max_model_requests=5,
         )
-        backend = _ChatAgentBackend(chat, tool_runtime)
+        backend = MainAgentBackend(chat, tool_runtime)
         backend.definitions(runtime, web_was_used=False)
         for index, (name, args) in enumerate(
             (

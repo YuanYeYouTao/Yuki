@@ -177,6 +177,10 @@ class ToolRuntime:
     origin: TurnOrigin = TurnOrigin.USER_MESSAGE
     tools_closed: bool = False
     read_only: bool = False
+    allow_work_environment: bool = False
+    read_scope: ConversationScope | None = None
+    read_target_id: str | None = None
+    history_limit: int | None = None
     turn_token: TurnToken | None = None
     turn_snapshot: ConversationTurnSnapshot | None = None
     reply_effects: list[ReplyEffect] | None = None
@@ -258,6 +262,8 @@ class ToolRuntime:
     def conversation_scope(self) -> ConversationScope:
         """Resolve the authenticated conversation without inventing a message actor."""
 
+        if self.read_scope is not None:
+            return self.read_scope
         if self.inbound is not None:
             return self.inbound.scope()
         bot_user_id = (self.bot_user_id or "").strip()
@@ -400,7 +406,7 @@ class AgentToolService:
                 name="get_recent_chat_history",
                 result_cacheable=False,
                 description=(
-                    "直接从当前 QQ/OneBot Provider 读取私聊或群聊最近 20 条消息。"
+                    "读取当前会话近期记录；消息入口可向网关补查，后台读取授权会话账本。"
                     "当用户问刚才说了什么、当前对话历史或人物上下文时使用。"
                 ),
                 parameters=_object_schema({}),
@@ -1041,7 +1047,11 @@ class AgentToolService:
 
                     invocation = current_invocation.get()
                     if (
-                        runtime.origin not in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}
+                        (
+                            runtime.origin
+                            not in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}
+                            and not runtime.allow_work_environment
+                        )
                         or runtime.tools_closed
                         or (runtime.read_only and name not in READ_TOOLS)
                     ):
@@ -1094,7 +1104,11 @@ class AgentToolService:
                     from qq_ai_bot.workspace.store import WorkspaceError
 
                     if (
-                        runtime.origin not in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}
+                        (
+                            runtime.origin
+                            not in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}
+                            and not runtime.allow_work_environment
+                        )
                         or (runtime.read_only and name not in WORKSPACE_READ_TOOLS)
                         or runtime.tools_closed
                     ):
@@ -1534,6 +1548,15 @@ class AgentToolService:
         )
 
     async def _recent_history(self, runtime: ToolRuntime) -> str:
+        if runtime.read_scope is not None or (runtime.inbound is None and runtime.gateway is None):
+            rows = await self._ledger.list_scope_recent(
+                runtime.conversation_scope(),
+                limit=min(runtime.history_limit or 20, self._settings.recent_history_tool_limit),
+                message_only=True,
+            )
+            return self._result(
+                data={"source": "ledger", "events": [self._event_json(row) for row in rows]}
+            )
         if runtime.gateway is None:
             return self._result(error="onebot_unavailable", detail="当前没有 OneBot 连接")
         scope = runtime.conversation_scope()
@@ -1735,13 +1758,13 @@ class AgentToolService:
         before = self._parse_time(arguments.get("before"))
         user_id = self._optional_string(arguments.get("user_id"))
         group_id = self._optional_string(arguments.get("group_id"))
-        if runtime.inbound is None:
-            if runtime.effective_scope_type is ScopeType.GROUP:
-                group_id = runtime.current_group_id
-                user_id = None
-            else:
-                user_id = runtime.external_target_id
-                group_id = None
+        if runtime.inbound is None or runtime.read_scope is not None:
+            scope = runtime.conversation_scope()
+            granted_group = scope.group_id if scope.scope_type is ScopeType.GROUP else None
+            granted_person = scope.private_peer_user_id if granted_group is None else None
+            if group_id not in {None, granted_group} or user_id not in {None, granted_person}:
+                return self._result(error="history_scope_denied", detail="只能读取获准会话")
+            group_id, user_id = granted_group, granted_person
         if (
             len(keyword.strip()) < 3
             and not user_id
@@ -2707,9 +2730,12 @@ class AgentToolService:
             except MemoryPartitionResolutionError:
                 person_id = None
             space_id = None
-            if runtime.current_group_id:
+            group_id = (
+                runtime.read_scope.group_id if runtime.read_scope else runtime.current_group_id
+            )
+            if group_id:
                 try:
-                    space_id = await resolve_active_space_id(session, runtime.current_group_id)
+                    space_id = await resolve_active_space_id(session, group_id)
                 except MemoryPartitionResolutionError:
                     space_id = None
         return person_id, space_id

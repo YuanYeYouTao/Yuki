@@ -36,7 +36,7 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                 "action=accept，并填写 goal、output_kind；成功后下一步才调用执行工具。"
                 "已有 work_id 的同一工作直接继续，不重复 accept；不要先试执行再补登记。"
                 "新一轮要续接 available_work 中的原目标，单独使用 resume 和 work_id；不重复登记。"
-                "普通聊天用 answer 和 text 直接回复，不建立长期工作。"
+                "普通聊天直接生成正文，不必登记；也可显式用 answer 和 text 回复。"
                 "新输入另提独立工作时再次 accept 排队，不能用 update 覆盖旧目标；"
                 "update 仅修正当前目标；wait 必须有真实待完成 run_id；"
                 "need_input 必须说明缺失信息；complete 仅提出结束，后端核对交付后提交。"
@@ -390,7 +390,7 @@ class WorkControl:
             and body.get("exit_code") in (None, 0),
             "pending": bool(body.get("pending"))
             or body.get("status") in {"running", "queued", "waiting"},
-            "uncertain": bool(body.get("uncertain"))
+            "uncertain": bool(value.get("uncertain") or body.get("uncertain"))
             or body.get("status") in {"uncertain", "unknown"},
         }
         if identity:
@@ -432,7 +432,7 @@ class WorkControl:
         if self.lease.work_id:
             if action == "accept":
                 raise ValueError("worker_already_registered")
-            if action in {"answer", "need_input"}:
+            if action in {"answer", "need_input"} and self.source.get("parent_work_id"):
                 from qq_ai_bot.runtime.subagent_tools import execute_subagent
 
                 return await execute_subagent(

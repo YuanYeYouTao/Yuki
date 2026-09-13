@@ -999,7 +999,11 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
         },
     }
     assert around["error"] == "not_found"
-    assert scoped_search == {"ok": True, "data": {"events": []}}
+    assert scoped_search["error"] == "history_scope_denied"
+    valid_search = json.loads(
+        await tools.execute("search_chat_history", '{"keyword":"release"}', group_runtime)
+    )
+    assert valid_search == {"ok": True, "data": {"events": []}}
     assert relationship["error"] == "permission_denied"
     gateway.call_api.assert_awaited_once_with(
         "get_group_msg_history",

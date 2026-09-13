@@ -77,6 +77,7 @@ class AutomationStep(StrictModel):
 
 
 class AutomationLimits(StrictModel):
+    agent_budget_managed: bool = False
     max_steps: int = Field(default=3, ge=1, le=16)
     max_llm_calls: int = Field(default=1, ge=0, le=10)
     max_tool_calls: int = Field(default=3, ge=1, le=16)
@@ -94,6 +95,14 @@ class AutomationScript(StrictModel):
     context: AutomationContext = Field(default_factory=AutomationContext)
     steps: tuple[AutomationStep, ...] = Field(min_length=1, max_length=16)
     limits: AutomationLimits = Field(default_factory=AutomationLimits)
+
+    @property
+    def uses_runtime_budget(self) -> bool:
+        # A Yuki step owns a durable runtime budget, including declarations
+        # saved before this distinction existed. Its outer DSL counts steps.
+        return self.limits.agent_budget_managed or any(
+            step.call in {"yuki.agent", "yuki.generate"} for step in self.steps
+        )
 
     @model_validator(mode="after")
     def _consistent_limits(self) -> AutomationScript:
@@ -142,6 +151,7 @@ class RetryPolicy(StrEnum):
 
 class AutomationRecord(StrictModel):
     id: int
+    claimed_by: str | None = None
     creator_user_id: str
     bot_user_id: str
     name: str

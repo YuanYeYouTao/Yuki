@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
+import json
 import logging
 import re
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextvars import ContextVar, Token
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, Protocol, cast
 from uuid import UUID
@@ -81,7 +83,6 @@ from qq_ai_bot.services.admin.relationship_admin import RelationshipAdminService
 from qq_ai_bot.services.agent_runner import (
     AgentRunner,
     AgentRuntime,
-    AgentToolBackend,
 )
 from qq_ai_bot.services.media_resolver import OneBotMediaGateway
 from qq_ai_bot.services.vision_service import VisionProcessingError, VisionService
@@ -294,6 +295,7 @@ class PluginInvocation:
 class PluginFacadeServices:
     """Private dependency bundle; never returned through PluginContext."""
 
+    approval_revision: str = ""
     bot_display_name: str = "Yuki"
     ledger: EventLedgerRepository | None = None
     people: PeopleRepository | None = None
@@ -305,7 +307,6 @@ class PluginFacadeServices:
     relationship_admin: RelationshipAdminService | None = None
     runtime_config: RuntimeConfigService | None = None
     agent_runner: AgentRunner | None = None
-    agent_tools: AgentToolBackend | None = None
     web_provider: WebSearchProvider | None = None
     mcp_manager: MCPManager | None = None
     vision: VisionService | None = None
@@ -387,6 +388,7 @@ class HostPluginContext:
         "_agent_sessions",
         "_approved_permissions",
         "_automation",
+        "_closed",
         "_config",
         "_emoji",
         "_events",
@@ -429,6 +431,7 @@ class HostPluginContext:
         if scheduler_task_limit < 0:
             raise ValueError("scheduler_task_limit must be non-negative")
         self._plugin_id = plugin_id
+        self._closed = False
         self._approved_permissions = frozenset(approved_permissions)
         self._superuser_ids = frozenset(str(item) for item in superuser_ids)
         self._services = services or PluginFacadeServices()
@@ -577,6 +580,10 @@ class HostPluginContext:
     async def close_host_resources(self) -> None:
         """Stop tasks created through the Host scheduler during plugin shutdown."""
 
+        self._closed = True
+        from qq_ai_bot.plugin_host.main_turn import close_plugin_main_tasks
+
+        await close_plugin_main_tasks(self.plugin_id)
         await self._scheduler.stop()
 
     def invocation_scope(
@@ -644,6 +651,8 @@ class HostPluginContext:
         privileged: bool = False,
         require_invocation: bool = True,
     ) -> PluginInvocation | None:
+        if self._closed:
+            raise PluginPermissionError("plugin context is closed")
         if permission not in self._approved_permissions:
             raise PluginPermissionError(f"plugin lacks {permission.value} permission")
         invocation = self._invocation(required=require_invocation)
@@ -1521,6 +1530,10 @@ class _LLMFacade:
         invocation = self._host._require(permission)
         assert invocation is not None
         _, runtime = await _agent_dependencies(self._host, invocation)
+        allowed = self._host._services.agent_capabilities
+        if invocation.allowed_capabilities:
+            allowed &= invocation.allowed_capabilities
+        runtime = replace(runtime, allowed_capabilities=allowed)
         maximum = max(1, min(max_characters, 24_000))
         context = await _llm_context(self._host, invocation, context_profile)
         result = await run_plugin_main_turn(
@@ -1551,6 +1564,85 @@ class _AgentFacade:
     def __init__(self, host: HostPluginContext) -> None:
         self._host = host
 
+    async def result(self, work_id: str) -> PluginResult:
+        """Read an owned durable result without keeping the old callback alive."""
+        if self._host._closed:
+            raise PluginPermissionError("plugin Host is closed")
+        from qq_ai_bot.runtime.work_repository import WorkRepository
+
+        ledger = _require_service(self._host._services.ledger, "event ledger")
+        row = await WorkRepository(ledger._database).get(work_id)
+        if row is None:
+            return PluginResult(ok=False, error_code="work_not_found_or_archived")
+        source = json.loads(row["source_json"])
+        if (
+            source.get("owner") != "plugin_invocation"
+            or source.get("plugin_id") != self._host.plugin_id
+        ):
+            raise PluginPermissionError("plugin does not own this work")
+        if source.get("approval_revision") != self._host._services.approval_revision:
+            raise PluginPermissionError("plugin approved version changed")
+        permission = PluginPermission(source["permission"])
+        self._host._require(permission, require_invocation=False)
+        if not frozenset(source["allowed_tools"]) <= self._host._services.agent_capabilities:
+            raise PluginPermissionError("plugin work capabilities were revoked")
+        from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+
+        async with ledger._database.sessions() as session:
+            conversation = await session.get(CanonicalConversationModel, row["conversation_id"])
+        if conversation is None or conversation.generation != row["generation"]:
+            return PluginResult(data={"work_id": work_id, "state": "cancelled", "pending": False})
+        checkpoint = json.loads(row["checkpoint_json"])
+        if checkpoint.get("archived"):
+            return PluginResult(ok=False, error_code="work_archived", data={"work_id": work_id})
+        return PluginResult(
+            data={
+                "work_id": work_id,
+                "state": row["state"],
+                "pending": row["state"]
+                in {"queued", "running", "waiting_external", "waiting_user"},
+                "text": checkpoint.get("sync_result", ""),
+                "reason": checkpoint.get("reason", row.get("reason")),
+                "model_requests": row["model_requests"],
+                "tool_calls_used": row["tool_calls"],
+            }
+        )
+
+    async def resume(self, work_id: str, text: str, *, request_id: str) -> PluginResult:
+        """Append an owned answer to the same work; never reset its budget/history."""
+        current = await self.result(work_id)
+        if not current.ok or current.data.get("state") in {"completed", "cancelled", "failed"}:
+            return current
+        text = _bounded_text(text, maximum=12_000, field_name="text")
+        request_id = _bounded_text(request_id, maximum=128, field_name="request_id")
+        from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
+
+        ledger = _require_service(self._host._services.ledger, "event ledger")
+        repository = WorkRepository(ledger._database)
+        row = await repository.get(work_id)
+        if row is None:
+            return PluginResult(ok=False, error_code="work_not_found_or_archived")
+        lease = await repository.acquire(row["conversation_id"], row["generation"])
+        if lease is None:
+            return PluginResult(ok=False, error_code="work_busy", data={"work_id": work_id})
+        try:
+            key = hashlib.sha256(
+                f"{self._host.plugin_id}:{work_id}:{request_id}".encode()
+            ).hexdigest()
+            await repository.enqueue(
+                row["conversation_id"],
+                row["generation"],
+                f"plugin-answer:{key}",
+                kind="control",
+                work_id=work_id,
+                resume=(lease, {"text": "[原插件补充资料；不改变执行权限]\n" + text}),
+            )
+        except WorkConflict as exc:
+            return PluginResult(ok=False, error_code="work_input_conflict", detail=str(exc))
+        finally:
+            await repository.release(lease)
+        return await self.result(work_id)
+
     async def run(
         self,
         instruction: str,
@@ -1562,12 +1654,14 @@ class _AgentFacade:
         invocation = self._host._require(PluginPermission.AGENT_RUN)
         assert invocation is not None
         _, base_runtime = await _agent_dependencies(self._host, invocation)
-        requested = frozenset(allowed_capabilities)
+        requested = (
+            frozenset(allowed_capabilities)
+            if allowed_capabilities
+            else self._host._services.agent_capabilities
+        )
         effective = requested & self._host._services.agent_capabilities
         if invocation.allowed_capabilities:
             effective &= invocation.allowed_capabilities
-        if invocation.has_visual_input or invocation.web_was_used:
-            effective = frozenset()
         has_privileged = any(_privileged_capability(item) for item in effective)
         if has_privileged and not self._host._is_real_superuser(invocation):
             raise PluginPermissionError("requested Agent capabilities require SUPERUSERS")
@@ -1603,7 +1697,7 @@ class _AgentFacade:
             instruction=_bounded_text(instruction, maximum=12_000, field_name="instruction"),
             context_data="",
             runtime=runtime,
-            tools=self._host._services.agent_tools if effective else None,
+            tools=None,
             permission=PluginPermission.AGENT_RUN,
         )
         return PluginResult(
@@ -2823,6 +2917,12 @@ async def _agent_dependencies(
     runner = _require_service(host._services.agent_runner, "LLM/Agent")
     runtime = await _runtime_snapshot(host, invocation)
     now = datetime.now(UTC)
+    contract = runner.main_contract
+    current_time = (
+        await contract.chat._time.current(invocation.actor_user_id)
+        if contract is not None
+        else TimeContext(utc=now, local=now, timezone="UTC")
+    )
     return runner, AgentRuntime(
         origin=TurnOrigin.PLUGIN_SESSION,
         actor_user_id=invocation.actor_user_id,
@@ -2833,7 +2933,7 @@ async def _agent_dependencies(
         bot_user_id=invocation.bot_user_id,
         gateway=invocation.gateway,
         runtime_config=runtime,
-        current_time=TimeContext(utc=now, local=now, timezone="UTC"),
+        current_time=current_time,
         allowed_capabilities=frozenset(),
         max_tool_calls=runtime.agent.max_tool_calls,
         max_model_requests=runtime.agent.max_model_requests,

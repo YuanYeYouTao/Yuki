@@ -113,13 +113,42 @@ class PluginAutomationAdapter:
             if scope_factory is None:
                 raise RuntimeError("plugin automation invocation scope is unavailable")
             invocation = _automation_invocation(plugin_id, context)
-            async with asyncio.timeout(registration.metadata.timeout_seconds):
-                async with scope_factory(plugin_id, invocation):
-                    value = await registration.handler(model)
+            from qq_ai_bot.automation.executor import AutomationExecutionError
+
+            try:
+                async with asyncio.timeout(registration.metadata.timeout_seconds):
+                    async with scope_factory(plugin_id, invocation):
+                        value = await registration.handler(model)
+            except (TimeoutError, OSError) as exc:
+                mutating = registration.metadata.risk.value != RiskClass.READ.value
+                raise AutomationExecutionError(
+                    "plugin_effect_unknown" if mutating else "plugin_read_failed",
+                    uncertain=mutating,
+                    transient=not mutating,
+                ) from exc
             if isinstance(value, PluginResult):
                 if not value.ok:
-                    raise RuntimeError(value.error_code or "plugin_automation_failed")
+                    raise AutomationExecutionError(
+                        value.error_code or "plugin_automation_failed",
+                        uncertain=value.data.get("uncertain") is True,
+                        transient=(
+                            registration.metadata.risk.value == RiskClass.READ.value
+                            and value.data.get("retryable") is True
+                        ),
+                    )
                 data = dict(value.data)
+                if data.get("pending") is True:
+                    work_id = data.get("work_id")
+                    if not isinstance(work_id, str) or not work_id:
+                        raise AutomationExecutionError("plugin_pending_work_id_required")
+                    return CapabilityResult(
+                        data=data,
+                        pending_work_id=work_id,
+                        llm_calls=_count(data, "model_requests"),
+                        tool_calls=_count(data, "tool_calls_used"),
+                    )
+                if data.get("state") in {"failed", "cancelled", "suspended"}:
+                    raise AutomationExecutionError("agent_work_blocked")
             elif isinstance(value, BaseModel):
                 validated = registration.output_model.model_validate(
                     value.model_dump(mode="python")
@@ -132,7 +161,14 @@ class PluginAutomationAdapter:
                 registration.metadata.risk.value == RiskClass.SEND.value
                 and str(data.get("status") or "").casefold() == "sent"
             )
-            return CapabilityResult(data=data, messages_sent=messages_sent)
+            return CapabilityResult(
+                data=data,
+                llm_calls=_count(data, "model_requests"),
+                tool_calls=_count(data, "tool_calls_used") if "tool_calls_used" in data else 1,
+                messages_sent=_count(data, "messages_sent")
+                if "messages_sent" in data
+                else messages_sent,
+            )
 
         return execute
 
@@ -181,3 +217,50 @@ def _automation_invocation(
 
 
 __all__ = ["InvocationScopeFactory", "PluginAutomationAdapter"]
+
+
+def _count(data: dict[str, Any], key: str) -> int:
+    value = data.get(key, 0)
+    if type(value) is not int or value < 0:
+        raise ValueError("plugin usage counter must be a nonnegative integer")
+    return value
+
+
+async def resume_plugin_result(
+    database: Any,
+    work_id: str,
+    definition: AutomationCapability,
+    context: CapabilityExecutionContext,
+    accounted: dict[str, int],
+) -> CapabilityResult:
+    """A returned handle transfers result ownership; never replay its handler."""
+    import json
+
+    from qq_ai_bot.automation.executor import AutomationExecutionError
+    from qq_ai_bot.runtime.work_repository import WorkRepository
+
+    row = await WorkRepository(database).get(work_id)
+    if row is None:
+        raise AutomationExecutionError("plugin_work_archived")
+    source = json.loads(row["source_json"])
+    if (
+        source.get("owner") != "plugin_invocation"
+        or source.get("plugin_id") != definition.provider_plugin_id
+        or source.get("approval_revision") != definition.provider_manifest_hash
+        or source.get("actor_user_id") != context.creator_user_id
+        or row["conversation_id"] != context.canonical_conversation_id
+        or row["generation"] != context.conversation_generation
+    ):
+        raise AutomationExecutionError("plugin_work_owner_mismatch")
+    if row["state"] in {"queued", "running", "waiting_external", "waiting_user"}:
+        return CapabilityResult(data={}, pending_work_id=work_id, tool_calls=0)
+    if row["state"] != "completed":
+        raise AutomationExecutionError("agent_work_blocked")
+    return CapabilityResult(
+        data={
+            "text": json.loads(row["checkpoint_json"]).get("sync_result", ""),
+            "work_id": work_id,
+        },
+        llm_calls=max(0, row["model_requests"] - accounted.get("models", 0)),
+        tool_calls=max(0, row["tool_calls"] - accounted.get("tools", 0)),
+    )

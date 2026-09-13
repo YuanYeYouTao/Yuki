@@ -15,11 +15,8 @@ from qq_ai_bot.capabilities.models import (
     CapabilityDescriptor,
     CapabilityEffect,
     CapabilityRisk,
-    CapabilityTrustSource,
 )
 from qq_ai_bot.runtime.contracts import MemoryCapabilityView
-from qq_ai_bot.sandbox.environment_tools import SANDBOX_TOOLS
-from qq_ai_bot.workspace.tools import WORKSPACE_TOOLS
 
 _WRITE_EFFECTS = frozenset(
     {
@@ -80,19 +77,6 @@ class CapabilityPolicyEngine:
                 continue
             if context.read_only and descriptor.effect not in _READ_EFFECTS:
                 continue
-            if context.contains_images and descriptor.effect in {
-                CapabilityEffect.WRITE_STATE,
-                CapabilityEffect.PLATFORM_MUTATE,
-            }:
-                # Attachments are normal inputs to rendering and file work.
-                # Keep memory/admin protection and the caller's other authority checks.
-                local_environment = (
-                    descriptor.trust_source is CapabilityTrustSource.CORE
-                    and descriptor.model_name in SANDBOX_TOOLS | WORKSPACE_TOOLS
-                    and descriptor.effect is CapabilityEffect.WRITE_STATE
-                )
-                if not local_environment:
-                    continue
             if descriptor.namespace_id in hidden_namespaces:
                 continue
             if exclusive is not None and descriptor.effect in _WRITE_EFFECTS:

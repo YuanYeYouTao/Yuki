@@ -208,6 +208,9 @@ class PluginCommandAdapter:
             return "插件命令执行超时。"
         except Exception as exc:
             return f"插件命令执行失败：{type(exc).__name__}"
+        if result.data.get("pending") is True:
+            work_id = result.data.get("work_id")
+            return f"任务已接纳，编号：{work_id}。" if work_id else "任务尚未取得有效编号。"
         return (
             result.text
             or result.detail

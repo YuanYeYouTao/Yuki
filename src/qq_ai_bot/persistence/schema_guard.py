@@ -22,6 +22,7 @@ def canonical_schema_revision(root: Path | None = None) -> str:
 
 
 _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
+    "runtime_automation_budgets": frozenset({"run_id", "models", "tools"}),
     "runtime_work_recovery": frozenset(
         {"work_id", "activation_id", "exit_reason", "failure_json", "attempts", "not_before"}
     ),

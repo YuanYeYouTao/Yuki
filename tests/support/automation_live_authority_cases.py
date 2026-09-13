@@ -46,7 +46,8 @@ async def authority_between_attempts(
         router=SimpleNamespace(resolve_send_for_person=AsyncMock()),
     ).execute(row, run)
     assert calls == 1, result
-    assert result.error_category == "automation_inactive"
+    # A SEND handler is never replayed on a transient hint alone.
+    assert result.error_category == "temporary_failure"
     assert result.messages_sent == 0
 
 

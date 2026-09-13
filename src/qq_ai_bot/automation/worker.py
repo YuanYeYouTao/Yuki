@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from datetime import timedelta
 from typing import Any
 
 from qq_ai_bot.automation.executor import AutomationExecutor
@@ -50,12 +51,13 @@ class AutomationWorker:
     async def close(self) -> None:
         self._stop.set()
         if self._task is not None:
-            await self._task
-            self._task = None
+            task, self._task = self._task, None
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
         if self._running:
             _done, pending = await asyncio.wait(
                 self._running,
-                timeout=float(self._settings.automation_max_runtime_seconds),
+                timeout=5,
             )
             for task in pending:
                 task.cancel()
@@ -65,10 +67,14 @@ class AutomationWorker:
     async def _loop(self) -> None:
         while not self._stop.is_set():
             try:
+                if len(self._running) >= max(1, self._settings.global_llm_concurrency - 1):
+                    await asyncio.sleep(self._settings.automation_poll_seconds)
+                    continue
                 rows = await self._repository.claim_due(
-                    worker_id=self._worker_id,
+                    worker_id=uuid.uuid4().hex,
                     now=self._time.clock.now(),
                     lease_seconds=self._settings.automation_lease_seconds,
+                    limit=max(1, self._settings.global_llm_concurrency - 1 - len(self._running)),
                 )
                 for row in rows:
                     task = asyncio.create_task(
@@ -88,9 +94,31 @@ class AutomationWorker:
     async def _process_guarded(self, automation: Any) -> None:
         """Contain unexpected task failures and release the lease for recovery."""
 
+        owner = asyncio.current_task()
+
+        async def heartbeat() -> None:
+            while True:
+                await asyncio.sleep(max(1, self._settings.automation_lease_seconds / 3))
+                valid = await self._repository.renew_claim(
+                    automation.id,
+                    automation.claimed_by or self._worker_id,
+                    self._time.clock.now()
+                    + timedelta(seconds=self._settings.automation_lease_seconds),
+                )
+                if not valid:
+                    if owner is not None:
+                        owner.cancel()
+                    return
+
+        pulse = asyncio.create_task(heartbeat())
         try:
             await self._process(automation)
         except asyncio.CancelledError:
+            await self._repository.release_claim(
+                automation.id,
+                worker_id=automation.claimed_by or self._worker_id,
+                next_run_at=automation.next_run_at,
+            )
             raise
         except Exception as exc:
             logger.error(
@@ -102,7 +130,7 @@ class AutomationWorker:
             try:
                 await self._repository.release_claim(
                     automation.id,
-                    worker_id=self._worker_id,
+                    worker_id=automation.claimed_by or self._worker_id,
                     next_run_at=automation.next_run_at,
                 )
             except Exception as release_exc:
@@ -111,11 +139,16 @@ class AutomationWorker:
                     getattr(automation, "id", "unknown"),
                     type(release_exc).__name__,
                 )
+        finally:
+            pulse.cancel()
+            await asyncio.gather(pulse, return_exceptions=True)
 
     async def _process(self, automation: Any) -> None:
         scheduled_for = automation.next_run_at
         if scheduled_for is None:
-            await self._repository.release_claim(automation.id, worker_id=self._worker_id)
+            await self._repository.release_claim(
+                automation.id, worker_id=automation.claimed_by or self._worker_id
+            )
             return
         now = self._time.clock.now()
         lateness = (now - scheduled_for).total_seconds()
@@ -135,6 +168,7 @@ class AutomationWorker:
             if run is not None:
                 await self._repository.finish_run(
                     run.id,
+                    worker_id=automation.claimed_by or self._worker_id,
                     status=RunStatus.MISSED,
                     steps_completed=0,
                     llm_calls=0,
@@ -146,7 +180,7 @@ class AutomationWorker:
                 )
             await self._repository.finish_automation_run(
                 automation.id,
-                worker_id=self._worker_id,
+                worker_id=automation.claimed_by or self._worker_id,
                 status=RunStatus.MISSED,
                 next_run_at=next_run,
                 now=now,
@@ -160,18 +194,24 @@ class AutomationWorker:
         )
         if run is None:
             await self._repository.release_claim(
-                automation.id, worker_id=self._worker_id, next_run_at=next_run
+                automation.id,
+                worker_id=automation.claimed_by or self._worker_id,
+                next_run_at=next_run,
             )
             return
         result = await self._executor.execute(automation, run)
         if result.status is RunStatus.RUNNING:
             await self._repository.release_claim(
-                automation.id, worker_id=self._worker_id, next_run_at=scheduled_for
+                automation.id,
+                worker_id=automation.claimed_by or self._worker_id,
+                next_run_at=scheduled_for,
+                not_before=self._time.clock.now() + timedelta(seconds=5),
             )
             return
         finished = self._time.clock.now()
-        await self._repository.finish_run(
+        recorded = await self._repository.finish_run(
             run.id,
+            worker_id=automation.claimed_by or self._worker_id,
             status=result.status,
             steps_completed=result.steps_completed,
             llm_calls=result.llm_calls,
@@ -181,9 +221,11 @@ class AutomationWorker:
             summary=result.summary,
             finished_at=finished,
         )
+        if not recorded:
+            return
         await self._repository.finish_automation_run(
             automation.id,
-            worker_id=self._worker_id,
+            worker_id=automation.claimed_by or self._worker_id,
             status=result.status,
             next_run_at=next_run,
             now=finished,

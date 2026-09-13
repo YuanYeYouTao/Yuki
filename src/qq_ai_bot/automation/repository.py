@@ -6,7 +6,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import delete, func, or_, select, true, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,7 +59,29 @@ class AutomationRepository:
         schedule_json = validated.script.schedule.model_dump_json(exclude_none=True)
         authority_json = authority.model_dump_json()
         timestamp = _aware_utc(now)
-        async with optional_session(self._database, session, write=True) as active:
+        transaction = (
+            self._database.immediate_session()
+            if session is None
+            else optional_session(self._database, session, write=True)
+        )
+        async with transaction as active:
+            if creation_source_key is not None:
+                previous = await active.scalar(
+                    select(AutomationModel)
+                    .where(
+                        AutomationModel.canonical_creator_person_id == creator_person_id,
+                        AutomationModel.creation_source_key == creation_source_key,
+                    )
+                    .order_by(AutomationModel.id)
+                    .limit(1)
+                )
+                if previous is not None:
+                    if (
+                        previous.script_hash != validated.script_hash
+                        or previous.max_runs != max_runs
+                    ):
+                        raise ValueError("automation_creation_key_conflict")
+                    return _automation_record(previous)
             creator = await active_person_id_for(active, authority.creator_user_id)
             if creator != creator_person_id:
                 raise ValueError("创建者没有对应的永久主体")
@@ -485,8 +507,9 @@ class AutomationRepository:
         *,
         worker_id: str,
         next_run_at: datetime | None = None,
+        not_before: datetime | None = None,
     ) -> None:
-        values: dict[str, Any] = {"claimed_by": None, "claimed_until": None}
+        values: dict[str, Any] = {"claimed_by": None, "claimed_until": not_before}
         if next_run_at is not None:
             values["next_run_at"] = _aware_utc(next_run_at)
         async with self._database.sessions() as session, session.begin():
@@ -498,6 +521,19 @@ class AutomationRepository:
                 )
                 .values(**values)
             )
+
+    async def renew_claim(self, automation_id: int, worker_id: str, until: datetime) -> bool:
+        async with self._database.immediate_session() as session:
+            result = await session.execute(
+                update(AutomationModel)
+                .where(
+                    AutomationModel.id == automation_id,
+                    AutomationModel.claimed_by == worker_id,
+                    AutomationModel.status == AutomationStatus.ACTIVE.value,
+                )
+                .values(claimed_until=until)
+            )
+            return cast(CursorResult[Any], result).rowcount == 1
 
     async def create_run(
         self,
@@ -589,11 +625,19 @@ class AutomationRepository:
         error_category: str | None,
         summary: dict[str, Any],
         finished_at: datetime,
-    ) -> None:
+        worker_id: str | None = None,
+    ) -> bool:
         async with self._database.sessions() as session, session.begin():
-            await session.execute(
+            result = await session.execute(
                 update(AutomationRunModel)
-                .where(AutomationRunModel.id == run_id)
+                .where(
+                    AutomationRunModel.id == run_id,
+                    AutomationRunModel.automation_id.in_(
+                        select(AutomationModel.id).where(AutomationModel.claimed_by == worker_id)
+                    )
+                    if worker_id is not None
+                    else true(),
+                )
                 .values(
                     status=status.value,
                     steps_completed=steps_completed,
@@ -604,7 +648,9 @@ class AutomationRepository:
                     result_summary_json=_redacted_json(summary),
                     finished_at=_aware_utc(finished_at),
                 )
+                .returning(AutomationRunModel.id)
             )
+            return result.scalar_one_or_none() is not None
 
     async def finish_automation_run(
         self,
@@ -617,7 +663,7 @@ class AutomationRepository:
         max_consecutive_failures: int,
     ) -> None:
         timestamp = _aware_utc(now)
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             row = await session.get(AutomationModel, automation_id)
             if row is None or row.claimed_by != worker_id:
                 return
@@ -751,6 +797,7 @@ async def _default_canonical_target(
 def _automation_record(row: AutomationModel) -> AutomationRecord:
     return AutomationRecord(
         id=row.id,
+        claimed_by=row.claimed_by,
         creator_user_id=row.creator_user_id,
         bot_user_id=row.bot_user_id,
         name=row.name,

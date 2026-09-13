@@ -228,7 +228,7 @@ class SubagentScheduler:
                 presence_id=recovered.presence_id,
             )
             from qq_ai_bot.memory.runtime.resolver import MemoryStructuredCommand
-            from qq_ai_bot.services.chat import _ChatAgentBackend
+            from qq_ai_bot.services.main_agent_backend import MainAgentBackend
 
             memory = self.app.chat._open_memory_session(
                 inbound,
@@ -266,7 +266,7 @@ class SubagentScheduler:
             names = frozenset(t.name for t in self.definitions)
             if names != WORKER_NAMES:
                 raise ValueError("incomplete_worker_tool_manifest")
-            backend = WorkerBackend(_ChatAgentBackend(self.app.chat, tool_runtime), names)
+            backend = WorkerBackend(MainAgentBackend(self.app.chat, tool_runtime), names)
             now = datetime.now(UTC)
             brief = json.loads(child["brief_json"])
             brief.update(child_id=identity, cwd=f"/workspace/tasks/{identity}", work_id=identity)

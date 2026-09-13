@@ -109,6 +109,13 @@ class WorkScheduler:
                                     )
                                 ),
                             ),
+                            or_(
+                                func.json_extract(work.c.source_json, "$.owner")
+                                == "plugin_invocation",
+                                func.json_extract(work.c.source_json, "$.origin").in_(
+                                    ("user_message", "autonomous_group")
+                                ),
+                            ),
                             work.c.id.not_in(select(children.c.work_id)),
                             or_(scope.c.owner.is_(None), scope.c.lease_until <= time.time()),
                             or_(recovery.c.work_id.is_(None), recovery.c.not_before <= time.time()),
@@ -122,10 +129,19 @@ class WorkScheduler:
             )
         for row in rows:
             source = json.loads(row["source_json"])
-            if source.get("origin") not in {"user_message", "autonomous_group"}:
+            plugin_owned = source.get("owner") == "plugin_invocation"
+            if not plugin_owned and source.get("origin") not in {
+                "user_message",
+                "autonomous_group",
+            }:
                 continue
             try:
-                await self._resume(dict(row), source)
+                if plugin_owned:
+                    from qq_ai_bot.plugin_host.main_turn import resume_plugin_work
+
+                    await resume_plugin_work(self.app, dict(row), source)
+                else:
+                    await self._resume(dict(row), source)
             except WorkConflict:
                 continue
             except Exception as exc:

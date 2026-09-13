@@ -18,6 +18,7 @@ from qq_ai_bot.automation.authority import (
     permission_for_accounts,
 )
 from qq_ai_bot.automation.compiler import AutomationCompiler, ExecutionPlan, TaskSpec
+from qq_ai_bot.automation.creation_key import creation_key as _creation_key
 from qq_ai_bot.automation.models import (
     AutomationRecord,
     AutomationRunRecord,
@@ -106,6 +107,46 @@ class AutomationService:
         )
         return row, plan
 
+    async def find_equivalent_task(
+        self,
+        task_payload: object,
+        *,
+        inbound: InboundMessage,
+        max_runs: int | None = None,
+    ) -> tuple[AutomationRecord, ...]:
+        """Exact structured candidates only; the Agent decides whether to create."""
+        task = TaskSpec.model_validate(task_payload)
+        creator, _permission, provenance = await self._creator_context(inbound)
+        plan = self._compiler.compile(
+            task,
+            provenance,
+            default_timezone=await self._time.timezone_for(inbound.sender.user_id),
+        )
+        expected = plan.script.model_dump(mode="json", exclude={"name"}, exclude_none=True)
+        rows = await self._repository.list_current_for_creator(creator, limit=200)
+        return tuple(
+            row
+            for row in rows
+            if row.max_runs == max_runs
+            and row.script.model_dump(mode="json", exclude={"name"}, exclude_none=True) == expected
+        )
+
+    async def find_equivalent_task_delegated(
+        self,
+        task_payload: object,
+        *,
+        context: CapabilityExecutionContext,
+        max_runs: int | None = None,
+    ) -> tuple[AutomationRecord, ...]:
+        _creator, account = await self._delegated_creator(context)
+        inbound = self._delegated_inbound(
+            "list",
+            {},
+            context=context,
+            creator_user_id=account,
+        )
+        return await self.find_equivalent_task(task_payload, inbound=inbound, max_runs=max_runs)
+
     async def create_task_delegated(
         self,
         task_payload: object,
@@ -115,7 +156,7 @@ class AutomationService:
     ) -> tuple[AutomationRecord, ExecutionPlan]:
         """Create a follow-up task under the original creator's trusted authority."""
 
-        creator_person_id, creator_account_id = await self._delegated_creator(context)
+        _creator_person_id, creator_account_id = await self._delegated_creator(context)
         inbound = self._delegated_inbound(
             "create",
             task_payload,
@@ -131,12 +172,6 @@ class AutomationService:
             (await self._creator_context(inbound))[2],
             default_timezone=context.timezone,
         )
-        existing = await self._repository.get_by_creation_key(
-            creator_person_id,
-            inbound.source_key,
-        )
-        if existing is not None:
-            return existing, plan
         row = await self.create(
             plan.script,
             inbound=inbound,
@@ -298,6 +333,13 @@ class AutomationService:
         now = self._time.clock.now()
         creator_person_id, permission, provenance = await self._creator_context(inbound)
         validated = self._validator.validate(script, provenance, now_utc=now)
+        existing = await self._repository.get_by_creation_key(
+            creator_person_id, _creation_key(inbound.source_key)
+        )
+        if existing is not None:
+            if existing.script_hash != validated.script_hash or existing.max_runs != max_runs:
+                raise ValueError("automation_creation_key_conflict")
+            return existing
         maximum = (
             self._settings.automation_max_active_per_superuser
             if permission.value == "superuser"
@@ -322,7 +364,7 @@ class AutomationService:
         row = await self._repository.create(
             validated,
             authority,
-            creation_source_key=inbound.source_key,
+            creation_source_key=_creation_key(inbound.source_key),
             creator_person_id=creator_person_id,
             max_runs=max_runs,
             misfire_grace_seconds=self._settings.automation_default_misfire_grace_seconds,

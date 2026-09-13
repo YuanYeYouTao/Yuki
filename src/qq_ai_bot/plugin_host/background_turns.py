@@ -94,8 +94,9 @@ class PluginBackgroundTurnWorker:
         self._stop.set()
         self._wake.set()
         if self._task is not None:
-            await self._task
-            self._task = None
+            task, self._task = self._task, None
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     def wake(self) -> None:
         self._wake.set()
@@ -167,13 +168,20 @@ class PluginBackgroundTurnWorker:
                 raise
             finally:
                 if correlation.touched or error_category is not None:
+                    delivery_counts = await self._repository.turn_delivery_counts(job)
+                    logger.info(
+                        "plugin_turn_delivery job_id=%d event_id=%d outbox_states=%s",
+                        job.id,
+                        job.source_event_id,
+                        delivery_counts,
+                    )
                     observation = build_turn_observation(
                         correlation,
                         scope_type=job.target_type,
                         conversation_key=resolved_key[0],
                         admission_outcome="plugin_background",
                         handled=error_category is None,
-                        sent_messages=0,
+                        sent_messages=delivery_counts.get("sent", 0),
                         error_category=error_category,
                         total_latency_ms=int((time.perf_counter() - started) * 1000),
                         canonical_conversation_id=canonical_conversation_id,
@@ -363,7 +371,7 @@ class PluginBackgroundTurnWorker:
                 job.id,
                 attempt=job.attempts,
                 generation=job.generation,
-                text=result.text,
+                text="" if result.suppress_delivery else result.text,
                 tool_calls_used=result.tool_calls_used,
                 model_requests=result.model_requests,
             )
@@ -389,19 +397,15 @@ class PluginBackgroundTurnWorker:
                 )
             except BackgroundTurnFenceError:
                 return
-            if job.attempts >= 2:
-                await self._repository.abandon_turn(
-                    job.id,
-                    attempt=job.attempts,
-                    error_category="interrupted_twice",
-                )
-            else:
-                await self._repository.defer_turn(
-                    job.id,
-                    attempt=job.attempts,
-                    error_category="interrupted_by_user",
-                    delay_seconds=5,
-                )
+            # The original job fence is still valid. A changed history/turn is
+            # a scheduling boundary, not evidence that the user cancelled work.
+            await self._repository.defer_turn(
+                job.id,
+                attempt=job.attempts,
+                error_category="conversation_boundary_changed",
+                delay_seconds=5,
+                preserve_budget=True,
+            )
         except BackgroundTurnFenceError:
             return
         except ConversationCoverageError as exc:

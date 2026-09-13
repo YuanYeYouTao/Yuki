@@ -128,22 +128,44 @@ class PluginCapabilityAdapter:
         except (json.JSONDecodeError, ValidationError) as exc:
             await self._record(item, runtime, False, type(exc).__name__)
             return _error("invalid_arguments", "插件工具参数未通过严格校验")
-        attempts = 2 if registration.metadata.retry_policy is RetryPolicy.TRANSIENT_ONCE else 1
+        # A timeout says nothing about whether a mutating handler committed.
+        # Only reads may be replayed without an execution receipt protocol.
+        attempts = (
+            2
+            if registration.metadata.retry_policy is RetryPolicy.TRANSIENT_ONCE
+            and registration.metadata.risk is RiskClass.READ
+            else 1
+        )
         for attempt in range(attempts):
+            dispatched = False
             try:
                 async with asyncio.timeout(registration.metadata.timeout_seconds):
                     async with self._scope(item.plugin_id, runtime, web_was_used=web_was_used):
+                        dispatched = True
                         raw_result = await registration.handler(arguments)
                 result = _validated_result(raw_result, registration.output_model)
                 await self._record(item, runtime, result.ok, result.error_code)
                 return json.dumps(result.model_dump(mode="json"), ensure_ascii=False)
-            except (TimeoutError, OSError) as exc:
-                if attempt + 1 < attempts:
+            except Exception as exc:
+                if isinstance(exc, (TimeoutError, OSError)) and attempt + 1 < attempts:
                     continue
                 await self._record(item, runtime, False, type(exc).__name__)
-                return _error("plugin_tool_failed", type(exc).__name__)
-            except Exception as exc:
-                await self._record(item, runtime, False, type(exc).__name__)
+                if dispatched and registration.metadata.risk in {
+                    RiskClass.SEND,
+                    RiskClass.MUTATE,
+                    RiskClass.DESTRUCTIVE,
+                }:
+                    return json.dumps(
+                        {
+                            "ok": False,
+                            "error": "plugin_effect_unknown",
+                            "detail": type(exc).__name__,
+                            "retryable": False,
+                            "mutation_committed": None,
+                            "uncertain": True,
+                            "data": {"status": "unknown", "uncertain": True},
+                        }
+                    )
                 return _error("plugin_tool_failed", type(exc).__name__)
         raise AssertionError("plugin tool retry loop must terminate")
 
@@ -178,12 +200,6 @@ class PluginCapabilityAdapter:
         if runtime.tools_closed:
             return False
         if runtime.read_only and metadata.risk is not RiskClass.READ:
-            return False
-        visual = bool(
-            runtime.inbound is not None
-            and (runtime.inbound.attachments or runtime.inbound.reply_attachments)
-        )
-        if visual and metadata.risk in {RiskClass.SEND, RiskClass.MUTATE, RiskClass.DESTRUCTIVE}:
             return False
         return True
 

@@ -15,7 +15,7 @@ from qq_ai_bot.admin.action_service import AdminActionService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.executor import AutomationExecutionError
-from qq_ai_bot.automation.gateway import ProactiveGateway
+from qq_ai_bot.automation.gateway import ProactiveGateway, ProactiveGatewayError
 from qq_ai_bot.automation.registry import (
     AutomationCapabilityRegistry,
     CapabilityExecutionContext,
@@ -54,6 +54,7 @@ from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     RelationshipRepository,
 )
+from qq_ai_bot.runtime.activation_outcome import ContextBoundaryChanged
 from qq_ai_bot.services.agent_runner import (
     AgentRunner,
     AgentRuntime,
@@ -62,7 +63,7 @@ from qq_ai_bot.services.agent_runner import (
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.context_assembler import ContextAssembler
 from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
-from qq_ai_bot.services.prompt_composer import PromptComposer, PromptComposition
+from qq_ai_bot.services.prompt_composer import PromptComposition
 from qq_ai_bot.speech.genie_client import GenieWorkerFailure, GenieWorkerUnavailable
 from qq_ai_bot.speech.provider import SpeechSynthesisRequest
 from qq_ai_bot.speech.service import (
@@ -80,7 +81,7 @@ if TYPE_CHECKING:
 GatewayFactory = Callable[[CapabilityExecutionContext], ProactiveGateway]
 
 
-class _AutomationContextChanged(LLMInvalidRequestError):
+class _AutomationContextChanged(ContextBoundaryChanged):
     """The declared history no longer belongs to the current conversation epoch."""
 
 
@@ -235,11 +236,18 @@ class AutomationCapabilityHandlers:
         self, arguments: dict[str, Any], context: CapabilityExecutionContext
     ) -> CapabilityResult:
         service = self._require_automation_service()
-        rows = (
-            await service.list(context.creator_user_id)
-            if bool(arguments.get("include_completed"))
-            else await service.list_current(context.creator_user_id)
-        )
+        if arguments.get("match_task") is not None:
+            rows = await service.find_equivalent_task_delegated(
+                arguments["match_task"],
+                context=context,
+                max_runs=arguments.get("max_runs"),
+            )
+        else:
+            rows = (
+                await service.list(context.creator_user_id)
+                if bool(arguments.get("include_completed"))
+                else await service.list_current(context.creator_user_id)
+            )
         return CapabilityResult(
             data={
                 "tasks": [
@@ -257,13 +265,7 @@ class AutomationCapabilityHandlers:
     async def generate(
         self, arguments: dict[str, Any], context: CapabilityExecutionContext
     ) -> CapabilityResult:
-        bounded_context = replace(
-            context,
-            authority=context.authority.model_copy(update={"allowed_capabilities": frozenset()}),
-        )
-        result = await self.agent(
-            {**arguments, "max_tool_calls": 3, "max_model_requests": 4}, bounded_context
-        )
+        result = await self.agent(arguments, context)
         if result.pending_work_id:
             return result
         return replace(
@@ -303,12 +305,22 @@ class AutomationCapabilityHandlers:
                 if selected_capabilities
                 else context.authority.allowed_capabilities
             ),
-            max_tool_calls=min(int(arguments["max_tool_calls"]), snapshot.agent.max_tool_calls),
+            max_tool_calls=min(
+                int(arguments.get("max_tool_calls", snapshot.agent.max_tool_calls)),
+                snapshot.agent.max_tool_calls,
+            ),
             max_model_requests=min(
-                int(arguments["max_model_requests"]), snapshot.agent.max_model_requests
+                int(arguments.get("max_model_requests", snapshot.agent.max_model_requests)),
+                snapshot.agent.max_model_requests,
             ),
             canonical_conversation_id=context.canonical_conversation_id,
             execution_id=f"automation:{context.automation_run_id}:{context.step_id}:{context.automation_script_hash}",
+            invocation_goal=str(arguments["instruction"]),
+            invocation_source={
+                "owner": "automation",
+                "automation_run_id": context.automation_run_id,
+                "step_id": context.step_id,
+            },
         )
         context = replace(
             context,
@@ -359,13 +371,94 @@ class AutomationCapabilityHandlers:
                 static_prompt_revision=composition.metrics.stable_prefix_hash,
             ),
         )
+        from qq_ai_bot.sandbox.environment_tools import SANDBOX_TOOLS
+        from qq_ai_bot.services.agent_tools import OneBotToolGateway, ToolRuntime
+        from qq_ai_bot.services.main_agent_backend import MainAgentBackend
+        from qq_ai_bot.workspace.tools import WORKSPACE_TOOLS
+
+        contract = self._agent_runner.main_contract
+        if contract is None:
+            raise AutomationExecutionError("main_agent_services_unavailable")
+        work_tools = (
+            SANDBOX_TOOLS
+            | WORKSPACE_TOOLS
+            | {"update_short_state", "request_tools", "read_tool_artifact"}
+        )
+        if context.automation_context.scene != "none" and context.automation_context.history_limit:
+            work_tools |= {
+                "read_conversation_history",
+                "get_recent_chat_history",
+                "search_chat_history",
+                "get_chat_history_around",
+            }
+        if (
+            context.automation_context.scene != "none"
+            and context.automation_context.include_memories
+        ):
+            work_tools |= {
+                "get_person_memories",
+                "get_group_memories",
+                "get_self_memories",
+                "get_memory_fact",
+                "get_memory_evidence",
+            }
+        from qq_ai_bot.domain.conversations import ConversationScope
+        from qq_ai_bot.identity.canonical_repository import (
+            active_person_id_for,
+            active_space_id_for,
+        )
+
+        read_group = (
+            context.current_group_id
+            if context.automation_context.scene == "current_group"
+            else None
+        )
+        read_scope = (
+            ConversationScope.group(context.bot_user_id, read_group)
+            if read_group
+            else ConversationScope.private(context.bot_user_id, context.creator_user_id)
+        )
+        async with contract.chat._ledger._database.sessions() as identity_session:
+            read_target = (
+                await active_space_id_for(identity_session, read_group)
+                if read_group
+                else await active_person_id_for(identity_session, context.creator_user_id)
+            )
+        backend.core = MainAgentBackend(
+            contract.chat,
+            ToolRuntime(
+                inbound=None,
+                gateway=cast(OneBotToolGateway | None, runtime.gateway),
+                allow_generic_onebot=False,
+                allow_work_environment=True,
+                read_scope=read_scope,
+                read_target_id=read_target,
+                history_limit=context.automation_context.history_limit,
+                external_target_id=read_group or context.creator_user_id,
+                conversation_key=context.conversation_key,
+                execution_id=runtime.execution_id or "",
+                actor_user_id=context.creator_user_id,
+                actor_is_superuser=False,
+                current_group_id=context.current_group_id,
+                runtime_config=snapshot,
+                origin=context.authority.origin,
+                conversation_id=context.canonical_conversation_id,
+                scope_type=ScopeType.GROUP if context.current_group_id else ScopeType.PRIVATE,
+                bot_user_id=context.bot_user_id,
+                person_id=context.canonical_target_person_id,
+                space_id=context.canonical_target_space_id,
+                before_model_request=validate_context,
+            ),
+            allowed_tools=frozenset(work_tools),
+        )
+        backend.core_names = frozenset(work_tools)
         try:
             result = await self._main_turn_service().run(messages, runtime, backend)
         except LLMError as exc:
             raise _automation_llm_error(
                 exc,
                 llm_calls=backend.failed_model_requests,
-                tool_calls=1 + backend.failed_tool_calls,
+                tool_calls=backend.failed_tool_calls,
                 messages_sent=backend.messages_sent,
             ) from exc
         if (
@@ -383,13 +476,13 @@ class AutomationCapabilityHandlers:
             raise AutomationExecutionError(
                 "agent_work_blocked",
                 llm_calls=result.model_requests + backend.nested_llm_calls,
-                tool_calls=1 + result.tool_calls_used + backend.nested_tool_calls,
+                tool_calls=result.tool_calls_used + backend.nested_tool_calls,
                 messages_sent=backend.messages_sent,
             )
         return CapabilityResult(
             data={"text": result.text, "tool_calls_used": result.tool_calls_used},
             llm_calls=result.model_requests + backend.nested_llm_calls,
-            tool_calls=1 + result.tool_calls_used + backend.nested_tool_calls,
+            tool_calls=result.tool_calls_used + backend.nested_tool_calls,
             messages_sent=backend.messages_sent,
         )
 
@@ -798,7 +891,7 @@ class AutomationCapabilityHandlers:
         contract = self._agent_runner.main_contract
         if contract is not None:
             return cast(MainAgentTurnService, contract.chat._main_turns)
-        return MainAgentTurnService(PromptComposer(self._settings), self._agent_runner)
+        raise AutomationExecutionError("main_agent_services_unavailable")
 
 
 class _AutomationAgentBackend(AgentToolBackend):
@@ -818,6 +911,15 @@ class _AutomationAgentBackend(AgentToolBackend):
         self._nested_tool_calls = 0
         self._failed_model_requests = 0
         self._failed_tool_calls = 0
+        self.core: Any = None
+        self.core_names: frozenset[str] = frozenset()
+
+    async def prepare(self, runtime: AgentRuntime) -> None:
+        if self.core is not None:
+            await self.core.prepare(runtime)
+
+    def work_control_allowed(self, name: str) -> bool:
+        return name == "task_control"
 
     @property
     def messages_sent(self) -> int:
@@ -869,12 +971,15 @@ class _AutomationAgentBackend(AgentToolBackend):
         return tuple(tools)
 
     def begin_batch(self, calls: tuple[ToolCall, ...], runtime: AgentRuntime) -> None:
-        return None
+        if self.core is not None:
+            self.core.begin_batch(calls, runtime)
 
     def did_use_web(self) -> bool:
         return self._web_was_used
 
     def parallel_safe(self, name: str, runtime: AgentRuntime) -> bool:
+        if self.core is not None and name in self.core_names:
+            return bool(self.core.parallel_safe(name, runtime))
         capability_name = self._name_map.get(name)
         if capability_name is None:
             return False
@@ -887,7 +992,8 @@ class _AutomationAgentBackend(AgentToolBackend):
         arguments_json: str,
         runtime: AgentRuntime,
     ) -> bool:
-        del arguments_json, runtime
+        if self.core is not None and name in self.core_names:
+            return bool(self.core.is_side_effecting(name, arguments_json, runtime))
         if name == "update_short_state":
             return True
         capability_name = self._name_map.get(name)
@@ -896,6 +1002,8 @@ class _AutomationAgentBackend(AgentToolBackend):
         return self._registry.require(capability_name).risk_class.value != "read"
 
     async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str:
+        if self.core is not None and name in self.core_names:
+            return cast(str, await self.core.execute(name, arguments_json, runtime))
         if name == "update_short_state" and self.short_state is not None:
             if self._context.revalidate_authority is not None:
                 try:
@@ -905,8 +1013,12 @@ class _AutomationAgentBackend(AgentToolBackend):
             return cast(str, await self.short_state.execute(arguments_json))
         capability_name = self._name_map.get(name)
         if capability_name is None:
-            if self.main_contract and name in self.main_contract.automation_names.values():
-                return json.dumps({"ok": False, "error": "capability_not_allowed"})
+            if self.main_contract and name in {
+                tool.name for tool in await self.main_contract.definitions()
+            }:
+                return json.dumps(
+                    {"ok": False, "error": "capability_not_allowed", "executed": False}
+                )
             return json.dumps({"ok": False, "error": "unknown_tool"})
         definition = self._registry.require(capability_name)
         if definition.handler is None:
@@ -945,26 +1057,57 @@ class _AutomationAgentBackend(AgentToolBackend):
                 {"ok": False, "error": "invalid_arguments", "issues": issues},
                 ensure_ascii=False,
             )
-        except (AutomationExecutionError, ValueError, json.JSONDecodeError) as exc:
+        except (
+            AutomationExecutionError,
+            ProactiveGatewayError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as exc:
             return json.dumps(
                 {
                     "ok": False,
                     "error": getattr(exc, "category", "invalid_arguments"),
                     "detail": str(exc)[:1000],
+                    "uncertain": bool(getattr(exc, "uncertain", False)),
                 },
                 ensure_ascii=False,
             )
         except Exception:
             return json.dumps(
-                {"ok": False, "error": "capability_execution_failed"},
+                {
+                    "ok": False,
+                    "error": "capability_execution_failed",
+                    "uncertain": definition.risk_class.value != "read",
+                },
                 ensure_ascii=False,
             )
         if capability_name in {"web.search", "web.read_page"}:
             self._web_was_used = True
         self._messages_sent += result.messages_sent
         self._nested_llm_calls += result.llm_calls
-        self._nested_tool_calls += result.tool_calls
-        return json.dumps({"ok": True, "data": result.data}, ensure_ascii=False)[:32000]
+        self._nested_tool_calls += max(0, result.tool_calls - 1)
+        from qq_ai_bot.capabilities.results import ToolExecutionResult, ToolResultBudgeter
+
+        config = runtime.runtime_config
+        tooling = config.tooling
+        artifacts = self.core._service._tool_artifacts if self.core is not None else None
+        rendered = await ToolResultBudgeter(
+            max_characters=(
+                tooling.result_token_budget * 4
+                if tooling and tooling.result_token_budget is not None
+                else config.agent.tool_result_max_characters
+            ),
+            item_limit=tooling.result_item_limit if tooling else None,
+            artifacts=artifacts if tooling and tooling.result_artifact_enabled else None,
+        ).render(
+            ToolExecutionResult(
+                ok=True,
+                data=result.data,
+                provider_id="automation",
+                tool_name=capability_name,
+            )
+        )
+        return rendered.text
 
     def finalize(self, content: str, runtime: AgentRuntime) -> str:
         return content

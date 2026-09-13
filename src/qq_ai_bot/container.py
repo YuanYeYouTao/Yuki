@@ -334,7 +334,6 @@ class ApplicationContainer:
             settings.social_transfer_directory,
             settings.social_gateway_transfer_directory,
         )
-        self.plugin_agent_tools = conversation.plugin_agent_tools
         self.chat = conversation.chat
         from qq_ai_bot.sandbox.continuation_worker import SandboxContinuationWorker
 
@@ -676,9 +675,20 @@ class ApplicationContainer:
             )
 
         agent_capabilities: set[str] = set()
+        if PluginPermission.AGENT_RUN in permissions:
+            from qq_ai_bot.sandbox.environment_tools import SANDBOX_TOOLS
+            from qq_ai_bot.workspace.tools import WORKSPACE_TOOLS
+
+            agent_capabilities.update(SANDBOX_TOOLS | WORKSPACE_TOOLS)
         if PluginPermission.MESSAGE_HISTORY_READ in permissions:
             agent_capabilities.update(
-                {"get_recent_chat_history", "search_chat_history", "get_chat_history_around"}
+                {
+                    "search_chat_history",
+                    "get_chat_history_around",
+                    "read_conversation_history",
+                    "get_recent_chat_history",
+                    "find_contacts",
+                }
             )
         if PluginPermission.MEMORY_PERSON_READ in permissions:
             agent_capabilities.add("get_person_memories")
@@ -702,6 +712,7 @@ class ApplicationContainer:
                 self.settings.plugin_background_task_limit,
             ),
             services=PluginFacadeServices(
+                approval_revision=manifest.manifest_hash,
                 bot_display_name=self.settings.bot_display_name,
                 ledger=self.ledger,
                 people=self.people,
@@ -713,7 +724,6 @@ class ApplicationContainer:
                 relationship_admin=self.relationship_admin,
                 runtime_config=self.runtime_config,
                 agent_runner=self.chat._agent_runner,
-                agent_tools=self.plugin_agent_tools,
                 agent_capabilities=frozenset(agent_capabilities),
                 web_provider=self.web_provider,
                 mcp_manager=self.mcp_manager,

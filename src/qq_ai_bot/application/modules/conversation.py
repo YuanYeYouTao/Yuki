@@ -43,7 +43,6 @@ from qq_ai_bot.memory.self_reflection.service import SelfReflectionService
 from qq_ai_bot.memory.self_reflection.worker import SelfReflectionWorker
 from qq_ai_bot.memory.worker import MemoryWorker
 from qq_ai_bot.model_runtime.models import ModelTask
-from qq_ai_bot.plugin_host.agent_backend import PluginAgentToolBackend
 from qq_ai_bot.services.agent_tools import AgentToolService
 from qq_ai_bot.services.chat import ChatService, ToolInvocationRecorder
 from qq_ai_bot.services.concurrency import ConcurrencyManager
@@ -78,7 +77,6 @@ class ConversationBundle:
     deduplication: DeduplicationService
     rate_limiter: SlidingWindowRateLimiter
     agent_tools: AgentToolService
-    plugin_agent_tools: PluginAgentToolBackend
     chat: ChatService
     memory_mutations: MemoryMutationService
     memory_auditor: MemoryAuditCoordinator
@@ -215,7 +213,6 @@ class ConversationModule:
             permission_catalog=self._permission_catalog,
             voice_preferences=self._voice_preferences,
         )
-        plugin_agent_tools = PluginAgentToolBackend(agent_tools)
         memory_attribution_worker = MemoryAttributionWorker(
             models=models,
             memory_context=persistence.memory_context,
@@ -360,7 +357,6 @@ class ConversationModule:
             deduplication,
             rate_limiter,
             agent_tools,
-            plugin_agent_tools,
             chat,
             memory_mutations,
             memory_auditor,

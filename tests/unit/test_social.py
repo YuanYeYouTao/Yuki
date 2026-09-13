@@ -119,13 +119,23 @@ async def test_social_receipt_claim_replay_and_interrupted_delivery(database: Da
         descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS for descriptor in descriptors
     )
     assert all(not descriptor.required_permissions for descriptor in descriptors)
-    assert all(
-        descriptor.allowed_origins
-        == frozenset(
-            {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP, TurnOrigin.SCHEDULED_AUTOMATION}
+    from qq_ai_bot.sandbox.environment_tools import SANDBOX_TOOLS
+    from qq_ai_bot.workspace.tools import WORKSPACE_TOOLS
+
+    working = SANDBOX_TOOLS | WORKSPACE_TOOLS | {"find_contacts", "read_conversation_history"}
+    for descriptor in descriptors:
+        expected = (
+            frozenset(TurnOrigin)
+            if descriptor.model_name in working
+            else frozenset(
+                {
+                    TurnOrigin.USER_MESSAGE,
+                    TurnOrigin.AUTONOMOUS_GROUP,
+                    TurnOrigin.SCHEDULED_AUTOMATION,
+                }
+            )
         )
-        for descriptor in descriptors
-    )
+        assert descriptor.allowed_origins == expected
     catalog = UnifiedToolCatalog(
         entries=tuple(
             UnifiedToolCatalogEntry(

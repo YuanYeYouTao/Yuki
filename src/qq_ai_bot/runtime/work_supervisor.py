@@ -132,7 +132,11 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
         )
         if current is None:
             raise WorkConflict("work_recovery_obsolete")
-        if state == "suspended" and not control.lease.work_id:
+        if (
+            state == "suspended"
+            and not control.lease.work_id
+            and control.source.get("delivery_contract") != "return_to_caller"
+        ):
             descriptions = {
                 ExitReason.BUDGET: "这项工作的总执行额度已用完，已暂停并保留结果。",
                 ExitReason.CAPACITY: "工作记录容量不足，已暂停并保留已有结果。",

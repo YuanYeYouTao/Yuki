@@ -196,7 +196,7 @@ class AutomationToolService:
     )
     _ALLOWED_ARGUMENTS: ClassVar[dict[str, frozenset[str]]] = {
         "automation_create": frozenset({"task", "max_runs"}),
-        "automation_list": frozenset(),
+        "automation_list": frozenset({"match_task", "max_runs"}),
         "automation_list_history": frozenset({"limit"}),
         "automation_get": frozenset({"automation_id"}),
         "automation_update": frozenset({"automation_id", "task"}),
@@ -232,8 +232,15 @@ class AutomationToolService:
                     "只列出当前真实发送者仍在运行或暂停的任务。每条任务返回并显示稳定的 "
                     "automation_id，后续查看、修改或取消必须使用该 ID；不要生成临时编号。"
                     "已结束任务请使用 automation_list_history。"
+                    "传入 match_task 可查询结构化等价的待执行任务；"
+                    "忽略显示名称，比较目标、时间、上下文和交付范围，不会自动合并或创建任务。"
                 ),
-                parameters=_object_schema({}),
+                parameters=_object_schema(
+                    {
+                        "match_task": task_schema,
+                        "max_runs": {"type": "integer", "minimum": 1},
+                    }
+                ),
             ),
             ChatTool(
                 name="automation_list_history",
@@ -355,7 +362,15 @@ class AutomationToolService:
                     mutation_committed=True,
                 )
             if name == "automation_list":
-                automations = await self._service.list_current(inbound.sender.user_id)
+                automations = (
+                    await self._service.find_equivalent_task(
+                        arguments["match_task"],
+                        inbound=inbound,
+                        max_runs=arguments.get("max_runs"),
+                    )
+                    if arguments.get("match_task") is not None
+                    else await self._service.list_current(inbound.sender.user_id)
+                )
                 return _result(
                     data={
                         "timezone": await self._service.timezone(inbound.sender.user_id),

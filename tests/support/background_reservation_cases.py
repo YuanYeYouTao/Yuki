@@ -64,6 +64,7 @@ async def background_attempt_reservation():
         generate_main_agent_wakeup=AsyncMock(
             return_value=SimpleNamespace(
                 text="done",
+                suppress_delivery=False,
                 tool_calls_used=0,
                 model_requests=1,
                 work_state="completed",

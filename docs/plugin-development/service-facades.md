@@ -71,23 +71,24 @@ await ctx.messages.send_text(turn.text)
 - `reset()` 只清空该会话历史；`close()` 关闭后不能继续运行。
 - 会话 UUID 是不透明标识，不能用来跨插件或跨真实场景访问。
 
-## 一次性 LLM 与 Agent
+## Yuki 主 Agent 调用
 
 `ctx.llm.generate()`、`generate_with_context()` 和 `ctx.agent.run()` 均进入 Yuki 主 Agent，使用相同固定提示词、工具声明和 short_state 编译。旧的独立 system 提示词与随机会话键已移除，允许兼容性变化。调用必须绑定真实入站事件、canonical Conversation 和 Presence；缺少来源或来源已被会话重置淘汰时明确报错，不自动选择人物或群。后台任务应通过有明确目标的通知唤醒入口发起；独立计算使用 `agent_sessions`。
 
-`generate()` 返回文字，不自动投递；全局 short_state 工具仍可使用。`generate_with_context()` 需要对应权限，仅沿用所选人物/当前群的有限资料范围，不因入口统一而读取额外聊天历史。`agent.run()` 只执行插件获批且本轮允许的 capability 交集，不能传入超级管理员标志。固定工具声明不代表获准执行；递归调用这组生成接口会被拒绝。来源 generation 在每次模型请求前重新检查。
+`generate()` 返回文字，不自动投递；全局 short_state 工具仍可使用。`generate_with_context()` 需要对应权限，仅沿用所选人物/当前群的有限资料范围，聊天历史仅在批准 message.history.read 时按绑定会话载入 Rollup 和原文尾部。`agent.run()` 只执行插件获批且本轮允许的 capability 交集，不能传入超级管理员标志。固定工具声明不代表获准执行；递归调用这组生成接口会被拒绝。来源 generation 在每次模型请求前重新检查。
 
-当前 Host 可向一次性插件 Agent 提供以下只读能力：
+主调用复用 `MainAgentBackend`，Host 根据批准权限设置执行范围：
 
 | Manifest 批准权限 | 可请求 capability |
 |---|---|
-| `message.history.read` | `get_recent_chat_history`、`search_chat_history` |
+| `agent.run` | 持久工作区、终端、安装、文件发布和环境服务 |
+| `message.history.read` | 当前授权会话的近期记录、搜索、原文定位与网关补查 |
 | `memory.person.read` | `get_person_memories` |
 | `memory.group.read` | `get_group_memories` |
 | `web.search` | `web_search` |
 | `web.read` | `read_webpage` |
 
-实际能力是“调用参数 ∩ 上表批准权限 ∩ 当前真实调用上下文 ∩ 本轮安全策略”。普通用户只能读取本人记忆、当前私聊或当前群范围；Host 在执行处检查适用的只读与内容安全限制，不因图片或网页动态裁剪主 Agent 的固定声明。`call_onebot_api`、管理员修改和自动化修改不会通过这个只读后端开放。
+实际能力取批准权限、真实来源和显式能力参数的交集；省略 `allowed_capabilities` 使用 Host 批准的默认集合。普通用户仍只能读获准人物和会话；目录、查询和媒体输入不改变固定声明。宿主管理、QQ 发送、记忆写入和自动化仍需各自的委托，获得工作环境权限不自动获得这些能力。
 
 ## MCP Facade
 
@@ -116,5 +117,8 @@ OneBot `music` 消息段发送到触发插件的当前真实私聊或群聊。�
 
 Runtime 升级后，`agent.run` 返回 `state`、`work_id`、`pending`。
 `llm.generate` / `generate_with_context` 成功仍返回字符串，未完成返回包含上述字段的 `PluginResult`。
-同一合法 invocation 用同样参数接回原工作；不要将等待结果当正文发送。
-需要脱离当前 invocation 的工作使用后台通知 API。详见 [恢复所有者与兼容变化](../operations/runtime-recovery-2026-09-13.md)。
+Host 等待约 5 秒后可返回持久任务句柄，生成由 Host 继续持有。
+`await ctx.agent.result(work_id)` 可在原回调退出后查询本插件的任务；检查批准版本、权限和 generation。
+同一合法 invocation 用同样参数接回原工作；不要将等待结果当正文发送。分段、恢复和重复查询不重置预算。
+新的后台目标仍通过通知 API 接纳，不能伪造调用者。已经接纳的 SDK 工作由 Host 调度器恢复；
+普通 `agent_sessions` 保持独立。详见 [主入口执行合同](../architecture/main-agent-runtime.md)。
