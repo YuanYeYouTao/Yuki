@@ -42,7 +42,8 @@ from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, requ
 from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.runtime.work_control import WORK_CONTROL_NAMES, WorkControl, WorkInputsPreparing
 from qq_ai_bot.runtime.work_repository import WorkCapacityError
-from qq_ai_bot.sandbox.progress import TaskProgress, current_progress
+from qq_ai_bot.runtime.execution_receipts import ExecutionReceipts, current_receipts
+from qq_ai_bot.runtime.activation_outcome import ActivationOutcome, ExitReason
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.evidence_observation import EVIDENCE_TOOLS, EvidenceObservation
 from qq_ai_bot.services.native_tool_binder import NativeToolBinder
@@ -81,7 +82,6 @@ class AgentRuntime:
     before_model_request: Callable[[], Awaitable[None]] | None = None
     canonical_conversation_id: str | None = None
     dynamic_context_prepared: bool = False
-    task_progress: TaskProgress | None = None
     work_control: WorkControl | None = None
     execution_id: str | None = None
     fixed_tools: tuple[ChatTool, ...] | None = None
@@ -99,6 +99,7 @@ class AgentRunResult:
     response_status: ModelResponseStatus = ModelResponseStatus.COMPLETED
     suppress_delivery: bool = False
     work_state: str | None = None
+    outcome: ActivationOutcome | None = None
 
 
 class AgentToolBackend(Protocol):
@@ -155,46 +156,37 @@ class AgentRunner:
     ) -> AgentRunResult:
         from qq_ai_bot.runtime.work_budget import WorkBudgetExceeded
 
-        progress = runtime.task_progress or TaskProgress(
-            runtime.max_model_requests, runtime.max_tool_calls
-        )
-        token = current_progress.set(progress)
+        receipts = ExecutionReceipts()
+        token = current_receipts.set(receipts)
+        control = runtime.work_control
         try:
             try:
-                result = await self._run(initial_messages, runtime, tools)
+                return await self._run(initial_messages, runtime, tools)
             except ExceptionGroup as exc:
                 budget_errors, other_errors = exc.split(WorkBudgetExceeded)
                 if budget_errors is not None and other_errors is None:
                     raise WorkBudgetExceeded("work_total_budget_exhausted") from exc
                 raise
-            await progress.finish("yielded")
-            return result
-        except WorkBudgetExceeded:
-            if runtime.work_control is not None:
-                runtime.work_control.ending = "suspended"
-            await progress.finish("yielded")
+        except (WorkBudgetExceeded, WorkCapacityError) as exc:
+            if control is None or control.current is None:
+                raise
+            outcome = await control.recover_failure(exc)
             return AgentRunResult(
-                text="这项工作的累计预算已用完，进度和产物已保留，尚未完成。",
-                tool_calls_used=progress.tools_used,
-                model_requests=progress.models_used,
-                web_was_used=False,
-                work_state="suspended",
+                text="", tool_calls_used=control.tools_started,
+                model_requests=control.requests_started, web_was_used=False,
+                suppress_delivery=True, work_state=control.ending, outcome=outcome,
             )
-        except WorkCapacityError:
-            if runtime.work_control is not None:
-                runtime.work_control.ending = "suspended"
-            await progress.finish("yielded")
+        except Exception as exc:
+            if control is None or control.current is None:
+                raise
+            outcome = await control.recover_failure(exc)
             return AgentRunResult(
-                text="当前任务的上下文已达到保存上限，任务尚未完成，已保留执行回执并暂停。",
-                tool_calls_used=progress.tools_used,
-                model_requests=progress.models_used,
-                web_was_used=False,
+                text="", tool_calls_used=control.tools_started,
+                model_requests=control.requests_started, web_was_used=False,
+                suppress_delivery=True, work_state=control.ending, outcome=outcome,
             )
-        except BaseException:
-            await progress.finish("uncertain")
-            raise
         finally:
-            current_progress.reset(token)
+            current_receipts.reset(token)
 
     async def _run(
         self,
@@ -290,18 +282,6 @@ class AgentRunner:
                     )
                 for message in added:
                     transcript.append(message)
-            if (
-                control is not None
-                and control.current is not None
-                and control.current["model_requests"] >= 120
-            ):
-                control.ending = "suspended"
-                return AgentRunResult(
-                    text="这项工作已达到本次累计执行预算，尚未完成，已暂停。",
-                    tool_calls_used=calls_used,
-                    model_requests=request_index,
-                    web_was_used=web_was_used,
-                )
             definitions = (
                 tools.definitions(runtime, web_was_used=web_was_used) if tools is not None else ()
             )
@@ -472,9 +452,6 @@ class AgentRunner:
                                 await runtime.before_model_request()
                         except LLMError as exc:
                             raise _RequestNotStarted(exc) from exc
-                    progress = current_progress.get()
-                    if progress is not None:
-                        await progress.checkpoint(models=request_count, tools=prior_tools)
                     if runtime.work_control is not None:
                         await runtime.work_control.reserve_request()
                         if runtime.work_control.session is not None:
@@ -487,9 +464,9 @@ class AgentRunner:
                 )
                 if runtime.work_control is not None:
                     await runtime.work_control.confirm_inputs()
-                progress = current_progress.get()
-                if progress is not None:
-                    await progress.confirm_observed()
+                receipts = current_receipts.get()
+                if receipts is not None:
+                    await receipts.confirm()
                 # A prepared request may be cancelled while waiting for the LLM
                 # slot or rejected by the transport budget before dispatch.
                 # Confirm conservatively only after a response was received.
@@ -874,13 +851,6 @@ class AgentRunner:
             if runtime.work_control is not None and runtime.work_control.session is not None:
                 await runtime.work_control.session.save("response", response.tool_calls)
             tooling = getattr(runtime.runtime_config, "tooling", None)
-            progress = current_progress.get()
-            if progress is not None:
-                await progress.checkpoint(
-                    models=request_index + 1,
-                    tools=calls_used
-                    + min(len(response.tool_calls), max(0, runtime.max_tool_calls - calls_used)),
-                )
             coordinated = await self._execute_tool_batch(
                 response.tool_calls,
                 tools,
@@ -1477,6 +1447,11 @@ class AgentRunner:
         response_status: ModelResponseStatus,
         exception_category: str,
     ) -> AgentRunResult | None:
+        from qq_ai_bot.runtime.work_activation import current_work_control
+
+        control = current_work_control.get()
+        if control is not None and control.current is not None:
+            return None
         recovery = getattr(tools, "post_commit_recovery_text", None)
         if not callable(recovery):
             return None

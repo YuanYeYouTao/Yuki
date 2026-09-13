@@ -19,6 +19,8 @@ from tenacity import (
     wait_random_exponential,
 )
 
+from qq_ai_bot.llm.http_errors import check_provider_response
+
 from qq_ai_bot.domain.messages import (
     ChatMessage,
     ChatRequest,
@@ -124,7 +126,7 @@ class DeepSeekResponsesProvider(LLMProvider):
         except httpx.TimeoutException as exc:
             raise LLMTimeoutError("LLM request timed out") from exc
         except (httpx.ConnectError, RetryableProviderError) as exc:
-            raise LLMUnavailableError("LLM is temporarily unavailable") from exc
+            raise LLMUnavailableError("LLM is temporarily unavailable", diagnostics=getattr(exc, "diagnostics", {})) from exc
 
         latency = time.perf_counter() - started
         parsed = self._parse_response(
@@ -322,16 +324,7 @@ class DeepSeekResponsesProvider(LLMProvider):
             json=payload,
             timeout=self._timeout,
         )
-        if response.status_code >= 500:
-            raise RetryableProviderError("provider returned a server error")
-        if response.status_code in {401, 403}:
-            raise LLMAuthenticationError("provider rejected credentials")
-        if response.status_code == 429:
-            raise LLMRateLimitError("provider rate limit exceeded")
-        if response.status_code == 400:
-            raise LLMInvalidRequestError("provider rejected the Responses request")
-        if response.status_code >= 400:
-            raise LLMError(f"provider rejected request with HTTP {response.status_code}")
+        check_provider_response(response)
         return response
 
     @classmethod

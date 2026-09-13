@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.runtime.subagent_schema import children, media, media_refs
+from qq_ai_bot.runtime.work_recovery_schema import recovery
 from qq_ai_bot.runtime.work_schema_v1 import WORK_STATES, effects, inputs, journal, scope, work
 
 TERMINAL = frozenset({"completed", "failed", "cancelled"})
@@ -421,7 +422,7 @@ class WorkRepository:
         work_id: str | None = None,
         ready: bool = True,
     ) -> int:
-        from qq_ai_bot.sandbox.progress import PROCESS_ID
+        from qq_ai_bot.runtime.execution_receipts import PROCESS_ID
 
         if not 1 <= len(source_key) <= 256 or kind not in {"message", "completion", "control"}:
             raise ValueError("invalid_work_input")

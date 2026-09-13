@@ -14,6 +14,8 @@ from tenacity import (
     wait_random_exponential,
 )
 
+from qq_ai_bot.llm.http_errors import check_provider_response
+
 from qq_ai_bot.domain.messages import ChatRequest, ChatResponse, ToolCall, ToolFunction
 from qq_ai_bot.llm.base import (
     LLMConfigurationError,
@@ -84,7 +86,7 @@ class OpenAICompatibleProvider(LLMProvider):
         except httpx.TimeoutException as exc:
             raise LLMTimeoutError("LLM request timed out") from exc
         except (httpx.TransportError, RetryableProviderError) as exc:
-            raise LLMUnavailableError("LLM is temporarily unavailable") from exc
+            raise LLMUnavailableError("LLM is temporarily unavailable", diagnostics=getattr(exc, "diagnostics", {})) from exc
 
         latency = time.perf_counter() - started
         logger.info("llm_request_complete latency_seconds=%.3f success=true", latency)
@@ -186,10 +188,7 @@ class OpenAICompatibleProvider(LLMProvider):
             json=payload,
             timeout=self._timeout,
         )
-        if response.status_code >= 500:
-            raise RetryableProviderError("provider returned a server error")
-        if response.status_code >= 400:
-            raise LLMError(f"provider rejected request with HTTP {response.status_code}")
+        check_provider_response(response)
         return response
 
     @staticmethod

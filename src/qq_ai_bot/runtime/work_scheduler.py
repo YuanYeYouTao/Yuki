@@ -40,7 +40,7 @@ class WorkScheduler:
 
     async def start(self) -> None:
         if self.app.settings.runtime_work_enabled and self._worker is None:
-            from qq_ai_bot.sandbox.progress import PROCESS_ID
+            from qq_ai_bot.runtime.execution_receipts import PROCESS_ID
 
             await self.repository.repair_abandoned_inputs(PROCESS_ID)
             self._worker = asyncio.create_task(self._loop(), name="runtime-work-scheduler")
@@ -81,7 +81,7 @@ class WorkScheduler:
             await asyncio.sleep(2)
 
     async def drain_once(self) -> None:
-        from qq_ai_bot.sandbox.progress import PROCESS_ID
+        from qq_ai_bot.runtime.execution_receipts import PROCESS_ID
 
         await self.repository.repair_abandoned_inputs(PROCESS_ID)
         if time.monotonic() - self._last_reclaim > 600:

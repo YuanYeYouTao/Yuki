@@ -124,7 +124,6 @@ from qq_ai_bot.runtime.trigger import (
     SandboxTaskTurnTrigger,
     WorkResumeTrigger,
 )
-from qq_ai_bot.sandbox.progress import TaskProgress
 from qq_ai_bot.services.agent_runner import (
     AgentRunner,
     AgentRunResult,
@@ -382,7 +381,6 @@ def _trusted_conversation_write_kwargs(inbound: InboundMessage) -> _TrustedConve
 class _CompletedAgentRun:
     result: AgentRunResult
     memory_exposures: tuple[MemoryExposure, ...]
-    progress: TaskProgress
 
 
 class _ChatAgentBackend(AgentToolBackend):
@@ -1169,27 +1167,12 @@ class _ChatAgentBackend(AgentToolBackend):
         )
 
     def post_commit_recovery_text(self) -> str | None:
-        """Return a deterministic reply when model finalization fails after a commit."""
-
-        memory_text = self._memory_mutation_final_text()
-        if memory_text is not None:
-            return memory_text
-        if not self._committed_mutation_messages:
-            return None
-        return "\n".join(self._committed_mutation_messages)
+        """Only an explicit domain receipt may supply user-facing recovery text."""
+        return self._memory_mutation_final_text()
 
     def _remember_committed_mutation(self, result: dict[str, object]) -> None:
-        message = str(result.get("public_message") or "").strip()
-        if not message:
-            receipt = json.dumps(
-                result,
-                ensure_ascii=False,
-                default=str,
-                separators=(",", ":"),
-            )
-            message = f"操作已经提交。以下是工具返回的结果：\n{receipt}"
-        if message not in self._committed_mutation_messages:
-            self._committed_mutation_messages.append(message)
+        # Durable effects belong to WorkSession, never a dump of tool JSON to QQ.
+        pass
 
     def exhausted(self, runtime: AgentRuntime) -> str:
         memory_text = self._memory_mutation_final_text()
@@ -2211,13 +2194,10 @@ class ChatService:
                     completed_agent = await self._run_agent(conversation_key, messages, runtime)
             else:
                 completed_agent = await self._run_agent(conversation_key, messages, runtime)
-            from qq_ai_bot.sandbox.budget_sender import BudgetSender
-
             if work_control is not None:
                 from qq_ai_bot.runtime.work_delivery import WorkDeliverySender
 
                 sender = WorkDeliverySender(sender, work_control)
-            sender = BudgetSender(sender, completed_agent.progress)
             agent_result = completed_agent.result
             if agent_result.suppress_delivery:
 
@@ -3172,11 +3152,6 @@ class ChatService:
             if runtime.inbound is not None
             else self._time.current_default()
         )
-        progress = runtime.task_progress or TaskProgress(
-            config.agent.max_model_requests,
-            config.agent.max_tool_calls,
-            max_messages=config.reply.hard_max_messages,
-        )
         backend = _ChatAgentBackend(self, runtime)
 
         async def before_model_request() -> None:
@@ -3203,7 +3178,6 @@ class ChatService:
                 max_tool_calls=min(config.agent.max_tool_calls, runtime.max_tool_calls_override)
                 if runtime.max_tool_calls_override is not None
                 else config.agent.max_tool_calls,
-                task_progress=progress,
                 max_model_requests=(
                     min(
                         config.agent.max_model_requests,
@@ -3222,7 +3196,6 @@ class ChatService:
         return _CompletedAgentRun(
             result=result,
             memory_exposures=exposure_registry.snapshot(),
-            progress=progress,
         )
 
     async def _validate_turn_snapshot(self, snapshot: ConversationTurnSnapshot) -> bool:

@@ -140,8 +140,16 @@ class Database:
                     await session.begin()
                 yield session
                 await session.commit()
-            except BaseException:
-                await session.rollback()
+            except BaseException as original:
+                try:
+                    await session.rollback()
+                except BaseException as cleanup:
+                    # Never replace the error that determines execution certainty.
+                    original.add_note(f"rollback_failed:{type(cleanup).__name__}")
+                    try:
+                        await session.invalidate()
+                    except BaseException as invalidation:
+                        original.add_note(f"invalidation_failed:{type(invalidation).__name__}")
                 raise
 
     async def close(self) -> None:

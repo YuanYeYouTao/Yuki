@@ -55,7 +55,6 @@ from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     RelationshipRepository,
 )
-from qq_ai_bot.sandbox.progress import TaskProgress
 from qq_ai_bot.services.agent_runner import (
     AgentRunner,
     AgentRuntime,
@@ -310,8 +309,7 @@ class AutomationCapabilityHandlers:
         arguments: dict[str, Any],
         context: CapabilityExecutionContext,
         *,
-        task_progress: TaskProgress | None = None,
-        completion_payload: str = "",
+            completion_payload: str = "",
     ) -> CapabilityResult:
         if self._registry is None:
             raise AutomationExecutionError("agent_registry_unavailable")
@@ -324,7 +322,6 @@ class AutomationCapabilityHandlers:
             str(name) for name in arguments.get("allowed_capabilities", ())
         )
         runtime = AgentRuntime(
-            task_progress=task_progress,
             origin=context.authority.origin,
             actor_user_id=context.creator_user_id,
             actor_is_superuser=context.authority.actor_is_superuser,

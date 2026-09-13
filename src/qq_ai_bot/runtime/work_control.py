@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from qq_ai_bot.domain.messages import ChatImage, ChatMessage, ChatTool
+from qq_ai_bot.runtime.activation_outcome import ActivationOutcome
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkLease, WorkRepository
 
 if TYPE_CHECKING:
@@ -122,6 +123,8 @@ class WorkControl:
     yield_segment: bool = False
     handoff_work_id: str | None = None
     completion_delivered: bool = False
+    settled: bool = False
+    outcome: ActivationOutcome | None = None
     staged_attempt: str | None = None
     input_images: dict[int, tuple[ChatImage, ...]] = field(default_factory=dict)
 
@@ -140,6 +143,11 @@ class WorkControl:
         if self.current is None:
             return []
         return await self.repository.pending(self.lease, work_id=self.current["id"])
+
+    async def recover_failure(self, exc: BaseException) -> ActivationOutcome:
+        from qq_ai_bot.runtime.work_supervisor import recover_failure
+
+        return await recover_failure(self, exc)
 
     async def background_state(self) -> str | None:
         """A foreground answer/finalization cannot terminate unfinished workers."""
@@ -682,49 +690,6 @@ class WorkControl:
         return {"delivered": accepted, "receipt": outcome, "continue_work": True}
 
     async def settle(self, *, delivered: bool, pending_inputs: bool) -> None:
-        """Host calls only after actual final delivery, never on a model claim."""
-        if self.current is None:
-            return
-        if self.handoff_work_id is not None:
-            state = "queued" if pending_inputs else await self.background_state()
-            if state is None:
-                state = (
-                    "waiting_external"
-                    if self.current["state"] == "waiting_external"
-                    or any(e.get("pending") for e in self.known_effects)
-                    else "suspended"
-                )
-            self.current = await self.repository.transition(
-                self.lease,
-                self.current["id"],
-                self.current["revision"],
-                state,
-                reason="independent_work_handoff",
-            )
-            return
-        if self.ending is None:
-            return
-        if self.yield_segment:
-            self.current = await self.repository.transition(
-                self.lease,
-                self.current["id"],
-                self.current["revision"],
-                "queued",
-                reason="segment_budget_yield",
-            )
-            return
-        if pending_inputs:
-            self.ending = None
-            return
-        state = self.ending if delivered else "suspended"
-        if state in {"failed", "completed"}:
-            # Recheck at commit boundary too: a child may have been dispatched
-            # before a model/runner proposes ending this foreground activation.
-            state = await self.background_state() or state
-        self.current = await self.repository.transition(
-            self.lease,
-            self.current["id"],
-            self.current["revision"],
-            state,
-            reason=None if delivered else "final_delivery_incomplete",
-        )
+        from qq_ai_bot.runtime.work_supervisor import settle
+
+        await settle(self, delivered=delivered, pending_inputs=pending_inputs)

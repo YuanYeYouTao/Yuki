@@ -26,9 +26,12 @@ def install_sqlite_diagnostics(engine: Engine) -> None:
     writers: dict[int, dict[str, Any]] = {}
 
     def clear(conn: Any) -> None:
-        value = conn.info.pop(_KEY, None)
-        if value is not None:
-            writers.pop(value["token"], None)
+        # Connection.info may reconnect an invalidated connection during rollback,
+        # raising PendingRollbackError and preventing the original rollback.
+        writers.pop(id(conn), None)
+        if conn.closed or conn.invalidated:
+            return
+        conn.info.pop(_KEY, None)
 
     def before(
         conn: Any, cursor: Any, statement: str, parameters: Any, context: Any, executemany: bool
@@ -46,8 +49,11 @@ def install_sqlite_diagnostics(engine: Engine) -> None:
         if write is None:
             return
         started, operation = write
-        if _KEY not in conn.info:
-            task = asyncio.current_task()
+        if id(conn) not in writers:
+            try:
+                task = asyncio.current_task()
+            except RuntimeError:
+                task = None
             value = {
                 "token": id(conn),
                 # The statement may itself have waited for a different writer.

@@ -10,6 +10,10 @@ from qq_ai_bot.domain.messages import ChatRequest, ChatResponse
 class LLMError(RuntimeError):
     """Base error safe for categorization but not direct provider details."""
 
+    def __init__(self, message: str, *, diagnostics: dict[str, object] | None = None) -> None:
+        super().__init__(message)
+        self.diagnostics = diagnostics or {}
+
 
 class LLMTimeoutError(LLMError):
     """The provider did not answer before the configured timeout."""
