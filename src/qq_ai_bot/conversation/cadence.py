@@ -9,7 +9,7 @@ from math import ceil
 from sqlalchemy import delete, select
 
 from qq_ai_bot.conversation.correlation import (
-    resolve_conversation_id_for_chat_event,
+    load_correlated_chat_event,
     stamp_conversation_correlation,
 )
 from qq_ai_bot.conversation.db_models import ReplyEffectEventModel
@@ -56,6 +56,7 @@ class ReplyEffectRepository:
         *,
         conversation_key: str,
         source_event_id: str,
+        trigger_event_id: int | None = None,
         text_sent: bool,
         voice_sent: bool,
         emoji_sent: bool,
@@ -97,15 +98,21 @@ class ReplyEffectRepository:
                 )
             )
             if existing is None:
-                session.add(row)
                 await stamp_conversation_correlation(session, row, canonical_conversation_id)
-                proven = await resolve_conversation_id_for_chat_event(
+                event = await load_correlated_chat_event(
                     session,
-                    platform_message_id=source_event_id,
+                    trigger_event_id=trigger_event_id,
+                    canonical_conversation_id=canonical_conversation_id,
                     bot_user_id=bot_user_id,
                     ingress_presence_id=ingress_presence_id,
                 )
-                await stamp_conversation_correlation(session, row, proven)
+                if event is not None:
+                    await stamp_conversation_correlation(
+                        session, row, event.canonical_conversation_id
+                    )
+                # Source key is only for delivery deduplication, never identity lookup.
+                # All identity reads finish before SQLAlchemy may autoflush this row.
+                session.add(row)
             await session.commit()
         await self.maintain(conversation_key)
 

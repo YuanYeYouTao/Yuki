@@ -720,8 +720,15 @@ class AgentRunner:
                             )
                         )
                         continue
-                    control.ending = "failed"
-                    content = "这项工作还没有完成，我没有继续执行下去。"
+                    background = await control.background_state()
+                    control.ending = background or "failed"
+                    content = (
+                        "后台任务仍在进行，我先继续处理聊天，结果回来后再接着处理。"
+                        if background == "waiting_external"
+                        else "后台任务已暂停，执行记录已保留，尚未确认完成。"
+                        if background
+                        else "这项工作还没有完成，我没有继续执行下去。"
+                    )
                 if "[提及" in content:
                     if (
                         not mention_recovery_used
