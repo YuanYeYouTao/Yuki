@@ -10,7 +10,7 @@ from sqlalchemy.pool import NullPool
 
 from qq_ai_bot.asr.schema import PROJECTION_TRIGGERS_0055
 
-CANONICAL_SCHEMA_REVISION = "0057"
+CANONICAL_SCHEMA_REVISION = "0058"
 
 _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
     "runtime_subagents": frozenset(
