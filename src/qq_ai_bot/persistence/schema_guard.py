@@ -3,14 +3,23 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
 
+from alembic.script import ScriptDirectory
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
 from qq_ai_bot.asr.schema import PROJECTION_TRIGGERS_0055
 
-CANONICAL_SCHEMA_REVISION = "0057"
+
+def canonical_schema_revision(root: Path | None = None) -> str:
+    """Read the single head shipped with this code, never the database's own version."""
+    heads = ScriptDirectory(str((root or Path.cwd()) / "migrations")).get_heads()
+    if len(heads) != 1:
+        raise CanonicalSchemaError(f"Expected one bundled migration head, got {heads!r}")
+    return heads[0]
+
 
 _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
     "runtime_subagents": frozenset(
@@ -175,6 +184,7 @@ async def require_canonical_schema(database_url: str) -> None:
     if not database_url.startswith("sqlite+aiosqlite:///"):
         raise CanonicalSchemaError("Yuki 3.8 supports only its canonical SQLite schema")
 
+    expected_revision = canonical_schema_revision()
     engine = create_async_engine(database_url, poolclass=NullPool)
     try:
         async with engine.connect() as connection:
@@ -185,16 +195,16 @@ async def require_canonical_schema(database_url: str) -> None:
             if "alembic_version" not in tables:
                 raise CanonicalSchemaError(
                     "database is not initialized; upgrade it to canonical revision "
-                    f"{CANONICAL_SCHEMA_REVISION}"
+                    f"{expected_revision}"
                 )
             revision_rows = await connection.execute(
                 text("SELECT version_num FROM alembic_version")
             )
             revisions = tuple(str(row[0]) for row in revision_rows)
-            if revisions != (CANONICAL_SCHEMA_REVISION,):
+            if revisions != (expected_revision,):
                 raise CanonicalSchemaError(
                     "database migration head is unsupported; expected canonical revision "
-                    f"{CANONICAL_SCHEMA_REVISION}"
+                    f"{expected_revision}"
                 )
 
             forbidden = sorted(tables & _FORBIDDEN_TABLES)
