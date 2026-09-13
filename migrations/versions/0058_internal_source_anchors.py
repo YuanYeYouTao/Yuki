@@ -50,6 +50,13 @@ def upgrade() -> None:
     )
     # Unresolvable legacy web results are a bounded cache, not the chat ledger.
     # Discard them instead of retaining ambiguous authorization/privacy provenance.
+    # Alembic's SQLite wrapper disables foreign keys: delete children explicitly.
+    bind.execute(
+        sa.text(
+            "DELETE FROM web_search_sources WHERE run_id IN ("
+            "SELECT id FROM web_search_runs WHERE trigger_event_id IS NULL AND execution_id IS NULL)"
+        )
+    )
     bind.execute(
         sa.text(
             "DELETE FROM web_search_runs WHERE trigger_event_id IS NULL AND execution_id IS NULL"
