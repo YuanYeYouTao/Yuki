@@ -52,6 +52,7 @@ class AutomationRepository:
         max_runs: int | None,
         misfire_grace_seconds: int,
         now: datetime,
+        creation_source_key: str | None = None,
         session: AsyncSession | None = None,
     ) -> AutomationRecord:
         script_json = validated.script.model_dump_json(exclude_none=True)
@@ -83,7 +84,7 @@ class AutomationRepository:
                 ),
                 authority_snapshot_json=authority_json,
                 created_from_message_id=authority.created_from_message_id,
-                creation_source_key=authority.creation_source_key,
+                creation_source_key=creation_source_key,
                 next_run_at=validated.next_run_at,
                 last_run_at=None,
                 run_count=0,

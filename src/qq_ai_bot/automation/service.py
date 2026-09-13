@@ -309,7 +309,6 @@ class AutomationService:
             creator_user_id=inbound.sender.user_id,
             bot_user_id=inbound.bot_user_id,
             created_from_message_id=inbound.message_id,
-            creation_source_key=inbound.source_key,
             created_at=now.isoformat(),
             permission_level=permission,
             granted_capabilities=validated.required_capabilities,
@@ -323,6 +322,7 @@ class AutomationService:
         row = await self._repository.create(
             validated,
             authority,
+            creation_source_key=inbound.source_key,
             creator_person_id=creator_person_id,
             max_runs=max_runs,
             misfire_grace_seconds=self._settings.automation_default_misfire_grace_seconds,
@@ -362,7 +362,6 @@ class AutomationService:
             creator_user_id=inbound.sender.user_id,
             bot_user_id=inbound.bot_user_id,
             created_from_message_id=inbound.message_id,
-            creation_source_key=inbound.source_key,
             created_at=now.isoformat(),
             permission_level=permission,
             granted_capabilities=validated.required_capabilities,
