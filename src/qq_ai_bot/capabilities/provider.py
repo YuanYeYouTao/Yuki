@@ -53,7 +53,9 @@ _RESIDENT_YUKI_TOOLS = (
 )
 _ORIGIN_OVERRIDES: dict[str, frozenset[TurnOrigin]] = {
     **{name: _SOCIAL_ORIGINS for name in _RESIDENT_YUKI_TOOLS},
-    "find_contacts": _SOCIAL_ORIGINS,
+    **{name: _ALL_ORIGINS for name in SANDBOX_TOOLS | WORKSPACE_TOOLS},
+    "find_contacts": _ALL_ORIGINS,
+    "read_conversation_history": _ALL_ORIGINS,
     "send_private_message": _SOCIAL_ORIGINS,
     "send_group_message": _SOCIAL_ORIGINS,
     "poke_person": _SOCIAL_ORIGINS,

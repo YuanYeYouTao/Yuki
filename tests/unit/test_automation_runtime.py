@@ -213,6 +213,13 @@ async def test_generation_keeps_dynamic_automation_data_out_of_system_messages(
     handlers._relationships = harness.relationships
     handlers._time = chat._time
     handlers._agent_runner = chat._agent_runner
+    from qq_ai_bot.services.main_agent_contract import MainAgentContract
+    from qq_ai_bot.workspace.short_state import ShortState
+    from qq_ai_bot.workspace.store import WorkspaceStore
+
+    handlers._agent_runner.main_contract = MainAgentContract(
+        chat, SimpleNamespace(_registry=None), ShortState(WorkspaceStore(tmp_path / "state"))
+    )
     context = CapabilityExecutionContext(
         authority=AuthorityContext(
             origin=TurnOrigin.SCHEDULED_AUTOMATION,
@@ -686,6 +693,14 @@ async def test_worker_executes_once_and_prevents_duplicate_claim(database, resum
         return result
 
     repository.finish_automation_run = finish_and_signal
+    original_release = repository.release_claim
+
+    async def release_and_advance(*args, **kwargs):
+        await original_release(*args, **kwargs)
+        if kwargs.get("not_before"):
+            clock.advance(6)
+
+    repository.release_claim = release_and_advance
     await worker.start()
     try:
         await asyncio.wait_for(completed_event.wait(), 5)

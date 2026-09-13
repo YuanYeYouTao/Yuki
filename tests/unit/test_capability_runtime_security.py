@@ -209,7 +209,7 @@ def test_namespace_is_not_a_permission() -> None:
     assert visible == ()
 
 
-def test_image_turns_deny_writes_and_platform_mutate() -> None:
+def test_image_turns_do_not_replace_execution_authority() -> None:
     write = _descriptor(
         "memory_change",
         namespace="memory.state.write",
@@ -241,6 +241,8 @@ def test_image_turns_deny_writes_and_platform_mutate() -> None:
         ),
     )
     assert [item.model_name for item in visible] == [
+        "memory_change",
+        "call_onebot_api",
         "get_person_memories",
         "terminal_exec",
         "run_python",

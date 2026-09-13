@@ -267,6 +267,9 @@ class FakeAgentFacade:
         self.response = response
         self.calls: list[tuple[str, tuple[str, ...]]] = []
 
+    async def result(self, work_id: str) -> PluginResult:
+        return PluginResult(ok=False, error_code="work_not_found_or_archived")
+
     async def run(
         self,
         instruction: str,

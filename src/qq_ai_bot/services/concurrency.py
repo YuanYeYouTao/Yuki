@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Callable, Coroutine
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any, TypeVar
 from weakref import WeakValueDictionary
 
@@ -20,6 +20,7 @@ class ConcurrencyManager:
 
     def __init__(self, global_limit: int) -> None:
         self._semaphore = asyncio.Semaphore(global_limit)
+        self._background_semaphore = asyncio.Semaphore(max(1, global_limit - 1))
         # Holders and waiters keep strong references; idle conversations need none.
         self._locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
         self._locks_guard = asyncio.Lock()
@@ -44,10 +45,14 @@ class ConcurrencyManager:
         operation: Callable[[], Coroutine[Any, Any, T]],
         *,
         translate_cancellation: bool = True,
+        background: bool = False,
     ) -> T:
         """Run one cancellable provider call under the global semaphore."""
 
-        async with self._semaphore:
+        async with AsyncExitStack() as stack:
+            if background:
+                await stack.enter_async_context(self._background_semaphore)
+            await stack.enter_async_context(self._semaphore)
             task: asyncio.Task[T] = asyncio.create_task(operation())
             async with self._active_guard:
                 self._active[conversation_key] = task

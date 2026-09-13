@@ -15,7 +15,7 @@ from qq_ai_bot.domain.messages import ChatMessage, ChatResponse, ToolCall, ToolF
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.services.agent_runner import AgentRuntime
 from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.services.chat import _ChatAgentBackend
+from qq_ai_bot.services.main_agent_backend import MainAgentBackend
 from qq_ai_bot.services.main_agent_contract import MainAgentContract
 from qq_ai_bot.workspace.short_state import ShortState, encode
 from qq_ai_bot.workspace.store import WorkspaceError, WorkspaceStore
@@ -104,7 +104,7 @@ async def run_short_state_cases(database, tmp_path, context):
         TurnOrigin.PLUGIN_BACKGROUND,
     ):
         scoped = replace(runtime, origin=origin)
-        backend = _ChatAgentBackend(
+        backend = MainAgentBackend(
             chat,
             ToolRuntime(
                 inbound=None,
@@ -119,7 +119,7 @@ async def run_short_state_cases(database, tmp_path, context):
                 read_only=True,
             ),
         )
-        await chat._agent_runner.run(initial, scoped, backend)
+        await chat._main_turns.run(await state.inject(initial), scoped, backend)
         assert provider.requests[-1].tools == declared
         before_discovery = backend._capability_runtime.exposure_snapshot()
         before_exclusive = backend._capability_runtime.requested_exclusive_write()
@@ -168,12 +168,16 @@ async def run_short_state_cases(database, tmp_path, context):
     automation = _AutomationAgentBackend(registry, context)
     automation.short_state = state
     automation.main_contract = contract
-    await chat._agent_runner.run(
-        initial, replace(runtime, origin=TurnOrigin.SCHEDULED_AUTOMATION), automation
+    from tests.support.state_backend import ShortStateOnlyBackend
+
+    await chat._main_turns.run(
+        await state.inject(initial),
+        replace(runtime, origin=TurnOrigin.SCHEDULED_AUTOMATION),
+        automation,
     )
     assert provider.requests[-1].tools == declared
     assert "73" in provider.requests[-1].messages[-1].content
-    await chat._agent_runner.run(initial, runtime, None)
+    await chat._main_turns.run(await state.inject(initial), runtime, ShortStateOnlyBackend(state))
     assert provider.requests[-1].tools == declared
 
     # Actual tool loop: group writes, private gets it; finalization retains the exact tool schemas.
@@ -206,18 +210,22 @@ async def run_short_state_cases(database, tmp_path, context):
 
     provider._responder = respond
     start = len(provider.requests)
-    await chat._agent_runner.run(initial, replace(runtime, max_model_requests=2), None)
+    await chat._main_turns.run(
+        await state.inject(initial),
+        replace(runtime, max_model_requests=2),
+        ShortStateOnlyBackend(state),
+    )
     assert calls == 2
     assert provider.requests[start].tools == provider.requests[start + 1].tools == declared
     assert provider.requests[start].messages[-1] == provider.requests[start + 1].messages[2]
     assert provider.requests[start + 1].tool_choice == "none"
     provider._responder = lambda request: "91"
-    await chat._agent_runner.run(initial, runtime, None)
+    await chat._main_turns.run(await state.inject(initial), runtime, ShortStateOnlyBackend(state))
     assert "91" in provider.requests[-1].messages[-1].content
 
     # State observations must refresh across requests even without local writes.
     # Exercise the shared runner with the actual frozen sandbox tool declaration.
-    from qq_ai_bot.services.main_agent_contract import ShortStateOnlyBackend
+    from tests.support.state_backend import ShortStateOnlyBackend
 
     assert next(t for t in declared if t.name == "get_code_run").result_cacheable is False
     assert registry.require("sandbox.get_code_run").result_cacheable is False
@@ -263,8 +271,10 @@ async def run_short_state_cases(database, tmp_path, context):
         )
 
     provider._responder = observe
-    result = await chat._agent_runner.run(
-        initial, replace(runtime, max_tool_calls=5, max_model_requests=6), progress
+    result = await chat._main_turns.run(
+        await state.inject(initial),
+        replace(runtime, max_tool_calls=5, max_model_requests=6),
+        progress,
     )
     assert result.text == "image ready"
     assert progress.polls == 4
@@ -432,5 +442,5 @@ async def run_short_state_cases(database, tmp_path, context):
         return "not available in this deployment"
 
     provider._responder = undeclared_response
-    await chat._agent_runner.run(initial, runtime, late_backend)
+    await chat._main_turns.run(await state.inject(initial), runtime, late_backend)
     assert late_backend.attempts == 0

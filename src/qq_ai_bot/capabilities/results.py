@@ -30,6 +30,7 @@ class ToolExecutionResult:
     public_message: str | None = None
     retryable: bool = False
     mutation_committed: bool | None = None
+    uncertain: bool = False
     finalize_after_commit: bool | None = None
     provider_id: str = ""
     tool_name: str = ""
@@ -39,6 +40,8 @@ class ToolExecutionResult:
 
     def model_payload(self) -> dict[str, Any]:
         payload = asdict(self)
+        if not self.uncertain:
+            payload.pop("uncertain")
         return {key: value for key, value in payload.items() if value not in (None, (), "")}
 
 
@@ -238,6 +241,7 @@ def normalize_legacy_result(
         finalize_value = raw.pop("finalize_after_commit", None)
         finalize_after_commit = None if finalize_value is None else bool(finalize_value)
         retryable = bool(raw.pop("retryable", False))
+        uncertain = bool(raw.pop("uncertain", False))
         evidence = raw.pop("evidence_state", None)
         grounding = raw.pop("memory_grounding_policy", None)
         trusted_grounding = (
@@ -277,7 +281,8 @@ def normalize_legacy_result(
             error_code=str(error) if error is not None else None,
             public_message=str(public) if public is not None else None,
             retryable=retryable,
-            mutation_committed=False if not ok else committed,
+            mutation_committed=None if uncertain else False if not ok else committed,
+            uncertain=uncertain,
             finalize_after_commit=finalize_after_commit if ok else None,
             provider_id=provider_id,
             tool_name=tool_name,
@@ -295,9 +300,11 @@ def normalize_legacy_result(
 def resolve_mutation_commit(
     result: ToolExecutionResult,
     descriptor: CapabilityDescriptor,
-) -> bool:
+) -> bool | None:
     """Resolve one provider-neutral commit state from result and capability effect."""
 
+    if result.uncertain:
+        return None
     if not result.ok:
         return False
     if result.mutation_committed is not None:

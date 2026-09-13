@@ -882,6 +882,16 @@ class WorkRepository:
                     select(work.c.id)
                     .where(
                         work.c.state.in_(TERMINAL),
+                        func.json_extract(work.c.checkpoint_json, "$.archived").is_(None),
+                        # Synchronous callers can return before their work finishes.
+                        # Give stable handles seven days for result consumption even
+                        # when a busy conversation creates more than 128 other works.
+                        or_(
+                            func.json_extract(work.c.source_json, "$.delivery_contract")
+                            != "return_to_caller",
+                            func.json_extract(work.c.source_json, "$.delivery_contract").is_(None),
+                            work.c.updated < time.time() - 7 * 86400,
+                        ),
                         work.c.id.not_in(select(children.c.work_id)),
                         work.c.id.not_in(select(children.c.root_id)),
                     )
@@ -895,7 +905,32 @@ class WorkRepository:
             await session.execute(delete(journal).where(journal.c.work_id.in_(selected)))
             await session.execute(delete(inputs).where(inputs.c.work_id.in_(selected)))
             await session.execute(delete(effects).where(effects.c.work_id.in_(selected)))
-            await session.execute(delete(work).where(work.c.id.in_(selected)))
+            await session.execute(delete(media_refs).where(media_refs.c.work_id.in_(selected)))
+            # Stable invocation identities outlive their detailed result. Keep a
+            # small tombstone so replaying an old callback cannot execute anew.
+            await session.execute(
+                update(work)
+                .where(
+                    work.c.id.in_(selected),
+                    func.json_extract(work.c.source_json, "$.delivery_contract")
+                    == "return_to_caller",
+                )
+                .values(
+                    checkpoint_json='{"archived":true}',
+                    goal=func.substr(work.c.goal, 1, 512),
+                    source_json=func.json_remove(
+                        work.c.source_json,
+                        "$.instruction",
+                        "$.context_data",
+                    ),
+                )
+            )
+            await session.execute(
+                delete(work).where(
+                    work.c.id.in_(selected),
+                    func.json_extract(work.c.checkpoint_json, "$.archived").is_(None),
+                )
+            )
 
     async def discard_input(self, identity: int) -> None:
         async with self.database.sessions() as session, session.begin():

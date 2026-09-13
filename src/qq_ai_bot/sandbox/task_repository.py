@@ -35,18 +35,34 @@ class SandboxTaskRepository:
         if not isinstance(source.get("conversation_id"), str):
             raise ValueError("invalid_task_source")
         conversation_id = str(UUID(source["conversation_id"]))
-        if source.get("origin") not in {
+        from qq_ai_bot.runtime.work_activation import current_work_control
+
+        control = current_work_control.get()
+        owned_work = bool(
+            control is not None
+            and control.current is not None
+            and source.get("work_id") == control.current["id"]
+            and conversation_id == control.lease.conversation_id
+        )
+        if owned_work:
+            assert control is not None
+            await control.validate()
+            if not await control.repository.valid(control.lease):
+                raise ValueError("invalid_task_work_lease")
+        elif source.get("origin") not in {
             "user_message",
             "autonomous_group",
             "scheduled_automation",
         } or not source.get("actor_user_id"):
             raise ValueError("invalid_task_source")
-        if source["origin"] == "scheduled_automation":
+        if not owned_work and source["origin"] == "scheduled_automation":
             if not source.get("delegated_authority"):
                 raise ValueError("missing_task_delegation")
             if not source.get("automation_run_id") or not source.get("step_id"):
                 raise ValueError("invalid_task_execution_anchor")
-        elif type(source.get("trigger_event_id")) is not int or source["trigger_event_id"] <= 0:
+        elif not owned_work and (
+            type(source.get("trigger_event_id")) is not int or source["trigger_event_id"] <= 0
+        ):
             raise ValueError("invalid_task_event_anchor")
         source_json = canonical_json(source, limit=65536)
         digest = hashlib.sha256(canonical_json(arguments, limit=262144).encode()).hexdigest()

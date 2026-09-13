@@ -27,6 +27,7 @@ from qq_ai_bot.automation.models import (
     AutomationStatus,
     ExecutionResult,
     RetryPolicy,
+    RiskClass,
     RunStatus,
     TurnOrigin,
 )
@@ -168,6 +169,11 @@ class AutomationExecutor:
                 or fresh.record.authority_snapshot != automation.authority_snapshot
             ):
                 raise AutomationExecutionError("automation_changed")
+            if (
+                automation.claimed_by is not None
+                and fresh.record.claimed_by != automation.claimed_by
+            ):
+                raise AutomationExecutionError("automation_lease_lost")
             if capability is not None and (
                 capability not in allowed or capability not in fresh.allowed
             ):
@@ -201,6 +207,7 @@ class AutomationExecutor:
         tool_calls = int(cursor.get("tool_calls", 0))
         messages_sent = int(cursor.get("messages_sent", 0))
         next_step = int(cursor.get("next_step", 0))
+        pending_usage = dict(cursor.get("pending_usage", {"models": 0, "tools": 0}))
         active_before = float(cursor.get("active_seconds", 0))
         activated_at = time.monotonic()
 
@@ -218,8 +225,10 @@ class AutomationExecutor:
                     "messages_sent": messages_sent,
                     "next_step": index,
                     "work_id": work_id,
+                    "pending_usage": pending_usage,
                     "active_seconds": active_before + time.monotonic() - activated_at,
                 },
+                expected_owner=automation.claimed_by,
             )
 
         web_was_used = False
@@ -244,7 +253,9 @@ class AutomationExecutor:
             )
         try:
             async with asyncio.timeout(
-                max(0, automation.script.limits.timeout_seconds - active_before)
+                None
+                if automation.script.uses_runtime_budget
+                else max(0, automation.script.limits.timeout_seconds - active_before)
             ):
                 for index, step in enumerate(automation.script.steps):
                     if index < next_step:
@@ -290,12 +301,57 @@ class AutomationExecutor:
                             gateway=self._gateway_factory(context),
                         )
                     started = self._time.clock.now()
+                    resume_plugin = bool(
+                        phase == "agent"
+                        and index == next_step
+                        and cursor.get("work_id")
+                        and definition.provider_plugin_id is not None
+                    )
                     await checkpoint(
-                        "agent" if step.call in {"yuki.agent", "yuki.generate"} else "dispatching",
+                        "agent"
+                        if resume_plugin or step.call in {"yuki.agent", "yuki.generate"}
+                        else "dispatching",
                         index,
+                        str(cursor["work_id"]) if resume_plugin else None,
                     )
                     try:
-                        result = await self._execute_capability(definition, arguments, context)
+                        if (
+                            not resume_plugin
+                            and automation.script.uses_runtime_budget
+                            and step.call
+                            not in {
+                                "yuki.agent",
+                                "yuki.generate",
+                            }
+                        ):
+                            from qq_ai_bot.runtime.work_budget import (
+                                WorkBudgetExceeded,
+                                charge_automation_run,
+                            )
+
+                            try:
+                                async with (
+                                    self._repository._database.immediate_session() as budget_session
+                                ):
+                                    await charge_automation_run(
+                                        budget_session, run.id, models=0, tools=1
+                                    )
+                            except WorkBudgetExceeded as exc:
+                                raise AutomationExecutionError("agent_work_blocked") from exc
+                        if resume_plugin:
+                            from qq_ai_bot.plugin_host.automation_adapter import (
+                                resume_plugin_result,
+                            )
+
+                            result = await resume_plugin_result(
+                                self._repository._database,
+                                str(cursor["work_id"]),
+                                definition,
+                                context,
+                                pending_usage,
+                            )
+                        else:
+                            result = await self._execute_capability(definition, arguments, context)
                     except AutomationExecutionError as exc:
                         llm_calls += exc.llm_calls
                         tool_calls += exc.tool_calls
@@ -325,6 +381,8 @@ class AutomationExecutor:
                         raise
                     finished = self._time.clock.now()
                     if result.pending_work_id is not None:
+                        pending_usage["models"] += result.llm_calls
+                        pending_usage["tools"] += result.tool_calls
                         llm_calls += result.llm_calls
                         tool_calls += result.tool_calls
                         messages_sent += result.messages_sent
@@ -378,6 +436,7 @@ class AutomationExecutor:
                         tool_calls=tool_calls,
                         messages_sent=messages_sent,
                     )
+                    pending_usage = {"models": 0, "tools": 0}
                     await checkpoint("ready", index + 1)
         except TimeoutError:
             return ExecutionResult(
@@ -389,6 +448,15 @@ class AutomationExecutor:
                 error_category="runtime_timeout",
             )
         except AutomationExecutionError as exc:
+            if exc.category == "conversation_activation_busy":
+                return ExecutionResult(
+                    status=RunStatus.RUNNING,
+                    steps_completed=steps_completed,
+                    llm_calls=llm_calls,
+                    tool_calls=tool_calls,
+                    messages_sent=messages_sent,
+                    error_category=exc.category,
+                )
             if exc.category in {
                 "paused",
                 "ambiguous",
@@ -611,6 +679,7 @@ class AutomationExecutor:
         attempts = (
             2
             if definition.retry_policy is RetryPolicy.TRANSIENT_ONCE
+            and definition.risk_class is RiskClass.READ
             and definition.name not in {"yuki.agent", "yuki.generate"}
             else 1
         )
@@ -625,6 +694,10 @@ class AutomationExecutor:
                 if not exc.transient or attempt + 1 >= attempts:
                     raise
             except Exception as exc:
+                from qq_ai_bot.runtime.work_repository import WorkConflict
+
+                if isinstance(exc, WorkConflict) and str(exc) == "conversation_activation_busy":
+                    raise AutomationExecutionError("conversation_activation_busy") from exc
                 logger.error(
                     "automation_capability_failed capability=%s category=%s",
                     definition.name,
@@ -642,9 +715,9 @@ class AutomationExecutor:
         messages_sent: int,
     ) -> None:
         limits = automation.script.limits
-        if llm_calls > limits.max_llm_calls:
+        if not automation.script.uses_runtime_budget and llm_calls > limits.max_llm_calls:
             raise AutomationExecutionError("llm_limit_exceeded")
-        if tool_calls > limits.max_tool_calls:
+        if not automation.script.uses_runtime_budget and tool_calls > limits.max_tool_calls:
             raise AutomationExecutionError("tool_limit_exceeded")
         if messages_sent > limits.max_messages:
             raise AutomationExecutionError("message_limit_exceeded")

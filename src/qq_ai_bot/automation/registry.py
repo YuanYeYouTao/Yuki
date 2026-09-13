@@ -29,8 +29,8 @@ class GenerateArguments(CapabilityArguments):
 class AgentArguments(CapabilityArguments):
     instruction: str = Field(min_length=1, max_length=4000)
     context_profile: Literal["none", "creator_private", "current_group"] = "none"
-    max_tool_calls: int = Field(default=6, ge=0, le=16)
-    max_model_requests: int = Field(default=10, ge=1, le=10)
+    max_tool_calls: int = Field(default=32, ge=0, le=160)
+    max_model_requests: int = Field(default=24, ge=1, le=120)
     allowed_capabilities: tuple[str, ...] = Field(default=(), max_length=128)
 
 
@@ -50,6 +50,8 @@ class AutomationIdArguments(CapabilityArguments):
 
 class AutomationListArguments(CapabilityArguments):
     include_completed: bool = False
+    match_task: TaskSpec | None = None
+    max_runs: int | None = Field(default=None, ge=1, le=10000)
 
 
 class SendPrivateArguments(CapabilityArguments):

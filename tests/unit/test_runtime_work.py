@@ -868,12 +868,13 @@ async def test_sync_main_entry_returns_result_without_acquiring_send_authority(
     from types import SimpleNamespace
 
     from tests.conftest import build_harness, make_settings
+    from tests.support.state_backend import ShortStateOnlyBackend
 
     from qq_ai_bot.domain.messages import ChatMessage, ChatResponse, ToolCall, ToolFunction
     from qq_ai_bot.llm.fake import FakeLLMProvider
     from qq_ai_bot.runtime.origin import TurnOrigin
     from qq_ai_bot.services.agent_runner import AgentRuntime
-    from qq_ai_bot.services.main_agent_contract import MainAgentContract, ShortStateOnlyBackend
+    from qq_ai_bot.services.main_agent_contract import MainAgentContract
     from qq_ai_bot.workspace.short_state import ShortState
     from qq_ai_bot.workspace.store import WorkspaceStore
 

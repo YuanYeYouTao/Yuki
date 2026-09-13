@@ -92,6 +92,7 @@ class AutomationCompiler:
             if delivery is not None:
                 steps += (self._delivery_step(delivery, "${result.text}", step_id="deliver"),)
             limits = AutomationLimits(
+                agent_budget_managed=True,
                 max_steps=len(steps),
                 max_llm_calls=1,
                 max_tool_calls=len(steps),
@@ -99,32 +100,13 @@ class AutomationCompiler:
                 timeout_seconds=min(120, self._settings.automation_max_runtime_seconds),
             )
         else:
-            if not selected:
-                warnings.append("Agentic 任务没有外部 capability，只会使用模型完成目标")
             delivery_calls = int(delivery is not None)
-            tool_budget = max(
-                0,
-                min(
-                    16,
-                    self._settings.automation_max_tool_calls_per_run - 1 - delivery_calls,
-                ),
-            )
-            if selected and tool_budget <= 0:
-                raise ValueError("后端工具预算不足，无法编译 Agentic 任务")
-            model_budget = min(
-                self._BASE_MODEL_REQUESTS,
-                self._settings.automation_max_llm_calls_per_run,
-            )
-            if model_budget <= 0:
-                raise ValueError("后端模型预算不足，无法编译 Agentic 任务")
             execute = AutomationStep(
                 id="execute",
                 call="yuki.agent",
                 arguments={
                     "instruction": self._instruction(task),
                     "context_profile": task.context.scene,
-                    "max_tool_calls": tool_budget,
-                    "max_model_requests": model_budget,
                     "allowed_capabilities": list(selected),
                 },
                 save_as="result",
@@ -133,9 +115,10 @@ class AutomationCompiler:
             if delivery is not None:
                 steps += (self._delivery_step(delivery, "${result.text}", step_id="deliver"),)
             limits = AutomationLimits(
+                agent_budget_managed=True,
                 max_steps=len(steps),
-                max_llm_calls=model_budget,
-                max_tool_calls=1 + tool_budget + delivery_calls,
+                max_llm_calls=1,
+                max_tool_calls=1 + delivery_calls,
                 # Agentic tasks may send through a delegated plugin or OneBot
                 # capability instead of the compiler-added delivery step.
                 max_messages=self._settings.automation_max_messages_per_run,

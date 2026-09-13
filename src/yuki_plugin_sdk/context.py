@@ -153,6 +153,8 @@ class AgentFacade(Protocol):
     random-key session. Main Agent declarations do not expand execution authority.
     """
 
+    async def result(self, work_id: str) -> PluginResult: ...
+
     async def run(
         self,
         instruction: str,

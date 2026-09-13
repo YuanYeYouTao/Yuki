@@ -27,7 +27,13 @@ async def load(database: Database, run_id: int, script_hash: str) -> tuple[str, 
 
 
 async def save(
-    database: Database, run_id: int, script_hash: str, phase: str, payload: dict[str, Any]
+    database: Database,
+    run_id: int,
+    script_hash: str,
+    phase: str,
+    payload: dict[str, Any],
+    *,
+    expected_owner: str | None = None,
 ) -> None:
     values = dict(
         run_id=run_id,
@@ -37,6 +43,17 @@ async def save(
         updated=time.time(),
     )
     async with database.immediate_session() as session:
+        if expected_owner is not None:
+            from qq_ai_bot.automation.executor import AutomationExecutionError
+            from qq_ai_bot.persistence.models import AutomationModel, AutomationRunModel
+
+            owner = await session.scalar(
+                select(AutomationModel.claimed_by)
+                .join(AutomationRunModel, AutomationRunModel.automation_id == AutomationModel.id)
+                .where(AutomationRunModel.id == run_id, AutomationModel.script_hash == script_hash)
+            )
+            if owner != expected_owner:
+                raise AutomationExecutionError("automation_lease_lost")
         await session.execute(
             insert(invocations)
             .values(**values)

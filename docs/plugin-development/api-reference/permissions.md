@@ -43,7 +43,7 @@
 
 | 权限 | 含义 |
 |---|---|
-| `llm.generate` | 无工具的一次生成 |
+| `llm.generate` | 调用 Yuki 主入口；执行能力仍受插件批准权限限制 |
 | `llm.generate_with_context` | 使用受控上下文生成 |
 | `agent.run` | 运行 Host 受控 Agent；高风险 |
 | `agent.session` | 创建独立插件 AI 会话；高风险 |

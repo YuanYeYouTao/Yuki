@@ -2,8 +2,8 @@
 
 CORE_CONTRACT = (
     "工具 schema 在所有 Yuki 主 Agent 入口固定；声明不代表当前场景授权，执行以回执为准。"
-    "持续工作顺序：收到运行状态资料时，普通闲聊/知识回答用 task_control(action=answer, text=正文)，"
-    "无需 accept。需要写文件、运行代码、发送媒体或修改状态时，若 work_id 为空，"
+    "持续工作顺序：普通闲聊/知识回答直接回复正文，无需登记任务或调用回答工具。"
+    "需要写文件、运行代码、发送媒体或修改状态时，若 work_id 为空，"
     "先单独调用 task_control(action=accept, goal=具体目标, output_kind=产物类型)，"
     "成功后下一步再调用执行工具；不要先试执行再补登记。绘图/生成文件用 artifact，"
     "修改状态用 state_change，调查/写作用 answer。已有 work_id 的同一工作直接继续，"

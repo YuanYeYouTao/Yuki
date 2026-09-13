@@ -9,7 +9,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from functools import partial
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.authority import DelegatedAuthority
@@ -86,6 +86,8 @@ class AgentRuntime:
     execution_id: str | None = None
     fixed_tools: tuple[ChatTool, ...] | None = None
     context_token_limit: int | None = None
+    invocation_source: dict[str, Any] | None = None
+    invocation_goal: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,12 +218,9 @@ class AgentRunner:
         elif self.main_contract is not None:
             fixed_definitions = await self.main_contract.definitions()
             if not runtime.dynamic_context_prepared:
-                # Legacy raw-message integrations await their explicit migration.
-                initial_messages = await self.main_contract.state.inject(initial_messages)
+                raise LLMError("main_agent_composition_required")
             if tools is None:
-                from qq_ai_bot.services.main_agent_contract import ShortStateOnlyBackend
-
-                tools = ShortStateOnlyBackend(self.main_contract.state)
+                raise LLMError("main_agent_executor_required")
         transcript = TurnTranscript(initial_messages)
         evidence_observation = EvidenceObservation(runtime.origin.value)
         staged_evidence_results = 0
@@ -467,6 +466,15 @@ class AgentRunner:
                 response = await self._concurrency.run_llm(
                     runtime.conversation_key,
                     dispatch,
+                    background=(
+                        runtime.origin
+                        in {
+                            TurnOrigin.SCHEDULED_AUTOMATION,
+                            TurnOrigin.PLUGIN_BACKGROUND,
+                            TurnOrigin.PLUGIN_SESSION,
+                        }
+                        or bool(runtime.work_control and runtime.work_control.lease.work_id)
+                    ),
                 )
                 if runtime.work_control is not None:
                     await runtime.work_control.confirm_inputs()
@@ -650,48 +658,8 @@ class AgentRunner:
                         )
                     )
                     continue
-                if control is not None and control.current is None and control.chat_answer is None:
-                    if control.corrections == 0 and request_index + 1 < runtime.max_model_requests:
-                        control.corrections += 1
-                        if response.continuation is None:
-                            transcript.append(ChatMessage(role="assistant", content=content))
-                        transcript.append(
-                            ChatMessage(
-                                role="system",
-                                content=(
-                                    "上一段正文尚未发送。先明确本轮处置："
-                                    "工作请求使用 task_control.accept"
-                                    "后执行；闲聊/知识回答使用 task_control.answer 返回正文。"
-                                    "不能用普通最终回复承诺稍后执行一项尚未登记的工作。"
-                                ),
-                            )
-                        )
-                        continue
-                    raise LLMError("model did not choose an answer or registered work")
-                if control is not None and control.current is not None and control.ending is None:
-                    if control.corrections == 0 and request_index + 1 < runtime.max_model_requests:
-                        control.corrections += 1
-                        if response.continuation is None:
-                            transcript.append(ChatMessage(role="assistant", content=content))
-                        transcript.append(
-                            ChatMessage(
-                                role="system",
-                                content=(
-                                    "当前工作尚未结束。上一段文字尚未发送，不代表已经执行。"
-                                    "需要过程发言请用 report_progress 后继续；继续必要工具，"
-                                    "或者通过 task_control 明确等待、受阻或提出完成。"
-                                    "不得只承诺稍后做。"
-                                ),
-                            )
-                        )
-                        continue
-                    background = await control.background_state()
-                    if background is None:
-                        from qq_ai_bot.runtime.activation_outcome import WorkNoProgress
-
-                        raise WorkNoProgress("work_control_missing")
-                    control.ending = background or "failed"
-                    # Waiting does not replace the Agent's own words.
+                # A neutral turn may answer directly. Admission is enforced before
+                # executing work tools, not by forcing every answer through a tool.
                 if "[提及" in content:
                     if (
                         not mention_recovery_used
@@ -754,6 +722,36 @@ class AgentRunner:
                         )
                     )
                     continue
+                if control is not None and control.current is not None and control.ending is None:
+                    # Infer lifecycle completion from a real final answer, but use
+                    # the same receipt validation as explicit task_control.complete.
+                    await control.reconcile_completed_children()
+                    state = await control.background_state()
+                    if any(effect.get("uncertain") for effect in control.known_effects):
+                        state = "suspended"
+                    elif any(effect.get("pending") for effect in control.known_effects):
+                        state = state or "waiting_external"
+                    if state is not None:
+                        control.ending = state
+                    else:
+                        artifacts = list(
+                            dict.fromkeys(
+                                artifact
+                                for effect in control.known_effects
+                                if effect.get("ok") or effect.get("delivered_artifacts")
+                                for artifact in effect.get("artifacts", [])
+                            )
+                        )[-8:]
+                        receipt = await control.execute(
+                            "task_control",
+                            {"action": "complete", "artifact_ids": artifacts},
+                            f"final-answer:{request_index}",
+                        )
+                        if not json.loads(receipt).get("ok"):
+                            if response.continuation is None:
+                                transcript.append(ChatMessage(role="assistant", content=content))
+                            transcript.append(ChatMessage(role="system", content=receipt))
+                            continue
                 if control is not None and control.session is not None:
                     if response.continuation is None:
                         transcript.append(

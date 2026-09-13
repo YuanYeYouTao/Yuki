@@ -132,8 +132,12 @@ class AutomationValidator:
                 ):
                     if delegated not in required:
                         required.append(delegated)
-                llm_calls += int(step.arguments.get("max_model_requests", 10))
-                tool_calls += 1 + int(step.arguments.get("max_tool_calls", 6))
+                if script.limits.agent_budget_managed:
+                    llm_calls += 1
+                    tool_calls += 1
+                else:
+                    llm_calls += int(step.arguments.get("max_model_requests", 10))
+                    tool_calls += 1 + int(step.arguments.get("max_tool_calls", 6))
             else:
                 llm_calls += int(step.call in _LLM_CAPABILITIES)
                 tool_calls += 1
@@ -494,8 +498,11 @@ def _resolved_send_group(target: Any, *, current_group_id: str | None) -> str:
 
 
 def canonical_script_hash(script: AutomationScript) -> str:
+    data = script.model_dump(mode="json", exclude_none=True)
+    if not script.limits.agent_budget_managed:
+        data["limits"].pop("agent_budget_managed", None)
     payload = json.dumps(
-        script.model_dump(mode="json", exclude_none=True),
+        data,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),

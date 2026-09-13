@@ -177,6 +177,17 @@ class PluginAgentSessionService:
             # fabricate one. Forward a Host-stamped id only when actually present.
             _ = max_tool_calls
             persisted_conversation_id = getattr(session, "canonical_conversation_id", None)
+            from qq_ai_bot.runtime.work_activation import current_work_control
+
+            parent = current_work_control.get()
+
+            async def reserve_parent_request() -> None:
+                if parent is not None:
+                    await parent.validate()
+                    # Independent computation keeps its own transcript, but a
+                    # nested request is still paid by the initiating root work.
+                    await parent.reserve_request(auxiliary=True)
+
             result = await self._runner.run(
                 messages,
                 AgentRuntime(
@@ -192,6 +203,7 @@ class PluginAgentSessionService:
                     current_time=TimeContext(utc=now, local=now, timezone="UTC"),
                     allowed_capabilities=frozenset(effective_capabilities),
                     max_tool_calls=0,
+                    before_model_request=reserve_parent_request,
                     max_model_requests=min(
                         max(1, max_model_requests or runtime.agent.max_model_requests),
                         max(1, runtime.agent.max_model_requests),

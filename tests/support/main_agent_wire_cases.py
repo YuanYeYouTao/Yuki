@@ -30,12 +30,10 @@ from qq_ai_bot.model_runtime.models import (
 from qq_ai_bot.model_runtime.pool import ModelClientPool
 from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
 from qq_ai_bot.model_runtime.routes import ModelRouter
-from qq_ai_bot.plugin_host.agent_backend import PluginAgentToolBackend
 from qq_ai_bot.plugin_host.facades import (
     HostPluginContext,
     PluginFacadeServices,
     PluginInvocation,
-    _agent_dependencies,
 )
 from qq_ai_bot.runtime.trigger import ExternalEventTurnTrigger
 from qq_ai_bot.sandbox.client import sandbox_tools
@@ -282,7 +280,6 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
                 ledger=harness.ledger,
                 people=chat._people,
                 agent_runner=chat._agent_runner,
-                agent_tools=PluginAgentToolBackend(chat._tools),
                 agent_capabilities=frozenset({"get_person_memories"}),
                 runtime_config=chat._runtime_config,
             ),
@@ -347,40 +344,6 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             )
         narrowed = captured.pop("sdk-narrow")
         assert "requested_context" not in json.dumps(narrowed[0][sequence_key])
-        with plugin.bind(invocation):
-            _, base = await _agent_dependencies(plugin, invocation)
-        source_backend = plugin._services.agent_tools
-        assert isinstance(source_backend, PluginAgentToolBackend)
-        bound_backend = source_backend.bind_source(bound_message)
-        scoped = bound_backend._tool_runtime(base)
-        assert scoped.inbound is bound_message
-        assert scoped.trigger_message_id == observed.platform_message_id
-        assert scoped.presence_id == observed.ingress_presence_id
-        assert scoped.conversation_id == observed.canonical_conversation_id
-        assert scoped.person_id == observed.author_person_id
-        assert scoped.read_only and not scoped.allow_admin_actions
-        with pytest.raises(PluginPermissionError, match="source does not match"):
-            source_backend._tool_runtime(base)
-        with pytest.raises(PluginPermissionError, match="source does not match"):
-            bound_backend._tool_runtime(replace(base, actor_user_id="other"))
-        other_message = replace(bound_message, presence_id="second-presence")
-        other_backend = source_backend.bind_source(other_message)
-        assert other_backend._tool_runtime(base).presence_id == "second-presence"
-        assert bound_backend._tool_runtime(base).presence_id == observed.ingress_presence_id
-        # Source validation must precede even an allowed read after invalidation.
-        invalid = AsyncMock(side_effect=LLMInvalidRequestError("changed source"))
-        with patch.object(chat._tools, "execute", AsyncMock()) as execute:
-            with pytest.raises(LLMInvalidRequestError, match="changed source"):
-                await bound_backend.execute(
-                    "get_person_memories",
-                    '{"user_id":"1001","limit":1}',
-                    replace(
-                        base,
-                        before_model_request=invalid,
-                        allowed_capabilities=frozenset({"get_person_memories"}),
-                    ),
-                )
-            execute.assert_not_awaited()
         before = sum(map(len, captured.values()))
         with plugin.bind(replace(invocation, inbound=replace(bound_message, conversation_id=None))):
             with pytest.raises(PluginPermissionError, match="real Host-bound"):
@@ -575,7 +538,8 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
         assert len(outputs) == (2 if name in {"automation-generate", "sdk-generate"} else 1)
         assert json.loads(outputs[0])["ok"] is True
         if name in {"automation-generate", "sdk-generate"}:
-            assert json.loads(outputs[-1]) == {"ok": False, "error": "capability_not_allowed"}
+            denied = json.loads(outputs[-1])
+            assert denied["ok"] is False and denied["error"] == "capability_not_allowed", denied
         sequence_key = "input" if protocol is ModelProtocol.RESPONSES else "messages"
         for previous, following in pairwise(chain):
             assert following[sequence_key][: len(previous[sequence_key])] == previous[sequence_key]

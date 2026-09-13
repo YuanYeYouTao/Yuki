@@ -9,7 +9,16 @@ from enum import StrEnum
 
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 
-from qq_ai_bot.llm.base import LLMError, LLMTimeoutError, LLMUnavailableError
+from qq_ai_bot.llm.base import (
+    LLMError,
+    LLMInvalidRequestError,
+    LLMTimeoutError,
+    LLMUnavailableError,
+)
+
+
+class ContextBoundaryChanged(LLMInvalidRequestError):
+    """Reassemble at the explicit source boundary while preserving work and receipts."""
 
 
 class ExitReason(StrEnum):
@@ -85,6 +94,8 @@ def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFa
         return RuntimeFailure("sqlite_busy" if busy else "database_failure", stage, busy)
     if isinstance(exc, SQLAlchemyError):
         return RuntimeFailure("database_failure", stage)
+    if isinstance(exc, ContextBoundaryChanged):
+        return RuntimeFailure("context_boundary_changed", "context", True)
     if isinstance(exc, LLMError):
         return RuntimeFailure(
             type(exc).__name__,

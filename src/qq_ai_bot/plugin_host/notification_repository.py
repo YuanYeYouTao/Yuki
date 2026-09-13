@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import (
@@ -849,6 +849,20 @@ class PluginNotificationRepository:
                 key = f"{prefix}_{value}"
                 result[key] = result.get(key, 0) + 1
         return result
+
+    async def turn_delivery_counts(self, job: BackgroundTurnJobRecord) -> dict[str, int]:
+        """Actual outbox states, scoped to the originating job/event, not model success."""
+        async with self._database.sessions() as session:
+            rows = await session.execute(
+                select(PluginNotificationOutboxModel.status, func.count())
+                .where(
+                    PluginNotificationOutboxModel.source_event_id == job.source_event_id,
+                    PluginNotificationOutboxModel.plugin_id == job.plugin_id,
+                    PluginNotificationOutboxModel.part_key == "agent_reply",
+                )
+                .group_by(PluginNotificationOutboxModel.status)
+            )
+            return {state: count for state, count in rows}
 
     async def require_outbox_ready(self, item: OutboxRecord) -> None:
         """Require the exact attempt plus live target, Conversation, and Presence."""

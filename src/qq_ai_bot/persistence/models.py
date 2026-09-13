@@ -1826,6 +1826,13 @@ class AutomationModel(Base):
         Index("ix_automations_canonical_target_person_id", "canonical_target_person_id"),
         Index("ix_automations_canonical_target_space_id", "canonical_target_space_id"),
         Index("ix_automations_canonical_presence_id", "canonical_presence_id"),
+        Index(
+            "uq_automation_creation_call",
+            "canonical_creator_person_id",
+            "creation_source_key",
+            unique=True,
+            sqlite_where=text("creation_source_key LIKE 'call:%'"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

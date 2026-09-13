@@ -18,6 +18,38 @@ from qq_ai_bot.social.service import SocialContext, SocialService
 async def invoke_social(
     service: SocialService, name: str, arguments: dict[str, Any], runtime: Any
 ) -> dict[str, Any]:
+    if getattr(runtime, "read_scope", None) is not None and name in {
+        "read_conversation_history",
+        "find_contacts",
+    }:
+        # This grant is constructed by the Host, independently of the send route.
+        # Sharing the implementation never grants arbitrary cross-conversation reads.
+        scope = runtime.read_scope
+        target_id = runtime.read_target_id
+        invocation = current_invocation.get()
+        if not target_id or invocation is None or runtime.tools_closed:
+            raise SocialError("missing_read_scope")
+        kind = "space" if scope.group_id else "person"
+        if arguments.get("operation_id") or arguments.get("kind", kind) != kind:
+            raise SocialError("history_scope_denied")
+        context = SocialContext(
+            turn_id=f"{runtime.effective_conversation_id}:{runtime.effective_execution_id}",
+            call_id=invocation.call_id,
+            conversation_id=runtime.effective_conversation_id or "",
+            space_id=target_id if kind == "space" else None,
+            person_refs={"current_speaker": target_id} if kind == "person" else {},
+        )
+        selected = dict(arguments)
+        if any(selected.get(key) for key in ("target_id", "subject_ref", "display_name")):
+            target = await service.target(kind, selected, context)
+            if str(target.id) != target_id:
+                raise SocialError("history_scope_denied")
+        selected.pop("subject_ref", None)
+        selected.pop("display_name", None)
+        selected.update(kind=kind, target_id=target_id)
+        if name == "read_conversation_history" and runtime.history_limit is not None:
+            selected["limit"] = min(int(selected.get("limit", 20)), runtime.history_limit)
+        return await service.execute(name, selected, context)
     if (
         runtime.origin not in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}
         or (runtime.read_only and name != "read_conversation_history")

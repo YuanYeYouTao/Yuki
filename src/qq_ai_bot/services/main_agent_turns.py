@@ -230,14 +230,7 @@ class MainAgentTurnService:
                 generation = conversation.generation
             if not runtime.execution_id:
                 raise WorkConflict("invocation_execution_id_required")
-            boundary = _hash(
-                [
-                    runtime.origin.value,
-                    runtime.canonical_conversation_id,
-                    runtime.execution_id,
-                    sorted(runtime.allowed_capabilities),
-                ]
-            )
+            boundary = invocation_boundary(runtime)
 
             async def validate() -> None:
                 if runtime.before_model_request is not None:
@@ -247,6 +240,14 @@ class MainAgentTurnService:
             previous = await repository.by_source(f"invocation:{boundary}")
             if previous is not None:
                 await validate()
+                prior_source = json.loads(previous["source_json"])
+                requested_source = runtime.invocation_source or {}
+                if prior_source.get("owner") == "plugin_invocation" and (
+                    prior_source.get("approval_revision")
+                    != requested_source.get("approval_revision")
+                    or prior_source.get("plugin_id") != requested_source.get("plugin_id")
+                ):
+                    raise WorkConflict("plugin_work_authority_changed")
                 from sqlalchemy import select
 
                 from qq_ai_bot.runtime.work_recovery_schema import recovery
@@ -281,9 +282,20 @@ class MainAgentTurnService:
             ):
                 await validate()
                 saved = json.loads(previous["checkpoint_json"])
+                if saved.get("archived"):
+                    return AgentRunResult(
+                        text="",
+                        tool_calls_used=0,
+                        model_requests=0,
+                        web_was_used=False,
+                        work_id=previous["id"],
+                        work_state="archived",
+                        suppress_delivery=True,
+                    )
                 if isinstance(saved.get("sync_result"), str):
                     return AgentRunResult(
                         text=saved["sync_result"],
+                        suppress_delivery=bool(saved.get("sync_suppress_delivery", False)),
                         tool_calls_used=0,
                         model_requests=0,
                         web_was_used=False,
@@ -299,6 +311,7 @@ class MainAgentTurnService:
                 generation,
                 f"invocation:{boundary}",
                 {
+                    **(runtime.invocation_source or {}),
                     "origin": runtime.origin.value,
                     "actor_user_id": runtime.actor_user_id,
                     "execution_boundary": boundary,
@@ -307,8 +320,19 @@ class MainAgentTurnService:
                 },
                 validate,
             ) as bounded:
+                if bounded.current is None and runtime.invocation_goal:
+                    await bounded.execute(
+                        "task_control",
+                        {
+                            "action": "accept",
+                            "goal": runtime.invocation_goal,
+                            "output_kind": "answer",
+                            "deliver_artifacts": False,
+                        },
+                        "host-invocation-admission",
+                    )
                 result = await self.run(messages, replace(runtime, work_control=bounded), backend)
-                bounded.final_delivery = bool(result.text) and bounded.ending == "completed"
+                bounded.final_delivery = bounded.ending == "completed"
                 if bounded.current is not None:
                     if result.suppress_delivery:
                         stored = json.loads(bounded.current["checkpoint_json"])
@@ -318,7 +342,12 @@ class MainAgentTurnService:
                             )
                     if bounded.ending == "completed" and bounded.final_delivery:
                         await repository.checkpoint(
-                            bounded.lease, bounded.current["id"], {"sync_result": result.text}
+                            bounded.lease,
+                            bounded.current["id"],
+                            {
+                                "sync_result": result.text,
+                                "sync_suppress_delivery": result.suppress_delivery,
+                            },
                         )
                         if bounded.session is not None:
                             await bounded.session.save("delivered")
@@ -360,6 +389,17 @@ class MainAgentTurnService:
             ),
             backend,
         )
+
+
+def invocation_boundary(runtime: AgentRuntime) -> str:
+    return _hash(
+        [
+            runtime.origin.value,
+            runtime.canonical_conversation_id,
+            runtime.execution_id,
+            sorted(runtime.allowed_capabilities),
+        ]
+    )
 
 
 def _hash(value: object) -> str:

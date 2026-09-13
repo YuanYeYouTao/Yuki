@@ -181,6 +181,75 @@ class ContextAssembler:
         self._rollups = rollup_repository
         self._rollup_service = rollup_service
 
+    async def assemble_plugin(
+        self,
+        *,
+        inbound: InboundMessage,
+        content: str,
+        metadata: dict[str, Any],
+        current_time: TimeContext,
+        read_history: bool,
+        projection_scope: str,
+    ) -> AssembledContext:
+        """Use the canonical Rollup/raw-tail projection within the plugin read grant."""
+        scope = inbound.scope()
+        version, _ = await self._ledger.read_scope_context(scope, limit=0)
+        rows: tuple[EventRecord, ...] = ()
+        rollup = ""
+        if read_history:
+            loaded = await self._rollups.load_prompt_snapshot(scope)
+            rows = tuple(row for row in loaded.raw_events if row.id != inbound.source_event_id)
+            rollup = loaded.rollup.summary_text if loaded.rollup else ""
+            version = ConversationReadVersion(
+                scope,
+                loaded.conversation_id,
+                loaded.scope.generation,
+                loaded.scope.starts_after_event_id,
+                loaded.prompt_source_revision,
+                tuple(row.id for row in rows),
+                loaded.rollup_stamp,
+            )
+        renderer = ChatEventPromptRenderer(
+            rows,
+            bot_display_name=self._settings.bot_display_name,
+            timezone=current_time.timezone,
+        )
+        rendered = renderer.main_agent_history(rows)
+        history = tuple(message for _, _, message in rendered)
+        metadata_size = len(json.dumps(metadata, ensure_ascii=False))
+        history_size = sum(len(message.content or "") for message in history)
+        if (
+            metadata_size + history_size + len(content) + len(rollup)
+            > self._settings.max_context_characters
+        ):
+            raise ConversationCoverageError("plugin context requires explicit compaction")
+        return AssembledContext(
+            metadata_payload=metadata,
+            history_messages=history,
+            current_message=ChatMessage(role="user", content=content),
+            recent_delivery=(),
+            current_time=current_time,
+            current_relationship=None,
+            metrics=ContextMetrics(
+                metadata_size,
+                history_size,
+                len(history),
+                len(content),
+                False,
+                rollup_characters=len(rollup),
+            ),
+            read_version=version,
+            rollup_text=rollup,
+            visible_event_ids=frozenset(row.id for row in rows),
+            history_fragments=tuple((ids, message) for _, ids, message in rendered),
+            history_event_fragments=tuple(
+                (ids, message)
+                for row in rows
+                for _, ids, message in renderer.main_agent_history((row,))
+            ),
+            projection_scope=projection_scope,
+        )
+
     @staticmethod
     async def assemble_automation(
         *,

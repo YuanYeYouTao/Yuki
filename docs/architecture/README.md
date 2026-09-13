@@ -8,6 +8,7 @@ Yuki 正在逐层解耦：永久主体、内部事件和工作身份由核心持
 | --- | --- |
 | [共同架构约束](development-contract.md) | 不可混用的 ID、依赖方向、固定合同、持久续跑、事务和交付原则 |
 | [Canonical runtime](canonical-runtime.md) | Yuki、Person、Space、Presence、Conversation 和网关边界 |
+| [主 Agent 执行与恢复](main-agent-runtime.md) | 公共执行器、来源授权、恢复所有者与预算（本分支验收中） |
 | [持久工作者](persistent-subagents.md) | 子 Agent 生命周期、权限、根预算和缓存 |
 | [Conversation Rollup](conversation-rollup.md) | 原始事件、历史投影、压缩与 generation |
 | [Memory](memory-v2.md) | 记忆范围、证据与权限 |
@@ -20,7 +21,11 @@ Yuki 正在逐层解耦：永久主体、内部事件和工作身份由核心持
 属于特定基线的设计或证据，不是现行开发合同。releases 和 upgrade 文档描述各自版本。
 需要核对历史原因时查这些记录；实施时不能照搬其中已经替换的入口、迁移版本或恢复流程。
 
-待实施设计：[Runtime 异常恢复与连续执行任务书](Yuki-Runtime异常恢复与连续执行任务书.md)。
-基于 2026-09-13 事故与代码审计，覆盖旧异常路径退出、单段到限自动续跑、交付恢复和各入口接管；尚未实施或部署，不替代当前能力说明。
+实施中：[主 Agent 全入口执行、恢复与交付统一任务书](main-agent-entrypoint-unification-taskbook.md)。
+基于 2026-09-13 自动化与插件入口审计，补齐执行器、预算、恢复所有者和交付的遗漏；代码正在定向验收，尚未部署。
+
+历史设计：[Runtime 异常恢复与连续执行任务书](Yuki-Runtime异常恢复与连续执行任务书.md)。
+该轮已实施，验收和部署证据见 [交付记录](../operations/runtime-recovery-2026-09-13.md)；
+此前的验收不代表上述全入口缺口已经解决。
 
 本文是开发导航，不是上线证明；实际部署状态须核对当前镜像、数据库版本与部署记录。

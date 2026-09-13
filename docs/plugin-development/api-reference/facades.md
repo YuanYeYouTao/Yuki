@@ -68,10 +68,11 @@ Yuki 3.0.0 对 MemoryFacade 做了正式 contract freeze：稳定方法为 `list
 ## LLM / Agent / AgentSession
 
 ```python
-llm.generate(instruction, *, max_characters=2000) -> str
+llm.generate(instruction, *, max_characters=2000) -> str | PluginResult
 llm.generate_with_context(instruction, *, context_profile,
-                          max_characters=2000) -> str
+                          max_characters=2000) -> str | PluginResult
 
+agent.result(work_id) -> PluginResult
 agent.run(instruction, *, allowed_capabilities=(),
           max_tool_calls=None, max_model_requests=None) -> PluginResult
 
