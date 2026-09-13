@@ -248,6 +248,11 @@ class PluginInvocation:
             if authority is None or authority.creator_user_id != self.actor_user_id:
                 raise ValueError("scheduled plugin invocation requires matching delegation")
         if self.inbound is not None:
+            anchor = self.inbound.source_event_id
+            if anchor is not None:
+                if self.source_event_id is not None and self.source_event_id != anchor:
+                    raise ValueError("plugin invocation event anchor mismatch")
+                object.__setattr__(self, "source_event_id", anchor)
             projection = projection_from_inbound(self.inbound)
             object.__setattr__(self, "person_id", projection.person_id)
             object.__setattr__(self, "space_id", projection.space_id)
@@ -3100,6 +3105,9 @@ def _control_audit_ref(invocation: PluginInvocation) -> ControlAuditRef:
     return ControlAuditRef(
         user_id=invocation.actor_user_id,
         trigger_message_id=inbound.message_id if inbound else "plugin-task",
+        trigger_event_id=invocation.source_event_id,
+        canonical_conversation_id=invocation.conversation_id,
+        ingress_presence_id=invocation.presence_id,
         conversation_key=invocation.conversation_key,
         bot_user_id=invocation.bot_user_id,
         decision_actor_type="plugin",
@@ -3117,6 +3125,9 @@ def _memory_mutation_subject(
         user_id=invocation.actor_user_id,
         bot_user_id=invocation.bot_user_id,
         trigger_message_id=inbound.message_id if inbound else "plugin-task",
+        trigger_event_id=invocation.source_event_id,
+        canonical_conversation_id=invocation.conversation_id,
+        ingress_presence_id=invocation.presence_id,
         conversation_key=invocation.conversation_key,
         decision_actor_type="plugin",
         decision_actor_id=invocation.plugin_id,

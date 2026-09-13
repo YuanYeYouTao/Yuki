@@ -330,11 +330,17 @@ class AutonomousGroupService:
             return
         identity = ConversationScope.group(last.bot_user_id, last.group_id)
         scope_state = await self._chat._conversation_scopes.get(identity)
-        trigger_event = await self._chat._ledger.find_by_platform_message(
-            bot_user_id=identity.bot_user_id,
-            platform_message_id=last.message_id,
-        )
+        if last.source_event_id is None:
+            return
+        trigger_event = await self._chat._ledger.get_event(last.source_event_id)
         if scope_state is None or trigger_event is None:
+            return
+        if (
+            trigger_event.bot_user_id != last.bot_user_id
+            or trigger_event.canonical_conversation_id != last.conversation_id
+            or trigger_event.ingress_presence_id != last.presence_id
+            or trigger_event.sender_user_id != last.sender.user_id
+        ):
             return
         runtime_key = runtime_conversation_key(
             identity=identity,

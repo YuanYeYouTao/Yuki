@@ -490,7 +490,7 @@ class MemoryContextService:
         self,
         *,
         conversation_key: str,
-        trigger_message_id: str,
+        source_key: str,
         origin: str,
         intent: MemoryQueryIntent | None,
         result: MemoryRetrievalResult,
@@ -510,7 +510,7 @@ class MemoryContextService:
             )
         return await self._receipts.record_initial(
             conversation_key=conversation_key,
-            trigger_message_id=trigger_message_id,
+            source_key=source_key,
             origin=origin,
             intent=intent,
             result=result,

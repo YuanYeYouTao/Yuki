@@ -300,6 +300,7 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             scope_type=ScopeType.PRIVATE,
             sender=SenderIdentity("1001"),
             text=observed.content,
+            source_event_id=observed.id,
             bot_user_id="9999",
             person_id=observed.author_person_id,
             conversation_id=observed.canonical_conversation_id,
@@ -384,7 +385,13 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
         with plugin.bind(replace(invocation, inbound=replace(bound_message, conversation_id=None))):
             with pytest.raises(PluginPermissionError, match="real Host-bound"):
                 await plugin.llm.generate("no source")
-        with plugin.bind(replace(invocation, inbound=replace(bound_message, message_id="unknown"))):
+        with plugin.bind(
+            replace(
+                invocation,
+                source_event_id=999999,
+                inbound=replace(bound_message, source_event_id=999999),
+            )
+        ):
             with pytest.raises(PluginPermissionError, match="source does not match"):
                 await plugin.agent.run("wrong source")
         with plugin.bind(invocation):

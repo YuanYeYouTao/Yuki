@@ -482,7 +482,8 @@ class AutomationToolService:
             inbound is not None
             and runtime.allow_automation
             and runtime.actor_user_id == inbound.sender.user_id
-            and runtime.trigger_message_id == inbound.message_id
+            and runtime.effective_trigger_event_id is not None
+            and runtime.effective_trigger_event_id == inbound.source_event_id
             and runtime.current_group_id == inbound.group_id
         )
 

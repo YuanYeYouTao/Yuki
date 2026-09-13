@@ -166,6 +166,9 @@ def audit_ref_from_actor(actor: AdminActor) -> ControlAuditRef:
     return ControlAuditRef(
         user_id=actor.user_id,
         trigger_message_id=actor.trigger_message_id,
+        trigger_event_id=actor.trigger_event_id,
+        canonical_conversation_id=actor.canonical_conversation_id,
+        ingress_presence_id=actor.ingress_presence_id,
         conversation_key=actor.conversation_key,
         bot_user_id=actor.bot_user_id,
         decision_actor_type=actor.decision_actor_type,

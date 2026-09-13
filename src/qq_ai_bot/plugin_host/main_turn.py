@@ -49,9 +49,9 @@ async def run_plugin_main_turn(
             "background callers must use the target-bound Main Agent wakeup API"
         )
     version, _ = await ledger.read_scope_context(inbound.scope(), limit=0)
-    event = await ledger.find_by_platform_message(
-        bot_user_id=invocation.bot_user_id, platform_message_id=inbound.message_id
-    )
+    if invocation.source_event_id is None:
+        raise PluginPermissionError("Yuki generation requires a ledger event anchor")
+    event = await ledger.get_event(invocation.source_event_id)
     if (
         version.conversation_id != invocation.conversation_id
         or event is None

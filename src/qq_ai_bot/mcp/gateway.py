@@ -139,7 +139,7 @@ class MCPGatewayBinding:
         self._described.add(
             (
                 context.conversation_key,
-                context.trigger_message_id,
+                context.execution_key,
                 descriptor.provider_id,
                 descriptor.provider_tool_name,
             )
@@ -152,7 +152,7 @@ class MCPGatewayBinding:
     ) -> bool:
         return (
             context.conversation_key,
-            context.trigger_message_id,
+            context.execution_key,
             descriptor.provider_id,
             descriptor.provider_tool_name,
         ) in self._described

@@ -37,7 +37,7 @@ def inspect_event_evidence(
     human = event.direction == "inbound" and event.author_kind == "person"
     yuki = event.direction == "outbound" and event.author_kind == "yuki"
     source = (
-        ChatEventPromptRenderer.event_content(_event_record(event), "", "")
+        ChatEventPromptRenderer.event_content(_event_record(event), None, "")
         if reflection
         else event.content
     )

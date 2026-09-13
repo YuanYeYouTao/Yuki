@@ -76,9 +76,12 @@ async def recover_source(
             or conversation.generation != generation
         ):
             raise ValueError("task_conversation_changed")
+        event_id = source.get("trigger_event_id")
+        if type(event_id) is not int or event_id <= 0:
+            raise ValueError("invalid_task_event_anchor")
         query = select(ChatEventModel).where(
+            ChatEventModel.id == event_id,
             ChatEventModel.canonical_conversation_id == conversation.id,
-            ChatEventModel.platform_message_id == source.get("trigger_id"),
             ChatEventModel.bot_user_id == source.get("bot_user_id"),
             ChatEventModel.sender_user_id == source.get("actor_user_id"),
             ChatEventModel.event_kind == "message",
@@ -86,11 +89,6 @@ async def recover_source(
             ChatEventModel.author_kind == "person",
             ChatEventModel.id > conversation.starts_after_event_id,
         )
-        event_id = source.get("trigger_event_id")
-        if event_id is not None:
-            if type(event_id) is not int:
-                raise ValueError("invalid_task_event_anchor")
-            query = query.where(ChatEventModel.id == event_id)
         events = list(await session.scalars(query.limit(2)))
         if len(events) != 1:
             raise ValueError("task_source_event_unavailable")

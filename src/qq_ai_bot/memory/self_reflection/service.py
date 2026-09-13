@@ -737,7 +737,7 @@ class SelfReflectionService:
 
     @staticmethod
     def _event_evidence_text(event: EventRecord) -> str:
-        return ChatEventPromptRenderer.event_content(event, "", "").strip()
+        return ChatEventPromptRenderer.event_content(event, None, "").strip()
 
     @staticmethod
     def _target(

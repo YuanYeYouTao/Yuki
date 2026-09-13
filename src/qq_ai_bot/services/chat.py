@@ -956,6 +956,7 @@ class _ChatAgentBackend(AgentToolBackend):
                                 conversation_key=execution_runtime.conversation_key,
                                 actor_user_id=execution_runtime.actor_user_id,
                                 trigger_message_id=execution_runtime.trigger_message_id,
+                                execution_id=execution_runtime.effective_execution_id,
                                 provider_metadata={
                                     "contains_images": bool(self._runtime.image_present),
                                     "web_was_used": self._web_was_used,
@@ -1914,7 +1915,7 @@ class ChatService:
             return await self._work_repository.enqueue(
                 control.lease.conversation_id,
                 control.lease.generation,
-                f"message:{control.lease.conversation_id}:{inbound.message_id}",
+                f"event:{control.lease.conversation_id}:{event_id}",
                 kind="message",
                 event_id=event_id,
                 work_id=control.current["id"],
@@ -1959,6 +1960,8 @@ class ChatService:
     ) -> int:
         """Run one ordered Agent turn and return the sent message count."""
 
+        if turn_snapshot is not None:
+            inbound = replace(inbound, source_event_id=turn_snapshot.trigger_event_id)
         turn_origin = TurnOrigin.AUTONOMOUS_GROUP if autonomous else TurnOrigin.USER_MESSAGE
         conversation_key = runtime_conversation_key(
             identity=identity,
@@ -2036,12 +2039,11 @@ class ChatService:
                         self._work_repository,
                         inbound.conversation_id,
                         turn_snapshot.generation,
-                        f"message:{inbound.conversation_id}:{inbound.message_id}",
+                        f"event:{inbound.conversation_id}:{turn_snapshot.trigger_event_id}",
                         {
                             "actor_user_id": inbound.sender.user_id,
                             "origin": turn_origin.value,
                             "trigger_event_id": turn_snapshot.trigger_event_id,
-                            "trigger_id": inbound.message_id,
                             "bot_user_id": inbound.bot_user_id,
                             "generation": turn_snapshot.generation,
                             "conversation_id": inbound.conversation_id,
@@ -2222,7 +2224,7 @@ class ChatService:
                 async def finish_suppressed() -> None:
                     await self._finish_memory_turn(
                         memory_session,
-                        run_id=inbound.message_id,
+                        run_id=inbound.source_key,
                         delivered_text="",
                         delivered=False,
                         cancelled=False,
@@ -2256,7 +2258,7 @@ class ChatService:
                     )
             sources = await self._web_sources.for_trigger(
                 conversation_key=conversation_key,
-                trigger_message_id=inbound.message_id,
+                trigger_event_id=inbound.source_event_id,
             )
             reply_to_message_id = await self._resolve_reply_target(
                 inbound=inbound,
@@ -2571,7 +2573,7 @@ class ChatService:
                 async def finish_delivery() -> None:
                     await self._record_reply_effects(
                         conversation_key=conversation_key,
-                        source_event_id=inbound.message_id,
+                        source_event_id=inbound.source_key,
                         trigger_event_id=turn_snapshot.trigger_event_id if turn_snapshot else None,
                         user_id=inbound.sender.user_id,
                         control=reply_control,
@@ -2580,7 +2582,7 @@ class ChatService:
                     )
                     await self._finish_memory_turn(
                         memory_session,
-                        run_id=inbound.message_id,
+                        run_id=inbound.source_key,
                         delivered_text=attribution_response_text,
                         delivered=agent_body_delivered,
                         cancelled=sequence.cancelled,
@@ -2755,7 +2757,7 @@ class ChatService:
                     sent_count += 1
             await self._finish_memory_turn(
                 memory_session,
-                run_id=inbound.message_id,
+                run_id=inbound.source_key,
                 delivered_text=attribution_response_text,
                 delivered=agent_body_delivered,
                 cancelled=False,
@@ -3213,7 +3215,7 @@ class ChatService:
                 prompt_diagnostics=runtime.prompt_diagnostics,
                 before_model_request=before_model_request,
                 canonical_conversation_id=runtime.effective_conversation_id,
-                execution_id=runtime.execution_id or runtime.trigger_message_id,
+                execution_id=runtime.effective_execution_id,
             ),
             backend,
         )

@@ -66,7 +66,7 @@ async def automation_task_source_cases(handlers, context, provider):
     )
     source = sandbox.execute.call_args.kwargs["source"]
     assert source["source_step_id"] == "original_step"
-    assert source["trigger_id"] == "agent:unique-call"
+    assert source["step_id"] == "agent:unique-call"
     assert source["script_hash"] == "a" * 64
     assert source["generation"] == 7
     assert source["instruction"] == "下载鲸鱼图片并保存产物"

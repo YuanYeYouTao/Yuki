@@ -133,7 +133,7 @@ class AutomationService:
         )
         existing = await self._repository.get_by_creation_key(
             creator_person_id,
-            inbound.message_id,
+            inbound.source_key,
         )
         if existing is not None:
             return existing, plan
@@ -309,6 +309,7 @@ class AutomationService:
             creator_user_id=inbound.sender.user_id,
             bot_user_id=inbound.bot_user_id,
             created_from_message_id=inbound.message_id,
+            creation_source_key=inbound.source_key,
             created_at=now.isoformat(),
             permission_level=permission,
             granted_capabilities=validated.required_capabilities,
@@ -361,6 +362,7 @@ class AutomationService:
             creator_user_id=inbound.sender.user_id,
             bot_user_id=inbound.bot_user_id,
             created_from_message_id=inbound.message_id,
+            creation_source_key=inbound.source_key,
             created_at=now.isoformat(),
             permission_level=permission,
             granted_capabilities=validated.required_capabilities,
@@ -794,6 +796,7 @@ class AutomationService:
         )[:128]
         return InboundMessage(
             message_id=message_id,
+            source_execution_id=message_id,
             event_type="scheduled_automation",
             scope_type=(ScopeType.GROUP if context.current_group_id else ScopeType.PRIVATE),
             sender=SenderIdentity(user_id=creator_user_id),

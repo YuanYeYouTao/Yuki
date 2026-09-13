@@ -157,7 +157,19 @@ class InboundMessage:
     space_id: str | None = None
     conversation_id: str | None = None
     presence_id: str | None = None
+    # Host-stamped after ledger admission; never supplied by a transport adapter.
+    source_event_id: int | None = None
+    source_execution_id: str | None = None
     yuki_account_ids: frozenset[str] = frozenset()
+
+    @property
+    def source_key(self) -> str:
+        """Internal work provenance, independent of transport message credentials."""
+        if self.source_event_id is not None:
+            return f"event:{self.source_event_id}"
+        if self.source_execution_id:
+            return f"execution:{self.source_execution_id}"
+        raise ValueError("missing_internal_source_anchor")
 
     def replies_to_yuki(self, *, yuki_account_ids: frozenset[str] = frozenset()) -> bool:
         """Reply-to-Yuki: canonical verdict wins; None allows Presence-id fallback."""

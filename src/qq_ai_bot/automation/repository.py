@@ -83,6 +83,7 @@ class AutomationRepository:
                 ),
                 authority_snapshot_json=authority_json,
                 created_from_message_id=authority.created_from_message_id,
+                creation_source_key=authority.creation_source_key,
                 next_run_at=validated.next_run_at,
                 last_run_at=None,
                 run_count=0,
@@ -171,13 +172,13 @@ class AutomationRepository:
     async def get_by_creation_key(
         self,
         creator_person_id: str,
-        created_from_message_id: str,
+        creation_source_key: str,
     ) -> AutomationRecord | None:
         """Resolve a delegated create retry without producing another task."""
 
         query = select(AutomationModel).where(
             AutomationModel.canonical_creator_person_id == creator_person_id,
-            AutomationModel.created_from_message_id == created_from_message_id,
+            AutomationModel.creation_source_key == creation_source_key,
         )
         async with self._database.sessions() as session:
             row = await session.scalar(query.order_by(AutomationModel.id.asc()).limit(1))

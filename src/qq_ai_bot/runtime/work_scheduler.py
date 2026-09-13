@@ -247,6 +247,7 @@ class WorkScheduler:
                     )
                     inbound = InboundMessage(
                         message_id=original.platform_message_id,
+                        source_event_id=original.id,
                         event_type="message",
                         scope_type=original.scope_type,
                         sender=SenderIdentity(recovered.actor_user_id),

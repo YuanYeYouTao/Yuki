@@ -156,7 +156,7 @@ def test_prompt_accounting_matches_assembler_and_outweighs_projection() -> None:
     )
     view = assembler._uncovered_prompt_view(
         events,
-        current_message_id=inbound.message_id,
+        current_event_id=dummy_current.id,
         content="now",
         yuki_account_ids=inbound.yuki_account_ids,
         current_message_override=None,
@@ -1018,7 +1018,7 @@ async def test_event_floor_between_character_target_and_admit_skips_extractive()
     )
     view = assembler._uncovered_prompt_view(
         history,
-        current_message_id=inbound.message_id,
+        current_event_id=dummy_current.id,
         content="now",
         yuki_account_ids=inbound.yuki_account_ids,
         current_message_override=None,
@@ -1040,7 +1040,7 @@ async def test_event_floor_between_character_target_and_admit_skips_extractive()
     await assembler._ensure_uncovered_fits_budget(
         snapshot=snapshot,
         recent=history,
-        current_message_id=inbound.message_id,
+        current_event_id=dummy_current.id,
         content="now",
         yuki_account_ids=inbound.yuki_account_ids,
         current_message_override=None,

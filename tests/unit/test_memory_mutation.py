@@ -3664,6 +3664,7 @@ async def test_deterministic_memory_admin_uses_unified_mutation_receipt(
             user_id="1001",
             is_superuser=False,
             trigger_message_id=event.platform_message_id,
+            trigger_event_id=event.id,
             conversation_key="private:1001",
             current_message_text=event.content,
             bot_user_id=event.bot_user_id,

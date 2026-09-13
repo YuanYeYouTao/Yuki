@@ -656,7 +656,9 @@ async def test_lazy_mcp_discovery_same_name_is_collision_free_and_calls_fake_tra
     outcome = await _call_mcp(manager, "music", "search", {"query": "Yuki"})
     assert outcome.ok and outcome.data == {"found": True}
     gateway = MCPGatewayBinding(manager)
-    context = ToolInvocationContext(runtime=object(), conversation_key="test:gateway")
+    context = ToolInvocationContext(
+        runtime=object(), conversation_key="test:gateway", execution_id="gateway-run"
+    )
     search_result = await gateway.invoke(
         {"operation": "search", "query": "remote"},
         context,
@@ -802,7 +804,7 @@ async def test_gateway_requires_describe_then_call_and_honors_read_only_policy(
         return ToolInvocationContext(
             runtime=runtime,
             conversation_key=key,
-            trigger_message_id=trigger or key,
+            execution_id=trigger or key,
         )
 
     unseen = await gateway.invoke(

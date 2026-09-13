@@ -511,7 +511,7 @@ class ContextAssembler:
                     inbound=inbound,
                     turn=turn,
                 ),
-                trigger_message_id=inbound.message_id,
+                source_key=f"event:{current_event.id}",
                 origin=turn_origin,
                 intent=memory_intent,
                 result=retrieval,
@@ -529,7 +529,7 @@ class ContextAssembler:
         snapshot, recent, rollup_text, shifted = await self._ensure_uncovered_fits_budget(
             snapshot=snapshot,
             recent=recent,
-            current_message_id=inbound.message_id,
+            current_event_id=current_event.id,
             content=content,
             yuki_account_ids=inbound.yuki_account_ids,
             current_message_override=None,
@@ -552,7 +552,7 @@ class ContextAssembler:
         )
         bounded_messages = self._bounded_history(
             recent,
-            current_message_id=inbound.message_id,
+            current_event_id=current_event.id,
             content=content,
             yuki_account_ids=inbound.yuki_account_ids,
             current_message_override=None,
@@ -769,7 +769,7 @@ class ContextAssembler:
         snapshot, recent, rollup_text, shifted = await self._ensure_uncovered_fits_budget(
             snapshot=snapshot,
             recent=recent,
-            current_message_id=event.platform_message_id,
+            current_event_id=event.id,
             content=event.content,
             yuki_account_ids=frozenset({event.bot_user_id}),
             current_message_override=self._external_wakeup_message(event, trigger),
@@ -784,7 +784,7 @@ class ContextAssembler:
         metadata_json = json.dumps(metadata_payload, ensure_ascii=False, separators=(",", ":"))
         bounded_messages = self._bounded_history(
             recent,
-            current_message_id=event.platform_message_id,
+            current_event_id=event.id,
             content=event.content,
             yuki_account_ids=frozenset({event.bot_user_id}),
             current_message_override=self._external_wakeup_message(event, trigger),
@@ -1499,7 +1499,7 @@ class ContextAssembler:
         self,
         recent: tuple[EventRecord, ...],
         *,
-        current_message_id: str,
+        current_event_id: int | None,
         content: str,
         yuki_account_ids: frozenset[str],
         current_message_override: ChatMessage | None,
@@ -1515,18 +1515,16 @@ class ContextAssembler:
             history_rows = tuple(row for row in recent if row.id != current_event.id)
             current_message = current_message_override or renderer.reference_message(
                 current_event,
-                current_message_id=current_message_id,
+                current_event_id=current_event_id,
                 current_content=content,
             )
             current_characters = len(current_message.content or "")
             record = current_event
             fallback = current_event.id
         else:
-            history_rows = tuple(
-                row for row in recent if row.platform_message_id != current_message_id
-            )
+            history_rows = tuple(row for row in recent if row.id != current_event_id)
             current_row = next(
-                (row for row in reversed(recent) if row.platform_message_id == current_message_id),
+                (row for row in reversed(recent) if row.id == current_event_id),
                 None,
             )
             if current_row is None:
@@ -1534,7 +1532,7 @@ class ContextAssembler:
             current_characters = len(
                 renderer.reference_message(
                     current_row,
-                    current_message_id=current_message_id,
+                    current_event_id=current_event_id,
                     current_content=content,
                 ).content
                 or ""
@@ -1556,7 +1554,7 @@ class ContextAssembler:
         *,
         snapshot: _HistoryPromptWindow,
         recent: tuple[EventRecord, ...],
-        current_message_id: str,
+        current_event_id: int | None,
         content: str,
         yuki_account_ids: frozenset[str],
         current_message_override: ChatMessage | None,
@@ -1575,7 +1573,7 @@ class ContextAssembler:
         for _ in range(max_batches):
             view = self._uncovered_prompt_view(
                 recent,
-                current_message_id=current_message_id,
+                current_event_id=current_event_id,
                 content=content,
                 yuki_account_ids=yuki_account_ids,
                 current_message_override=current_message_override,
@@ -1631,7 +1629,7 @@ class ContextAssembler:
             rollup_text = snapshot.rollup_text
         final_view = self._uncovered_prompt_view(
             recent,
-            current_message_id=current_message_id,
+            current_event_id=current_event_id,
             content=content,
             yuki_account_ids=yuki_account_ids,
             current_message_override=current_message_override,
@@ -1690,7 +1688,7 @@ class ContextAssembler:
     def _bounded_history(
         recent: tuple[EventRecord, ...],
         *,
-        current_message_id: str,
+        current_event_id: int | None,
         content: str,
         yuki_account_ids: frozenset[str],
         current_message_override: ChatMessage | None,
@@ -1706,13 +1704,13 @@ class ContextAssembler:
             yuki_account_ids=yuki_account_ids,
         )
         current_row = current_event or next(
-            (row for row in reversed(recent) if row.platform_message_id == current_message_id),
+            (row for row in reversed(recent) if row.id == current_event_id),
             None,
         )
         current_message = (
             current_message_override
             or renderer.reference_message(
-                current_row, current_message_id=current_message_id, current_content=content
+                current_row, current_event_id=current_event_id, current_content=content
             )
             if current_row is not None
             else current_message_override or ChatMessage(role="user", content=content)
@@ -1720,8 +1718,7 @@ class ContextAssembler:
         history_rows = tuple(
             row
             for row in recent
-            if row.platform_message_id != current_message_id
-            and (current_event is None or row.id != current_event.id)
+            if row.id != current_event_id and (current_event is None or row.id != current_event.id)
         )
         rendered = renderer.main_agent_history(history_rows)
         event_ids = tuple(event_id for _, ids, _ in rendered for event_id in ids)

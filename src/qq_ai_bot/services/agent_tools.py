@@ -211,7 +211,19 @@ class ToolRuntime:
     def effective_trigger_event_id(self) -> int | None:
         if self.turn_snapshot is not None:
             return self.turn_snapshot.trigger_event_id
-        return self.trigger_event_id
+        if self.trigger_event_id is not None:
+            return self.trigger_event_id
+        return self.inbound.source_event_id if self.inbound is not None else None
+
+    @property
+    def effective_execution_id(self) -> str:
+        if self.execution_id:
+            return self.execution_id
+        if self.effective_trigger_event_id is not None:
+            return f"event:{self.effective_trigger_event_id}"
+        if self.inbound is not None and self.inbound.source_execution_id:
+            return self.inbound.source_execution_id
+        raise ValueError("missing_internal_execution_anchor")
 
     @property
     def effective_scope_type(self) -> ScopeType:
@@ -1043,7 +1055,7 @@ class AgentToolService:
                     request_id = sha256(
                         (
                             f"{runtime.conversation_id}:"
-                            f"{runtime.execution_id or runtime.trigger_message_id}:"
+                            f"{runtime.effective_execution_id}:"
                             f"{invocation.call_id}"
                         ).encode()
                     ).hexdigest()
@@ -1068,15 +1080,12 @@ class AgentToolService:
                             "allow_automation": runtime.allow_automation,
                             "actor_is_superuser": runtime.actor_is_superuser,
                             "actor_user_id": runtime.actor_user_id,
-                            "trigger_id": runtime.trigger_message_id,
                             "bot_user_id": runtime.effective_bot_user_id,
                             "presence_id": runtime.effective_presence_id,
                             "generation": runtime.turn_snapshot.generation
                             if runtime.turn_snapshot
                             else None,
-                            "trigger_event_id": runtime.turn_snapshot.trigger_event_id
-                            if runtime.turn_snapshot
-                            else None,
+                            "trigger_event_id": runtime.effective_trigger_event_id,
                         }
                         if name in EXECUTION_TOOLS
                         else None,
@@ -1514,7 +1523,8 @@ class AgentToolService:
             not runtime.actor_user_id
             or runtime.actor_user_id != inbound.sender.user_id
             or runtime.actor_is_superuser != actual_superuser
-            or runtime.trigger_message_id != inbound.message_id
+            or runtime.effective_trigger_event_id is None
+            or runtime.effective_trigger_event_id != inbound.source_event_id
             or runtime.current_group_id != inbound.group_id
             or tuple(runtime.mentioned_user_ids) != tuple(inbound.mentioned_user_ids)
         ):
@@ -2545,8 +2555,7 @@ class AgentToolService:
                 detail="无法从永久账本核验当前入站消息",
             )
         if (
-            event.platform_message_id != runtime.require_inbound().message_id
-            or event.sender_user_id != runtime.require_inbound().sender.user_id
+            event.sender_user_id != runtime.require_inbound().sender.user_id
             or event.group_id != runtime.current_group_id
             or event.direction != "inbound"
             or event.bot_user_id != (runtime.effective_bot_user_id or "bot")
@@ -3033,7 +3042,8 @@ class AgentToolService:
         )
         previously_found = await sources.used_url_for_trigger(
             conversation_key=runtime.conversation_key,
-            trigger_message_id=runtime.trigger_message_id,
+            trigger_event_id=runtime.effective_trigger_event_id,
+            execution_id=runtime.execution_id or None,
             url=normalized,
         )
         if not explicitly_sent and not previously_found:
@@ -3089,21 +3099,21 @@ class AgentToolService:
         runtime: ToolRuntime,
         repository: WebSearchSourceRepository,
     ) -> None:
-        if not runtime.conversation_key or not runtime.trigger_message_id:
+        if not runtime.conversation_key or (
+            runtime.effective_trigger_event_id is None and not runtime.execution_id
+        ):
             raise WebSearchError("missing_runtime", "联网工具缺少当前会话信息")
         await repository.save_response(
             conversation_key=runtime.conversation_key,
             trigger_message_id=runtime.trigger_message_id,
             trigger_event_id=runtime.effective_trigger_event_id,
+            execution_id=runtime.execution_id or None,
             provider=response.provider,
             response=response,
             max_runs=self._runtime().web.source_max_runs_per_conversation,
             canonical_conversation_id=runtime.effective_conversation_id,
             bot_user_id=runtime.effective_bot_user_id,
             ingress_presence_id=runtime.effective_presence_id,
-            infer_trigger_event=(
-                runtime.inbound is None or runtime.inbound.event_type != "plugin_agent"
-            ),
         )
 
     @staticmethod

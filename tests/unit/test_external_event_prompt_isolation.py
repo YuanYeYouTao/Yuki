@@ -261,7 +261,7 @@ def test_bounded_history_keeps_current_external_out_of_main_history() -> None:
     )
     bounded = ContextAssembler._bounded_history(
         history_rows,
-        current_message_id=current.platform_message_id,
+        current_event_id=current.id,
         content=current.content,
         yuki_account_ids=frozenset({"8000"}),
         current_message_override=ContextAssembler._external_wakeup_message(current, trigger),
@@ -727,6 +727,7 @@ async def test_external_wakeup_and_ordinary_turn_send_the_same_provider_shape(
     ordinary_runtime = ToolRuntime(
         inbound=ordinary_inbound,
         trigger_message_id="ordinary-current",
+        trigger_event_id=1,
         actor_user_id="1001",
         origin=TurnOrigin.USER_MESSAGE,
         **shared,
@@ -734,6 +735,7 @@ async def test_external_wakeup_and_ordinary_turn_send_the_same_provider_shape(
     wakeup_runtime = ToolRuntime(
         inbound=None,
         trigger_message_id="external-current",
+        trigger_event_id=2,
         actor_user_id="",
         origin=TurnOrigin.PLUGIN_BACKGROUND,
         **shared,
@@ -858,6 +860,7 @@ async def test_plugin_wakeup_can_decline_without_creating_a_fake_reply(
         allow_automation=True,
         conversation_key="canonical:conv-stable:generation:1",
         trigger_message_id="external-current",
+        trigger_event_id=2,
         runtime_config=runtime_config,
         origin=TurnOrigin.PLUGIN_BACKGROUND,
         reply_control=control,
@@ -901,6 +904,7 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
         allow_generic_onebot=False,
         conversation_key="canonical:space-100:generation:1",
         trigger_message_id="external-current",
+        trigger_event_id=2,
         actor_user_id="",
         runtime_config=runtime_config,
         origin=TurnOrigin.PLUGIN_BACKGROUND,

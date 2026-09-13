@@ -984,6 +984,10 @@ async def test_completed_receipts_reconcile_pending_evidence_without_model_poll(
         lease, source_key="receipt-parent", source={}, goal="render"
     )
     tasks = SandboxTaskRepository(database)
+    from qq_ai_bot.persistence.models import ChatEventModel
+
+    async with database.sessions() as session:
+        event_id = await session.scalar(select(ChatEventModel.id))
     runs = [str(uuid4()) for _ in range(3)]
     for index, run_id in enumerate(runs):
         source = {
@@ -992,7 +996,7 @@ async def test_completed_receipts_reconcile_pending_evidence_without_model_poll(
             "work_id": control.current["id"] if index < 2 else "another-parent",
             "origin": "user_message",
             "actor_user_id": "10001",
-            "trigger_id": "inbound",
+            "trigger_event_id": event_id,
         }
         await tasks.prepare(f"receipt-{index}", {"command": "render"}, source)
         await tasks.receive(

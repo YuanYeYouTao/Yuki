@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import func, select
 
+from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.sandbox.client import SandboxClient
 from qq_ai_bot.sandbox.completion_receiver import CompletionReceiver
 from qq_ai_bot.sandbox.db_models import SandboxTaskRunModel
@@ -19,11 +20,13 @@ from tests.support.social_identity_cases import social_env
 async def task_receipt_cases(database, tmp_path):
     env = await social_env(database, tmp_path)
     tasks = SandboxTaskRepository(database)
+    async with database.sessions() as session:
+        event_id = await session.scalar(select(ChatEventModel.id))
     source = {
         "conversation_id": env.context.conversation_id,
         "origin": "user_message",
         "actor_user_id": "10001",
-        "trigger_id": "inbound",
+        "trigger_event_id": event_id,
         "generation": 1,
         "presence_id": env.presence,
         "bot_user_id": "80001",

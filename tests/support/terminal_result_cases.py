@@ -47,6 +47,7 @@ async def check_terminal_result_recovery(database, tmp_path):
             snapshot, tooling=replace(snapshot.tooling, result_artifact_enabled=enabled)
         )
         tool_runtime = ToolRuntime(
+            execution_id="terminal-result-test",
             inbound=None,
             gateway=None,
             allow_generic_onebot=False,

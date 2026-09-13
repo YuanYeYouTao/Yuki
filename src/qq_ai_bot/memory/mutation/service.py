@@ -2332,7 +2332,7 @@ class MemoryMutationService:
         event: EventRecord,
     ) -> str:
         source = normalize_memory_text(
-            ChatEventPromptRenderer.event_content(event, "", ""),
+            ChatEventPromptRenderer.event_content(event, None, ""),
             maximum=4000,
         )
         if not source:

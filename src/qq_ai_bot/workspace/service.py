@@ -75,12 +75,11 @@ class WorkspaceService:
             from qq_ai_bot.capabilities.invocation import current_invocation
 
             invocation = current_invocation.get()
-            execution = getattr(invocation.runtime, "execution_id", None) if invocation else None
             request_id = (
                 sha256(
                     (
                         f"workspace:{invocation.conversation_key}:"
-                        f"{execution or invocation.trigger_message_id}:"
+                        f"{invocation.execution_key}:"
                         f"{invocation.call_id}"
                     ).encode()
                 ).hexdigest()

@@ -499,8 +499,8 @@ class PeopleRepository:
             )
         )
         web_cleanup_conditions = [
-            WebSearchRunModel.trigger_message_id.in_(
-                select(ChatEventModel.platform_message_id).where(privacy_event_match)
+            WebSearchRunModel.trigger_event_id.in_(
+                select(ChatEventModel.id).where(privacy_event_match)
             ),
             *[WebSearchRunModel.conversation_key == f"private:{item}" for item in owner_externals],
             *[
