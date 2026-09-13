@@ -309,6 +309,7 @@ class WorkRepository:
         *,
         reason: str | None = None,
         goal: str | None = None,
+        exit_reason: str | None = None,
     ) -> dict[str, Any]:
         if state not in WORK_STATES or (goal is not None and not 1 <= len(goal) <= 8192):
             raise ValueError("invalid_work_transition")
@@ -355,6 +356,27 @@ class WorkRepository:
             )
             if row is None:
                 raise WorkConflict("work_revision_conflict")
+            if exit_reason is not None:
+                detail = dict(
+                    work_id=identity,
+                    activation_id=lease.owner,
+                    exit_reason=exit_reason,
+                    stage="activation",
+                    updated=time.time(),
+                    not_before=0,
+                )
+                if exit_reason in {
+                    "segment_budget",
+                    "completed",
+                    "waiting_input",
+                    "waiting_external",
+                }:
+                    detail.update(attempts=0, failure_json="{}")
+                await session.execute(
+                    insert(recovery)
+                    .values(**detail)
+                    .on_conflict_do_update(index_elements=[recovery.c.work_id], set_=detail)
+                )
             return dict(row)
 
     async def checkpoint(
@@ -421,12 +443,22 @@ class WorkRepository:
         event_id: int | None = None,
         work_id: str | None = None,
         ready: bool = True,
+        resume: tuple[WorkLease, dict[str, Any]] | None = None,
     ) -> int:
         from qq_ai_bot.runtime.execution_receipts import PROCESS_ID
 
         if not 1 <= len(source_key) <= 256 or kind not in {"message", "completion", "control"}:
             raise ValueError("invalid_work_input")
         async with self.database.immediate_session() as session:
+            if resume is not None:
+                owned, _payload = resume
+                await self._assert_lease(session, owned)
+                if (
+                    owned.work_id
+                    or owned.conversation_id != conversation_id
+                    or owned.generation != generation
+                ):
+                    raise WorkConflict("work_resume_scope_mismatch")
             existing = await session.scalar(
                 select(inputs.c.id).where(inputs.c.source_key == source_key)
             )
@@ -451,6 +483,7 @@ class WorkRepository:
                     event_id=event_id,
                     work_id=work_id,
                     ready=ready,
+                    payload_json=bounded_json(resume[1], 32768) if resume else "{}",
                     prepare_owner=None if ready else PROCESS_ID,
                     created=time.time(),
                 )
@@ -472,6 +505,25 @@ class WorkRepository:
                 }.items()
             ):
                 raise WorkConflict("work_input_conflict")
+            if resume is not None and row["state"] == "pending":
+                updated = await session.scalar(
+                    update(work)
+                    .where(
+                        work.c.id == work_id,
+                        work.c.conversation_id == conversation_id,
+                        work.c.generation == generation,
+                        work.c.state.not_in(TERMINAL),
+                    )
+                    .values(
+                        state="queued",
+                        reason="explicit_resume",
+                        revision=work.c.revision + 1,
+                        updated=time.time(),
+                    )
+                    .returning(work.c.id)
+                )
+                if updated is None:
+                    raise WorkConflict("work_resume_obsolete")
             return int(row["id"])
 
     async def prepare_input(self, identity: int, payload: dict[str, Any]) -> None:
@@ -485,6 +537,23 @@ class WorkRepository:
                     inputs.c.ready.is_(False),
                 )
                 .values(payload_json=serialized, ready=True)
+            )
+            await session.execute(
+                update(work)
+                .where(
+                    work.c.id.in_(
+                        select(inputs.c.work_id).where(
+                            inputs.c.id == identity, inputs.c.ready.is_(True)
+                        )
+                    ),
+                    work.c.state == "waiting_external",
+                )
+                .values(
+                    state="queued",
+                    reason="input_prepared",
+                    updated=time.time(),
+                    revision=work.c.revision + 1,
+                )
             )
 
     async def pending(
@@ -783,7 +852,28 @@ class WorkRepository:
 
     async def reclaim_terminal(self) -> None:
         """Keep the latest 128 terminal work receipts; never evict an active work."""
+        from qq_ai_bot.runtime.subagent_schema import media, media_refs
+
+        async with self.database.sessions() as session:
+            orphaned = list(
+                await session.scalars(
+                    select(media.c.sha256)
+                    .where(
+                        ~select(media_refs.c.sha256)
+                        .where(media_refs.c.sha256 == media.c.sha256)
+                        .exists()
+                    )
+                    .limit(64)
+                )
+            )
         async with self.database.immediate_session() as session:
+            if orphaned:
+                await session.execute(
+                    delete(media).where(
+                        media.c.sha256.in_(orphaned),
+                        media.c.sha256.not_in(select(media_refs.c.sha256)),
+                    )
+                )
             selected = list(
                 await session.scalars(
                     select(work.c.id)

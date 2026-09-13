@@ -6,7 +6,6 @@ import json
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
-from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
@@ -258,58 +257,25 @@ class AutomationCapabilityHandlers:
     async def generate(
         self, arguments: dict[str, Any], context: CapabilityExecutionContext
     ) -> CapabilityResult:
-        if self._agent_runner.main_contract is not None:
-            # Text generation has the same declaration and state, but no delegated external effects.
-            bounded_context = replace(
-                context,
-                authority=context.authority.model_copy(
-                    update={"allowed_capabilities": frozenset()}
-                ),
-            )
-            result = await self.agent(
-                {**arguments, "max_tool_calls": 3, "max_model_requests": 4}, bounded_context
-            )
-            return replace(
-                result, data={"text": str(result.data["text"])[: int(arguments["max_characters"])]}
-            )
-        messages = await self._generation_messages(arguments, context)
-        snapshot = await self._runtime_config.snapshot(
-            user_id=context.creator_user_id,
-            group_id=context.current_group_id,
+        bounded_context = replace(
+            context,
+            authority=context.authority.model_copy(update={"allowed_capabilities": frozenset()}),
         )
-        request = _chat_request(messages, snapshot, tools=())
-        execute = (
-            partial(
-                self._models.execute,
-                ModelTask.AUTOMATION_TEXT_GENERATION,
-                request,
-                canonical_conversation_id=context.canonical_conversation_id,
-            )
-            if context.canonical_conversation_id is not None
-            else partial(
-                self._models.execute,
-                ModelTask.AUTOMATION_TEXT_GENERATION,
-                request,
-            )
+        result = await self.agent(
+            {**arguments, "max_tool_calls": 3, "max_model_requests": 4}, bounded_context
         )
-        try:
-            response = await self._concurrency.run_llm(
-                context.conversation_key,
-                execute,
-            )
-        except LLMError as exc:
-            raise _automation_llm_error(exc, llm_calls=1) from exc
-        text = response.content.strip()[: int(arguments["max_characters"])]
-        if not text:
-            raise AutomationExecutionError("llm_empty_response")
-        return CapabilityResult(data={"text": text}, llm_calls=1)
+        if result.pending_work_id:
+            return result
+        return replace(
+            result, data={"text": str(result.data["text"])[: int(arguments["max_characters"])]}
+        )
 
     async def agent(
         self,
         arguments: dict[str, Any],
         context: CapabilityExecutionContext,
         *,
-            completion_payload: str = "",
+        completion_payload: str = "",
     ) -> CapabilityResult:
         if self._registry is None:
             raise AutomationExecutionError("agent_registry_unavailable")
@@ -402,9 +368,20 @@ class AutomationCapabilityHandlers:
                 tool_calls=1 + backend.failed_tool_calls,
                 messages_sent=backend.messages_sent,
             ) from exc
+        if (
+            result.work_state in {"queued", "running", "waiting_external", "waiting_user"}
+            and result.work_id
+        ):
+            return CapabilityResult(
+                data={},
+                pending_work_id=result.work_id,
+                llm_calls=result.model_requests + backend.nested_llm_calls,
+                tool_calls=result.tool_calls_used + backend.nested_tool_calls,
+                messages_sent=backend.messages_sent,
+            )
         if result.work_state not in {None, "completed"}:
             raise AutomationExecutionError(
-                "agent_work_incomplete",
+                "agent_work_blocked",
                 llm_calls=result.model_requests + backend.nested_llm_calls,
                 tool_calls=1 + result.tool_calls_used + backend.nested_tool_calls,
                 messages_sent=backend.messages_sent,

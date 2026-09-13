@@ -35,6 +35,7 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                 "管理当前持续工作。没有 work_id 而需要执行操作时，第一步单独调用 "
                 "action=accept，并填写 goal、output_kind；成功后下一步才调用执行工具。"
                 "已有 work_id 的同一工作直接继续，不重复 accept；不要先试执行再补登记。"
+                "新一轮要续接 available_work 中的原目标，单独使用 resume 和 work_id；不重复登记。"
                 "普通聊天用 answer 和 text 直接回复，不建立长期工作。"
                 "新输入另提独立工作时再次 accept 排队，不能用 update 覆盖旧目标；"
                 "update 仅修正当前目标；wait 必须有真实待完成 run_id；"
@@ -49,6 +50,7 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                         "enum": [
                             "answer",
                             "accept",
+                            "resume",
                             "update",
                             "wait",
                             "need_input",
@@ -57,6 +59,7 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                         ],
                     },
                     "goal": {"type": "string", "maxLength": 8192},
+                    "work_id": {"type": "string", "maxLength": 36},
                     "output_kind": {
                         "type": "string",
                         "enum": ["answer", "artifact", "state_change"],
@@ -119,11 +122,13 @@ class WorkControl:
     final_delivery: bool = False
     chat_answer: str | None = None
     requests_started: int = 0
+    segment_model_limit: int = 24
     tools_started: int = 0
     yield_segment: bool = False
     handoff_work_id: str | None = None
     completion_delivered: bool = False
     settled: bool = False
+    recovery_deferred: bool = False
     outcome: ActivationOutcome | None = None
     staged_attempt: str | None = None
     input_images: dict[int, tuple[ChatImage, ...]] = field(default_factory=dict)
@@ -145,9 +150,15 @@ class WorkControl:
         return await self.repository.pending(self.lease, work_id=self.current["id"])
 
     async def recover_failure(self, exc: BaseException) -> ActivationOutcome:
+        from qq_ai_bot.runtime.activation_outcome import WorkRecoveryDeferred
         from qq_ai_bot.runtime.work_supervisor import recover_failure
 
-        return await recover_failure(self, exc)
+        try:
+            return await recover_failure(self, exc)
+        except BaseException as secondary:
+            self.recovery_deferred = True
+            exc.add_note(f"recovery persistence failed: {type(secondary).__name__}")
+            raise WorkRecoveryDeferred(type(exc).__name__) from exc
 
     async def background_state(self) -> str | None:
         """A foreground answer/finalization cannot terminate unfinished workers."""
@@ -285,18 +296,22 @@ class WorkControl:
             self.handoff_work_id = identity
 
     async def reserve_request(self, *, auxiliary: bool = False) -> None:
-        self.requests_started += 1
-        if self.session is not None and not auxiliary:
-            self.session.sequence += 1
+        if auxiliary and self.requests_started >= self.segment_model_limit:
+            from qq_ai_bot.runtime.activation_outcome import SegmentBudgetReached
+
+            raise SegmentBudgetReached()
         if self.current is not None:
             await self.repository.checkpoint(self.lease, self.current["id"], None, models=1)
             self.current["model_requests"] += 1
+        self.requests_started += 1
+        if self.session is not None and not auxiliary:
+            self.session.sequence += 1
 
     async def charge_tools(self, count: int) -> None:
-        self.tools_started += count
         if self.current is not None and count:
             await self.repository.checkpoint(self.lease, self.current["id"], None, tools=count)
             self.current["tool_calls"] += count
+        self.tools_started += count
 
     def observe_result(
         self,
@@ -429,6 +444,32 @@ class WorkControl:
                     },
                     call_key,
                 )
+        if action == "resume":
+            if self.current is not None or self.lease.work_id:
+                raise ValueError("resume_requires_neutral_foreground")
+            identity = args.get("work_id")
+            candidates = await self.available_work()
+            if not isinstance(identity, str) or identity not in {r["work_id"] for r in candidates}:
+                raise ValueError("resume_work_not_authorized")
+            await self.repository.enqueue(
+                self.lease.conversation_id,
+                self.lease.generation,
+                self.source_key,
+                kind="message",
+                event_id=self.source.get("trigger_event_id"),
+                work_id=identity,
+                ready=True,
+                resume=(
+                    self.lease,
+                    {
+                        "text": self.current_message.content
+                        if self.current_message
+                        else "继续原目标"
+                    },
+                ),
+            )
+            self.handoff_work_id = identity
+            return {"resumed_work_id": identity, "state": "queued", "continue_original_chain": True}
         if action == "answer":
             text = args.get("text")
             if not isinstance(text, str) or not 1 <= len(text.strip()) <= 8000:
@@ -659,6 +700,25 @@ class WorkControl:
             ),
         }
 
+    async def available_work(self) -> list[dict[str, Any]]:
+        if self.lease.work_id:
+            return []
+        result = []
+        for row in await self.repository.active(self.lease.conversation_id, self.lease.generation):
+            source = json.loads(row["source_json"])
+            if all(
+                source.get(k) == self.source.get(k)
+                for k in (
+                    "actor_user_id",
+                    "origin",
+                    "plugin_id",
+                    "delegation_id",
+                    "execution_boundary",
+                )
+            ):
+                result.append({"work_id": row["id"], "goal": row["goal"], "state": row["state"]})
+        return result[:16]
+
     async def _progress(self, args: dict[str, Any], call_key: str) -> dict[str, Any]:
         if self.deliver_progress is None:
             raise ValueError("progress_delivery_not_authorized")
@@ -667,14 +727,14 @@ class WorkControl:
         text = args.get("text")
         if not isinstance(text, str) or not 1 <= len(text.strip()) <= 1000:
             raise ValueError("invalid_progress_text")
-        if self.progress_count >= 4 or self.current["sent_messages"] >= 16:
-            raise ValueError("progress_message_budget_exhausted")
+        from qq_ai_bot.runtime.delivery_intents import reserve
+
+        if not await reserve(self, call_key, "progress", {"text": text}):
+            return {"delivered": False, "suppressed": True, "continue_work": True}
         if not await self.repository.prepare_effect(
             self.lease, self.current["id"], call_key, "progress"
         ):
             return {"already_recorded": True, "replay_forbidden": True}
-        await self.repository.checkpoint(self.lease, self.current["id"], None, messages=1)
-        self.current["sent_messages"] += 1
         try:
             outcome = await self.deliver_progress(text, call_key)
         except BaseException:

@@ -29,9 +29,8 @@ def install_sqlite_diagnostics(engine: Engine) -> None:
         # Connection.info may reconnect an invalidated connection during rollback,
         # raising PendingRollbackError and preventing the original rollback.
         writers.pop(id(conn), None)
-        if conn.closed or conn.invalidated:
-            return
-        conn.info.pop(_KEY, None)
+        # Pool checkin clears the connection-record marker. Never touch
+        # Connection.info here: rollback itself can invalidate the connection.
 
     def before(
         conn: Any, cursor: Any, statement: str, parameters: Any, context: Any, executemany: bool
@@ -66,7 +65,7 @@ def install_sqlite_diagnostics(engine: Engine) -> None:
             }
             conn.info[_KEY] = value
             writers[id(conn)] = value
-        conn.info[_KEY]["operation"] = operation
+        writers[id(conn)]["operation"] = operation
         duration = time.monotonic() - started
         if duration >= 1:
             logger.warning("sqlite_slow_write operation=%s seconds=%.3f", operation, duration)

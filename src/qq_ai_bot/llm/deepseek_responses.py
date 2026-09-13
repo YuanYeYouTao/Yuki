@@ -19,8 +19,6 @@ from tenacity import (
     wait_random_exponential,
 )
 
-from qq_ai_bot.llm.http_errors import check_provider_response
-
 from qq_ai_bot.domain.messages import (
     ChatMessage,
     ChatRequest,
@@ -37,19 +35,17 @@ from qq_ai_bot.domain.messages import (
     ToolFunction,
 )
 from qq_ai_bot.llm.base import (
-    LLMAuthenticationError,
     LLMConfigurationError,
     LLMEmptyResponseError,
-    LLMError,
     LLMInvalidRequestError,
     LLMInvalidResponseError,
     LLMNativeToolError,
     LLMProvider,
-    LLMRateLimitError,
     LLMTimeoutError,
     LLMUnavailableError,
     RetryableProviderError,
 )
+from qq_ai_bot.llm.http_errors import check_provider_response
 from qq_ai_bot.llm.wire_diagnostics import WireRequestObserver
 
 logger = logging.getLogger(__name__)
@@ -109,7 +105,11 @@ class DeepSeekResponsesProvider(LLMProvider):
             ):
                 with attempt:
                     from qq_ai_bot.runtime.observability import current_runtime_turn_correlation
+                    from qq_ai_bot.runtime.work_activation import current_work_control
 
+                    work = current_work_control.get()
+                    if work is not None and attempt.retry_state.attempt_number > 1:
+                        await work.reserve_request(auxiliary=True)
                     correlation = current_runtime_turn_correlation()
                     logger.info(
                         "model_transport_attempt protocol=responses correlation_id=%s attempt=%d",
@@ -126,7 +126,9 @@ class DeepSeekResponsesProvider(LLMProvider):
         except httpx.TimeoutException as exc:
             raise LLMTimeoutError("LLM request timed out") from exc
         except (httpx.ConnectError, RetryableProviderError) as exc:
-            raise LLMUnavailableError("LLM is temporarily unavailable", diagnostics=getattr(exc, "diagnostics", {})) from exc
+            raise LLMUnavailableError(
+                "LLM is temporarily unavailable", diagnostics=getattr(exc, "diagnostics", {})
+            ) from exc
 
         latency = time.perf_counter() - started
         parsed = self._parse_response(

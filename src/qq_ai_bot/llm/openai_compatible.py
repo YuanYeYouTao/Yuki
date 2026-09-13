@@ -14,8 +14,6 @@ from tenacity import (
     wait_random_exponential,
 )
 
-from qq_ai_bot.llm.http_errors import check_provider_response
-
 from qq_ai_bot.domain.messages import ChatRequest, ChatResponse, ToolCall, ToolFunction
 from qq_ai_bot.llm.base import (
     LLMConfigurationError,
@@ -27,6 +25,7 @@ from qq_ai_bot.llm.base import (
     LLMUnavailableError,
     RetryableProviderError,
 )
+from qq_ai_bot.llm.http_errors import check_provider_response
 from qq_ai_bot.llm.wire_diagnostics import WireRequestObserver
 
 logger = logging.getLogger(__name__)
@@ -74,7 +73,11 @@ class OpenAICompatibleProvider(LLMProvider):
             ):
                 with attempt:
                     from qq_ai_bot.runtime.observability import current_runtime_turn_correlation
+                    from qq_ai_bot.runtime.work_activation import current_work_control
 
+                    work = current_work_control.get()
+                    if work is not None and attempt.retry_state.attempt_number > 1:
+                        await work.reserve_request(auxiliary=True)
                     correlation = current_runtime_turn_correlation()
                     logger.info(
                         "model_transport_attempt protocol=chat_completions correlation_id=%s "
@@ -86,7 +89,9 @@ class OpenAICompatibleProvider(LLMProvider):
         except httpx.TimeoutException as exc:
             raise LLMTimeoutError("LLM request timed out") from exc
         except (httpx.TransportError, RetryableProviderError) as exc:
-            raise LLMUnavailableError("LLM is temporarily unavailable", diagnostics=getattr(exc, "diagnostics", {})) from exc
+            raise LLMUnavailableError(
+                "LLM is temporarily unavailable", diagnostics=getattr(exc, "diagnostics", {})
+            ) from exc
 
         latency = time.perf_counter() - started
         logger.info("llm_request_complete latency_seconds=%.3f success=true", latency)

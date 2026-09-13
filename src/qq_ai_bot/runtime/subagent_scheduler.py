@@ -5,13 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import sqlite3
 from contextlib import ExitStack
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select
-from sqlalchemy.exc import OperationalError
+from sqlalchemy import func, or_, select
 
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage, SenderIdentity
 from qq_ai_bot.runtime.origin import TurnOrigin
@@ -20,7 +18,8 @@ from qq_ai_bot.runtime.subagent_schema import children
 from qq_ai_bot.runtime.subagent_tools import WORKER_NAMES, WORKER_PROMPT
 from qq_ai_bot.runtime.work_activation import current_work_control
 from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_repository import WorkConflict, WorkLease, WorkRepository
+from qq_ai_bot.runtime.work_recovery_schema import recovery
+from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import work
 from qq_ai_bot.sandbox.source_recovery import recover_source
 from qq_ai_bot.services.agent_runner import AgentRuntime
@@ -28,15 +27,6 @@ from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.time.models import TimeContext
 
 logger = logging.getLogger(__name__)
-
-
-def _sqlite_busy(exc: BaseException) -> bool:
-    if not isinstance(exc, OperationalError):
-        return False
-    code = getattr(exc.orig, "sqlite_errorcode", 0)
-    return (
-        isinstance(code, int) and code & 255 in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
-    ) or str(exc.orig).lower() in {"database is locked", "database table is locked"}
 
 
 class WorkerBackend:
@@ -103,7 +93,12 @@ class SubagentScheduler:
                         await session.scalars(
                             select(children.c.work_id)
                             .join(work, work.c.id == children.c.work_id)
+                            .outerjoin(recovery, recovery.c.work_id == work.c.id)
                             .where(
+                                or_(
+                                    recovery.c.work_id.is_(None),
+                                    recovery.c.not_before <= datetime.now(UTC).timestamp(),
+                                ),
                                 work.c.state.in_(("queued", "running")),
                                 children.c.archived_at.is_(None),
                             )
@@ -112,8 +107,7 @@ class SubagentScheduler:
                         )
                     )
                 for identity in ids:
-                    await asyncio.gather(self.run(identity), return_exceptions=True)
-                self.last_error = None
+                    await self.run(identity)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -205,6 +199,7 @@ class SubagentScheduler:
             activation = asyncio.current_task()
 
             async def heartbeat() -> None:
+                assert control is not None
                 while True:
                     await asyncio.sleep(15)
                     if not await self.repository.renew(lease):
@@ -305,59 +300,47 @@ class SubagentScheduler:
                 backend,
             )
             await control.settle(delivered=True, pending_inputs=bool(await control.pending()))
+            self.last_error = (
+                control.outcome.failure.code
+                if control.outcome and control.outcome.failure
+                else None
+            )
             await self.children.finish(lease, result.text)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            if await self._retry_busy(lease, exc):
-                return
-            if await self.repository.valid(lease):
-                current = await self.repository.get(identity)
-                if current and current["state"] not in {"completed", "failed", "cancelled"}:
-                    await self.repository.transition(
-                        lease, identity, current["revision"], "suspended", reason=type(exc).__name__
-                    )
-                    await self.children.finish(
-                        lease, "工作暂停，已保留执行记录。错误类别：" + type(exc).__name__
-                    )
+            self.last_error = type(exc).__name__
+            if control is None:
+
+                async def validate_recovery() -> None:
+                    if not await self.repository.valid(lease):
+                        raise WorkConflict("worker_lease_obsolete")
+
+                control = WorkControl(self.repository, lease, "recovery", {}, validate_recovery)
+                control.current = await self.repository.get(identity)
+            if control.current is not None and not control.settled:
+                await control.recover_failure(exc)
+            await self.children.finish(
+                lease, "工作暂停，已保留执行记录。" if control.ending == "suspended" else ""
+            )
             logger.warning("subagent_run_failed category=%s", type(exc).__name__)
         finally:
             if pulse:
                 pulse.cancel()
                 await asyncio.gather(pulse, return_exceptions=True)
             if memory:
-                await memory.close()
+                try:
+                    await memory.close()
+                except Exception as cleanup:
+                    logger.warning(
+                        "worker_cleanup_deferred stage=memory category=%s", type(cleanup).__name__
+                    )
             if token is not None:
                 current_work_control.reset(token)
             bindings.close()
-            await self.repository.release(lease)
-
-    async def _retry_busy(self, lease: WorkLease, exc: BaseException) -> bool:
-        """Requeue the original journal, never resubmit commands or reset budgets."""
-        if not _sqlite_busy(exc) or lease.work_id is None:
-            return False
-        for delay in (0.25, 0.75, 1.5):
-            await asyncio.sleep(delay)
             try:
-                if not await self.repository.valid(lease):
-                    return True
-                row = await self.repository.get(lease.work_id)
-                if row is None or row["state"] in {"completed", "failed", "cancelled"}:
-                    return True
-                checkpoint = json.loads(row["checkpoint_json"])
-                retries = int(checkpoint.get("sqlite_busy_retries", 0))
-                if retries >= 3:
-                    return False
-                checkpoint["sqlite_busy_retries"] = retries + 1
-                await self.repository.checkpoint(lease, row["id"], checkpoint)
-                await self.repository.transition(
-                    lease, row["id"], row["revision"], "queued", reason="sqlite_busy_retry"
+                await self.repository.release(lease)
+            except Exception as cleanup:
+                logger.warning(
+                    "worker_cleanup_deferred stage=lease category=%s", type(cleanup).__name__
                 )
-                logger.info("subagent_requeued reason=sqlite_busy retry=%s", retries + 1)
-                return True
-            except OperationalError as retry_exc:
-                if not _sqlite_busy(retry_exc):
-                    raise
-            except WorkConflict:
-                return True
-        return False

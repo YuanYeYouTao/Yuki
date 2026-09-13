@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import Protocol
 
+from qq_ai_bot.adapters.onebot.sender import ConfirmedQuoteRejection
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.conversation.delivery import ReplySequenceSpec
 from qq_ai_bot.domain.messages import OutboundMessage, OutboundSendReceipt
@@ -158,6 +159,10 @@ class ReplySequenceManager:
                 reply_to_message_id=reply_to_message_id,
             )
         sent = 0
+        from qq_ai_bot.runtime.work_delivery import WorkDeliverySender
+
+        if isinstance(sender, WorkDeliverySender):
+            await sender.plan(outbound_messages)
         try:
             async with self._coordinator.track(token, "reply"):
                 for index, outbound in enumerate(outbound_messages):
@@ -185,7 +190,9 @@ class ReplySequenceManager:
                     except Exception as exc:
                         failure_message = outbound
                         failure = exc
-                        if outbound.reply_to_message_id is not None:
+                        if outbound.reply_to_message_id is not None and isinstance(
+                            exc, ConfirmedQuoteRejection
+                        ):
                             failure_message = replace(outbound, reply_to_message_id=None)
                             logger.warning(
                                 "reply_quote_delivery_failed retry_without_quote=true "

@@ -163,11 +163,19 @@ async def test_progress_continues_work_and_finish_waits_for_delivery(database, t
     assert control.known_effects[-1]["side_effecting"] is True
     assert json.loads(await control.execute("task_control", {"action": "complete"}, "c3"))["ok"]
     assert (await repository.get(identity))["state"] == "running"
+    await repository.enqueue(
+        lease.conversation_id,
+        lease.generation,
+        "ready-followup",
+        kind="message",
+        work_id=identity,
+        ready=True,
+    )
     await control.settle(delivered=True, pending_inputs=True)
-    assert (await repository.get(identity))["state"] == "running"
-    await control.execute("task_control", {"action": "complete"}, "c4")
+    assert (await repository.get(identity))["state"] == "queued"
+    # An activation commits one decision; later cleanup cannot overwrite it.
     await control.settle(delivered=False, pending_inputs=False)
-    assert (await repository.get(identity))["state"] == "suspended"
+    assert (await repository.get(identity))["state"] == "queued"
 
 
 @pytest.mark.asyncio
@@ -567,7 +575,12 @@ async def test_real_chat_entry_progress_delivery_and_work_completion(
 
 
 @pytest.mark.asyncio
-async def test_child_completion_has_one_parent_consumer_and_scheduler(database, tmp_path):
+@pytest.mark.parametrize(
+    "protocol,updates", [(None, 1), ("responses", 49), ("chat_completions", 49)]
+)
+async def test_child_completion_has_one_parent_consumer_and_scheduler(
+    database, tmp_path, protocol, updates
+):
     from types import SimpleNamespace
     from uuid import uuid4
 
@@ -619,7 +632,17 @@ async def test_child_completion_has_one_parent_consumer_and_scheduler(database, 
     )
     steps = iter(
         [
-            ("update_short_state", {"slot": 1, "text": "child-done", "expected_revision": 0}),
+            *[
+                (
+                    "update_short_state",
+                    {"slot": 1, "text": f"step-{index}", "expected_revision": index},
+                )
+                for index in range(updates - 1)
+            ],
+            (
+                "update_short_state",
+                {"slot": 1, "text": "child-done", "expected_revision": updates - 1},
+            ),
             ("task_control", {"action": "complete"}),
             (None, None),
         ]
@@ -628,7 +651,7 @@ async def test_child_completion_has_one_parent_consumer_and_scheduler(database, 
     def respond(request):
         name, args = next(steps)
         return (
-            "后台任务已完成。"
+            ChatResponse("后台任务已完成。", 0)
             if name is None
             else ChatResponse(
                 "",
@@ -642,7 +665,13 @@ async def test_child_completion_has_one_parent_consumer_and_scheduler(database, 
     provider = FakeLLMProvider(respond)
     harness = build_harness(
         database,
-        make_settings(database.url, runtime_work_enabled=True, enabled_groups_csv="20001"),
+        make_settings(
+            database.url,
+            runtime_work_enabled=True,
+            enabled_groups_csv="20001",
+            agent_max_model_requests=24,
+            agent_max_tool_calls=32,
+        ),
         provider,
     )
     chat = harness.processor._chat
@@ -651,6 +680,11 @@ async def test_child_completion_has_one_parent_consumer_and_scheduler(database, 
     chat._agent_runner.main_contract = MainAgentContract(
         chat, SimpleNamespace(_registry=None), state
     )
+    client, captured = None, []
+    if protocol:
+        from tests.support.runtime_wire import install_wire
+
+        client, captured = install_wire(chat, provider, protocol)
     app = SimpleNamespace(
         database=database,
         settings=harness.settings,
@@ -669,12 +703,25 @@ async def test_child_completion_has_one_parent_consumer_and_scheduler(database, 
     assert not provider.requests
     scheduler = WorkScheduler(app)
     await scheduler.drain_once()
+    if updates > 24:
+        assert len(provider.requests) == 24
+        assert (await repository.get(parent["id"]))["state"] == "queued"
+        await scheduler.drain_once()
+        assert len(provider.requests) == 48
+        assert (await repository.get(parent["id"]))["state"] == "queued"
+        await scheduler.drain_once()
     assert (await repository.get(parent["id"]))["state"] == "completed"
     assert state.snapshot()[0]["text"] == "child-done"
     assert len([call for call in env.bot.calls if call[0] == "send_group_msg"]) == 1
     await scheduler.drain_once()
     await old._drain_request("child-request")
-    assert len(provider.requests) == 3
+    assert len(provider.requests) == updates + 2
+    if client:
+        await client.aclose()
+        field = "input" if protocol == "responses" else "messages"
+        for previous, current in pairwise(captured):
+            assert current["tools"] == previous["tools"]
+            assert current[field][: len(previous[field])] == previous[field]
     async with database.sessions() as session:
         assert len((await session.execute(select(inputs))).all()) == 1
 
@@ -781,9 +828,10 @@ async def test_new_epoch_retains_execution_evidence_and_budget(database, tmp_pat
 
     control = WorkControl(repo, lease, "epoch", {"trigger_event_id": 123}, validate)
     control.current = await repo.accept(lease, source_key="epoch", source={}, goal="draw")
-    await repo.checkpoint(lease, control.current["id"], None, models=3, tools=2, active_seconds=61)
     first = WorkSession(control, "old-contract")
     await first.restore(TurnTranscript((ChatMessage("user", "draw"),)))
+    await first.save("paired")
+    await repo.checkpoint(lease, control.current["id"], None, models=3, tools=2, active_seconds=61)
     control.known_effects = [{"run_id": "original", "pending": True, "ok": True}]
     await first.save("paired")
     control.current = await repo.get(control.current["id"])

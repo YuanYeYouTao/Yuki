@@ -573,6 +573,9 @@ class ConversationRollupRepository:
     async def claim_next_job(
         self, *, lease_owner: str, lease_seconds: int
     ) -> RollupJobClaim | None:
+        from qq_ai_bot.conversation.canonical_rollup import drain_rollup_signals
+
+        await drain_rollup_signals(self._database, self.config)
         now = _utcnow()
         lease_until = now + timedelta(seconds=lease_seconds)
         token = uuid.uuid4().hex

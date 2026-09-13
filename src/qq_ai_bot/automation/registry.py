@@ -155,6 +155,7 @@ class CapabilityResult:
     llm_calls: int = 0
     tool_calls: int = 1
     messages_sent: int = 0
+    pending_work_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

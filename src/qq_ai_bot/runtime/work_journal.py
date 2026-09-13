@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from typing import Any
 
-from sqlalchemy import LargeBinary, delete, func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
@@ -26,7 +26,7 @@ from qq_ai_bot.domain.messages import (
 from qq_ai_bot.runtime.subagent_schema import media, media_refs
 from qq_ai_bot.runtime.work_media import externalize, hydrate, references
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkLease, WorkRepository, bounded_json
-from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, journal
+from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, journal, work
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 
 
@@ -88,11 +88,22 @@ def decode_transcript(value: dict[str, Any]) -> TurnTranscript:
     return transcript
 
 
+class JournalUnavailable(RuntimeError):
+    """A missing/corrupt checkpoint is not an authorized context reset."""
+
+
+@dataclass(frozen=True)
+class JournalSnapshot:
+    reason: str
+    record: dict[str, Any] | None = None
+    previous_chain: str | None = None
+
+
 class WorkJournal:
     def __init__(self, repository: WorkRepository) -> None:
         self.repository = repository
 
-    async def load(self, lease: WorkLease, work_id: str, contract: str) -> dict[str, Any] | None:
+    async def load(self, lease: WorkLease, work_id: str, contract: str) -> JournalSnapshot:
         async with self.repository.database.sessions() as session:
             source = await session.get(CanonicalConversationModel, lease.conversation_id)
             row = (
@@ -102,14 +113,22 @@ class WorkJournal:
             )
             if source is None or source.generation != lease.generation:
                 raise WorkConflict("work_journal_generation_changed")
-            if (
-                not row
-                or row["contract"] != contract
-                or (not lease.work_id and row["source_revision"] != source.prompt_source_revision)
-            ):
-                return None
+            if not row:
+                used = await session.scalar(
+                    select(work.c.model_requests).where(work.c.id == work_id)
+                )
+                if used:
+                    raise JournalUnavailable("work_journal_missing")
+                return JournalSnapshot("fresh")
+            if row["contract"] != contract:
+                return JournalSnapshot("contract_changed", previous_chain=row["chain_id"])
+            if not lease.work_id and row["source_revision"] != source.prompt_source_revision:
+                return JournalSnapshot("source_changed", previous_chain=row["chain_id"])
             result = dict(row)
-            payload = json.loads(result["payload_json"])
+            try:
+                payload = json.loads(result["payload_json"])
+            except ValueError as exc:
+                raise JournalUnavailable("work_journal_corrupt") from exc
             refs = references(payload)
             if refs:
                 blobs = {
@@ -118,8 +137,11 @@ class WorkJournal:
                         await session.execute(select(media).where(media.c.sha256.in_(refs)))
                     ).all()
                 }
-                result["payload_json"] = json.dumps(hydrate(payload, blobs), ensure_ascii=False)
-            return result
+                try:
+                    result["payload_json"] = json.dumps(hydrate(payload, blobs), ensure_ascii=False)
+                except (ValueError, KeyError) as exc:
+                    raise JournalUnavailable("work_journal_media_missing") from exc
+            return JournalSnapshot("resume", result, row["chain_id"])
 
     async def save(
         self,
@@ -152,6 +174,30 @@ class WorkJournal:
                 raise WorkConflict("work_journal_generation_changed")
             if not lease.work_id and source.prompt_source_revision != source_revision:
                 raise WorkConflict("work_journal_source_changed")
+            if phase == "response":
+                from qq_ai_bot.runtime.work_recovery_schema import recovery
+
+                await session.execute(
+                    update(recovery)
+                    .where(recovery.c.work_id == work_id)
+                    .values(attempts=0, failure_json="{}", not_before=0)
+                )
+            await session.execute(
+                update(work)
+                .where(work.c.id == work_id)
+                .values(
+                    checkpoint_json=func.json_set(
+                        work.c.checkpoint_json,
+                        "$.execution_evidence",
+                        func.json(bounded_json(metadata.get("effects", []), 65536)),
+                    )
+                )
+            )
+            previous_media = set(
+                await session.scalars(
+                    select(media_refs.c.sha256).where(media_refs.c.work_id == work_id)
+                )
+            )
             for digest, content in blobs.items():
                 await session.execute(
                     insert(media).values(sha256=digest, content=content).on_conflict_do_nothing()
@@ -159,24 +205,14 @@ class WorkJournal:
             await session.execute(delete(media_refs).where(media_refs.c.work_id == work_id))
             for digest in blobs:
                 await session.execute(insert(media_refs).values(work_id=work_id, sha256=digest))
-            await session.execute(
-                delete(media).where(media.c.sha256.not_in(select(media_refs.c.sha256)))
-            )
-            other_bytes = await session.scalar(
-                select(
-                    func.coalesce(
-                        func.sum(func.length(journal.c.payload_json.cast(LargeBinary))), 0
+            stale = previous_media - blobs.keys()
+            if stale:
+                await session.execute(
+                    delete(media).where(
+                        media.c.sha256.in_(stale),
+                        media.c.sha256.not_in(select(media_refs.c.sha256)),
                     )
-                ).where(journal.c.work_id != work_id)
-            )
-            media_bytes = await session.scalar(
-                select(func.coalesce(func.sum(func.length(media.c.content)), 0))
-            )
-            if (
-                int(other_bytes or 0) + int(media_bytes or 0) + len(payload.encode())
-                > 64 * 1024 * 1024
-            ):
-                raise ValueError("work_journal_capacity")
+                )
             values = dict(
                 work_id=work_id,
                 chain_id=transcript.chain_id,
@@ -244,6 +280,19 @@ class WorkJournal:
                     return str(value["result"])
                 if value.get("transport_accepted"):
                     return json.dumps({"ok": True, "receipt": value, "replay_forbidden": True})
+        if row is None or (
+            row["state"] == "failed"
+            and json.loads(row["receipt_json"]).get("error") == "never_dispatched"
+        ):
+            return json.dumps(
+                {
+                    "ok": False,
+                    "executed": False,
+                    "uncertain": False,
+                    "error": "never_dispatched",
+                    "replay_forbidden": True,
+                }
+            )
         from hashlib import sha256
 
         from qq_ai_bot.sandbox.db_models import SandboxTaskRunModel

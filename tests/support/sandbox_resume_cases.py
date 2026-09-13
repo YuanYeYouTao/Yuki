@@ -5,7 +5,6 @@ from uuid import uuid4
 
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.sandbox.continuation_worker import SandboxContinuationWorker
-from qq_ai_bot.sandbox.progress import TaskProgress
 from tests.conftest import build_harness, make_settings
 
 
@@ -25,10 +24,8 @@ async def resume_cases(database, env, tasks, source):
     )
     before_calls = len(env.bot.calls)
     worker = SandboxContinuationWorker(app)
-    progress = TaskProgress(5, 6, max_messages=3)
     for name in ("resume-a", "resume-b"):
         await tasks.prepare(name, {"code": "print(1)"}, source)
-        await progress.bind(tasks, name)
         run = str(uuid4())
         await tasks.receive(
             {
@@ -42,8 +39,6 @@ async def resume_cases(database, env, tasks, source):
                 },
             }
         )
-    await progress.checkpoint(models=2, tools=2)
-    await progress.finish("yielded")
     await worker.drain_once()
     for name in ("resume-a", "resume-b"):
         receipt = await worker.repository.get(name)

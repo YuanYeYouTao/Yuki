@@ -28,7 +28,6 @@ from qq_ai_bot.identity.routing import PresenceRouter, ResolvedSend
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
-from qq_ai_bot.sandbox.progress import current_progress
 from qq_ai_bot.social.db_models import SocialOperationModel
 from qq_ai_bot.social.models import OperationStatus, SocialError, SocialMessage, SocialTarget
 from qq_ai_bot.social.repository import SocialOperationRepository
@@ -695,6 +694,22 @@ class SocialService:
                     )
                 if int(total or 0) >= global_limit or int(per_target or 0) >= target_limit:
                     return {"error": "rate_limited", "retry_after_seconds": 60, "retryable": False}
+            from qq_ai_bot.runtime.delivery_intents import reserve
+            from qq_ai_bot.runtime.work_activation import current_work_control
+
+            work_control = current_work_control.get()
+            if (
+                work_control is not None
+                and name.startswith("send_")
+                and name != "send_file_caption"
+            ):
+                await reserve(
+                    work_control,
+                    receipt.operation_id,
+                    "artifact" if caption or caption_segments else "message",
+                    {"target": target.model_dump(mode="json"), "arguments": args},
+                    count=2 if caption or caption_segments else 1,
+                )
             if not await self.receipts.claim(receipt.operation_id, presence_id=route.presence_id):
                 return (
                     await self._file_result(receipt.operation_id)
@@ -702,9 +717,6 @@ class SocialService:
                     else (await self.receipts.get(receipt.operation_id)).model_dump(mode="json")
                 )
         try:
-            progress = current_progress.get()
-            if progress is not None and name.startswith("send_"):
-                await progress.reserve_message()
             result = await self._call(route, action, params)
             reference = (
                 str(result["message_id"])
@@ -753,13 +765,17 @@ class SocialService:
             if appended is not None:
                 self.writer.notify_committed(appended)
         except BaseException as exc:
-            async with self.database.sessions() as session, session.begin():
-                await self.receipts.finish(
-                    receipt.operation_id,
-                    status=OperationStatus.UNCERTAIN,
-                    error_category=type(exc).__name__[:64],
-                    session=session,
-                )
+            try:
+                async with self.database.sessions() as session, session.begin():
+                    await self.receipts.finish(
+                        receipt.operation_id,
+                        status=OperationStatus.UNCERTAIN,
+                        error_category=type(exc).__name__[:64],
+                        session=session,
+                    )
+            except Exception as secondary:
+                exc.add_note(f"social receipt reconciliation deferred: {type(secondary).__name__}")
+                raise exc from secondary
             if not isinstance(exc, Exception):
                 raise
         completed = await self.receipts.get(receipt.operation_id)

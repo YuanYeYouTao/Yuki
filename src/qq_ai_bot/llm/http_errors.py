@@ -45,9 +45,16 @@ def check_provider_response(response: httpx.Response) -> None:
     except ValueError:
         pass
     category = (
-        RetryableProviderError if response.status_code >= 500 else
-        LLMAuthenticationError if response.status_code in {401, 403} else
-        LLMRateLimitError if response.status_code == 429 else
-        LLMInvalidRequestError if response.status_code == 400 else LLMError
+        RetryableProviderError
+        if response.status_code >= 500
+        else LLMAuthenticationError
+        if response.status_code in {401, 403}
+        else LLMRateLimitError
+        if response.status_code == 429
+        else LLMInvalidRequestError
+        if response.status_code == 400
+        else LLMError
     )
-    raise category(f"provider rejected request with HTTP {response.status_code}", diagnostics=details)
+    raise category(
+        f"provider rejected request with HTTP {response.status_code}", diagnostics=details
+    )

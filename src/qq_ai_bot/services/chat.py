@@ -12,6 +12,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass, replace
 from typing import Any, Protocol, TypedDict, TypeVar, cast
 
+from qq_ai_bot.adapters.onebot.sender import ConfirmedQuoteRejection
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.admin.permission_catalog import contains_internal_capability_payload
@@ -398,7 +399,6 @@ class _ChatAgentBackend(AgentToolBackend):
         self._admin_retry_constraint: tuple[str, str] | None = None
         self._admin_terminal_failure: dict[str, object] | None = None
         self._completed_admin_mutations: set[tuple[str, str]] = set()
-        self._committed_mutation_messages: list[str] = []
         self._mutation_committed = False
         self._automation_persisted = False
         self._batch: list[ToolCall] = []
@@ -1103,7 +1103,6 @@ class _ChatAgentBackend(AgentToolBackend):
                 self._admin_terminal_failure = None
                 if mutation_identity is not None and mutation_committed:
                     self._completed_admin_mutations.add(mutation_identity)
-                    self._remember_committed_mutation(decoded)
                     self._mutation_committed = True
                     if self._exclusive_write():
                         self._tools_closed = True
@@ -1169,10 +1168,6 @@ class _ChatAgentBackend(AgentToolBackend):
     def post_commit_recovery_text(self) -> str | None:
         """Only an explicit domain receipt may supply user-facing recovery text."""
         return self._memory_mutation_final_text()
-
-    def _remember_committed_mutation(self, result: dict[str, object]) -> None:
-        # Durable effects belong to WorkSession, never a dump of tool JSON to QQ.
-        pass
 
     def exhausted(self, runtime: AgentRuntime) -> str:
         memory_text = self._memory_mutation_final_text()
@@ -2440,6 +2435,8 @@ class ChatService:
                     _error: Exception,
                 ) -> DeliveryFailureRecovery:
                     nonlocal send_failure_notice_created
+                    if work_control is not None and work_control.current is not None:
+                        return DeliveryFailureRecovery(handled=False)
                     emoji_id = next(
                         (media.emoji_id for media in message.media if media.emoji_id),
                         None,
@@ -2508,7 +2505,9 @@ class ChatService:
                         receipt = await deliver_chunk(voice_message)
                     except Exception as exc:
                         retried = False
-                        if voice_message.reply_to_message_id is not None:
+                        if voice_message.reply_to_message_id is not None and isinstance(
+                            exc, ConfirmedQuoteRejection
+                        ):
                             voice_message = replace(voice_message, reply_to_message_id=None)
                             try:
                                 receipt = await deliver_chunk(voice_message)
@@ -2607,6 +2606,10 @@ class ChatService:
             legacy_fallback_ids = {id(message) for message in preparation_fallbacks}
             agent_body_delivered = False
             sent_count = 0
+            from qq_ai_bot.runtime.work_delivery import WorkDeliverySender
+
+            if isinstance(sender, WorkDeliverySender):
+                await sender.plan(legacy_messages)
             for index, outbound in enumerate(legacy_messages):
                 if len(legacy_messages) > 1 and index > 0:
                     delay = random.uniform(
@@ -2626,7 +2629,9 @@ class ChatService:
                         raise TypeError("outbound sender returned no delivery receipt")
                 except Exception as exc:
                     retry_succeeded = False
-                    if outbound.reply_to_message_id is not None:
+                    if outbound.reply_to_message_id is not None and isinstance(
+                        exc, ConfirmedQuoteRejection
+                    ):
                         outbound = replace(outbound, reply_to_message_id=None)
                         logger.warning(
                             "reply_quote_delivery_failed retry_without_quote=true "
@@ -2642,6 +2647,8 @@ class ChatService:
                         else:
                             retry_succeeded = True
                     if not retry_succeeded:
+                        if work_control is not None and work_control.current is not None:
+                            raise exc
                         if outbound.media and self._emoji_effects is not None:
                             await self._emoji_effects.record_failure(
                                 outbound,

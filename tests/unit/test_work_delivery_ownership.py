@@ -154,7 +154,7 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
 
     try:
         async with activate_work(
-            repo, env.context.conversation_id, 1, source_key, source, validate
+            repo, env.context.conversation_id, 1, source_key, source, validate, work_id=old["id"]
         ) as control:
             assert control.current["id"] == old["id"]
             result = await chat._agent_runner.run(

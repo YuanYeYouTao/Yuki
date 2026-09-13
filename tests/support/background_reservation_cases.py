@@ -62,7 +62,13 @@ async def background_attempt_reservation():
     chat = SimpleNamespace(
         configure_runtime_controls=Mock(),
         generate_main_agent_wakeup=AsyncMock(
-            return_value=SimpleNamespace(text="done", tool_calls_used=0, model_requests=1)
+            return_value=SimpleNamespace(
+                text="done",
+                tool_calls_used=0,
+                model_requests=1,
+                work_state="completed",
+                work_id="completed-work",
+            )
         ),
     )
     worker = PluginBackgroundTurnWorker(

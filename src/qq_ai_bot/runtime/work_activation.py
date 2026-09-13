@@ -50,7 +50,6 @@ async def activate_work(
             await control.meter_active_time()
 
     pulse = asyncio.create_task(heartbeat(), name="work-lease-renew")
-    interrupted = False
     try:
         # Authority is reconstructed by the caller, not copied out of a prior work.
         # A different actor cannot silently take over the original actor's goal.
@@ -58,6 +57,8 @@ async def activate_work(
         candidates.sort(key=lambda candidate: candidate["source_key"] != source_key)
         for candidate in candidates:
             if work_id is not None and candidate["id"] != work_id:
+                continue
+            if work_id is None and candidate["source_key"] != source_key:
                 continue
             if work_id is None and json.loads(candidate["checkpoint_json"]).get("handoff_work_id"):
                 # A later message cannot select the old owner ahead of the work
@@ -85,33 +86,36 @@ async def activate_work(
             )
         yield control
     except BaseException as exc:
-        interrupted = type(exc).__name__ in {
-            "TurnSupersededError",
-            "LLMTimeoutError",
-            "LLMUnavailableError",
-            "CancelledError",
-        }
+        if control.current is not None and not control.settled and not control.recovery_deferred:
+            try:
+                await control.recover_failure(exc)
+            except BaseException as cleanup:
+                exc.add_note(f"work recovery deferred: {type(cleanup).__name__}")
+        if control.current is not None and isinstance(exc, Exception):
+            from qq_ai_bot.runtime.activation_outcome import (
+                WorkActivationHandled,
+                WorkRecoveryDeferred,
+            )
+
+            if control.recovery_deferred:
+                raise WorkRecoveryDeferred("owned_activation_recovery_deferred") from exc
+            if control.settled:
+                raise WorkActivationHandled("owned_activation_recovered") from exc
         raise
     finally:
         pulse.cancel()
         await asyncio.gather(pulse, return_exceptions=True)
         current_work_control.reset(token)
         try:
-            if await repository.valid(lease) and control.current is not None:
+            if (
+                await repository.valid(lease)
+                and control.current is not None
+                and not control.recovery_deferred
+            ):
                 await control.meter_active_time()
                 pending = bool(await control.pending())
                 await control.settle(delivered=control.final_delivery, pending_inputs=pending)
-                if control.current["state"] == "running":
-                    await repository.transition(
-                        lease,
-                        control.current["id"],
-                        control.current["revision"],
-                        "queued" if pending or interrupted else "suspended",
-                        reason="pending_input"
-                        if pending
-                        else "activation_ended_without_completion",
-                    )
-        except SQLAlchemyError as exc:
+        except (SQLAlchemyError, WorkConflict) as exc:
             # Accepted delivery and its durable journal must not become a second
             # user-facing failure. The next fenced activation reconciles state.
             logger.warning("work_cleanup_deferred stage=settle category=%s", type(exc).__name__)

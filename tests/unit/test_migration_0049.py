@@ -726,7 +726,11 @@ def _assert_orm_shape(path: Path) -> None:
 
 def _assert_final_health(path: Path, *, populated: bool) -> None:
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0058",)
+        from qq_ai_bot.persistence.schema_guard import canonical_schema_revision
+
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            canonical_schema_revision(),
+        )
         tables = _tables(connection)
         assert not (_RETIRED_TABLES & tables)
         assert {
@@ -824,7 +828,7 @@ def test_fresh_baseline_reaches_current_head_with_final_integrity(
     config = Config("alembic.ini")
     scripts = ScriptDirectory.from_config(config)
     assert scripts.get_bases() == ["0048"]
-    assert scripts.get_heads() == ["0058"]
+    assert len(scripts.get_heads()) == 1
 
     path = tmp_path / "fresh.db"
     _upgrade(path, monkeypatch)
@@ -878,7 +882,10 @@ def test_fresh_baseline_reaches_current_head_with_final_integrity(
     bundle = tmp_path / "bundle"
     shutil.copytree(Path("migrations"), bundle / "migrations")
     next_revision = bundle / "migrations/versions/future.py"
-    next_revision.write_text("revision = 'future'\ndown_revision = '0058'\n", encoding="utf-8")
+    current_head = canonical_schema_revision()
+    next_revision.write_text(
+        f"revision = 'future'\ndown_revision = '{current_head}'\n", encoding="utf-8"
+    )
     assert canonical_schema_revision(bundle) == "future"
     monkeypatch.chdir(bundle)
     with pytest.raises(CanonicalSchemaError, match="future"):
@@ -887,7 +894,7 @@ def test_fresh_baseline_reaches_current_head_with_final_integrity(
         connection.execute("UPDATE alembic_version SET version_num = 'future'")
     asyncio.run(require_canonical_schema(url))
     (bundle / "migrations/versions/branch.py").write_text(
-        "revision = 'branch'\ndown_revision = '0058'\n", encoding="utf-8"
+        f"revision = 'branch'\ndown_revision = '{current_head}'\n", encoding="utf-8"
     )
     with pytest.raises(CanonicalSchemaError, match="one bundled migration head"):
         asyncio.run(require_canonical_schema(url))

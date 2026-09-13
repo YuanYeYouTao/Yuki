@@ -1486,7 +1486,9 @@ class _LLMFacade:
     def __init__(self, host: HostPluginContext) -> None:
         self._host = host
 
-    async def generate(self, instruction: str, *, max_characters: int = 2_000) -> str:
+    async def generate(
+        self, instruction: str, *, max_characters: int = 2_000
+    ) -> str | PluginResult:
         return await self._generate(
             instruction,
             context_profile="none",
@@ -1500,7 +1502,7 @@ class _LLMFacade:
         *,
         context_profile: str,
         max_characters: int = 2_000,
-    ) -> str:
+    ) -> str | PluginResult:
         return await self._generate(
             instruction,
             context_profile=context_profile,
@@ -1515,7 +1517,7 @@ class _LLMFacade:
         context_profile: str,
         max_characters: int,
         permission: PluginPermission,
-    ) -> str:
+    ) -> str | PluginResult:
         invocation = self._host._require(permission)
         assert invocation is not None
         _, runtime = await _agent_dependencies(self._host, invocation)
@@ -1531,6 +1533,17 @@ class _LLMFacade:
             permission=permission,
             context_profile=context_profile,
         )
+        if result.work_state not in {None, "completed"}:
+            return PluginResult(
+                data={
+                    "state": result.work_state,
+                    "work_id": result.work_id,
+                    "pending": result.work_state
+                    in {"queued", "running", "waiting_external", "waiting_user"},
+                    "model_requests": result.model_requests,
+                    "tool_calls_used": result.tool_calls_used,
+                }
+            )
         return result.text.strip()[:maximum]
 
 
@@ -1599,6 +1612,10 @@ class _AgentFacade:
                 "tool_calls_used": result.tool_calls_used,
                 "model_requests": result.model_requests,
                 "capabilities": sorted(effective),
+                "state": result.work_state or "completed",
+                "work_id": result.work_id,
+                "pending": result.work_state
+                in {"queued", "running", "waiting_external", "waiting_user"},
             }
         )
 

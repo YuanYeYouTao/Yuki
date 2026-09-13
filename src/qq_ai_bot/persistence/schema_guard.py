@@ -22,6 +22,27 @@ def canonical_schema_revision(root: Path | None = None) -> str:
 
 
 _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
+    "runtime_work_recovery": frozenset(
+        {"work_id", "activation_id", "exit_reason", "failure_json", "attempts", "not_before"}
+    ),
+    "runtime_delivery_intents": frozenset(
+        {
+            "id",
+            "work_id",
+            "kind",
+            "state",
+            "payload_json",
+            "receipt_json",
+            "not_before",
+            "target_key",
+            "message_count",
+        }
+    ),
+    "canonical_rollup_signals": frozenset(
+        {"conversation_id", "generation", "event_id", "revision"}
+    ),
+    "runtime_checkpoint_quota": frozenset({"id", "bytes"}),
+    "runtime_automation_cursors": frozenset({"run_id", "script_hash", "phase", "payload_json"}),
     "runtime_subagents": frozenset(
         {
             "work_id",
@@ -227,8 +248,11 @@ async def require_canonical_schema(database_url: str) -> None:
                 text("SELECT name, sql FROM sqlite_master WHERE type='trigger'")
             )
             triggers = {str(row[0]): str(row[1]) for row in trigger_rows}
-            for name, expected in PROJECTION_TRIGGERS_0055.items():
+            from qq_ai_bot.runtime.work_recovery_schema import quota_trigger_sql
+
+            for name, expected in {**PROJECTION_TRIGGERS_0055, **quota_trigger_sql()}.items():
                 actual = triggers.get(name, "").replace("IF NOT EXISTS ", "")
+                expected = expected.replace("IF NOT EXISTS ", "")
                 if " ".join(actual.split()) != " ".join(expected.split()):
                     raise CanonicalSchemaError(
                         "database projection invalidation trigger is missing or changed"

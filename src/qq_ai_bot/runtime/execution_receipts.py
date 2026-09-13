@@ -22,4 +22,6 @@ class ExecutionReceipts:
             self.staged.pop(request_id, None)
 
 
-current_receipts: ContextVar[ExecutionReceipts | None] = ContextVar("execution_receipts", default=None)
+current_receipts: ContextVar[ExecutionReceipts | None] = ContextVar(
+    "execution_receipts", default=None
+)
