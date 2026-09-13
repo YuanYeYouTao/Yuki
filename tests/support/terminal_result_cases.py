@@ -134,3 +134,9 @@ async def check_terminal_result_recovery(database, tmp_path):
             assert backend.finalize("can continue", runtime) == "can continue"
             if not index:
                 assert "event_id" in payload["public_message"]
+
+        backend._runtime = replace(backend._runtime, scheduled_automation_intent=True)
+        assert backend.response_feedback("定时任务已经创建", runtime)
+        assert backend.finalize("定时任务已经创建", runtime) == "定时任务已经创建"
+        backend._automation_persisted = True
+        assert backend.response_feedback("定时任务已经创建", runtime) is None

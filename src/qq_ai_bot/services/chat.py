@@ -16,7 +16,10 @@ from qq_ai_bot.adapters.onebot.sender import ConfirmedQuoteRejection
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.admin.permission_catalog import contains_internal_capability_payload
-from qq_ai_bot.automation.intent import enforce_creation_claim, is_scheduled_automation_request
+from qq_ai_bot.automation.intent import (
+    contains_automation_success_claim,
+    is_scheduled_automation_request,
+)
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities import (
     AuthorityContext,
@@ -449,13 +452,6 @@ class _ChatAgentBackend(AgentToolBackend):
         session = self._memory()
         if session is not None:
             await session.confirm_prompt_exposure()
-
-    def terminal_memory_reply(self) -> str | None:
-        session = self._memory()
-        if session is None or not session.mutation_terminal:
-            return None
-        text = session.finalize_text()
-        return text if isinstance(text, str) else None
 
     def mark_native_web_used(self) -> None:
         """Apply post-Web isolation before same-response local calls execute."""
@@ -981,19 +977,7 @@ class _ChatAgentBackend(AgentToolBackend):
                     outcome,
                     effective_descriptor,
                 )
-                should_finalize_after_commit = bool(
-                    mutation_committed
-                    and (
-                        (is_memory_write_tool and self._exclusive_write())
-                        or outcome.finalize_after_commit is True
-                        or effective_descriptor.finalize_after_commit
-                    )
-                )
-                outcome = replace(
-                    outcome,
-                    mutation_committed=mutation_committed,
-                    finalize_after_commit=True if should_finalize_after_commit else None,
-                )
+                outcome = replace(outcome, mutation_committed=mutation_committed)
                 tooling = config.tooling
                 mcp = config.mcp
                 is_mcp = effective_descriptor.trust_source is CapabilityTrustSource.MCP
@@ -1078,25 +1062,12 @@ class _ChatAgentBackend(AgentToolBackend):
             )
         if self._is_mutating_call(call):
             if (
-                effective_descriptor.trust_source is CapabilityTrustSource.CORE
-                and name == "workspace_import_attachment"
-                and decoded.get("error_code", decoded.get("error")) == "attachment_not_found"
+                not self._exclusive_write()
+                and descriptor.provider_id != "admin"
+                and not decoded.get("ok")
             ):
-                # Selection failed before any import/write. Keep history lookup and
-                # a corrected event selection available; never re-run effects here.
                 self._admin_retry_constraint = None
                 self._admin_terminal_failure = None
-                return result
-            if (
-                effective_descriptor.trust_source is CapabilityTrustSource.CORE
-                and effective_descriptor.namespace_id
-                in {"social.send", "social.poke", "social.recall"}
-                and not bool(decoded.get("ok"))
-            ):
-                # Delivery failure is evidence for the normal answer, not an admin
-                # command response. Stop more effects, but don't replace that answer.
-                self._tools_closed = True
-                self._admin_retry_constraint = None
                 return result
             if bool(decoded.get("ok")):
                 self._admin_retry_constraint = None
@@ -1133,19 +1104,24 @@ class _ChatAgentBackend(AgentToolBackend):
                 self._tools_closed = True
         return result
 
-    def finalize(self, content: str, runtime: AgentRuntime) -> str:
-        memory_text = self._memory_mutation_final_text()
-        if memory_text is not None:
-            return memory_text
-        if self._admin_terminal_failure is not None:
-            return self._service._admin_failure_text(self._admin_terminal_failure)
+    def response_feedback(self, content: str, runtime: AgentRuntime) -> str | None:
         if self._capability_was_used and contains_internal_capability_payload(content):
-            return "我已经在本轮内部读取了权限范围，但没有生成合适的简短回答。请再问一次。"
-        return enforce_creation_claim(
-            content,
-            scheduled_intent=self._runtime.scheduled_automation_intent,
-            persisted=self._automation_persisted,
-        )
+            return (
+                "上一正文未发送：权限结果是内部执行资料。请根据实际结果继续，勿转发内部权限载荷。"
+            )
+        if (
+            self._runtime.scheduled_automation_intent
+            and not self._automation_persisted
+            and contains_automation_success_claim(content)
+        ):
+            return (
+                "上一正文未发送：没有定时任务已持久化的回执。"
+                "核对实际结果，继续创建、查询或如实回答。"
+            )
+        return None
+
+    def finalize(self, content: str, runtime: AgentRuntime) -> str:
+        return content
 
     def has_visible_effects(self) -> bool:
         """Return whether queued effects can produce a reply without model text."""
@@ -1165,16 +1141,7 @@ class _ChatAgentBackend(AgentToolBackend):
             for effect in effects
         )
 
-    def post_commit_recovery_text(self) -> str | None:
-        """Only an explicit domain receipt may supply user-facing recovery text."""
-        return self._memory_mutation_final_text()
-
     def exhausted(self, runtime: AgentRuntime) -> str:
-        memory_text = self._memory_mutation_final_text()
-        if memory_text is not None:
-            return memory_text
-        if self._admin_terminal_failure is not None:
-            return self._service._admin_failure_text(self._admin_terminal_failure)
         return "这次操作的工具调用次数过多，已停止继续执行。请把请求拆小后再试。"
 
     @staticmethod
@@ -1193,17 +1160,6 @@ class _ChatAgentBackend(AgentToolBackend):
         if result.get("mutation_committed") is True:
             return "committed"
         return "rejected"
-
-    def _memory_mutation_final_text(self) -> str | None:
-        session = self._memory()
-        if session is None:
-            return None
-        text = session.finalize_text()
-        if not isinstance(text, str):
-            return None
-        if session.receipt_gated and not session.mutation_terminal:
-            self._service._record_memory_mutation_turn_outcome("not_attempted")
-        return text
 
     def _is_mutating_call(self, call: ToolCall) -> bool:
         entry = (

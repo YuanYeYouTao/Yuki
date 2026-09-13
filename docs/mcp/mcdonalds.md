@@ -71,9 +71,8 @@ Yuki 由 Capability Runtime 本地检索官方工具；不需要让模型拼 `/a
 领券或订单创建，可从 `includeTools` 删除对应工具并重启 Bot。远端工具 Schema 变化后，已有相关
 任务会被后端阻止，重新确认并保存任务后才会采用新版参数。
 
-预设还为 `create-order` 配置 `finalizeAfterCommit=true`：订单确认创建后，Agent 保留真实回执并进入
-一次无工具最终回复，避免再次提交。该行为不是所有写操作的默认值；例如“发歌后创建提醒”仍可继续调用
-下一项工具。
+旧预设中的 `finalizeAfterCommit=true` 不再控制 Agent 循环。订单创建返回真实订单回执；
+Agent 可以继续查询或说明结果。授权和执行去重仍生效，不能把结果未知当失败后再次下单。
 
 ## 调度语义
 

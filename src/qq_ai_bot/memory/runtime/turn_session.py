@@ -32,8 +32,6 @@ from qq_ai_bot.memory.runtime.contract import (
     MemoryWriteTransition,
 )
 from qq_ai_bot.memory.runtime.finalizer import (
-    MutationFinalizationInput,
-    finalize_mutation_text,
     mutation_view_from_tool_result,
 )
 from qq_ai_bot.memory.runtime.partition_lookup import MemoryPartitionLookup
@@ -382,14 +380,6 @@ class TurnMemorySession:
     def request_exclusive_write(self) -> None:
         if self._state.contract.write_transition is MemoryWriteTransition.REQUESTABLE:
             self._state.enter_exclusive_write()
-
-    def finalize_text(self) -> str | None:
-        if not self.receipt_gated:
-            return None
-        view = self._state.last_mutation_view
-        if view is None:
-            return finalize_mutation_text(MutationFinalizationInput(attempted=False))
-        return finalize_mutation_text(view)
 
     async def on_delivery_confirmed(self, summary: DeliverySummary) -> None:
         if self._state.closed:

@@ -972,9 +972,6 @@ class _AutomationAgentBackend(AgentToolBackend):
     def exhausted(self, runtime: AgentRuntime) -> str:
         return "工具调用次数过多，自动化 Agent 已停止。"
 
-    def post_commit_recovery_text(self) -> str | None:
-        return None
-
 
 def _chat_request(
     messages: tuple[ChatMessage, ...], snapshot: Any, *, tools: tuple[ChatTool, ...]

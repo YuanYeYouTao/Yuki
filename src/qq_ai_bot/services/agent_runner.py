@@ -123,8 +123,6 @@ class AgentToolBackend(Protocol):
 
     def exhausted(self, runtime: AgentRuntime) -> str: ...
 
-    def post_commit_recovery_text(self) -> str | None: ...
-
 
 class AgentRunner:
     """Execute a provider-neutral bounded tool loop without fabricating inbound events."""
@@ -231,6 +229,7 @@ class AgentRunner:
         web_was_used = False
         empty_retries = 0
         mention_recovery_used = False
+        answer_recovery_used = False
         native_events: list[NativeToolEvent] = []
         citations: list[ResponseCitation] = []
         response_status = ModelResponseStatus.COMPLETED
@@ -367,13 +366,6 @@ class AgentRunner:
                     )
                     finalization_prompt_added = True
             if (
-                incomplete_recovery_used
-                and transcript.continuation is None
-                and fixed_definitions is None
-            ):
-                definitions = ()
-                native_definitions = ()
-            if (
                 no_progress_recovery
                 and transcript.continuation is None
                 and fixed_definitions is None
@@ -418,12 +410,7 @@ class AgentRunner:
                     tools=definitions,
                     tool_choice=(
                         "none"
-                        if (
-                            compacting
-                            or finalization_only
-                            or incomplete_recovery_used
-                            or no_progress_recovery
-                        )
+                        if (compacting or finalization_only or no_progress_recovery)
                         and (definitions or native_definitions)
                         else ("auto" if definitions or native_definitions else None)
                     ),
@@ -516,42 +503,18 @@ class AgentRunner:
                     tools, tool_calls=calls_used, model_requests=request_index
                 )
                 raise exc.cause from exc
-            except (LLMTimeoutError, LLMUnavailableError) as exc:
-                recovered = self._recover_committed_mutation(
-                    tools,
-                    calls_used=calls_used,
-                    model_requests=request_index + 1,
-                    web_was_used=web_was_used,
-                    native_events=native_events,
-                    citations=citations,
-                    response_status=response_status,
-                    exception_category=type(exc).__name__,
-                )
-                if recovered is not None:
-                    return recovered
+            except (LLMTimeoutError, LLMUnavailableError):
                 self._record_failure_usage(
                     tools, tool_calls=calls_used, model_requests=request_index + 1
                 )
                 raise
-            except LLMEmptyResponseError as exc:
-                recovered = self._recover_committed_mutation(
-                    tools,
-                    calls_used=calls_used,
-                    model_requests=request_index + 1,
-                    web_was_used=web_was_used,
-                    native_events=native_events,
-                    citations=citations,
-                    response_status=response_status,
-                    exception_category=type(exc).__name__,
-                )
-                if recovered is not None:
-                    return recovered
+            except LLMEmptyResponseError:
                 has_visible_effects = bool(
                     tools is not None
                     and callable(getattr(tools, "has_visible_effects", None))
                     and tools.has_visible_effects()  # type: ignore[attr-defined]
                 )
-                if has_visible_effects:
+                if has_visible_effects and (control is None or control.ending == "completed"):
                     return AgentRunResult(
                         text="",
                         tool_calls_used=calls_used,
@@ -583,19 +546,7 @@ class AgentRunner:
                     )
                 )
                 continue
-            except LLMError as exc:
-                recovered = self._recover_committed_mutation(
-                    tools,
-                    calls_used=calls_used,
-                    model_requests=request_index + 1,
-                    web_was_used=web_was_used,
-                    native_events=native_events,
-                    citations=citations,
-                    response_status=response_status,
-                    exception_category=type(exc).__name__,
-                )
-                if recovered is not None:
-                    return recovered
+            except LLMError:
                 self._record_failure_usage(
                     tools, tool_calls=calls_used, model_requests=request_index + 1
                 )
@@ -640,19 +591,32 @@ class AgentRunner:
                 continuation_tools = definitions
                 continuation_native_tools = native_definitions
             if response.status is ModelResponseStatus.INCOMPLETE:
-                if incomplete_recovery_used or request_index + 1 >= runtime.max_model_requests:
-                    recovered = self._recover_committed_mutation(
-                        tools,
-                        calls_used=calls_used,
-                        model_requests=request_index + 1,
-                        web_was_used=web_was_used,
-                        native_events=native_events,
-                        citations=citations,
-                        response_status=response_status,
-                        exception_category=LLMIncompleteResponseError.__name__,
+                # Truncated calls never execute. Pair non-execution receipts before
+                # recovery so either protocol retains a valid, append-only history.
+                if response.continuation is None:
+                    transcript.append(
+                        ChatMessage(
+                            role="assistant",
+                            content=response.content or None,
+                            tool_calls=response.tool_calls,
+                            reasoning_content=response.reasoning_content,
+                        )
                     )
-                    if recovered is not None:
-                        return recovered
+                for call in response.tool_calls:
+                    transcript.append_result(
+                        call.id,
+                        json.dumps(
+                            {
+                                "ok": False,
+                                "error": "provider_response_incomplete",
+                                "executed": False,
+                                "mutation_committed": False,
+                            }
+                        ),
+                    )
+                if control is not None and control.session is not None:
+                    await control.session.save("paired")
+                if incomplete_recovery_used or request_index + 1 >= runtime.max_model_requests:
                     raise LLMIncompleteResponseError(
                         "provider response remained incomplete after bounded recovery"
                     )
@@ -661,7 +625,7 @@ class AgentRunner:
                     ChatMessage(
                         role="system",
                         content=(
-                            "上一响应未完整结束。只根据本轮已有结果给出简短最终答复；"
+                            "上一响应未完整结束。根据真实回执继续原任务，必要时查询或解释；"
                             "不要重复任何已经完成的原生搜索或本地工具调用。"
                         ),
                     )
@@ -703,7 +667,7 @@ class AgentRunner:
                             )
                         )
                         continue
-                    content = "这次没有开始执行工作，请重新明确要处理的事情。"
+                    raise LLMError("model did not choose an answer or registered work")
                 if control is not None and control.current is not None and control.ending is None:
                     if control.corrections == 0 and request_index + 1 < runtime.max_model_requests:
                         control.corrections += 1
@@ -727,35 +691,42 @@ class AgentRunner:
 
                         raise WorkNoProgress("work_control_missing")
                     control.ending = background or "failed"
-                    content = (
-                        "后台任务仍在进行，我先继续处理聊天，结果回来后再接着处理。"
-                        if background == "waiting_external"
-                        else "后台任务已暂停，执行记录已保留，尚未确认完成。"
-                        if background
-                        else "这项工作还没有完成，我没有继续执行下去。"
-                    )
+                    # Waiting does not replace the Agent's own words.
                 if "[提及" in content:
                     if (
                         not mention_recovery_used
-                        and calls_used == 0
                         and not finalization_only
-                        and request_index + 2 < runtime.max_model_requests
+                        and request_index + 1 < runtime.max_model_requests
                         and any(tool.name == "send_group_message" for tool in definitions)
                     ):
                         mention_recovery_used = True
+                        if response.continuation is None:
+                            transcript.append(ChatMessage(role="assistant", content=content))
                         transcript.append(
                             ChatMessage(
                                 role="system",
                                 content=(
                                     "上一回复含 [提及…] 历史占位标记，已拦截且未发送；"
-                                    "本轮尚未调用工具，不能声称已 @。若用户要求提醒成员，"
+                                    "该占位标记不是发送回执。若用户要求提醒成员，"
                                     "先明确人物，再用 send_group_message.mentions 发送；"
                                     "普通正文和 @名字都不能触发提醒。无法执行时如实说明。"
                                 ),
                             )
                         )
                         continue
-                    content = "这段回复没有形成有效的 @ 提醒。"
+                    raise LLMError("model repeated an invalid mention placeholder")
+                feedback = getattr(tools, "response_feedback", None)
+                issue = feedback(content, runtime) if callable(feedback) else None
+                if issue:
+                    if answer_recovery_used or request_index + 1 >= runtime.max_model_requests:
+                        raise LLMError("model repeated an unsupported final response")
+                    answer_recovery_used = True
+                    if response.continuation is None and not response.tool_calls:
+                        transcript.append(ChatMessage(role="assistant", content=content))
+                    transcript.append(ChatMessage(role="system", content=issue))
+                    if runtime.work_control is not None:
+                        runtime.work_control.chat_answer = None
+                    continue
                 if tools is not None:
                     content = tools.finalize(content, runtime)
                 has_visible_effects = bool(
@@ -764,18 +735,6 @@ class AgentRunner:
                     and tools.has_visible_effects()  # type: ignore[attr-defined]
                 )
                 if not content.strip() and not has_visible_effects:
-                    recovered = self._recover_committed_mutation(
-                        tools,
-                        calls_used=calls_used,
-                        model_requests=request_index + 1,
-                        web_was_used=web_was_used,
-                        native_events=native_events,
-                        citations=citations,
-                        response_status=response_status,
-                        exception_category=LLMEmptyResponseError.__name__,
-                    )
-                    if recovered is not None:
-                        return recovered
                     if empty_retries >= 2 or request_index + 1 >= runtime.max_model_requests:
                         raise LLMEmptyResponseError("model returned no final answer")
                     empty_retries += 1
@@ -788,8 +747,8 @@ class AgentRunner:
                         ChatMessage(
                             role="system",
                             content=(
-                                "你已经完成了本轮所需的工具调用，但最终回复正文为空。"
-                                "请根据已有工具结果生成实际要发送给用户的简短正文；"
+                                "上一响应正文为空；回执仍保留，不能据此断言整个任务完成。"
+                                "根据目标和真实结果选择继续执行、等待或回答；"
                                 "不要重复已经成功的工具调用，也不要只描述发送模式。"
                             ),
                         )
@@ -820,18 +779,6 @@ class AgentRunner:
                     len(response.tool_calls),
                     request_index + 1,
                 )
-                recovered = self._recover_committed_mutation(
-                    tools,
-                    calls_used=calls_used,
-                    model_requests=request_index + 1,
-                    web_was_used=web_was_used,
-                    native_events=native_events,
-                    citations=citations,
-                    response_status=response_status,
-                    exception_category="tool_call_during_finalization",
-                )
-                if recovered is not None:
-                    return recovered
                 exhausted = (
                     tools.exhausted(runtime)
                     if tools is not None
@@ -896,7 +843,6 @@ class AgentRunner:
             )
             batch, executed = coordinated.calls, coordinated.executed_count
             calls_used += executed
-            finalizing_commit_in_batch = False
             for call, result, _was_executed in batch:
                 try:
                     outcome = json.loads(result)
@@ -911,13 +857,6 @@ class AgentRunner:
                         ok=isinstance(outcome, dict) and outcome.get("ok") is True,
                     )
                     staged_evidence_results += 1
-                if (
-                    isinstance(outcome, dict)
-                    and outcome.get("ok") is True
-                    and outcome.get("mutation_committed") is True
-                    and outcome.get("finalize_after_commit") is True
-                ):
-                    finalizing_commit_in_batch = True
                 logger.info(
                     "agent_tool_complete tool=%s ok=%s error=%s reused=%s",
                     call.function.name,
@@ -998,6 +937,18 @@ class AgentRunner:
                     )
             if runtime.work_control is not None and runtime.work_control.chat_answer is not None:
                 content = runtime.work_control.chat_answer
+                feedback = getattr(tools, "response_feedback", None)
+                issue = feedback(content, runtime) if callable(feedback) else None
+                if issue:
+                    if answer_recovery_used or request_index + 1 >= runtime.max_model_requests:
+                        raise LLMError("model repeated an unsupported final response")
+                    answer_recovery_used = True
+                    if response.continuation is None and not response.tool_calls:
+                        transcript.append(ChatMessage(role="assistant", content=content))
+                    transcript.append(ChatMessage(role="system", content=issue))
+                    if runtime.work_control is not None:
+                        runtime.work_control.chat_answer = None
+                    continue
                 if tools is not None:
                     content = tools.finalize(content, runtime)
                 return AgentRunResult(
@@ -1022,28 +973,6 @@ class AgentRunner:
                         response_status=response_status,
                         suppress_delivery=True,
                     )
-                terminal_reply = getattr(tools, "terminal_memory_reply", None)
-                if callable(terminal_reply):
-                    terminal_text = terminal_reply()
-                    if isinstance(terminal_text, str) and terminal_text.strip():
-                        return AgentRunResult(
-                            text=terminal_text,
-                            tool_calls_used=calls_used,
-                            model_requests=request_index + 1,
-                            web_was_used=web_was_used,
-                            native_tool_events=tuple(native_events),
-                            citations=tuple(citations),
-                            response_status=response_status,
-                        )
-            if finalizing_commit_in_batch:
-                force_finalization = True
-                reusable_tool_results.clear()
-                logger.info(
-                    "agent_terminal_mutation_force_finalization "
-                    "tool_calls_used=%d model_requests=%d",
-                    calls_used,
-                    request_index + 1,
-                )
             fingerprint = tuple(
                 (call.function.name, self._tool_call_signature(call)[1], result)
                 for call, result, _was_executed in batch
@@ -1116,18 +1045,6 @@ class AgentRunner:
                 suppress_delivery=True,
                 work_state="queued",
             )
-        recovered = self._recover_committed_mutation(
-            tools,
-            calls_used=calls_used,
-            model_requests=runtime.max_model_requests,
-            web_was_used=web_was_used,
-            native_events=native_events,
-            citations=citations,
-            response_status=response_status,
-            exception_category="model_request_budget_exhausted",
-        )
-        if recovered is not None:
-            return recovered
         exhausted = (
             tools.exhausted(runtime) if tools is not None else "工具调用次数过多，Agent 已停止。"
         )
@@ -1461,43 +1378,3 @@ class AgentRunner:
         merged = {item.type: item for item in previous}
         merged.update({item.type: item for item in current})
         return tuple(sorted(merged.values(), key=lambda item: item.type))
-
-    @staticmethod
-    def _recover_committed_mutation(
-        tools: AgentToolBackend | None,
-        *,
-        calls_used: int,
-        model_requests: int,
-        web_was_used: bool,
-        native_events: list[NativeToolEvent],
-        citations: list[ResponseCitation],
-        response_status: ModelResponseStatus,
-        exception_category: str,
-    ) -> AgentRunResult | None:
-        from qq_ai_bot.runtime.work_activation import current_work_control
-
-        control = current_work_control.get()
-        if control is not None and control.current is not None:
-            return None
-        recovery = getattr(tools, "post_commit_recovery_text", None)
-        if not callable(recovery):
-            return None
-        text = recovery()
-        if not isinstance(text, str) or not text.strip():
-            return None
-        logger.warning(
-            "agent_post_commit_finalization_recovered exception_category=%s "
-            "tool_calls_used=%d model_requests=%d",
-            exception_category,
-            calls_used,
-            model_requests,
-        )
-        return AgentRunResult(
-            text=text.strip(),
-            tool_calls_used=calls_used,
-            model_requests=model_requests,
-            web_was_used=web_was_used,
-            native_tool_events=tuple(native_events),
-            citations=tuple(citations),
-            response_status=response_status,
-        )
