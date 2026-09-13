@@ -30,6 +30,70 @@ async def stack(database, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_foreground_answer_and_finalization_keep_worker_alive(database, tmp_path):
+    from qq_ai_bot.runtime.work_control import WorkControl
+
+    repo, workers, lease, parent, identity = await stack(database, tmp_path)
+
+    async def valid():
+        assert await repo.valid(lease)
+
+    control = WorkControl(repo, lease, "parent", {}, valid)
+    control.current = parent
+    with pytest.raises(ValueError, match="unfinished_subagents"):
+        await control._control({"action": "fail", "reason": "继续聊天"}, "fail")
+    result = await control._control({"action": "answer", "text": "好，继续聊。"}, "answer")
+    assert result["background_state"] == "waiting_external"
+    assert control.chat_answer == "好，继续聊。"
+    # Also defend against a runner falling through to implicit failure.
+    control.ending = "failed"
+    await control.settle(delivered=True, pending_inputs=False)
+    assert (await repo.get(parent["id"]))["state"] == "waiting_external"
+    child_lease = await workers.acquire(identity)
+    assert child_lease is not None
+    child = await repo.get(identity)
+    await repo.transition(child_lease, identity, child["revision"], "suspended", reason="error")
+    assert await control.background_state() == "suspended"
+    await repo.release(child_lease)
+    await workers.cancel(lease, parent["id"], identity)
+    assert await control.background_state() is None
+    await control._control({"action": "fail", "reason": "已明确取消子任务"}, "cancelled")
+    await control.settle(delivered=True, pending_inputs=False)
+    assert (await repo.get(parent["id"]))["state"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_worker_busy_retry_keeps_journal_evidence_and_budget(database, tmp_path):
+    import sqlite3
+    from types import SimpleNamespace
+
+    from sqlalchemy.exc import OperationalError
+
+    from qq_ai_bot.runtime.subagent_scheduler import SubagentScheduler
+
+    repo, workers, parent_lease, _parent, identity = await stack(database, tmp_path)
+    lease = await workers.acquire(identity)
+    evidence = {"execution_evidence": [{"run_id": "already-dispatched", "uncertain": True}]}
+    await repo.checkpoint(lease, identity, evidence, models=2, tools=1)
+    scheduler = SubagentScheduler(SimpleNamespace(database=database))
+    error = OperationalError("UPDATE", {}, sqlite3.OperationalError("database is locked"))
+    for count in range(1, 4):
+        assert await scheduler._retry_busy(lease, error)
+        row = await repo.get(identity)
+        assert row["state"] == "queued"
+        checkpoint = json.loads(row["checkpoint_json"])
+        assert checkpoint["sqlite_busy_retries"] == count
+        assert checkpoint["execution_evidence"] == evidence["execution_evidence"]
+        assert row["model_requests"] == 2 and row["tool_calls"] == 1
+    assert not await scheduler._retry_busy(lease, error)
+    assert not await scheduler._retry_busy(
+        lease, OperationalError("SELECT", {}, sqlite3.OperationalError("no such table: missing"))
+    )
+    await repo.release(lease)
+    await repo.release(parent_lease)
+
+
+@pytest.mark.asyncio
 async def test_worker_independent_lease_messages_and_dormant_resume(database, tmp_path):
     repo, workers, parent_lease, parent, identity = await stack(database, tmp_path)
     assert (

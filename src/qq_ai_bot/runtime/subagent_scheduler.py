@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sqlite3
 from contextlib import ExitStack
 from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage, SenderIdentity
 from qq_ai_bot.runtime.origin import TurnOrigin
@@ -18,7 +20,7 @@ from qq_ai_bot.runtime.subagent_schema import children
 from qq_ai_bot.runtime.subagent_tools import WORKER_NAMES, WORKER_PROMPT
 from qq_ai_bot.runtime.work_activation import current_work_control
 from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
+from qq_ai_bot.runtime.work_repository import WorkConflict, WorkLease, WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import work
 from qq_ai_bot.sandbox.source_recovery import recover_source
 from qq_ai_bot.services.agent_runner import AgentRuntime
@@ -26,6 +28,15 @@ from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.time.models import TimeContext
 
 logger = logging.getLogger(__name__)
+
+
+def _sqlite_busy(exc: BaseException) -> bool:
+    if not isinstance(exc, OperationalError):
+        return False
+    code = getattr(exc.orig, "sqlite_errorcode", 0)
+    return (
+        isinstance(code, int) and code & 255 in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+    ) or str(exc.orig).lower() in {"database is locked", "database table is locked"}
 
 
 class WorkerBackend:
@@ -297,6 +308,8 @@ class SubagentScheduler:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            if await self._retry_busy(lease, exc):
+                return
             if await self.repository.valid(lease):
                 current = await self.repository.get(identity)
                 if current and current["state"] not in {"completed", "failed", "cancelled"}:
@@ -317,3 +330,33 @@ class SubagentScheduler:
                 current_work_control.reset(token)
             bindings.close()
             await self.repository.release(lease)
+
+    async def _retry_busy(self, lease: WorkLease, exc: BaseException) -> bool:
+        """Requeue the original journal, never resubmit commands or reset budgets."""
+        if not _sqlite_busy(exc) or lease.work_id is None:
+            return False
+        for delay in (0.25, 0.75, 1.5):
+            await asyncio.sleep(delay)
+            try:
+                if not await self.repository.valid(lease):
+                    return True
+                row = await self.repository.get(lease.work_id)
+                if row is None or row["state"] in {"completed", "failed", "cancelled"}:
+                    return True
+                checkpoint = json.loads(row["checkpoint_json"])
+                retries = int(checkpoint.get("sqlite_busy_retries", 0))
+                if retries >= 3:
+                    return False
+                checkpoint["sqlite_busy_retries"] = retries + 1
+                await self.repository.checkpoint(lease, row["id"], checkpoint)
+                await self.repository.transition(
+                    lease, row["id"], row["revision"], "queued", reason="sqlite_busy_retry"
+                )
+                logger.info("subagent_requeued reason=sqlite_busy retry=%s", retries + 1)
+                return True
+            except OperationalError as retry_exc:
+                if not _sqlite_busy(retry_exc):
+                    raise
+            except WorkConflict:
+                return True
+        return False

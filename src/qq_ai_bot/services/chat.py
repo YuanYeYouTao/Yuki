@@ -2572,6 +2572,7 @@ class ChatService:
                     await self._record_reply_effects(
                         conversation_key=conversation_key,
                         source_event_id=inbound.message_id,
+                        trigger_event_id=turn_snapshot.trigger_event_id if turn_snapshot else None,
                         user_id=inbound.sender.user_id,
                         control=reply_control,
                         cancelled=sequence.cancelled,
@@ -2906,6 +2907,7 @@ class ChatService:
         *,
         conversation_key: str,
         source_event_id: str,
+        trigger_event_id: int | None = None,
         user_id: str,
         control: ReplyControlState,
         cancelled: bool,
@@ -2932,6 +2934,7 @@ class ChatService:
         await self._reply_effects.record(
             conversation_key=conversation_key,
             source_event_id=source_event_id,
+            trigger_event_id=trigger_event_id,
             text_sent=control.text_sent,
             voice_sent=control.voice_sent,
             emoji_sent=control.emoji_sent,

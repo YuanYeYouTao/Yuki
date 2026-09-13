@@ -139,6 +139,20 @@ class WorkControl:
             return []
         return await self.repository.pending(self.lease, work_id=self.current["id"])
 
+    async def background_state(self) -> str | None:
+        """A foreground answer/finalization cannot terminate unfinished workers."""
+        if self.current is None or self.lease.work_id:
+            return None
+        from qq_ai_bot.runtime.subagent_repository import SubagentRepository
+
+        children = await SubagentRepository(self.repository).list(self.current["id"])
+        unfinished = [r for r in children if r["state"] not in {"completed", "failed", "cancelled"}]
+        if any(r["state"] in {"queued", "running", "waiting_external"} for r in unfinished):
+            return "waiting_external"
+        if unfinished:
+            return "suspended"
+        return None
+
     async def reconcile_completed_children(self) -> None:
         if self.current is None:
             return
@@ -375,10 +389,15 @@ class WorkControl:
                 )
         if action == "answer":
             text = args.get("text")
-            if self.current is not None:
-                return await self._progress({"text": text}, call_key)
             if not isinstance(text, str) or not 1 <= len(text.strip()) <= 8000:
                 raise ValueError("chat_answer_required")
+            if self.current is not None:
+                background = await self.background_state()
+                if background is not None:
+                    self.ending = background
+                    self.chat_answer = text
+                    return {"chat_answer_prepared": True, "background_state": background}
+                return await self._progress({"text": text}, call_key)
             self.chat_answer = text
             return {"chat_answer_prepared": True}
         if action == "accept":
@@ -456,6 +475,8 @@ class WorkControl:
             )
             self.ending = "waiting_external"
         elif action in {"need_input", "fail"}:
+            if action == "fail" and await self.background_state() is not None:
+                raise ValueError("unfinished_subagents_use_answer_or_wait_cancel_explicitly")
             reason = args.get("reason")
             if not isinstance(reason, str) or not reason.strip() or len(reason) > 1000:
                 raise ValueError("work_reason_required")
@@ -623,6 +644,10 @@ class WorkControl:
             self.ending = None
             return
         state = self.ending if delivered else "suspended"
+        if state in {"failed", "completed"}:
+            # Recheck at commit boundary too: a child may have been dispatched
+            # before a model/runner proposes ending this foreground activation.
+            state = await self.background_state() or state
         self.current = await self.repository.transition(
             self.lease,
             self.current["id"],

@@ -17,6 +17,8 @@ WORKER_PROMPT = (
     "放入资料包给出的目录；安装依赖、联网、运行代码均使用已有工具。"
     "需要资料时先使用已授权的历史与记忆查询，意图不明时用 subagent_message 向父任务"
     "提问，ask=true 表示等待回答。只有真实回执才能证明执行和完成。"
+    "列目录、读取、统计或摘要计算不等于完成修改；删除清单和释放空间必须有实际删除结果。"
+    "故障前未执行修改就明确报告尚未修改，不把命令成功或工具次数换算成完成比例。"
     "运行中命令保留 run_id，用 task_control.wait 等待，不能重新运行同一命令。"
     "完成文件后 workspace_publish，使用 task_control.complete 提交 artifact_ids；"
     "最终回复说明产物、验证结果及未完成事项。QQ 发送与长期记忆变更交给主 Yuki。"
@@ -158,6 +160,10 @@ async def execute_subagent(
         rows = [await repository.related(root_id, identity)]
     return {
         "ok": True,
+        "evidence_note": (
+            "state 是调度状态，tool_calls 是调用次数，不代表已完成修改。"
+            "未取得具体命令输出、变更清单或产物验证前，不得声称已删除或清理了一部分。"
+        ),
         "children": [
             {
                 "child_id": row["work_id"],
