@@ -120,6 +120,8 @@ class WorkControl:
     requests_started: int = 0
     tools_started: int = 0
     yield_segment: bool = False
+    handoff_work_id: str | None = None
+    completion_delivered: bool = False
     staged_attempt: str | None = None
     input_images: dict[int, tuple[ChatImage, ...]] = field(default_factory=dict)
 
@@ -250,6 +252,7 @@ class WorkControl:
             self.staged_attempt = attempt
             self.ending = None
             self.chat_answer = None
+            self.completion_delivered = False
             self.corrections = 0
         return tuple(messages)
 
@@ -257,6 +260,21 @@ class WorkControl:
         if self.staged_attempt is not None:
             await self.repository.consume(self.lease, self.staged_attempt)
             self.staged_attempt = None
+
+    async def restore_handoff(self, acknowledged: str | None) -> None:
+        """A committed independent acceptance ends the old activation, even after a crash."""
+        if self.current is None or self.lease.work_id:
+            return
+        identity = json.loads(self.current["checkpoint_json"]).get("handoff_work_id")
+        if not isinstance(identity, str) or identity == acknowledged:
+            return
+        target = await self.repository.get(identity)
+        if (
+            target is not None
+            and target["conversation_id"] == self.lease.conversation_id
+            and target["generation"] == self.lease.generation
+        ):
+            self.handoff_work_id = identity
 
     async def reserve_request(self, *, auxiliary: bool = False) -> None:
         self.requests_started += 1
@@ -309,6 +327,7 @@ class WorkControl:
 
         collect(body)
         delivered: list[str] = []
+        caption_delivered = False
         try:
             args = json.loads(arguments)
         except ValueError:
@@ -317,15 +336,30 @@ class WorkControl:
             name in {"send_private_message", "send_group_message"}
             and isinstance(args, dict)
             and isinstance(args.get("artifact_id"), str)
-            and body.get("status") == "succeeded"
         ):
-            delivered.append(args["artifact_id"])
-            artifacts.append(args["artifact_id"])
+            file_receipt = body.get("file", body)
+            if isinstance(file_receipt, dict) and file_receipt.get("status") == "succeeded":
+                delivered.append(args["artifact_id"])
+                artifacts.append(args["artifact_id"])
+                caption = body.get("caption")
+                caption_delivered = bool(
+                    isinstance(args.get("text"), str)
+                    and args["text"].strip()
+                    and (
+                        (isinstance(caption, dict) and caption.get("status") == "succeeded")
+                        or (
+                            args.get("attachment_kind") == "image"
+                            and body.get("status") == "succeeded"
+                        )
+                    )
+                )
         entry = {
             "tool": name,
             "side_effecting": side_effecting,
             "artifacts": artifacts,
             "delivered_artifacts": delivered,
+            "caption_delivered": caption_delivered,
+            "delivery_target": body.get("target") if delivered else None,
             "run_id": identity,
             "ok": bool(value.get("ok", not value.get("error")))
             and not body.get("error")
@@ -502,7 +536,7 @@ class WorkControl:
                 known = {
                     identity
                     for effect in self.known_effects
-                    if effect.get("ok")
+                    if effect.get("ok") or effect.get("delivered_artifacts")
                     for identity in effect.get("artifacts", [])
                 }
                 if (
@@ -517,11 +551,31 @@ class WorkControl:
                 delivered = {
                     identity
                     for effect in self.known_effects
-                    if effect.get("ok")
                     for identity in effect.get("delivered_artifacts", [])
                 }
                 if self.current["deliver_artifacts"] and not set(selected) <= delivered:
                     raise ValueError("work_completion_requires_artifact_delivery_receipt")
+                # Only a confirmed caption in this conversation replaces the
+                # final reply. Sending to somebody else still needs a report here.
+                from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+
+                async with self.repository.database.sessions() as session:
+                    conversation = await session.get(
+                        CanonicalConversationModel, self.lease.conversation_id
+                    )
+                if conversation is not None and not self.lease.work_id:
+                    target = {
+                        "kind": "space" if conversation.space_id else "person",
+                        "id": conversation.space_id or conversation.person_id,
+                    }
+                    explained = {
+                        identity
+                        for effect in self.known_effects
+                        if effect.get("caption_delivered")
+                        and effect.get("delivery_target") == target
+                        for identity in effect.get("delivered_artifacts", [])
+                    }
+                    self.completion_delivered = set(selected) <= explained
             elif kind == "state_change" and not any(
                 effect.get("ok") and effect.get("side_effecting", True)
                 for effect in self.known_effects
@@ -584,16 +638,17 @@ class WorkControl:
             goal=goal,
             output_kind=kind,
             deliver_artifacts=args.get("deliver_artifacts") is not False,
+            handoff_from=self.current["id"],
         )
-        if queued["state"] == "running":
-            queued = await self.repository.transition(
-                self.lease, queued["id"], queued["revision"], "queued"
-            )
+        self.handoff_work_id = queued["id"]
         return {
             "queued_work_id": queued["id"],
             "state": queued["state"],
             "current_work_id": self.current["id"],
-            "instruction": "新工作已排队。当前目标不变；当前后台执行未结束时用 wait 让出执行位置。",
+            "instruction": (
+                "新工作已交给 queued_work_id，本轮立即让出执行位置。"
+                "后续由新工作的原始请求开始执行和交付；当前工作不得代做、代发。"
+            ),
         }
 
     async def _progress(self, args: dict[str, Any], call_key: str) -> dict[str, Any]:
@@ -628,7 +683,26 @@ class WorkControl:
 
     async def settle(self, *, delivered: bool, pending_inputs: bool) -> None:
         """Host calls only after actual final delivery, never on a model claim."""
-        if self.current is None or self.ending is None:
+        if self.current is None:
+            return
+        if self.handoff_work_id is not None:
+            state = "queued" if pending_inputs else await self.background_state()
+            if state is None:
+                state = (
+                    "waiting_external"
+                    if self.current["state"] == "waiting_external"
+                    or any(e.get("pending") for e in self.known_effects)
+                    else "suspended"
+                )
+            self.current = await self.repository.transition(
+                self.lease,
+                self.current["id"],
+                self.current["revision"],
+                state,
+                reason="independent_work_handoff",
+            )
+            return
+        if self.ending is None:
             return
         if self.yield_segment:
             self.current = await self.repository.transition(

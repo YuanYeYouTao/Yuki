@@ -256,7 +256,12 @@ class AgentRunner:
             runtime.work_control.session = WorkSession(runtime.work_control, contract)
             transcript = await runtime.work_control.session.restore(transcript)
             repeated_batch_count = int(runtime.work_control.session.progress.get("repeats", 0))
-            if runtime.work_control.session.recovered_delivery:
+            if runtime.work_control.handoff_work_id is not None:
+                await runtime.work_control.session.save("paired")
+            if (
+                runtime.work_control.session.recovered_delivery
+                or runtime.work_control.handoff_work_id is not None
+            ):
                 return AgentRunResult(
                     text="",
                     tool_calls_used=0,
@@ -962,6 +967,30 @@ class AgentRunner:
                 )
                 persisted_progress.update(fingerprint=batch_hash, repeats=repeats)
                 await runtime.work_control.session.save("paired")
+                if runtime.work_control.handoff_work_id is not None:
+                    return AgentRunResult(
+                        text="",
+                        tool_calls_used=calls_used,
+                        model_requests=request_index + 1,
+                        web_was_used=web_was_used,
+                        suppress_delivery=True,
+                        work_state="suspended",
+                    )
+                if (
+                    runtime.work_control.ending == "completed"
+                    and runtime.work_control.completion_delivered
+                    and not await runtime.work_control.pending()
+                ):
+                    runtime.work_control.final_delivery = True
+                    await runtime.work_control.session.save("delivered")
+                    return AgentRunResult(
+                        text="",
+                        tool_calls_used=calls_used,
+                        model_requests=request_index + 1,
+                        web_was_used=web_was_used,
+                        suppress_delivery=True,
+                        work_state="completed",
+                    )
                 if runtime.work_control.lease.work_id and runtime.work_control.ending in {
                     "waiting_user",
                     "waiting_external",

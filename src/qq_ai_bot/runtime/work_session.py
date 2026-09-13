@@ -30,6 +30,7 @@ class WorkSession:
         self.recovered_delivery: str | None = None
         self.progress: dict[str, Any] = {}
         self.initial: TurnTranscript | None = None
+        self.handoff_work_id: str | None = None
 
     async def restore(self, initial: TurnTranscript) -> TurnTranscript:
         control = self.control
@@ -62,6 +63,7 @@ class WorkSession:
             value = json.loads(row["payload_json"])
             self.transcript = decode_transcript(value["transcript"])
             metadata = value.get("metadata", {})
+            self.handoff_work_id = metadata.get("handoff_work_id")
             self.progress = dict(metadata.get("progress", {}))
             self.sequence = int(metadata.get("sequence", 0))
             self.event_ids = list(metadata.get("event_ids", []))
@@ -97,6 +99,17 @@ class WorkSession:
                 control.lease, self.input_ids, control.current["id"]
             )
         await control.reconcile_completed_children()
+        await control.restore_handoff(self.handoff_work_id)
+        if control.handoff_work_id is not None:
+            self.transcript.append(
+                ChatMessage(
+                    role="user",
+                    content=(
+                        f"[工作交接已提交：独立请求由 {control.handoff_work_id} 负责执行和交付。"
+                        "当前工作只保留自己的原目标，不得代做或重发该独立请求。]"
+                    ),
+                )
+            )
         return self.transcript
 
     async def needs_compaction(self) -> bool:
@@ -174,6 +187,7 @@ class WorkSession:
             evidence=self.control.known_effects,
         )
         assert self.transcript is not None
+        self.handoff_work_id = self.control.handoff_work_id or self.handoff_work_id
         self.pending = [
             {"id": call.id, "name": call.function.name, "arguments": call.function.arguments}
             for call in calls
@@ -194,6 +208,7 @@ class WorkSession:
                     "effects": self.control.known_effects,
                     "ending": self.control.ending,
                     "progress": self.progress,
+                    "handoff_work_id": self.handoff_work_id,
                 },
             )
         except ValueError as exc:

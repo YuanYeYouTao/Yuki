@@ -54,8 +54,14 @@ async def activate_work(
     try:
         # Authority is reconstructed by the caller, not copied out of a prior work.
         # A different actor cannot silently take over the original actor's goal.
-        for candidate in await repository.active(conversation_id, generation):
+        candidates = await repository.active(conversation_id, generation)
+        candidates.sort(key=lambda candidate: candidate["source_key"] != source_key)
+        for candidate in candidates:
             if work_id is not None and candidate["id"] != work_id:
+                continue
+            if work_id is None and json.loads(candidate["checkpoint_json"]).get("handoff_work_id"):
+                # A later message cannot select the old owner ahead of the work
+                # it just registered. Explicit execution wakeups retain its ID.
                 continue
             previous = json.loads(candidate["source_json"])
             if all(

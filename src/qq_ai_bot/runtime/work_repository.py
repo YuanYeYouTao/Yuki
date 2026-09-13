@@ -179,6 +179,7 @@ class WorkRepository:
         goal: str,
         output_kind: str = "state_change",
         deliver_artifacts: bool = True,
+        handoff_from: str | None = None,
     ) -> dict[str, Any]:
         if not 1 <= len(goal) <= 8192 or not 1 <= len(source_key) <= 256:
             raise ValueError("invalid_work_goal")
@@ -217,7 +218,7 @@ class WorkRepository:
                     goal=goal,
                     output_kind=output_kind,
                     deliver_artifacts=deliver_artifacts,
-                    state="running",
+                    state="queued" if handoff_from else "running",
                     created=now,
                     updated=now,
                 )
@@ -236,6 +237,27 @@ class WorkRepository:
                 raise WorkConflict("work_source_conflict")
             if row["state"] in TERMINAL:
                 raise WorkConflict("work_already_terminal")
+            if handoff_from is not None:
+                previous = (
+                    (await session.execute(select(work).where(work.c.id == handoff_from)))
+                    .mappings()
+                    .one()
+                )
+                if (
+                    previous["id"] == row["id"]
+                    or previous["conversation_id"] != lease.conversation_id
+                    or previous["generation"] != lease.generation
+                    or previous["state"] in TERMINAL
+                    or lease.work_id
+                ):
+                    raise WorkConflict("work_handoff_source_invalid")
+                checkpoint = json.loads(previous["checkpoint_json"])
+                checkpoint["handoff_work_id"] = row["id"]
+                await session.execute(
+                    update(work)
+                    .where(work.c.id == handoff_from)
+                    .values(checkpoint_json=bounded_json(checkpoint), updated=now)
+                )
             return dict(row)
 
     async def by_source(self, source_key: str) -> dict[str, Any] | None:
