@@ -702,6 +702,7 @@ async def test_created_automation_sends_persisted_person_not_creator(
     )
     inbound = InboundMessage(
         message_id="auto-explicit",
+        source_event_id=1,
         event_type="private",
         scope_type=ScopeType.PRIVATE,
         sender=SenderIdentity(user_id="9000", nickname="超管"),

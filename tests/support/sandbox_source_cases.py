@@ -74,7 +74,12 @@ async def message_source_cases(database, tasks, source, completion):
         ({"presence_id": str(uuid4())}, "task_source_presence_changed"),
         ({"generation": None}, "task_conversation_changed"),
         (
-            {"origin": "scheduled_automation", "delegated_authority": {"reference": "test"}},
+            {
+                "origin": "scheduled_automation",
+                "delegated_authority": {"reference": "test"},
+                "automation_run_id": 1,
+                "step_id": "test-step",
+            },
             "not_a_message_task",
         ),
     ):
