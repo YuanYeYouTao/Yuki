@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import os
 import re
 import subprocess
@@ -12,7 +13,6 @@ from pathlib import Path
 _TAG_PATTERN = re.compile(r"^v(?P<version>0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 _APP_VERSION_PATTERN = re.compile(r'^__version__\s*=\s*"([^"]+)"$', re.MULTILINE)
 _RELEASE_VERSION_PATTERN = re.compile(r'^_EXPECTED_RELEASE_VERSION\s*=\s*"([^"]+)"$', re.MULTILINE)
-_ALEMBIC_HEAD_PATTERN = re.compile(r'^_ALEMBIC_HEAD\s*=\s*"([^"]+)"$', re.MULTILINE)
 _PLUGIN_API_PATTERN = re.compile(r'^PLUGIN_API_VERSION\s*=\s*"([^"]+)"$', re.MULTILINE)
 
 
@@ -82,13 +82,33 @@ def validate_release_identity(root: Path, tag: str) -> str:
             "Genie-TTS Worker pyproject.toml and uv.lock versions do not match: "
             f"{worker_version} != {worker_lock_version}"
         )
-    alembic_head = _match_value(
-        root / "src/qq_ai_bot/memory/quality/release_check.py",
-        _ALEMBIC_HEAD_PATTERN,
-        "Alembic head",
-    )
-    if alembic_head != "0058":
-        raise ReleaseValidationError(f"Alembic head must be 0058, got {alembic_head}")
+    # This early release gate runs without project dependencies installed.
+    # Read literal Alembic revision metadata from the shipped migrations.
+    revisions: set[str] = set()
+    parents: set[str] = set()
+    for migration in (root / "migrations/versions").glob("*.py"):
+        for node in ast.parse(migration.read_text(encoding="utf-8")).body:
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                name, value = node.target.id, node.value
+            elif (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+            ):
+                name, value = node.targets[0].id, node.value
+            else:
+                continue
+            if name not in {"revision", "down_revision"} or value is None:
+                continue
+            literal = ast.literal_eval(value)
+            if name == "revision":
+                if literal in revisions:
+                    raise ReleaseValidationError(f"Duplicate migration revision: {literal}")
+                revisions.add(literal)
+            elif literal is not None:
+                parents.update((literal,) if isinstance(literal, str) else literal)
+    if len(revisions - parents) != 1 or parents - revisions:
+        raise ReleaseValidationError("Bundled migrations must have one head and no missing parents")
     plugin_api = _match_value(
         root / "src/yuki_plugin_sdk/api.py", _PLUGIN_API_PATTERN, "Plugin API version"
     )

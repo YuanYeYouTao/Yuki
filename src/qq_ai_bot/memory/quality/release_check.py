@@ -9,8 +9,6 @@ import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 
-from alembic.config import Config
-from alembic.script import ScriptDirectory
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from sqlalchemy import text
 
@@ -28,8 +26,8 @@ from qq_ai_bot.memory.quality.models import (
 from qq_ai_bot.memory.quality.report import write_reports
 from qq_ai_bot.memory.quality.runner import MemoryQualityRunner
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.schema_guard import canonical_schema_revision
 
-_ALEMBIC_HEAD = "0058"
 _EXPECTED_RELEASE_VERSION = "3.8.2"
 
 
@@ -50,7 +48,7 @@ class MemoryReleaseCheck:
             )
         )
         head = self._alembic_head()
-        items.append(self._item("alembic_head", head == _ALEMBIC_HEAD, f"Alembic head is {head}"))
+        items.append(self._item("alembic_head", bool(head), f"Alembic head is {head}"))
         try:
             suite = load_quality_suite(self._root / "tests/fixtures/memory_quality/v1")
             items.append(
@@ -181,10 +179,7 @@ class MemoryReleaseCheck:
         )
 
     def _alembic_head(self) -> str:
-        config = Config(str(self._root / "alembic.ini"))
-        config.set_main_option("script_location", str(self._root / "migrations"))
-        heads = ScriptDirectory.from_config(config).get_heads()
-        return heads[0] if len(heads) == 1 else ",".join(sorted(heads))
+        return canonical_schema_revision(self._root)
 
     def _migration_contract_item(self) -> ReleaseCheckItem:
         versions = {path.name for path in (self._root / "migrations/versions").glob("00*.py")}
@@ -204,8 +199,8 @@ class MemoryReleaseCheck:
         missing = sorted(required - versions)
         return self._item(
             "migration_contract",
-            not missing and self._alembic_head() == _ALEMBIC_HEAD,
-            f"fresh/upgrade matrix is current through {_ALEMBIC_HEAD}"
+            not missing and bool(self._alembic_head()),
+            f"fresh/upgrade matrix is current through {self._alembic_head()}"
             if not missing
             else f"missing migration files: {','.join(missing)}",
         )
@@ -233,13 +228,12 @@ class MemoryReleaseCheck:
             else f"incompatible manifests: {','.join(sorted(incompatible))}",
         )
 
-    @staticmethod
-    async def _database_integrity(database: Database) -> bool:
+    async def _database_integrity(self, database: Database) -> bool:
         async with database.sessions() as session:
             integrity = str(await session.scalar(text("PRAGMA integrity_check")))
             foreign_keys = tuple((await session.execute(text("PRAGMA foreign_key_check"))).all())
             revision = await session.scalar(text("SELECT version_num FROM alembic_version"))
-        return integrity == "ok" and not foreign_keys and str(revision) == _ALEMBIC_HEAD
+        return integrity == "ok" and not foreign_keys and str(revision) == self._alembic_head()
 
     @staticmethod
     def _item(code: str, passed: bool, detail: str) -> ReleaseCheckItem:

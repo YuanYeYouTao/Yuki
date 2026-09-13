@@ -870,6 +870,28 @@ def test_fresh_baseline_reaches_current_head_with_final_integrity(
         ).fetchone() == ("old", "unknown", None)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
+    # Future migration heads must be discovered without editing the startup guard.
+    import shutil
+
+    from qq_ai_bot.persistence.schema_guard import canonical_schema_revision
+
+    bundle = tmp_path / "bundle"
+    shutil.copytree(Path("migrations"), bundle / "migrations")
+    next_revision = bundle / "migrations/versions/future.py"
+    next_revision.write_text("revision = 'future'\ndown_revision = '0058'\n", encoding="utf-8")
+    assert canonical_schema_revision(bundle) == "future"
+    monkeypatch.chdir(bundle)
+    with pytest.raises(CanonicalSchemaError, match="future"):
+        asyncio.run(require_canonical_schema(url))
+    with sqlite3.connect(path) as connection:
+        connection.execute("UPDATE alembic_version SET version_num = 'future'")
+    asyncio.run(require_canonical_schema(url))
+    (bundle / "migrations/versions/branch.py").write_text(
+        "revision = 'branch'\ndown_revision = '0058'\n", encoding="utf-8"
+    )
+    with pytest.raises(CanonicalSchemaError, match="one bundled migration head"):
+        asyncio.run(require_canonical_schema(url))
+
 
 @pytest.mark.parametrize(
     "restore_historical",

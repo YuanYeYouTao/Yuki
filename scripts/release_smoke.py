@@ -308,12 +308,15 @@ def verify_bot(compose: Compose, deploy_directory: Path, version: str) -> None:
         "import sqlite3; "
         "connection=sqlite3.connect('/app/data/qq_ai_bot.db'); "
         "row=connection.execute('SELECT version_num FROM alembic_version').fetchone(); "
-        "connection.close(); print(row[0] if row else '')"
+        "connection.close(); "
+        "from qq_ai_bot.persistence.schema_guard import canonical_schema_revision; "
+        "expected=canonical_schema_revision(); "
+        "assert row and row[0] == expected, (row, expected); print('ok')"
     )
     alembic_version = compose.run(
         "exec", "-T", "bot", "python", "-c", migration_command, capture=True
     )
-    if alembic_version != "0058":
+    if alembic_version != "ok":
         raise SmokeError(f"unexpected Alembic version: {alembic_version!r}")
     compose.run("exec", "-T", "bot", "qq-ai-bot-cli", "plugin", "discover", capture=True)
     selected = write_plugin_pending(deploy_directory, compose)
