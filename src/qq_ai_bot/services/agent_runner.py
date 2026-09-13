@@ -921,7 +921,10 @@ class AgentRunner:
                         suppress_delivery=True,
                         work_state="completed",
                     )
-                if runtime.work_control.lease.work_id and runtime.work_control.ending in {
+                if (
+                    runtime.work_control.lease.work_id
+                    or runtime.work_control.source.get("delivery_contract") == "return_to_caller"
+                ) and runtime.work_control.ending in {
                     "waiting_user",
                     "waiting_external",
                 }:

@@ -155,6 +155,8 @@ class AgentFacade(Protocol):
 
     async def result(self, work_id: str) -> PluginResult: ...
 
+    async def resume(self, work_id: str, text: str, *, request_id: str) -> PluginResult: ...
+
     async def run(
         self,
         instruction: str,

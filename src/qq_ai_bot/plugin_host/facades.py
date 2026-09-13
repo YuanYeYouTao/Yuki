@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import re
@@ -1601,10 +1602,46 @@ class _AgentFacade:
                 "pending": row["state"]
                 in {"queued", "running", "waiting_external", "waiting_user"},
                 "text": checkpoint.get("sync_result", ""),
+                "reason": checkpoint.get("reason", row.get("reason")),
                 "model_requests": row["model_requests"],
                 "tool_calls_used": row["tool_calls"],
             }
         )
+
+    async def resume(self, work_id: str, text: str, *, request_id: str) -> PluginResult:
+        """Append an owned answer to the same work; never reset its budget/history."""
+        current = await self.result(work_id)
+        if not current.ok or current.data.get("state") in {"completed", "cancelled", "failed"}:
+            return current
+        text = _bounded_text(text, maximum=12_000, field_name="text")
+        request_id = _bounded_text(request_id, maximum=128, field_name="request_id")
+        from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
+
+        ledger = _require_service(self._host._services.ledger, "event ledger")
+        repository = WorkRepository(ledger._database)
+        row = await repository.get(work_id)
+        if row is None:
+            return PluginResult(ok=False, error_code="work_not_found_or_archived")
+        lease = await repository.acquire(row["conversation_id"], row["generation"])
+        if lease is None:
+            return PluginResult(ok=False, error_code="work_busy", data={"work_id": work_id})
+        try:
+            key = hashlib.sha256(
+                f"{self._host.plugin_id}:{work_id}:{request_id}".encode()
+            ).hexdigest()
+            await repository.enqueue(
+                row["conversation_id"],
+                row["generation"],
+                f"plugin-answer:{key}",
+                kind="control",
+                work_id=work_id,
+                resume=(lease, {"text": "[原插件补充资料；不改变执行权限]\n" + text}),
+            )
+        except WorkConflict as exc:
+            return PluginResult(ok=False, error_code="work_input_conflict", detail=str(exc))
+        finally:
+            await repository.release(lease)
+        return await self.result(work_id)
 
     async def run(
         self,

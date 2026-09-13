@@ -432,7 +432,7 @@ class WorkControl:
         if self.lease.work_id:
             if action == "accept":
                 raise ValueError("worker_already_registered")
-            if action in {"answer", "need_input"}:
+            if action in {"answer", "need_input"} and self.source.get("parent_work_id"):
                 from qq_ai_bot.runtime.subagent_tools import execute_subagent
 
                 return await execute_subagent(

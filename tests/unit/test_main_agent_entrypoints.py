@@ -262,7 +262,7 @@ async def test_owned_main_turn_resumes_original_journal_and_budget(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("segment_resume", [False, True, "preparation"])
+@pytest.mark.parametrize("segment_resume", [False, True, "preparation", "question"])
 async def test_plugin_callback_pending_is_queryable_after_callback_returns(
     database, tmp_path, monkeypatch, segment_resume
 ):
@@ -295,6 +295,25 @@ async def test_plugin_callback_pending_is_queryable_after_callback_returns(
         released.set()
 
         def respond(request):
+            if len(provider.requests) == 1 and segment_resume == "question":
+                return ChatResponse(
+                    content="",
+                    latency_seconds=0,
+                    tool_calls=(
+                        ToolCall(
+                            "ask",
+                            ToolFunction(
+                                "task_control",
+                                json.dumps(
+                                    {
+                                        "action": "need_input",
+                                        "reason": "需要哪个颜色？",
+                                    }
+                                ),
+                            ),
+                        ),
+                    ),
+                )
             if len(provider.requests) == 1:
                 return ChatResponse(
                     content="",
@@ -383,7 +402,22 @@ async def test_plugin_callback_pending_is_queryable_after_callback_returns(
         assert pending.data["pending"] is True, pending
         work_id = pending.data["work_id"]
         if segment_resume:
+            # Pending may be returned while the first segment is still committing
+            # on a slower runner. Wait for that activation, not an assumed timer.
+            tasks = tuple(main_turn._RUNNING.values())
+            if tasks:
+                await asyncio.wait_for(asyncio.gather(*tasks), 10)
             row = await WorkRepository(database).get(work_id)
+            if segment_resume == "question":
+                assert row["state"] == "waiting_user"
+                assert (await host.agent.result(work_id)).data["reason"] == "需要哪个颜色？"
+                answer = await host.agent.resume(work_id, "蓝色", request_id="color-answer")
+                assert answer.ok and answer.data["state"] == "queued", answer
+                repeated = await host.agent.resume(work_id, "蓝色", request_id="color-answer")
+                assert repeated.ok and repeated.data["work_id"] == work_id
+                conflict = await host.agent.resume(work_id, "红色", request_id="color-answer")
+                assert not conflict.ok and conflict.error_code == "work_input_conflict"
+                row = await WorkRepository(database).get(work_id)
             assert row["state"] == "queued", row
             await main_turn.resume_plugin_work(
                 SimpleNamespace(_plugin_contexts={host.plugin_id: host}, ledger=chat._ledger),

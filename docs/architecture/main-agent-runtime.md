@@ -28,6 +28,8 @@
 
 SDK 回调等待约 5 秒可返回 `work_id/state/pending`；等待不是模型正文。
 `agent.result(work_id)` 不依赖已经退出的 ContextVar，但核对插件所有权、批准版本、权限和 generation。
+等待原因随结果返回；`agent.resume(work_id, text, request_id=...)` 将补充资料追加到原工作。
+相同 request_id 重放幂等，不同内容冲突；不新建 work，不重置历史或预算。
 接纳前超时取消准备，接纳后回调退出不取消 Host 工作。完成句柄至少保留 7 天，超过保留期查询明确返回已归档。
 插件停止时取消进程内任务，保留已接纳工作和回执；失效授权不得继续执行或自行发送。
 没有真实事件的 SDK 调用仍须用目标明确的通知 API，禁止补造用户。

@@ -508,6 +508,8 @@ class WorkRepository:
                 }.items()
             ):
                 raise WorkConflict("work_input_conflict")
+            if resume is not None and row["payload_json"] != bounded_json(resume[1], 32768):
+                raise WorkConflict("work_input_conflict")
             if resume is not None and row["state"] == "pending":
                 updated = await session.scalar(
                     update(work)

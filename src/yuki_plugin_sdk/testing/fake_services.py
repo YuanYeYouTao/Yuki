@@ -270,6 +270,9 @@ class FakeAgentFacade:
     async def result(self, work_id: str) -> PluginResult:
         return PluginResult(ok=False, error_code="work_not_found_or_archived")
 
+    async def resume(self, work_id: str, text: str, *, request_id: str) -> PluginResult:
+        return await self.result(work_id)
+
     async def run(
         self,
         instruction: str,

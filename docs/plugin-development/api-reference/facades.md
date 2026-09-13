@@ -167,3 +167,7 @@ events.publish(EventEnvelope) -> None
 ```
 
 `PluginContext` 还提供 `plugin_id`、隔离 `logger`、脱敏 `current` 和 `FeatureRegistry features`。
+
+`ctx.agent.result(work_id)` 返回等待原因 `reason`。需要补充资料时调用
+`ctx.agent.resume(work_id, text, request_id="稳定的调用标识")`，在原历史后追加并交给 Host 续跑。
+同一 request_id 重放复用原输入，不同内容明确冲突；已归档、取消或完成的工作不会另建新任务。
