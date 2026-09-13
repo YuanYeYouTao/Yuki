@@ -10,9 +10,9 @@ Yuki 只读取 `MCP_CONFIG_PATH` 指定的 UTF-8 JSON，不扫描或导入其他
 `yuki.scope/summary/tags/toolAnnotations`。`command` 与 `url` 必须且只能填写一个。
 
 `toolAnnotations` 按远端工具名覆盖 MCP 标准提示字段：`readOnlyHint`、`destructiveHint`、
-`idempotentHint` 和 `openWorldHint`。另有 Yuki 本地扩展 `finalizeAfterCommit`：仅在该工具确认
-提交成功后，关闭后续工具并进入最终回复，适用于创建待支付订单这类必须防止模型继续操作的交易终点。
-普通发歌、发消息、记忆修改和自动化创建不应设置它，因为这些副作用之后仍可能有合法后续步骤。
+`idempotentHint` 和 `openWorldHint`。旧本地扩展 `finalizeAfterCommit` 仅保留配置读取兼容，
+不再关闭 Agent 工具或强制最终回复。操作结果进入原循环；是否继续由 Agent 根据目标和回执决定，
+授权和未知效果重放限制仍在执行层核验。
 这些提示只影响 Tool Kernel 的调度元数据，不会改写远端 Schema 或绕过工具本身的鉴权。配置变化会
 使旧工具缓存失效。
 

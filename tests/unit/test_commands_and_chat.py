@@ -86,6 +86,20 @@ async def test_delivery_failure_keeps_normal_answer(
         if model_calls == 2:
             results = [m.content or "" for m in request.messages if m.role == "tool"]
             assert any(failure in r for r in results), results
+            return ChatResponse(
+                "",
+                0,
+                tool_calls=(
+                    ToolCall(
+                        "lookup-after-failure",
+                        ToolFunction("request_tools", json.dumps({"query": tool_name})),
+                    ),
+                ),
+            )
+        if model_calls == 3:
+            result = json.loads([m.content for m in request.messages if m.role == "tool"][-1])
+            assert result.get("error", result.get("error_code")) != "tools_closed", result
+            assert result.get("ok") is True, result
             return "文件已生成，但未确认发送成功。"
         return "可以正常聊天。"
 
@@ -701,7 +715,7 @@ async def test_empty_model_response_is_user_safe(database: Database) -> None:
         assert all("[提及" not in str(message.text) for message in mention_sender.messages)
         assert all("@完了" not in str(message.text) for message in mention_sender.messages)
         assert any(
-            ("确认" if repair else "没有形成有效") in str(message.text)
+            ("确认" if repair else "AI 服务暂时不可用") in str(message.text)
             for message in mention_sender.messages
         )
 
@@ -743,7 +757,7 @@ async def test_ordinary_chat_keeps_generic_tool_request_gateway(
 async def test_mutation_turn_uses_auto_with_only_write_tool_and_receipt_contract(
     database: Database,
 ) -> None:
-    provider = FakeLLMProvider(lambda _request: "已经撤回")
+    provider = FakeLLMProvider(lambda _request: "需要你指明哪条记忆")
     harness = build_harness(database, make_settings(database.url), provider)
     harness.processor._chat._tools._memory_mutations = object()  # type: ignore[assignment]
     sender = MemorySender()
@@ -780,7 +794,7 @@ async def test_mutation_turn_uses_auto_with_only_write_tool_and_receipt_contract
     assert "memory_change" in tool_names
     assert "request_tools" in tool_names
     assert any("真实工具回执" in (message.content or "") for message in request.messages)
-    assert sender.messages[0].text == "记忆变更未执行，本轮没有取得任何有效的记忆写入回执。"
+    assert sender.messages[0].text == "需要你指明哪条记忆"
 
 
 @pytest.mark.asyncio

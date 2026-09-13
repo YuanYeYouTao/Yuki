@@ -156,6 +156,3 @@ class ShortStateOnlyBackend:
 
     def exhausted(self, runtime: Any) -> str:
         return "本轮处理已达到调用上限。"
-
-    def post_commit_recovery_text(self) -> None:
-        return None

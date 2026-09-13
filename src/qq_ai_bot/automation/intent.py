@@ -59,16 +59,3 @@ def contains_automation_success_claim(text: str) -> bool:
     """Detect only concrete persistence claims, not ordinary future-tense discussion."""
 
     return bool(_SUCCESS_CLAIM.search(" ".join(text.casefold().split())))
-
-
-def enforce_creation_claim(
-    text: str,
-    *,
-    scheduled_intent: bool,
-    persisted: bool,
-) -> str:
-    """Prevent a model from claiming a task exists without a persisted tool result."""
-
-    if scheduled_intent and not persisted and contains_automation_success_claim(text):
-        return "这个定时任务还没有写入任务列表，不能算创建成功。"
-    return text
