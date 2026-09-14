@@ -838,6 +838,7 @@ class SelfReflectionRepository:
             run.committed_count = committed
             run.error_category = None
             run.retry_state = None
+            run.checkpoint_json = None
             run.completed_at = now
             state = await session.get(MemorySelfReflectionStateModel, batch.state.id)
             if state is None:
@@ -941,6 +942,8 @@ class SelfReflectionRepository:
             )
             run.committed_count = max(int(run.committed_count), committed)
             run.error_category = f"recovered:{error_category}"[:64]
+            run.checkpoint_json = None
+            run.retry_state = None
             run.completed_at = now
             return "completed"
         run.committed_count = max(int(run.committed_count), committed)
