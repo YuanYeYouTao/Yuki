@@ -130,6 +130,7 @@ class SelfReflectionWorker:
             attempted < self._settings.memory_self_reflection_max_batches_per_run
             and not self._stop.is_set()
         ):
+            await self._repository.scan_new_events()
             snapshot = await self.control.snapshot()
             if snapshot["calls_today"] >= snapshot["daily_limit"]:
                 exhausted = True
@@ -237,6 +238,7 @@ class SelfReflectionWorker:
             if snapshot["recent_not_due"]["events"]
             else "no_actionable_backlog",
         }
+        await self._repository.scan_new_events()
         result = await self.control.finish(cycle["id"], report)
         after = result["after"]
         if (
