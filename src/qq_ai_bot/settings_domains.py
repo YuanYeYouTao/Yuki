@@ -72,6 +72,7 @@ class OneBotSettings(DomainSettings):
 
 
 class ModelRuntimeSettings(DomainSettings):
+    memory_self_reflection_timeout_seconds: float = Field(default=180.0, gt=0)
     conversation_rollup_model_timeout_seconds: float = Field(gt=0)
     llm_provider: str
     llm_base_url: str
@@ -217,9 +218,16 @@ class MemorySettings(DomainSettings):
     memory_self_reflection_low_character_threshold: int = Field(gt=0)
     memory_self_reflection_natural_gap_seconds: float = Field(gt=0)
     memory_self_reflection_max_wait_seconds: float = Field(gt=0)
-    memory_self_reflection_max_events: int = Field(gt=0, le=100)
-    memory_self_reflection_max_characters: int = Field(gt=0, le=8000)
+    memory_self_reflection_max_events: int = Field(gt=0, le=200)
+    memory_self_reflection_max_characters: int = Field(gt=0, le=16000)
     memory_self_reflection_max_output_tokens: int = Field(gt=0)
+    memory_self_reflection_timeout_seconds: float = Field(default=180.0, gt=0)
+    memory_self_reflection_drain_enabled: bool = False
+    memory_self_reflection_drain_high_events: int = 500
+    memory_self_reflection_drain_critical_events: int = 1000
+    memory_self_reflection_drain_low_events: int = 100
+    memory_self_reflection_drain_interval_seconds: float = Field(default=600.0, gt=0)
+    memory_self_reflection_allow_text_json_fallback: bool = False
     memory_self_reflection_tool_receipt_characters: int = Field(gt=0, le=8000)
     memory_self_reflection_tool_receipt_retention_days: int = Field(gt=0, le=30)
     memory_max_referenced_targets: int = Field(gt=0)
@@ -318,6 +326,13 @@ class MemorySettings(DomainSettings):
             raise ValueError("automatic topic threshold cannot be below background threshold")
         if self.memory_batch_trigger_count > self.memory_batch_max_events:
             raise ValueError("memory batch trigger count cannot exceed batch event limit")
+        if not (
+            0
+            < self.memory_self_reflection_drain_low_events
+            < self.memory_self_reflection_drain_high_events
+            <= self.memory_self_reflection_drain_critical_events
+        ):
+            raise ValueError("self-reflection drain watermarks must be ordered")
         hours = [item.strip() for item in self.memory_self_reflection_schedule_hours.split(",")]
         if len(hours) != 3 or any(not item.isdigit() or not 0 <= int(item) <= 23 for item in hours):
             raise ValueError("memory self-reflection schedule must contain three hours")

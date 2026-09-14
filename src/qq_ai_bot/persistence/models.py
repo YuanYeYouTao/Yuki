@@ -1011,6 +1011,9 @@ class MemorySelfReflectionStateModel(Base):
         ),
     )
 
+    last_policy_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_policy_event_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     conversation_key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     bot_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -1041,6 +1044,9 @@ class MemorySelfReflectionRuntimeModel(Base):
     __tablename__ = "memory_self_reflection_runtime"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ingress_events_total: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     last_scanned_event_id: Mapped[int] = mapped_column(Integer, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -1101,6 +1107,51 @@ class MemorySelfReflectionRunModel(Base):
     error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    cycle_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    retry_state: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    first_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    input_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    processed_events: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    processed_characters: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    checkpoint_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class MemorySelfReflectionCycleModel(Base):
+    __tablename__ = "memory_self_reflection_cycles"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_key: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    trigger: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_event_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    conversation_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    report_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    delivery_state: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    delivery_receipt_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class MemorySelfReflectionRequestModel(Base):
+    __tablename__ = "memory_self_reflection_requests"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    attempt_kind: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="initial", server_default="initial"
+    )
+    run_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    local_date: Mapped[str] = mapped_column(String(10), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="reserved")
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class MemorySelfReflectionResultModel(Base):

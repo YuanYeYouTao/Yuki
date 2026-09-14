@@ -11,6 +11,7 @@ Yuki 正在逐层解耦：永久主体、内部事件和工作身份由核心持
 | [主 Agent 执行与恢复](main-agent-runtime.md) | 公共执行器、来源授权、恢复所有者与预算 |
 | [持久工作者](persistent-subagents.md) | 子 Agent 生命周期、权限、根预算和缓存 |
 | [Conversation Rollup](conversation-rollup.md) | 原始事件、历史投影、压缩与 generation |
+| [Self Reflection](self-reflection.md) | 自省 Responses 合同、后台周期、预算、重试与运维报告 |
 | [Memory](memory-v2.md) | 记忆范围、证据与权限 |
 | [MCP 架构](../mcp/architecture.md) | 外部工具、固定清单和执行授权 |
 | [插件架构](../plugin-development/architecture.md) | SDK、Host 与隔离插件会话 |

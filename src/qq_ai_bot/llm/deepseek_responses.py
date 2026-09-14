@@ -122,7 +122,33 @@ class DeepSeekResponsesProvider(LLMProvider):
                         chain_id=request.request_chain_id,
                         provider=self.provider_name,
                     )
-                    response = await self._post(payload)
+                    from qq_ai_bot.model_runtime.request_accounting import (
+                        after_provider_request,
+                        before_provider_request,
+                    )
+
+                    account = before_provider_request.get()
+                    if account is not None:
+                        await account()
+                    finish = after_provider_request.get()
+                    try:
+                        response = await self._post(payload)
+                    except BaseException:
+                        if finish is not None:
+                            await finish("failed", None)
+                        raise
+                    if finish is not None:
+                        try:
+                            raw_body = response.json()
+                        except ValueError:
+                            raw_body = {}
+                        body = raw_body if isinstance(raw_body, dict) else {}
+                        usage = body.get("usage")
+                        usage = usage if isinstance(usage, dict) else {}
+                        await finish(
+                            str(body.get("status", "unknown")),
+                            self._integer(usage.get("output_tokens")),
+                        )
         except httpx.TimeoutException as exc:
             raise LLMTimeoutError("LLM request timed out") from exc
         except (httpx.ConnectError, RetryableProviderError) as exc:
@@ -205,7 +231,12 @@ class DeepSeekResponsesProvider(LLMProvider):
         if request.thinking_enabled and request.reasoning_effort is not None:
             payload["reasoning"] = {"effort": request.reasoning_effort.value}
         if request.response_format is not None:
-            payload["text"] = {"format": request.response_format}
+            format_spec = dict(request.response_format)
+            if format_spec.get("type") == "json_schema":
+                nested = format_spec.pop("json_schema", None)
+                if isinstance(nested, dict):
+                    format_spec.update(nested)
+            payload["text"] = {"format": format_spec}
         logger.info(
             "responses_request_started provider=%s protocol=responses model=%s "
             "native_tool_types=%s function_tool_count=%d continuation=%s",

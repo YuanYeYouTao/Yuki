@@ -81,7 +81,6 @@ from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import ResolvedSubject
 from qq_ai_bot.memory.validation import ValidatedMemoryClaim
 from qq_ai_bot.model_runtime.executor import LegacyTaskModelExecutor
-from qq_ai_bot.model_runtime.structured import StructuredTaskError
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     MemoryFactModel,
@@ -99,7 +98,6 @@ from qq_ai_bot.persistence.repositories import (
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
 from qq_ai_bot.services.agent_tools import AgentToolService, ToolRuntime
-from qq_ai_bot.services.concurrency import ConcurrencyManager
 
 
 def _service(
@@ -1401,7 +1399,6 @@ async def test_self_reflection_batch_survives_presence_switch(database: Database
         facts=facts,
         mutations=mutation_service,
         models=LegacyTaskModelExecutor(provider),
-        concurrency=ConcurrencyManager(1),
         metrics=MemoryLifecycleMetrics(),
     )
     historical_episode = await facts.remember(
@@ -1437,10 +1434,8 @@ async def test_self_reflection_batch_survives_presence_switch(database: Database
         assert row.authority == stored_fact.authority
         assert row.conflict_state == stored_fact.conflict_state
         assert row.evidence_count == stored_fact.evidence_count
-    bounded, _facts, _candidates, bounded_events, _tools = await reflection._input(
-        replace(batch, max_input_characters=1)
-    )
-    assert set(bounded_events) == {row.ref for row in bounded.events} == {"event_1"}
+    with pytest.raises(ValueError, match="reflection_input_budget_exceeded"):
+        await reflection._input(replace(batch, max_input_characters=1))
     proposed, committed = await reflection.reflect(batch)
     await repository.complete(batch, proposals=proposed, committed=committed)
 
@@ -1488,13 +1483,9 @@ async def test_self_reflection_batch_survives_presence_switch(database: Database
         old_event.id,
         new_event.id,
     }
-    # Even an otherwise valid result cannot cite a budget-hidden event. The
-    # normal bounded repair runs once, then fails without another mutation.
-    with pytest.raises(StructuredTaskError) as hidden_reference:
-        await reflection.reflect(replace(batch, max_input_characters=1))
-    assert hidden_reference.value.reason_code == "unknown_reference"
-    assert hidden_reference.value.attempts == 2
-    assert len(provider.requests) == 4
+    # Durable validated data and result mappings resume without another model or mutation.
+    assert await reflection.reflect(batch) == (2, 2)
+    assert len(provider.requests) == 2
     async with database.sessions() as session:
         assert tuple(await session.scalars(select(MemoryMutationReceiptModel.id))) == tuple(
             receipt.id for receipt in receipts
@@ -1615,7 +1606,6 @@ async def test_self_reflection_skips_reset_prefix_and_recovers_committed_batch(
         facts=facts,
         mutations=mutation_service,
         models=LegacyTaskModelExecutor(provider),
-        concurrency=ConcurrencyManager(1),
         metrics=MemoryLifecycleMetrics(),
     )
     assert await reflection.reflect(batch) == (1, 1)
@@ -1703,6 +1693,14 @@ async def test_self_reflection_stale_run_without_results_is_retryable(database: 
     assert run.status == "failed"
     assert run.error_category == "stale_processing"
 
+    assert run.retry_state == "waiting"
+    assert run.next_attempt_at is not None
+    async with database.sessions() as session, session.begin():
+        await session.execute(
+            update(MemorySelfReflectionRunModel)
+            .where(MemorySelfReflectionRunModel.id == run_id)
+            .values(next_attempt_at=datetime.now(UTC) - timedelta(seconds=1))
+        )
     retried = await repository.claim_due(
         scheduled_slot="2026-09-03:m:stale:r02",
         local_date="2026-09-03",
@@ -1720,65 +1718,142 @@ async def test_self_reflection_stale_run_without_results_is_retryable(database: 
 
 
 @pytest.mark.asyncio
-async def test_self_reflection_worker_recovers_cancelled_batch() -> None:
-    batch = SimpleNamespace(run_id=42, trigger_reason="manual")
-    repository = SimpleNamespace(
-        recover_stale_runs=AsyncMock(return_value=0),
-        scan_new_events=AsyncMock(return_value=0),
-        claim_due=AsyncMock(return_value=(batch,)),
-        recover_interrupted=AsyncMock(return_value="completed"),
-        cleanup_receipts=AsyncMock(return_value=0),
+async def test_self_reflection_worker_recovers_cancelled_batch(database: Database) -> None:
+    _mutations, _facts, ledger, _processor = _service(database, self_memory_enabled=True)
+    repository = SelfReflectionRepository(database)
+    await repository.scan_new_events()
+    source = await _event(
+        ledger,
+        message_id="sr-manual",
+        sender_user_id="1001",
+        content="run reflection",
+        group_id="3001",
     )
+    await _event(
+        ledger,
+        message_id="sr-answer",
+        sender_user_id="8000",
+        content="a real reply",
+        group_id="3001",
+        direction="outbound",
+        sender_is_bot=True,
+    )
+    await repository.scan_new_events()
     service = SimpleNamespace(reflect=AsyncMock(side_effect=asyncio.CancelledError))
     worker = SelfReflectionWorker(
         settings=make_settings(
-            "sqlite+aiosqlite:///:memory:",
-            memory_self_reflection_enabled=True,
+            database.url,
+            memory_self_reflection_event_threshold=1,
+            memory_self_reflection_low_event_threshold=1,
         ),
-        repository=cast(SelfReflectionRepository, repository),
+        repository=repository,
         service=cast(SelfReflectionService, service),
         metrics=MemoryLifecycleMetrics(),
     )
-
+    cycle = await worker.run_now(
+        source_event_id=source.id, conversation_id=source.canonical_conversation_id
+    )
+    replay = await worker.run_now(
+        source_event_id=source.id, conversation_id=source.canonical_conversation_id
+    )
+    assert cycle["id"] == replay["id"] and cycle["status"] == "queued"
+    assert service.reflect.await_count == 0
     with pytest.raises(asyncio.CancelledError):
-        await worker.process_once(force=True)
+        await worker.process_once(datetime(2026, 9, 15, 0, tzinfo=UTC))
+    rows = await worker.control.cycle_runs(cycle["id"])
+    assert len(rows) == 1 and rows[0]["status"] == "failed"
+    assert rows[0]["retry_state"] == "waiting"
+    # A new worker resumes the original cycle; a failed batch keeps its source and backoff.
+    resumed = SelfReflectionWorker(
+        settings=make_settings(
+            database.url,
+            memory_self_reflection_event_threshold=1,
+            memory_self_reflection_low_event_threshold=1,
+        ),
+        repository=repository,
+        service=cast(
+            SelfReflectionService, SimpleNamespace(reflect=AsyncMock(return_value=(0, 0)))
+        ),
+        metrics=MemoryLifecycleMetrics(),
+    )
+    await resumed.process_once(datetime(2026, 9, 15, 0, tzinfo=UTC))
+    final = await resumed.control.get(cycle["id"])
+    assert final and final["status"] == "partial_failed"
+    assert final["failures"][0]["checkpoint_advanced"] is False
+    assert final["attempted_batches"] == 1
 
-    repository.recover_interrupted.assert_awaited_once_with(42, "cancelled")
 
-    # Unexpected post-model errors must finalize the batch and keep the loop alive.
-    batch.state = SimpleNamespace(conversation_key_hash="scope")
-    repository.claim_due = AsyncMock(side_effect=[(batch,), ()])
-    repository.recover_interrupted.reset_mock()
-    repository.recover_interrupted.return_value = "failed"
-    service.reflect = AsyncMock(side_effect=TypeError("synthetic post-model failure"))
-    result = await worker.run_now()
-    assert result.failed_batches == 1
-    repository.recover_interrupted.assert_awaited_once_with(42, "TypeError")
+@pytest.mark.asyncio
+async def test_reflection_budget_is_atomic_and_failed_ranges_do_not_block_peers(
+    database: Database,
+) -> None:
+    from qq_ai_bot.memory.self_reflection.control import (
+        ReflectionControlRepository,
+        ReflectionDailyLimit,
+    )
 
-    repository.claim_due = AsyncMock(side_effect=[(batch,), ()])
-    repository.recover_interrupted.return_value = "completed"
-    repository.result_counts = AsyncMock(return_value=(2, 1))
-    result = await worker.run_now()
-    assert (result.completed_batches, result.failed_batches) == (1, 0)
-    assert (result.proposal_count, result.committed_count) == (2, 1)
-
-    # A failed scan must not terminate the scheduler, and start can replace a dead task.
-    worker.process_once = AsyncMock(side_effect=[AttributeError("scan"), None])
-    original_process = worker.process_once
-
-    async def one_cycle() -> None:
-        await original_process()
-        worker._stop.set()
-
-    worker.process_once = one_cycle
-    worker._settings.memory_self_reflection_poll_seconds = 0.01
-    await worker.start()
-    await asyncio.wait_for(worker._task, timeout=2)
-    assert original_process.await_count == 2
-    worker.process_once = AsyncMock(side_effect=worker._stop.set)
-    await worker.start()
-    await asyncio.wait_for(worker._task, timeout=2)
-    await worker.close()
+    _mutations, _facts, ledger, _processor = _service(database, self_memory_enabled=True)
+    repository = SelfReflectionRepository(database)
+    await repository.scan_new_events()
+    for group in ("3001", "3002"):
+        await _event(
+            ledger,
+            message_id=f"sr-{group}",
+            sender_user_id="8000",
+            content="real reply",
+            group_id=group,
+            direction="outbound",
+            sender_is_bot=True,
+        )
+    await repository.scan_new_events()
+    args = dict(
+        local_date="2026-09-15",
+        event_threshold=1,
+        character_threshold=1,
+        max_wait_seconds=1,
+        max_sessions=1,
+        max_daily_calls=96,
+        max_events=200,
+        max_characters=16000,
+        force=True,
+    )
+    first = (await repository.claim_due(scheduled_slot="first", cycle_id="cycle-first", **args))[0]
+    await repository.recover_interrupted(first.run_id, "timeout")
+    peer = (await repository.claim_due(scheduled_slot="peer", **args))[0]
+    assert peer.state.id != first.state.id
+    await repository.complete(peer, proposals=0, committed=0)
+    async with database.sessions() as session, session.begin():
+        await session.execute(
+            update(MemorySelfReflectionRunModel)
+            .where(MemorySelfReflectionRunModel.id == first.run_id)
+            .values(next_attempt_at=datetime.now(UTC) - timedelta(seconds=1))
+        )
+    assert not await repository.claim_due(
+        scheduled_slot="same-cycle", cycle_id="cycle-first", **args
+    )
+    for attempt in (2, 3):
+        async with database.sessions() as session, session.begin():
+            await session.execute(
+                update(MemorySelfReflectionRunModel)
+                .where(MemorySelfReflectionRunModel.id == first.run_id)
+                .values(next_attempt_at=datetime.now(UTC) - timedelta(seconds=1))
+            )
+        retry = (await repository.claim_due(scheduled_slot=f"retry-{attempt}", **args))[0]
+        assert retry.run_id == first.run_id
+        await repository.recover_interrupted(retry.run_id, "timeout")
+    async with database.sessions() as session:
+        row = await session.get(MemorySelfReflectionRunModel, first.run_id)
+        state = await session.get(MemorySelfReflectionStateModel, first.state.id)
+        assert row and row.attempt_count == 3 and row.retry_state == "isolated"
+        assert state and state.last_event_id < first.events[0].id
+    control = ReflectionControlRepository(
+        database, make_settings(database.url, memory_self_reflection_max_daily_calls=2)
+    )
+    outcomes = await asyncio.gather(
+        *(control.reserve_request(first.run_id) for _ in range(3)), return_exceptions=True
+    )
+    assert sum(isinstance(x, ReflectionDailyLimit) for x in outcomes) == 1
+    assert (await control.snapshot())["calls_today"] == 2
 
 
 @pytest.mark.asyncio

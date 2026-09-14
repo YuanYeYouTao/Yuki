@@ -210,29 +210,30 @@ class ProfileCommandHandler:
             if operation == "dream":
                 return await self._memory_dream_command(actor, parts)
             if operation == "self-reflection":
-                if parts != ["run"]:
-                    return "格式：/ai memory self-reflection run"
-                reflection_result = await self._memory_admin.self_reflection_run(actor)
-                reflection_health = reflection_result.health
-                usage = f"{reflection_health.calls_today}/{reflection_result.max_daily_calls}"
-                if reflection_result.attempted_batches:
+                from qq_ai_bot.memory.self_reflection.reporting import format_report
+
+                if parts == ["run"]:
+                    return format_report(await self._memory_admin.self_reflection_run(actor))
+                if len(parts) == 2 and parts[0] == "retry" and parts[1].isdigit():
+                    resumed = await self._memory_admin.self_reflection_retry(actor, int(parts[1]))
                     return (
-                        "Self Reflection 本轮结束："
-                        f"尝试 {reflection_result.attempted_batches} 个批次，"
-                        f"成功 {reflection_result.completed_batches} 个，"
-                        f"失败 {reflection_result.failed_batches} 个；"
-                        f"生成 {reflection_result.proposal_count} 条 proposal，"
-                        f"实际写入 {reflection_result.committed_count} 条；"
-                        f"今日反思批次 {usage}；"
-                        f"仍待处理 {reflection_health.pending_conversations} 个会话。"
+                        "已登记原批次重试，保留预算和回执。"
+                        if resumed
+                        else "没有可重试的失败批次。"
                     )
-                if reflection_health.calls_today >= reflection_result.max_daily_calls:
-                    reason = "今日模型调用已达上限"
-                elif reflection_health.pending_conversations == 0:
-                    reason = "当前没有待处理会话"
-                else:
-                    reason = f"待处理会话尚无 {self._bot_display_name} 已发送回复或可信工具结果"
-                return f"Self Reflection 本轮未处理会话：{reason}；今日反思批次 {usage}。"
+                if parts and parts[0] == "status" and len(parts) <= 3:
+                    reflection_status = await self._memory_admin.self_reflection_status(
+                        actor, parts[1] if len(parts) > 1 else None
+                    )
+                    page = int(parts[2]) if len(parts) > 2 else 1
+                    if page < 1:
+                        raise ValueError("页码必须大于零")
+                    return (
+                        format_report(reflection_status, page=page)
+                        if reflection_status
+                        else "没有找到 Self Reflection 运行记录。"
+                    )
+                return "格式：/ai memory self-reflection run | status [run_id] [页码]"
             if operation in {"show", "explain", "history"}:
                 if len(parts) != 1 or not parts[0].isdigit():
                     return f"格式：/ai memory {operation} <fact_id>"

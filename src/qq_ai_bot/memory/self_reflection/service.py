@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from dataclasses import dataclass
+
+from pydantic import TypeAdapter
 
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ScopeType
@@ -33,6 +36,7 @@ from qq_ai_bot.memory.mutation.models import (
     SelfMemoryVisibilityMode,
 )
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
+from qq_ai_bot.memory.self_reflection.control import ReflectionControlRepository
 from qq_ai_bot.memory.self_reflection.models import (
     SelfCandidateDecision,
     SelfEpisodeProposal,
@@ -53,10 +57,13 @@ from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import ResolvedSubject
 from qq_ai_bot.model_runtime.executor import ModelExecutor
-from qq_ai_bot.model_runtime.models import ModelTask
+from qq_ai_bot.model_runtime.models import ModelExecutionPriority, ModelTask, StructuredOutputMode
+from qq_ai_bot.model_runtime.request_accounting import (
+    after_provider_request,
+    before_provider_request,
+)
 from qq_ai_bot.model_runtime.structured import StructuredTaskError, StructuredTaskRunner
 from qq_ai_bot.persistence.repository_records import EventRecord
-from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.time.formatting import local_datetime, utc_iso
 
 logger = logging.getLogger(__name__)
@@ -135,6 +142,20 @@ self_facts 是已有的事实/偏好，existing_episodes 是历史经历，二�
 """
 
 
+@dataclass
+class ReflectionCheckpoint:
+    output: SelfReflectionOutput
+    payload: SelfReflectionInput
+    fact_map: dict[str, MemoryFact]
+    candidate_map: dict[str, MemoryClaimCandidate]
+    event_map: dict[str, EventRecord]
+    tool_map: dict[str, StoredToolReceipt]
+    completed_counts: tuple[int, int] | None = None
+
+
+_CHECKPOINT = TypeAdapter(ReflectionCheckpoint)
+
+
 class SelfReflectionService:
     def __init__(
         self,
@@ -144,7 +165,6 @@ class SelfReflectionService:
         facts: MemoryFactService,
         mutations: MemoryMutationService,
         models: ModelExecutor,
-        concurrency: ConcurrencyManager,
         metrics: MemoryLifecycleMetrics,
     ) -> None:
         self._settings = settings
@@ -152,12 +172,22 @@ class SelfReflectionService:
         self._facts = facts
         self._mutations = mutations
         self._structured = StructuredTaskRunner(models)
-        self._concurrency = concurrency
         self._metrics = metrics
         self._candidates = MemoryClaimCandidateRepository(facts.repository.database)
 
     async def reflect(self, batch: SelfReflectionBatch) -> tuple[int, int]:
-        payload, fact_map, candidate_map, event_map, tool_map = await self._input(batch)
+        saved = await self._repository.load_checkpoint(batch.run_id)
+        checkpoint = _CHECKPOINT.validate_json(saved) if saved else None
+        if checkpoint:
+            payload, fact_map, candidate_map, event_map, tool_map = (
+                checkpoint.payload,
+                checkpoint.fact_map,
+                checkpoint.candidate_map,
+                checkpoint.event_map,
+                checkpoint.tool_map,
+            )
+        else:
+            payload, fact_map, candidate_map, event_map, tool_map = await self._input(batch)
 
         def validate_references(output: SelfReflectionOutput) -> None:
             allowed_evidence = set(event_map) | set(tool_map)
@@ -187,42 +217,91 @@ class SelfReflectionService:
                         detail=f"episodes.{index}.evidence_refs",
                     )
 
-        output = await self._concurrency.run_llm(
-            "memory-self-reflection",
-            lambda: self._structured.run(
-                task=ModelTask.MEMORY_SELF_REFLECTION,
-                instruction=(
-                    f"{_INSTRUCTION.format(bot_name=self._settings.bot_display_name)}\n"
-                    f"{_EPISODE_INSTRUCTION.format(timezone=self._settings.memory_self_reflection_timezone)}\n\n"
-                    f"{_EPISODE_EVIDENCE_INSTRUCTION}\n"
-                    f"【{self._settings.bot_display_name} 共享核心人格】\n"
-                    f"{self._settings.bot_persona}\n\n"
-                    f"【本次结构化记忆任务的归类与价值合同】\n{_VALUE_INSTRUCTION}"
-                ),
-                structured_input=payload,
-                output_model=SelfReflectionOutput,
-                temperature=0.1,
-                max_output_tokens=self._settings.memory_self_reflection_max_output_tokens,
-                allow_text_json=True,
-                # Field-level semantic boundaries are needed at the emit_result call site.
-                # Compact schemas remove descriptions, losing the fact/episode distinction.
-                compact_schema=False,
-                validation_retries=1,
-                validate_output=validate_references,
-                validation_repair_hint=(
-                    "Fix the reported fields. Max 8 proposals and 1 episode. An episode requires "
-                    "passages, importance, value_reason; 1-8 passages each need nonblank content "
-                    "and 1-8 unique evidence_refs. For >8 references in one passage, split its "
-                    "content into supported passages; do not discard evidence or invent aliases "
-                    "to fit. Max 16 distinct references and 4000 joined characters per episode. "
-                    "Only supplied event_N/tool_N references are evidence, never context_N. "
-                    "Proposal categories: self_fact, self_preference, self_reflection, "
-                    "self_principle; each needs reason. Episodes are not proposals. Remove "
-                    "placeholders. Use empty arrays for no valuable supported change."
-                ),
-            ),
-            translate_cancellation=False,
-        )
+        if checkpoint:
+            output = checkpoint.output
+            validate_references(output)
+        else:
+            control = ReflectionControlRepository(self._repository.database, self._settings)
+            request_id = 0
+            model_attempt = 0
+            physical_attempt = 0
+
+            async def begin_attempt() -> None:
+                nonlocal model_attempt, physical_attempt
+                model_attempt += 1
+                physical_attempt = 0
+
+            async def reserve() -> None:
+                nonlocal request_id, physical_attempt
+                kind = (
+                    "transport_retry"
+                    if physical_attempt
+                    else "repair"
+                    if model_attempt > 1
+                    else "initial"
+                )
+                request_id = await control.reserve_request(batch.run_id, kind)
+                physical_attempt += 1
+
+            async def finish(status: str, tokens: int | None) -> None:
+                await control.finish_request(request_id, status, tokens)
+
+            token = before_provider_request.set(reserve)
+            finish_token = after_provider_request.set(finish)
+            try:
+                output = await self._structured.run(
+                    task=ModelTask.MEMORY_SELF_REFLECTION,
+                    instruction=(
+                        f"{_INSTRUCTION.format(bot_name=self._settings.bot_display_name)}\n"
+                        f"{_EPISODE_INSTRUCTION.format(timezone=self._settings.memory_self_reflection_timezone)}\n\n"
+                        f"{_EPISODE_EVIDENCE_INSTRUCTION}\n"
+                        f"【{self._settings.bot_display_name} 共享核心人格】\n"
+                        f"{self._settings.bot_persona}\n\n"
+                        f"【本次结构化记忆任务的归类与价值合同】\n{_VALUE_INSTRUCTION}"
+                    ),
+                    structured_input=payload,
+                    output_model=SelfReflectionOutput,
+                    temperature=0.1,
+                    max_output_tokens=self._settings.memory_self_reflection_max_output_tokens,
+                    mode=StructuredOutputMode.JSON_SCHEMA,
+                    allow_schema_fallback=self._settings.memory_self_reflection_allow_text_json_fallback,
+                    priority=ModelExecutionPriority.BEST_EFFORT_BACKGROUND,
+                    before_attempt=begin_attempt,
+                    # Field-level semantic boundaries are needed at the emit_result call site.
+                    # Compact schemas remove descriptions, losing the fact/episode distinction.
+                    compact_schema=False,
+                    validation_retries=1,
+                    validate_output=validate_references,
+                    validation_repair_hint=(
+                        "Fix the reported fields. Max 8 proposals and 1 episode. An episode "
+                        "requires "
+                        "passages, importance, value_reason; 1-8 passages each need "
+                        "nonblank content "
+                        "and 1-8 unique evidence_refs. For >8 references in one passage, "
+                        "split its "
+                        "content into supported passages; do not discard evidence or invent "
+                        "aliases "
+                        "to fit. Max 16 distinct references and 4000 joined characters per "
+                        "episode. "
+                        "Only supplied event_N/tool_N references are evidence, never "
+                        "context_N. "
+                        "Proposal categories: self_fact, self_preference, self_reflection, "
+                        "self_principle; each needs reason. Episodes are not proposals. Remove "
+                        "placeholders. Use empty arrays for no valuable supported change."
+                    ),
+                )
+            finally:
+                before_provider_request.reset(token)
+                after_provider_request.reset(finish_token)
+            await self._repository.save_checkpoint(
+                batch.run_id,
+                _CHECKPOINT.dump_json(
+                    ReflectionCheckpoint(
+                        output, payload, fact_map, candidate_map, event_map, tool_map
+                    )
+                ).decode(),
+            )
+        already_committed = await self._repository.committed_results(batch.run_id)
         committed = 0
         requested_mutations = 0
         successful_mutations = 0
@@ -230,6 +309,11 @@ class SelfReflectionService:
         from qq_ai_bot.memory.quality_policy import AutomaticValuePolicy
 
         for proposal_index, proposal in enumerate(output.proposals, start=1):
+            if ("proposal", proposal_index) in already_committed:
+                committed += 1
+                successful_mutations += 1
+                requested_mutations += 1
+                continue
             if proposal.operation is SelfReflectionOperation.CREATE:
                 value = AutomaticValuePolicy.evaluate(
                     importance=proposal.importance,
@@ -268,6 +352,11 @@ class SelfReflectionService:
         episode_committed = 0
         episode_attempted = 0
         for index, episode in enumerate(output.episodes, start=1):
+            if ("episode", index) in already_committed:
+                committed += 1
+                episode_committed += 1
+                episode_attempted += 1
+                continue
             value = AutomaticValuePolicy.evaluate(
                 importance=episode.importance,
                 retention=MemoryRetention.MEANINGFUL_EPISODE,
@@ -297,15 +386,24 @@ class SelfReflectionService:
                 continue
             episode_committed += int(changed)
             committed += int(changed)
-        if episode_attempted and not episode_committed:
+        if episode_attempted > episode_committed:
             raise RuntimeError("all self-reflection episodes failed to commit")
-        if requested_mutations and not successful_mutations and not episode_committed:
+        if requested_mutations > successful_mutations:
             raise RuntimeError("all self-reflection mutations failed to commit")
         if not output.proposals and not output.episodes:
             self._metrics.increment("self_reflection_noop")
         self._metrics.increment("self_reflection_episode_committed", episode_committed)
         self._metrics.increment("self_reflection_committed", committed)
-        return len(output.proposals) + len(output.episodes), committed
+        counts = (len(output.proposals) + len(output.episodes), committed)
+        await self._repository.save_checkpoint(
+            batch.run_id,
+            _CHECKPOINT.dump_json(
+                ReflectionCheckpoint(
+                    output, payload, fact_map, candidate_map, event_map, tool_map, counts
+                )
+            ).decode(),
+        )
+        return counts
 
     async def _input(
         self,
@@ -328,7 +426,9 @@ class SelfReflectionService:
         rendered_events: list[SelfReflectionEvent] = []
         remaining = batch.max_input_characters
         for ref, event in event_map.items():
-            rendered = renderer.render_event(event)[: max(1, remaining)]
+            rendered = renderer.render_event(event)
+            if len(rendered) > remaining:
+                raise ValueError("reflection_input_budget_exceeded")
             if rendered:
                 rendered_events.append(
                     SelfReflectionEvent(
@@ -343,8 +443,7 @@ class SelfReflectionService:
                     )
                 )
                 remaining -= len(rendered)
-            if remaining <= 0:
-                break
+
         events = tuple(rendered_events)
         # Only aliases actually shown to the model may become mutation evidence.
         visible_event_refs = {event.ref for event in events}
