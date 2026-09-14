@@ -188,7 +188,6 @@ class ToolRuntime:
     reply_control: ReplyControlState | None = None
     voice_spontaneous_allowed: bool = True
     selection_query: str = ""
-    scheduled_automation_intent: bool = False
     max_model_requests_override: int | None = None
     max_tool_calls_override: int | None = None
     sandbox_source: dict[str, Any] | None = None

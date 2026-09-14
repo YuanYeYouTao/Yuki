@@ -85,7 +85,6 @@ class AutomationValidator:
         now_utc: datetime,
     ) -> ValidatedAutomation:
         validate_timezone(script.timezone)
-        self._reject_ambiguous_time(provenance.original_text)
         schedule_timezone = getattr(script.schedule, "timezone", None)
         if schedule_timezone:
             validate_timezone(schedule_timezone)
@@ -193,19 +192,6 @@ class AutomationValidator:
             if name not in result:
                 result.append(name)
         return tuple(result)
-
-    @staticmethod
-    def _reject_ambiguous_time(original_text: str) -> None:
-        compact = "".join(original_text.split()).casefold()
-        ambiguous = ("晚点", "过会", "等会", "有空时", "下周")
-        if any(token in compact for token in ambiguous):
-            raise ValueError("时间表达含糊，请明确日期、星期、时刻或延迟秒数")
-        if re.search(
-            r"(?<![上下凌晨晚])(?:[一二三四五六七八九十两]|\d{1,2})点", compact
-        ) and not any(
-            marker in compact for marker in ("上午", "下午", "晚上", "凌晨", "每天", "星期", "周")
-        ):
-            raise ValueError("请明确是上午、下午、晚上或具体日期的几点")
 
     @staticmethod
     def _validate_arguments(

@@ -64,7 +64,6 @@ class MainAgentTurnService:
         scope_type: ScopeType | None = None,
         include_plugin_context: bool = True,
         memory_exclusive_write: bool = False,
-        scheduled_automation_intent: bool = False,
     ) -> PromptComposition:
         contract = self._runner.main_contract
         state = await asyncio.to_thread(contract.state.snapshot) if contract else None
@@ -78,7 +77,6 @@ class MainAgentTurnService:
             include_plugin_context=include_plugin_context,
             short_state=state,
             memory_exclusive_write=memory_exclusive_write,
-            scheduled_automation_intent=scheduled_automation_intent,
         )
         if (
             self._projections is None
@@ -150,7 +148,6 @@ class MainAgentTurnService:
             include_plugin_context=include_plugin_context,
             short_state=state,
             memory_exclusive_write=memory_exclusive_write,
-            scheduled_automation_intent=scheduled_automation_intent,
         )
         fragments = prepared.fragments.append_current(
             context.current_event_id, composition.messages[-1]

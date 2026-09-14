@@ -10,7 +10,6 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
 from qq_ai_bot.admin.permission_catalog import contains_internal_capability_payload
-from qq_ai_bot.automation.intent import contains_automation_success_claim
 from qq_ai_bot.capabilities import (
     AuthorityContext,
     CapabilityDescriptor,
@@ -105,7 +104,6 @@ class MainAgentBackend(AgentToolBackend):
         self._admin_terminal_failure: dict[str, object] | None = None
         self._completed_admin_mutations: set[tuple[str, str]] = set()
         self._mutation_committed = False
-        self._automation_persisted = False
         self._batch: list[ToolCall] = []
         self._batch_lock = asyncio.Lock()
         self._catalog: UnifiedToolCatalog | None = None
@@ -757,17 +755,6 @@ class MainAgentBackend(AgentToolBackend):
             self._service._record_memory_mutation_turn_outcome(
                 self._memory_mutation_outcome(decoded)
             )
-        if (
-            descriptor.provider_id == "automation"
-            and descriptor.provider_tool_name == "automation_create"
-        ):
-            data = decoded.get("data")
-            self._automation_persisted = bool(
-                decoded.get("ok")
-                and isinstance(data, dict)
-                and data.get("confirmation") == "persisted"
-                and isinstance(data.get("automation_id"), int)
-            )
         if self._is_mutating_call(call):
             if (
                 not self._exclusive_write()
@@ -816,15 +803,6 @@ class MainAgentBackend(AgentToolBackend):
         if self._capability_was_used and contains_internal_capability_payload(content):
             return (
                 "上一正文未发送：权限结果是内部执行资料。请根据实际结果继续，勿转发内部权限载荷。"
-            )
-        if (
-            self._runtime.scheduled_automation_intent
-            and not self._automation_persisted
-            and contains_automation_success_claim(content)
-        ):
-            return (
-                "上一正文未发送：没有定时任务已持久化的回执。"
-                "核对实际结果，继续创建、查询或如实回答。"
             )
         return None
 

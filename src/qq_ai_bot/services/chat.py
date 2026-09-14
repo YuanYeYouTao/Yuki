@@ -14,9 +14,6 @@ from typing import Any, Protocol, TypedDict, TypeVar, cast
 from qq_ai_bot.adapters.onebot.sender import ConfirmedQuoteRejection
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
-from qq_ai_bot.automation.intent import (
-    is_scheduled_automation_request,
-)
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities import (
     CapabilityTrustSource,
@@ -1047,16 +1044,6 @@ class ChatService:
             if memory_session is not None:
                 memory_cleanup.push_async_callback(memory_session.close)
 
-            scheduled_automation_intent = bool(
-                not visual_input_present
-                and self._automation_tools is not None
-                and any(
-                    tool.name == "automation_create"
-                    for tool in self._automation_tools.definitions()
-                )
-                and is_scheduled_automation_request(content)
-            )
-
             if work_control is not None:
                 from qq_ai_bot.runtime.work_delivery import repair_receipt_ledger
 
@@ -1083,7 +1070,6 @@ class ChatService:
                     attachment_text=attachment_text,
                     visual_failure=visual_failure,
                     turn_origin=turn_origin,
-                    scheduled_automation_intent=scheduled_automation_intent,
                     memory_session=memory_session,
                     turn_snapshot=turn_snapshot,
                 )
@@ -1098,8 +1084,6 @@ class ChatService:
                 read_version,
                 commit_projection,
             ) = await self._run_effect(turn_snapshot, build_messages)
-            exclusive_write = memory_session is not None and memory_session.exclusive_write
-            scheduled_automation_allowed = bool(scheduled_automation_intent and not exclusive_write)
             gateway = (
                 cast(OneBotToolGateway, sender)
                 if callable(getattr(sender, "call_api", None))
@@ -1144,7 +1128,6 @@ class ChatService:
                 reply_control=reply_control,
                 voice_spontaneous_allowed=voice_spontaneous_allowed,
                 selection_query=content,
-                scheduled_automation_intent=scheduled_automation_allowed,
                 memory_turn_id=memory_turn_id,
                 memory_exposures=automatic_memory_exposures,
                 memory_intent=memory_intent,
@@ -1930,7 +1913,6 @@ class ChatService:
         turn_origin: TurnOrigin = TurnOrigin.USER_MESSAGE,
         native_images: tuple[ChatImage, ...] = (),
         attachment_text: str = "",
-        scheduled_automation_intent: bool = False,
         memory_session: TurnMemorySession | None = None,
         turn_snapshot: ConversationTurnSnapshot | None = None,
     ) -> tuple[
@@ -2015,7 +1997,6 @@ class ChatService:
             visual_observation=visual_observation,
             visual_failure=visual_failure,
             memory_exclusive_write=bool(memory_session and memory_session.exclusive_write),
-            scheduled_automation_intent=scheduled_automation_intent,
         )
         messages = composition.messages
         return (
