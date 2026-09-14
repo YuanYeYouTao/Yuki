@@ -336,13 +336,35 @@ class ProfileCommandHandler:
                 )
             if operation == "doctor":
                 health = await self._memory_admin.consistency_health(actor)
+                reflection = await self._memory_admin.self_reflection_health(actor)
+                reflection_text = ""
+                if reflection:
+                    backlog = reflection["backlog"]
+                    groups = "; ".join(
+                        f"{name}={backlog[name]['events']}"
+                        for name in (
+                            "actionable",
+                            "waiting_retry",
+                            "isolated",
+                            "policy_ineligible",
+                            "recent_not_due",
+                            "processing",
+                        )
+                    )
+                    reflection_text = (
+                        f"\nSelf Reflection：运行 {reflection['running']}；{groups}；"
+                        f"今日请求 {backlog['calls_today']}/{backlog['daily_limit']}；"
+                        f"最老可执行 {backlog['oldest_actionable_age_seconds']:.0f} 秒；"
+                        f"流入/排出每小时 {backlog['ingress_events_per_hour']}/"
+                        f"{backlog['drain_events_per_hour']}（None 表示观察不足）。"
+                    )
                 return (
                     f"Memory V2 一致性：{'正常' if health.healthy else '异常'}；"
                     f"active 槽冲突 {health.active_slot_conflicts}；"
                     f"争议 facts {health.contested_fact_count}；"
                     f"孤立关系 {health.orphan_relation_count}；"
                     f"跨目标关系 {health.cross_target_relation_count}；"
-                    f"过期 active {health.expired_active_count}。"
+                    f"过期 active {health.expired_active_count}。{reflection_text}"
                 )
             if not actor.is_superuser:
                 return "权限不足：该记忆检索诊断仅限超级管理员。"

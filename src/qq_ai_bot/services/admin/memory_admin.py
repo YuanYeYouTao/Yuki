@@ -821,6 +821,12 @@ class MemoryAdminService:
             raise RuntimeError("Self Reflection Worker 当前不可用")
         return await self._self_reflection.control.get(run_id)
 
+    async def self_reflection_health(self, actor: AdminActor) -> dict[str, Any] | None:
+        self._require_superuser(actor)
+        if self._self_reflection is None:
+            return None
+        return (await self._self_reflection.health()).model_dump(mode="json")
+
     async def self_reflection_retry(self, actor: AdminActor, run_id: int) -> bool:
         self._require_superuser(actor)
         if self._self_reflection is None:

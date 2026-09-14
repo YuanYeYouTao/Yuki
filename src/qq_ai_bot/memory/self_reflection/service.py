@@ -176,6 +176,9 @@ class SelfReflectionService:
         self._candidates = MemoryClaimCandidateRepository(facts.repository.database)
 
     async def reflect(self, batch: SelfReflectionBatch) -> tuple[int, int]:
+        completed = await self._repository.completed_result(batch.run_id)
+        if completed is not None:
+            return completed
         saved = await self._repository.load_checkpoint(batch.run_id)
         checkpoint = _CHECKPOINT.validate_json(saved) if saved else None
         if checkpoint:
