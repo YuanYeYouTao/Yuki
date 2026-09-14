@@ -49,6 +49,18 @@ class SandboxTaskRepository:
             await control.validate()
             if not await control.repository.valid(control.lease):
                 raise ValueError("invalid_task_work_lease")
+            generation = source.get("generation")
+            if generation is not None and (
+                type(generation) is not int or generation != control.lease.generation
+            ):
+                raise ValueError("invalid_task_work_generation")
+            # Automation has no chat snapshot. Anchor its receipt to the validated
+            # work lease, without modifying the caller's source or delegation.
+            source = {
+                **source,
+                "conversation_id": control.lease.conversation_id,
+                "generation": control.lease.generation,
+            }
         elif source.get("origin") not in {
             "user_message",
             "autonomous_group",
