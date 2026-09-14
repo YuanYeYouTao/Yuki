@@ -64,9 +64,23 @@ checkpoint 与 raw tail 不能重叠或留洞。当前触发事件只在 current
 - protected tail 取最近 N 条可见 message；夹在这些 message 之间或之后的 external keeper 随后缀
   一起受保护。位于 eligible prefix 的外部风暴仍可触发压缩，但不能跨过受保护消息切 batch。
 
-模型配置的最大输出字符必须足以容纳结构化摘要。若 Provider 上限、请求上限或本地
-`summary_max_characters` 不一致，应在调用前按最小有效上限校验并记录无正文错误类别；不能先让
-模型稳定截断，再把低质量 fallback 当作正常结果。
+模型生成预算与摘要字符上限独立。`conversation_rollup_max_output_tokens` 默认 16384，包含推理
+和最终正文；`summary_max_characters` 继续限制落入历史前缀的摘要正文，不能靠增大正文换取
+推理预算。若 Profile 配置了 `max_output_tokens_limit`，共享执行器在发送前拒绝超限请求；
+未配置 Provider 上限时该上限未知，不推测一个硬编码模型限制。超长、无正文、纯 reasoning 和
+不完整响应不能写入语义 checkpoint，错误类别及 token/耗时日志不含正文或推理内容。
+
+`conversation_rollup_model_timeout_seconds` 默认 90 秒，同时设置 Rollup 的 Provider 客户端超时
+和单次排队/模型执行的总等待上限；聊天及其他后台任务沿用各自 Profile 超时。
+达到触发水位后的 Rollup 使用 maintenance 优先级：全局最多一个保护中的维护模型调用，
+共用原全局容量，普通前台不取消它，剩余容量允许其他会话聊天。exclusive 操作可以取消维护请求。
+低于触发水位不启动后台语义请求。
+
+前台超过 admit 时，所有批次共用一次有界等待期限。优先等待同 Conversation/generation
+的现有 claim 提交；没有活动 claim 才以 required 身份执行语义压缩，期间维持 heartbeat。
+失败、已有失败退避或等待超时后才使用应急 overlay。超时先取消本地请求，并最多再等 5 秒
+让原 worker 完成持久提交；无法确认释放时失败关闭，不与原提交竞争。未超过 admit 的会话
+不会全局停聊。普通聊天不再抢占语义 Rollup 的租约。
 
 前台压缩必须有界。达到 trigger 后压向 stop，重新读取一致 snapshot；来源缺口、计数漂移或
 压缩后仍超过 admit 时失败关闭，不拼接不连续摘要。

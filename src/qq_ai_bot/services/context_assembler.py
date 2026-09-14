@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, replace
@@ -1644,6 +1645,10 @@ class ContextAssembler:
         if not self._settings.conversation_rollup_enabled:
             return snapshot, recent, rollup_text, False
         compact_to_stop = False
+        rollup_deadline = (
+            asyncio.get_running_loop().time()
+            + self._settings.conversation_rollup_model_timeout_seconds
+        )
         max_batches = self._settings.conversation_rollup_foreground_max_batches
         for _ in range(max_batches):
             view = self._uncovered_prompt_view(
@@ -1685,11 +1690,12 @@ class ContextAssembler:
             ):
                 break
             compact_to_stop = True
-            committed = await self._rollup_service.ensure_extractive_coverage(
+            committed = await self._rollup_service.ensure_required_coverage(
                 repository=self._rollups,
                 scope=identity,
                 lease_seconds=self._settings.conversation_rollup_lease_seconds,
                 max_batches=1,
+                deadline=rollup_deadline,
             )
             if not committed:
                 raise ConversationCoverageError(

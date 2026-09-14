@@ -14,6 +14,7 @@ from qq_ai_bot.conversation.rollup.errors import (
     ConversationCoverageError,
     RollupLeaseLostError,
     RollupSourceChangedError,
+    model_failure_error_category,
 )
 from qq_ai_bot.conversation.rollup.metrics import ConversationRollupMetrics
 from qq_ai_bot.conversation.rollup.models import (
@@ -30,11 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 def _model_failure_error_category(exc: BaseException) -> str:
-    if isinstance(exc, TimeoutError):
-        return "model_timeout"
-    if isinstance(exc, ValueError):
-        return "model_quality"
-    return type(exc).__name__
+    return model_failure_error_category(exc)
 
 
 class ConversationRollupWorker:
@@ -84,6 +81,11 @@ class ConversationRollupWorker:
                 "enabled": self._enabled,
                 "running": self.running,
                 "model_success_total": self.metrics.model_summaries,
+                "model_timeout_total": self.metrics.model_timeouts,
+                "model_empty_total": self.metrics.model_empty,
+                "model_preempted_total": self.metrics.model_preempted,
+                "max_output_tokens": self._service._max_output_tokens,
+                "model_timeout_seconds": self._service._timeout_seconds,
                 "extractive_total": self.metrics.extractive_fallbacks,
                 "infrastructure_retry_total": self.metrics.infrastructure_retries,
                 "commit_conflict_total": (
@@ -140,6 +142,9 @@ class ConversationRollupWorker:
                 await self._idle()
                 continue
             self.metrics.jobs_claimed += 1
+            settlement_key = (claim.scope_id, claim.generation)
+            settled = asyncio.Event()
+            self._service._settlements[settlement_key] = settled
             heartbeat = asyncio.create_task(self._heartbeat(claim))
             try:
                 for batch_index in range(self._max_batches_per_claim):
@@ -188,6 +193,8 @@ class ConversationRollupWorker:
             finally:
                 heartbeat.cancel()
                 await asyncio.gather(heartbeat, return_exceptions=True)
+                self._service._settlements.pop(settlement_key, None)
+                settled.set()
                 if self.on_finished is not None and claim.conversation_id is not None:
                     self.on_finished(claim.conversation_id)
 
@@ -203,10 +210,15 @@ class ConversationRollupWorker:
             self._service.summarize_candidate(candidate),
             name="conversation-rollup-model",
         )
-        done, _pending = await asyncio.wait(
-            {summary_task, heartbeat},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
+        try:
+            done, _pending = await asyncio.wait(
+                {summary_task, heartbeat},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        except BaseException:
+            summary_task.cancel()
+            await asyncio.gather(summary_task, return_exceptions=True)
+            raise
         if heartbeat in done:
             summary_task.cancel()
             await asyncio.gather(summary_task, return_exceptions=True)

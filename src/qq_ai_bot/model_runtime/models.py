@@ -34,6 +34,8 @@ class ModelExecutionPriority(StrEnum):
     FOREGROUND = "foreground"
     EXCLUSIVE = "exclusive"
     BEST_EFFORT_BACKGROUND = "best_effort_background"
+    MAINTENANCE = "maintenance"
+    REQUIRED = "required"
 
 
 class ModelCapability(StrEnum):
@@ -79,6 +81,7 @@ class ModelProfile(_FrozenModel):
     max_retries: int = Field(ge=0)
     default_temperature: float = Field(ge=0, le=2)
     default_max_output_tokens: int = Field(gt=0)
+    max_output_tokens_limit: int | None = Field(default=None, gt=0)
     thinking_enabled: bool | None = True
     reasoning_effort: ReasoningEffort | None = ReasoningEffort.LOW
     structured_output_mode: StructuredOutputMode = StructuredOutputMode.FUNCTION_TOOL

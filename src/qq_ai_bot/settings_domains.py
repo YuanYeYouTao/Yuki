@@ -72,6 +72,7 @@ class OneBotSettings(DomainSettings):
 
 
 class ModelRuntimeSettings(DomainSettings):
+    conversation_rollup_model_timeout_seconds: float = Field(gt=0)
     llm_provider: str
     llm_base_url: str
     llm_api_key: str
@@ -122,6 +123,7 @@ class ConversationSettings(DomainSettings):
     conversation_rollup_poll_seconds: float = Field(gt=0)
     conversation_rollup_lease_seconds: int = Field(gt=0)
     conversation_rollup_model_timeout_seconds: float = Field(gt=0)
+    conversation_rollup_max_output_tokens: int = Field(ge=16384)
     conversation_rollup_raw_tail_events: int = Field(ge=1)
     conversation_rollup_raw_tail_characters: int = Field(ge=1)
     conversation_rollup_trigger_events: int = Field(ge=2)

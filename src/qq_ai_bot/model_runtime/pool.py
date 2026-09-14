@@ -29,14 +29,17 @@ class ModelClientPool:
     ) -> None:
         self._secret_overrides = dict(secret_overrides or {})
         self._injected_profiles = dict(injected_profiles or {})
-        self._clients: dict[str, LLMProvider] = {}
+        self._clients: dict[tuple[str, float], LLMProvider] = {}
         self._connection_pools: dict[tuple[str, str, str], httpx.AsyncClient] = {}
 
-    def get(self, profile: ModelProfile) -> LLMProvider:
+    def get(self, profile: ModelProfile, *, timeout_seconds: float | None = None) -> LLMProvider:
         injected = self._injected_profiles.get(profile.id)
         if injected is not None:
             return injected
-        existing = self._clients.get(profile.id)
+        if timeout_seconds is not None:
+            profile = profile.model_copy(update={"timeout_seconds": timeout_seconds})
+        key = (profile.id, profile.timeout_seconds)
+        existing = self._clients.get(key)
         if existing is not None:
             return existing
         if profile.provider.casefold() == "fake":
@@ -95,7 +98,7 @@ class ModelClientPool:
             raise LLMConfigurationError(
                 f"model profile {profile.id} uses unsupported provider {profile.provider}"
             )
-        self._clients[profile.id] = provider
+        self._clients[key] = provider
         return provider
 
     @property
