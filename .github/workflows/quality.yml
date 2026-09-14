@@ -109,8 +109,8 @@ jobs:
           count="$(printf '%s\n' "$output" | sed -nE 's/^([0-9]+) tests? collected.*$/\1/p' | tail -n 1)"
           test -n "$count"
           # Includes entrypoint ownership, callback recovery, shared budget and scope gates.
-          if (( count > 910 )); then
-            echo "test budget exceeded: $count collected (maximum 910)" >&2
+          if (( count > 921 )); then
+            echo "test budget exceeded: $count collected (maximum 921)" >&2
             exit 1
           fi
           required_tests=(

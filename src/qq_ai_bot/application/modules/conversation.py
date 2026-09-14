@@ -223,6 +223,7 @@ class ConversationModule:
             models=models,
             config=persistence.conversation_rollups.config,
             timeout_seconds=settings.conversation_rollup_model_timeout_seconds,
+            max_output_tokens=settings.conversation_rollup_max_output_tokens,
             metrics=persistence.conversation_rollup_metrics,
         )
         conversation_rollup_worker = ConversationRollupWorker(

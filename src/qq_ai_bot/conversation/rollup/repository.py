@@ -590,8 +590,9 @@ class ConversationRollupRepository:
         *,
         lease_owner: str,
         lease_seconds: int,
+        preempt: bool = True,
     ) -> RollupJobClaim | None:
-        """Preempt background ownership so foreground can restore a bounded prompt."""
+        """Join live semantic ownership unless an explicit emergency must take over."""
 
         now = _utcnow()
         lease_until = now + timedelta(seconds=lease_seconds)
@@ -604,6 +605,7 @@ class ConversationRollupRepository:
                 lease_until=lease_until,
                 token=token,
                 now=now,
+                preempt=preempt,
             )
 
     async def heartbeat(self, claim: RollupJobClaim, *, lease_seconds: int) -> RollupJobClaim:
@@ -856,11 +858,21 @@ class ConversationRollupRepository:
         lease_until: datetime,
         token: str,
         now: datetime,
+        preempt: bool = True,
     ) -> RollupJobClaim | None:
         conversation = await self._conversation_for_scope(session, scope)
         if conversation is None:
             return None
         job = await session.get(CanonicalConversationRollupJobModel, conversation.id)
+        if (
+            not preempt
+            and job is not None
+            and job.generation == conversation.generation
+            and job.status == "processing"
+            and job.lease_until is not None
+            and job.lease_until.replace(tzinfo=UTC) > now
+        ):
+            return None
         if job is None:
             job = CanonicalConversationRollupJobModel(
                 conversation_id=conversation.id,

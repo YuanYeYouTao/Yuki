@@ -85,6 +85,7 @@ class ModelRuntimeModule:
             pool=clients,
             invocations=invocations,
             max_concurrency=settings.global_llm_concurrency,
+            compaction_timeout_seconds=settings.conversation_rollup_model_timeout_seconds,
         )
         self._lifecycle.register("model_runtime", close=executor.close)
         _route, chat_profile = router.route(ModelTask.CHAT_AGENT)
