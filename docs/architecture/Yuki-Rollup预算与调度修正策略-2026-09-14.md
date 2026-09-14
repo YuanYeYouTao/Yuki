@@ -1,7 +1,7 @@
 # Yuki Rollup 预算与调度修正策略
 
 日期：2026-09-14  
-状态：本策略已完成代码实现及定向验证，正在交付；下文保留诊断基线。现行合同见 [Conversation Rollup](conversation-rollup.md)，上线状态以部署记录为准。
+状态：已实现、合并并部署；下文保留诊断基线。现行合同见 [Conversation Rollup](conversation-rollup.md)，验证与观察限制见 [交付记录](../operations/rollup-scheduling-2026-09-14.md)。
 
 ## 1. 范围
 
