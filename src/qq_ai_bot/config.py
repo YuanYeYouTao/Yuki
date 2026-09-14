@@ -183,23 +183,30 @@ class Settings(BaseSettings):
     memory_self_reflection_timezone: str = "Asia/Shanghai"
     memory_self_reflection_poll_seconds: float = 60.0
     memory_self_reflection_max_batches_per_run: int = Field(
-        default=12,
+        default=32,
         validation_alias=AliasChoices(
             "MEMORY_SELF_REFLECTION_MAX_BATCHES_PER_RUN",
             "MEMORY_SELF_REFLECTION_MAX_SESSIONS_PER_RUN",
         ),
     )
-    memory_self_reflection_max_batches_per_conversation_per_run: int = 7
-    memory_self_reflection_max_daily_calls: int = 36
+    memory_self_reflection_max_batches_per_conversation_per_run: int = 16
+    memory_self_reflection_max_daily_calls: int = 96
     memory_self_reflection_event_threshold: int = 50
     memory_self_reflection_character_threshold: int = 8000
     memory_self_reflection_low_event_threshold: int = 30
     memory_self_reflection_low_character_threshold: int = 4800
     memory_self_reflection_natural_gap_seconds: float = 300.0
     memory_self_reflection_max_wait_seconds: float = 28800.0
-    memory_self_reflection_max_events: int = 100
-    memory_self_reflection_max_characters: int = 8000
-    memory_self_reflection_max_output_tokens: int = 4096
+    memory_self_reflection_max_events: int = 200
+    memory_self_reflection_max_characters: int = 16000
+    memory_self_reflection_max_output_tokens: int = 32768
+    memory_self_reflection_timeout_seconds: float = 180.0
+    memory_self_reflection_drain_enabled: bool = False
+    memory_self_reflection_drain_high_events: int = 500
+    memory_self_reflection_drain_critical_events: int = 1000
+    memory_self_reflection_drain_low_events: int = 100
+    memory_self_reflection_drain_interval_seconds: float = 600.0
+    memory_self_reflection_allow_text_json_fallback: bool = False
     memory_self_reflection_tool_receipt_characters: int = 2000
     memory_self_reflection_tool_receipt_retention_days: int = 7
     memory_max_referenced_targets: int = 5

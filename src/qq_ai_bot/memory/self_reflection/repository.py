@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -190,6 +191,20 @@ class SelfReflectionRepository:
             int(state.last_event_id),
             min(int(through_event_id), int(state.latest_event_id)),
         )
+        gaps = list(
+            (
+                await session.scalars(
+                    select(MemorySelfReflectionRunModel).where(
+                        MemorySelfReflectionRunModel.conversation_key_hash
+                        == state.conversation_key_hash,
+                        MemorySelfReflectionRunModel.last_event_id > state.last_event_id,
+                    )
+                )
+            ).all()
+        )
+        unfinished = [r.first_event_id for r in gaps if r.status != "completed"]
+        if unfinished:
+            processed_last_event_id = min(processed_last_event_id, min(unfinished) - 1)
         remaining_query = self._apply_event_scope(
             select(ChatEventModel).where(
                 ChatEventModel.id > processed_last_event_id,
@@ -198,6 +213,14 @@ class SelfReflectionRepository:
             ),
             state,
         )
+        for completed_run in gaps:
+            if completed_run.status == "completed":
+                remaining_query = remaining_query.where(
+                    or_(
+                        ChatEventModel.id < completed_run.first_event_id,
+                        ChatEventModel.id > completed_run.last_event_id,
+                    )
+                )
         remaining = list(
             (await session.scalars(remaining_query.order_by(ChatEventModel.id.asc()))).all()
         )
@@ -289,11 +312,7 @@ class SelfReflectionRepository:
     async def _scan_event_batch(self, *, limit: int) -> int:
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
-            await session.execute(
-                update(MemorySelfReflectionStateModel)
-                .where(MemorySelfReflectionStateModel.high_value_signal.is_(True))
-                .values(high_value_signal=False, updated_at=now)
-            )
+            session.autoflush = False
             runtime = await session.get(MemorySelfReflectionRuntimeModel, 1)
             if runtime is None:
                 maximum = int(await session.scalar(select(func.max(ChatEventModel.id))) or 0)
@@ -329,6 +348,7 @@ class SelfReflectionRepository:
                         )
                     )
                 )
+            staged_states: dict[str, MemorySelfReflectionStateModel] = {}
             for row in rows:
                 if row.id not in live_ids:
                     continue
@@ -355,6 +375,7 @@ class SelfReflectionRepository:
                         self._owner_state_filter(person_id, space_id)
                     )
                 )
+                state = staged_states.get(key_hash, state)
                 content = row.evidence_content.strip()
                 if state is None:
                     state = MemorySelfReflectionStateModel(
@@ -373,10 +394,13 @@ class SelfReflectionRepository:
                         updated_at=now,
                     )
                     session.add(state)
+                    staged_states[key_hash] = state
                 if content:
+                    runtime.ingress_events_total += 1
                     state.pending_events += 1
                     state.pending_characters += len(content)
                     state.pending_since = state.pending_since or row.occurred_at
+                state.last_policy_reason = None
                 state.latest_event_id = row.id
                 state.has_yuki_reply = state.has_yuki_reply or (
                     row.direction == "outbound"
@@ -388,6 +412,10 @@ class SelfReflectionRepository:
                 runtime.last_scanned_event_id = rows[-1].id
                 runtime.updated_at = now
             return len(rows)
+
+    @property
+    def database(self) -> Database:
+        return self._database
 
     async def claim_due(
         self,
@@ -407,18 +435,15 @@ class SelfReflectionRepository:
         context_events: int = 4,
         force: bool = False,
         excluded_conversation_keys: frozenset[str] = frozenset(),
+        cycle_id: str | None = None,
+        bot_display_name: str = "Yuki",
+        timezone: str = "Asia/Shanghai",
     ) -> tuple[SelfReflectionBatch, ...]:
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
-            used = int(
-                await session.scalar(
-                    select(func.count(MemorySelfReflectionRunModel.id)).where(
-                        MemorySelfReflectionRunModel.scheduled_slot.like(f"{local_date}:%")
-                    )
-                )
-                or 0
-            )
-            available = min(max_sessions, max(0, max_daily_calls - used))
+            session.autoflush = False
+            used = 0
+            available = min(1, max_sessions, max(0, max_daily_calls - used))
             if available <= 0:
                 return ()
             waited_before = now - timedelta(seconds=max_wait_seconds)
@@ -444,7 +469,7 @@ class SelfReflectionRepository:
                 await session.scalars(
                     state_query.order_by(
                         MemorySelfReflectionStateModel.pending_since.asc(),
-                    ).limit(available * 3)
+                    )
                 )
             ).all()
             claimed: list[SelfReflectionBatch] = []
@@ -465,6 +490,38 @@ class SelfReflectionRepository:
                     )
                 )
                 if not (row.has_yuki_reply or row.has_tool_result or has_tool):
+                    if row.pending_since and _utc(row.pending_since) <= waited_before:
+                        await self._advance_state(
+                            session, row, through_event_id=row.latest_event_id, now=now
+                        )
+                        row.last_policy_reason = "no_self_evidence"
+                        row.last_policy_event_id = row.last_event_id
+                    continue
+                outstanding = list(
+                    (
+                        await session.scalars(
+                            select(MemorySelfReflectionRunModel)
+                            .where(
+                                MemorySelfReflectionRunModel.conversation_key_hash
+                                == row.conversation_key_hash,
+                                MemorySelfReflectionRunModel.last_event_id > row.last_event_id,
+                            )
+                            .order_by(MemorySelfReflectionRunModel.first_event_id)
+                        )
+                    ).all()
+                )
+                retry = next(
+                    (
+                        r
+                        for r in outstanding
+                        if r.status == "failed"
+                        and r.retry_state != "isolated"
+                        and (cycle_id is None or r.cycle_id != cycle_id)
+                        and (r.next_attempt_at is None or _utc(r.next_attempt_at) <= now)
+                    ),
+                    None,
+                )
+                if any(r.status == "processing" for r in outstanding):
                     continue
                 event_query = self._apply_event_scope(
                     select(ChatEventModel).where(
@@ -474,12 +531,32 @@ class SelfReflectionRepository:
                     ),
                     row,
                 )
+                if retry is not None:
+                    event_query = event_query.where(
+                        ChatEventModel.id >= retry.first_event_id,
+                        ChatEventModel.id <= retry.last_event_id,
+                    )
+                else:
+                    for owned in outstanding:
+                        event_query = event_query.where(
+                            or_(
+                                ChatEventModel.id < owned.first_event_id,
+                                ChatEventModel.id > owned.last_event_id,
+                            )
+                        )
                 candidate_rows = list(
                     (
                         await session.scalars(
                             event_query.order_by(ChatEventModel.id.asc()).limit(max_events)
                         )
                     ).all()
+                )
+                from qq_ai_bot.event_prompt import ChatEventPromptRenderer
+
+                renderer = ChatEventPromptRenderer(
+                    tuple(_event_record(r) for r in candidate_rows),
+                    bot_display_name=bot_display_name,
+                    timezone=timezone,
                 )
                 event_rows: list[ChatEventModel] = []
                 input_characters = 0
@@ -488,13 +565,18 @@ class SelfReflectionRepository:
                 for item in candidate_rows:
                     if await refuse_legacy_live_event(session, item):
                         continue
-                    item_characters = len(item.evidence_content)
-                    if event_rows and input_characters + item_characters > max_characters:
+                    item_characters = len(renderer.render_event(_event_record(item)))
+                    if input_characters + item_characters > max_characters:
+                        if not event_rows:
+                            # Persist this source before classifying it; otherwise an oversized
+                            # event would crash every cycle without a resumable failure record.
+                            event_rows.append(item)
                         break
                     event_rows.append(item)
                     input_characters += item_characters
                 if (
                     event_rows
+                    and retry is None
                     and natural_gap_seconds is not None
                     and low_event_threshold is not None
                     and low_character_threshold is not None
@@ -509,6 +591,8 @@ class SelfReflectionRepository:
                         low_character_threshold=low_character_threshold,
                         natural_gap_seconds=natural_gap_seconds,
                     )
+                if not event_rows and outstanding:
+                    continue
                 if not event_rows:
                     # Suppression or a repaired canonical chain may invalidate every
                     # remaining row after it was counted. Do not spin on that dead tail.
@@ -518,6 +602,13 @@ class SelfReflectionRepository:
                         through_event_id=row.latest_event_id,
                         now=now,
                     )
+                    continue
+                if retry is not None and (
+                    event_rows[0].id != retry.first_event_id
+                    or event_rows[-1].id != retry.last_event_id
+                ):
+                    retry.retry_state = "isolated"
+                    retry.error_category = "source_range_changed"
                     continue
                 context_query = self._apply_event_scope(
                     select(ChatEventModel).where(
@@ -547,6 +638,21 @@ class SelfReflectionRepository:
                 )
                 run_person_id = row.canonical_person_id
                 run_space_id = row.canonical_space_id
+                projected_state = await self._state(session, row, has_tool=has_tool)
+                if projected_state is None:
+                    continue
+                fingerprint = hashlib.sha256(
+                    repr([(r.id, r.evidence_content) for r in event_rows]).encode()
+                ).hexdigest()
+                if (
+                    retry is not None
+                    and retry.input_fingerprint
+                    and fingerprint != retry.input_fingerprint
+                ):
+                    retry.retry_state = "isolated"
+                    retry.error_category = "source_changed"
+                    continue
+                input_characters = sum(len(item.evidence_content) for item in event_rows)
                 run_values = {
                     "conversation_key_hash": row.conversation_key_hash,
                     "bot_user_id": row.bot_user_id,
@@ -560,24 +666,38 @@ class SelfReflectionRepository:
                     "proposal_count": 0,
                     "committed_count": 0,
                     "started_at": now,
+                    "cycle_id": cycle_id,
+                    "attempt_count": 1,
+                    "input_fingerprint": fingerprint,
+                    "processed_events": len(event_rows),
+                    "processed_characters": input_characters,
                 }
-                conflict, conflict_where = self._run_conflict_target(row)
-                insert_stmt = insert(MemorySelfReflectionRunModel).values(**run_values)
-                if conflict_where is not None:
-                    insert_stmt = insert_stmt.on_conflict_do_nothing(
-                        index_elements=conflict,
-                        index_where=conflict_where,
-                    )
+                if retry is not None:
+                    retry.status = "processing"
+                    retry.started_at = now
+                    retry.completed_at = None
+                    retry.cycle_id = cycle_id
+                    retry.attempt_count += 1
+                    retry.input_fingerprint = fingerprint
+                    retry.processed_events = len(event_rows)
+                    retry.processed_characters = input_characters
+                    run_id = retry.id
                 else:
-                    insert_stmt = insert_stmt.on_conflict_do_nothing(index_elements=conflict)
-                run_id = await session.scalar(
-                    insert_stmt.returning(MemorySelfReflectionRunModel.id)
-                )
-                if run_id is None:
-                    continue
-                projected_state = await self._state(session, row, has_tool=has_tool)
-                if projected_state is None:
-                    continue
+                    conflict, conflict_where = self._run_conflict_target(row)
+                    insert_stmt = insert(MemorySelfReflectionRunModel).values(**run_values)
+                    if conflict_where is not None:
+                        insert_stmt = insert_stmt.on_conflict_do_nothing(
+                            index_elements=conflict,
+                            index_where=conflict_where,
+                        )
+                    else:
+                        insert_stmt = insert_stmt.on_conflict_do_nothing(index_elements=conflict)
+                    inserted_id = await session.scalar(
+                        insert_stmt.returning(MemorySelfReflectionRunModel.id)
+                    )
+                    if inserted_id is None:
+                        continue
+                    run_id = inserted_id
                 claimed.append(
                     SelfReflectionBatch(
                         state=projected_state,
@@ -709,20 +829,16 @@ class SelfReflectionRepository:
     ) -> None:
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
-            await session.execute(
-                update(MemorySelfReflectionRunModel)
-                .where(
-                    MemorySelfReflectionRunModel.id == batch.run_id,
-                    MemorySelfReflectionRunModel.status == "processing",
-                )
-                .values(
-                    status="completed",
-                    proposal_count=proposals,
-                    committed_count=committed,
-                    error_category=None,
-                    completed_at=now,
-                )
-            )
+            session.autoflush = False
+            run = await session.get(MemorySelfReflectionRunModel, batch.run_id)
+            if run is None or run.status != "processing":
+                return
+            run.status = "completed"
+            run.proposal_count = proposals
+            run.committed_count = committed
+            run.error_category = None
+            run.retry_state = None
+            run.completed_at = now
             state = await session.get(MemorySelfReflectionStateModel, batch.state.id)
             if state is None:
                 raise RuntimeError("self-reflection state disappeared during completion")
@@ -737,6 +853,7 @@ class SelfReflectionRepository:
         """Finalize one interrupted run without replaying already committed effects."""
 
         async with self._database.sessions() as session, session.begin():
+            session.autoflush = False
             run = await session.get(MemorySelfReflectionRunModel, run_id)
             if run is None or run.status != "processing":
                 return None
@@ -752,6 +869,7 @@ class SelfReflectionRepository:
 
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
+            session.autoflush = False
             rows = (
                 await session.scalars(
                     select(MemorySelfReflectionRunModel).where(
@@ -796,7 +914,10 @@ class SelfReflectionRepository:
             )
             or 0
         )
-        if committed:
+        completed_counts = (
+            json.loads(run.checkpoint_json).get("completed_counts") if run.checkpoint_json else None
+        )
+        if completed_counts is not None or (committed and run.checkpoint_json is None):
             state = await session.scalar(
                 select(MemorySelfReflectionStateModel).where(
                     self._owner_state_filter(run.canonical_person_id, run.canonical_space_id)
@@ -807,6 +928,7 @@ class SelfReflectionRepository:
                 run.error_category = "recovery_state_missing"
                 run.completed_at = now
                 return "failed"
+            run.status = "completed"
             await self._advance_state(
                 session,
                 state,
@@ -814,18 +936,32 @@ class SelfReflectionRepository:
                 now=now,
             )
             run.status = "completed"
-            run.proposal_count = max(int(run.proposal_count), committed)
+            run.proposal_count = max(
+                int(run.proposal_count), committed, completed_counts[0] if completed_counts else 0
+            )
             run.committed_count = max(int(run.committed_count), committed)
             run.error_category = f"recovered:{error_category}"[:64]
             run.completed_at = now
             return "completed"
+        run.committed_count = max(int(run.committed_count), committed)
+        if run.checkpoint_json:
+            output = json.loads(run.checkpoint_json).get("output", {})
+            run.proposal_count = len(output.get("proposals", [])) + len(output.get("episodes", []))
         run.status = "failed"
         run.error_category = error_category[:64]
         run.completed_at = now
+        run.first_failed_at = run.first_failed_at or now
+        if error_category in {"daily_limit_reached", "preempted"}:
+            run.attempt_count = max(0, run.attempt_count - 1)
+        run.retry_state = "isolated" if run.attempt_count >= 3 else "waiting"
+        run.next_attempt_at = now + timedelta(
+            minutes=(5, 15, 30)[min(2, max(0, run.attempt_count - 1))]
+        )
         return "failed"
 
     async def fail(self, run_id: int, error_category: str) -> None:
         async with self._database.sessions() as session, session.begin():
+            session.autoflush = False
             await session.execute(
                 update(MemorySelfReflectionRunModel)
                 .where(
@@ -839,10 +975,40 @@ class SelfReflectionRepository:
                 )
             )
 
+    async def load_checkpoint(self, run_id: int) -> str | None:
+        async with self._database.sessions() as session:
+            return await session.scalar(
+                select(MemorySelfReflectionRunModel.checkpoint_json).where(
+                    MemorySelfReflectionRunModel.id == run_id
+                )
+            )
+
+    async def save_checkpoint(self, run_id: int, value: str) -> None:
+        if len(value.encode()) > 4 * 1024 * 1024:
+            raise ValueError("reflection_checkpoint_too_large")
+        async with self._database.sessions() as session, session.begin():
+            await session.execute(
+                update(MemorySelfReflectionRunModel)
+                .where(MemorySelfReflectionRunModel.id == run_id)
+                .values(checkpoint_json=value)
+            )
+
+    async def committed_results(self, run_id: int) -> set[tuple[str, int]]:
+        async with self._database.sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(MemorySelfReflectionResultModel).where(
+                        MemorySelfReflectionResultModel.run_id == run_id
+                    )
+                )
+            ).all()
+            return {(r.result_kind, r.result_index) for r in rows}
+
     async def cleanup_receipts(self) -> int:
         from sqlalchemy import delete
 
         async with self._database.sessions() as session, session.begin():
+            session.autoflush = False
             referenced = (
                 select(MemoryEvidenceModel.id)
                 .where(MemoryEvidenceModel.tool_receipt_id == MemoryToolReceiptModel.id)
@@ -894,3 +1060,7 @@ class SelfReflectionRepository:
             has_tool_result=row.has_tool_result or has_tool,
             high_value_signal=False,
         )
+
+
+def _utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)

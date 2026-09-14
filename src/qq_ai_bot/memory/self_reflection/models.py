@@ -284,6 +284,7 @@ class StoredToolReceipt:
 class SelfReflectionHealth(_Contract):
     """Content-free scheduler state exposed to administrators and health checks."""
 
+    backlog: dict[str, object] = Field(default_factory=dict)
     enabled: bool
     running: bool
     schedule_hours: tuple[int, ...]

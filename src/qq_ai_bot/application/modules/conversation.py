@@ -306,7 +306,6 @@ class ConversationModule:
                 facts=persistence.memories,
                 mutations=memory_mutations,
                 models=models,
-                concurrency=self._concurrency,
                 metrics=persistence.memory_metrics,
             ),
             metrics=persistence.memory_metrics,

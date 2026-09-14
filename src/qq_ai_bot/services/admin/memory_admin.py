@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from qq_ai_bot.admin.audit import AdminAuditService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
@@ -51,7 +52,6 @@ from qq_ai_bot.memory.runtime.query_plane import (
     MemoryReadRequest,
     ResolvedReadScope,
 )
-from qq_ai_bot.memory.self_reflection.models import SelfReflectionManualRun
 from qq_ai_bot.memory.self_reflection.worker import SelfReflectionWorker
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import ResolvedSubject
@@ -803,22 +803,29 @@ class MemoryAdminService:
         self._require_superuser(actor)
         return await self.run_maintenance_once()
 
-    async def self_reflection_run(self, actor: AdminActor) -> SelfReflectionManualRun:
-        """Run one bounded manual SELF reflection cycle for a real superuser."""
-
+    async def self_reflection_run(self, actor: AdminActor) -> dict[str, Any]:
         self._require_superuser(actor)
         if self._self_reflection is None:
             raise RuntimeError("Self Reflection Worker 当前不可用")
-        cycle = await self._self_reflection.run_now()
-        return SelfReflectionManualRun(
-            attempted_batches=cycle.attempted_batches,
-            completed_batches=cycle.completed_batches,
-            failed_batches=cycle.failed_batches,
-            proposal_count=cycle.proposal_count,
-            committed_count=cycle.committed_count,
-            health=await self._self_reflection.health(),
-            max_daily_calls=self._settings.memory_self_reflection_max_daily_calls,
+        if actor.trigger_event_id is None or actor.canonical_conversation_id is None:
+            raise ValueError("Self Reflection 需要内部事件与会话标识")
+        return await self._self_reflection.run_now(
+            source_event_id=actor.trigger_event_id, conversation_id=actor.canonical_conversation_id
         )
+
+    async def self_reflection_status(
+        self, actor: AdminActor, run_id: str | None
+    ) -> dict[str, Any] | None:
+        self._require_superuser(actor)
+        if self._self_reflection is None:
+            raise RuntimeError("Self Reflection Worker 当前不可用")
+        return await self._self_reflection.control.get(run_id)
+
+    async def self_reflection_retry(self, actor: AdminActor, run_id: int) -> bool:
+        self._require_superuser(actor)
+        if self._self_reflection is None:
+            raise RuntimeError("Self Reflection Worker 当前不可用")
+        return await self._self_reflection.control.resume_batch(run_id)
 
     async def dream_plan(self, actor: AdminActor) -> DreamRun:
         self._require_superuser(actor)

@@ -263,9 +263,31 @@ def build_model_profiles(*, main_protocol: str, flash_enabled: bool) -> str:
                 'capabilities = ["structured_output", "reasoning"]',
             )
         )
+    if main_protocol == "responses":
+        lines.extend(
+            (
+                "",
+                "[profiles.self_reflection]",
+                'provider = "deepseek"',
+                'protocol = "responses"',
+                'base_url_env = "LLM_BASE_URL"',
+                'api_key_env = "LLM_API_KEY"',
+                'model_env = "LLM_MODEL"',
+                "timeout_seconds = 180.0",
+                "max_retries = 1",
+                "default_temperature = 0.1",
+                "default_max_output_tokens = 32768",
+                'thinking_mode = "enabled"',
+                'reasoning_effort = "low"',
+                'structured_output_mode = "json_schema"',
+                'capabilities = ["structured_output", "reasoning"]',
+            )
+        )
     lines.extend(("", "[routes]"))
     for task in ModelTask:
         profile = "flash" if flash_enabled and task in _FLASH_TASKS else "main"
+        if main_protocol == "responses" and task is ModelTask.MEMORY_SELF_REFLECTION:
+            profile = "self_reflection"
         lines.append(f'{task.value} = "{profile}"')
     return "\n".join(lines) + "\n"
 

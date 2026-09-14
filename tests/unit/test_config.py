@@ -325,10 +325,10 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
     assert settings.memory_self_reflection_low_event_threshold == 30
     assert settings.memory_self_reflection_low_character_threshold == 4800
     assert settings.memory_self_reflection_natural_gap_seconds == 300
-    assert settings.memory_self_reflection_max_batches_per_run == 12
-    assert settings.memory_self_reflection_max_batches_per_conversation_per_run == 7
-    assert settings.memory_self_reflection_max_daily_calls == 36
-    assert settings.memory_self_reflection_max_events == 100
+    assert settings.memory_self_reflection_max_batches_per_run == 32
+    assert settings.memory_self_reflection_max_batches_per_conversation_per_run == 16
+    assert settings.memory_self_reflection_max_daily_calls == 96
+    assert settings.memory_self_reflection_max_events == 200
     assert settings.emoji_selector_candidate_count == 3
     assert settings.emoji_selector_score_gap == 0.75
     assert settings.emoji_selector_timeout_seconds == 2

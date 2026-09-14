@@ -279,12 +279,14 @@ class TaskModelExecutor:
         invocations: ModelInvocationRepository | None = None,
         max_concurrency: int | None = None,
         compaction_timeout_seconds: float = 90.0,
+        self_reflection_timeout_seconds: float = 180.0,
     ) -> None:
         if max_concurrency is not None and max_concurrency <= 0:
             raise ValueError("max_concurrency must be positive when configured")
         self._router = router
         self._pool = pool
         self._compaction_timeout_seconds = compaction_timeout_seconds
+        self._self_reflection_timeout_seconds = self_reflection_timeout_seconds
         self._invocations = invocations
         self._semaphore = (
             asyncio.Semaphore(max_concurrency) if max_concurrency is not None else None
@@ -352,6 +354,8 @@ class TaskModelExecutor:
         provider = (
             self._pool.get(profile, timeout_seconds=self._compaction_timeout_seconds)
             if task is ModelTask.CONVERSATION_COMPACTION
+            else self._pool.get(profile, timeout_seconds=self._self_reflection_timeout_seconds)
+            if task is ModelTask.MEMORY_SELF_REFLECTION
             else self._pool.get(profile)
         )
         normalized = ChatRequest(

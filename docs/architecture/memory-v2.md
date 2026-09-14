@@ -46,6 +46,8 @@ Plugin API 2.0 的受控读取也不产生普通用户社会关系授权。
 
 ### 自省的配置与结构化安全
 
+运行、预算、持久重试和管理报告见 [Self Reflection](self-reflection.md)。
+
 自省按 canonical 会话所有者读取配置：群任务使用 Space，私聊任务使用 Person。
 首条 evidence 即使是 Yuki 的旧/新 Presence 或工具回执，也不承担配置主体角色。
 配置读取允许已有停用所有者，任务准入仍独立判断；不存在或类型错误的引用失败关闭。

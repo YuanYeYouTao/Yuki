@@ -542,7 +542,7 @@ class CommandService:
             "/ai memory show|explain|history <fact_id>\n"
             "/ai memory conflicts [user <QQ号>] | correct | invalidate | restore\n"
             "/ai memory merge|resolve|doctor|maintenance（超级管理员操作按权限执行）\n"
-            "/ai memory self-reflection run（超级管理员立即运行一轮自省）\n"
+            "/ai memory self-reflection run | status [run_id] [页码]（超级管理员后台自省）\n"
             "/ai memory dream plan|start|list|status|show|preview|cancel|resume|retry|rollback"
             "（超级管理员）\n"
             "/ai memory search person <QQ号> <query>（超级管理员）\n"

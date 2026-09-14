@@ -9,7 +9,14 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ChatResponse, ChatTool
+from qq_ai_bot.domain.messages import (
+    ChatMessage,
+    ChatRequest,
+    ChatResponse,
+    ChatTool,
+    ModelResponseStatus,
+)
+from qq_ai_bot.llm.base import LLMInvalidRequestError, LLMUnsupportedFeatureError
 from qq_ai_bot.model_runtime.executor import ModelExecutor
 from qq_ai_bot.model_runtime.models import (
     ModelExecutionPriority,
@@ -60,6 +67,7 @@ class StructuredTaskRunner:
         max_output_tokens: int | None = None,
         mode: StructuredOutputMode | None = None,
         allow_text_json: bool = False,
+        allow_schema_fallback: bool = False,
         compact_schema: bool = False,
         validation_retries: int = 0,
         validation_repair_hint: str = "",
@@ -77,6 +85,7 @@ class StructuredTaskRunner:
             max_output_tokens=max_output_tokens,
             mode=mode,
             allow_text_json=allow_text_json,
+            allow_schema_fallback=allow_schema_fallback,
             compact_schema=compact_schema,
             validation_retries=validation_retries,
             validation_repair_hint=validation_repair_hint,
@@ -98,6 +107,7 @@ class StructuredTaskRunner:
         max_output_tokens: int | None = None,
         mode: StructuredOutputMode | None = None,
         allow_text_json: bool = False,
+        allow_schema_fallback: bool = False,
         compact_schema: bool = False,
         validation_retries: int = 0,
         validation_repair_hint: str = "",
@@ -175,23 +185,69 @@ class StructuredTaskRunner:
             )
             if before_attempt is not None:
                 await before_attempt()
-            if priority is ModelExecutionPriority.FOREGROUND:
-                if canonical_conversation_id is None:
-                    response = await self._models.execute(task, request)
+            try:
+                if priority is ModelExecutionPriority.FOREGROUND:
+                    if canonical_conversation_id is None:
+                        response = await self._models.execute(task, request)
+                    else:
+                        response = await self._models.execute(
+                            task,
+                            request,
+                            canonical_conversation_id=canonical_conversation_id,
+                        )
+                elif canonical_conversation_id is None:
+                    response = await self._models.execute(task, request, priority=priority)
                 else:
                     response = await self._models.execute(
                         task,
                         request,
+                        priority=priority,
                         canonical_conversation_id=canonical_conversation_id,
                     )
-            elif canonical_conversation_id is None:
-                response = await self._models.execute(task, request, priority=priority)
-            else:
-                response = await self._models.execute(
-                    task,
-                    request,
+            except (LLMInvalidRequestError, LLMUnsupportedFeatureError) as exc:
+                if not (
+                    allow_schema_fallback
+                    and effective_mode is StructuredOutputMode.JSON_SCHEMA
+                    and exc.diagnostics.get("code")
+                    in {"unsupported_json_schema", "json_schema_not_supported"}
+                ):
+                    raise
+                logger.warning(
+                    "structured_schema_fallback task=%s reason=json_schema_not_supported",
+                    task.value,
+                )
+                return await self.run_with_response(
+                    task=task,
+                    instruction=instruction
+                    + "\nReturn only one strict JSON object matching this schema: "
+                    + json.dumps(schema),
+                    structured_input=structured_input,
+                    output_model=output_model,
+                    temperature=temperature,
+                    max_output_tokens=max_output_tokens,
+                    mode=StructuredOutputMode.TEXT_JSON,
+                    allow_text_json=True,
+                    validation_retries=validation_retries,
+                    validation_repair_hint=validation_repair_hint,
+                    validate_output=validate_output,
+                    before_attempt=before_attempt,
                     priority=priority,
                     canonical_conversation_id=canonical_conversation_id,
+                )
+            if response.status is ModelResponseStatus.INCOMPLETE or (
+                max_output_tokens is not None
+                and response.completion_tokens is not None
+                and response.completion_tokens >= max_output_tokens
+            ):
+                raise StructuredTaskError(
+                    "structured output was not complete",
+                    reason_code=(
+                        "output_budget_exhausted"
+                        if response.incomplete_reason == "max_output_tokens"
+                        or (response.completion_tokens or 0) >= (max_output_tokens or 2**63)
+                        else "incomplete_response"
+                    ),
+                    response=response,
                 )
             try:
                 decoded = _decode_response(
@@ -216,7 +272,11 @@ class StructuredTaskRunner:
                         task.value,
                         attempts,
                         exc.reason_code,
-                        exc.detail or "none",
+                        (
+                            "redacted"
+                            if task == ModelTask.MEMORY_SELF_REFLECTION
+                            else exc.detail or "none"
+                        ),
                     )
                     raise StructuredTaskError(
                         str(exc),
@@ -230,7 +290,11 @@ class StructuredTaskRunner:
                     task.value,
                     attempts,
                     exc.reason_code,
-                    exc.detail or "none",
+                    (
+                        "redacted"
+                        if task == ModelTask.MEMORY_SELF_REFLECTION
+                        else exc.detail or "none"
+                    ),
                 )
                 messages = (
                     *base_messages,
@@ -269,9 +333,13 @@ def _decode_response[DecodedT: BaseModel](
             )
         raw_result = call.function.arguments
     else:
+        if response.tool_calls:
+            raise StructuredTaskError(
+                "unexpected tools in structured text", reason_code="unexpected_tools"
+            )
         raw_result = response.content.strip()
     try:
-        decoded = json.loads(raw_result)
+        decoded = json.loads(raw_result, parse_constant=_reject_json_constant)
     except json.JSONDecodeError as exc:
         raise StructuredTaskError(
             "structured task returned invalid JSON",
@@ -292,6 +360,10 @@ def _decode_response[DecodedT: BaseModel](
             reason_code="schema_validation",
             detail=_validation_error_detail(exc),
         ) from exc
+
+
+def _reject_json_constant(value: str) -> None:
+    raise StructuredTaskError("nonfinite JSON number", reason_code="json_decode")
 
 
 def _validation_error_detail(exc: ValidationError) -> str:

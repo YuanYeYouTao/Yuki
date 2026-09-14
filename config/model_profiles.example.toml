@@ -35,10 +35,25 @@ reasoning_effort = "low"
 structured_output_mode = "function_tool"
 capabilities = ["structured_output", "reasoning"]
 
+[profiles.self_reflection]
+provider = "deepseek"
+protocol = "responses"
+base_url_env = "LLM_FLASH_BASE_URL"
+api_key_env = "LLM_FLASH_API_KEY"
+model_env = "LLM_FLASH_MODEL"
+timeout_seconds = 180.0
+max_retries = 1
+default_temperature = 0.1
+default_max_output_tokens = 32768
+thinking_mode = "enabled"
+reasoning_effort = "low"
+structured_output_mode = "json_schema"
+capabilities = ["structured_output", "reasoning"]
+
 [routes]
 chat_agent = "pro"
 memory_extraction = "flash"
-memory_self_reflection = "flash"
+memory_self_reflection = "self_reflection"
 memory_consolidation = "flash"
 memory_dream = "flash"
 memory_attribution = "flash"
