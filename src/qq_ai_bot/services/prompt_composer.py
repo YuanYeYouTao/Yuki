@@ -74,7 +74,6 @@ class PromptComposer:
         include_plugin_context: bool = True,
         short_state: list[dict[str, Any]] | None = None,
         memory_exclusive_write: bool = False,
-        scheduled_automation_intent: bool = False,
     ) -> PromptComposition:
         contributions: list[PromptContribution] = [
             static_text(
@@ -123,11 +122,6 @@ class PromptComposer:
             )
         for identity, enabled, data in (
             ("runtime.memory_mutation", memory_exclusive_write, {"exclusive_write": True}),
-            (
-                "runtime.automation_intent",
-                scheduled_automation_intent and not memory_exclusive_write,
-                {"scheduled_automation_intent": True},
-            ),
         ):
             if enabled:
                 contributions.append(

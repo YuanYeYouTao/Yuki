@@ -151,11 +151,28 @@ def test_untrusted_step_output_cannot_become_target_but_can_be_text() -> None:
         )
 
 
-@pytest.mark.parametrize("text", ["晚点提醒我", "下周提醒我", "三点提醒我"])
-def test_ambiguous_natural_time_is_rejected(text: str) -> None:
-    with pytest.raises(ValueError, match=r"时间|明确"):
+@pytest.mark.parametrize(
+    "text", ["今晚十一点写个日记，保存成文件发群里", "今天晚上十一点，重建一下", "就按刚才说的时间"]
+)
+def test_agent_resolved_schedule_is_not_reparsed_from_user_wording(text: str) -> None:
+    payload = _script().model_dump(mode="json")
+    payload["schedule"] = {
+        "type": "once",
+        "local_datetime": "2026-09-14T23:00:00",
+        "timezone": "Asia/Shanghai",
+    }
+    result = _validator().validate(
+        AutomationScript.model_validate(payload),
+        _provenance(text=text),
+        now_utc=datetime(2026, 9, 14, 14, 12, tzinfo=UTC),
+    )
+    assert result.next_run_at == datetime(2026, 9, 14, 15, 0, tzinfo=UTC)
+    payload["timezone"] = "Invalid/Timezone"
+    with pytest.raises(ValueError):
         _validator().validate(
-            _script(), _provenance(text=text), now_utc=datetime(2026, 7, 27, tzinfo=UTC)
+            AutomationScript.model_validate(payload),
+            _provenance(text=text),
+            now_utc=datetime(2026, 9, 14, 14, 12, tzinfo=UTC),
         )
 
 

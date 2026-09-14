@@ -223,7 +223,7 @@ async def test_only_mutation_access_appends_the_write_receipt_contract(database)
             metrics=ContextMetrics(0, 0, len(history), 6, False),
         )
         variants = []
-        for exclusive, scheduled in ((False, False), (True, False), (False, True), (True, True)):
+        for exclusive in (False, True):
             composed = await chat._main_turns.compose(
                 inbound=None,
                 context=context,
@@ -231,13 +231,12 @@ async def test_only_mutation_access_appends_the_write_receipt_contract(database)
                 visual_observation=None,
                 visual_failure=False,
                 memory_exclusive_write=exclusive,
-                scheduled_automation_intent=scheduled,
             )
             variants.append(composed.messages)
             tail = composed.messages[-1].content
             assert strip_dynamic_prefix(tail) == context.current_message.content
             assert ('"exclusive_write":true' in tail) == exclusive
-            assert ('"scheduled_automation_intent":true' in tail) == (scheduled and not exclusive)
+            assert "runtime.automation_intent" not in tail
             assert composed.metrics.total_characters == sum(
                 len(message.content or "") for message in composed.messages
             )
