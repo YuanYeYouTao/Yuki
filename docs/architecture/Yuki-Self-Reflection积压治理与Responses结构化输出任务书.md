@@ -1,10 +1,10 @@
 # Yuki Self Reflection 积压治理与 Responses 结构化输出任务书
 
-> 状态：待实现
+> 状态：代码已部署，真实 manual 与固定调度窗口验收待完成。见 [交付记录](self-reflection-delivery-2026-09-15.md)。
 >
 > 范围：仅 Self Reflection
 >
-> 本文是修改任务书，不表示代码已经修改、镜像已经构建或生产环境已经上线。
+> 本文保留原验收要求；当前实现与线上证据以交付记录和现行 self-reflection.md 为准。
 
 ## 1. 背景与目标
 
