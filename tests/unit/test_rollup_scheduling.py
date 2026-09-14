@@ -60,6 +60,8 @@ async def test_rollup_wire_budget_and_transport_timeout_are_independent(protocol
 
     def transport(request):
         seen.append((json.loads(request.content), request.extensions["timeout"]))
+        truncated = len(seen) == 3
+        reasoning_only = len(seen) == 4
         if protocol == "responses":
             payload = {
                 "id": "r",
@@ -72,12 +74,27 @@ async def test_rollup_wire_budget_and_transport_timeout_are_independent(protocol
                     }
                 ],
             }
+            if truncated:
+                payload.update(
+                    status="incomplete", incomplete_details={"reason": "max_output_tokens"}
+                )
+            if reasoning_only:
+                payload["output"] = [
+                    {
+                        "type": "reasoning",
+                        "summary": [{"type": "summary_text", "text": "private reasoning"}],
+                    }
+                ]
         else:
             payload = {
                 "choices": [
                     {
-                        "message": {"role": "assistant", "content": "summary"},
-                        "finish_reason": "stop",
+                        "message": {
+                            "role": "assistant",
+                            "content": "" if reasoning_only else "summary",
+                            "reasoning_content": "private reasoning",
+                        },
+                        "finish_reason": "length" if truncated else "stop",
                     }
                 ]
             }
@@ -104,6 +121,14 @@ async def test_rollup_wire_budget_and_transport_timeout_are_independent(protocol
         else:
             assert "enabled" in json.dumps(body) and "low" in json.dumps(body)
         assert pool.connection_pool_count == 1
+        from qq_ai_bot.conversation.rollup.errors import model_failure_error_category
+        from qq_ai_bot.llm.base import LLMEmptyResponseError, LLMIncompleteResponseError
+
+        with pytest.raises(LLMIncompleteResponseError):
+            await service.summarize_candidate(_candidate((_event(1, origin="user_message"),)))
+        with pytest.raises(LLMEmptyResponseError) as caught:
+            await service.summarize_candidate(_candidate((_event(1, origin="user_message"),)))
+        assert model_failure_error_category(caught.value) == "model_reasoning_only"
     finally:
         await models.close()
 

@@ -421,7 +421,10 @@ class DeepSeekResponsesProvider(LLMProvider):
             else ModelResponseStatus.COMPLETED
         )
         if not content and not calls and response_status is ModelResponseStatus.COMPLETED:
-            raise LLMEmptyResponseError("provider returned no final message or function call")
+            raise LLMEmptyResponseError(
+                "provider returned no final message or function call",
+                diagnostics={"reasoning_only": bool(reasoning)},
+            )
         continuation = ProviderContinuation(
             provider=cls.provider_name,
             protocol="responses",

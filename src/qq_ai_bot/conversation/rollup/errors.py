@@ -26,7 +26,14 @@ def model_failure_error_category(exc: BaseException) -> str:
     if isinstance(exc, TimeoutError) or name == "LLMTimeoutError":
         return "model_timeout"
     if name == "LLMEmptyResponseError":
-        return "model_reasoning_only" if str(exc) == "rollup_reasoning_only" else "model_empty"
+        return (
+            "model_reasoning_only"
+            if (
+                str(exc) == "rollup_reasoning_only"
+                or getattr(exc, "diagnostics", {}).get("reasoning_only")
+            )
+            else "model_empty"
+        )
     if name == "LLMIncompleteResponseError":
         return "model_truncated"
     if name == "BackgroundModelPreempted":

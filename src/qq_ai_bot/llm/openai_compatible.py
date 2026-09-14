@@ -14,7 +14,13 @@ from tenacity import (
     wait_random_exponential,
 )
 
-from qq_ai_bot.domain.messages import ChatRequest, ChatResponse, ToolCall, ToolFunction
+from qq_ai_bot.domain.messages import (
+    ChatRequest,
+    ChatResponse,
+    ModelResponseStatus,
+    ToolCall,
+    ToolFunction,
+)
 from qq_ai_bot.llm.base import (
     LLMConfigurationError,
     LLMEmptyResponseError,
@@ -105,6 +111,7 @@ class OpenAICompatibleProvider(LLMProvider):
             total_tokens,
             cached_prompt_tokens,
         ) = self._parse_response(response)
+        truncated = response.json()["choices"][0].get("finish_reason") == "length"
         return ChatResponse(
             content=content,
             latency_seconds=latency,
@@ -115,6 +122,8 @@ class OpenAICompatibleProvider(LLMProvider):
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
             cached_prompt_tokens=cached_prompt_tokens,
+            status=ModelResponseStatus.INCOMPLETE if truncated else ModelResponseStatus.COMPLETED,
+            incomplete_reason="max_output_tokens" if truncated else None,
         )
 
     async def _post(self, request: ChatRequest) -> httpx.Response:
@@ -247,8 +256,11 @@ class OpenAICompatibleProvider(LLMProvider):
                         )
                     )
             content = raw_content.strip() if isinstance(raw_content, str) else ""
-            if not content and not tool_calls:
-                raise LLMEmptyResponseError("provider returned empty content")
+            if not content and not tool_calls and first.get("finish_reason") != "length":
+                raise LLMEmptyResponseError(
+                    "provider returned empty content",
+                    diagnostics={"reasoning_only": bool(message.get("reasoning_content"))},
+                )
             request_id = payload.get("id")
             raw_reasoning = message.get("reasoning_content")
             reasoning = raw_reasoning if isinstance(raw_reasoning, str) else None
