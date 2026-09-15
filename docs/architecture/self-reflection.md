@@ -53,6 +53,10 @@ Responses 通用适配器将 Chat 风格的嵌套 schema 展开为 `text.format`
 实际流入/排出速率，观察不足 60 秒时为未知；连续三轮积压未下降会告警。
 配置见 `.env.example`。
 
+管理员可用 `/ai config set memory.self_reflection_drain_enabled false` 关闭额外排空，
+用 `true` 开启，`/ai config get memory.self_reflection_drain_enabled` 查询。
+配置持久化且需要重建/重启 Bot 才生效，不终止当前周期，不关闭固定调度和失败重试。
+
 ## 部署
 
 先备份并在副本验证 0061，再只替换 Bot；首次保持 drain=false，完成真实 manual 验证后
