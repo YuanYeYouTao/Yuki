@@ -60,15 +60,6 @@ class AutomationService:
     def enabled(self) -> bool:
         return self._settings.automation_enabled
 
-    def capability_catalog(self, *, prefix: str = "") -> tuple[tuple[str, str], ...]:
-        """Return current reviewed capability names for Agent-facing DSL documentation."""
-
-        return tuple(
-            (item.name, item.description)
-            for item in self._registry.list()
-            if not prefix or item.name.startswith(prefix)
-        )
-
     async def create_task(
         self,
         task_payload: object,

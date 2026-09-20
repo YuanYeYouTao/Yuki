@@ -4,16 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from enum import StrEnum
-from typing import TYPE_CHECKING
 
 from pydantic import Field
 
 from qq_ai_bot.automation.models import StrictModel, TurnOrigin
 from qq_ai_bot.config import Settings
-
-if TYPE_CHECKING:
-    pass
-
 
 class PermissionLevel(StrEnum):
     USER = "user"
