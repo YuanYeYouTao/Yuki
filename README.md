@@ -9,20 +9,20 @@
 <p>有长期记忆、能使用工具与持久工作环境的 QQ AI Agent</p>
 
 <p>
-  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.2"><img src="https://img.shields.io/badge/Release-3.8.2-blue" alt="Yuki 3.8.2"></a>
+  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.3"><img src="https://img.shields.io/badge/Release-3.8.3-blue" alt="Yuki 3.8.3"></a>
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
   <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/actions/workflows/quality.yml"><img src="https://github.com/YuanYeYouTao/Yuki-QQbot/actions/workflows/quality.yml/badge.svg" alt="Quality"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow" alt="MIT License"></a>
 </p>
 
-[下载 3.8.2](https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.2) · [3.8.3 开发基线](docs/releases/v3.8.3.md) · [当前升级指南](docs/upgrade-3.8.3.md) · [使用帮助](docs/help.md)
+[下载 3.8.3](https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.3) · [3.8.3 发布说明](docs/releases/v3.8.3.md) · [当前升级指南](docs/upgrade-3.8.3.md) · [使用帮助](docs/help.md)
 
 </div>
 
 Yuki 可以在 QQ 私聊和群聊中交流，记住人与共同经历，读取图片、语音和文件，并通过工具搜索资料、发送消息、执行代码和处理后台任务。人格、记忆和关系保存在自己的数据库中，切换 QQ 账号或网关时可以继续沿用。
 
-**当前开发基线为 3.8.3，尚未正式发布；最新正式版仍为 3.8.2。** 当前代码包含持久工作环境、语音识别、统一主 Agent、子任务与持续恢复，以及工具合同清理。工作环境需要单独部署；WebUI 尚未提供。
+**当前正式版为 3.8.3。** 当前代码包含持久工作环境、语音识别、统一主 Agent、子任务与持续恢复，以及工具合同清理。工作环境需要单独部署；WebUI 尚未提供。
 
 ## Yuki 能做什么
 
@@ -77,12 +77,12 @@ Yuki 可以在 QQ 私聊和群聊中交流，记住人与共同经历，读取�
 - 可用的模型服务配置，支持项目接入的 Chat Completions 或 Responses 协议；
 - 至少一个 NapCat 或 SnowLuma QQ 网关及登录账号。
 
-从 [3.8.2 Release](https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.2) 下载部署包，解压后可以手动填写 `.env` 和模型配置，也可以使用配置向导。
+从 [3.8.3 Release](https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.3) 下载部署包，解压后可以手动填写 `.env` 和模型配置，也可以使用配置向导。
 
 Linux：
 
 ```bash
-curl -fLO https://github.com/YuanYeYouTao/Yuki-QQbot/releases/download/v3.8.2/install.sh
+curl -fLO https://github.com/YuanYeYouTao/Yuki-QQbot/releases/download/v3.8.3/install.sh
 chmod +x install.sh
 ./install.sh
 ```
@@ -90,7 +90,7 @@ chmod +x install.sh
 Windows PowerShell：
 
 ```powershell
-Invoke-WebRequest -Uri https://github.com/YuanYeYouTao/Yuki-QQbot/releases/download/v3.8.2/install.ps1 -OutFile install.ps1
+Invoke-WebRequest -Uri https://github.com/YuanYeYouTao/Yuki-QQbot/releases/download/v3.8.3/install.ps1 -OutFile install.ps1
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
@@ -105,13 +105,13 @@ docker compose run --rm --no-deps --entrypoint qq-ai-bot-cli bot init-db
 docker compose up -d
 ```
 
-还需完成 QQ 登录，并按所选插件和语音组件的说明进行初始化。完整步骤见[首次启动与升级指南](docs/upgrade-3.8.2.md)。已有部署请直接按该指南升级，保留原项目名、Compose 覆盖文件和挂载配置。
+还需完成 QQ 登录，并按所选插件和语音组件的说明进行初始化。完整步骤见[首次启动与升级指南](docs/upgrade-3.8.3.md)。已有部署请直接按该指南升级，保留原项目名、Compose 覆盖文件和挂载配置。
 
-正式镜像为 `ghcr.io/yuanyeyoutao/yuki-qqbot:3.8.2`；可选 TTS Worker 镜像为 `ghcr.io/yuanyeyoutao/yuki-genie-tts-worker:3.8.2`。发布包提供 `SHA256SUMS`。单独下载的环境模板附件名为 `default.env.example`，压缩包内仍为 `.env.example`。
+正式镜像为 `ghcr.io/yuanyeyoutao/yuki-qqbot:3.8.3`；可选 TTS Worker 镜像为 `ghcr.io/yuanyeyoutao/yuki-genie-tts-worker:3.8.3`。发布包提供 `SHA256SUMS`。单独下载的环境模板附件名为 `default.env.example`，压缩包内仍为 `.env.example`。
 
 ## 升级与日常维护
 
-当前 3.8.3 开发基线使用数据库版本 **0061**、Plugin API **2.0**；3.8.2 正式发布包的历史目标为 0055。较旧的数据库必须先满足迁移前提，不能通过 `stamp` 跳过迁移。旧插件的 `llm.generate` / `agent.run` 已统一到主入口，依赖旧独立生成语义的插件需要适配。
+3.8.3 使用数据库版本 **0061**、Plugin API **2.0**；3.8.2 发布包的历史目标为 0055。较旧的数据库必须先满足迁移前提，不能通过 `stamp` 跳过迁移。旧插件的 `llm.generate` / `agent.run` 已统一到主入口，依赖旧独立生成语义的插件需要适配。
 
 升级前保存一致的数据库、配置、插件及文件备份；持久环境还需保存家目录与运行回执。暂停写入只涉及 Bot 和相关 Manager，不需要关闭整个 Docker 或 QQ 网关。回退时应先保全升级后的新消息、文件和回执，详见[升级指南](docs/upgrade-3.8.3.md)。
 

@@ -1,7 +1,7 @@
 # Versioned Docker Release
 
 应用版本以 `pyproject.toml` 为源，数据库目标以随包 Alembic 单一 head 为源。
-当前开发基线见 [README](../../README.md)，发布范围见[发布说明](../releases/v3.8.3.md)，
+当前正式版见 [README](../../README.md)，发布范围见[发布说明](../releases/v3.8.3.md)，
 数据库与部署步骤见[升级指南](../upgrade-3.8.3.md)。历史 Release 保留对应版本的记录，不作为当前部署指令。
 
 ## 仓库与 CI
@@ -15,9 +15,9 @@ Memory release check 读取项目版本与迁移图，不另存版本常量或�
 正式产物由 `.github/workflows/release.yml` 发布，目标平台为 `linux/amd64`：
 
 1. 将审核通过的变更合并到 main，确认 Quality 结果与当前发布说明。
-2. 用对应提交创建 `vX.Y.Z` 标签；已有标签与发行资产不覆盖。
+2. 用对应提交创建 `vX.Y.Z` 标签；已有标签与内容不同的发行资产不覆盖，同内容附件在重跑时复用。
 3. Release workflow 构建镜像、部署包、安装入口及 SHA256SUMS，并执行发布 smoke。
-4. 发布完成后更新 README 的正式版下载入口。只有推进开发基线时，不提前声称新镜像或安装包已发布。
+4. 发布提交同步更新 README 的正式版下载入口，并在流水线完成后核对链接、镜像和附件。只有推进开发基线时，不提前声称新镜像或安装包已发布。
 
 首次配置 GHCR 可使用 workflow 的 bootstrap 模式；该模式只准备镜像访问，不等于正式发布。
 Genie-TTS Worker 的发行镜像标签跟随应用版本，其内部组件版本独立维护。

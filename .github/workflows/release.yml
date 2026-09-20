@@ -303,15 +303,33 @@ jobs:
           else
             gh release create "$tag" --verify-tag --title "Yuki $VERSION" --notes-file "docs/releases/v$VERSION.md"
           fi
-          gh release upload "$tag" --clobber \
-            "dist/yuki-$VERSION-deploy.zip" \
-            "dist/yuki-$VERSION-deploy.tar.gz" \
-            "dist/docker-compose.yml" \
-            "dist/.env.example" \
-            "dist/Yuki-$VERSION-Upgrade.md" \
-            "dist/install.sh" \
-            "dist/install.ps1" \
+          assets=(
+            "dist/yuki-$VERSION-deploy.zip"
+            "dist/yuki-$VERSION-deploy.tar.gz"
+            "dist/docker-compose.yml"
+            "dist/.env.example"
+            "dist/Yuki-$VERSION-Upgrade.md"
+            "dist/install.sh"
+            "dist/install.ps1"
             "dist/SHA256SUMS"
+          )
+          existing="$(gh release view "$tag" --json assets --jq '.assets[].name')"
+          existing_dir="$RUNNER_TEMP/yuki-existing-assets"
+          mkdir -p "$existing_dir"
+          for asset in "${assets[@]}"; do
+            name="$(basename "$asset")"
+            [[ "$name" == '.env.example' ]] && name='default.env.example'
+            if grep -Fxq "$name" <<< "$existing"; then
+              gh release download "$tag" --pattern "$name" --dir "$existing_dir"
+              if ! cmp -s "$asset" "$existing_dir/$name"; then
+                echo "Refusing to overwrite divergent release asset: $name" >&2
+                exit 1
+              fi
+              echo "Reusing identical release asset: $name"
+            else
+              gh release upload "$tag" "$asset"
+            fi
+          done
 
   finalize:
     needs: validate
@@ -413,12 +431,30 @@ jobs:
           else
             gh release create "$tag" --verify-tag --title "Yuki $VERSION" --notes-file "docs/releases/v$VERSION.md"
           fi
-          gh release upload "$tag" --clobber \
-            "dist/yuki-$VERSION-deploy.zip" \
-            "dist/yuki-$VERSION-deploy.tar.gz" \
-            "dist/docker-compose.yml" \
-            "dist/.env.example" \
-            "dist/Yuki-$VERSION-Upgrade.md" \
-            "dist/install.sh" \
-            "dist/install.ps1" \
+          assets=(
+            "dist/yuki-$VERSION-deploy.zip"
+            "dist/yuki-$VERSION-deploy.tar.gz"
+            "dist/docker-compose.yml"
+            "dist/.env.example"
+            "dist/Yuki-$VERSION-Upgrade.md"
+            "dist/install.sh"
+            "dist/install.ps1"
             "dist/SHA256SUMS"
+          )
+          existing="$(gh release view "$tag" --json assets --jq '.assets[].name')"
+          existing_dir="$RUNNER_TEMP/yuki-existing-assets"
+          mkdir -p "$existing_dir"
+          for asset in "${assets[@]}"; do
+            name="$(basename "$asset")"
+            [[ "$name" == '.env.example' ]] && name='default.env.example'
+            if grep -Fxq "$name" <<< "$existing"; then
+              gh release download "$tag" --pattern "$name" --dir "$existing_dir"
+              if ! cmp -s "$asset" "$existing_dir/$name"; then
+                echo "Refusing to overwrite divergent release asset: $name" >&2
+                exit 1
+              fi
+              echo "Reusing identical release asset: $name"
+            else
+              gh release upload "$tag" "$asset"
+            fi
+          done
