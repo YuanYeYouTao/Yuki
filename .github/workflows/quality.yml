@@ -124,8 +124,8 @@ jobs:
           count="$(printf '%s\n' "$output" | sed -nE 's/^([0-9]+) tests? collected.*$/\1/p' | tail -n 1)"
           test -n "$count"
           # Includes reflection wire, durable cycles, retry ranges and physical request budgets.
-          if (( count > 931 )); then
-            echo "test budget exceeded: $count collected (maximum 931)" >&2
+          if (( count > 939 )); then
+            echo "test budget exceeded: $count collected (maximum 939)" >&2
             exit 1
           fi
           required_tests=(
