@@ -8,7 +8,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from typing import Any, Literal, Protocol, cast
 
@@ -26,6 +26,7 @@ from qq_ai_bot.conversation.reply import ReplyEffect
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import ChatTool, InboundMessage, PromptRequestDiagnostics
+from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.emoji.models import (
     EmojiPlacement,
     EmojiReplyMode,
@@ -93,7 +94,9 @@ _URL_IN_TEXT = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
 _CQ_CODE = re.compile(r"\[CQ:([a-zA-Z0-9_-]+)(?:,[^\]]*)?\]", re.IGNORECASE)
 _HISTORY_TEXT_MAX = 4000
 _HISTORY_SEGMENT_MAX = 100
-_MEMORY_CHANGE_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP})
+_MEMORY_CHANGE_ORIGINS = frozenset(
+    {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP, TurnOrigin.SCHEDULED_AUTOMATION}
+)
 _MEMORY_INTENT_PROPERTIES = {
     "purpose": {
         "type": "string",
@@ -170,6 +173,7 @@ class ToolRuntime:
     trigger_event_id: int | None = None
     source_display_requested: bool = False
     actor_user_id: str = ""
+    actor_context: ToolActor | None = None
     actor_is_superuser: bool = False
     current_group_id: str | None = None
     mentioned_user_ids: tuple[str, ...] = ()
@@ -252,6 +256,35 @@ class ToolRuntime:
             self.inbound is not None
             and (self.inbound.attachments or self.inbound.reply_attachments)
         )
+
+    def require_actor(self) -> ToolActor:
+        if self.inbound is not None:
+            incoming = ToolActor.from_inbound(self.inbound)
+            if (
+                (self.actor_user_id and incoming.user_id != self.actor_user_id)
+                or (
+                    self.current_group_id is not None and incoming.group_id != self.current_group_id
+                )
+                or (
+                    incoming.event_id is not None
+                    and incoming.event_id != self.effective_trigger_event_id
+                )
+            ):
+                raise PermissionError("tool_actor_context_mismatch")
+            return replace(incoming, event_id=self.effective_trigger_event_id, origin=self.origin)
+        actor: ToolActor | None = self.actor_context
+        if (
+            actor is None
+            or actor.origin is not TurnOrigin.SCHEDULED_AUTOMATION
+            or self.origin is not TurnOrigin.SCHEDULED_AUTOMATION
+            or actor.user_id != self.actor_user_id
+            or actor.group_id != self.current_group_id
+            or not actor.execution_id
+            or actor.execution_id != self.execution_id
+            or actor.conversation_id != self.effective_conversation_id
+        ):
+            raise PermissionError("tool_actor_unavailable")
+        return actor
 
     def require_inbound(self) -> InboundMessage:
         if self.inbound is None:
@@ -783,6 +816,15 @@ class AgentToolService:
                                     "事实或有意义的单次经历，4–5 是重要变化/承诺/里程碑。"
                                 ),
                             },
+                            "evidence_event_id": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "description": (
+                                    "真实内部证据事件 ID。无入站消息时，"
+                                    "先查询创建者在当前会话的原始记录；"
+                                    "省略使用当前入站事件，不可编造。"
+                                ),
+                            },
                             "evidence_refs": {
                                 "type": "array",
                                 "items": {"type": "string", "enum": ["current_event"]},
@@ -936,7 +978,12 @@ class AgentToolService:
         if runtime.declaration_only or (
             self._voice_available_for_turn(runtime)
             and not runtime.read_only
-            and runtime.origin in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}
+            and runtime.origin
+            in {
+                TurnOrigin.USER_MESSAGE,
+                TurnOrigin.AUTONOMOUS_GROUP,
+                TurnOrigin.SCHEDULED_AUTOMATION,
+            }
         ):
             tools.append(
                 ChatTool(
@@ -959,6 +1006,7 @@ class AgentToolService:
         if runtime.declaration_only or runtime.origin in {
             TurnOrigin.USER_MESSAGE,
             TurnOrigin.AUTONOMOUS_GROUP,
+            TurnOrigin.SCHEDULED_AUTOMATION,
         }:
             tools.append(
                 ChatTool(
@@ -1402,7 +1450,12 @@ class AgentToolService:
         runtime: ToolRuntime,
     ) -> str:
         if (
-            runtime.origin not in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}
+            runtime.origin
+            not in {
+                TurnOrigin.USER_MESSAGE,
+                TurnOrigin.AUTONOMOUS_GROUP,
+                TurnOrigin.SCHEDULED_AUTOMATION,
+            }
             or runtime.read_only
         ):
             return self._result(error="voice_preference_forbidden", detail="本轮不能修改语音偏好")
@@ -1415,9 +1468,9 @@ class AgentToolService:
         if mode not in {"text_only", "auto", "prefer_voice"}:
             return self._result(error="invalid_arguments", detail="mode 无效")
         saved = await self._voice_preferences.set_persistent(
-            user_id=runtime.require_inbound().sender.user_id,
+            user_id=runtime.require_actor().user_id,
             mode=VoicePreferenceMode(mode),
-            source_message_id=runtime.require_inbound().message_id,
+            source_message_id=runtime.require_actor().source_key,
             origin=runtime.origin,
         )
         if saved is None:
@@ -1530,23 +1583,11 @@ class AgentToolService:
     ) -> CapabilityReport:
         """Resolve the current sender after validating all event-bound fields."""
 
-        inbound = runtime.require_inbound()
-        actual_superuser = inbound.sender.user_id in self._settings.superusers
-        if (
-            not runtime.actor_user_id
-            or runtime.actor_user_id != inbound.sender.user_id
-            or runtime.actor_is_superuser != actual_superuser
-            or runtime.effective_trigger_event_id is None
-            or runtime.effective_trigger_event_id != inbound.source_event_id
-            or runtime.current_group_id != inbound.group_id
-            or tuple(runtime.mentioned_user_ids) != tuple(inbound.mentioned_user_ids)
-        ):
-            raise PermissionError("权限查询没有绑定到当前真实消息发送者")
-        return self._permission_catalog.report_for_message(
-            inbound,
-            category=category,
-            query=query,
-        )
+        actor = runtime.require_actor()
+        actual_superuser = actor.user_id in self._settings.superusers
+        if runtime.actor_is_superuser != actual_superuser:
+            raise PermissionError("actor_permission_changed")
+        return self._permission_catalog.report_for_actor(actor, category=category, query=query)
 
     async def _recent_history(self, runtime: ToolRuntime) -> str:
         if runtime.read_scope is not None or (runtime.inbound is None and runtime.gateway is None):
@@ -1759,7 +1800,9 @@ class AgentToolService:
         before = self._parse_time(arguments.get("before"))
         user_id = self._optional_string(arguments.get("user_id"))
         group_id = self._optional_string(arguments.get("group_id"))
-        if runtime.inbound is None or runtime.read_scope is not None:
+        if (
+            runtime.inbound is None and runtime.actor_context is None
+        ) or runtime.read_scope is not None:
             scope = runtime.conversation_scope()
             granted_group = scope.group_id if scope.scope_type is ScopeType.GROUP else None
             granted_person = scope.private_peer_user_id if granted_group is None else None
@@ -1905,11 +1948,10 @@ class AgentToolService:
         arguments: dict[str, Any],
         runtime: ToolRuntime,
     ) -> str:
-        if runtime.inbound is None:
-            return self._result(
-                error="permission_denied",
-                detail="关系查询需要绑定真实消息发送者",
-            )
+        try:
+            runtime.require_actor()
+        except PermissionError:
+            return self._result(error="permission_denied", detail="关系查询需要可信执行主体")
         selection = await self._resolve_relationship_selection(arguments, runtime)
         if isinstance(selection, _ToolFailure):
             return self._result(error=selection.code, detail=selection.detail)
@@ -2075,6 +2117,14 @@ class AgentToolService:
         subject_ref: str,
         runtime: ToolRuntime,
     ) -> str | _ToolFailure:
+        if runtime.inbound is None:
+            if (
+                subject_ref == "current_speaker"
+                and runtime.origin is TurnOrigin.SCHEDULED_AUTOMATION
+                and runtime.actor_context is not None
+            ):
+                return runtime.require_actor().user_id
+            return _ToolFailure("subject_not_found", "当前执行没有对应的真实提及或回复事件")
         inbound = runtime.require_inbound()
         if subject_ref == "current_speaker":
             return inbound.sender.user_id
@@ -2149,7 +2199,7 @@ class AgentToolService:
             )
         if self._social_requester(runtime) is not None:
             scope = await self._memory_reads.person(
-                runtime.require_inbound().sender.user_id,
+                runtime.require_actor().user_id,
                 user_id,
             )
             if not scope.targets:
@@ -2570,7 +2620,8 @@ class AgentToolService:
                 error="invalid_memory_change",
                 detail=(f"记忆变更参数无效：{location}:{first.get('type', 'validation_error')}"),
             )
-        trigger_event_id = runtime.effective_trigger_event_id
+        actor = runtime.require_actor()
+        trigger_event_id = request.evidence_event_id or runtime.effective_trigger_event_id
         event = await self._ledger.get_event(trigger_event_id) if trigger_event_id else None
         if event is None:
             return self._result(
@@ -2578,7 +2629,7 @@ class AgentToolService:
                 detail="无法从永久账本核验当前入站消息",
             )
         if (
-            event.sender_user_id != runtime.require_inbound().sender.user_id
+            event.sender_user_id != actor.user_id
             or event.group_id != runtime.current_group_id
             or event.direction != "inbound"
             or event.bot_user_id != (runtime.effective_bot_user_id or "bot")
@@ -2603,7 +2654,7 @@ class AgentToolService:
             delegation_mode="main_agent",
             trigger_actor_user_id=event.sender_user_id,
             decision_actor_type=MemoryDecisionActorType.AGENT,
-            decision_actor_id="main_agent",
+            decision_actor_id=actor.execution_id or "main_agent",
             executed_by_bot_user_id=runtime.effective_bot_user_id or "bot",
             actor_is_superuser=(
                 runtime.actor_is_superuser and event.sender_user_id in self._settings.superusers
@@ -2747,6 +2798,11 @@ class AgentToolService:
         # An origin or arbitrary actor_user_id is not proof of a real user.
         if runtime.inbound is not None and runtime.origin in _MEMORY_CHANGE_ORIGINS:
             return runtime.inbound.sender.user_id
+        if runtime.actor_context is not None:
+            try:
+                return runtime.require_actor().user_id
+            except PermissionError:
+                return None
         return None
 
     async def _can_read_fact(self, fact: Any, runtime: ToolRuntime) -> bool:
@@ -2968,14 +3024,9 @@ class AgentToolService:
             )
 
     async def _call_onebot(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
-        if (
-            not runtime.allow_generic_onebot
-            or not runtime.actor_is_superuser
-            or runtime.inbound is None
-            or runtime.actor_user_id != runtime.inbound.sender.user_id
-            or runtime.actor_user_id not in self._settings.superusers
-        ):
-            return self._result(error="permission_denied", detail="当前轮次不是超级管理员直发")
+        actor = runtime.require_actor()
+        if not runtime.allow_generic_onebot or not runtime.actor_is_superuser:
+            return self._result(error="permission_denied", detail="当前执行主体不是超级管理员")
         if runtime.gateway is None:
             return self._result(error="onebot_unavailable", detail="当前没有 OneBot 连接")
         action = arguments.get("action")
@@ -3002,7 +3053,7 @@ class AgentToolService:
             success=True,
             duration_seconds=time.perf_counter() - started,
         )
-        await self._record_onebot_send(action, params, result, runtime.require_inbound())
+        await self._record_onebot_send(action, params, result, actor)
         return self._result(data={"action": action, "result": result})
 
     async def _web_search(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
@@ -3064,7 +3115,7 @@ class AgentToolService:
         explicitly_sent = (
             normalized in self._inbound_urls(runtime.inbound)
             if runtime.inbound is not None
-            else False
+            else normalized in self._text_urls(runtime.require_actor().instruction)
         )
         previously_found = await sources.used_url_for_trigger(
             conversation_key=runtime.conversation_key,
@@ -3185,6 +3236,10 @@ class AgentToolService:
         text = "\n".join(
             value for value in (inbound.text, inbound.raw_text, inbound.reply_text or "") if value
         )
+        return AgentToolService._text_urls(text)
+
+    @staticmethod
+    def _text_urls(text: str) -> frozenset[str]:
         urls: set[str] = set()
         for match in _URL_IN_TEXT.findall(text):
             candidate = match.rstrip(".,;:!?)]}，。；：！？）》】")
@@ -3199,7 +3254,7 @@ class AgentToolService:
         action: str,
         params: dict[str, Any],
         result: Any,
-        inbound: InboundMessage,
+        actor: ToolActor,
     ) -> None:
         if action not in {
             "send_private_msg",
@@ -3236,12 +3291,12 @@ class AgentToolService:
         if not message_id or not message_id.strip():
             return
         await self._ledger.append(
-            bot_user_id=inbound.bot_user_id or "unknown-bot",
+            bot_user_id=actor.bot_user_id or "unknown-bot",
             platform_message_id=message_id,
             scope_type=scope,
             group_id=group_id,
             private_peer_user_id=peer,
-            sender_user_id=inbound.bot_user_id or "unknown-bot",
+            sender_user_id=actor.bot_user_id or "unknown-bot",
             direction="outbound",
             content=content,
             segments=segments,

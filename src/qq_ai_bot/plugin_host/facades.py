@@ -33,6 +33,7 @@ from qq_ai_bot.conversation.reply import ReplyEffect
 from qq_ai_bot.conversation.scope import runtime_conversation_key
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage
+from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.emoji.collector import EmojiCollector
 from qq_ai_bot.emoji.lifecycle import EmojiLifecycleService
 from qq_ai_bot.emoji.models import (
@@ -2469,7 +2470,7 @@ class _AutomationFacade:
         service = _require_service(self._host._services.automation, "automation")
         row = await service.create(
             builder(parameters),
-            inbound=inbound,
+            actor=ToolActor.from_inbound(inbound),
             conversation_key=invocation.conversation_key,
         )
         return PluginResult(data={"automation": _automation_record(row)})

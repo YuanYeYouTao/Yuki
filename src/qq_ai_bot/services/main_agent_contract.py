@@ -17,9 +17,8 @@ from qq_ai_bot.workspace.short_state import STATE_TOOL, ShortState
 
 
 class MainAgentContract:
-    def __init__(self, chat: Any, automation: Any, state: ShortState) -> None:
-        self.chat, self.automation, self.state = chat, automation, state
-        self.automation_names: dict[str, str] = {}
+    def __init__(self, chat: Any, state: ShortState) -> None:
+        self.chat, self.state = chat, state
         self._tools: tuple[ChatTool, ...] | None = None
         self.revision = ""
         self._lock = asyncio.Lock()
@@ -60,38 +59,11 @@ class MainAgentContract:
                 else:
                     await provider.refresh(force=False)
             registry = self.chat._build_tool_registry(declaration, web_was_used=False)
-            automation_names: dict[str, str] = {}
             tools = [
                 entry.descriptor.as_chat_tool(description=entry.descriptor.description)
                 for entry in registry.catalog(declaration).entries
             ]
             tools.extend((request_tools_definition(), _SET_REPLY_TARGET_TOOL, STATE_TOOL))
-            if self.automation._registry is not None:
-                for capability in self.automation._registry.list():
-                    if not capability.name.startswith("yuki."):
-                        if capability.model_tool_name:
-                            matching = [t for t in tools if t.name == capability.model_tool_name]
-                            if len(matching) != 1 or (
-                                matching[0].parameters != capability.input_schema
-                                or matching[0].description != capability.description
-                                or matching[0].result_cacheable != capability.result_cacheable
-                            ):
-                                raise ValueError(
-                                    f"invalid explicit tool mapping: {capability.name}"
-                                )
-                            automation_names[capability.name] = capability.model_tool_name
-                            continue
-                        automation_names[capability.name] = (
-                            self.automation._registry.agent_tool_name(capability.name)
-                        )
-                        tools.append(
-                            ChatTool(
-                                name=self.automation._registry.agent_tool_name(capability.name),
-                                description=capability.description,
-                                parameters=capability.input_schema,
-                                result_cacheable=capability.result_cacheable,
-                            )
-                        )
             from qq_ai_bot.runtime.subagent_tools import subagent_tools
 
             tools.extend(work_control_tools())
@@ -103,7 +75,7 @@ class MainAgentContract:
             revision = hashlib.sha256(
                 json.dumps(
                     {
-                        "version": 2,
+                        "version": 4,
                         "tools": [
                             {
                                 "name": t.name,
@@ -113,7 +85,6 @@ class MainAgentContract:
                             }
                             for t in frozen
                         ],
-                        "automation_names": dict(sorted(automation_names.items())),
                     },
                     ensure_ascii=False,
                     # Schema mapping order is part of the Provider token prefix.
@@ -121,7 +92,7 @@ class MainAgentContract:
                     separators=(",", ":"),
                 ).encode("utf-8")
             ).hexdigest()
-            self._tools, self.automation_names, self.revision = frozen, automation_names, revision
+            self._tools, self.revision = frozen, revision
             logging.getLogger(__name__).info(
                 "main_agent_manifest_frozen tools=%d revision=%s", len(self._tools), self.revision
             )

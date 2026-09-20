@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import time
 
@@ -27,13 +25,11 @@ from qq_ai_bot.automation.models import (
 )
 from qq_ai_bot.automation.registry import (
     AutomationCapabilityRegistry,
-    CapabilityExecutionContext,
 )
 from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.validator import AutomationValidator, CreationProvenance
 from qq_ai_bot.config import Settings
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
+from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.time.schedules import initial_run_at
 from qq_ai_bot.time.service import TimeContextService
 
@@ -57,32 +53,18 @@ class AutomationService:
         self._registry = registry
         self._time = time_service
         self._validator = AutomationValidator(settings=settings, registry=registry)
-        self._compiler = AutomationCompiler(settings=settings, registry=registry)
+        self._compiler = AutomationCompiler(settings=settings)
         self._audit = audit
 
     @property
     def enabled(self) -> bool:
         return self._settings.automation_enabled
 
-    def capability_catalog(self, *, prefix: str = "") -> tuple[tuple[str, str], ...]:
-        """Return current reviewed capability names for Agent-facing DSL documentation."""
-
-        return tuple(
-            (item.name, item.description)
-            for item in self._registry.list()
-            if not prefix or item.name.startswith(prefix)
-        )
-
-    def task_capability_catalog(self) -> tuple[dict[str, str], ...]:
-        """Return model-safe capability references accepted by TaskSpec."""
-
-        return self._compiler.capability_catalog()
-
     async def create_task(
         self,
         task_payload: object,
         *,
-        inbound: InboundMessage,
+        actor: ToolActor,
         conversation_key: str,
         max_runs: int | None = None,
     ) -> tuple[AutomationRecord, ExecutionPlan]:
@@ -93,15 +75,15 @@ class AutomationService:
             task = TaskSpec.model_validate(task_payload)
         except ValidationError as exc:
             raise ValueError(f"任务规格格式错误：{exc.errors()[0]['msg']}") from exc
-        _creator_person_id, _permission, provenance = await self._creator_context(inbound)
+        _creator_person_id, _permission, provenance = await self._creator_context(actor)
         plan = self._compiler.compile(
             task,
             provenance,
-            default_timezone=await self._time.timezone_for(inbound.sender.user_id),
+            default_timezone=await self._time.timezone_for(actor.user_id),
         )
         row = await self.create(
             plan.script,
-            inbound=inbound,
+            actor=actor,
             conversation_key=conversation_key,
             max_runs=max_runs,
         )
@@ -111,16 +93,16 @@ class AutomationService:
         self,
         task_payload: object,
         *,
-        inbound: InboundMessage,
+        actor: ToolActor,
         max_runs: int | None = None,
     ) -> tuple[AutomationRecord, ...]:
         """Exact structured candidates only; the Agent decides whether to create."""
         task = TaskSpec.model_validate(task_payload)
-        creator, _permission, provenance = await self._creator_context(inbound)
+        creator, _permission, provenance = await self._creator_context(actor)
         plan = self._compiler.compile(
             task,
             provenance,
-            default_timezone=await self._time.timezone_for(inbound.sender.user_id),
+            default_timezone=await self._time.timezone_for(actor.user_id),
         )
         expected = plan.script.model_dump(mode="json", exclude={"name"}, exclude_none=True)
         rows = await self._repository.list_current_for_creator(creator, limit=200)
@@ -131,120 +113,12 @@ class AutomationService:
             and row.script.model_dump(mode="json", exclude={"name"}, exclude_none=True) == expected
         )
 
-    async def find_equivalent_task_delegated(
-        self,
-        task_payload: object,
-        *,
-        context: CapabilityExecutionContext,
-        max_runs: int | None = None,
-    ) -> tuple[AutomationRecord, ...]:
-        _creator, account = await self._delegated_creator(context)
-        inbound = self._delegated_inbound(
-            "list",
-            {},
-            context=context,
-            creator_user_id=account,
-        )
-        return await self.find_equivalent_task(task_payload, inbound=inbound, max_runs=max_runs)
-
-    async def create_task_delegated(
-        self,
-        task_payload: object,
-        *,
-        context: CapabilityExecutionContext,
-        max_runs: int | None = None,
-    ) -> tuple[AutomationRecord, ExecutionPlan]:
-        """Create a follow-up task under the original creator's trusted authority."""
-
-        _creator_person_id, creator_account_id = await self._delegated_creator(context)
-        inbound = self._delegated_inbound(
-            "create",
-            task_payload,
-            context=context,
-            creator_user_id=creator_account_id,
-        )
-        try:
-            task = TaskSpec.model_validate(task_payload)
-        except ValidationError as exc:
-            raise ValueError(f"任务规格格式错误：{exc.errors()[0]['msg']}") from exc
-        plan = self._compiler.compile(
-            task,
-            (await self._creator_context(inbound))[2],
-            default_timezone=context.timezone,
-        )
-        row = await self.create(
-            plan.script,
-            inbound=inbound,
-            conversation_key=context.conversation_key,
-            max_runs=max_runs,
-        )
-        return row, plan
-
-    async def update_task_delegated(
-        self,
-        automation_id: int,
-        task_payload: object,
-        *,
-        context: CapabilityExecutionContext,
-    ) -> tuple[AutomationRecord, ExecutionPlan]:
-        _creator_person_id, creator_account_id = await self._delegated_creator(context)
-        inbound = self._delegated_inbound(
-            "update",
-            {"automation_id": automation_id, "task": task_payload},
-            context=context,
-            creator_user_id=creator_account_id,
-        )
-        return await self.update_task(
-            automation_id,
-            task_payload,
-            inbound=inbound,
-            conversation_key=context.conversation_key,
-        )
-
-    async def cancel_delegated(
-        self,
-        automation_id: int,
-        *,
-        context: CapabilityExecutionContext,
-    ) -> bool:
-        _creator_person_id, creator_account_id = await self._delegated_creator(context)
-        inbound = self._delegated_inbound(
-            "cancel",
-            {"automation_id": automation_id},
-            context=context,
-            creator_user_id=creator_account_id,
-        )
-        return await self.cancel(
-            automation_id,
-            inbound=inbound,
-            conversation_key=context.conversation_key,
-        )
-
-    async def run_now_delegated(
-        self,
-        automation_id: int,
-        *,
-        context: CapabilityExecutionContext,
-    ) -> bool:
-        _creator_person_id, creator_account_id = await self._delegated_creator(context)
-        inbound = self._delegated_inbound(
-            "run_now",
-            {"automation_id": automation_id},
-            context=context,
-            creator_user_id=creator_account_id,
-        )
-        return await self.run_now(
-            automation_id,
-            inbound=inbound,
-            conversation_key=context.conversation_key,
-        )
-
     async def update_task(
         self,
         automation_id: int,
         task_payload: object,
         *,
-        inbound: InboundMessage,
+        actor: ToolActor,
         conversation_key: str,
     ) -> tuple[AutomationRecord, ExecutionPlan]:
         """Compile and validate a high-level replacement before switching versions."""
@@ -255,13 +129,13 @@ class AutomationService:
             raise ValueError(f"任务规格格式错误：{exc.errors()[0]['msg']}") from exc
         plan = self._compiler.compile(
             task,
-            (await self._creator_context(inbound))[2],
-            default_timezone=await self._time.timezone_for(inbound.sender.user_id),
+            (await self._creator_context(actor))[2],
+            default_timezone=await self._time.timezone_for(actor.user_id),
         )
         row = await self.update(
             automation_id,
             plan.script,
-            inbound=inbound,
+            actor=actor,
             conversation_key=conversation_key,
         )
         return row, plan
@@ -269,7 +143,7 @@ class AutomationService:
     async def record_creation_failure(
         self,
         *,
-        inbound: InboundMessage,
+        actor: ToolActor,
         conversation_key: str,
         error: Exception,
     ) -> None:
@@ -279,11 +153,11 @@ class AutomationService:
             return
         try:
             await self._audit.record(
-                actor=self._audit_ref(inbound, conversation_key),
+                actor=self._audit_ref(actor, conversation_key),
                 capability="automation",
                 operation="create_task",
                 target_type="automation_draft",
-                target_id=inbound.message_id,
+                target_id=actor.platform_message_id,
                 after={"phase": "compile_or_commit"},
                 success=False,
                 error_category=type(error).__name__,
@@ -316,7 +190,7 @@ class AutomationService:
         self,
         script_payload: object,
         *,
-        inbound: InboundMessage,
+        actor: ToolActor,
         conversation_key: str,
         max_runs: int | None = None,
     ) -> AutomationRecord:
@@ -331,10 +205,10 @@ class AutomationService:
         except ValidationError as exc:
             raise ValueError(f"自动化脚本格式错误：{exc.errors()[0]['msg']}") from exc
         now = self._time.clock.now()
-        creator_person_id, permission, provenance = await self._creator_context(inbound)
+        creator_person_id, permission, provenance = await self._creator_context(actor)
         validated = self._validator.validate(script, provenance, now_utc=now)
         existing = await self._repository.get_by_creation_key(
-            creator_person_id, _creation_key(inbound.source_key)
+            creator_person_id, _creation_key(actor.source_key)
         )
         if existing is not None:
             if existing.script_hash != validated.script_hash or existing.max_runs != max_runs:
@@ -348,9 +222,9 @@ class AutomationService:
         if await self._repository.active_count(creator_person_id) >= maximum:
             raise ValueError(f"当前用户最多同时启用 {maximum} 个自动化任务")
         authority = DelegatedAuthority(
-            creator_user_id=inbound.sender.user_id,
-            bot_user_id=inbound.bot_user_id,
-            created_from_message_id=inbound.message_id,
+            creator_user_id=actor.user_id,
+            bot_user_id=actor.bot_user_id,
+            created_from_message_id=actor.platform_message_id,
             created_at=now.isoformat(),
             permission_level=permission,
             granted_capabilities=validated.required_capabilities,
@@ -359,19 +233,19 @@ class AutomationService:
                 for name in validated.required_capabilities
             },
             capability_provenance=self._capability_provenance(validated.required_capabilities),
-            current_group_id=inbound.group_id,
+            current_group_id=actor.group_id,
         )
         row = await self._repository.create(
             validated,
             authority,
-            creation_source_key=_creation_key(inbound.source_key),
+            creation_source_key=_creation_key(actor.source_key),
             creator_person_id=creator_person_id,
             max_runs=max_runs,
             misfire_grace_seconds=self._settings.automation_default_misfire_grace_seconds,
             now=now,
         )
         await self._audit_event(
-            inbound,
+            actor,
             conversation_key,
             operation="create",
             automation_id=row.id,
@@ -385,10 +259,10 @@ class AutomationService:
         automation_id: int,
         script_payload: object,
         *,
-        inbound: InboundMessage,
+        actor: ToolActor,
         conversation_key: str,
     ) -> AutomationRecord:
-        creator_person_id, permission, provenance = await self._creator_context(inbound)
+        creator_person_id, permission, provenance = await self._creator_context(actor)
         existing = await self._require_owned_person(automation_id, creator_person_id)
         try:
             script = AutomationScript.model_validate(script_payload)
@@ -401,9 +275,9 @@ class AutomationService:
             now_utc=now,
         )
         authority = DelegatedAuthority(
-            creator_user_id=inbound.sender.user_id,
-            bot_user_id=inbound.bot_user_id,
-            created_from_message_id=inbound.message_id,
+            creator_user_id=actor.user_id,
+            bot_user_id=actor.bot_user_id,
+            created_from_message_id=actor.platform_message_id,
             created_at=now.isoformat(),
             permission_level=permission,
             granted_capabilities=validated.required_capabilities,
@@ -412,7 +286,7 @@ class AutomationService:
                 for name in validated.required_capabilities
             },
             capability_provenance=self._capability_provenance(validated.required_capabilities),
-            current_group_id=inbound.group_id,
+            current_group_id=actor.group_id,
         )
         row = await self._repository.update_script(
             automation_id,
@@ -424,7 +298,7 @@ class AutomationService:
         if row is None:
             raise ValueError("该任务已经结束，不能更新")
         await self._audit_event(
-            inbound,
+            actor,
             conversation_key,
             operation="update",
             automation_id=row.id,
@@ -459,10 +333,8 @@ class AutomationService:
         creator_person_id = await self._resolve_creator_person(creator_user_id)
         return await self._require_owned_person(automation_id, creator_person_id)
 
-    async def pause(
-        self, automation_id: int, *, inbound: InboundMessage, conversation_key: str
-    ) -> bool:
-        creator_person_id = await self._resolve_creator_person(inbound.sender.user_id)
+    async def pause(self, automation_id: int, *, actor: ToolActor, conversation_key: str) -> bool:
+        creator_person_id = await self._resolve_creator_person(actor.user_id)
         await self._require_owned_person(automation_id, creator_person_id)
         changed = await self._repository.set_status(
             automation_id,
@@ -471,7 +343,7 @@ class AutomationService:
             now=self._time.clock.now(),
         )
         await self._audit_event(
-            inbound,
+            actor,
             conversation_key,
             operation="pause",
             automation_id=automation_id,
@@ -479,10 +351,8 @@ class AutomationService:
         )
         return changed
 
-    async def resume(
-        self, automation_id: int, *, inbound: InboundMessage, conversation_key: str
-    ) -> bool:
-        creator_person_id = await self._resolve_creator_person(inbound.sender.user_id)
+    async def resume(self, automation_id: int, *, actor: ToolActor, conversation_key: str) -> bool:
+        creator_person_id = await self._resolve_creator_person(actor.user_id)
         row = await self._require_owned_person(automation_id, creator_person_id)
         now = self._time.clock.now()
         next_run = initial_run_at(row.script.schedule, now, row.timezone)
@@ -493,7 +363,7 @@ class AutomationService:
             now=now,
         )
         await self._audit_event(
-            inbound,
+            actor,
             conversation_key,
             operation="resume",
             automation_id=automation_id,
@@ -501,10 +371,8 @@ class AutomationService:
         )
         return changed
 
-    async def cancel(
-        self, automation_id: int, *, inbound: InboundMessage, conversation_key: str
-    ) -> bool:
-        creator_person_id = await self._resolve_creator_person(inbound.sender.user_id)
+    async def cancel(self, automation_id: int, *, actor: ToolActor, conversation_key: str) -> bool:
+        creator_person_id = await self._resolve_creator_person(actor.user_id)
         await self._require_owned_person(automation_id, creator_person_id)
         changed = await self._repository.set_status(
             automation_id,
@@ -513,7 +381,7 @@ class AutomationService:
             now=self._time.clock.now(),
         )
         await self._audit_event(
-            inbound,
+            actor,
             conversation_key,
             operation="cancel",
             automation_id=automation_id,
@@ -521,10 +389,8 @@ class AutomationService:
         )
         return changed
 
-    async def run_now(
-        self, automation_id: int, *, inbound: InboundMessage, conversation_key: str
-    ) -> bool:
-        creator_person_id = await self._resolve_creator_person(inbound.sender.user_id)
+    async def run_now(self, automation_id: int, *, actor: ToolActor, conversation_key: str) -> bool:
+        creator_person_id = await self._resolve_creator_person(actor.user_id)
         await self._require_owned_person(automation_id, creator_person_id)
         changed = await self._repository.schedule_now(
             automation_id,
@@ -532,7 +398,7 @@ class AutomationService:
             now=self._time.clock.now(),
         )
         await self._audit_event(
-            inbound,
+            actor,
             conversation_key,
             operation="run_now",
             automation_id=automation_id,
@@ -762,9 +628,11 @@ class AutomationService:
 
     async def _creator_context(
         self,
-        inbound: InboundMessage,
+        actor: ToolActor,
     ) -> tuple[str, PermissionLevel, CreationProvenance]:
-        creator_person_id = await self._resolve_creator_person(inbound.sender.user_id)
+        creator_person_id = await self._resolve_creator_person(actor.user_id)
+        if actor.person_id is not None and actor.person_id != creator_person_id:
+            raise PermissionError("actor_identity_changed")
         accounts = await self._repository.active_creator_accounts(creator_person_id)
         if not accounts:
             raise PermissionError("当前永久主体没有活动 QQ 绑定")
@@ -772,7 +640,7 @@ class AutomationService:
         return (
             creator_person_id,
             permission,
-            self._creation_provenance(inbound, permission=permission),
+            self._creation_provenance(actor, permission=permission),
         )
 
     async def _require_owned_person(
@@ -785,74 +653,36 @@ class AutomationService:
             raise ValueError("没有找到属于当前用户的自动化任务")
         return row
 
-    async def _delegated_creator(
-        self,
-        context: CapabilityExecutionContext,
-    ) -> tuple[str, str]:
-        parent = await self._repository.get(context.automation_id)
-        if parent is None or parent.canonical_creator_person_id is None:
-            raise PermissionError("自动化没有可验证的永久创建者")
-        account_id = await self._repository.preferred_active_creator_account(
-            parent.canonical_creator_person_id
-        )
-        if account_id is None:
-            raise PermissionError("自动化创建者没有活动 QQ 绑定")
-        return parent.canonical_creator_person_id, account_id
-
     def _require_enabled(self) -> None:
         if not self._settings.automation_enabled:
             raise ValueError("自动化功能当前未启用")
 
     def _creation_provenance(
         self,
-        inbound: InboundMessage,
+        actor: ToolActor,
         *,
         permission: PermissionLevel,
     ) -> CreationProvenance:
         return CreationProvenance(
-            creator_user_id=inbound.sender.user_id,
-            bot_user_id=inbound.bot_user_id,
-            message_id=inbound.message_id,
-            original_text=inbound.text,
-            current_group_id=inbound.group_id,
-            mentioned_user_ids=inbound.mentioned_user_ids,
+            creator_user_id=actor.user_id,
+            bot_user_id=actor.bot_user_id,
+            message_id=actor.platform_message_id,
+            original_text=actor.instruction,
+            current_group_id=actor.group_id,
+            mentioned_user_ids=actor.mentioned_user_ids,
             permission=permission,
         )
 
-    @staticmethod
-    def _delegated_inbound(
-        operation: str,
-        payload: object,
-        *,
-        context: CapabilityExecutionContext,
-        creator_user_id: str,
-    ) -> InboundMessage:
-        """Project scheduled authority into a non-user synthetic service envelope."""
-
-        serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
-        digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
-        message_id = (
-            f"auto:{context.automation_id}:{context.automation_run_id}:"
-            f"{context.step_id}:{operation}:{digest}"
-        )[:128]
-        return InboundMessage(
-            message_id=message_id,
-            source_execution_id=message_id,
-            event_type="scheduled_automation",
-            scope_type=(ScopeType.GROUP if context.current_group_id else ScopeType.PRIVATE),
-            sender=SenderIdentity(user_id=creator_user_id),
-            text=serialized[:12000],
-            bot_user_id=context.bot_user_id,
-            group_id=context.current_group_id,
-            received_at=context.actual_started_at,
-        )
-
-    def _audit_ref(self, inbound: InboundMessage, conversation_key: str) -> ControlAuditRef:
+    def _audit_ref(self, actor: ToolActor, conversation_key: str) -> ControlAuditRef:
         return ControlAuditRef(
-            user_id=inbound.sender.user_id,
-            trigger_message_id=inbound.message_id,
+            user_id=actor.user_id,
+            trigger_message_id=actor.platform_message_id,
+            trigger_event_id=actor.event_id,
+            decision_actor_id=actor.execution_id or None,
+            canonical_conversation_id=actor.conversation_id,
+            ingress_presence_id=actor.presence_id,
             conversation_key=conversation_key,
-            bot_user_id=inbound.bot_user_id,
+            bot_user_id=actor.bot_user_id,
         )
 
     def _capability_provenance(
@@ -873,7 +703,7 @@ class AutomationService:
 
     async def _audit_event(
         self,
-        inbound: InboundMessage,
+        actor: ToolActor,
         conversation_key: str,
         *,
         operation: str,
@@ -885,7 +715,7 @@ class AutomationService:
         if self._audit is None:
             return
         await self._audit.record(
-            actor=self._audit_ref(inbound, conversation_key),
+            actor=self._audit_ref(actor, conversation_key),
             capability="automation",
             operation=operation,
             target_type="automation",

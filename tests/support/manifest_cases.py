@@ -49,8 +49,7 @@ async def run_manifest_cases(state):
         _external_tool_providers=[SimpleNamespace(prepare_manifest=prepare)],
         _build_tool_registry=build_registry,
     )
-    automation = SimpleNamespace(_registry=None)
-    contract = MainAgentContract(chat, automation, state)
+    contract = MainAgentContract(chat, state)
     pending = asyncio.create_task(contract.definitions())
     try:
         await asyncio.wait_for(started.wait(), timeout=2)
@@ -62,23 +61,23 @@ async def run_manifest_cases(state):
         if not pending.done():
             pending.cancel()
         await asyncio.gather(pending, return_exceptions=True)
-    assert contract._tools is None and contract.automation_names == {} and not contract.revision
+    assert contract._tools is None and not contract.revision
     failure = False
     first = await contract.definitions()
     assert contract.revision
 
     # Equal mappings with a different property order require a different revision.
     tool.parameters["properties"] = dict(reversed(tuple(tool.parameters["properties"].items())))
-    reordered = MainAgentContract(chat, automation, state)
+    reordered = MainAgentContract(chat, state)
     assert await reordered.definitions() == first
     assert reordered.revision != contract.revision
     assert await contract.definitions() == first
 
     # Failure during serialization must not publish an incomplete frozen object.
     tool.parameters["bad"] = object()
-    invalid = MainAgentContract(chat, automation, state)
+    invalid = MainAgentContract(chat, state)
     with pytest.raises(TypeError):
         await invalid.definitions()
-    assert invalid._tools is None and not invalid.revision and invalid.automation_names == {}
+    assert invalid._tools is None and not invalid.revision
     del tool.parameters["bad"]
     assert await invalid.definitions()

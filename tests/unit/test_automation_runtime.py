@@ -15,11 +15,10 @@ from qq_ai_bot.automation.authority import (
     AuthorityContext,
     DelegatedAuthority,
     PermissionLevel,
-    effective_delegated_capabilities,
 )
 from qq_ai_bot.automation.executor import AutomationExecutor
 from qq_ai_bot.automation.gateway import ProactiveGatewayError
-from qq_ai_bot.automation.handlers import AutomationCapabilityHandlers, _AutomationAgentBackend
+from qq_ai_bot.automation.handlers import AutomationCapabilityHandlers
 from qq_ai_bot.automation.models import (
     AutomationContext,
     AutomationScript,
@@ -39,9 +38,9 @@ from qq_ai_bot.automation.worker import AutomationWorker
 from qq_ai_bot.capabilities.catalog import estimate_chat_tool_tokens
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
+from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.identity.routing import PresenceRouter, RouteSendError
 from qq_ai_bot.persistence.models import AutomationStepRunModel, AutomationVersionModel
-from qq_ai_bot.services.agent_runner import AgentRuntime
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.automation_commands import AutomationCommandHandler
 from qq_ai_bot.time.schedules import schedule_after_completion
@@ -129,7 +128,9 @@ async def test_repository_persists_versions_and_owner_scope(database) -> None:
         registry=registry,
         time_service=TimeContextService(database, clock=clock),
     )
-    row = await service.create(_script(), inbound=_inbound(), conversation_key="private:10001")
+    row = await service.create(
+        _script(), actor=ToolActor.from_inbound(_inbound()), conversation_key="private:10001"
+    )
 
     assert row.id > 0
     assert (await repository.get(row.id)).script_hash == row.script_hash  # type: ignore[union-attr]
@@ -185,7 +186,7 @@ def test_create_tool_exposes_high_level_task_spec(database) -> None:
         for item in AutomationToolService(service).definitions()
         if item.name == "automation_create"
     )
-    assert "不要手写 AutomationScript" in tool.description
+    assert "主 Agent 的完整工具" in tool.description
     assert "confirmation='persisted'" in tool.description
     example = tool.parameters["properties"]["task"]["examples"][0]  # type: ignore[index]
     assert example["goal"] == "提醒我喝水"
@@ -218,7 +219,7 @@ async def test_generation_keeps_dynamic_automation_data_out_of_system_messages(
     from qq_ai_bot.workspace.store import WorkspaceStore
 
     handlers._agent_runner.main_contract = MainAgentContract(
-        chat, SimpleNamespace(_registry=None), ShortState(WorkspaceStore(tmp_path / "state"))
+        chat, ShortState(WorkspaceStore(tmp_path / "state"))
     )
     context = CapabilityExecutionContext(
         authority=AuthorityContext(
@@ -362,9 +363,9 @@ def test_create_tool_description_does_not_embed_capability_catalog(database) -> 
         if item.name == "automation_create"
     )
     task_schema = tool.parameters["properties"]["task"]
-    capabilities = task_schema["properties"]["capabilities"]["items"]
+    assert "capabilities" not in task_schema["properties"]
     encoded = json.dumps(tool.parameters, ensure_ascii=False)
-    fat_ids = [registry.agent_tool_name(f"mcp.mcd.long_tool_{index}") for index in range(20)]
+    fat_ids = [f"mcp.mcd.long_tool_{index}" for index in range(20)]
     assert tool.description == _CREATE_DESCRIPTION
     assert len(tool.description) <= SEARCH_DOCUMENT_TEXT_MAX
     assert "可选 capability ID：" not in tool.description
@@ -372,7 +373,6 @@ def test_create_tool_description_does_not_embed_capability_catalog(database) -> 
     assert fat_description not in tool.description
     assert fat_description not in encoded
     assert "$defs" not in task_schema
-    assert "enum" not in capabilities
     assert all(item_id not in tool.description for item_id in fat_ids)
     assert all(item_id not in encoded for item_id in fat_ids)
     assert estimate_chat_tool_tokens(tool) < 1000
@@ -381,43 +381,14 @@ def test_create_tool_description_does_not_embed_capability_catalog(database) -> 
         for item in AutomationToolService(service).definitions()
         if item.name == "automation_update"
     )
-    update_capabilities = update.parameters["properties"]["task"]["properties"]["capabilities"]
-    assert "enum" not in update_capabilities["items"]
+    assert "capabilities" not in update.parameters["properties"]["task"]["properties"]
     assert estimate_chat_tool_tokens(update) < 1000
 
 
-@pytest.mark.asyncio
-async def test_delegated_create_tool_exposes_task_spec_and_validation_issues() -> None:
-    async def create_task(arguments, context):
-        return CapabilityResult(data={"automation_id": 1})
-
-    registry = build_capability_registry({"automation.create_task": create_task})
-    capability = registry.require("automation.create_task")
-    schema = capability.input_schema
-    task_schema = schema["$defs"]["TaskSpec"]  # type: ignore[index]
-    assert task_schema["required"] == ["name", "goal", "trigger"]
-    assert "oneOf" in task_schema["properties"]["trigger"]
-
-    backend = _AutomationAgentBackend(
-        registry,
-        cast(CapabilityExecutionContext, SimpleNamespace(web_was_used=False)),
-    )
-    runtime = cast(
-        AgentRuntime,
-        SimpleNamespace(allowed_capabilities=frozenset({"automation.create_task"})),
-    )
-    tool = backend.definitions(runtime, web_was_used=False)[0]
-    result = json.loads(
-        await backend.execute(
-            tool.name,
-            json.dumps({"task": {"name": "喝水提醒"}}, ensure_ascii=False),
-            runtime,
-        )
-    )
-
-    assert result["ok"] is False
-    assert result["error"] == "invalid_arguments"
-    assert {issue["path"] for issue in result["issues"]} == {"task.goal", "task.trigger"}
+def test_removed_automation_tool_backend_is_not_registered() -> None:
+    registry = build_capability_registry()
+    assert registry.get("automation.create_task") is None
+    assert registry.get("automation.update_task") is None
 
 
 def test_removed_admin_action_is_not_registered() -> None:
@@ -471,7 +442,7 @@ async def test_create_tool_compiles_and_confirms_database_persistence(database) 
         )
     )
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert result["data"]["confirmation"] == "persisted"
     assert result["data"]["compiled_strategy"] == "static"
     automation_id = result["data"]["automation_id"]
@@ -502,7 +473,7 @@ async def test_delegated_followup_creation_is_owned_and_idempotent(database) -> 
     )
     parent = await service.create(
         _script(),
-        inbound=_inbound(),
+        actor=ToolActor.from_inbound(_inbound()),
         conversation_key="private:10001",
     )
     granted = frozenset({"automation.create_task"})
@@ -544,13 +515,25 @@ async def test_delegated_followup_creation_is_owned_and_idempotent(database) -> 
         "strategy": "static",
     }
 
-    first, _ = await service.create_task_delegated(payload, context=context)
-    repeated, _ = await service.create_task_delegated(payload, context=context)
+    actor = ToolActor(
+        user_id=context.creator_user_id,
+        bot_user_id=context.bot_user_id,
+        group_id=None,
+        origin=TurnOrigin.SCHEDULED_AUTOMATION,
+        instruction="定时后续提醒",
+        execution_id="automation:23:execute:call-1",
+    )
+    first, _ = await service.create_task(
+        payload, actor=actor, conversation_key=context.conversation_key
+    )
+    repeated, _ = await service.create_task(
+        payload, actor=actor, conversation_key=context.conversation_key
+    )
 
     assert first.id == repeated.id
     assert first.creator_user_id == "10001"
     assert len(await service.list_current("10001")) == 2
-    assert first.created_from_message_id.startswith(f"auto:{parent.id}:23:execute:create:")
+    assert first.created_from_message_id == ""  # No fabricated QQ message.
 
 
 @pytest.mark.asyncio
@@ -606,7 +589,9 @@ async def test_worker_executes_once_and_prevents_duplicate_claim(database, resum
         )
         raw["limits"].update(max_steps=2, max_llm_calls=2, max_tool_calls=2)
         script = AutomationScript.model_validate(raw)
-    row = await service.create(script, inbound=_inbound(), conversation_key="private:10001")
+    row = await service.create(
+        script, actor=ToolActor.from_inbound(_inbound()), conversation_key="private:10001"
+    )
     clock.advance(2)
     first = await repository.claim_due(worker_id="first", now=clock.now(), lease_seconds=30)
     second = await repository.claim_due(worker_id="second", now=clock.now(), lease_seconds=30)
@@ -686,7 +671,9 @@ async def test_superuser_authority_revocation_blocks_old_task(database) -> None:
         registry=registry,
         time_service=TimeContextService(database, clock=clock),
     )
-    row = await service.create(_script(), inbound=_inbound("9000"), conversation_key="private:9000")
+    row = await service.create(
+        _script(), actor=ToolActor.from_inbound(_inbound("9000")), conversation_key="private:9000"
+    )
     clock.advance(2)
     run = await repository.create_run(
         row.id,
@@ -729,17 +716,27 @@ async def test_pause_resume_cancel_and_run_now(database) -> None:
         time_service=TimeContextService(database, clock=clock),
     )
     inbound = _inbound()
-    row = await service.create(_script(), inbound=inbound, conversation_key="private:10001")
-    assert await service.pause(row.id, inbound=inbound, conversation_key="private:10001")
+    row = await service.create(
+        _script(), actor=ToolActor.from_inbound(inbound), conversation_key="private:10001"
+    )
+    assert await service.pause(
+        row.id, actor=ToolActor.from_inbound(inbound), conversation_key="private:10001"
+    )
     assert (await repository.get(row.id)).status is AutomationStatus.PAUSED  # type: ignore[union-attr]
-    assert await service.resume(row.id, inbound=inbound, conversation_key="private:10001")
-    assert await service.run_now(row.id, inbound=inbound, conversation_key="private:10001")
-    assert await service.cancel(row.id, inbound=inbound, conversation_key="private:10001")
+    assert await service.resume(
+        row.id, actor=ToolActor.from_inbound(inbound), conversation_key="private:10001"
+    )
+    assert await service.run_now(
+        row.id, actor=ToolActor.from_inbound(inbound), conversation_key="private:10001"
+    )
+    assert await service.cancel(
+        row.id, actor=ToolActor.from_inbound(inbound), conversation_key="private:10001"
+    )
     assert (await repository.get(row.id)).status is AutomationStatus.CANCELLED  # type: ignore[union-attr]
 
 
 @pytest.mark.asyncio
-async def test_removed_capability_blocks_task_and_new_capability_is_not_granted(
+async def test_removed_dsl_step_blocks_but_current_actor_sees_new_capabilities(
     database,
 ) -> None:
     clock = FakeClock(datetime(2026, 7, 27, tzinfo=UTC))
@@ -753,19 +750,15 @@ async def test_removed_capability_blocks_task_and_new_capability_is_not_granted(
         registry=original,
         time_service=time_service,
     )
-    row = await service.create(_script(), inbound=_inbound(), conversation_key="private:10001")
-    authority = DelegatedAuthority.model_validate(row.authority_snapshot)
-
+    row = await service.create(
+        _script(), actor=ToolActor.from_inbound(_inbound()), conversation_key="private:10001"
+    )
     expanded = build_capability_registry()
     expanded.register(replace(expanded.require("yuki.generate"), name="future.read"))
-    effective = effective_delegated_capabilities(
-        authority,
-        settings=settings,
-        registry=expanded,
-        current_permission=PermissionLevel.USER,
-    )
-    assert effective == frozenset({"onebot.send_private_message"})
-    assert "future.read" not in effective
+    snapshot = await AutomationExecutor(
+        settings=settings, registry=expanded, repository=repository, time_service=time_service
+    )._begin_execution(row)
+    assert "future.read" in snapshot.allowed
 
     removed = AutomationCapabilityRegistry()
     for definition in original.list():
@@ -803,7 +796,9 @@ async def test_unavailable_canonical_route_blocks_due_task(database) -> None:
         registry=build_capability_registry(),
         time_service=time_service,
     )
-    row = await service.create(_script(), inbound=_inbound(), conversation_key="private:10001")
+    row = await service.create(
+        _script(), actor=ToolActor.from_inbound(_inbound()), conversation_key="private:10001"
+    )
     clock.advance(2)
     worker = AutomationWorker(
         settings=settings,
@@ -854,7 +849,9 @@ async def test_misfired_once_task_is_marked_missed_without_sending(database) -> 
         registry=registry,
         time_service=time_service,
     )
-    row = await service.create(_script(), inbound=_inbound(), conversation_key="private:10001")
+    row = await service.create(
+        _script(), actor=ToolActor.from_inbound(_inbound()), conversation_key="private:10001"
+    )
     clock.advance(60)
     worker = AutomationWorker(
         settings=settings,
@@ -898,7 +895,9 @@ async def test_uncertain_send_is_never_retried(database) -> None:
         registry=registry,
         time_service=time_service,
     )
-    row = await service.create(_script(), inbound=_inbound(), conversation_key="private:10001")
+    row = await service.create(
+        _script(), actor=ToolActor.from_inbound(_inbound()), conversation_key="private:10001"
+    )
     clock.advance(2)
     run = await repository.create_run(
         row.id,
@@ -975,7 +974,7 @@ async def test_web_result_can_be_followed_by_authorized_admin_mutation(database)
     )
     row = await service.create(
         script,
-        inbound=_inbound("9000"),
+        actor=ToolActor.from_inbound(_inbound("9000")),
         conversation_key="private:9000",
     )
     clock.advance(2)
@@ -1009,13 +1008,15 @@ async def test_update_creates_version_and_step_audit_redacts_secrets(database) -
         time_service=TimeContextService(database, clock=clock),
     )
     inbound = _inbound()
-    row = await service.create(_script(), inbound=inbound, conversation_key="private:10001")
+    row = await service.create(
+        _script(), actor=ToolActor.from_inbound(inbound), conversation_key="private:10001"
+    )
     payload = _script().model_dump(mode="json")
     payload["name"] = "更新后的提醒"
     await service.update(
         row.id,
         payload,
-        inbound=inbound,
+        actor=ToolActor.from_inbound(inbound),
         conversation_key="private:10001",
     )
     run = await repository.create_run(
@@ -1074,7 +1075,7 @@ async def test_three_consecutive_failures_stop_periodic_task(database) -> None:
     payload["schedule"] = {"type": "interval", "seconds": 60}
     row = await service.create(
         AutomationScript.model_validate(payload),
-        inbound=_inbound(),
+        actor=ToolActor.from_inbound(_inbound()),
         conversation_key="private:10001",
     )
     executor = AutomationExecutor(
@@ -1200,7 +1201,7 @@ async def test_superuser_script_persists_explicit_person_not_creator(database) -
     )
     row = await service.create(
         _script_to("1808058482"),
-        inbound=_superuser_inbound("1808058482"),
+        actor=ToolActor.from_inbound(_superuser_inbound("1808058482")),
         conversation_key="private:9000",
     )
     assert row.canonical_target_person_id is not None
@@ -1225,7 +1226,7 @@ async def test_multiple_distinct_send_targets_are_rejected(database) -> None:
     with pytest.raises(ValueError, match="一个永久发送目标"):
         await service.create(
             _script_to("1808058482", extra="1808058483"),
-            inbound=_superuser_inbound("1808058482", "1808058483"),
+            actor=ToolActor.from_inbound(_superuser_inbound("1808058482", "1808058483")),
             conversation_key="private:9000",
         )
 
@@ -1272,14 +1273,14 @@ async def test_update_switches_to_same_person_alias(database) -> None:
     inbound = _superuser_inbound("1808058482", "1808058499")
     row = await service.create(
         _script_to("1808058482"),
-        inbound=inbound,
+        actor=ToolActor.from_inbound(inbound),
         conversation_key="private:9000",
     )
     assert row.canonical_target_person_id == target
     updated = await service.update(
         row.id,
         _script_to("1808058499"),
-        inbound=inbound,
+        actor=ToolActor.from_inbound(inbound),
         conversation_key="private:9000",
     )
     assert updated.canonical_target_person_id == target
@@ -1291,7 +1292,7 @@ async def test_unknown_person_and_space_targets_fail_closed(database) -> None:
     with pytest.raises(ValueError, match="永久主体"):
         await service.create(
             _script_to("666666666"),
-            inbound=_superuser_inbound("666666666"),
+            actor=ToolActor.from_inbound(_superuser_inbound("666666666")),
             conversation_key="private:9000",
         )
     inbound = InboundMessage(
@@ -1330,7 +1331,7 @@ async def test_unknown_person_and_space_targets_fail_closed(database) -> None:
                     },
                 }
             ),
-            inbound=inbound,
+            actor=ToolActor.from_inbound(inbound),
             conversation_key="group:666666667",
         )
 
@@ -1340,7 +1341,7 @@ async def test_creator_without_binding_fails_closed(database) -> None:
     with pytest.raises(PermissionError, match="永久主体绑定"):
         await _canonical_service(database).create(
             _script(),
-            inbound=_inbound("666666668"),
+            actor=ToolActor.from_inbound(_inbound("666666668")),
             conversation_key="private:666666668",
         )
 
@@ -1365,7 +1366,7 @@ async def test_disabled_binding_fails_while_space_target_remains_canonical(datab
     with pytest.raises(ValueError, match="永久主体"):
         await service.create(
             _script_to("1808058482"),
-            inbound=_superuser_inbound("1808058482"),
+            actor=ToolActor.from_inbound(_superuser_inbound("1808058482")),
             conversation_key="private:9000",
         )
     inbound = InboundMessage(
@@ -1403,7 +1404,7 @@ async def test_disabled_binding_fails_while_space_target_remains_canonical(datab
                 },
             }
         ),
-        inbound=inbound,
+        actor=ToolActor.from_inbound(inbound),
         conversation_key="group:2001",
     )
     assert row.canonical_target_space_id == space

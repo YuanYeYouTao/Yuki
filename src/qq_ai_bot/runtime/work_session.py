@@ -31,6 +31,7 @@ class WorkSession:
         self.sequence = 0
         self.recovered_delivery: str | None = None
         self.progress: dict[str, Any] = {}
+        self.reply_state_reader: Callable[[], dict[str, Any]] | None = None
         self.initial: TurnTranscript | None = None
         self.handoff_work_id: str | None = None
 
@@ -188,6 +189,8 @@ class WorkSession:
         if self.control.current is None:
             return
         assert self.transcript is not None
+        if self.reply_state_reader is not None:
+            self.progress["reply_state"] = self.reply_state_reader()
         self.handoff_work_id = self.control.handoff_work_id or self.handoff_work_id
         self.pending = [
             {"id": call.id, "name": call.function.name, "arguments": call.function.arguments}

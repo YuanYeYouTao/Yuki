@@ -16,7 +16,6 @@ from qq_ai_bot.automation.authority import (
     AuthorityContext,
     DelegatedAuthority,
     PermissionLevel,
-    effective_delegated_capabilities,
     permission_for_accounts,
 )
 from qq_ai_bot.automation.context import AutomationBindError, bind_automation_conversation
@@ -174,6 +173,8 @@ class AutomationExecutor:
                 and fresh.record.claimed_by != automation.claimed_by
             ):
                 raise AutomationExecutionError("automation_lease_lost")
+            if fresh.actor_is_superuser != actor_is_superuser:
+                raise AutomationExecutionError("actor_permission_changed")
             if capability is not None and (
                 capability not in allowed or capability not in fresh.allowed
             ):
@@ -287,6 +288,7 @@ class AutomationExecutor:
                         automation_context=automation.script.context,
                         conversation_key=conversation_key,
                         web_was_used=web_was_used,
+                        canonical_creator_person_id=automation.canonical_creator_person_id,
                         canonical_target_person_id=automation.canonical_target_person_id,
                         canonical_target_space_id=automation.canonical_target_space_id,
                         canonical_conversation_id=conversation_id,
@@ -533,14 +535,10 @@ class AutomationExecutor:
                     error_category="delegated_authority_revoked",
                     summary={"reason": "control principal is no longer active"},
                 )
-            authority = DelegatedAuthority.model_validate(current.authority_snapshot)
-            allowed = effective_delegated_capabilities(
-                authority,
-                settings=self._settings,
-                registry=self._registry,
-                current_permission=current_permission,
+            allowed = frozenset(
+                item.name for item in self._registry.list() if item.permits(current_permission)
             )
-            if not set(current.required_capabilities).issubset(allowed):
+            if not {step.call for step in current.script.steps}.issubset(allowed):
                 return ExecutionResult(
                     status=RunStatus.BLOCKED,
                     error_category="delegated_authority_revoked",
@@ -627,9 +625,11 @@ class AutomationExecutor:
                 summary={"reason": "canonical creator has no active binding"},
             )
         person_id = PersonId.parse(creator_id)
-        current_permission = permission_for_accounts(
-            self._settings, (str(item) for item in accounts)
-        )
+        if automation.creator_user_id not in accounts:
+            return ExecutionResult(
+                status=RunStatus.BLOCKED, error_category="actor_identity_changed"
+            )
+        current_permission = permission_for_accounts(self._settings, (automation.creator_user_id,))
         principal = ControlPrincipal(
             principal_id=PrincipalId.parse(person_id.text),
             person_id=person_id,

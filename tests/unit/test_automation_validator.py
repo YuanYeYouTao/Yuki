@@ -407,7 +407,7 @@ def test_explicit_target_must_be_a_complete_numeric_token() -> None:
         )
 
 
-def test_yuki_agent_delegates_only_explicit_selected_capabilities() -> None:
+def test_yuki_agent_ignores_historical_tool_selection() -> None:
     payload = _script().model_dump(mode="json")
     payload["steps"] = [
         {
@@ -433,10 +433,7 @@ def test_yuki_agent_delegates_only_explicit_selected_capabilities() -> None:
         _provenance(),
         now_utc=datetime(2026, 7, 27, tzinfo=UTC),
     )
-    assert "history.search" in ordinary.required_capabilities
-    assert "web.search" in ordinary.required_capabilities
-    assert "onebot.call_api" not in ordinary.required_capabilities
-    assert "config.set" not in ordinary.required_capabilities
+    assert ordinary.required_capabilities == ("yuki.agent",)
 
     payload["steps"][0]["arguments"]["allowed_capabilities"] = [
         "onebot.call_api",
@@ -447,9 +444,7 @@ def test_yuki_agent_delegates_only_explicit_selected_capabilities() -> None:
         _provenance(superuser=True),
         now_utc=datetime(2026, 7, 27, tzinfo=UTC),
     )
-    assert "onebot.call_api" in admin.required_capabilities
-    assert "admin.execute_action" not in admin.required_capabilities
-    assert "config.set" in admin.required_capabilities
+    assert admin.required_capabilities == ("yuki.agent",)
 
 
 def test_yuki_agent_context_and_nested_limits_must_match_script() -> None:

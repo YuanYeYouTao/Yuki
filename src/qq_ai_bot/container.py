@@ -521,7 +521,7 @@ class ApplicationContainer:
         from qq_ai_bot.workspace.short_state import ShortState
 
         self.main_agent_contract = MainAgentContract(
-            self.chat, self._automation_handlers, ShortState(self.workspace_service.store)
+            self.chat, ShortState(self.workspace_service.store)
         )
         self.agent_tools.short_state = self.main_agent_contract.state
         self.chat._agent_runner.main_contract = self.main_agent_contract

@@ -68,10 +68,7 @@ class SandboxTaskRepository:
         } or not source.get("actor_user_id"):
             raise ValueError("invalid_task_source")
         if not owned_work and source["origin"] == "scheduled_automation":
-            if not source.get("delegated_authority"):
-                raise ValueError("missing_task_delegation")
-            if not source.get("automation_run_id") or not source.get("step_id"):
-                raise ValueError("invalid_task_execution_anchor")
+            raise ValueError("scheduled_task_requires_work_lease")
         elif not owned_work and (
             type(source.get("trigger_event_id")) is not int or source["trigger_event_id"] <= 0
         ):

@@ -17,6 +17,12 @@ from qq_ai_bot.persistence.repositories import AgentActionRepository, EventLedge
 logger = logging.getLogger(__name__)
 
 
+def _reply_segments(text: str, message_id: str | None) -> object:
+    if message_id is None:
+        return text
+    return [{"type": "reply", "data": {"id": message_id}}, {"type": "text", "data": {"text": text}}]
+
+
 class ProactiveGatewayError(RuntimeError):
     """Sanitized proactive transport failure with stable category."""
 
@@ -27,9 +33,13 @@ class ProactiveGatewayError(RuntimeError):
 
 
 class ProactiveGateway(Protocol):
-    async def send_private(self, user_id: str, text: str) -> object: ...
+    async def send_private(
+        self, user_id: str, text: str, *, reply_to_message_id: str | None = None
+    ) -> object: ...
 
-    async def send_group(self, group_id: str, text: str) -> object: ...
+    async def send_group(
+        self, group_id: str, text: str, *, reply_to_message_id: str | None = None
+    ) -> object: ...
 
     async def send_emoji(
         self,
@@ -86,9 +96,12 @@ class OneBotProactiveGateway:
         self._target_person_id = target_person_id
         self._target_space_id = target_space_id
 
-    async def send_private(self, user_id: str, text: str) -> object:
+    async def send_private(
+        self, user_id: str, text: str, *, reply_to_message_id: str | None = None
+    ) -> object:
         result, resolved = await self._invoke(
-            "send_private_msg", {"user_id": user_id, "message": text}
+            "send_private_msg",
+            {"user_id": user_id, "message": _reply_segments(text, reply_to_message_id)},
         )
         await self._record_message(
             result,
@@ -100,9 +113,12 @@ class OneBotProactiveGateway:
         )
         return result
 
-    async def send_group(self, group_id: str, text: str) -> object:
+    async def send_group(
+        self, group_id: str, text: str, *, reply_to_message_id: str | None = None
+    ) -> object:
         result, resolved = await self._invoke(
-            "send_group_msg", {"group_id": group_id, "message": text}
+            "send_group_msg",
+            {"group_id": group_id, "message": _reply_segments(text, reply_to_message_id)},
         )
         await self._record_message(
             result,
@@ -117,7 +133,7 @@ class OneBotProactiveGateway:
     async def call_api(self, action: str, params: dict[str, object]) -> object:
         started = time.perf_counter()
         try:
-            result, _resolved = await self._invoke(action, params)
+            result, _resolved = await self._invoke(action, params, bind_target=False)
         except ProactiveGatewayError as exc:
             await self._actions.record(
                 actor_user_id=self._creator_user_id,
@@ -208,9 +224,22 @@ class OneBotProactiveGateway:
         )
         return result
 
-    async def _invoke(self, action: str, params: dict[str, object]) -> tuple[object, ResolvedSend]:
-        resolved = await self._resolve_route(action=action)
-        bound = await self._bound_onebot_params(action, params, resolved)
+    async def _invoke(
+        self, action: str, params: dict[str, object], *, bind_target: bool = True
+    ) -> tuple[object, ResolvedSend]:
+        if bind_target:
+            resolved = await self._resolve_route(action=action)
+            bound = await self._bound_onebot_params(action, params, resolved)
+        else:
+            # The common executor already authorizes raw API access. Select the
+            # actual actor account, without replacing caller-supplied targets.
+            resolved = await self._router.resolve_send_for_account(self._bot_user_id)
+            bound = dict(params)
+        if resolved.sender_account_id != self._bot_user_id:
+            message = bound.get("message")
+            if isinstance(message, list):
+                # QQ quote IDs belong to the original account's message stream.
+                bound["message"] = [part for part in message if part.get("type") != "reply"]
         bot = resolved.connection.bot
         call_api = getattr(bot, "call_api", None)
         if bot is None or not callable(call_api):
@@ -453,13 +482,17 @@ class FakeOneBotProactiveGateway:
     def connected(self) -> bool:
         return self._connected
 
-    async def send_private(self, user_id: str, text: str) -> object:
+    async def send_private(
+        self, user_id: str, text: str, *, reply_to_message_id: str | None = None
+    ) -> object:
         if not self._connected:
             raise ProactiveGatewayError("bot_unavailable")
         self.private_messages.append((user_id, text))
         return {"message_id": len(self.private_messages)}
 
-    async def send_group(self, group_id: str, text: str) -> object:
+    async def send_group(
+        self, group_id: str, text: str, *, reply_to_message_id: str | None = None
+    ) -> object:
         if not self._connected:
             raise ProactiveGatewayError("bot_unavailable")
         self.group_messages.append((group_id, text))

@@ -193,14 +193,14 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             {"onebot.send_private_message": forbidden_send}
         )
         handlers._gateway_factory = lambda context: None
-        contract = MainAgentContract(chat, handlers, state)
+        contract = MainAgentContract(chat, state)
         chat._agent_runner.main_contract = contract
         chat._tools.short_state = state
         manifest = await contract.definitions()
         python_tool = next(t for t in manifest if t.name == "run_python")
         assert python_tool.description == sandbox_tools()[0].description
         assert python_tool.parameters == sandbox_tools()[0].parameters
-        denied_name = contract.automation_names["onebot.send_private_message"]
+        denied_name = "call_onebot_api"
         assert len(manifest) > 10
 
         for name, user, group in (("private", "1001", None), ("admin-group", "9000", "2002")):

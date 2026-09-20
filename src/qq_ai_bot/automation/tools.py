@@ -14,13 +14,9 @@ from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.time.formatting import local_iso
 
 _CREATE_DESCRIPTION = (
-    "根据高层 TaskSpec 创建真实持久化任务；不要手写 AutomationScript、步骤、"
-    "底层 capability 名或预算。简单提醒使用 static 且 capabilities 留空；需要"
-    "模型生成内容用 generated；需要运行时查询或操作外部系统用 agentic，并只"
-    "选择必要 capability ID。不要把外部工具说明或 capability 目录写进本工具；"
-    "capabilities 只填后端已委托的 ID，非法 ID 由后端拒绝。创建任务时不得提前"
-    "执行这些外部工具。只有返回 confirmation='persisted' 和 automation_id 后"
-    "才能告诉用户已经创建成功。"
+    "创建持久化定时任务。纯提醒使用 static；需要模型或工具时使用 agentic。"
+    "运行时使用主 Agent 的完整工具，按创建者当前权限执行，无需选择工具或预算。"
+    "创建时不要提前执行任务；收到 confirmation='persisted' 和 automation_id 才表示成功。"
 )
 
 
@@ -121,12 +117,6 @@ def _task_intent_schema() -> dict[str, object]:
                 "enum": ["auto", "static", "generated", "agentic"],
                 "description": "纯提醒用 static；运行时需要模型或工具时用 agentic。",
             },
-            "capabilities": {
-                "type": "array",
-                "maxItems": 128,
-                "items": {"type": "string", "minLength": 1, "maxLength": 128},
-                "description": "仅填写本任务运行时确实需要的 capability ID；简单提醒留空。",
-            },
             "constraints": {
                 "type": "array",
                 "maxItems": 12,
@@ -164,7 +154,6 @@ def _task_intent_schema() -> dict[str, object]:
                 "goal": "提醒我喝水",
                 "trigger": {"type": "after", "seconds": 300},
                 "strategy": "static",
-                "capabilities": [],
                 "constraints": [],
                 "context": {"scene": "none"},
                 "delivery": {"target": "auto", "text": "该喝水啦～"},
@@ -229,7 +218,7 @@ class AutomationToolService:
             ChatTool(
                 name="automation_list",
                 description=(
-                    "只列出当前真实发送者仍在运行或暂停的任务。每条任务返回并显示稳定的 "
+                    "只列出当前执行主体仍在运行或暂停的任务。每条任务返回并显示稳定的 "
                     "automation_id，后续查看、修改或取消必须使用该 ID；不要生成临时编号。"
                     "已结束任务请使用 automation_list_history。"
                     "传入 match_task 可查询结构化等价的待执行任务；"
@@ -245,7 +234,7 @@ class AutomationToolService:
             ChatTool(
                 name="automation_list_history",
                 description=(
-                    "单独列出当前真实发送者已完成、取消、失败或阻塞的任务历史，"
+                    "单独列出当前执行主体已完成、取消、失败或阻塞的任务历史，"
                     "每条任务显示稳定的 automation_id。"
                 ),
                 parameters=_object_schema(
@@ -254,7 +243,7 @@ class AutomationToolService:
             ),
             ChatTool(
                 name="automation_get",
-                description="查看当前真实发送者自己的一个自动化任务。",
+                description="查看当前执行主体自己的一个自动化任务。",
                 parameters=_object_schema(id_schema, required=("automation_id",)),
             ),
             ChatTool(
@@ -270,14 +259,14 @@ class AutomationToolService:
             ChatTool(
                 name="automation_diagnose",
                 description=(
-                    "读取当前真实发送者最近的自动化创建结果，用于核实任务是否真的持久化或定位失败。"
+                    "读取当前执行主体最近的自动化创建结果，用于核实任务是否真的持久化或定位失败。"
                 ),
                 parameters=_object_schema({}),
             ),
             *(
                 ChatTool(
                     name=f"automation_{operation}",
-                    description=f"{description}当前真实发送者自己的任务。",
+                    description=f"{description}当前执行主体自己的任务。",
                     parameters=_object_schema(id_schema, required=("automation_id",)),
                 )
                 for operation, description in (
@@ -295,12 +284,12 @@ class AutomationToolService:
             ),
             ChatTool(
                 name="time_get_timezone",
-                description="读取当前真实发送者保存的 IANA 时区。",
+                description="读取当前执行主体保存的 IANA 时区。",
                 parameters=_object_schema({}),
             ),
             ChatTool(
                 name="time_set_timezone",
-                description="设置当前真实发送者自己的 IANA 时区。",
+                description="设置当前执行主体自己的 IANA 时区。",
                 parameters=_object_schema(
                     {"timezone": {"type": "string", "maxLength": 64}},
                     required=("timezone",),
@@ -316,10 +305,8 @@ class AutomationToolService:
 
     async def execute(self, name: str, arguments_json: str, runtime: ToolRuntime) -> str:
         if not self._valid_runtime(runtime):
-            return _result(
-                error="permission_context_mismatch", detail="自动化工具未绑定当前真实消息"
-            )
-        inbound = runtime.require_inbound()
+            return _result(error="permission_context_mismatch", detail="自动化工具缺少可信执行主体")
+        actor = runtime.require_actor()
         try:
             arguments = json.loads(arguments_json)
             if not isinstance(arguments, dict):
@@ -327,7 +314,7 @@ class AutomationToolService:
         except (json.JSONDecodeError, ValueError) as exc:
             if name == "automation_create":
                 await self._service.record_creation_failure(
-                    inbound=inbound,
+                    actor=actor,
                     conversation_key=runtime.conversation_key,
                     error=exc,
                 )
@@ -340,7 +327,7 @@ class AutomationToolService:
             error = ValueError(f"不接受参数：{', '.join(sorted(unexpected))}")
             if name == "automation_create":
                 await self._service.record_creation_failure(
-                    inbound=inbound,
+                    actor=actor,
                     conversation_key=runtime.conversation_key,
                     error=error,
                 )
@@ -352,7 +339,7 @@ class AutomationToolService:
             if name == "automation_create":
                 row, plan = await self._service.create_task(
                     arguments.get("task"),
-                    inbound=inbound,
+                    actor=actor,
                     conversation_key=runtime.conversation_key,
                     max_runs=arguments.get("max_runs"),
                 )
@@ -365,15 +352,15 @@ class AutomationToolService:
                 automations = (
                     await self._service.find_equivalent_task(
                         arguments["match_task"],
-                        inbound=inbound,
+                        actor=actor,
                         max_runs=arguments.get("max_runs"),
                     )
                     if arguments.get("match_task") is not None
-                    else await self._service.list_current(inbound.sender.user_id)
+                    else await self._service.list_current(actor.user_id)
                 )
                 return _result(
                     data={
-                        "timezone": await self._service.timezone(inbound.sender.user_id),
+                        "timezone": await self._service.timezone(actor.user_id),
                         "current_tasks": [_record(row) for row in automations],
                     }
                 )
@@ -381,22 +368,20 @@ class AutomationToolService:
                 maximum = arguments.get("limit", 50)
                 if isinstance(maximum, bool) or not isinstance(maximum, int):
                     raise ValueError("limit 必须是整数")
-                automations = await self._service.list_completed(inbound.sender.user_id)
+                automations = await self._service.list_completed(actor.user_id)
                 return _result(
                     data={
-                        "timezone": await self._service.timezone(inbound.sender.user_id),
+                        "timezone": await self._service.timezone(actor.user_id),
                         "completed_history": [_record(row) for row in automations[:maximum]],
                     }
                 )
             if name == "time_get_current":
-                return _result(data=await self._service.current_time(inbound.sender.user_id))
+                return _result(data=await self._service.current_time(actor.user_id))
             if name == "time_get_timezone":
-                return _result(
-                    data={"timezone": await self._service.timezone(inbound.sender.user_id)}
-                )
+                return _result(data={"timezone": await self._service.timezone(actor.user_id)})
             if name == "time_set_timezone":
                 timezone = await self._service.set_timezone(
-                    inbound.sender.user_id, str(arguments.get("timezone") or "")
+                    actor.user_id, str(arguments.get("timezone") or "")
                 )
                 return _result(
                     data={"timezone": timezone},
@@ -407,22 +392,20 @@ class AutomationToolService:
                 return _result(
                     data={
                         "recent_creation_outcomes": await self._service.diagnose_creation(
-                            inbound.sender.user_id
+                            actor.user_id
                         )
                     }
                 )
             automation_id = _automation_id(arguments)
             if name == "automation_get":
                 return _result(
-                    data=_record(
-                        await self._service.require_owned(automation_id, inbound.sender.user_id)
-                    )
+                    data=_record(await self._service.require_owned(automation_id, actor.user_id))
                 )
             if name == "automation_update":
                 row, plan = await self._service.update_task(
                     automation_id,
                     arguments.get("task"),
-                    inbound=inbound,
+                    actor=actor,
                     conversation_key=runtime.conversation_key,
                 )
                 return _result(
@@ -432,24 +415,24 @@ class AutomationToolService:
                 )
             if name == "automation_pause":
                 changed = await self._service.pause(
-                    automation_id, inbound=inbound, conversation_key=runtime.conversation_key
+                    automation_id, actor=actor, conversation_key=runtime.conversation_key
                 )
             elif name == "automation_resume":
                 changed = await self._service.resume(
-                    automation_id, inbound=inbound, conversation_key=runtime.conversation_key
+                    automation_id, actor=actor, conversation_key=runtime.conversation_key
                 )
             elif name == "automation_cancel":
                 changed = await self._service.cancel(
-                    automation_id, inbound=inbound, conversation_key=runtime.conversation_key
+                    automation_id, actor=actor, conversation_key=runtime.conversation_key
                 )
             elif name == "automation_run_now":
                 changed = await self._service.run_now(
-                    automation_id, inbound=inbound, conversation_key=runtime.conversation_key
+                    automation_id, actor=actor, conversation_key=runtime.conversation_key
                 )
             elif name == "automation_history":
-                task = await self._service.require_owned(automation_id, inbound.sender.user_id)
+                task = await self._service.require_owned(automation_id, actor.user_id)
                 history_rows = await self._service.history(
-                    automation_id, creator_user_id=inbound.sender.user_id
+                    automation_id, creator_user_id=actor.user_id
                 )
                 return _result(
                     data={
@@ -484,7 +467,7 @@ class AutomationToolService:
         except (PermissionError, ValueError) as exc:
             if name == "automation_create":
                 await self._service.record_creation_failure(
-                    inbound=inbound,
+                    actor=actor,
                     conversation_key=runtime.conversation_key,
                     error=exc,
                 )
@@ -492,15 +475,12 @@ class AutomationToolService:
 
     @staticmethod
     def _valid_runtime(runtime: ToolRuntime) -> bool:
-        inbound = runtime.inbound
-        return bool(
-            inbound is not None
-            and runtime.allow_automation
-            and runtime.actor_user_id == inbound.sender.user_id
-            and runtime.effective_trigger_event_id is not None
-            and runtime.effective_trigger_event_id == inbound.source_event_id
-            and runtime.current_group_id == inbound.group_id
-        )
+        try:
+            actor = runtime.require_actor()
+            _ = actor.source_key
+        except (PermissionError, ValueError):
+            return False
+        return runtime.allow_automation
 
 
 def _automation_id(arguments: dict[str, Any]) -> int:
@@ -528,7 +508,6 @@ def _record(
     }
     if plan is not None:
         payload["compiled_strategy"] = plan.strategy
-        payload["selected_capabilities"] = plan.selected_capabilities
         payload["warnings"] = plan.warnings
     if persisted:
         payload["confirmation"] = "persisted"

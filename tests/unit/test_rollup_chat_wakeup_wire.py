@@ -7,7 +7,6 @@ import pytest
 @pytest.mark.asyncio
 async def test_rollup_interrupt_reenters_main_contract(database, tmp_path, monkeypatch, protocol):
     from dataclasses import replace
-    from types import SimpleNamespace
 
     from tests.conftest import MemorySender, build_harness, make_settings
     from tests.unit.test_commands_and_chat import inbound
@@ -48,9 +47,7 @@ async def test_rollup_interrupt_reenters_main_contract(database, tmp_path, monke
     consumed = []
     chat.rollup_wakeups.on_consumed = lambda cid, event_id: consumed.append((cid, event_id))
     state = ShortState(WorkspaceStore(tmp_path / "short-state"))
-    chat._agent_runner.main_contract = MainAgentContract(
-        chat, SimpleNamespace(_registry=None), state
-    )
+    chat._agent_runner.main_contract = MainAgentContract(chat, state)
     chat._tools.short_state = state
     async with database.sessions() as session, session.begin():
         person = await ensure_person(session, "1001")

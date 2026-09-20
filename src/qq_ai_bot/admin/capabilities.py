@@ -478,31 +478,26 @@ class AdminCapabilityService:
         return result.model_dump(mode="json")
 
     def _actor(self, runtime: ToolRuntime) -> AdminActor:
-        inbound = runtime.require_inbound()
-        if (
-            not runtime.actor_is_superuser
-            or runtime.actor_user_id != inbound.sender.user_id
-            or runtime.actor_user_id not in self._settings.superusers
-            or runtime.effective_trigger_event_id is None
-            or runtime.effective_trigger_event_id != inbound.source_event_id
-            or runtime.current_group_id != inbound.group_id
-            or tuple(runtime.mentioned_user_ids) != tuple(inbound.mentioned_user_ids)
+        source = runtime.require_actor()
+        if not runtime.actor_is_superuser or (
+            runtime.inbound is not None and source.user_id not in self._settings.superusers
         ):
-            raise PermissionError("当前管理员工具没有绑定到真实超级管理员事件")
+            raise PermissionError("当前执行主体不是超级管理员")
+        _ = source.source_key
         return AdminActor(
-            user_id=runtime.actor_user_id,
-            is_superuser=runtime.actor_is_superuser,
-            trigger_message_id=runtime.trigger_message_id,
-            trigger_event_id=runtime.effective_trigger_event_id,
-            canonical_conversation_id=runtime.effective_conversation_id,
-            ingress_presence_id=runtime.effective_presence_id,
+            user_id=source.user_id,
+            is_superuser=True,
+            trigger_message_id=source.platform_message_id,
+            trigger_event_id=source.event_id,
+            canonical_conversation_id=source.conversation_id,
+            ingress_presence_id=source.presence_id,
             conversation_key=runtime.conversation_key,
-            current_group_id=runtime.current_group_id,
-            mentioned_user_ids=runtime.mentioned_user_ids,
-            current_message_text=inbound.text,
-            bot_user_id=inbound.bot_user_id,
+            current_group_id=source.group_id,
+            mentioned_user_ids=source.mentioned_user_ids,
+            current_message_text=source.instruction,
+            bot_user_id=source.bot_user_id,
             decision_actor_type="admin",
-            decision_actor_id="admin_agent",
+            decision_actor_id=source.execution_id or "admin_agent",
         )
 
     async def _get_config(

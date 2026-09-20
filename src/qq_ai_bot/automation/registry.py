@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import re
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -13,7 +11,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from qq_ai_bot.automation.authority import AuthorityContext, PermissionLevel
 from qq_ai_bot.automation.models import AutomationContext, RetryPolicy, RiskClass, TurnOrigin
-from qq_ai_bot.automation.task_spec import TaskSpec
 
 
 class CapabilityArguments(BaseModel):
@@ -31,35 +28,18 @@ class AgentArguments(CapabilityArguments):
     context_profile: Literal["none", "creator_private", "current_group"] = "none"
     max_tool_calls: int = Field(default=32, ge=0, le=160)
     max_model_requests: int = Field(default=24, ge=1, le=120)
+    # Historical persisted DSL metadata only; never an execution allowlist.
     allowed_capabilities: tuple[str, ...] = Field(default=(), max_length=128)
 
 
-class AutomationCreateTaskArguments(CapabilityArguments):
-    task: TaskSpec
-    max_runs: int | None = Field(default=None, ge=1, le=10000)
-
-
-class AutomationUpdateTaskArguments(CapabilityArguments):
-    automation_id: int = Field(ge=1)
-    task: TaskSpec
-
-
-class AutomationIdArguments(CapabilityArguments):
-    automation_id: int = Field(ge=1)
-
-
-class AutomationListArguments(CapabilityArguments):
-    include_completed: bool = False
-    match_task: TaskSpec | None = None
-    max_runs: int | None = Field(default=None, ge=1, le=10000)
-
-
 class SendPrivateArguments(CapabilityArguments):
+    reply_state: dict[str, Any] | str | None = None
     user_id: str = Field(min_length=1, max_length=64)
     text: str = Field(min_length=1, max_length=12000)
 
 
 class SendGroupArguments(CapabilityArguments):
+    reply_state: dict[str, Any] | str | None = None
     group_id: str = Field(min_length=1, max_length=64)
     text: str = Field(min_length=1, max_length=12000)
 
@@ -111,6 +91,8 @@ class WebSearchArguments(CapabilityArguments):
     query: str = Field(min_length=1, max_length=400)
     topic: Literal["general", "news"] = "general"
     time_range: Literal["day", "week", "month", "year"] | None = None
+    start_date: str | None = None
+    end_date: str | None = None
 
 
 class WebReadArguments(CapabilityArguments):
@@ -161,6 +143,7 @@ class CapabilityExecutionContext:
     timezone: str
     automation_context: AutomationContext
     conversation_key: str
+    canonical_creator_person_id: str | None = None
     web_was_used: bool = False
     gateway: object | None = None
     canonical_target_person_id: str | None = None
@@ -201,7 +184,6 @@ class AutomationCapability:
     provider_manifest_hash: str | None = None
     handler: CapabilityHandler | None = field(default=None, repr=False)
     result_cacheable: bool = True
-    model_tool_name: str = ""
 
     @property
     def input_schema(self) -> dict[str, object]:
@@ -261,47 +243,6 @@ class AutomationCapabilityRegistry:
     def names_for(self, permission: PermissionLevel) -> tuple[str, ...]:
         return tuple(item.name for item in self.list() if item.permits(permission))
 
-    def agent_tool_name(self, capability_name: str) -> str:
-        """Return a provider-neutral model-safe name for one registered capability."""
-
-        self.require(capability_name)
-        normalized = re.sub(r"[^a-zA-Z0-9_]", "_", capability_name.replace(".", "__"))
-        normalized = re.sub(r"_+", "_", normalized).strip("_") or "capability"
-        digest = hashlib.sha256(capability_name.encode("utf-8")).hexdigest()[:8]
-        return f"{normalized[:51]}_{digest}"
-
-    def resolve_agent_reference(self, reference: str) -> str:
-        """Resolve exact names or model-safe aliases without guessing ambiguous tools."""
-
-        if reference in self._items:
-            return reference
-        matches = [name for name in self._items if self.agent_tool_name(name) == reference]
-        if len(matches) == 1:
-            return matches[0]
-        normalized = _loose_capability_key(reference)
-        loose_matches = [name for name in self._items if _loose_capability_key(name) == normalized]
-        if len(loose_matches) == 1:
-            return loose_matches[0]
-        if len(loose_matches) > 1:
-            raise ValueError(f"自动化能力引用不明确：{reference}")
-        raise ValueError(f"未登记的自动化 capability：{reference}")
-
-    def delegatable(self) -> tuple[AutomationCapability, ...]:
-        """List capabilities that a scheduled Agent may call itself."""
-
-        return tuple(item for item in self.list() if _is_agent_delegatable(item))
-
-
-def _loose_capability_key(value: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", value.casefold())
-
-
-def _is_agent_delegatable(item: AutomationCapability) -> bool:
-    # yuki.agent/yuki.generate would recursively start another model loop. All
-    # concrete READ/SEND/MUTATE capabilities remain delegatable; identity,
-    # ownership and per-run quotas are enforced by their handlers/executor.
-    return not item.name.startswith("yuki.")
-
 
 def build_capability_registry(
     handlers: dict[str, CapabilityHandler] | None = None,
@@ -322,7 +263,7 @@ def build_capability_registry(
     ] = (
         (
             "yuki.generate",
-            "调用主模型生成文字，不开放工具。",
+            "调用主 Agent 完成生成目标，复用完整工具。",
             GenerateArguments,
             PermissionLevel.USER,
             RiskClass.GENERATE,
@@ -330,7 +271,7 @@ def build_capability_registry(
         ),
         (
             "yuki.agent",
-            "运行受委托能力约束的 Agent。",
+            "以创建者当前权限运行主 Agent。",
             AgentArguments,
             PermissionLevel.USER,
             RiskClass.GENERATE,
@@ -338,7 +279,7 @@ def build_capability_registry(
         ),
         (
             "onebot.send_private_message",
-            "自动化委托发送：用 user_id 和 text 向已授权私聊发送文本；不生成当前会话最终回复。",
+            "向已授权私聊发送文本。",
             SendPrivateArguments,
             PermissionLevel.USER,
             RiskClass.SEND,
@@ -346,7 +287,7 @@ def build_capability_registry(
         ),
         (
             "onebot.send_group_message",
-            "自动化委托发送：用 group_id 和 text 向已授权群发送文本；不支持结构化 mentions。",
+            "向已授权群发送文本。",
             SendGroupArguments,
             PermissionLevel.USER,
             RiskClass.SEND,
@@ -396,8 +337,7 @@ def build_capability_registry(
         ),
         (
             "config.get",
-            "自动化管理员委托读取单个配置 key；scope_type 和 scope_id "
-            "指定授权范围。批量当前请求读取使用 admin_get_config 的 keys。",
+            "读取授权范围内的配置。",
             ConfigGetArguments,
             PermissionLevel.SUPERUSER,
             RiskClass.READ,
@@ -453,48 +393,6 @@ def build_capability_registry(
             PermissionLevel.USER,
             RiskClass.READ,
             RetryPolicy.TRANSIENT_ONCE,
-        ),
-        (
-            "automation.create_task",
-            "为已授权任务创建者登记后续自动化，task 填写结构化 TaskSpec；不同于 au"
-            "tomation_create 的会话创建参数。以持久化 ID 确认创建，不重复登记。",
-            AutomationCreateTaskArguments,
-            PermissionLevel.USER,
-            RiskClass.MUTATE,
-            RetryPolicy.NONE,
-        ),
-        (
-            "automation.update_task",
-            "按 automation_id 和 task 更新委托创建者拥有的自动化；"
-            "task 是结构化 TaskSpec，仍核验所有权。",
-            AutomationUpdateTaskArguments,
-            PermissionLevel.USER,
-            RiskClass.MUTATE,
-            RetryPolicy.NONE,
-        ),
-        (
-            "automation.cancel_task",
-            "按 automation_id 取消委托创建者拥有的自动化；只取消指定任务，不撤销已完成效果。",
-            AutomationIdArguments,
-            PermissionLevel.USER,
-            RiskClass.MUTATE,
-            RetryPolicy.NONE,
-        ),
-        (
-            "automation.run_task_now",
-            "立即调度当前创建者拥有的自动化任务。",
-            AutomationIdArguments,
-            PermissionLevel.USER,
-            RiskClass.MUTATE,
-            RetryPolicy.NONE,
-        ),
-        (
-            "automation.list_tasks",
-            "列出当前创建者自己的自动化任务和稳定 ID。",
-            AutomationListArguments,
-            PermissionLevel.USER,
-            RiskClass.READ,
-            RetryPolicy.NONE,
         ),
     )
     registry = AutomationCapabilityRegistry()

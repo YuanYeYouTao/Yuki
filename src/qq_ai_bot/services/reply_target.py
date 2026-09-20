@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import InboundMessage
+from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.persistence.repository_records import EventRecord
 
 
@@ -59,21 +59,21 @@ class ReplyTargetResolver:
         self,
         event_id: int,
         *,
-        inbound: InboundMessage,
+        actor: ToolActor,
     ) -> ReplyTargetResolution:
         event = await self._ledger.get_event(event_id)
         if event is None:
             return ReplyTargetResolution(event_id, None, "event_not_found")
         if event.event_kind != "message":
             return ReplyTargetResolution(event_id, None, "unsupported_event_kind")
-        if event.bot_user_id != inbound.bot_user_id:
+        if event.bot_user_id != actor.bot_user_id:
             return ReplyTargetResolution(event_id, None, "different_bot")
-        if event.scope_type is not inbound.scope_type:
+        if event.scope_type is not (ScopeType.GROUP if actor.group_id else ScopeType.PRIVATE):
             return ReplyTargetResolution(event_id, None, "different_scope")
-        if inbound.scope_type is ScopeType.GROUP:
-            if not inbound.group_id or event.group_id != inbound.group_id:
+        if (ScopeType.GROUP if actor.group_id else ScopeType.PRIVATE) is ScopeType.GROUP:
+            if not actor.group_id or event.group_id != actor.group_id:
                 return ReplyTargetResolution(event_id, None, "different_conversation")
-        elif event.private_peer_user_id != inbound.sender.user_id:
+        elif event.private_peer_user_id != actor.user_id:
             return ReplyTargetResolution(event_id, None, "different_conversation")
         if not event.platform_message_id.isdigit():
             return ReplyTargetResolution(event_id, None, "transport_id_unavailable")

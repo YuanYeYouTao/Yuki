@@ -1,6 +1,5 @@
 """Recheck live authority after a transient attempt without replaying its handler."""
 
-import json
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -52,10 +51,10 @@ async def authority_between_attempts(
 
 
 async def guarded_agent_calls(handlers, context, provider):
-    from qq_ai_bot.automation.handlers import _AutomationAgentBackend
-    from qq_ai_bot.automation.registry import CapabilityResult, build_capability_registry
+    from qq_ai_bot.services.agent_tools import ToolRuntime
+    from qq_ai_bot.services.main_agent_backend import MainAgentBackend
 
-    async def revoked(capability):
+    async def revoked(capability=None):
         raise AutomationExecutionError("automation_inactive")
 
     guarded = replace(context, revalidate_authority=revoked)
@@ -65,18 +64,12 @@ async def guarded_agent_calls(handlers, context, provider):
     assert caught.value.category == "automation_inactive"
     assert caught.value.llm_calls == 0
     assert len(provider.requests) == before
-    capability = build_capability_registry().require("onebot.send_private_message")
-    effect = AsyncMock(return_value=CapabilityResult(data={"sent": True}))
-    registry = AutomationCapabilityRegistry()
-    registry.register(replace(capability, handler=effect))
-    backend = _AutomationAgentBackend(registry, guarded)
-    backend._name_map = {"guarded_send": capability.name}
-    result = json.loads(
-        await backend.execute("guarded_send", '{"user_id":"10001","text":"hi"}', None)
+    backend = MainAgentBackend(
+        handlers._agent_runner.main_contract.chat,
+        ToolRuntime(
+            inbound=None, gateway=None, allow_generic_onebot=False, before_model_request=revoked
+        ),
     )
-    assert result["error"] == "automation_inactive"
-    effect.assert_not_called()
-    backend.short_state = SimpleNamespace(execute=AsyncMock())
-    result = json.loads(await backend.execute("update_short_state", "{}", None))
-    assert result["error"] == "automation_inactive"
-    backend.short_state.execute.assert_not_called()
+    for name in ("send_private_message", "update_short_state"):
+        with pytest.raises(AutomationExecutionError, match="automation_inactive"):
+            await backend.execute(name, "{}", None)

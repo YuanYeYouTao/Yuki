@@ -292,10 +292,22 @@ async def test_real_mentions_preserve_segments_and_replay(social_env, attachment
 
 async def current_speaker_mention(env):
     from qq_ai_bot.capabilities.invocation import ToolInvocationContext, current_invocation
+    from qq_ai_bot.domain.tool_actor import ToolActor
     from qq_ai_bot.runtime.origin import TurnOrigin
     from qq_ai_bot.social.agent_adapter import invoke_social
 
+    async with env.db.sessions() as session:
+        event_id = await session.scalar(select(ChatEventModel.id))
+    actor = ToolActor(
+        user_id="10001",
+        bot_user_id="80001",
+        group_id="20001",
+        origin=TurnOrigin.USER_MESSAGE,
+        instruction="test",
+        event_id=event_id,
+    )
     runtime = SimpleNamespace(
+        require_actor=lambda: actor,
         origin=TurnOrigin.USER_MESSAGE,
         read_only=False,
         tools_closed=False,

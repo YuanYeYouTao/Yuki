@@ -11,7 +11,6 @@ from qq_ai_bot.automation.models import (
     AutomationStep,
     StrictModel,
 )
-from qq_ai_bot.automation.registry import AutomationCapabilityRegistry
 from qq_ai_bot.automation.task_spec import (
     TaskDelivery as TaskDelivery,
 )
@@ -29,7 +28,6 @@ class ExecutionPlan(StrictModel):
     """Backend-generated plan; only the contained script is persisted and executed."""
 
     strategy: Literal["static", "generated", "agentic"]
-    selected_capabilities: tuple[str, ...]
     script: AutomationScript
     warnings: tuple[str, ...] = ()
 
@@ -37,16 +35,12 @@ class ExecutionPlan(StrictModel):
 class AutomationCompiler:
     """Deterministically lower a TaskSpec into the already-audited DSL."""
 
-    _BASE_MODEL_REQUESTS = 10
-
     def __init__(
         self,
         *,
         settings: Settings,
-        registry: AutomationCapabilityRegistry,
     ) -> None:
         self._settings = settings
-        self._registry = registry
 
     def compile(
         self,
@@ -55,12 +49,7 @@ class AutomationCompiler:
         *,
         default_timezone: str,
     ) -> ExecutionPlan:
-        selected = self._resolve_capabilities(
-            task.capabilities,
-            provenance,
-            inherit=task.strategy is TaskStrategy.AGENTIC and not task.capabilities,
-        )
-        strategy = self._resolve_strategy(task, selected)
+        strategy = self._resolve_strategy(task)
         timezone = task.timezone or default_timezone
         delivery = self._resolve_delivery(task.delivery, provenance)
         warnings: list[str] = []
@@ -90,13 +79,20 @@ class AutomationCompiler:
             )
             steps = (generate,)
             if delivery is not None:
-                steps += (self._delivery_step(delivery, "${result.text}", step_id="deliver"),)
+                steps += (
+                    self._delivery_step(
+                        delivery,
+                        "${result.text}",
+                        step_id="deliver",
+                        reply_state="${result.reply_state}",
+                    ),
+                )
             limits = AutomationLimits(
                 agent_budget_managed=True,
                 max_steps=len(steps),
                 max_llm_calls=1,
                 max_tool_calls=len(steps),
-                max_messages=int(delivery is not None),
+                max_messages=self._settings.automation_max_messages_per_run,
                 timeout_seconds=min(120, self._settings.automation_max_runtime_seconds),
             )
         else:
@@ -107,20 +103,25 @@ class AutomationCompiler:
                 arguments={
                     "instruction": self._instruction(task),
                     "context_profile": task.context.scene,
-                    "allowed_capabilities": list(selected),
                 },
                 save_as="result",
             )
             steps = (execute,)
             if delivery is not None:
-                steps += (self._delivery_step(delivery, "${result.text}", step_id="deliver"),)
+                steps += (
+                    self._delivery_step(
+                        delivery,
+                        "${result.text}",
+                        step_id="deliver",
+                        reply_state="${result.reply_state}",
+                    ),
+                )
             limits = AutomationLimits(
                 agent_budget_managed=True,
                 max_steps=len(steps),
                 max_llm_calls=1,
                 max_tool_calls=1 + delivery_calls,
-                # Agentic tasks may send through a delegated plugin or OneBot
-                # capability instead of the compiler-added delivery step.
+                # Main Agent tools can deliver before the final reply step.
                 max_messages=self._settings.automation_max_messages_per_run,
                 timeout_seconds=self._settings.automation_max_runtime_seconds,
             )
@@ -136,54 +137,14 @@ class AutomationCompiler:
         )
         return ExecutionPlan(
             strategy=strategy,
-            selected_capabilities=selected,
             script=script,
             warnings=tuple(warnings),
         )
 
-    def capability_catalog(self) -> tuple[dict[str, str], ...]:
-        """Return model-safe IDs while keeping provider-native names internal."""
-
-        return tuple(
-            {
-                "id": self._registry.agent_tool_name(item.name),
-                "name": item.name,
-                "description": item.description,
-                "permission": item.required_permission.value,
-            }
-            for item in self._registry.delegatable()
-        )
-
-    def _resolve_capabilities(
-        self,
-        references: tuple[str, ...],
-        provenance: CreationProvenance,
-        *,
-        inherit: bool = False,
-    ) -> tuple[str, ...]:
-        result: list[str] = []
-        delegatable = {item.name for item in self._registry.delegatable()}
-        if inherit:
-            return tuple(
-                item.name
-                for item in self._registry.delegatable()
-                if item.permits(provenance.permission)
-            )
-        for reference in references:
-            name = self._registry.resolve_agent_reference(reference)
-            if name not in delegatable:
-                raise ValueError(f"capability 不能委托给自动化 Agent：{name}")
-            definition = self._registry.require(name)
-            if not definition.permits(provenance.permission):
-                raise PermissionError(f"当前用户无权委托 capability：{name}")
-            if name not in result:
-                result.append(name)
-        return tuple(result)
-
     @staticmethod
-    def _resolve_strategy(task: TaskSpec, selected: tuple[str, ...]) -> str:
+    def _resolve_strategy(task: TaskSpec) -> str:
         if task.strategy is TaskStrategy.AUTO:
-            return "agentic" if selected else "static"
+            return "agentic"
         return task.strategy.value
 
     @staticmethod
@@ -206,17 +167,26 @@ class AutomationCompiler:
         text: str,
         *,
         step_id: str = "deliver",
+        reply_state: str | None = None,
     ) -> AutomationStep:
         if target == "current_group":
             return AutomationStep(
                 id=step_id,
                 call="onebot.send_group_message",
-                arguments={"group_id": "$current_group_id", "text": text},
+                arguments={
+                    "group_id": "$current_group_id",
+                    "text": text,
+                    **({"reply_state": reply_state} if reply_state is not None else {}),
+                },
             )
         return AutomationStep(
             id=step_id,
             call="onebot.send_private_message",
-            arguments={"user_id": "$creator_user_id", "text": text},
+            arguments={
+                "user_id": "$creator_user_id",
+                "text": text,
+                **({"reply_state": reply_state} if reply_state is not None else {}),
+            },
         )
 
     @staticmethod

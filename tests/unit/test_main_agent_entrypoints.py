@@ -11,6 +11,7 @@ from tests.support.social_identity_cases import social_env
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, ToolCall, ToolFunction
+from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.runtime.work_activation import activate_work
 from qq_ai_bot.runtime.work_repository import WorkRepository
@@ -28,7 +29,7 @@ async def test_neutral_answer_is_delivered_without_registration_request(database
     provider = FakeLLMProvider(lambda request: "Yuki 是用 Python 写的。")
     chat = build_harness(database, make_settings(database.url), provider).processor._chat
     chat._agent_runner.main_contract = MainAgentContract(
-        chat, SimpleNamespace(_registry=None), ShortState(WorkspaceStore(tmp_path / "state"))
+        chat, ShortState(WorkspaceStore(tmp_path / "state"))
     )
     config = await chat._runtime_config.snapshot()
 
@@ -90,7 +91,7 @@ async def test_neutral_answer_is_delivered_without_registration_request(database
 async def test_host_granted_environment_reaches_shared_executor(database, tmp_path, origin):
     chat = build_harness(database, make_settings(database.url)).processor._chat
     chat._agent_runner.main_contract = MainAgentContract(
-        chat, SimpleNamespace(_registry=None), ShortState(WorkspaceStore(tmp_path / "state"))
+        chat, ShortState(WorkspaceStore(tmp_path / "state"))
     )
     calls = []
 
@@ -181,7 +182,7 @@ async def test_owned_main_turn_resumes_original_journal_and_budget(
         database, make_settings(database.url, runtime_work_enabled=True), provider
     ).processor._chat
     chat._agent_runner.main_contract = MainAgentContract(
-        chat, SimpleNamespace(_registry=None), ShortState(WorkspaceStore(tmp_path / "state"))
+        chat, ShortState(WorkspaceStore(tmp_path / "state"))
     )
 
     async def execute(name, arguments, **kwargs):
@@ -341,7 +342,7 @@ async def test_plugin_callback_pending_is_queryable_after_callback_returns(
         database, make_settings(database.url, runtime_work_enabled=True), provider
     ).processor._chat
     chat._agent_runner.main_contract = MainAgentContract(
-        chat, SimpleNamespace(_registry=None), ShortState(WorkspaceStore(tmp_path / "state"))
+        chat, ShortState(WorkspaceStore(tmp_path / "state"))
     )
     host = HostPluginContext(
         plugin_id="test.pending",
@@ -424,6 +425,9 @@ async def test_plugin_callback_pending_is_queryable_after_callback_returns(
                 row,
                 json.loads(row["source_json"]),
             )
+            tasks = tuple(main_turn._RUNNING.values())
+            if tasks:
+                await asyncio.wait_for(asyncio.gather(*tasks), 10)
             assert (
                 provider.requests[1].messages[: len(provider.requests[0].messages)]
                 == provider.requests[0].messages
@@ -500,7 +504,7 @@ async def test_scoped_background_reads_do_not_use_send_route_or_expand_scope(dat
     chat = build_harness(database, make_settings(database.url)).processor._chat
     chat._tools.social_service = env.service
     chat._agent_runner.main_contract = MainAgentContract(
-        chat, SimpleNamespace(_registry=None), ShortState(WorkspaceStore(tmp_path / "state"))
+        chat, ShortState(WorkspaceStore(tmp_path / "state"))
     )
     config = await chat._runtime_config.snapshot()
     runtime = AgentRuntime(
@@ -590,7 +594,7 @@ async def test_creation_replay_and_run_budget_are_atomic(database, tmp_path):
         )
         try:
             return await service.create(
-                script, inbound=_inbound(), conversation_key="private:10001"
+                script, actor=ToolActor.from_inbound(_inbound()), conversation_key="private:10001"
             )
         finally:
             current_invocation.reset(token)
@@ -613,11 +617,15 @@ async def test_creation_replay_and_run_budget_are_atomic(database, tmp_path):
         "delivery": {"target": "self_private"},
     }
     created, _ = await service.create_task(
-        task, inbound=_inbound(), conversation_key="private:10001"
+        task, actor=ToolActor.from_inbound(_inbound()), conversation_key="private:10001"
     )
-    same = await service.find_equivalent_task({**task, "name": "另一个名字"}, inbound=_inbound())
+    same = await service.find_equivalent_task(
+        {**task, "name": "另一个名字"}, actor=ToolActor.from_inbound(_inbound())
+    )
     assert [row.id for row in same] == [created.id]
-    assert not await service.find_equivalent_task({**task, "goal": "吃饭"}, inbound=_inbound())
+    assert not await service.find_equivalent_task(
+        {**task, "goal": "吃饭"}, actor=ToolActor.from_inbound(_inbound())
+    )
 
     run = await repository.create_run(
         first.id, scheduled_for=first.next_run_at, actual_started_at=clock.now()

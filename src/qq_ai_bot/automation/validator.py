@@ -125,12 +125,6 @@ class AutomationValidator:
             if step.call not in required:
                 required.append(step.call)
             if step.call == "yuki.agent":
-                for delegated in self._agent_delegation_capabilities(
-                    step.arguments,
-                    provenance.permission,
-                ):
-                    if delegated not in required:
-                        required.append(delegated)
                 if script.limits.agent_budget_managed:
                     llm_calls += 1
                     tool_calls += 1
@@ -169,29 +163,6 @@ class AutomationValidator:
             raise ValueError("limits.max_messages 超过后端硬限制")
         if limits.timeout_seconds > self._settings.automation_max_runtime_seconds:
             raise ValueError("limits.timeout_seconds 超过后端硬限制")
-
-    def _agent_delegation_capabilities(
-        self,
-        arguments: dict[str, Any],
-        permission: PermissionLevel,
-    ) -> tuple[str, ...]:
-        declared = arguments.get("allowed_capabilities", ())
-        if not isinstance(declared, list | tuple):
-            raise ValueError("yuki.agent.allowed_capabilities 必须是数组")
-        delegatable = {item.name for item in self._registry.delegatable()}
-        result: list[str] = []
-        for reference in declared:
-            if not isinstance(reference, str):
-                raise ValueError("yuki.agent.allowed_capabilities 只能包含字符串")
-            name = self._registry.resolve_agent_reference(reference)
-            if name not in delegatable:
-                raise ValueError(f"capability 不能委托给自动化 Agent：{name}")
-            definition = self._registry.require(name)
-            if not definition.permits(permission):
-                raise PermissionError(f"当前用户无权委托 capability：{name}")
-            if name not in result:
-                result.append(name)
-        return tuple(result)
 
     @staticmethod
     def _validate_arguments(

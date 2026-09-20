@@ -465,7 +465,6 @@ async def test_real_chat_entry_progress_delivery_and_work_completion(
     database, tmp_path, steer, monkeypatch
 ):
     from dataclasses import replace
-    from types import SimpleNamespace
 
     from tests.conftest import MemorySender, build_harness, make_settings
     from tests.unit.test_commands_and_chat import inbound
@@ -515,9 +514,7 @@ async def test_real_chat_entry_progress_delivery_and_work_completion(
     )
     chat = harness.processor._chat
     state = ShortState(WorkspaceStore(tmp_path / "short-state"))
-    chat._agent_runner.main_contract = MainAgentContract(
-        chat, SimpleNamespace(_registry=None), state
-    )
+    chat._agent_runner.main_contract = MainAgentContract(chat, state)
     chat._tools.short_state = state
     async with database.sessions() as session, session.begin():
         person = await ensure_person(session, "1001")
@@ -677,9 +674,7 @@ async def test_child_completion_has_one_parent_consumer_and_scheduler(
     chat = harness.processor._chat
     state = ShortState(WorkspaceStore(tmp_path / "resume-state"))
     chat._tools.short_state = state
-    chat._agent_runner.main_contract = MainAgentContract(
-        chat, SimpleNamespace(_registry=None), state
-    )
+    chat._agent_runner.main_contract = MainAgentContract(chat, state)
     client, captured = None, []
     if protocol:
         from tests.support.runtime_wire import install_wire
@@ -865,7 +860,6 @@ async def test_new_epoch_retains_execution_evidence_and_budget(database, tmp_pat
 async def test_sync_main_entry_returns_result_without_acquiring_send_authority(
     database, tmp_path, origin
 ):
-    from types import SimpleNamespace
 
     from tests.conftest import build_harness, make_settings
     from tests.support.state_backend import ShortStateOnlyBackend
@@ -906,9 +900,7 @@ async def test_sync_main_entry_returns_result_without_acquiring_send_authority(
     chat = harness.processor._chat
     env = await social_env(database, tmp_path)
     state = ShortState(WorkspaceStore(tmp_path / "sync-state"))
-    chat._agent_runner.main_contract = MainAgentContract(
-        chat, SimpleNamespace(_registry=None), state
-    )
+    chat._agent_runner.main_contract = MainAgentContract(chat, state)
     runtime = AgentRuntime(
         origin=TurnOrigin(origin),
         actor_user_id="10001",

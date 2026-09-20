@@ -88,6 +88,7 @@ class AgentRuntime:
     context_token_limit: int | None = None
     invocation_source: dict[str, Any] | None = None
     invocation_goal: str | None = None
+    deliver_progress: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,6 +264,12 @@ class AgentRunner:
             ).hexdigest()
             runtime.work_control.session = WorkSession(runtime.work_control, contract)
             transcript = await runtime.work_control.session.restore(transcript)
+            restore_reply = getattr(tools, "restore_reply_state", None)
+            if callable(restore_reply) and "reply_state" in runtime.work_control.session.progress:
+                restore_reply(runtime.work_control.session.progress["reply_state"])
+            runtime.work_control.session.reply_state_reader = getattr(
+                tools, "export_reply_state", None
+            )
             repeated_batch_count = int(runtime.work_control.session.progress.get("repeats", 0))
             if runtime.work_control.handoff_work_id is not None:
                 await runtime.work_control.session.save("paired")

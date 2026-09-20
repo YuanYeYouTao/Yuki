@@ -42,7 +42,7 @@ async def task_receipt_cases(database, tmp_path):
     ):
         with pytest.raises(ValueError, match="sandbox_task_idempotency_conflict"):
             await tasks.prepare("request", changed_args, changed_source)
-    with pytest.raises(ValueError, match="missing_task_delegation"):
+    with pytest.raises(ValueError, match="scheduled_task_requires_work_lease"):
         await tasks.prepare("delegated", arguments, {**source, "origin": "scheduled_automation"})
     run_id = str(uuid4())
     event = {
