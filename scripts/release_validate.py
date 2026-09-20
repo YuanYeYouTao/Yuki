@@ -117,6 +117,7 @@ def validate_release_identity(root: Path, tag: str) -> str:
     baseline = f"<!-- release-baseline: version={tag_version} schema={head} -->"
     for relative in (
         "README.md",
+        "README.en.md",
         f"docs/releases/v{tag_version}.md",
         f"docs/upgrade-{tag_version}.md",
     ):

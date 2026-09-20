@@ -1,5 +1,7 @@
 <!-- release-baseline: version=3.8.3 schema=0061 -->
 
+中文（默认） · [English](README.en.md)
+
 <div align="center">
 
 <p><img src="img/Yuki_2.png" alt="Yuki" width="280"></p>

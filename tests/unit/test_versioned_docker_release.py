@@ -47,6 +47,20 @@ def test_release_identity_matches_all_version_surfaces(monkeypatch: pytest.Monke
         validate_release_identity(ROOT, "v3.8.3")
 
 
+def test_english_readme_must_match_release_baseline(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_read = Path.read_text
+
+    def stale_english_readme(path: Path, *args, **kwargs):
+        text = original_read(path, *args, **kwargs)
+        if path == ROOT / "README.en.md":
+            return text.replace("version=3.8.3", "version=3.8.2")
+        return text
+
+    monkeypatch.setattr(Path, "read_text", stale_english_readme)
+    with pytest.raises(ReleaseValidationError, match=r"README\.en\.md"):
+        validate_release_identity(ROOT, "v3.8.3")
+
+
 def test_release_identity_rejects_non_final_tags() -> None:
     for tag in ["3.8.3", "v3.5", "v3.5.3-rc1", "v03.5.3", "latest"]:
         _check_release_identity_rejects_non_final_tags(tag)
