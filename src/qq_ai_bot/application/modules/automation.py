@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from qq_ai_bot.admin.action_service import AdminActionService
 from qq_ai_bot.admin.audit import AdminAuditService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
@@ -67,7 +66,6 @@ class AutomationModule:
         ledger: EventLedgerRepository,
         memories: MemoryFactService,
         relationships: RelationshipRepository,
-        admin_actions: AdminActionService,
         admin_audit: AdminAuditService,
         agent_actions: AgentActionRepository,
         web_provider: WebSearchProvider | None,
@@ -88,7 +86,6 @@ class AutomationModule:
         self._ledger = ledger
         self._memories = memories
         self._relationships = relationships
-        self._admin_actions = admin_actions
         self._admin_audit = admin_audit
         self._agent_actions = agent_actions
         self._web_provider = web_provider
