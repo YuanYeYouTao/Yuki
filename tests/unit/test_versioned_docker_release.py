@@ -429,9 +429,9 @@ def test_release_workflow_has_bootstrap_quality_smoke_and_all_assets() -> None:
     assert workflow.index("Verify anonymous version pulls") < workflow.index(
         "Update latest only after public version verification"
     )
-    assert "gh release upload \"$tag\" --clobber" not in workflow
+    assert 'gh release upload "$tag" --clobber' not in workflow
     assert workflow.count('cmp -s "$asset" "$existing_dir/$name"') == 2
-    assert workflow.count('Refusing to overwrite divergent release asset') == 2
+    assert workflow.count("Refusing to overwrite divergent release asset") == 2
     for asset in (
         "yuki-$VERSION-deploy.zip",
         "yuki-$VERSION-deploy.tar.gz",
