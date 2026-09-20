@@ -17,7 +17,7 @@ from qq_ai_bot.automation.authority import (
     PermissionLevel,
     effective_delegated_capabilities,
 )
-from qq_ai_bot.automation.executor import AutomationExecutionError, AutomationExecutor
+from qq_ai_bot.automation.executor import AutomationExecutor
 from qq_ai_bot.automation.gateway import ProactiveGatewayError
 from qq_ai_bot.automation.handlers import AutomationCapabilityHandlers, _AutomationAgentBackend
 from qq_ai_bot.automation.models import (
@@ -420,71 +420,13 @@ async def test_delegated_create_tool_exposes_task_spec_and_validation_issues() -
     assert {issue["path"] for issue in result["issues"]} == {"task.goal", "task.trigger"}
 
 
-class _RecordingAdminActions:
-    def __init__(self) -> None:
-        self.calls: list[tuple[object, ...]] = []
+def test_removed_admin_action_is_not_registered() -> None:
+    from qq_ai_bot.automation.registry import build_capability_registry
 
-    async def execute(self, *args: object, **kwargs: object) -> dict[str, object]:
-        self.calls.append(args)
-        raise AssertionError("admin action must not execute")
-
-
-def _admin_action_context(*, superuser: bool) -> CapabilityExecutionContext:
-    now = datetime(2026, 8, 5, 8, tzinfo=UTC)
-    return CapabilityExecutionContext(
-        authority=AuthorityContext(
-            origin=TurnOrigin.SCHEDULED_AUTOMATION,
-            actor_user_id="9000",
-            actor_is_superuser=superuser,
-            bot_user_id="7777",
-            delegated_authority=None,
-            allowed_capabilities=frozenset({"admin.execute_action"}),
-        ),
-        automation_id=19,
-        automation_run_id=23,
-        step_id="execute",
-        creator_user_id="9000",
-        bot_user_id="7777",
-        current_group_id=None,
-        scheduled_for=now,
-        actual_started_at=now,
-        local_time=now,
-        timezone="Asia/Shanghai",
-        automation_context=AutomationContext(scene="none"),
-        conversation_key="automation:19",
-    )
-
-
-@pytest.mark.asyncio
-async def test_admin_action_is_unavailable_and_does_not_execute() -> None:
-    actions = _RecordingAdminActions()
-    handlers = object.__new__(AutomationCapabilityHandlers)
-    handlers._admin_actions = actions
-    with pytest.raises(AutomationExecutionError) as caught:
-        await handlers.admin_action(
-            {
-                "action": "relationship.set_affection",
-                "user_id": "1001",
-                "value": 88,
-            },
-            _admin_action_context(superuser=True),
-        )
-    assert caught.value.category == "operation_unavailable"
-    assert actions.calls == []
-
-
-@pytest.mark.asyncio
-async def test_admin_action_still_revokes_non_superuser_without_executing() -> None:
-    actions = _RecordingAdminActions()
-    handlers = object.__new__(AutomationCapabilityHandlers)
-    handlers._admin_actions = actions
-    with pytest.raises(AutomationExecutionError) as caught:
-        await handlers.admin_action(
-            {"action": "relationship.get", "user_id": "9000"},
-            _admin_action_context(superuser=False),
-        )
-    assert caught.value.category == "permission_revoked"
-    assert actions.calls == []
+    registry = build_capability_registry()
+    assert registry.get("admin.execute_action") is None
+    with pytest.raises(ValueError):
+        registry.require("admin.execute_action")
 
 
 @pytest.mark.asyncio

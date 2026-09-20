@@ -97,20 +97,6 @@ class OneBotCallArguments(CapabilityArguments):
     params: dict[str, Any]
 
 
-class AdminActionArguments(CapabilityArguments):
-    action: str = Field(min_length=1, max_length=128)
-    target: str | None = Field(default=None, max_length=32)
-    user_id: str | None = Field(default=None, max_length=64)
-    group_id: str | None = Field(default=None, max_length=64)
-    value: Any = None
-    delta: int | None = None
-    memory_id: int | None = None
-    max_importance: int | None = Field(default=None, ge=1, le=5)
-    older_than_days: int | None = Field(default=None, ge=1, le=3650)
-    content: str | None = Field(default=None, max_length=4000)
-    key: str | None = Field(default=None, max_length=128)
-
-
 class ConfigGetArguments(CapabilityArguments):
     key: str = Field(min_length=1, max_length=128)
     scope_type: Literal["global", "group", "user"] = "global"
@@ -352,7 +338,7 @@ def build_capability_registry(
         ),
         (
             "onebot.send_private_message",
-            "主动发送一条普通私聊消息。",
+            "自动化委托发送：用 user_id 和 text 向已授权私聊发送文本；不生成当前会话最终回复。",
             SendPrivateArguments,
             PermissionLevel.USER,
             RiskClass.SEND,
@@ -360,7 +346,7 @@ def build_capability_registry(
         ),
         (
             "onebot.send_group_message",
-            "主动发送一条普通群消息。",
+            "自动化委托发送：用 group_id 和 text 向已授权群发送文本；不支持结构化 mentions。",
             SendGroupArguments,
             PermissionLevel.USER,
             RiskClass.SEND,
@@ -368,7 +354,8 @@ def build_capability_registry(
         ),
         (
             "speech.send_private",
-            "生成本地语音并发送给任务所有者本人。",
+            "自动化语音发送：用 user_id 和 text 向任务所有者发送指定文本"
+            "。profile_id 可省略；不同于本轮回复布局 send_voice。",
             SpeechSendPrivateArguments,
             PermissionLevel.USER,
             RiskClass.SEND,
@@ -376,7 +363,8 @@ def build_capability_registry(
         ),
         (
             "speech.send_group",
-            "生成本地语音并发送到任务创建时的当前群。",
+            "自动化语音发送：用 group_id 和 text 向创建时授权群发送指定文"
+            "本。profile_id 可省略；不同于本轮回复布局 send_voice。",
             SpeechSendGroupArguments,
             PermissionLevel.USER,
             RiskClass.SEND,
@@ -407,16 +395,9 @@ def build_capability_registry(
             RetryPolicy.NONE,
         ),
         (
-            "admin.execute_action",
-            "调用已登记的后端管理员业务 action。",
-            AdminActionArguments,
-            PermissionLevel.SUPERUSER,
-            RiskClass.MUTATE,
-            RetryPolicy.NONE,
-        ),
-        (
             "config.get",
-            "读取已登记运行时配置。",
+            "自动化管理员委托读取单个配置 key；scope_type 和 scope_id "
+            "指定授权范围。批量当前请求读取使用 admin_get_config 的 keys。",
             ConfigGetArguments,
             PermissionLevel.SUPERUSER,
             RiskClass.READ,
@@ -424,7 +405,8 @@ def build_capability_registry(
         ),
         (
             "config.set",
-            "修改已登记运行时配置。",
+            "自动化管理员委托修改单个配置 key/value；指定 scope_type/scope_id，"
+            "不允许修改 automation.*。不能替代当前请求的 admin_set_config 授权。",
             ConfigSetArguments,
             PermissionLevel.SUPERUSER,
             RiskClass.MUTATE,
@@ -432,7 +414,8 @@ def build_capability_registry(
         ),
         (
             "web.search",
-            "通过受控 Tavily Provider 搜索公开网页。",
+            "通过已配置的搜索服务查询公开网页；query 为问题，topic 为 gen"
+            "eral/news，time_range 可省略。仅在自动化委托范围内执行。",
             WebSearchArguments,
             PermissionLevel.USER,
             RiskClass.READ,
@@ -440,7 +423,7 @@ def build_capability_registry(
         ),
         (
             "web.read_page",
-            "通过受控 Provider 读取一个公开网页。",
+            "读取已授权的公开网页 url，question 可用于聚焦内容；遵守自动化委托和 URL 校验。",
             WebReadArguments,
             PermissionLevel.USER,
             RiskClass.READ,
@@ -464,7 +447,8 @@ def build_capability_registry(
         ),
         (
             "history.search",
-            "在明确范围内搜索本地永久聊天账本。",
+            "在自动化授权范围内按 keyword、可选 user_id/group_id "
+            "及时间搜索本地账本；绑定 canonical 会话时搜索该会话，不代表全库检索。",
             HistorySearchArguments,
             PermissionLevel.USER,
             RiskClass.READ,
@@ -472,7 +456,8 @@ def build_capability_registry(
         ),
         (
             "automation.create_task",
-            "为当前任务创建者新建后续自动化；task 使用与用户会话相同的 TaskSpec。",
+            "为已授权任务创建者登记后续自动化，task 填写结构化 TaskSpec；不同于 au"
+            "tomation_create 的会话创建参数。以持久化 ID 确认创建，不重复登记。",
             AutomationCreateTaskArguments,
             PermissionLevel.USER,
             RiskClass.MUTATE,
@@ -480,7 +465,8 @@ def build_capability_registry(
         ),
         (
             "automation.update_task",
-            "更新当前创建者拥有的自动化任务。",
+            "按 automation_id 和 task 更新委托创建者拥有的自动化；"
+            "task 是结构化 TaskSpec，仍核验所有权。",
             AutomationUpdateTaskArguments,
             PermissionLevel.USER,
             RiskClass.MUTATE,
@@ -488,7 +474,7 @@ def build_capability_registry(
         ),
         (
             "automation.cancel_task",
-            "取消当前创建者拥有的自动化任务。",
+            "按 automation_id 取消委托创建者拥有的自动化；只取消指定任务，不撤销已完成效果。",
             AutomationIdArguments,
             PermissionLevel.USER,
             RiskClass.MUTATE,

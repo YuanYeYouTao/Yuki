@@ -440,7 +440,6 @@ def test_yuki_agent_delegates_only_explicit_selected_capabilities() -> None:
 
     payload["steps"][0]["arguments"]["allowed_capabilities"] = [
         "onebot.call_api",
-        "admin.execute_action",
         "config.set",
     ]
     admin = _validator().validate(
@@ -449,7 +448,7 @@ def test_yuki_agent_delegates_only_explicit_selected_capabilities() -> None:
         now_utc=datetime(2026, 7, 27, tzinfo=UTC),
     )
     assert "onebot.call_api" in admin.required_capabilities
-    assert "admin.execute_action" in admin.required_capabilities
+    assert "admin.execute_action" not in admin.required_capabilities
     assert "config.set" in admin.required_capabilities
 
 

@@ -409,7 +409,6 @@ class ApplicationContainer:
             ledger=self.ledger,
             memories=self.memories,
             relationships=self.relationships,
-            admin_actions=self.admin_actions,
             admin_audit=self.admin_audit,
             agent_actions=self.agent_actions,
             web_provider=self.web_provider,

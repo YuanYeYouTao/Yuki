@@ -176,7 +176,6 @@ class AdminModule:
             runtime_config=self._runtime_config,
             actions=actions,
             audit=audit,
-            permission_catalog=self._permission_catalog,
             memory_rebuild=self._memory_rebuild,
         )
         return AdminBundle(

@@ -1,4 +1,4 @@
-"""Model-facing schema for loading omitted capabilities via local search."""
+"""Fixed model-facing directory lookup; never changes tool declarations."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ REQUEST_TOOLS_NAME = "request_tools"
 
 
 def request_tools_definition() -> ChatTool:
-    """Return the stable schema used to ask the Host for omitted tools."""
+    """Return the stable capability-directory query schema."""
 
     return ChatTool(
         name=REQUEST_TOOLS_NAME,

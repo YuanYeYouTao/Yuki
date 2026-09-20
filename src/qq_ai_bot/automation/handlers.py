@@ -11,7 +11,6 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from qq_ai_bot.admin.action_service import AdminActionService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.executor import AutomationExecutionError
@@ -106,7 +105,6 @@ class AutomationCapabilityHandlers:
         ledger: EventLedgerRepository,
         memories: MemoryFactService,
         relationships: RelationshipRepository,
-        admin_actions: AdminActionService,
         web_provider: WebSearchProvider | None,
         gateway_factory: GatewayFactory,
         emoji_repository: EmojiRepository | None = None,
@@ -126,7 +124,6 @@ class AutomationCapabilityHandlers:
         self._ledger = ledger
         self._memories = memories
         self._relationships = relationships
-        self._admin_actions = admin_actions
         self._web = web_provider
         self._gateway_factory = gateway_factory
         self._emoji_repository = emoji_repository
@@ -158,7 +155,6 @@ class AutomationCapabilityHandlers:
             "emoji.send": self.send_emoji,
             "emoji.send_by_id": self.send_emoji,
             "onebot.call_api": self.call_onebot,
-            "admin.execute_action": self.admin_action,
             "config.get": self.config_get,
             "config.set": self.config_set,
             "web.search": self.web_search,
@@ -665,13 +661,6 @@ class AutomationCapabilityHandlers:
             str(arguments["action"]), cast(dict[str, object], arguments["params"])
         )
         return CapabilityResult(data={"ok": True, "result": _bounded_result(result)})
-
-    async def admin_action(
-        self, arguments: dict[str, Any], context: CapabilityExecutionContext
-    ) -> CapabilityResult:
-        if not context.authority.actor_is_superuser:
-            raise AutomationExecutionError("permission_revoked")
-        raise AutomationExecutionError("operation_unavailable")
 
     async def config_get(
         self, arguments: dict[str, Any], context: CapabilityExecutionContext
