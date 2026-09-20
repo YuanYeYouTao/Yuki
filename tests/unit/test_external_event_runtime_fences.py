@@ -298,7 +298,7 @@ async def test_message_history_filters_external_before_limit(database: Database)
 
 
 @pytest.mark.asyncio
-async def test_finish_rechecks_coverage_before_enqueuing_agent_reply(database: Database) -> None:
+async def test_finish_rechecks_coverage_without_enqueuing_agent_reply(database: Database) -> None:
     repository, source_id, conversation_id = await _seed_job(database)
     job = await repository.claim_turn()
     assert job is not None
@@ -320,7 +320,6 @@ async def test_finish_rechecks_coverage_before_enqueuing_agent_reply(database: D
         job.id,
         attempt=job.attempts,
         generation=job.generation,
-        text="must not escape",
         tool_calls_used=0,
         model_requests=1,
     )
@@ -413,7 +412,6 @@ async def test_active_wakeup_holds_rollup_until_a_silent_terminal_finish(
         wakeup.id,
         attempt=wakeup.attempts,
         generation=wakeup.generation,
-        text="",
         tool_calls_used=1,
         model_requests=1,
     )

@@ -45,7 +45,7 @@ class ReplyTargetControl:
     """Host-verified reply target for outbound messages.
 
     ``pinned=True`` means an explicit, backend-verified target (for example
-    via a future ``set_reply_target`` tool); ``False`` means heuristic
+    through ``send_message.reply_to_event_id``); ``False`` means heuristic
     default targeting that later stages may replace.
     """
 

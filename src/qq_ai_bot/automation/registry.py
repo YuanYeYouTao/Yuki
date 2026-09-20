@@ -296,7 +296,7 @@ def build_capability_registry(
         (
             "speech.send_private",
             "自动化语音发送：用 user_id 和 text 向任务所有者发送指定文本"
-            "。profile_id 可省略；不同于本轮回复布局 send_voice。",
+            "。profile_id 可省略；此项是显式 DSL 步骤，Agent 发送使用 send_message。",
             SpeechSendPrivateArguments,
             PermissionLevel.USER,
             RiskClass.SEND,
@@ -305,7 +305,7 @@ def build_capability_registry(
         (
             "speech.send_group",
             "自动化语音发送：用 group_id 和 text 向创建时授权群发送指定文"
-            "本。profile_id 可省略；不同于本轮回复布局 send_voice。",
+            "本。profile_id 可省略；此项是显式 DSL 步骤，Agent 发送使用 send_message。",
             SpeechSendGroupArguments,
             PermissionLevel.USER,
             RiskClass.SEND,

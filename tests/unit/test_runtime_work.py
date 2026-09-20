@@ -98,21 +98,15 @@ async def test_expired_owner_cannot_release_or_mutate_replacement(database, tmp_
 
 
 @pytest.mark.asyncio
-async def test_progress_continues_work_and_finish_waits_for_delivery(database, tmp_path):
+async def test_work_control_has_no_progress_tool_and_preserves_checkpoint(database, tmp_path):
     env = await social_env(database, tmp_path)
     repository = WorkRepository(database)
     lease = await repository.acquire(env.context.conversation_id, 1)
     assert lease
-    sent = []
-
     async def validate():
         assert await repository.valid(lease)
 
-    async def deliver(text, key):
-        sent.append(text)
-        return {"transport_accepted": True, "message_id": key, "ledger_recorded": True}
-
-    control = WorkControl(repository, lease, "source", {}, validate, deliver)
+    control = WorkControl(repository, lease, "source", {}, validate)
     assert not json.loads(await control.execute("report_progress", {"text": "starting"}, "p0"))[
         "ok"
     ]
@@ -125,9 +119,9 @@ async def test_progress_continues_work_and_finish_waits_for_delivery(database, t
     )["ok"]
     identity = control.current["id"]
     await repository.checkpoint(lease, identity, {"transcript_ref": "preserved"})
-    await control.execute("report_progress", {"text": "accepted"}, "p1")
-    await control.execute("report_progress", {"text": "accepted"}, "p1")
-    assert sent == ["accepted"]
+    assert not json.loads(
+        await control.execute("report_progress", {"text": "accepted"}, "p1")
+    )["ok"]
     persisted = await repository.get(identity)
     assert persisted["state"] == "running"
     assert json.loads(persisted["checkpoint_json"])["transcript_ref"] == "preserved"
@@ -210,7 +204,6 @@ async def test_agent_loop_speaks_then_executes_and_proposes_finish(
                 {"action": "accept", "goal": "render", "output_kind": "state_change"},
                 "accept",
             ),
-            call("report_progress", {"text": "接下了，开始准备"}, "progress"),
             *([call("render_fixture", {}, "old-plan")] if steer else []),
             call("render_fixture", {}, "render"),
             call("task_control", {"action": "complete"}, "complete"),
@@ -229,11 +222,7 @@ async def test_agent_loop_speaks_then_executes_and_proposes_finish(
     async def validate():
         assert await repo.valid(lease)
 
-    async def deliver(text, key):
-        observed.append("say")
-        return {"transport_accepted": True, "message_id": key}
-
-    control = WorkControl(repo, lease, "source-loop", {}, validate, deliver)
+    control = WorkControl(repo, lease, "source-loop", {}, validate)
     wire_client, captured = None, []
     if wire_protocol:
         from tests.support.runtime_wire import install_wire
@@ -242,7 +231,7 @@ async def test_agent_loop_speaks_then_executes_and_proposes_finish(
     original_complete = provider.complete
 
     async def complete(request):
-        if steer and len(provider.requests) == 2:
+        if steer and len(provider.requests) == 1:
             identity = await repo.enqueue(
                 lease.conversation_id,
                 1,
@@ -310,8 +299,8 @@ async def test_agent_loop_speaks_then_executes_and_proposes_finish(
     result = await chat._agent_runner.run(
         (ChatMessage(role="user", content="画图"),), runtime, Backend()
     )
-    assert observed == ["say", "render"]
-    assert result.text == "图片已经生成"
+    assert observed == ["render"]
+    assert result.text == ""
     assert control.ending == "completed"
     assert (await repo.get(control.current["id"]))["state"] == "running"
     for before, after in zip(provider.requests, provider.requests[1:], strict=False):
@@ -484,7 +473,6 @@ async def test_real_chat_entry_progress_delivery_and_work_completion(
                 "task_control",
                 {"action": "accept", "goal": "记录指定短期信息", "output_kind": "state_change"},
             ),
-            ("report_progress", {"text": "接下了，这就记录。"}),
             *(
                 [("update_short_state", {"slot": 1, "text": "old-plan", "expected_revision": 0})]
                 if steer
@@ -534,7 +522,7 @@ async def test_real_chat_entry_progress_delivery_and_work_completion(
     original_complete = provider.complete
 
     async def complete(request):
-        if steer and len(provider.requests) == 2:
+        if steer and len(provider.requests) == 1:
             model_waiting.set()
             await input_ready.wait()
         return await original_complete(request)
@@ -562,11 +550,11 @@ async def test_real_chat_entry_progress_delivery_and_work_completion(
         input_ready.set()
     result = await asyncio.wait_for(running, 10)
     assert result.reason == "chat", result
-    assert [m.text for m in sender.messages] == ["接下了，这就记录。", "已经记录好了。"]
+    assert not sender.messages
     async with database.sessions() as session:
         row = (await session.execute(select(work))).mappings().one()
         assert row["state"] == "completed"
-        assert row["sent_messages"] == 2
+        assert row["sent_messages"] == 0
     assert state.snapshot()[0]["text"] == "runtime-check"
     assert all(request.tools == provider.requests[0].tools for request in provider.requests)
 
@@ -707,10 +695,10 @@ async def test_child_completion_has_one_parent_consumer_and_scheduler(
         await scheduler.drain_once()
     assert (await repository.get(parent["id"]))["state"] == "completed"
     assert state.snapshot()[0]["text"] == "child-done"
-    assert len([call for call in env.bot.calls if call[0] == "send_group_msg"]) == 1
+    assert not [call for call in env.bot.calls if call[0] == "send_group_msg"]
     await scheduler.drain_once()
     await old._drain_request("child-request")
-    assert len(provider.requests) == updates + 2
+    assert len(provider.requests) == updates + 1
     if client:
         await client.aclose()
         field = "input" if protocol == "responses" else "messages"
@@ -875,7 +863,6 @@ async def test_sync_main_entry_returns_result_without_acquiring_send_authority(
     steps = iter(
         [
             ("task_control", {"action": "accept", "goal": "write answer", "output_kind": "answer"}),
-            ("report_progress", {"text": "must not be sent"}),
             ("task_control", {"action": "complete"}),
         ]
     )
@@ -921,7 +908,7 @@ async def test_sync_main_entry_returns_result_without_acquiring_send_authority(
     backend = ShortStateOnlyBackend(state)
     result = await chat._main_turns.run((ChatMessage("user", "write answer"),), runtime, backend)
     assert result.text == "computed answer" and result.work_state == "completed"
-    assert any("progress_delivery_not_authorized" in str(r.messages) for r in provider.requests)
+    assert not any("progress_delivery_not_authorized" in str(r.messages) for r in provider.requests)
     count = len(provider.requests)
     repeated = await chat._main_turns.run((ChatMessage("user", "write answer"),), runtime, backend)
     assert repeated.text == "computed answer" and repeated.model_requests == 0

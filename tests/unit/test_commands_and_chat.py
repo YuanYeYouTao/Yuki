@@ -43,7 +43,7 @@ from qq_ai_bot.services.processor import (
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "tool_name,failure",
-    [("send_private_message", "artifact_transfer_unavailable"), ("poke_person", "route_paused")],
+    [("send_message", "artifact_transfer_unavailable"), ("poke_person", "route_paused")],
 )
 async def test_delivery_failure_keeps_normal_answer(
     database: Database, tmp_path, tool_name: str, failure: str
@@ -72,12 +72,7 @@ async def test_delivery_failure_keeps_normal_answer(
                             name=tool_name,
                             arguments=json.dumps(
                                 {
-                                    "subject_ref": "current_speaker",
-                                    **(
-                                        {"text": "hello"}
-                                        if tool_name == "send_private_message"
-                                        else {}
-                                    ),
+                                    **({"text": "hello"} if tool_name == "send_message" else {}),
                                 }
                             ),
                         ),
@@ -134,13 +129,13 @@ async def test_delivery_failure_keeps_normal_answer(
     sender = MemorySender()
     result = await harness.processor.handle(message, sender)
     assert result.reason == "chat" and calls == 1
-    assert "文件已生成，但未确认发送成功。" in [m.text for m in sender.messages]
+    assert not sender.messages
     assert all(not m.text.startswith("操作未完成：") for m in sender.messages)
     following = MemorySender()
     await harness.processor.handle(
         replace(message, text="聊聊天", message_id="after-failure"), following
     )
-    assert calls == 1 and following.messages[0].text == "可以正常聊天。"
+    assert calls == 1 and not following.messages
 
 
 def inbound(
@@ -662,8 +657,8 @@ async def test_stop_cancels_only_current_task(
         other_result = await other_task
         assert other_result.reason == "chat"
         assert other_result.handled
-        assert other_result.sent_messages >= 1
-        assert any("FakeLLM" in (message.text or "") for message in other_sender.messages)
+        assert other_result.sent_messages == 0
+        assert not other_sender.messages
         assert not harness.concurrency.is_processing(other_key)
         observations = [
             json.loads(record.getMessage().removeprefix("agent_evidence "))
@@ -715,9 +710,10 @@ async def test_empty_model_response_is_user_safe(database: Database) -> None:
         assert mention_provider.requests[0].tools == mention_provider.requests[1].tools
         assert all("[提及" not in str(message.text) for message in mention_sender.messages)
         assert all("@完了" not in str(message.text) for message in mention_sender.messages)
-        assert any(
-            ("确认" if repair else "AI 服务暂时不可用") in str(message.text)
-            for message in mention_sender.messages
+        assert (
+            not mention_sender.messages
+            if repair
+            else any("AI 服务暂时不可用" in message.text for message in mention_sender.messages)
         )
 
 
@@ -795,7 +791,7 @@ async def test_mutation_turn_uses_auto_with_only_write_tool_and_receipt_contract
     assert "memory_change" in tool_names
     assert "request_tools" in tool_names
     assert any("真实工具回执" in (message.content or "") for message in request.messages)
-    assert sender.messages[0].text == "需要你指明哪条记忆"
+    assert not sender.messages
 
 
 @pytest.mark.asyncio
@@ -813,7 +809,7 @@ async def test_unused_planner_fallback_no_longer_blocks_the_agent(
 
     assert result.reason == "chat"
     assert len(provider.requests) == 1
-    assert sender.messages[0].text == "主 Agent 仍然会回复"
+    assert not sender.messages
 
 
 @pytest.mark.asyncio
@@ -848,10 +844,9 @@ async def test_ordinary_chat_always_assembles_agent_context(
     )
 
     assert result.reason == "chat"
-    assert len(checked) == 1
-    assert await chat._turn_coordinator.begin_background(checked[0]) is not None
+    assert not checked
     assert len(provider.requests) == 1
-    assert sender.messages[0].text == "表情也要先走 Main Agent"
+    assert not sender.messages
     request = provider.requests[0]
     assert "event_bound_memory_refs" in request.messages[-1].content
     assert "available_memory_subjects" not in request.messages[-1].content
@@ -878,7 +873,7 @@ async def test_group_mention_without_text_starts_a_natural_chat_turn(database: D
     )
 
     assert result.reason == "chat"
-    assert sender.messages[0].text == "在呢，怎么啦？"
+    assert not sender.messages
     request = provider.requests[0]
     assert request.messages[-1].role == "user"
     assert request.messages[-1].content.endswith(MENTION_ONLY_CONTEXT)
@@ -1133,12 +1128,12 @@ async def test_native_images_use_full_chat_without_external_vision(
 
 
 @pytest.mark.asyncio
-async def test_send_failure_is_not_retried_or_persisted_as_assistant(database: Database) -> None:
+async def test_silent_final_never_tries_transport_or_persists_assistant(database: Database) -> None:
     harness = build_harness(database, make_settings(database.url))
     sender = MemorySender(fail=True)
     result = await harness.processor.handle(inbound("hello", message_id="send-fail"), sender)
-    assert result.reason == "send_or_storage_failure"
-    assert sender.calls == 1
+    assert result.reason == "chat"
+    assert sender.calls == 0
     identity = ConversationScope.private("9999", "1001")
     history = await harness.conversation_rollups.load_prompt_snapshot(identity)
     assert [(item.direction, item.content) for item in history.raw_events] == [("inbound", "hello")]

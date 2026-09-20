@@ -85,7 +85,7 @@ async def history_agent_loop(env):
         ),
         sender,
     )
-    assert result.reason == "chat" and sender.messages
+    assert result.reason == "chat" and not sender.messages
     assert calls == 3
     assert sum(action == "get_friend_msg_history" for action, _ in env.bot.calls) == 2
     async with env.db.sessions() as session:

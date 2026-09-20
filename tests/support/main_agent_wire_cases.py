@@ -217,7 +217,7 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             )
             sender = MemorySender()
             result = await harness.processor.handle(message, sender)
-            assert result.reason == "chat" and sender.messages
+            assert result.reason == "chat" and not sender.messages
             if name == "private":
                 from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
 
@@ -509,7 +509,7 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             turn_token=token,
             turn_snapshot=snapshot,
         )
-        assert sender.messages
+        assert not sender.messages
 
     forbidden_send.assert_not_awaited()
     assert len(captured) == 9

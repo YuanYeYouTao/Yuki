@@ -52,6 +52,7 @@ from qq_ai_bot.identity.db_models import (
     IdentityBindingModel,
 )
 from qq_ai_bot.identity.routing import PresenceRouter, RouteSendError
+from qq_ai_bot.social.db_models import SocialOperationModel
 from qq_ai_bot.time.service import TimeContextService
 
 _SEND_CAPABILITIES = frozenset(
@@ -260,6 +261,29 @@ class AutomationExecutor:
             ):
                 for index, step in enumerate(automation.script.steps):
                     if index < next_step:
+                        continue
+                    legacy_status = await self._legacy_agent_delivery_status(
+                        automation, run, index, conversation_id
+                    )
+                    if legacy_status in {"executing", "uncertain"}:
+                        raise AutomationExecutionError(
+                            "legacy_delivery_outcome_uncertain", uncertain=True
+                        )
+                    if legacy_status == "succeeded":
+                        now = self._time.clock.now()
+                        await self._repository.record_step(
+                            run_id=run.id,
+                            step_id=step.id,
+                            capability=step.call,
+                            status="skipped",
+                            input_summary=_summary(step.arguments),
+                            output_summary={"reason": "already_sent_by_agent"},
+                            started_at=now,
+                            finished_at=now,
+                            error_category=None,
+                        )
+                        steps_completed += 1
+                        await checkpoint("ready", index + 1)
                         continue
                     definition = self._registry.require(step.call)
                     if step.call not in allowed:
@@ -496,6 +520,65 @@ class AutomationExecutor:
             messages_sent=messages_sent,
             summary={"output_steps": list(outputs)},
         )
+
+    async def _legacy_agent_delivery_status(
+        self,
+        automation: AutomationRecord,
+        run: AutomationRunRecord,
+        index: int,
+        conversation_id: str | None,
+    ) -> str | None:
+        """Fence old Agent+deliver scripts against a new explicit model send.
+
+        A generated script's deliver step and any user-authored DSL remain
+        explicit sends. Only the compiler's former implicit Agent tail is
+        eligible for this compatibility check.
+        """
+
+        if index == 0 or conversation_id is None:
+            return None
+        previous, step = automation.script.steps[index - 1 : index + 1]
+        if (
+            previous.call != "yuki.agent"
+            or previous.save_as != "result"
+            or step.id != "deliver"
+            or step.arguments.get("text") != "${result.text}"
+        ):
+            return None
+        if (
+            step.call == "onebot.send_group_message"
+            and step.arguments.get("group_id") == "$current_group_id"
+        ):
+            kind, target_id = "space", automation.canonical_target_space_id
+        elif (
+            step.call == "onebot.send_private_message"
+            and step.arguments.get("user_id") == "$creator_user_id"
+        ):
+            kind, target_id = "person", automation.canonical_creator_person_id
+        else:
+            return None
+        if target_id is None:
+            return None
+        source_turn = (
+            f"{conversation_id}:execution:automation:{run.id}:{previous.id}:"
+            f"{automation.script_hash}"
+        )
+        async with self._repository._database.sessions() as session:
+            states = set(
+                await session.scalars(
+                    select(SocialOperationModel.status).where(
+                        SocialOperationModel.source_turn_id == source_turn,
+                        SocialOperationModel.action == "send_message",
+                        SocialOperationModel.target_kind == kind,
+                        SocialOperationModel.target_id == target_id,
+                    )
+                )
+            )
+        if "uncertain" in states or "executing" in states:
+            return "uncertain"
+        if "succeeded" in states:
+            return "succeeded"
+        return None
 
     async def _begin_execution(
         self, claimed: AutomationRecord, *, allow_completed: bool = False

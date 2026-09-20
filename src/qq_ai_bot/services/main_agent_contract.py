@@ -41,8 +41,6 @@ class MainAgentContract:
         async with self._lock:
             if self._tools is not None:
                 return deepcopy(self._tools)
-            from qq_ai_bot.services.main_agent_backend import _SET_REPLY_TARGET_TOOL
-
             # No event/person/group can affect declaration. This runtime is NEVER used to execute.
             config = await self.chat._runtime_config.snapshot()
             declaration = ToolRuntime(
@@ -63,7 +61,7 @@ class MainAgentContract:
                 entry.descriptor.as_chat_tool(description=entry.descriptor.description)
                 for entry in registry.catalog(declaration).entries
             ]
-            tools.extend((request_tools_definition(), _SET_REPLY_TARGET_TOOL, STATE_TOOL))
+            tools.extend((request_tools_definition(), STATE_TOOL))
             from qq_ai_bot.runtime.subagent_tools import subagent_tools
 
             tools.extend(work_control_tools())
@@ -75,7 +73,7 @@ class MainAgentContract:
             revision = hashlib.sha256(
                 json.dumps(
                     {
-                        "version": 4,
+                        "version": 5,
                         "tools": [
                             {
                                 "name": t.name,

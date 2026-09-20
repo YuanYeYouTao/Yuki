@@ -168,7 +168,7 @@ async def test_voice_reaches_main_agent_history_search_and_rollup(
     inbound = voice(group=group)
     try:
         result = await harness.processor.handle(inbound, gateway)
-        assert result.sent_messages == 1, result
+        assert result.sent_messages == 0, result
         request = provider.requests[-1]
         assert "我喜欢吃草莓" in "\n".join(m.content or "" for m in request.messages)
         assert all("base64" not in (m.content or "") for m in request.messages if m.role == "user")

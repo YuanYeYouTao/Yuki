@@ -134,7 +134,7 @@ def speech_config_specs() -> tuple[ConfigSpec, ...]:
                 (
                     "speech.agent_effects_enabled",
                     "Agent 语音效果",
-                    "允许 Main Agent 通过 send_voice 请求语音效果。",
+                    "允许 Main Agent 通过 send_message.voice 发送语音。",
                     (),
                     "boolean",
                     None,

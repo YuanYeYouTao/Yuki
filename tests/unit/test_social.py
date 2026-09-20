@@ -114,7 +114,7 @@ async def test_social_receipt_claim_replay_and_interrupted_delivery(database: Da
     descriptors = ChatToolCapabilityProvider(
         definitions, source=CapabilityTrustSource.CORE
     ).descriptors()
-    assert len(descriptors) == 28
+    assert len(descriptors) == 27
     assert all(
         descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS for descriptor in descriptors
     )
@@ -132,6 +132,11 @@ async def test_social_receipt_claim_replay_and_interrupted_delivery(database: Da
                     TurnOrigin.USER_MESSAGE,
                     TurnOrigin.AUTONOMOUS_GROUP,
                     TurnOrigin.SCHEDULED_AUTOMATION,
+                    *(
+                        (TurnOrigin.PLUGIN_BACKGROUND,)
+                        if descriptor.model_name == "send_message"
+                        else ()
+                    ),
                 }
             )
         )
@@ -163,7 +168,6 @@ async def test_social_receipt_claim_replay_and_interrupted_delivery(database: Da
         kernel_tools=(),
         query="unrelated",
         artifact_available=False,
-        reply_target_available=False,
     )
     assert {item.descriptor.model_name for item in plan.entries} == {
         tool.name for tool in definitions
@@ -289,6 +293,7 @@ async def test_social_gateway_delivery_and_fail_closed(database: Database, tmp_p
             select(ChatEventModel).where(ChatEventModel.platform_message_id == "1")
         )
         conversation_id = event.canonical_conversation_id
+        inbound_event_id = event.id
     assert await router.cas_takeover_person(person) in {"taken", "unchanged"}
     service = SocialService(database, router, writer)
     store = WorkspaceStore(tmp_path / "workspace")
@@ -391,7 +396,7 @@ async def test_social_gateway_delivery_and_fail_closed(database: Database, tmp_p
         "reply-turn",
         "reply-file",
         conversation_id,
-        reply_message_id="1",
+        trigger_event_id=inbound_event_id,
         reply_presence_id=presence,
     )
     group_context = SocialContext("group-poke", "default", conversation_id, space_id=space_id)
@@ -423,7 +428,7 @@ async def test_social_gateway_delivery_and_fail_closed(database: Database, tmp_p
     with pytest.raises(SocialError, match="invalid_reply_context"):
         await service.send_route(
             SocialTarget(kind="person", id=UUID(person)),
-            replace(reply_context, reply_message_id="forged"),
+            replace(reply_context, trigger_event_id=999999),
         )
     # File and caption are independently receipted. Replay must never re-send,
     # including a deleted source artifact or a failed caption.
@@ -523,3 +528,352 @@ async def test_social_gateway_delivery_and_fail_closed(database: Database, tmp_p
     from tests.support.social_identity_cases import run_identity_scenarios
 
     await run_identity_scenarios(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_send_message_defaults_to_current_group_and_replays_receipt(
+    database: Database, tmp_path: Path
+) -> None:
+    from dataclasses import replace
+
+    from sqlalchemy import select
+    from tests.support.social_identity_cases import social_env
+
+    from qq_ai_bot.conversation.canonical_db_models import SpaceActiveRouteModel
+    from qq_ai_bot.persistence.models import ChatEventModel
+
+    env = await social_env(database, tmp_path)
+    async with database.sessions() as session:
+        inbound = await session.scalar(
+            select(ChatEventModel).where(ChatEventModel.platform_message_id == "inbound")
+        )
+        assert inbound is not None
+        assert inbound.ingress_presence_id == env.presence
+    context = replace(env.context, trigger_event_id=inbound.id)
+    sent = await env.service.execute("send_message", {"text": "第一步完成"}, context)
+    assert sent["status"] == "succeeded"
+    assert sent["target"] == {"kind": "space", "id": env.space}
+    assert env.bot.calls[-1][0] == "send_group_msg"
+    async with database.sessions() as session, session.begin():
+        route = await session.get(SpaceActiveRouteModel, env.space)
+        assert route is not None
+        route.paused = True
+    before = len(env.bot.calls)
+    assert await env.service.execute("send_message", {"text": "第一步完成"}, context) == sent
+    assert len(env.bot.calls) == before
+    with pytest.raises(SocialError, match="idempotency_conflict"):
+        await env.service.execute("send_message", {"text": "不同内容"}, context)
+
+
+@pytest.mark.asyncio
+async def test_send_message_explicit_person(
+    database: Database, tmp_path: Path
+) -> None:
+    from dataclasses import replace
+
+    from tests.support.social_identity_cases import social_env
+
+    env = await social_env(database, tmp_path)
+    assert await env.router.cas_takeover_person(env.person) in {"taken", "unchanged"}
+    context = replace(env.context, call_id="private")
+    sent = await env.service.execute(
+        "send_message",
+        {"target": {"kind": "person", "target_id": env.person}, "text": "私信"},
+        context,
+    )
+    assert sent["status"] == "succeeded"
+    assert sent["target"] == {"kind": "person", "id": env.person}
+    assert env.bot.calls[-1][0] == "send_private_msg"
+
+
+@pytest.mark.asyncio
+async def test_legacy_agent_delivery_checks_durable_send_receipt(
+    database: Database, tmp_path: Path
+) -> None:
+    from types import SimpleNamespace
+
+    from tests.support.social_identity_cases import social_env
+
+    from qq_ai_bot.automation.executor import AutomationExecutor
+    from qq_ai_bot.automation.models import AutomationStep
+    from qq_ai_bot.social.models import OperationStatus, SocialTarget
+
+    env = await social_env(database, tmp_path)
+    turn = f"{env.context.conversation_id}:execution:automation:17:execute:hash"
+    target = SocialTarget(kind="space", id=UUID(env.space))
+    first = await env.service.receipts.prepare(
+        source_turn_id=turn,
+        tool_call_id="send-1",
+        source_conversation_id=env.context.conversation_id,
+        action="send_message",
+        target=target,
+        payload={"text": "sent explicitly"},
+    )
+    assert await env.service.receipts.claim(first.operation_id, presence_id=env.presence)
+    async with database.sessions() as session, session.begin():
+        await env.service.receipts.finish(
+            first.operation_id,
+            status=OperationStatus.SUCCEEDED,
+            platform_reference="42",
+            session=session,
+        )
+    agent = AutomationStep(
+        id="execute", call="yuki.agent", arguments={"instruction": "go"}, save_as="result"
+    )
+    delivery = AutomationStep(
+        id="deliver",
+        call="onebot.send_group_message",
+        arguments={"group_id": "$current_group_id", "text": "${result.text}"},
+    )
+    automation = SimpleNamespace(
+        script=SimpleNamespace(steps=(agent, delivery)),
+        script_hash="hash",
+        canonical_target_space_id=env.space,
+        canonical_creator_person_id=env.person,
+    )
+    executor = object.__new__(AutomationExecutor)
+    executor._repository = SimpleNamespace(_database=database)
+    run = SimpleNamespace(id=17)
+    assert (
+        await executor._legacy_agent_delivery_status(
+            automation, run, 1, env.context.conversation_id
+        )
+        == "succeeded"
+    )
+    unknown = await env.service.receipts.prepare(
+        source_turn_id=turn,
+        tool_call_id="send-2",
+        source_conversation_id=env.context.conversation_id,
+        action="send_message",
+        target=target,
+        payload={"text": "maybe sent"},
+    )
+    assert await env.service.receipts.claim(unknown.operation_id, presence_id=env.presence)
+    async with database.sessions() as session, session.begin():
+        await env.service.receipts.finish(
+            unknown.operation_id,
+            status=OperationStatus.UNCERTAIN,
+            session=session,
+        )
+    assert (
+        await executor._legacy_agent_delivery_status(
+            automation, run, 1, env.context.conversation_id
+        )
+        == "uncertain"
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_message_media_uses_same_receipt_and_no_replay(
+    database: Database, tmp_path: Path
+) -> None:
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from tests.support.social_identity_cases import social_env
+
+    from qq_ai_bot.domain.messages import AttachmentKind, OutboundMedia, OutboundMessage
+    from qq_ai_bot.emoji.models import EmojiPreparationResult, EmojiPreparationStatus
+
+    env = await social_env(database, tmp_path)
+    assert await env.router.cas_takeover_person(env.person) in {"taken", "unchanged"}
+    audio = tmp_path / "reply.wav"
+    audio.write_bytes(b"test-audio")
+    voice_message = OutboundMessage(
+        media=(
+            OutboundMedia(
+                kind=AttachmentKind.AUDIO,
+                mime_type="audio/wav",
+                summary="语音消息",
+                local_path=str(audio),
+                spoken_text="你好",
+                generation_id=7,
+            ),
+        )
+    )
+    env.service.speech_effects = SimpleNamespace(
+        prepare=AsyncMock(return_value=SimpleNamespace(message=voice_message)),
+        record_success=AsyncMock(),
+    )
+    context = replace(
+        env.context,
+        call_id="voice",
+        actor=SimpleNamespace(),
+        runtime_snapshot=SimpleNamespace(
+            speech=SimpleNamespace(enabled=True, agent_effects_enabled=True),
+            emoji=SimpleNamespace(enabled=True),
+        ),
+        voice_spontaneous_allowed=True,
+    )
+    voice_args = {
+        "target": {"kind": "person", "target_id": env.person},
+        "text": "你好",
+        "voice": {"request_basis": "agent_initiated"},
+    }
+    sent = await env.service.execute("send_message", voice_args, context)
+    assert sent["status"] == "succeeded"
+    assert env.bot.calls[-1][1]["message"][0]["type"] == "record"
+    assert await env.service.execute("send_message", voice_args, context) == sent
+    env.service.speech_effects.prepare.assert_awaited_once()
+    env.service.speech_effects.record_success.assert_awaited_once()
+
+    emoji_message = OutboundMessage(
+        media=(
+            OutboundMedia(
+                kind=AttachmentKind.IMAGE,
+                content=b"test-image",
+                mime_type="image/png",
+                summary="笑脸",
+                emoji_id="emoji-1",
+            ),
+        )
+    )
+    env.service.emoji_effects = SimpleNamespace(
+        prepare=AsyncMock(
+            return_value=EmojiPreparationResult(
+                status=EmojiPreparationStatus.READY,
+                message=emoji_message,
+                emoji_id="emoji-1",
+                reason_code="selected",
+            )
+        ),
+        record_send_accepted=AsyncMock(),
+        record_success=AsyncMock(),
+    )
+    emoji_context = replace(context, call_id="emoji")
+    emoji_args = {
+        "target": {"kind": "person", "target_id": env.person},
+        "text": "看这个",
+        "emoji": {"goal": "开心"},
+    }
+    emoji_receipt = await env.service.execute("send_message", emoji_args, emoji_context)
+    assert emoji_receipt["status"] == "succeeded"
+    assert [part["type"] for part in env.bot.calls[-1][1]["message"]] == ["text", "image"]
+    assert await env.service.execute("send_message", emoji_args, emoji_context) == emoji_receipt
+    env.service.emoji_effects.prepare.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_chat_agent_sends_only_via_explicit_tool(database: Database, tmp_path: Path) -> None:
+    import json
+
+    from tests.conftest import MemorySender, build_harness, make_settings
+    from tests.support.social_identity_cases import social_env
+
+    from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
+    from qq_ai_bot.domain.messages import (
+        ChatResponse,
+        InboundMessage,
+        SenderIdentity,
+        ToolCall,
+        ToolFunction,
+    )
+    from qq_ai_bot.llm.fake import FakeLLMProvider
+    from qq_ai_bot.services.main_agent_contract import MainAgentContract
+    from qq_ai_bot.workspace.short_state import ShortState
+
+    env = await social_env(database, tmp_path)
+    calls = 0
+
+    def respond(_request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ChatResponse(
+                "",
+                0,
+                tool_calls=(
+                    ToolCall(
+                        "send-step",
+                        ToolFunction("send_message", json.dumps({"text": "第一步完成"})),
+                    ),
+                ),
+            )
+        return "内部收尾，不再自动发送"
+
+    provider = FakeLLMProvider(respond)
+    harness = build_harness(
+        database, make_settings(database.url, enabled_groups_csv="20001"), provider
+    )
+    chat = harness.processor._chat
+    chat._tools.social_service = env.service
+    chat._agent_runner.main_contract = MainAgentContract(chat, ShortState(env.store))
+    sender = MemorySender()
+    result = await harness.processor.handle(
+        InboundMessage(
+            message_id="explicit-tool-inbound",
+            event_type="message:test",
+            scope_type=ScopeType.GROUP,
+            sender=SenderIdentity("10001"),
+            text="做完第一步告诉我",
+            bot_user_id="80001",
+            group_id="20001",
+            mentions_bot=True,
+            conversation_id=env.context.conversation_id,
+            legacy_conversation_key=ConversationScope.group("80001", "20001").key,
+            person_id=env.person,
+            space_id=env.space,
+            presence_id=env.presence,
+        ),
+        sender,
+    )
+    assert result.reason == "chat" and result.sent_messages == 1
+    assert [action for action, _ in env.bot.calls if action == "send_group_msg"] == [
+        "send_group_msg"
+    ]
+    assert not sender.messages
+    assert await harness.relationship_jobs.pending_count() == 1
+
+
+@pytest.mark.asyncio
+async def test_plugin_background_send_is_bound_to_frozen_job_target(
+    database: Database, tmp_path: Path
+) -> None:
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from tests.support.social_identity_cases import social_env
+
+    from qq_ai_bot.capabilities.invocation import ToolInvocationContext, current_invocation
+    from qq_ai_bot.domain.conversations import ConversationScope
+    from qq_ai_bot.social.agent_adapter import invoke_social
+
+    env = await social_env(database, tmp_path)
+    event = await env.service.writer.append_external(
+        scope=ConversationScope.group("80001", "20001"),
+        platform_message_id="plugin-event-1",
+        source_plugin_id="test-plugin",
+        external_source="test",
+        external_event_key="event-1",
+        external_event_type="notice",
+        external_payload={},
+        external_target_id="20001",
+        content="plugin notice",
+        occurred_at=datetime.now(UTC),
+    )
+    runtime = SimpleNamespace(
+        origin=TurnOrigin.PLUGIN_BACKGROUND,
+        effective_trigger_event_id=event.event.id,
+        effective_conversation_id=env.context.conversation_id,
+        inbound=None,
+        read_only=False,
+        tools_closed=False,
+        space_id=env.space,
+        person_id=None,
+        reply_target_control=None,
+    )
+    token = current_invocation.set(ToolInvocationContext(runtime, call_id="plugin-send"))
+    try:
+        receipt = await invoke_social(env.service, "send_message", {"text": "通知"}, runtime)
+        assert receipt["status"] == "succeeded"
+        assert env.bot.calls[-1][0] == "send_group_msg"
+        with pytest.raises(SocialError, match="permission_denied"):
+            await invoke_social(
+                env.service,
+                "send_message",
+                {"target": {"kind": "person", "target_id": env.person}, "text": "越界"},
+                runtime,
+            )
+    finally:
+        current_invocation.reset(token)

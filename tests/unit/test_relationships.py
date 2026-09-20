@@ -505,7 +505,7 @@ async def test_relationship_evaluation_failure_does_not_change_completed_chat(
         inbound("你好", message_id="reply-before-evaluation"),
         sender,
     )
-    assert result.reason == "chat" and sender.messages
+    assert result.reason == "chat" and not sender.messages
     worker = RelationshipWorker(
         settings=harness.settings,
         jobs=harness.relationship_jobs,
@@ -518,7 +518,7 @@ async def test_relationship_evaluation_failure_does_not_change_completed_chat(
 
 
 @pytest.mark.asyncio
-async def test_only_successful_direct_chat_enqueues_relationship_job(database: Database) -> None:
+async def test_silent_direct_chat_does_not_enqueue_relationship_job(database: Database) -> None:
     harness = build_harness(database, make_settings(database.url))
     observed = await harness.processor.handle(
         inbound("未触发群聊", message_id="observe", group_id="2001"),
@@ -538,16 +538,16 @@ async def test_only_successful_direct_chat_enqueues_relationship_job(database: D
 
     message = inbound("普通聊天", message_id="successful")
     await harness.processor.handle(message, MemorySender())
-    assert await harness.relationship_jobs.pending_count() == 1
+    assert await harness.relationship_jobs.pending_count() == 0
     duplicate = await harness.processor.handle(message, MemorySender())
     assert duplicate.reason == "duplicate"
-    assert await harness.relationship_jobs.pending_count() == 1
+    assert await harness.relationship_jobs.pending_count() == 0
 
     await harness.processor.handle(
         inbound("发送失败", message_id="send-failure"),
         MemorySender(fail=True),
     )
-    assert await harness.relationship_jobs.pending_count() == 1
+    assert await harness.relationship_jobs.pending_count() == 0
 
 
 @pytest.mark.asyncio
@@ -790,7 +790,7 @@ async def test_relationship_context_contains_only_current_speaker_relationship(
     )
     assert '"stage":"friendly"' in context
     assert '"stage":"distant"' not in context
-    assert "好感度" not in sender.messages[0].text
+    assert not sender.messages
 
 
 async def _add_canonical_person_with_aliases(

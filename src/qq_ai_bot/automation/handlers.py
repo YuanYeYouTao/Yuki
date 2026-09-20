@@ -240,25 +240,9 @@ class AutomationCapabilityHandlers:
             if composition.commit_projection is not None:
                 await composition.commit_projection()
 
-        async def deliver_progress(text: str, call_key: str) -> dict[str, Any]:
-            await validate_context()
-            gateway = self._gateway_factory(context)
-            receipt = (
-                await gateway.send_group(context.current_group_id, text)
-                if context.current_group_id
-                else await gateway.send_private(context.creator_user_id, text)
-            )
-            message_id = receipt.get("message_id") if isinstance(receipt, dict) else receipt
-            return {
-                "transport_accepted": bool(message_id),
-                "message_id": message_id,
-                "call_key": call_key,
-            }
-
         runtime = replace(
             runtime,
             before_model_request=validate_context,
-            deliver_progress=deliver_progress,
             prompt_diagnostics=PromptRequestDiagnostics(
                 conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
                 prompt_snapshot_fingerprint=composition.metrics.prompt_snapshot_fingerprint,

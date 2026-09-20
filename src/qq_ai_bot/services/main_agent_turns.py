@@ -304,7 +304,6 @@ class MainAgentTurnService:
                     )
 
             # Synchronous plugin/automation calls return to their owning step.
-            # Their owner supplies an explicit progress-delivery callback.
             async with activate_work(
                 repository,
                 runtime.canonical_conversation_id,
@@ -320,7 +319,6 @@ class MainAgentTurnService:
                 },
                 validate,
             ) as bounded:
-                bounded.deliver_progress = runtime.deliver_progress
                 if bounded.current is None and runtime.invocation_goal:
                     await bounded.execute(
                         "task_control",

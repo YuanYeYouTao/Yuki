@@ -371,7 +371,6 @@ class PluginBackgroundTurnWorker:
                 job.id,
                 attempt=job.attempts,
                 generation=job.generation,
-                text="" if result.suppress_delivery else result.text,
                 tool_calls_used=result.tool_calls_used,
                 model_requests=result.model_requests,
             )
@@ -379,10 +378,9 @@ class PluginBackgroundTurnWorker:
                 return
             logger.info(
                 "plugin_background_turn_completed plugin_id=%s event_id=%d "
-                "reply=%s model_requests=%d",
+                "model_requests=%d",
                 job.plugin_id,
                 event.id,
-                bool(result.text),
                 result.model_requests,
             )
         except (

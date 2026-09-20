@@ -71,7 +71,7 @@ class AutomationCompiler:
                 id="generate",
                 call="yuki.generate",
                 arguments={
-                    "instruction": self._instruction(task),
+                    "instruction": self._instruction(task, None),
                     "context_profile": task.context.scene,
                     "max_characters": 4000,
                 },
@@ -79,14 +79,9 @@ class AutomationCompiler:
             )
             steps = (generate,)
             if delivery is not None:
-                steps += (
-                    self._delivery_step(
-                        delivery,
-                        "${result.text}",
-                        step_id="deliver",
-                        reply_state="${result.reply_state}",
-                    ),
-                )
+                # Generation has no model-facing tools. This is an explicit
+                # persisted DSL step, not a fallback for an Agent final answer.
+                steps += (self._delivery_step(delivery, "${result.text}"),)
             limits = AutomationLimits(
                 agent_budget_managed=True,
                 max_steps=len(steps),
@@ -96,32 +91,21 @@ class AutomationCompiler:
                 timeout_seconds=min(120, self._settings.automation_max_runtime_seconds),
             )
         else:
-            delivery_calls = int(delivery is not None)
             execute = AutomationStep(
                 id="execute",
                 call="yuki.agent",
                 arguments={
-                    "instruction": self._instruction(task),
+                    "instruction": self._instruction(task, delivery),
                     "context_profile": task.context.scene,
                 },
                 save_as="result",
             )
             steps = (execute,)
-            if delivery is not None:
-                steps += (
-                    self._delivery_step(
-                        delivery,
-                        "${result.text}",
-                        step_id="deliver",
-                        reply_state="${result.reply_state}",
-                    ),
-                )
             limits = AutomationLimits(
                 agent_budget_managed=True,
                 max_steps=len(steps),
                 max_llm_calls=1,
-                max_tool_calls=1 + delivery_calls,
-                # Main Agent tools can deliver before the final reply step.
+                max_tool_calls=1,
                 max_messages=self._settings.automation_max_messages_per_run,
                 timeout_seconds=self._settings.automation_max_runtime_seconds,
             )
@@ -167,7 +151,6 @@ class AutomationCompiler:
         text: str,
         *,
         step_id: str = "deliver",
-        reply_state: str | None = None,
     ) -> AutomationStep:
         if target == "current_group":
             return AutomationStep(
@@ -176,7 +159,6 @@ class AutomationCompiler:
                 arguments={
                     "group_id": "$current_group_id",
                     "text": text,
-                    **({"reply_state": reply_state} if reply_state is not None else {}),
                 },
             )
         return AutomationStep(
@@ -185,20 +167,24 @@ class AutomationCompiler:
             arguments={
                 "user_id": "$creator_user_id",
                 "text": text,
-                **({"reply_state": reply_state} if reply_state is not None else {}),
             },
         )
 
     @staticmethod
-    def _instruction(task: TaskSpec) -> str:
+    def _instruction(
+        task: TaskSpec, delivery: Literal["self_private", "current_group"] | None
+    ) -> str:
         payload = {
             "goal": task.goal,
             "constraints": task.constraints,
-            "delivery": task.delivery.target,
+            "delivery": delivery or "none",
             "rules": (
                 "围绕目标自主选择已授权工具及调用顺序；目标要求后续提醒时可以创建或修改"
                 "创建者自己的自动化。动态编号和价格必须在任务运行时查询；"
-                "不要假装外部操作成功。最终只返回适合直接发给用户的简短结果。"
+                "不要假装外部操作成功。需要投递时在执行中显式调用 send_message；"
+                "delivery=none 时不要发送。self_private 要用 target.kind=person、"
+                "target.subject_ref=current_speaker；current_group 在当前群省略 target。"
+                "模型最终正文不会自动投递。"
             ),
         }
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))[:4000]

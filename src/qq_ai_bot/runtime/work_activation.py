@@ -31,7 +31,6 @@ async def activate_work(
     source_key: str,
     source: dict[str, Any],
     validate: Callable[[], Awaitable[None]],
-    deliver: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None,
     resolve_child: Callable[[str], Awaitable[dict[str, Any] | None]] | None = None,
     *,
     work_id: str | None = None,
@@ -39,7 +38,7 @@ async def activate_work(
     lease = await repository.acquire(conversation_id, generation)
     if lease is None:
         raise WorkConflict("conversation_activation_busy")
-    control = WorkControl(repository, lease, source_key, source, validate, deliver, resolve_child)
+    control = WorkControl(repository, lease, source_key, source, validate, resolve_child)
     token = current_work_control.set(control)
 
     async def heartbeat() -> None:

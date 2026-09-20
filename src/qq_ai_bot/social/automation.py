@@ -75,7 +75,7 @@ def register_social_automation(
             "get_code_run",
         }
         read = read or tool.name in READ_TOOLS | WORKSPACE_READ_TOOLS
-        send = tool.name in {"send_private_message", "send_group_message", "poke_person"}
+        send = tool.name in {"send_message", "poke_person"}
         registry.register(
             AutomationCapability(
                 name=name,
@@ -163,6 +163,11 @@ class SocialAutomationAdapter:
                     call_id=context.step_id,
                     conversation_id=context.canonical_conversation_id,
                     space_id=context.canonical_target_space_id,
+                    person_refs=(
+                        {"current_speaker": context.canonical_target_person_id}
+                        if context.canonical_target_person_id
+                        else {}
+                    ),
                 )
                 if (
                     tool_name == "read_conversation_history"
@@ -185,8 +190,18 @@ class SocialAutomationAdapter:
                 }:
                     if tool_name == "recall_own_message":
                         raise SocialError("delegated_target_not_allowed")
-                    kind = "space" if tool_name == "send_group_message" else "person"
-                    target = await self.social.target(kind, args, social_context)
+                    if tool_name == "send_message":
+                        selected = args.get("target") or {}
+                        if not isinstance(selected, dict):
+                            raise SocialError("invalid_message_arguments")
+                        kind = selected.get("kind") or (
+                            "space" if context.canonical_target_space_id else "person"
+                        )
+                        target_args = selected
+                    else:
+                        kind = "person"
+                        target_args = args
+                    target = await self.social.target(kind, target_args, social_context)
                     expected = (
                         context.canonical_target_space_id
                         if kind == "space"

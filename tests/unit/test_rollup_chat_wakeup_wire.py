@@ -113,7 +113,7 @@ async def test_rollup_interrupt_reenters_main_contract(database, tmp_path, monke
     result = await harness.processor.handle(message, sender)
     await wire.aclose()
     assert result.reason == "chat", result
-    assert sender.messages
+    assert not sender.messages
 
     assert len(provider.requests) == 3
     assert any("等待期间的新补充" in (m.content or "") for m in provider.requests[1].messages)

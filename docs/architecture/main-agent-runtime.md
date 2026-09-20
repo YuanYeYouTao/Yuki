@@ -9,7 +9,7 @@
 模型工具后端、名称映射或参数转换。独立 agent_sessions、子 Agent 合同和辅助模型不属于主合同。
 
 模型侧每项业务只有一个公开名称和参数合同。冻结清单只来自主工具注册表，不追加 DSL、MCP
-或插件的自动化别名；目录查询不会加载工具、改变声明或提升权限。合同版本 4 为本轮更新建立
+或插件的自动化别名；目录查询不会加载工具、改变声明或提升权限。合同版本 5 为本轮更新建立
 明确的新链边界，续跑仍保留执行记录、预算和已提交回执。
 
 自动化以创建者的当前身份和权限执行，与其在目标会话发起普通聊天一致；不再交集创建时的
@@ -21,10 +21,14 @@
 历史、记忆的主动补查使用同一读取授权；context 配置只控制首次预取。记忆写入仍需真实证据，
 定时任务通过 evidence_event_id 引用创建者在当前会话的原始事件，不把任务指令伪装成人类发言。
 
-send_voice、send_emoji、set_reply_layout、set_reply_target 控制本轮最终回复；排队回执不是送达回执。
-回复效果随 work journal 保存，分段和恢复后继续交付。自动化最终输出由原 run 的发送步骤交付，
-复用聊天的语音、表情准备和文本布局服务；不恢复另一套模型可调用的立即语音/表情工具。
-report_progress 通过任务所有者注入的真实交付回调发送，沿用持久效果围栏。
+模型侧只用 `send_message` 发送可见内容：省略 target 时发到当前群或私聊，显式 target 可指定
+其他人或群，后端选择私聊或群聊路由。语音、表情、附件、引用、提及均由同一工具的参数表达；
+真实网关发送和持久回执组成普通工具结果，`uncertain` 不自动重试。一次循环可多次发送，也可
+完全不发送；模型最终正文只供内部收尾，不会自动发给用户。`report_progress` 和本轮最终回复
+效果队列不再是模型可调用合同。工作完成可以安静结束，不需要人为制造发送回执。
+
+新建 Agentic 自动化由 Agent 自行决定何时调用 `send_message`；生成式自动化没有工具循环，
+保留明确写入脚本的 DSL 发送步骤。历史脚本仍按原 run/step 游标恢复，不能盲目重建或重发。
 
 调度器的结构化步骤、执行游标、原有业务集成和发送回执保留；它们不再构成另一套模型工具声明。
 旧存储的 allowed_capabilities 是历史数据，不参与主 Agent 的执行授权。
@@ -37,9 +41,9 @@ report_progress 通过任务所有者注入的真实交付回调发送，沿用�
 
 | 来源 | 恢复所有者 | 交付所有者 |
 | --- | --- | --- |
-| 用户消息、主动群聊 | WorkScheduler，原 work/generation | 原工作交付链路 |
-| 自动化生成、Agent 步骤 | AutomationWorker，原 run/step 游标 | DSL 后续发送步骤 |
-| 插件通知自主轮 | PluginBackgroundTurnWorker，原 job/event | 原通知 outbox |
+| 用户消息、主动群聊 | WorkScheduler，原 work/generation | Agent 显式 `send_message` |
+| 自动化生成、Agent 步骤 | AutomationWorker，原 run/step 游标 | 生成式 DSL 步骤；Agent 显式 `send_message` |
+| 插件通知自主轮 | PluginBackgroundTurnWorker，原 job/event | Agent 显式 `send_message`；插件自己的通知 outbox 独立 |
 | 有真实事件的 SDK 主调用 | Host 持有正在运行的协程，后续由 WorkScheduler 恢复 | 原调用方查询结果 |
 | 子 Agent | SubagentScheduler，原父子关系 | 父 Agent 验收后交付 |
 
@@ -74,8 +78,9 @@ SDK 回调等待约 5 秒可返回 `work_id/state/pending`；等待不是模型�
 自动化收到插件任务句柄后查询该 work，不重新执行产生句柄的 handler。
 未取得可核验结果的外层 dispatch 恢复为 uncertain，不猜测成功或重跑。
 
-普通回答无需先调用 task_control.answer。最终文字可结束本轮，但工作完成仍由同一回执校验
-检查未结束执行、artifact 和实际交付；不自动把工具 JSON 或固定成功句发到聊天中。
+普通回答无需先调用 task_control.answer。模型最终文字可结束内部循环，但不触发发送；
+工作完成仍由同一回执校验检查未结束执行和 artifact。发送是否成功只看显式发送回执，
+不自动把工具 JSON 或固定成功句发到聊天中。
 明确管理命令和模型完全不可用时的运行状态反馈与普通 Agent 正文区分。
 
 ## 持久化与验证

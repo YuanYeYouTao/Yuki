@@ -34,7 +34,7 @@ from qq_ai_bot.capabilities.runtime import (
 )
 from qq_ai_bot.capabilities.validation import UNDECLARED_TOOL
 from qq_ai_bot.domain.messages import ChatTool, ToolCall, ToolFunction
-from qq_ai_bot.emoji.models import EmojiPlacement, EmojiReplyMode, PendingReplyEffect
+from qq_ai_bot.emoji.models import PendingReplyEffect
 from qq_ai_bot.memory.runtime.contract import MemoryReadPolicy
 from qq_ai_bot.runtime.authority import TurnAuthority
 from qq_ai_bot.runtime.observability import identifier_hash
@@ -53,22 +53,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _ARTIFACT_READER_NAME = "read_tool_artifact"
-
-_SET_REPLY_TARGET_NAME = "set_reply_target"
-
-_SET_REPLY_TARGET_TOOL = ChatTool(
-    name=_SET_REPLY_TARGET_NAME,
-    description=(
-        "控制本轮最终 QQ 引用回复目标。仅在多人混聊或需要明确回应某条较早消息时调用。"
-        "event_id 必须来自当前上下文消息行的 #EventRecord.id；省略 event_id 表示取消引用。"
-        "该函数只设置本轮回复样式，不发送消息。每轮最多成功设置一次。"
-    ),
-    parameters={
-        "type": "object",
-        "properties": {"event_id": {"type": "integer", "minimum": 1}},
-        "additionalProperties": False,
-    },
-)
 
 _ADMIN_RETRYABLE_ERRORS = frozenset(
     {
@@ -96,6 +80,7 @@ class MainAgentBackend(AgentToolBackend):
         self._allowed_tools = allowed_tools
         self._memory_session = getattr(runtime, "memory_session", None)
         self.messages_sent = 0
+        self.sent_current_texts: list[str] = []
         self.failed_model_requests = 0
         self.failed_tool_calls = 0
         self._tools_closed = False
@@ -117,7 +102,6 @@ class MainAgentBackend(AgentToolBackend):
         self._tool_turn_recorded = False
         self._request_tools_called = False
         self._first_real_tool_recorded = False
-        self._batch_rejected: str = ""
 
     def export_reply_state(self) -> dict[str, Any]:
         control = self._runtime.reply_control
@@ -234,29 +218,21 @@ class MainAgentBackend(AgentToolBackend):
     def definitions(self, runtime: AgentRuntime, *, web_was_used: bool) -> tuple[ChatTool, ...]:
         del runtime
         self._web_was_used = self._web_was_used or web_was_used
-        response_controls = () if self._exclusive_write() else self._response_control_definitions()
         if self._prompt_tools_closed():
-            self._callable_tool_names = {tool.name for tool in response_controls}
-            self._log_tool_exposure(response_controls, reason="business_tools_closed")
-            return response_controls
+            self._callable_tool_names = set()
+            self._log_tool_exposure((), reason="business_tools_closed")
+            return ()
         capability_runtime = self._ensure_capability_runtime()
         session = self._memory()
         if session is not None:
             capability_runtime.sync_memory_view(session.capability_view())
         definitions = capability_runtime.definitions()
-        if response_controls:
-            definitions = (
-                *(tool for tool in definitions if tool.name != _SET_REPLY_TARGET_NAME),
-                *response_controls,
-            )
         if self._admin_retry_constraint is not None:
             definitions = tuple(
                 tool for tool in definitions if tool.name == self._admin_retry_constraint[0]
             )
         definitions = tuple(sorted(definitions, key=lambda tool: tool.name))
-        self._callable_tool_names = set(capability_runtime.callable_capability_ids()) | {
-            tool.name for tool in response_controls
-        }
+        self._callable_tool_names = set(capability_runtime.callable_capability_ids())
         self._callable_tool_names.update(tool.name for tool in definitions)
         if not self._tool_turn_recorded and definitions:
             self._service._tool_metrics.record_tool_enabled_turn()
@@ -305,7 +281,6 @@ class MainAgentBackend(AgentToolBackend):
         snapshot, index = self._refresh_capability_registry()
         session = self._memory()
         memory_view = session.capability_view() if session is not None else None
-        reply_target = self._runtime.reply_target_control
         policy_context = CapabilityPolicyContext(
             authority=AuthorityContext(
                 actor_user_id=self._runtime.actor_user_id,
@@ -318,9 +293,6 @@ class MainAgentBackend(AgentToolBackend):
             read_only=self._runtime.read_only,
             memory_view=memory_view,
             artifact_available=self._service._tool_artifacts is not None,
-            reply_target_available=bool(
-                reply_target is not None and reply_target.visible_event_ids
-            ),
         )
         mcp = self._runtime.runtime_config.mcp if self._runtime.runtime_config else None
         tooling = self._runtime.runtime_config.tooling if self._runtime.runtime_config else None
@@ -446,29 +418,7 @@ class MainAgentBackend(AgentToolBackend):
 
     def begin_batch(self, calls: tuple[ToolCall, ...], runtime: AgentRuntime) -> None:
         del runtime
-        self._batch_rejected = ""
-        names = {call.function.name for call in calls}
-        if "decline_reply" in names and (len(calls) != 1 or self.has_prior_reply_effects()):
-            self._batch_rejected = "decline_reply_batch_rejected"
-            self._batch = []
-            return
         self._batch = list(calls)
-
-    def has_prior_reply_effects(self) -> bool:
-        from qq_ai_bot.runtime.work_activation import current_work_control
-
-        work = current_work_control.get()
-        if work is not None and work.progress_count:
-            return True
-        control = self._runtime.reply_control
-        return bool(
-            control is not None
-            and (control.had_effect or control.layout_applied or control.declined)
-        )
-
-    def declined_reply(self) -> bool:
-        control = self._runtime.reply_control
-        return bool(control is not None and control.declined)
 
     def did_use_web(self) -> bool:
         """Expose a provider-metadata-derived effect to the shared Agent loop."""
@@ -480,15 +430,6 @@ class MainAgentBackend(AgentToolBackend):
             await self._runtime.before_model_request()
         if self._allowed_tools is not None and name not in self._allowed_tools:
             return json.dumps({"ok": False, "error": "capability_not_allowed", "executed": False})
-        if self._batch_rejected:
-            return json.dumps(
-                {
-                    "ok": False,
-                    "error": self._batch_rejected,
-                    "detail": "decline_reply 必须是尚未产生效果时的单独调用。",
-                },
-                ensure_ascii=False,
-            )
         async with self._batch_lock:
             if not self._batch:
                 return json.dumps(
@@ -518,8 +459,6 @@ class MainAgentBackend(AgentToolBackend):
             )
         if name == "update_short_state" and self._service._agent_runner.main_contract is not None:
             return await self._service._agent_runner.main_contract.state.execute(arguments_json)
-        if name == _SET_REPLY_TARGET_NAME:
-            return self._set_reply_target(arguments_json)
         if self._runtime.tools_closed:
             return json.dumps(
                 {
@@ -718,13 +657,43 @@ class MainAgentBackend(AgentToolBackend):
                     effective_descriptor,
                 )
                 outcome = replace(outcome, mutation_committed=mutation_committed)
-                if (
-                    outcome.ok
-                    and call.function.name in {"send_private_message", "send_group_message"}
-                    and isinstance(outcome.data, dict)
-                    and outcome.data.get("status") == "succeeded"
-                ):
-                    self.messages_sent += 1
+                if call.function.name == "send_message" and isinstance(outcome.data, dict):
+                    receipt = outcome.data
+                    file = receipt.get("file")
+                    caption = receipt.get("caption")
+                    accepted = (
+                        int(file.get("status") == "succeeded")
+                        + int(isinstance(caption, dict) and caption.get("status") == "succeeded")
+                        if isinstance(file, dict)
+                        else int(receipt.get("status") == "succeeded")
+                    )
+                    self.messages_sent += accepted
+                    inbound = self._runtime.inbound
+                    expected = (
+                        {"kind": "space", "id": inbound.space_id}
+                        if inbound is not None and inbound.space_id
+                        else {"kind": "person", "id": inbound.person_id}
+                        if inbound is not None
+                        else {
+                            "kind": "space" if self._runtime.space_id else "person",
+                            "id": self._runtime.space_id or self._runtime.person_id,
+                        }
+                    )
+                    sent_target = receipt.get("target")
+                    sent_text = parsed.get("text")
+                    text_accepted = (
+                        isinstance(caption, dict) and caption.get("status") == "succeeded"
+                        if isinstance(file, dict)
+                        else receipt.get("status") == "succeeded"
+                    )
+                    if (
+                        text_accepted
+                        and isinstance(sent_text, str)
+                        and sent_text.strip()
+                        and isinstance(sent_target, dict)
+                        and sent_target == expected
+                    ):
+                        self.sent_current_texts.append(sent_text)
                 tooling = config.tooling
                 mcp = config.mcp
                 is_mcp = effective_descriptor.trust_source is CapabilityTrustSource.MCP
@@ -851,22 +820,9 @@ class MainAgentBackend(AgentToolBackend):
         return content
 
     def has_visible_effects(self) -> bool:
-        """Return whether queued effects can produce a reply without model text."""
+        """An accepted send permits a text-free internal final response."""
 
-        effects = self._runtime.reply_effects or ()
-        if any(isinstance(effect, PendingVoiceReplyEffect) for effect in effects):
-            # Voice synthesis needs the final model text as its spoken content.
-            # Treating the queued voice request itself as visible content can make
-            # a successful tool call end in a completely silent turn.
-            return False
-        return any(
-            isinstance(effect, PendingReplyEffect)
-            and (
-                effect.mode in {EmojiReplyMode.PREFERRED, EmojiReplyMode.EMOJI_ONLY}
-                or effect.placement is EmojiPlacement.ONLY
-            )
-            for effect in effects
-        )
+        return self.messages_sent > 0
 
     def exhausted(self, runtime: AgentRuntime) -> str:
         return "这次操作的工具调用次数过多，已停止继续执行。请把请求拆小后再试。"
@@ -925,7 +881,7 @@ class MainAgentBackend(AgentToolBackend):
 
     def parallel_safe(self, name: str, runtime: AgentRuntime) -> bool:
         del runtime
-        if name in {REQUEST_TOOLS_NAME, _SET_REPLY_TARGET_NAME}:
+        if name == REQUEST_TOOLS_NAME:
             return False
         entry = self._catalog.by_model_name(name) if self._catalog is not None else None
         return bool(entry is not None and entry.descriptor.parallel_safe)
@@ -941,7 +897,7 @@ class MainAgentBackend(AgentToolBackend):
             return True
 
         del runtime
-        if name in {REQUEST_TOOLS_NAME, _SET_REPLY_TARGET_NAME}:
+        if name == REQUEST_TOOLS_NAME:
             return False
         entry = self._catalog.by_model_name(name) if self._catalog is not None else None
         descriptor = entry.descriptor if entry is not None else None
@@ -957,10 +913,7 @@ class MainAgentBackend(AgentToolBackend):
         """Keep local response controls and Artifact reads outside the business budget."""
 
         del runtime
-        return name not in {
-            _SET_REPLY_TARGET_NAME,
-            _ARTIFACT_READER_NAME,
-        }
+        return name != _ARTIFACT_READER_NAME
 
     def _mutation_identity(self, call: ToolCall) -> tuple[str, str] | None:
         if not self._is_mutating_call(call):
@@ -978,48 +931,6 @@ class MainAgentBackend(AgentToolBackend):
             )
         return call.function.name, normalized
 
-    def _response_control_definitions(self) -> tuple[ChatTool, ...]:
-        if self._runtime.reply_target_control is not None:
-            return (_SET_REPLY_TARGET_TOOL,)
-        return ()
-
-    def _set_reply_target(self, arguments_json: str) -> str:
-        control = self._runtime.reply_target_control
-        if control is None:
-            return json.dumps(
-                {"ok": False, "error": "reply_control_unavailable"},
-                ensure_ascii=False,
-            )
-        try:
-            arguments = json.loads(arguments_json)
-        except json.JSONDecodeError:
-            arguments = None
-        if not isinstance(arguments, dict) or set(arguments) - {"event_id"}:
-            return json.dumps(
-                {"ok": False, "error": "invalid_arguments"},
-                ensure_ascii=False,
-            )
-        event_id = arguments.get("event_id")
-        if event_id is not None and (not isinstance(event_id, int) or isinstance(event_id, bool)):
-            return json.dumps(
-                {"ok": False, "error": "invalid_event_id"},
-                ensure_ascii=False,
-            )
-        accepted, outcome = control.apply(event_id)
-        logger.info(
-            "agent_reply_target_control accepted=%s outcome=%s event_id=%s",
-            accepted,
-            outcome,
-            event_id if event_id is not None else "none",
-        )
-        return json.dumps(
-            {
-                "ok": accepted,
-                "outcome": outcome,
-                "reply_to_event_id": event_id if accepted else None,
-            },
-            ensure_ascii=False,
-        )
 
     async def _request_tools(self, arguments_json: str) -> str:
         self._request_tools_called = True

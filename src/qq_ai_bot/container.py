@@ -305,6 +305,9 @@ class ApplicationContainer:
         )
         self.agent_tools.social_service = self.social_service
         self.social_service.runtime_config = self.runtime_config
+        self.social_service.speech_effects = self.speech_effects
+        self.social_service.emoji_effects = self.emoji_effects
+        self.social_service.reply_effects = conversation.chat._reply_effects
         from qq_ai_bot.workspace.service import WorkspaceService
         from qq_ai_bot.workspace.store import WorkspaceStore
 

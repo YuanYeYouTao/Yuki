@@ -843,7 +843,7 @@ def test_provider_cache_shape_excludes_only_the_current_user_tail() -> None:
 
 
 @pytest.mark.asyncio
-async def test_plugin_wakeup_can_decline_without_creating_a_fake_reply(
+async def test_plugin_wakeup_can_end_without_creating_a_fake_reply(
     database: Database,
 ) -> None:
     harness = build_harness(database, make_settings(database.url))
@@ -873,16 +873,10 @@ async def test_plugin_wakeup_can_decline_without_creating_a_fake_reply(
     )
 
     definitions = chat._tools.definitions(runtime)
-    assert "decline_reply" in {tool.name for tool in definitions}
-    result = json.loads(
-        await chat._tools.execute(
-            "decline_reply",
-            '{"reason_code":"not_relevant"}',
-            runtime,
-        )
-    )
-    assert result["ok"] is True
-    assert control.declined is True
+    names = {tool.name for tool in definitions}
+    assert "send_message" in names
+    assert "decline_reply" not in names
+    assert control.declined is False
 
 
 @pytest.mark.asyncio

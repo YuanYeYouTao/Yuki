@@ -52,7 +52,7 @@ DEFAULT_FIRST_ROUND_PIN_IDS = (
     "get_self_memories",
     "web_search",
     "automation_create",
-    "send_emoji",
+    "send_message",
 )
 
 

@@ -42,9 +42,9 @@ async def test_foreground_answer_and_finalization_keep_worker_alive(database, tm
     control.current = parent
     with pytest.raises(ValueError, match="unfinished_subagents"):
         await control._control({"action": "fail", "reason": "继续聊天"}, "fail")
-    result = await control._control({"action": "answer", "text": "好，继续聊。"}, "answer")
-    assert result["background_state"] == "waiting_external"
-    assert control.chat_answer == "好，继续聊。"
+    with pytest.raises(ValueError, match="unfinished_subagents"):
+        await control._control({"action": "complete"}, "complete")
+    assert await control.background_state() == "waiting_external"
     # Also defend against a runner falling through to implicit failure.
     control.ending = "failed"
     await control.settle(delivered=True, pending_inputs=False)

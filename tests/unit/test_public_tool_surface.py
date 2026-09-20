@@ -64,11 +64,13 @@ async def test_one_manifest_without_legacy_aliases(database, tmp_path):
     assert {
         "automation_create",
         "automation_list_history",
-        "send_voice",
-        "send_emoji",
+        "send_message",
         "workspace_write",
     } <= set(names)
-    assert not {"send_group_voice", "send_target_emoji", "automation_create_task"} & set(names)
+    assert not {
+        "send_voice", "send_emoji", "send_group_voice", "send_target_emoji",
+        "automation_create_task", "report_progress",
+    } & set(names)
     task_schema = next(t for t in tools if t.name == "automation_create").parameters["properties"][
         "task"
     ]
