@@ -640,8 +640,8 @@ class AgentRunner:
                         )
                     )
                     continue
-                # A neutral turn may answer directly. Admission is enforced before
-                # executing work tools, not by forcing every answer through a tool.
+                # The final body is internal; the main backend can reject an
+                # unsent user-facing answer without implicitly delivering it.
                 if "[提及" in content:
                     if (
                         not mention_recovery_used
@@ -682,25 +682,29 @@ class AgentRunner:
                     and tools.has_visible_effects()  # type: ignore[attr-defined]
                 )
                 if not content.strip() and not has_visible_effects:
-                    if empty_retries >= 2 or request_index + 1 >= runtime.max_model_requests:
-                        raise LLMEmptyResponseError("model returned no final answer")
-                    empty_retries += 1
-                    logger.warning(
-                        "agent_empty_final_retry retry=%d tool_calls_used=%d",
-                        empty_retries,
-                        calls_used,
-                    )
-                    transcript.append(
-                        ChatMessage(
-                            role="system",
-                            content=(
-                                "上一响应正文为空；回执仍保留，不能据此断言整个任务完成。"
-                                "根据目标和真实结果选择继续执行、等待或回答；"
-                                "不要重复已经成功的工具调用，也不要只描述发送模式。"
-                            ),
+                    allow_silence = getattr(tools, "allow_silent_final", None)
+                    if callable(allow_silence) and allow_silence(runtime):
+                        logger.info("agent_silent_final origin=%s", runtime.origin.value)
+                    else:
+                        if empty_retries >= 2 or request_index + 1 >= runtime.max_model_requests:
+                            raise LLMEmptyResponseError("model returned no final answer")
+                        empty_retries += 1
+                        logger.warning(
+                            "agent_empty_final_retry retry=%d tool_calls_used=%d",
+                            empty_retries,
+                            calls_used,
                         )
-                    )
-                    continue
+                        transcript.append(
+                            ChatMessage(
+                                role="system",
+                                content=(
+                                    "上一响应正文为空；回执仍保留，不能据此断言整个任务完成。"
+                                    "根据目标和真实结果选择继续执行、等待或回答；"
+                                    "不要重复已经成功的工具调用，也不要只描述发送模式。"
+                                ),
+                            )
+                        )
+                        continue
                 if control is not None and control.current is not None and control.ending is None:
                     # Infer lifecycle completion from a real final answer, but use
                     # the same receipt validation as explicit task_control.complete.

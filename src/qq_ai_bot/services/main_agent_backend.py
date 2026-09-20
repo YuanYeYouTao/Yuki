@@ -35,6 +35,7 @@ from qq_ai_bot.capabilities.runtime import (
 from qq_ai_bot.capabilities.validation import UNDECLARED_TOOL
 from qq_ai_bot.domain.messages import ChatTool, ToolCall, ToolFunction
 from qq_ai_bot.emoji.models import PendingReplyEffect
+from qq_ai_bot.llm.base import LLMError
 from qq_ai_bot.memory.runtime.contract import MemoryReadPolicy
 from qq_ai_bot.runtime.authority import TurnAuthority
 from qq_ai_bot.runtime.observability import identifier_hash
@@ -53,6 +54,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _ARTIFACT_READER_NAME = "read_tool_artifact"
+
+
+class UnsentFinalResponseError(LLMError):
+    """A user-facing answer never reached the explicit send tool."""
 
 _ADMIN_RETRYABLE_ERRORS = frozenset(
     {
@@ -81,6 +86,8 @@ class MainAgentBackend(AgentToolBackend):
         self._memory_session = getattr(runtime, "memory_session", None)
         self.messages_sent = 0
         self.sent_current_texts: list[str] = []
+        self._send_message_attempted = False
+        self._unsent_final_feedback_count = 0
         self.failed_model_requests = 0
         self.failed_tool_calls = 0
         self._tools_closed = False
@@ -419,6 +426,9 @@ class MainAgentBackend(AgentToolBackend):
     def begin_batch(self, calls: tuple[ToolCall, ...], runtime: AgentRuntime) -> None:
         del runtime
         self._batch = list(calls)
+        self._send_message_attempted |= any(
+            call.function.name == "send_message" for call in calls
+        )
 
     def did_use_web(self) -> bool:
         """Expose a provider-metadata-derived effect to the shared Agent loop."""
@@ -814,7 +824,31 @@ class MainAgentBackend(AgentToolBackend):
             return (
                 "上一正文未发送：权限结果是内部执行资料。请根据实际结果继续，勿转发内部权限载荷。"
             )
+        if (
+            runtime.origin is RuntimeTurnOrigin.USER_MESSAGE
+            and self._runtime.inbound is not None
+            and content.strip()
+            and not self._send_message_attempted
+            and not self.messages_sent
+            and (runtime.work_control is None or runtime.work_control.current is None)
+        ):
+            if self._unsent_final_feedback_count:
+                raise UnsentFinalResponseError("user-facing answer was not sent")
+            self._unsent_final_feedback_count += 1
+            logger.warning("agent_unsent_final_retry origin=%s", runtime.origin.value)
+            return (
+                "上一段最终正文没有发送给用户。若要回复，调用 send_message(text=答复)，"
+                "当前会话省略 target；不要只写最终正文，也不要重复已成功的其他工具。"
+                "若你决定不回复，返回空的最终正文。"
+            )
         return None
+
+    def allow_silent_final(self, runtime: AgentRuntime) -> bool:
+        return (
+            runtime.origin is RuntimeTurnOrigin.USER_MESSAGE
+            and self._runtime.inbound is not None
+            and (runtime.work_control is None or runtime.work_control.current is None)
+        )
 
     def finalize(self, content: str, runtime: AgentRuntime) -> str:
         return content

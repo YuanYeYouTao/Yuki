@@ -827,6 +827,196 @@ async def test_chat_agent_sends_only_via_explicit_tool(database: Database, tmp_p
 
 
 @pytest.mark.asyncio
+async def test_chat_agent_recovers_unsent_final_through_send_message(
+    database: Database, tmp_path: Path
+) -> None:
+    import json
+
+    from tests.conftest import MemorySender, build_harness, make_settings
+    from tests.support.social_identity_cases import social_env
+
+    from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
+    from qq_ai_bot.domain.messages import (
+        ChatResponse,
+        InboundMessage,
+        SenderIdentity,
+        ToolCall,
+        ToolFunction,
+    )
+    from qq_ai_bot.llm.fake import FakeLLMProvider
+    from qq_ai_bot.services.main_agent_contract import MainAgentContract
+    from qq_ai_bot.workspace.short_state import ShortState
+
+    env = await social_env(database, tmp_path)
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        if len(requests) == 1:
+            return ChatResponse("你好，我在。", 0)
+        if len(requests) == 2:
+            assert any(
+                message.role == "system" and "上一段最终正文没有发送给用户" in message.content
+                for message in request.messages
+            )
+            return ChatResponse(
+                "",
+                0,
+                tool_calls=(
+                    ToolCall(
+                        "send-recovered",
+                        ToolFunction("send_message", json.dumps({"text": "你好，我在。"})),
+                    ),
+                ),
+            )
+        return ChatResponse("内部收尾", 0)
+
+    provider = FakeLLMProvider(respond)
+    harness = build_harness(
+        database, make_settings(database.url, enabled_groups_csv="20001"), provider
+    )
+    chat = harness.processor._chat
+    chat._tools.social_service = env.service
+    chat._agent_runner.main_contract = MainAgentContract(chat, ShortState(env.store))
+    sender = MemorySender()
+    result = await harness.processor.handle(
+        InboundMessage(
+            message_id="unsent-final-inbound",
+            event_type="message:test",
+            scope_type=ScopeType.GROUP,
+            sender=SenderIdentity("10001"),
+            text="你现在知道怎么回复吗",
+            bot_user_id="80001",
+            group_id="20001",
+            mentions_bot=True,
+            conversation_id=env.context.conversation_id,
+            legacy_conversation_key=ConversationScope.group("80001", "20001").key,
+            person_id=env.person,
+            space_id=env.space,
+            presence_id=env.presence,
+        ),
+        sender,
+    )
+    assert result.reason == "chat" and result.sent_messages == 1
+    assert len(requests) == 3
+    assert [action for action, _ in env.bot.calls if action == "send_group_msg"] == [
+        "send_group_msg"
+    ]
+    assert not sender.messages
+
+
+@pytest.mark.asyncio
+async def test_chat_agent_can_choose_silent_final(database: Database, tmp_path: Path) -> None:
+    from tests.conftest import MemorySender, build_harness, make_settings
+    from tests.support.social_identity_cases import social_env
+
+    from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
+    from qq_ai_bot.domain.messages import ChatResponse, InboundMessage, SenderIdentity
+    from qq_ai_bot.llm.fake import FakeLLMProvider
+    from qq_ai_bot.services.main_agent_contract import MainAgentContract
+    from qq_ai_bot.workspace.short_state import ShortState
+
+    env = await social_env(database, tmp_path)
+    calls = 0
+
+    def respond(_request):
+        nonlocal calls
+        calls += 1
+        return ChatResponse("", 0)
+
+    provider = FakeLLMProvider(respond)
+    harness = build_harness(
+        database, make_settings(database.url, enabled_groups_csv="20001"), provider
+    )
+    chat = harness.processor._chat
+    chat._tools.social_service = env.service
+    chat._agent_runner.main_contract = MainAgentContract(chat, ShortState(env.store))
+    sender = MemorySender()
+    result = await harness.processor.handle(
+        InboundMessage(
+            message_id="silent-final-inbound",
+            event_type="message:test",
+            scope_type=ScopeType.GROUP,
+            sender=SenderIdentity("10001"),
+            text="这条不用回",
+            bot_user_id="80001",
+            group_id="20001",
+            mentions_bot=True,
+            conversation_id=env.context.conversation_id,
+            legacy_conversation_key=ConversationScope.group("80001", "20001").key,
+            person_id=env.person,
+            space_id=env.space,
+            presence_id=env.presence,
+        ),
+        sender,
+    )
+    assert result.reason == "chat" and result.sent_messages == 0
+    assert calls == 1
+    assert not sender.messages
+    assert not [
+        action
+        for action, _ in env.bot.calls
+        if action in {"send_group_msg", "send_private_msg"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_chat_agent_rejects_repeated_unsent_final(
+    database: Database, tmp_path: Path
+) -> None:
+    from tests.conftest import MemorySender, build_harness, make_settings
+    from tests.support.social_identity_cases import social_env
+
+    from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
+    from qq_ai_bot.domain.messages import ChatResponse, InboundMessage, SenderIdentity
+    from qq_ai_bot.llm.fake import FakeLLMProvider
+    from qq_ai_bot.services.main_agent_contract import MainAgentContract
+    from qq_ai_bot.workspace.short_state import ShortState
+
+    env = await social_env(database, tmp_path)
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return ChatResponse("只写正文，不调用工具", 0)
+
+    provider = FakeLLMProvider(respond)
+    harness = build_harness(
+        database, make_settings(database.url, enabled_groups_csv="20001"), provider
+    )
+    chat = harness.processor._chat
+    chat._tools.social_service = env.service
+    chat._agent_runner.main_contract = MainAgentContract(chat, ShortState(env.store))
+    sender = MemorySender()
+    result = await harness.processor.handle(
+            InboundMessage(
+                message_id="repeated-unsent-inbound",
+                event_type="message:test",
+                scope_type=ScopeType.GROUP,
+                sender=SenderIdentity("10001"),
+                text="回我一句",
+                bot_user_id="80001",
+                group_id="20001",
+                mentions_bot=True,
+                conversation_id=env.context.conversation_id,
+                legacy_conversation_key=ConversationScope.group("80001", "20001").key,
+                person_id=env.person,
+                space_id=env.space,
+                presence_id=env.presence,
+            ),
+            sender,
+        )
+    assert result.reason == "llm_failure"
+    assert len(requests) == 2
+    assert sender.messages
+    assert not [
+        action
+        for action, _ in env.bot.calls
+        if action in {"send_group_msg", "send_private_msg"}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_plugin_background_send_is_bound_to_frozen_job_target(
     database: Database, tmp_path: Path
 ) -> None:
