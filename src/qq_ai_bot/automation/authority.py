@@ -10,6 +10,7 @@ from pydantic import Field
 from qq_ai_bot.automation.models import StrictModel, TurnOrigin
 from qq_ai_bot.config import Settings
 
+
 class PermissionLevel(StrEnum):
     USER = "user"
     SUPERUSER = "superuser"
