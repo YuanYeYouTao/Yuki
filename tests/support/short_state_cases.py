@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from qq_ai_bot.automation.handlers import _AutomationAgentBackend
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.automation.registry import AutomationCapabilityRegistry
 from qq_ai_bot.domain.conversations import ScopeType
@@ -67,7 +66,7 @@ async def run_short_state_cases(database, tmp_path, context):
 
     registry = AutomationCapabilityRegistry()
     register_social_automation(registry, {})
-    contract = MainAgentContract(chat, SimpleNamespace(_registry=registry), state)
+    contract = MainAgentContract(chat, state)
     chat._agent_runner.main_contract = contract
     chat._tools.short_state = state
     declared = await contract.definitions()
@@ -77,8 +76,6 @@ async def run_short_state_cases(database, tmp_path, context):
     copied[0].parameters["injected"] = True
     assert await contract.definitions() == declared
     assert contract.revision == revision
-    assert contract.automation_names["social.send_group_message"] == "send_group_message"
-    assert contract.automation_names["workspace.write"] == "workspace_write"
     assert {"update_short_state", "call_onebot_api", "decline_reply", "set_reply_layout"} <= {
         t.name for t in declared
     }
@@ -165,9 +162,18 @@ async def run_short_state_cases(database, tmp_path, context):
         assert not json.loads(
             await backend.execute(denied.function.name, denied.function.arguments, scoped)
         )["ok"]
-    automation = _AutomationAgentBackend(registry, context)
-    automation.short_state = state
-    automation.main_contract = contract
+    automation = MainAgentBackend(
+        chat,
+        ToolRuntime(
+            inbound=None,
+            gateway=None,
+            allow_generic_onebot=False,
+            scope_type=ScopeType.PRIVATE,
+            bot_user_id="7777",
+            external_target_id="10001",
+            runtime_config=config,
+        ),
+    )
     from tests.support.state_backend import ShortStateOnlyBackend
 
     await chat._main_turns.run(

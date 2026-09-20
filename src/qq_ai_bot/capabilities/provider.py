@@ -24,10 +24,12 @@ from qq_ai_bot.sandbox.environment_tools import READ_TOOLS, SANDBOX_TOOLS
 from qq_ai_bot.workspace.tools import WORKSPACE_READ_TOOLS, WORKSPACE_TOOLS
 
 _ALL_ORIGINS = frozenset(TurnOrigin)
-_DIRECT_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP})
+_DIRECT_ORIGINS = frozenset(
+    {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP, TurnOrigin.SCHEDULED_AUTOMATION}
+)
 _DECLINE_REPLY_ORIGINS = frozenset({TurnOrigin.AUTONOMOUS_GROUP, TurnOrigin.PLUGIN_BACKGROUND})
-_REPLY_LAYOUT_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP})
-_SOCIAL_ORIGINS = _DIRECT_ORIGINS | frozenset({TurnOrigin.SCHEDULED_AUTOMATION})
+_REPLY_LAYOUT_ORIGINS = _DIRECT_ORIGINS
+_SOCIAL_ORIGINS = _DIRECT_ORIGINS
 _RESIDENT_YUKI_TOOLS = (
     frozenset(
         {

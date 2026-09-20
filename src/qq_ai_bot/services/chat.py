@@ -54,6 +54,7 @@ from qq_ai_bot.domain.messages import (
     PromptRequestDiagnostics,
 )
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
+from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.emoji.effects import EmojiReplyEffectService
 from qq_ai_bot.emoji.models import (
     EmojiPlacement,
@@ -1223,7 +1224,7 @@ class ChatService:
                             assert self._emoji_effects is not None
                             return await self._emoji_effects.prepare(
                                 pending_effect,
-                                inbound=inbound,
+                                actor=ToolActor.from_inbound(inbound),
                                 response_text=rendered_text,
                                 runtime=runtime_config,
                             )
@@ -1267,7 +1268,8 @@ class ChatService:
                 async def prepare_voice() -> PreparedVoiceReply | None:
                     assert self._speech_effects is not None
                     return await self._speech_effects.prepare(
-                        inbound=inbound,
+                        actor=ToolActor.from_inbound(inbound),
+                        conversation_key=conversation_key,
                         response_text=rendered,
                         runtime=runtime_config,
                         token=turn_token,
@@ -2072,7 +2074,9 @@ class ChatService:
                     identifier_hash(conversation_key) or "missing",
                 )
             return None
-        resolution = await self._reply_target_resolver.resolve(event_id, inbound=inbound)
+        resolution = await self._reply_target_resolver.resolve(
+            event_id, actor=ToolActor.from_inbound(inbound)
+        )
         logger.info(
             "reply_target_resolved conversation_hash=%s source=%s event_id=%d outcome=%s",
             identifier_hash(conversation_key) or "missing",

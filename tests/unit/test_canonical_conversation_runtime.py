@@ -16,6 +16,7 @@ from qq_ai_bot.conversation.canonical_db_models import ConversationLegacyAliasMo
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot, turn_matches_hydrated_scope
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
+from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.identity.canonical_repository import (
     ensure_person,
     ensure_space,
@@ -441,6 +442,9 @@ async def test_automation_send_uses_current_binding_and_presence_provenance(
     with pytest.raises(ProactiveGatewayError) as mismatch:
         await gateway.send_group("2001", "nope")
     assert mismatch.value.category == "capability"
+    # Shared raw tools authorize the actor, not the final scheduled reply target.
+    await gateway.call_api("get_group_msg_history", {"group_id": "2001", "count": 5})
+    assert bot_a.calls[-1] == ("get_group_msg_history", {"group_id": "2001", "count": 5})
     registry.disconnect(bot_a)
     async with database.sessions() as session, session.begin():
         presence_b = await ensure_v2_presence(session, "8001")
@@ -712,7 +716,9 @@ async def test_created_automation_sends_persisted_person_not_creator(
     )
     async with database.sessions() as session, session.begin():
         await ensure_person(session, "1808058482", now=_NOW)
-    row = await service.create(script, inbound=inbound, conversation_key="private:9000")
+    row = await service.create(
+        script, actor=ToolActor.from_inbound(inbound), conversation_key="private:9000"
+    )
     assert row.canonical_target_person_id is not None
     assert row.canonical_target_person_id != row.canonical_creator_person_id
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))

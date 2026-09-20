@@ -321,7 +321,7 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
     protocol = "responses" if native else protocol
     client, wire = install_wire(chat, provider, protocol, native=native)
     chat._agent_runner.main_contract = MainAgentContract(
-        chat, SimpleNamespace(_registry=None), ShortState(WorkspaceStore(tmp_path / "state"))
+        chat, ShortState(WorkspaceStore(tmp_path / "state"))
     )
     app = SimpleNamespace(
         database=database,

@@ -71,7 +71,11 @@ class CapabilityPolicyEngine:
         )
         visible: list[CapabilityDescriptor] = []
         for descriptor in descriptors:
-            if context.origin not in descriptor.allowed_origins:
+            same_actor_access = (
+                context.origin is TurnOrigin.SCHEDULED_AUTOMATION
+                and TurnOrigin.USER_MESSAGE in descriptor.allowed_origins
+            )
+            if context.origin not in descriptor.allowed_origins and not same_actor_access:
                 continue
             if not descriptor.required_permissions.issubset(granted):
                 continue
@@ -89,6 +93,7 @@ class CapabilityPolicyEngine:
             if descriptor.risk is CapabilityRisk.DESTRUCTIVE and context.origin not in {
                 TurnOrigin.USER_MESSAGE,
                 TurnOrigin.AUTONOMOUS_GROUP,
+                TurnOrigin.SCHEDULED_AUTOMATION,
             }:
                 continue
             visible.append(descriptor)

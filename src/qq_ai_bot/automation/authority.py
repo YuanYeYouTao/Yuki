@@ -12,7 +12,7 @@ from qq_ai_bot.automation.models import StrictModel, TurnOrigin
 from qq_ai_bot.config import Settings
 
 if TYPE_CHECKING:
-    from qq_ai_bot.automation.registry import AutomationCapabilityRegistry
+    pass
 
 
 class PermissionLevel(StrEnum):
@@ -49,40 +49,3 @@ def permission_for_accounts(settings: Settings, account_ids: Iterable[str]) -> P
     if any(item in settings.superusers for item in account_ids):
         return PermissionLevel.SUPERUSER
     return PermissionLevel.USER
-
-
-def effective_delegated_capabilities(
-    authority: DelegatedAuthority,
-    *,
-    settings: Settings,
-    registry: AutomationCapabilityRegistry,
-    current_permission: PermissionLevel,
-) -> frozenset[str]:
-    """Intersect the immutable grant with the Person's current live permission."""
-
-    resolved = current_permission
-    if authority.permission_level is PermissionLevel.SUPERUSER and (
-        resolved is not PermissionLevel.SUPERUSER
-    ):
-        return frozenset()
-    allowed: set[str] = set()
-    for name in authority.granted_capabilities:
-        definition = registry.get(name)
-        if definition is None:
-            continue
-        if authority.capability_schema_versions.get(name) != definition.schema_version:
-            continue
-        if definition.provider_plugin_id is not None:
-            expected = authority.capability_provenance.get(name, {})
-            if expected != {
-                "plugin_id": definition.provider_plugin_id,
-                "plugin_version": definition.provider_version or "",
-                "manifest_hash": definition.provider_manifest_hash or "",
-            }:
-                continue
-        if not definition.permits(resolved):
-            continue
-        if TurnOrigin.SCHEDULED_AUTOMATION not in definition.allowed_origins:
-            continue
-        allowed.add(name)
-    return frozenset(allowed)

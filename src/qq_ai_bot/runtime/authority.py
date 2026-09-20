@@ -8,8 +8,7 @@ of this module.
 ``automation.authority.DelegatedAuthority``: the runtime layer must not import
 the automation domain (it drags in ``Settings`` and the capability registry),
 so delegation is revalidated here through a pure function fed with
-pre-extracted facts.  ``revalidate_delegated_capabilities`` replicates the
-semantics of ``automation.authority.effective_delegated_capabilities``
+pre-extracted facts.  ``revalidate_delegated_capabilities`` checks explicit immutable grants
 (superuser downgrade to empty set, schema version equality, provenance triple
 equality, current permission, allowed origin).
 """
@@ -79,7 +78,7 @@ def revalidate_delegated_capabilities(
 ) -> frozenset[str]:
     """Intersect the immutable grant with current facts.
 
-    Mirrors ``automation.authority.effective_delegated_capabilities``:
+    This applies to explicit restricted grants, not creator-owned scheduled Main Agent work:
 
     - a superuser-level grant collapses to the empty set the moment the
       creator loses superuser status;

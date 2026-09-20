@@ -11,6 +11,7 @@ from qq_ai_bot.admin.config_registry import ConfigRegistry
 from qq_ai_bot.admin.models import ConfigSpec
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.messages import InboundMessage
+from qq_ai_bot.domain.tool_actor import ToolActor
 
 _INTERNAL_CAPABILITY_MARKERS = (
     '"transient_internal_reference"',
@@ -705,7 +706,18 @@ class PermissionCatalogService:
     ) -> CapabilityReport:
         """Query the sender's catalog without accepting a caller-supplied QQ or role."""
 
-        level = self._resolver.resolve(message)
+        return self.report_for_actor(
+            ToolActor.from_inbound(message), category=category, query=query
+        )
+
+    def report_for_actor(
+        self, actor: ToolActor, *, category: str | None = None, query: str | None = None
+    ) -> CapabilityReport:
+        level = (
+            PermissionLevel.SUPERUSER
+            if actor.user_id in self._resolver._superusers
+            else PermissionLevel.USER
+        )
         normalized_category = category.strip().casefold() if category else None
         normalized_query = query.strip().casefold() if query else None
         if normalized_query is not None and len(normalized_query) > 64:
@@ -732,9 +744,11 @@ class PermissionCatalogService:
             )
         )
         return CapabilityReport(
-            actor_user_id=message.sender.user_id,
+            actor_user_id=actor.user_id,
             permission_level=level,
-            permission_source=self._resolver.source(message),
+            permission_source="SUPERUSERS"
+            if level is PermissionLevel.SUPERUSER
+            else "default_user",
             capabilities=capabilities,
         )
 
@@ -762,13 +776,13 @@ class PermissionCatalogService:
                 category="onebot",
                 display_name="调用全部 QQ/OneBot Provider 公开接口",
                 description=(
-                    "当前真实消息发送者属于 SUPERUSERS 的直接普通聊天轮可使用 "
+                    "当前执行主体属于 SUPERUSERS 的普通聊天或定时任务可使用 "
                     "call_onebot_api(action, params)，action 不设 denylist，也不需要二次确认。"
                     "自主群聊轮不开放；使用网页工具后本轮会撤销该网关。"
                 ),
                 minimum_level=PermissionLevel.SUPERUSER,
                 mutating=True,
-                target_scopes=("current_direct_superuser_event",),
+                target_scopes=("current_superuser_execution",),
             )
         )
         return tuple(

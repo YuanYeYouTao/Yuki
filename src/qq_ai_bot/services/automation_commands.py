@@ -7,6 +7,7 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.scope import runtime_conversation_key
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import InboundMessage
+from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.time.formatting import local_text
 
 
@@ -95,28 +96,28 @@ class AutomationCommandHandler:
             if operation == "pause":
                 changed = await self._automation.pause(
                     automation_id,
-                    inbound=message,
+                    actor=ToolActor.from_inbound(message),
                     conversation_key=conversation_key,
                 )
                 return "任务已暂停。" if changed else "任务状态没有改变。"
             if operation == "resume":
                 changed = await self._automation.resume(
                     automation_id,
-                    inbound=message,
+                    actor=ToolActor.from_inbound(message),
                     conversation_key=conversation_key,
                 )
                 return "任务已恢复。" if changed else "该任务不能恢复。"
             if operation == "cancel":
                 changed = await self._automation.cancel(
                     automation_id,
-                    inbound=message,
+                    actor=ToolActor.from_inbound(message),
                     conversation_key=conversation_key,
                 )
                 return "任务已取消。" if changed else "任务状态没有改变。"
             if operation == "run":
                 changed = await self._automation.run_now(
                     automation_id,
-                    inbound=message,
+                    actor=ToolActor.from_inbound(message),
                     conversation_key=conversation_key,
                 )
                 return "任务已进入待执行队列。" if changed else "该任务不能立即执行。"

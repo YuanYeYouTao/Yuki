@@ -312,7 +312,6 @@ async def test_bridge_switch_preserves_main_and_worker_wire(database, tmp_path, 
             ).processor._chat
             contract = MainAgentContract(
                 chat,
-                SimpleNamespace(_registry=None),
                 ShortState(WorkspaceStore(tmp_path / backend)),
             )
             main = await contract.definitions()

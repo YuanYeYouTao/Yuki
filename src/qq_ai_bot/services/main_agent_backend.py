@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import time
-from dataclasses import replace
+from dataclasses import asdict, replace
 from typing import TYPE_CHECKING, Any, cast
 
 from qq_ai_bot.admin.permission_catalog import contains_internal_capability_payload
@@ -95,6 +95,9 @@ class MainAgentBackend(AgentToolBackend):
         self._runtime = runtime
         self._allowed_tools = allowed_tools
         self._memory_session = getattr(runtime, "memory_session", None)
+        self.messages_sent = 0
+        self.failed_model_requests = 0
+        self.failed_tool_calls = 0
         self._tools_closed = False
         self._web_was_used = False
         self._web_calls_used = 0
@@ -115,6 +118,48 @@ class MainAgentBackend(AgentToolBackend):
         self._request_tools_called = False
         self._first_real_tool_recorded = False
         self._batch_rejected: str = ""
+
+    def export_reply_state(self) -> dict[str, Any]:
+        control = self._runtime.reply_control
+        return {
+            "effects": [
+                effect.model_dump(mode="json")
+                if isinstance(effect, PendingReplyEffect)
+                else asdict(effect)
+                for effect in self._runtime.reply_effects or ()
+                if isinstance(effect, (PendingReplyEffect, PendingVoiceReplyEffect))
+            ],
+            "layout": asdict(control.spec) if control is not None else None,
+            "reply_target": {
+                "event_id": self._runtime.reply_target_control.event_id,
+                "override_applied": self._runtime.reply_target_control.override_applied,
+            }
+            if self._runtime.reply_target_control is not None
+            else None,
+        }
+
+    def restore_reply_state(self, state: dict[str, Any]) -> None:
+        from qq_ai_bot.conversation.delivery import ReplySequenceSpec
+        from qq_ai_bot.speech.models import VoiceMode
+
+        target = self._runtime.reply_target_control
+        if target is not None and state.get("reply_target"):
+            target.event_id = state["reply_target"].get("event_id")
+            target.override_applied = bool(state["reply_target"].get("override_applied"))
+        effects = self._runtime.reply_effects
+        if effects is not None:
+            effects[:] = [
+                PendingReplyEffect.model_validate_json(json.dumps(item))
+                if item.get("kind") == "emoji"
+                else PendingVoiceReplyEffect(**{**item, "mode": VoiceMode(item["mode"])})
+                for item in state.get("effects", [])
+            ]
+        if self._runtime.reply_control is not None and state.get("layout"):
+            self._runtime.reply_control.spec = ReplySequenceSpec(**state["layout"])
+
+    def record_failure_usage(self, *, tool_calls: int, model_requests: int) -> None:
+        self.failed_tool_calls = max(self.failed_tool_calls, tool_calls)
+        self.failed_model_requests = max(self.failed_model_requests, model_requests)
 
     async def prepare(self, runtime: AgentRuntime | None = None) -> None:
         """Hydrate lazy MCP metadata before the first model request."""
@@ -431,7 +476,7 @@ class MainAgentBackend(AgentToolBackend):
         return self._web_was_used
 
     async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str:
-        if self._allowed_tools is not None and self._runtime.before_model_request is not None:
+        if self._runtime.before_model_request is not None:
             await self._runtime.before_model_request()
         if self._allowed_tools is not None and name not in self._allowed_tools:
             return json.dumps({"ok": False, "error": "capability_not_allowed", "executed": False})
@@ -529,6 +574,13 @@ class MainAgentBackend(AgentToolBackend):
         entry = self._catalog.by_model_name(name) if self._catalog is not None else None
         descriptor = entry.descriptor if entry is not None else None
         if descriptor is None or descriptor.binding is None:
+            contract = self._service._agent_runner.main_contract
+            if contract is not None and any(
+                tool.name == name for tool in await contract.definitions()
+            ):
+                return json.dumps(
+                    {"ok": False, "error": "capability_not_allowed", "executed": False}
+                )
             return json.dumps({"ok": False, "error": "unknown_capability"})
         binding = descriptor.binding
         if not self._first_real_tool_recorded:
@@ -666,6 +718,13 @@ class MainAgentBackend(AgentToolBackend):
                     effective_descriptor,
                 )
                 outcome = replace(outcome, mutation_committed=mutation_committed)
+                if (
+                    outcome.ok
+                    and call.function.name in {"send_private_message", "send_group_message"}
+                    and isinstance(outcome.data, dict)
+                    and outcome.data.get("status") == "succeeded"
+                ):
+                    self.messages_sent += 1
                 tooling = config.tooling
                 mcp = config.mcp
                 is_mcp = effective_descriptor.trust_source is CapabilityTrustSource.MCP

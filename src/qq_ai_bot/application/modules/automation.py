@@ -130,7 +130,6 @@ class AutomationModule:
             speech=self._speech,
         )
         registry = build_capability_registry(handlers.mapping())
-        handlers.bind_registry(registry)
         mcp_bridge = MCPAutomationBridge(
             manager=self._mcp_manager,
             registry=registry,
@@ -151,7 +150,6 @@ class AutomationModule:
             time_service=self._time_service,
             audit=self._admin_audit,
         )
-        handlers.bind_automation_service(service)
         tools = AutomationToolService(service)
         executor = AutomationExecutor(
             settings=self._settings,

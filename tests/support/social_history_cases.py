@@ -65,9 +65,7 @@ async def history_agent_loop(env):
     harness = build_harness(env.db, make_settings(env.db.url, enabled_groups_csv="20001"), provider)
     chat = harness.processor._chat
     chat._tools.social_service = env.service
-    chat._agent_runner.main_contract = MainAgentContract(
-        chat, SimpleNamespace(_registry=None), ShortState(env.store)
-    )
+    chat._agent_runner.main_contract = MainAgentContract(chat, ShortState(env.store))
     sender = MemorySender()
     result = await harness.processor.handle(
         InboundMessage(

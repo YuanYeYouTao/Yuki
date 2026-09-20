@@ -182,7 +182,6 @@ async def test_real_memory_receipt_returns_to_model_without_reusing_write_author
 
     provider = FakeLLMProvider(respond)
     harness = build_harness(database, make_settings(database.url), provider)
-    from types import SimpleNamespace
 
     from qq_ai_bot.services.main_agent_contract import MainAgentContract
     from qq_ai_bot.workspace.short_state import ShortState
@@ -191,7 +190,7 @@ async def test_real_memory_receipt_returns_to_model_without_reusing_write_author
     chat = harness.processor._chat
     chat._tools._memory_mutations = service
     chat._agent_runner.main_contract = MainAgentContract(
-        chat, SimpleNamespace(_registry=None), ShortState(WorkspaceStore(tmp_path / "state"))
+        chat, ShortState(WorkspaceStore(tmp_path / "state"))
     )
     sender = MemorySender()
     result = await harness.processor.handle(

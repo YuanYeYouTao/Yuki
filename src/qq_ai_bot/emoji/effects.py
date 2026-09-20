@@ -9,6 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.domain.messages import AttachmentKind, InboundMessage, OutboundMedia, OutboundMessage
+from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.emoji.models import (
     EmojiLifecycleStatus,
     EmojiPreparationResult,
@@ -49,7 +50,7 @@ class EmojiReplyEffectService:
         self,
         effect: PendingReplyEffect,
         *,
-        inbound: InboundMessage,
+        actor: ToolActor,
         response_text: str,
         runtime: RuntimeConfigSnapshot,
     ) -> EmojiPreparationResult:
@@ -66,8 +67,8 @@ class EmojiReplyEffectService:
         try:
             selection = await self._selector.select(
                 EmojiSelectionRequest(
-                    actor_user_id=inbound.sender.user_id,
-                    group_id=inbound.group_id,
+                    actor_user_id=actor.user_id,
+                    group_id=actor.group_id,
                     reply_text=response_text[:4000],
                     goal=effect.goal,
                     emotion=effect.emotion,

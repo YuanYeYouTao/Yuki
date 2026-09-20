@@ -51,16 +51,22 @@ async def invoke_social(
             selected["limit"] = min(int(selected.get("limit", 20)), runtime.history_limit)
         return await service.execute(name, selected, context)
     if (
-        runtime.origin not in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}
+        runtime.origin
+        not in {
+            TurnOrigin.USER_MESSAGE,
+            TurnOrigin.AUTONOMOUS_GROUP,
+            TurnOrigin.SCHEDULED_AUTOMATION,
+        }
         or (runtime.read_only and name != "read_conversation_history")
         or runtime.tools_closed
     ):
         raise SocialError("permission_denied")
     invocation = current_invocation.get()
-    if invocation is None or not invocation.call_id or runtime.inbound is None:
+    if invocation is None or not invocation.call_id:
         raise SocialError("missing_call_context")
     inbound = runtime.inbound
-    refs = {"current_speaker": inbound.sender.user_id}
+    actor = runtime.require_actor()
+    refs = {"current_speaker": actor.user_id}
     for index, user_id in enumerate(runtime.mentioned_user_ids, 1):
         refs[f"mentioned_user_{index}"] = user_id
     if runtime.mentioned_user_ids:
@@ -80,9 +86,9 @@ async def invoke_social(
         ).all()
     by_account = {row.external_account_id: row.person_id for row in bindings}
     conversation_id = runtime.effective_conversation_id
-    if not conversation_id or not runtime.trigger_message_id:
+    if not conversation_id:
         raise SocialError("missing_call_context")
-    execution_id = getattr(runtime, "execution_id", "") or runtime.trigger_message_id
+    execution_id = actor.source_key
     context = SocialContext(
         turn_id=f"{conversation_id}:{execution_id}",
         call_id=invocation.call_id,
@@ -90,8 +96,12 @@ async def invoke_social(
         person_refs={key: by_account[value] for key, value in refs.items() if value in by_account},
         account_refs={key: value for key, value in refs.items() if value in by_account},
         space_id=runtime.space_id or getattr(inbound, "space_id", None),
-        reply_message_id=inbound.message_id if inbound.scope_type == "private" else None,
-        reply_presence_id=inbound.presence_id if inbound.scope_type == "private" else None,
+        reply_message_id=inbound.message_id
+        if inbound is not None and inbound.scope_type == "private"
+        else None,
+        reply_presence_id=inbound.presence_id
+        if inbound is not None and inbound.scope_type == "private"
+        else None,
     )
     try:
         return await service.execute(name, arguments, context)

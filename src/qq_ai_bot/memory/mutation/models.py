@@ -137,6 +137,7 @@ class MemoryMutationRequest(_MutationModel):
     )
     confidence: float = Field(default=0.9, ge=0, le=1)
     importance: int | None = Field(default=None, ge=1, le=5)
+    evidence_event_id: int | None = Field(default=None, ge=1)
     evidence_refs: tuple[str, ...] = ("current_event",)
     evidence_quote: str | None = Field(default=None, max_length=500)
     expected_fact_state: MemoryStatus | None = None

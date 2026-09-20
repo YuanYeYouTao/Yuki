@@ -35,6 +35,7 @@ from qq_ai_bot.vision.models import VisualObservation
 class PromptComposition:
     messages: tuple[ChatMessage, ...]
     metrics: PromptMetrics
+    visible_event_ids: frozenset[int] = frozenset()
     read_version: ConversationReadVersion | None = None
     commit_projection: Callable[[], Awaitable[None]] | None = None
 
@@ -295,7 +296,10 @@ class PromptComposer:
             }
         )
         return PromptComposition(
-            messages=compiled.messages, metrics=metrics, read_version=context.read_version
+            messages=compiled.messages,
+            metrics=metrics,
+            read_version=context.read_version,
+            visible_event_ids=context.visible_event_ids,
         )
 
     @staticmethod

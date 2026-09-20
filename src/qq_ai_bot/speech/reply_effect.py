@@ -10,7 +10,8 @@ from typing import Literal
 from uuid import uuid4
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
-from qq_ai_bot.domain.messages import AttachmentKind, InboundMessage, OutboundMedia, OutboundMessage
+from qq_ai_bot.domain.messages import AttachmentKind, OutboundMedia, OutboundMessage
+from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.services.plugin_events import LifecycleEventPublisher, publish_notification
 from qq_ai_bot.services.turn_coordinator import TurnSupersededError, TurnToken
@@ -85,10 +86,11 @@ class VoiceReplyEffectService:
     async def prepare(
         self,
         *,
-        inbound: InboundMessage,
+        actor: ToolActor,
         response_text: str,
         runtime: RuntimeConfigSnapshot,
-        token: TurnToken,
+        token: TurnToken | None,
+        conversation_key: str,
         mode: VoiceMode,
         style_hint: str,
         language_hint: str = "auto",
@@ -98,7 +100,7 @@ class VoiceReplyEffectService:
             return None
         scope_enabled = (
             runtime.speech.private_enabled
-            if inbound.group_id is None
+            if actor.group_id is None
             else runtime.speech.group_enabled
         )
         if not scope_enabled:
@@ -113,11 +115,11 @@ class VoiceReplyEffectService:
                     style_hint=style_hint,
                     text=speech_text,
                     split_sentence=runtime.speech.split_sentence,
-                    conversation_key=token.conversation_key,
+                    conversation_key=conversation_key,
                     trigger_event_id=None,
                     turn_token=token,
                     language_hint=language_hint,
-                    canonical_conversation_id=inbound.conversation_id,
+                    canonical_conversation_id=actor.conversation_id,
                 ),
                 runtime=runtime.speech,
                 cancellation=cancellation,
