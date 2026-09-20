@@ -40,7 +40,7 @@ if args == ['compose', 'version']:
     print('Docker Compose version v2.test')
 elif args and args[0] == 'info':
     print('amd64' if 'Architecture' in ' '.join(args) else 'linux')
-elif args == ['pull', 'ghcr.io/yuanyeyoutao/yuki-qqbot:3.8.2']:
+elif args == ['pull', 'ghcr.io/yuanyeyoutao/yuki-qqbot:3.8.3']:
     pass
 elif args and args[0] == 'run' and args[-3:] == ['setup', '--deployment-root', '/deploy']:
     sys.exit(int(os.environ['SETUP_EXIT']))

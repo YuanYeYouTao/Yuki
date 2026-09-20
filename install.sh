@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-VERSION="3.8.2"
+VERSION="3.8.3"
 INSTALL_DIR=""
 REPOSITORY="YuanYeYouTao/Yuki-QQbot"
 BOT_IMAGE="ghcr.io/yuanyeyoutao/yuki-qqbot"

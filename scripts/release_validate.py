@@ -12,7 +12,6 @@ from pathlib import Path
 
 _TAG_PATTERN = re.compile(r"^v(?P<version>0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 _APP_VERSION_PATTERN = re.compile(r'^__version__\s*=\s*"([^"]+)"$', re.MULTILINE)
-_RELEASE_VERSION_PATTERN = re.compile(r'^_EXPECTED_RELEASE_VERSION\s*=\s*"([^"]+)"$', re.MULTILINE)
 _PLUGIN_API_PATTERN = re.compile(r'^PLUGIN_API_VERSION\s*=\s*"([^"]+)"$', re.MULTILINE)
 
 
@@ -59,10 +58,15 @@ def validate_release_identity(root: Path, tag: str) -> str:
             root / "src/qq_ai_bot/__init__.py", _APP_VERSION_PATTERN, "runtime version"
         ),
         "uv.lock": locked_project_version(root),
-        "memory release check": _match_value(
-            root / "src/qq_ai_bot/memory/quality/release_check.py",
-            _RELEASE_VERSION_PATTERN,
-            "Memory Release Check version",
+        "install.sh": _match_value(
+            root / "install.sh",
+            re.compile(r'^VERSION="([^"]+)"$', re.MULTILINE),
+            "installer version",
+        ),
+        "install.ps1": _match_value(
+            root / "install.ps1",
+            re.compile(r'\[string\]\$Version = "([^"]+)"'),
+            "installer version",
         ),
     }
     if set(versions.values()) != {tag_version}:
@@ -109,6 +113,18 @@ def validate_release_identity(root: Path, tag: str) -> str:
                 parents.update((literal,) if isinstance(literal, str) else literal)
     if len(revisions - parents) != 1 or parents - revisions:
         raise ReleaseValidationError("Bundled migrations must have one head and no missing parents")
+    head = next(iter(revisions - parents))
+    baseline = f"<!-- release-baseline: version={tag_version} schema={head} -->"
+    for relative in (
+        "README.md",
+        f"docs/releases/v{tag_version}.md",
+        f"docs/upgrade-{tag_version}.md",
+    ):
+        path = root / relative
+        if not path.is_file() or baseline not in path.read_text(encoding="utf-8"):
+            raise ReleaseValidationError(
+                f"release/schema baseline is stale: {relative}; expected {baseline}"
+            )
     plugin_api = _match_value(
         root / "src/yuki_plugin_sdk/api.py", _PLUGIN_API_PATTERN, "Plugin API version"
     )

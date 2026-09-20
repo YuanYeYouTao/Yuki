@@ -1,3 +1,5 @@
+<!-- release-baseline: version=3.8.3 schema=0061 -->
+
 <div align="center">
 
 <p><img src="img/Yuki_2.png" alt="Yuki" width="280"></p>
@@ -14,13 +16,13 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow" alt="MIT License"></a>
 </p>
 
-[下载 3.8.2](https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.2) · [本版更新](docs/releases/v3.8.2.md) · [启动与升级](docs/upgrade-3.8.2.md) · [使用帮助](docs/help.md)
+[下载 3.8.2](https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.2) · [3.8.3 开发基线](docs/releases/v3.8.3.md) · [当前升级指南](docs/upgrade-3.8.3.md) · [使用帮助](docs/help.md)
 
 </div>
 
 Yuki 可以在 QQ 私聊和群聊中交流，记住人与共同经历，读取图片、语音和文件，并通过工具搜索资料、发送消息、执行代码和处理后台任务。人格、记忆和关系保存在自己的数据库中，切换 QQ 账号或网关时可以继续沿用。
 
-**3.8.2** 带来了持久工作环境、接收语音识别、统一的主 Agent 入口，以及成员提及、跨会话消息和任务恢复方面的修复。工作环境需要单独部署；WebUI 尚未提供。
+**当前开发基线为 3.8.3，尚未正式发布；最新正式版仍为 3.8.2。** 当前代码包含持久工作环境、语音识别、统一主 Agent、子任务与持续恢复，以及工具合同清理。工作环境需要单独部署；WebUI 尚未提供。
 
 ## Yuki 能做什么
 
@@ -109,9 +111,9 @@ docker compose up -d
 
 ## 升级与日常维护
 
-3.8.2 使用数据库版本 **0055**、Plugin API **2.0**。较旧的数据库必须先满足迁移前提，不能通过 `stamp` 跳过迁移。旧插件的 `llm.generate` / `agent.run` 已统一到主入口，依赖旧独立生成语义的插件需要适配。
+当前 3.8.3 开发基线使用数据库版本 **0061**、Plugin API **2.0**；3.8.2 正式发布包的历史目标为 0055。较旧的数据库必须先满足迁移前提，不能通过 `stamp` 跳过迁移。旧插件的 `llm.generate` / `agent.run` 已统一到主入口，依赖旧独立生成语义的插件需要适配。
 
-升级前保存一致的数据库、配置、插件及文件备份；持久环境还需保存家目录与运行回执。暂停写入只涉及 Bot 和相关 Manager，不需要关闭整个 Docker 或 QQ 网关。回退时应先保全升级后的新消息、文件和回执，详见[升级指南](docs/upgrade-3.8.2.md)。
+升级前保存一致的数据库、配置、插件及文件备份；持久环境还需保存家目录与运行回执。暂停写入只涉及 Bot 和相关 Manager，不需要关闭整个 Docker 或 QQ 网关。回退时应先保全升级后的新消息、文件和回执，详见[升级指南](docs/upgrade-3.8.3.md)。
 
 ```bash
 docker compose ps

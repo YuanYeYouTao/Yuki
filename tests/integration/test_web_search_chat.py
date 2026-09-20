@@ -7,6 +7,7 @@ import json
 import pytest
 from tests.conftest import MemorySender, build_harness, make_settings
 from tests.fakes import FakeWebSearchProvider
+from tests.support.fixed_contract_fixture import bind_main_contract
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import (
@@ -429,6 +430,7 @@ async def test_native_web_sources_are_persisted_before_backend_rendering(
 @pytest.mark.asyncio
 async def test_chat_completions_profile_can_request_tavily_without_native(
     database: Database,
+    tmp_path,
 ) -> None:
     settings = make_settings(
         database.url,
@@ -444,6 +446,7 @@ async def test_chat_completions_profile_can_request_tavily_without_native(
         llm,
         web_provider=FakeWebSearchProvider(response=web_response()),
     )
+    bind_main_contract(harness, tmp_path)
     sender = MemorySender()
 
     result = await harness.processor.handle(
@@ -454,12 +457,14 @@ async def test_chat_completions_profile_can_request_tavily_without_native(
     assert result.sent_messages == 1
     assert sender.messages[0].text.startswith("已通过备用搜索核验。\n\n来源：")
     assert "https://example.com/deepseek-update" in sender.messages[0].text
-    assert len(llm.requests) == 3
+    assert len(llm.requests) == 2
+    assert llm.requests[0].tools == llm.requests[1].tools
 
 
 @pytest.mark.asyncio
 async def test_domain_text_does_not_fabricate_a_deployment_route(
     database: Database,
+    tmp_path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level("INFO")
@@ -482,6 +487,7 @@ async def test_domain_text_does_not_fabricate_a_deployment_route(
     llm = DomainRoutedTavilyLLM(target_url)
     web = FakeWebSearchProvider(extracted={target_url: source})
     harness = build_harness(database, settings, llm, web_provider=web)
+    bind_main_contract(harness, tmp_path)
     sender = MemorySender()
 
     result = await harness.processor.handle(
@@ -492,7 +498,8 @@ async def test_domain_text_does_not_fabricate_a_deployment_route(
     assert result.reason == "chat"
     assert [message.text for message in sender.messages] == ["这个仓库是 Yuki QQ 机器人项目。"]
     assert web.extract_requests == [(target_url, "这个项目是什么")]
-    assert len(llm.requests) == 3
+    assert len(llm.requests) == 2
+    assert llm.requests[0].tools == llm.requests[1].tools
     assert '"web_mode": "both"' in caplog.text
     assert "web_route_selected" not in caplog.text
     assert "reason=domain_rule" not in caplog.text
@@ -501,6 +508,7 @@ async def test_domain_text_does_not_fabricate_a_deployment_route(
 @pytest.mark.asyncio
 async def test_tavily_keyword_does_not_fabricate_a_deployment_route(
     database: Database,
+    tmp_path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level("INFO")
@@ -514,6 +522,7 @@ async def test_tavily_keyword_does_not_fabricate_a_deployment_route(
     llm = WebToolLLM()
     web = FakeWebSearchProvider(response=web_response())
     harness = build_harness(database, settings, llm, web_provider=web)
+    bind_main_contract(harness, tmp_path)
     sender = MemorySender()
 
     result = await harness.processor.handle(
@@ -523,9 +532,10 @@ async def test_tavily_keyword_does_not_fabricate_a_deployment_route(
 
     assert result.reason == "chat"
     assert len(web.search_requests) == 1
-    assert len(llm.requests) == 3
+    assert len(llm.requests) == 2
+    assert llm.requests[0].tools == llm.requests[1].tools
     assert not llm.requests[0].native_tools
-    assert "web_search" not in {tool.name for tool in llm.requests[0].tools}
+    assert "web_search" in {tool.name for tool in llm.requests[0].tools}
     assert "web_search" in {tool.name for tool in llm.requests[1].tools}
     assert '"web_mode": "both"' in caplog.text
     assert "web_route_selected" not in caplog.text
@@ -535,6 +545,7 @@ async def test_tavily_keyword_does_not_fabricate_a_deployment_route(
 @pytest.mark.asyncio
 async def test_chat_completions_url_read_uses_read_webpage(
     database: Database,
+    tmp_path,
 ) -> None:
     target_url = "https://docs.example.org/required-page"
     source = WebSearchSource(
@@ -555,6 +566,7 @@ async def test_chat_completions_url_read_uses_read_webpage(
     llm = TargetMissThenTavilyLLM(target_url)
     web = FakeWebSearchProvider(extracted={target_url: source})
     harness = build_harness(database, settings, llm, web_provider=web)
+    bind_main_contract(harness, tmp_path)
     sender = MemorySender()
 
     result = await harness.processor.handle(
@@ -565,10 +577,11 @@ async def test_chat_completions_url_read_uses_read_webpage(
     assert result.reason == "chat"
     assert [message.text for message in sender.messages] == ["Tavily 已经读取到指定页面。"]
     assert web.extract_requests == [(target_url, "读取用户指定的网页")]
-    assert len(llm.requests) == 3
+    assert len(llm.requests) == 2
+    assert llm.requests[0].tools == llm.requests[1].tools
     first_names = {tool.name for tool in llm.requests[0].tools}
-    assert "read_webpage" not in first_names
-    assert "web_search" not in first_names
+    assert "read_webpage" in first_names
+    assert "web_search" in first_names
     assert "read_webpage" in {tool.name for tool in llm.requests[1].tools}
     assert not llm.requests[0].native_tools
 
@@ -725,7 +738,9 @@ async def test_web_failure_is_returned_to_llm_for_a_natural_answer(database: Dat
 
 
 @pytest.mark.asyncio
-async def test_web_lookup_can_be_followed_by_superuser_onebot_tool(database: Database) -> None:
+async def test_web_lookup_can_be_followed_by_superuser_onebot_tool(
+    database: Database, tmp_path
+) -> None:
     llm = WebThenOneBotLLM()
     harness = build_harness(
         database,
@@ -733,6 +748,7 @@ async def test_web_lookup_can_be_followed_by_superuser_onebot_tool(database: Dat
         llm,
         web_provider=FakeWebSearchProvider(response=web_response()),
     )
+    bind_main_contract(harness, tmp_path)
     sender = ToolGatewaySender()
 
     result = await harness.processor.handle(

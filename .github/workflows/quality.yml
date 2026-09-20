@@ -16,6 +16,19 @@ permissions:
   contents: read
 
 jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate application and database release baseline
+        shell: bash
+        run: |
+          version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          python -m scripts.release_validate --tag "v$version"
+
   changes:
     runs-on: ubuntu-latest
     outputs:
@@ -58,6 +71,7 @@ jobs:
           echo "docker=$docker" >> "$GITHUB_OUTPUT"
 
   memory-quality:
+    needs: baseline
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -85,6 +99,7 @@ jobs:
           if-no-files-found: warn
 
   python:
+    needs: baseline
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -154,11 +169,10 @@ jobs:
         run: |
           mkdir -p data
           uv run alembic upgrade head
-      - name: Canonical migration matrix
-        run: uv run pytest -q tests/unit/test_migration_0049.py
+      # The canonical migration matrix is already included in the Pytest step.
 
   docker:
-    needs: changes
+    needs: [changes, baseline]
     if: needs.changes.outputs.docker == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -179,6 +193,7 @@ jobs:
         run: docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile speech build genie-tts-worker
 
   speech-worker:
+    needs: baseline
     runs-on: ubuntu-latest
     defaults:
       run:

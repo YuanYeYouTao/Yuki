@@ -1,6 +1,6 @@
 # Memory 当前架构
 
-本文是 canonical 3.8.1 的现行 Memory 合同（schema 0051）。实施与验收见
+本文是 canonical 架构下的现行 Memory 合同；版本基线见 [README](../../README.md)。实施与验收见
 [Yuki Memory P1 治理任务书](Yuki-Memory-P1治理任务书.md)。
 
 ## 所有权与记忆层次

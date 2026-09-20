@@ -638,9 +638,9 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
     )
     assert "github-monitor" not in system_text
     assert "PushEvent" not in system_text
-    assert "查证合同" in system_text
-    assert "普通闲聊、创作和表达感受不强制查询" in system_text
-    assert "不表示长期记忆不存在" in system_text
+    assert "【资料与查证】" in system_text
+    assert "普通闲聊、创作、表达感受不强制查询" in system_text
+    assert "不代表长期记忆不存在" in system_text
     assert tuple(item.content for item in composed.messages if item.role == "system") == tuple(
         item.content for item in ordinary.messages if item.role == "system"
     )
