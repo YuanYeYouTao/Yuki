@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import logging
+import random
 import time
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -16,6 +18,7 @@ from sqlalchemy import func, select
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.conversation.canonical_db_models import PersonActiveRouteModel, SpaceActiveRouteModel
+from qq_ai_bot.conversation.delivery import default_reply_spec
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.gateway.providers.napcat import NapCatProvider
 from qq_ai_bot.gateway.providers.snowluma import SnowLumaProvider
@@ -30,6 +33,7 @@ from qq_ai_bot.identity.routing import PresenceRouter, ResolvedSend
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from qq_ai_bot.services.reply_sequence import ReplySequenceManager
 from qq_ai_bot.social.db_models import SocialOperationModel
 from qq_ai_bot.social.models import OperationStatus, SocialError, SocialMessage, SocialTarget
 from qq_ai_bot.social.repository import SocialOperationRepository
@@ -59,6 +63,7 @@ class SocialContext:
     # Backend-only proof from the current private inbound event, never tool arguments.
     reply_message_id: str | None = None
     reply_presence_id: str | None = None
+    sequence_part_index: int | None = None
 
 
 class SocialService:
@@ -456,9 +461,114 @@ class SocialService:
         if not isinstance(result, dict) or str(result.get("user_id")) != account:
             raise SocialError("group_member_unavailable")
 
+    async def _send_message_sequence(
+        self, args: dict[str, Any], context: SocialContext
+    ) -> dict[str, Any]:
+        """Reuse the former reply layout, with one durable receipt per actual send."""
+        prior = await self.receipts.find(context.turn_id, context.call_id)
+        if prior is not None and prior.action == "send_message":
+            # Calls created before sequence support retain their original receipt.
+            return await self.execute(
+                "send_message", args, replace(context, sequence_part_index=0)
+            )
+        message = SocialMessage.model_validate(
+            {key: value for key, value in args.items() if key in SocialMessage.model_fields}
+        )
+        if not message.text or any(
+            (message.artifact_id, message.voice, message.emoji)
+        ):
+            return await self.execute(
+                "send_message", args, replace(context, sequence_part_index=0)
+            )
+        snapshot = context.runtime_snapshot
+        if snapshot is None and self.runtime_config is not None:
+            snapshot = await self.runtime_config.snapshot()
+        if snapshot is None:
+            return await self.execute(
+                "send_message", args, replace(context, sequence_part_index=0)
+            )
+        chunks = ReplySequenceManager.render(
+            message.text,
+            spec=default_reply_spec(hard_max_messages=snapshot.reply.hard_max_messages),
+            runtime=snapshot,
+        )
+        if len(chunks) <= 1 and prior is None:
+            return await self.execute(
+                "send_message", args, replace(context, sequence_part_index=0)
+            )
+        selected = args.get("target") or {}
+        if not isinstance(selected, dict):
+            raise SocialError("invalid_message_arguments")
+        kind = selected.get("kind") or ("space" if context.space_id else "person")
+        if kind not in {"person", "space"}:
+            raise SocialError("invalid_target_kind")
+        if args.get("target") and not any(
+            selected.get(key) for key in ("target_id", "display_name", "subject_ref")
+        ):
+            raise SocialError("target_selector_conflict")
+        target = prior.target if prior is not None else await self.target(kind, selected, context)
+        # A content-free manifest freezes the split plan before any gateway call.
+        # It remains PREPARED because it is not itself a transport effect.
+        await self.receipts.prepare(
+            source_turn_id=context.turn_id,
+            tool_call_id=context.call_id,
+            source_conversation_id=context.conversation_id,
+            action="send_message_sequence",
+            target=target,
+            payload={"original": args, "chunks": chunks},
+        )
+        prefix = hashlib.sha256(context.call_id.encode()).hexdigest()[:24]
+        planned = []
+        for index, chunk in enumerate(chunks):
+            part_args = dict(args, text=chunk)
+            if index:
+                part_args.pop("mentions", None)
+                part_args.pop("reply_to_event_id", None)
+            part_context = replace(
+                context, call_id=f"seq:{prefix}:{index}", sequence_part_index=index
+            )
+            await self.receipts.prepare(
+                source_turn_id=part_context.turn_id,
+                tool_call_id=part_context.call_id,
+                source_conversation_id=part_context.conversation_id,
+                action="send_message",
+                target=target,
+                payload=part_args,
+            )
+            planned.append((part_args, part_context))
+        parts: list[dict[str, Any]] = []
+        for index, (part_args, part_context) in enumerate(planned):
+            if index:
+                delay = random.uniform(
+                    snapshot.reply.delay_min_seconds, snapshot.reply.delay_max_seconds
+                )
+                if delay > 0:
+                    await asyncio.sleep(delay)
+            part = await self.execute("send_message", part_args, part_context)
+            parts.append(part)
+            if part.get("status") != OperationStatus.SUCCEEDED.value:
+                break
+        status = (
+            OperationStatus.SUCCEEDED.value
+            if len(parts) == len(chunks)
+            and all(part.get("status") == OperationStatus.SUCCEEDED.value for part in parts)
+            else parts[-1].get("status", OperationStatus.FAILED.value)
+        )
+        return {
+            "status": status,
+            "target": target.model_dump(mode="json"),
+            "planned_messages": len(chunks),
+            "sent_messages": sum(
+                part.get("status") == OperationStatus.SUCCEEDED.value for part in parts
+            ),
+            "parts": parts,
+        }
+
     async def execute(
         self, name: str, args: dict[str, Any], context: SocialContext
     ) -> dict[str, Any]:
+        if name == "send_message" and context.sequence_part_index is None:
+            return await self._send_message_sequence(args, context)
         if name == "read_conversation_history":
             from qq_ai_bot.social.history import read_history
 
@@ -967,7 +1077,9 @@ class SocialService:
                 if name == "poke_person"
                 else ("send_message", "send_private_message", "send_group_message")
             )
-            if name not in {"recall_own_message", "send_file_caption"}:
+            if name not in {"recall_own_message", "send_file_caption"} and (
+                context.sequence_part_index is None or context.sequence_part_index == 0
+            ):
                 async with self.database.sessions() as session:
                     where = (
                         SocialOperationModel.action.in_(family),

@@ -566,6 +566,76 @@ async def test_send_message_defaults_to_current_group_and_replays_receipt(
 
 
 @pytest.mark.asyncio
+async def test_send_message_reuses_automatic_reply_splitting(
+    database: Database, tmp_path: Path
+) -> None:
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from tests.support.social_identity_cases import social_env
+
+    from qq_ai_bot.admin.models import ReplyRuntimeConfig
+
+    env = await social_env(database, tmp_path)
+    snapshot = SimpleNamespace(reply=ReplyRuntimeConfig(0, 0, 1800, False, 10))
+    context = replace(env.context, runtime_snapshot=snapshot)
+    args = {"text": "第一段\n第二段\n第三段"}
+    result = await env.service.execute("send_message", args, context)
+    assert result["status"] == "succeeded"
+    assert result["planned_messages"] == result["sent_messages"] == 3
+    assert [
+        params["message"][0]["data"]["text"]
+        for action, params in env.bot.calls
+        if action == "send_group_msg"
+    ] == ["第一段", "第二段", "第三段"]
+    assert await env.service.execute("send_message", args, context) == result
+    assert len([action for action, _ in env.bot.calls if action == "send_group_msg"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_send_message_split_stops_on_uncertain_part_without_resending(
+    database: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from tests.support.social_identity_cases import social_env
+
+    from qq_ai_bot.admin.models import ReplyRuntimeConfig
+
+    env = await social_env(database, tmp_path)
+    snapshot = SimpleNamespace(reply=ReplyRuntimeConfig(0, 0, 1800, False, 10))
+    context = replace(env.context, runtime_snapshot=snapshot)
+    args = {"text": "第一段\n第二段\n第三段"}
+    original_call = env.bot.call_api
+    sends = 0
+
+    async def fail_second(action, **params):
+        nonlocal sends
+        if action == "send_group_msg":
+            sends += 1
+            if sends == 2:
+                raise RuntimeError("simulated_disconnect")
+        return await original_call(action, **params)
+
+    monkeypatch.setattr(env.bot, "call_api", fail_second)
+    result = await env.service.execute("send_message", args, context)
+    assert result["status"] == "uncertain"
+    assert result["sent_messages"] == 1
+    assert [part["status"] for part in result["parts"]] == ["succeeded", "uncertain"]
+    assert sends == 2
+    assert await env.service.execute("send_message", args, context) == result
+    assert sends == 2
+    changed = replace(
+        context,
+        runtime_snapshot=SimpleNamespace(reply=ReplyRuntimeConfig(0, 0, 2, False, 10)),
+    )
+    with pytest.raises(SocialError, match="idempotency_conflict"):
+        await env.service.execute("send_message", args, changed)
+    assert sends == 2
+
+
+@pytest.mark.asyncio
 async def test_send_message_explicit_person(
     database: Database, tmp_path: Path
 ) -> None:
@@ -786,7 +856,9 @@ async def test_chat_agent_sends_only_via_explicit_tool(database: Database, tmp_p
                 tool_calls=(
                     ToolCall(
                         "send-step",
-                        ToolFunction("send_message", json.dumps({"text": "第一步完成"})),
+                        ToolFunction(
+                            "send_message", json.dumps({"text": "第一步完成\n第二步完成"})
+                        ),
                     ),
                 ),
             )
@@ -818,8 +890,9 @@ async def test_chat_agent_sends_only_via_explicit_tool(database: Database, tmp_p
         ),
         sender,
     )
-    assert result.reason == "chat" and result.sent_messages == 1
+    assert result.reason == "chat" and result.sent_messages == 2
     assert [action for action, _ in env.bot.calls if action == "send_group_msg"] == [
+        "send_group_msg",
         "send_group_msg"
     ]
     assert not sender.messages

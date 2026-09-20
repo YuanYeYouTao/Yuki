@@ -50,6 +50,12 @@ async def history_agent_loop(env):
         if calls == 3:
             assert returned[-1]["data"]["count"] == 2
             return "读到两条消息"
+        if calls == 4:
+            assert any(
+                message.role == "system" and "上一段最终正文没有发送给用户" in message.content
+                for message in request.messages
+            )
+            return ChatResponse(content="", latency_seconds=0)
         return ChatResponse(
             content="",
             latency_seconds=0,
@@ -86,7 +92,7 @@ async def history_agent_loop(env):
         sender,
     )
     assert result.reason == "chat" and not sender.messages
-    assert calls == 3
+    assert calls == 4
     assert sum(action == "get_friend_msg_history" for action, _ in env.bot.calls) == 2
     async with env.db.sessions() as session:
         assert not await session.scalar(

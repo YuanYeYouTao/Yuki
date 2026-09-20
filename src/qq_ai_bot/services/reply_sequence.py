@@ -69,8 +69,8 @@ class ReplySequenceManager:
         self._coordinator = coordinator
         self._random_uniform = random_uniform
 
+    @staticmethod
     def render(
-        self,
         text: str,
         *,
         spec: ReplySequenceSpec,
@@ -79,17 +79,17 @@ class ReplySequenceManager:
         hard_max = min(spec.max_messages, runtime.reply.hard_max_messages)
         structured = _STRUCTURED_CHAT_OUTPUT.search(text) is not None
         if spec.split_hint == "paragraph":
-            messages = self._split_chat_line_sections(text, max_messages=hard_max)
+            messages = ReplySequenceManager._split_chat_line_sections(text, max_messages=hard_max)
         elif spec.split_hint == "sentence":
-            messages = self._split_sentences(text, max_messages=hard_max)
+            messages = ReplySequenceManager._split_sentences(text, max_messages=hard_max)
         elif structured:
             messages = (text,)
         else:
-            messages = self._split_chat_line_sections(text, max_messages=hard_max)
+            messages = ReplySequenceManager._split_chat_line_sections(text, max_messages=hard_max)
         chunks = tuple(
             chunk
             for message in messages
-            for chunk in self._split_preserving_structure(
+            for chunk in ReplySequenceManager._split_preserving_structure(
                 message,
                 limit=runtime.reply.max_qq_message_chars,
             )

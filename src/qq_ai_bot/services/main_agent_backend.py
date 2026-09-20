@@ -671,11 +671,19 @@ class MainAgentBackend(AgentToolBackend):
                     receipt = outcome.data
                     file = receipt.get("file")
                     caption = receipt.get("caption")
+                    parts = receipt.get("parts")
                     accepted = (
-                        int(file.get("status") == "succeeded")
-                        + int(isinstance(caption, dict) and caption.get("status") == "succeeded")
-                        if isinstance(file, dict)
-                        else int(receipt.get("status") == "succeeded")
+                        sum(part.get("status") == "succeeded" for part in parts)
+                        if isinstance(parts, list)
+                        else (
+                            int(file.get("status") == "succeeded")
+                            + int(
+                                isinstance(caption, dict)
+                                and caption.get("status") == "succeeded"
+                            )
+                            if isinstance(file, dict)
+                            else int(receipt.get("status") == "succeeded")
+                        )
                     )
                     self.messages_sent += accepted
                     inbound = self._runtime.inbound
@@ -692,9 +700,13 @@ class MainAgentBackend(AgentToolBackend):
                     sent_target = receipt.get("target")
                     sent_text = parsed.get("text")
                     text_accepted = (
-                        isinstance(caption, dict) and caption.get("status") == "succeeded"
-                        if isinstance(file, dict)
-                        else receipt.get("status") == "succeeded"
+                        accepted > 0
+                        if isinstance(parts, list)
+                        else (
+                            isinstance(caption, dict) and caption.get("status") == "succeeded"
+                            if isinstance(file, dict)
+                            else receipt.get("status") == "succeeded"
+                        )
                     )
                     if (
                         text_accepted
