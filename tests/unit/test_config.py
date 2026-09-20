@@ -312,7 +312,7 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
         "get_self_memories",
         "web_search",
         "automation_create",
-        "send_emoji",
+        "send_message",
     )
     assert settings.tooling_schema_token_budget == 12000
     assert settings.mcp_selected_tool_limit == 16

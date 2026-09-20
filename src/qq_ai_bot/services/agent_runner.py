@@ -1046,7 +1046,13 @@ class AgentRunner:
         if (
             control is not None
             and control.current is None
-            and any(self._is_side_effecting(tools, call, runtime) for call in calls)
+            # Sending is an explicit conversation output, not work execution.
+            # Keep its mutation risk, receipt, routing and permission checks intact.
+            and any(
+                call.function.name != "send_message"
+                and self._is_side_effecting(tools, call, runtime)
+                for call in calls
+            )
         ):
             result = json.dumps({"ok": False, "error": "accept_work_before_execution"})
             return CoordinatedToolResult(tuple((call, result, False) for call in calls), 0)

@@ -593,6 +593,33 @@ async def test_send_message_reuses_automatic_reply_splitting(
 
 
 @pytest.mark.asyncio
+async def test_social_sends_and_pokes_have_no_frequency_gate(
+    database: Database, tmp_path: Path
+) -> None:
+    from dataclasses import replace
+
+    from tests.support.social_identity_cases import social_env
+
+    env = await social_env(database, tmp_path)
+    for index in range(4):
+        receipt = await env.service.execute(
+            "send_message",
+            {"text": f"第 {index + 1} 条"},
+            replace(env.context, call_id=f"send-{index}"),
+        )
+        assert receipt["status"] == "succeeded"
+    for index in range(2):
+        receipt = await env.service.execute(
+            "poke_person",
+            {"target_id": env.person},
+            replace(env.context, call_id=f"poke-{index}"),
+        )
+        assert receipt["status"] == "succeeded"
+    assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 4
+    assert sum(action == "send_poke" for action, _ in env.bot.calls) == 2
+
+
+@pytest.mark.asyncio
 async def test_send_message_split_stops_on_uncertain_part_without_resending(
     database: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -633,6 +660,43 @@ async def test_send_message_split_stops_on_uncertain_part_without_resending(
     with pytest.raises(SocialError, match="idempotency_conflict"):
         await env.service.execute("send_message", args, changed)
     assert sends == 2
+
+
+@pytest.mark.asyncio
+async def test_send_message_split_reports_confirmed_failure_not_uncertainty(
+    database: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from tests.support.social_identity_cases import social_env
+
+    from qq_ai_bot.admin.models import ReplyRuntimeConfig
+
+    env = await social_env(database, tmp_path)
+    context = replace(
+        env.context,
+        runtime_snapshot=SimpleNamespace(reply=ReplyRuntimeConfig(0, 0, 1800, False, 10)),
+    )
+    original_effect = env.service._effect
+    calls = 0
+
+    async def reject_second(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            return {"error": "confirmed_rejection"}
+        return await original_effect(*args, **kwargs)
+
+    monkeypatch.setattr(env.service, "_effect", reject_second)
+    result = await env.service.execute(
+        "send_message", {"text": "第一段\n第二段\n第三段"}, context
+    )
+    assert result["status"] == "failed"
+    assert result["error"] == "confirmed_rejection"
+    assert result["sent_messages"] == 1
+    assert calls == 2
+    assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
 
 
 @pytest.mark.asyncio

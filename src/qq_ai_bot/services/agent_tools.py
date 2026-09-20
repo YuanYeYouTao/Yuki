@@ -1079,17 +1079,26 @@ class AgentToolService:
                             "failed",
                             "uncertain",
                         }:
+                            uncertain = social_result.get("status") == "uncertain"
+                            sent_parts = int(social_result.get("sent_messages") or 0)
                             return self._result(
-                                error=str(social_result.get("error") or "delivery_uncertain"),
+                                error=str(
+                                    social_result.get("error")
+                                    or ("delivery_uncertain" if uncertain else "delivery_failed")
+                                ),
                                 detail=(
                                     "读取账号不明确；从 presences 选择 presence_id，勿换号试读"
                                     if name == "read_conversation_history"
                                     else "文件已发送成功，附带文字未确认发送；不要重发文件"
                                     if social_result.get("error") == "file_sent_caption_unconfirmed"
-                                    else "发送未确认成功，不要重复发送；请根据实际工具结果说明情况"
+                                    else "部分分条已确认发送；不要重发已成功的分条"
+                                    if sent_parts
+                                    else "发送结果未知，不要重发；请根据回执说明情况"
+                                    if uncertain
+                                    else "发送前或发送时明确失败，未确认有消息送达"
                                 ),
                                 data=social_result,
-                                uncertain=social_result.get("status") == "uncertain",
+                                uncertain=uncertain,
                             )
                         return self._result(data=social_result)
                     except SocialError as exc:

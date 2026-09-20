@@ -172,3 +172,25 @@ async def test_autonomous_observation_does_not_repeat_consumed_batch(monkeypatch
     state.revision += 1
     service.consume_rollup_history("conversation", 10)
     assert state.consumed_revision < state.revision
+
+
+@pytest.mark.asyncio
+async def test_autonomous_turn_observation_counts_confirmed_messages():
+    from types import SimpleNamespace
+
+    from qq_ai_bot.runtime.observability import claim_runtime_turn_id
+    from qq_ai_bot.services.autonomous_groups import AutonomousGroupService
+
+    service = object.__new__(AutonomousGroupService)
+    service._states = {"scope": SimpleNamespace(message=None)}
+    service._turn_observations = SimpleNamespace(record_turn=AsyncMock())
+
+    async def admit(*_args):
+        assert claim_runtime_turn_id()
+        return 3
+
+    service._admit_latest = admit
+    await service._run_latest("scope", 1, SimpleNamespace())
+    observation = service._turn_observations.record_turn.await_args.args[0]
+    assert observation.handled
+    assert observation.sent_messages == 3

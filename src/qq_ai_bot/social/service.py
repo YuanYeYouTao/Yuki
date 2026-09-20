@@ -9,12 +9,12 @@ import logging
 import random
 import time
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.conversation.canonical_db_models import PersonActiveRouteModel, SpaceActiveRouteModel
@@ -34,7 +34,6 @@ from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from qq_ai_bot.services.reply_sequence import ReplySequenceManager
-from qq_ai_bot.social.db_models import SocialOperationModel
 from qq_ai_bot.social.models import OperationStatus, SocialError, SocialMessage, SocialTarget
 from qq_ai_bot.social.repository import SocialOperationRepository
 from qq_ai_bot.social.transfer import ArtifactTransfer
@@ -527,14 +526,6 @@ class SocialService:
             part_context = replace(
                 context, call_id=f"seq:{prefix}:{index}", sequence_part_index=index
             )
-            await self.receipts.prepare(
-                source_turn_id=part_context.turn_id,
-                tool_call_id=part_context.call_id,
-                source_conversation_id=part_context.conversation_id,
-                action="send_message",
-                target=target,
-                payload=part_args,
-            )
             planned.append((part_args, part_context))
         parts: list[dict[str, Any]] = []
         for index, (part_args, part_context) in enumerate(planned):
@@ -554,7 +545,7 @@ class SocialService:
             and all(part.get("status") == OperationStatus.SUCCEEDED.value for part in parts)
             else parts[-1].get("status", OperationStatus.FAILED.value)
         )
-        return {
+        result = {
             "status": status,
             "target": target.model_dump(mode="json"),
             "planned_messages": len(chunks),
@@ -563,6 +554,20 @@ class SocialService:
             ),
             "parts": parts,
         }
+        if status != OperationStatus.SUCCEEDED.value:
+            last = parts[-1]
+            result["error"] = (
+                last.get("error")
+                or last.get("error_category")
+                or (
+                    "delivery_uncertain"
+                    if status == OperationStatus.UNCERTAIN.value
+                    else "delivery_failed"
+                )
+            )
+            if "retry_after_seconds" in last:
+                result["retry_after_seconds"] = last["retry_after_seconds"]
+        return result
 
     async def execute(
         self, name: str, args: dict[str, Any], context: SocialContext
@@ -1071,50 +1076,6 @@ class SocialService:
                 route.connection.snapshot,
             ):
                 raise SocialError("route_changed")
-            now = datetime.now(UTC)
-            family = (
-                ("poke_person",)
-                if name == "poke_person"
-                else ("send_message", "send_private_message", "send_group_message")
-            )
-            if name not in {"recall_own_message", "send_file_caption"} and (
-                context.sequence_part_index is None or context.sequence_part_index == 0
-            ):
-                async with self.database.sessions() as session:
-                    where = (
-                        SocialOperationModel.action.in_(family),
-                        SocialOperationModel.updated_at >= now - timedelta(seconds=60),
-                        SocialOperationModel.status.in_(["executing", "succeeded", "uncertain"]),
-                    )
-                    total = await session.scalar(
-                        select(func.count()).select_from(SocialOperationModel).where(*where)
-                    )
-                    per_target = await session.scalar(
-                        select(func.count())
-                        .select_from(SocialOperationModel)
-                        .where(*where, SocialOperationModel.target_id == str(target.id))
-                    )
-                family_name = "poke" if name == "poke_person" else "send"
-                global_limit, target_limit = (5, 1) if family_name == "poke" else (10, 3)
-                if self.runtime_config is not None:
-                    global_limit = int(
-                        (
-                            await self.runtime_config.get_effective(
-                                f"social.{family_name}_global_per_minute"
-                            )
-                        ).value
-                        or global_limit
-                    )
-                    target_limit = int(
-                        (
-                            await self.runtime_config.get_effective(
-                                f"social.{family_name}_per_target_per_minute"
-                            )
-                        ).value
-                        or target_limit
-                    )
-                if int(total or 0) >= global_limit or int(per_target or 0) >= target_limit:
-                    return {"error": "rate_limited", "retry_after_seconds": 60, "retryable": False}
             from qq_ai_bot.runtime.delivery_intents import reserve
             from qq_ai_bot.runtime.work_activation import current_work_control
 

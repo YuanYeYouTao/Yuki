@@ -244,9 +244,7 @@ class AutonomousGroupService:
     ) -> None:
         """Bind one fresh runtime turn correlation per autonomous attempt.
 
-        Delivery counts stay joinable through confirmed-delivery observations
-        on the same ``runtime_turn_id``; the observation row itself only
-        carries latency and outcome category.
+        A completed attempt records the actual confirmed delivery count.
         """
 
         started = time.perf_counter()
@@ -255,6 +253,7 @@ class AutonomousGroupService:
             origin=TurnOrigin.AUTONOMOUS_GROUP,
         )
         error_category: str | None = None
+        sent_messages = 0
         observation_key = scope_key
         state = self._states.get(scope_key)
         selected = state.message if state is not None else None
@@ -263,7 +262,7 @@ class AutonomousGroupService:
         )
         with bind_runtime_turn(correlation):
             try:
-                await self._admit_latest(scope_key, revision, runtime)
+                sent_messages = await self._admit_latest(scope_key, revision, runtime)
             except BaseException as exc:
                 error_category = type(exc).__name__
                 raise
@@ -275,7 +274,7 @@ class AutonomousGroupService:
                         conversation_key=observation_key,
                         admission_outcome="autonomous_group",
                         handled=error_category is None,
-                        sent_messages=0,
+                        sent_messages=sent_messages,
                         error_category=error_category,
                         total_latency_ms=int((time.perf_counter() - started) * 1000),
                         canonical_conversation_id=canonical_conversation_id,
@@ -289,10 +288,10 @@ class AutonomousGroupService:
         scope_key: str,
         revision: int,
         runtime: RuntimeConfigSnapshot,
-    ) -> None:
+    ) -> int:
         state = self._states.get(scope_key)
         if state is None:
-            return
+            return 0
         last = state.message
         profile = state.profile
         sender = state.sender
@@ -305,7 +304,7 @@ class AutonomousGroupService:
         else:
             token = await self._coordinator.begin_autonomous(token)
             if token is None:
-                return
+                return 0
         plugin_signals = (
             await self._admission_signals.collect(
                 message=last,
@@ -340,25 +339,25 @@ class AutonomousGroupService:
                     reasons=list(snapshot.reasons),
                 ),
             )
-            return
+            return 0
         if not self._is_latest(scope_key, revision) or not self._coordinator.is_current(token):
-            return
+            return 0
         if last.group_id is None:
-            return
+            return 0
         identity = ConversationScope.group(last.bot_user_id, last.group_id)
         scope_state = await self._chat._conversation_scopes.get(identity)
         if last.source_event_id is None:
-            return
+            return 0
         trigger_event = await self._chat._ledger.get_event(last.source_event_id)
         if scope_state is None or trigger_event is None:
-            return
+            return 0
         if (
             trigger_event.bot_user_id != last.bot_user_id
             or trigger_event.canonical_conversation_id != last.conversation_id
             or trigger_event.ingress_presence_id != last.presence_id
             or trigger_event.sender_user_id != last.sender.user_id
         ):
-            return
+            return 0
         runtime_key = runtime_conversation_key(
             identity=identity,
             inbound=last,
@@ -384,8 +383,9 @@ class AutonomousGroupService:
         )
         started = time.perf_counter()
         outcome = "autonomous_group"
+        sent_messages = 0
         try:
-            await self._chat.respond(
+            sent_messages = await self._chat.respond(
                 last,
                 identity,
                 profile,
@@ -409,10 +409,11 @@ class AutonomousGroupService:
                     conversation_key=conversation_key,
                     outcome=outcome,
                     handled=True,
-                    sent_messages=0,
+                    sent_messages=sent_messages,
                     latency_ms=int((time.perf_counter() - started) * 1000),
                 ),
             )
+        return sent_messages
 
     async def wait_until_idle(self, scope_key: str) -> None:
         while True:
