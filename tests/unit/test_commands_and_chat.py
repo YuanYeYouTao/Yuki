@@ -7,6 +7,7 @@ import json
 
 import pytest
 from tests.conftest import MemorySender, build_harness, make_settings
+from tests.support.fixed_contract_fixture import bind_main_contract
 
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
@@ -45,7 +46,7 @@ from qq_ai_bot.services.processor import (
     [("send_private_message", "artifact_transfer_unavailable"), ("poke_person", "route_paused")],
 )
 async def test_delivery_failure_keeps_normal_answer(
-    database: Database, tool_name: str, failure: str
+    database: Database, tmp_path, tool_name: str, failure: str
 ) -> None:
     from dataclasses import replace
 
@@ -115,6 +116,7 @@ async def test_delivery_failure_keeps_normal_answer(
             raise SocialError(failure)
 
     harness = build_harness(database, make_settings(database.url), FakeLLMProvider(respond))
+    bind_main_contract(harness, tmp_path)
     harness.processor._chat._tools.social_service = Delivery()
     async with database.sessions() as session, session.begin():
         person = await ensure_person(session, "1001")
@@ -322,7 +324,7 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     )
     admin_text = admin_sender.messages[0].text
     assert "当前权限：超级管理员" in admin_text
-    assert "可修改运行时配置参数：239 项" in admin_text
+    assert "可修改运行时配置参数：240 项" in admin_text
     assert "管理员业务接口：44 项，其中修改型 33 项" in admin_text
     assert "conversation.autonomous_batch_limit" in admin_text
     assert "relationship.set_affection" in admin_text

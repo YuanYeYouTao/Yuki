@@ -1,6 +1,8 @@
 # Memory V2 质量指标与分母
 
-## 现行运行观测（schema 0051）
+## 现行运行观测
+
+数据库版本遵循随包迁移 head，发布基线见 [README](../../README.md)。
 
 正常预取即使注入为零，也记录 recall receipt；零注入不调用使用判定。receipt 的
 `attribution_status` 分为 unknown/pending/succeeded/failed/skipped，并保存完成时间及

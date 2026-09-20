@@ -9,6 +9,7 @@ import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 
+from alembic.script import ScriptDirectory
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from sqlalchemy import text
 
@@ -28,8 +29,6 @@ from qq_ai_bot.memory.quality.runner import MemoryQualityRunner
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.schema_guard import canonical_schema_revision
 
-_EXPECTED_RELEASE_VERSION = "3.8.2"
-
 
 class MemoryReleaseCheck:
     def __init__(self, repository_root: Path, *, artifact_directory: Path | None = None) -> None:
@@ -43,7 +42,7 @@ class MemoryReleaseCheck:
         items.append(
             self._item(
                 "version",
-                __version__ == _EXPECTED_RELEASE_VERSION,
+                __version__ == self._project_version(),
                 f"project version is {__version__}",
             )
         )
@@ -182,28 +181,18 @@ class MemoryReleaseCheck:
         return canonical_schema_revision(self._root)
 
     def _migration_contract_item(self) -> ReleaseCheckItem:
-        versions = {path.name for path in (self._root / "migrations/versions").glob("00*.py")}
-        required = {
-            "0048_canonical_3_8_baseline.py",
-            "0049_canonical_only_bridge.py",
-            "0050_plugin_reply_causality.py",
-            "0051_memory_recall_evaluation.py",
-            "0052_social_operation_receipts.py",
-            "0053_sandbox_task_runs.py",
-            "0054_prompt_projections.py",
-            "0055_audio_transcripts.py",
-            "0056_runtime_work.py",
-            "0057_subagents.py",
-            "0058_internal_source_anchors.py",
-        }
-        missing = sorted(required - versions)
+        scripts = ScriptDirectory(str(self._root / "migrations"))
+        revisions = tuple(scripts.walk_revisions())
+        head = self._alembic_head()
         return self._item(
             "migration_contract",
-            not missing and bool(self._alembic_head()),
-            f"fresh/upgrade matrix is current through {self._alembic_head()}"
-            if not missing
-            else f"missing migration files: {','.join(missing)}",
+            bool(revisions),
+            f"bundled migration chain contains {len(revisions)} revisions; head {head}",
         )
+
+    def _project_version(self) -> str:
+        with (self._root / "pyproject.toml").open("rb") as stream:
+            return str(tomllib.load(stream)["project"]["version"])
 
     def _plugin_contract_item(self) -> ReleaseCheckItem:
         manifests = tuple((self._root / "plugins").glob("*/plugin.toml")) + tuple(

@@ -1,7 +1,8 @@
 # Yuki 3.8 canonical runtime
 
 本文描述 Yuki 3.8 的现行架构合同，不是迁移任务书。3.8 运行时只支持 canonical schema，
-数据库版本以 `persistence/schema_guard.py` 和新增迁移链为准；当前迁移至 `0057`。
+数据库版本以随包 Alembic head 为准，启动由 `persistence/schema_guard.py` 读取；
+当前应用与数据库基线统一见 [README](../../README.md)。
 跨模块开发遵循 [共同架构约束](development-contract.md)。
 
 ## 永久主体与身份

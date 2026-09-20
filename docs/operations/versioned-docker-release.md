@@ -1,149 +1,29 @@
-# Versioned Docker Release 运维说明
+# Versioned Docker Release
 
-当前3.8.2候选的版本、schema0051、Bot-only本地镜像部署及回滚规则见
-[3.8.2升级指南](../upgrade-3.8.2.md)和[候选说明](../releases/v3.8.2.md)。
-下方是历史正式发行记录，不能据此重新发布3.8.1或降低当前schema。
+应用版本以 `pyproject.toml` 为源，数据库目标以随包 Alembic 单一 head 为源。
+当前开发基线见 [README](../../README.md)，发布范围见[发布说明](../releases/v3.8.3.md)，
+数据库与部署步骤见[升级指南](../upgrade-3.8.3.md)。历史 Release 保留对应版本的记录，不作为当前部署指令。
 
-> **历史发行流程：** 本文冻结已发布的 3.8.1/`0049` Release 流程。当前源码包含尚未发布的
-> `0050` 插件主动回复因果修复；在为该源码确定新版本并更新全部不可变产物前，不得复用
-> `v3.8.1` tag、镜像或 Release。当前实现合同见
-> [插件唤醒 Main Agent 与主动回复因果修复任务书](../architecture/Yuki-插件唤醒Main-Agent与主动回复因果修复任务书.md)。
+## 仓库与 CI
 
-Yuki 3.8.1 正式产物只由 `.github/workflows/release.yml` 发布，目标平台为 `linux/amd64`。
-本地开发镜像不属于发布合同。
+`scripts/release_validate.py` 核对项目版本、运行时版本、锁文件、安装器和当前发布文档，并检查迁移图。
+普通 PR 的 Quality workflow 在构建和测试前执行该检查；正式发布复用同一检查，再核对 tag 与 main 的提交关系。
+Memory release check 读取项目版本与迁移图，不另存版本常量或迁移文件清单。
 
-## 发布前一致性
+## 发布流程
 
-最终 main SHA 必须满足：
+正式产物由 `.github/workflows/release.yml` 发布，目标平台为 `linux/amd64`：
 
-- `pyproject.toml`、运行时 `__version__`、`uv.lock` 和 Release notes 均为 `3.8.1`。
-- Alembic head 为 `0049`；fresh `0048 -> 0049` 和 historical populated `0048 -> 0049` 通过。
-- Plugin API 为 `2.0`；Genie-TTS Worker 内部版本仍为 `1.9.0`。
-- README、安装器默认版本、升级指南与部署包文件名一致。
-- Quality、完整 pytest、测试预算、Memory release validation、Compose config 和 release smoke
-  全部通过。
-- 没有 `.env`、token、Cookie、QQ 号、数据库、Gateway 登录数据或构建临时目录进入 Git。
+1. 将审核通过的变更合并到 main，确认 Quality 结果与当前发布说明。
+2. 用对应提交创建 `vX.Y.Z` 标签；已有标签与发行资产不覆盖。
+3. Release workflow 构建镜像、部署包、安装入口及 SHA256SUMS，并执行发布 smoke。
+4. 发布完成后更新 README 的正式版下载入口。只有推进开发基线时，不提前声称新镜像或安装包已发布。
 
-historical 0048 fixture 必须代表已完成 canonical v2 的数据库。pre-3.8、v1 或 cutover 中间态不是
-3.8 Release 的升级来源。
+首次配置 GHCR 可使用 workflow 的 bootstrap 模式；该模式只准备镜像访问，不等于正式发布。
+Genie-TTS Worker 的发行镜像标签跟随应用版本，其内部组件版本独立维护。
 
-## GHCR bootstrap
+## 现有服务器
 
-如果 Package 尚未公开，只在正式 tag 前执行一次：
-
-1. 对最新 main 手动运行 Release workflow 的 bootstrap 路径。
-2. 只发布 Bot 与 Genie Worker 的 `bootstrap-amd64` 标签。
-3. 在 GitHub Packages 中将两个 Package 设为 Public。
-4. 在未登录 GHCR 的环境验证匿名拉取。
-
-bootstrap 不创建正式 Release，不发布版本 tag 或 `latest`。
-
-## 正式发布
-
-1. 确认目标 commit 已合入 main，工作树与远端 main 一致。
-2. 确认 Quality workflow 对该 SHA 通过。
-3. 创建严格的 `v3.8.1` annotated tag 并推送。
-4. Release workflow 在 tag SHA 上重新运行完整 Quality。
-5. 构建 amd64 Bot/Worker 镜像和无源码部署包。
-6. 在临时部署中验证 fresh baseline、0049 head、Provider profiles、挂载与容器重建。
-7. 推送不可变 `3.8.1` 镜像。
-8. 在匿名环境拉取版本镜像并启动；digest 校验通过后才更新 `latest`。
-9. 上传带 SHA-256 的部署资产并创建 GitHub Release，正文使用
-   [v3.8.1 发布说明](../releases/v3.8.1.md)。
-
-同一版本 tag 重跑时，只有 OCI `org.opencontainers.image.revision` 等于当前 tag SHA 才允许
-复用或覆盖资产；不同 revision 不得覆盖既有版本镜像。
-
-`v3.8.0` tag、Release、版本镜像和部署资产已经不可变，3.8.1 流程不得覆盖或删除它们。
-
-## Release 资产
-
-至少包含：
-
-- `yuki-3.8.1-deploy.tar.gz`
-- `SHA256SUMS`
-- `install.sh`
-- `install.ps1`
-- SnowLuma Provider 文档
-- 3.8.1 升级指南
-
-安装器必须验证 archive checksum 和精确目录布局；不能从 main 分支即时下载未固定文件补齐
-Release bundle。
-
-## 数据迁移发布门
-
-发布 smoke 必须分别验证：
-
-1. 空目录初始化 `0048` baseline 并升级到 `0049`。
-2. populated historical `0048` 在 preflight 全通过时原子桥接到 `0049`。
-3. v1、conflict、processing lease、ownership 缺口和 schema manifest 不匹配均失败关闭。
-4. 任一 failpoint 后数据库签名回滚。
-5. 迁移后 quick check、foreign key、FTS、trigger、关键表行数与摘要一致。
-6. 旧事件不重新进入 Memory worker。
-
-`0049` 没有 downgrade。Release 与升级文档必须把 DB/WAL/SHM 同时点快照列为唯一回退路径。
-
-3.8.0 运行时会把 3.8.1 已落账的 external event 再投影为普通 system 历史，不是生产安全回退
-下限。至少保留含 external-event Prompt 隔离与 Host request idempotency 的本地回退镜像。
-
-## 本地生产镜像交付
-
-生产替换使用本机构建的 Bot 镜像；生产机只执行 `docker load`，不得构建、`uv sync` 或挂载源码：
-
-```bash
-VERSION=3.8.1
-REVISION="$(git rev-parse HEAD)"
-IMAGE="ghcr.io/yuanyeyoutao/yuki-qqbot:$VERSION"
-
-docker buildx build \
-  --platform linux/amd64 \
-  --load \
-  --build-arg "YUKI_VERSION=$VERSION" \
-  --build-arg "VCS_REF=$REVISION" \
-  --label "org.opencontainers.image.version=$VERSION" \
-  --label "org.opencontainers.image.revision=$REVISION" \
-  --tag "$IMAGE" \
-  .
-docker save --output "yuki-qqbot-$VERSION-amd64.tar" "$IMAGE"
-sha256sum "yuki-qqbot-$VERSION-amd64.tar" \
-  > "yuki-qqbot-$VERSION-amd64.tar.sha256"
-```
-
-传输后在生产机验证 SHA-256，执行 `docker load`，然后只替换 Bot：
-
-```bash
-docker load --input yuki-qqbot-3.8.1-amd64.tar
-YUKI_VERSION=3.8.1 docker compose up -d \
-  --no-deps --no-build --force-recreate bot
-```
-
-Bot 镜像不携带 Compose 只读挂载的 `plugins/` 源码。若发布包含内置插件变更，必须在 Bot
-停止期间同时备份并分阶段替换对应插件目录，并运行该插件的离线 doctor。3.8.1 的
-精确步骤见 `docs/upgrade-3.8.1.md`；只 `docker load` / 只换 Bot 容器不会更新 GitHub
-Monitor。
-
-SnowLuma、NapCat 和 Speech Worker 不在这次生产替换范围。替换前必须完成停写快照与
-`conversation recount-uncovered`、只读 `--check` 与插件队列 doctor；镜像
-architecture、version/revision label 和 `/healthz` 必须与
-目标 commit 一致。
-
-## Provider 发布门
-
-- NapCat QQ A 与 SnowLuma QQ B 可同时收发。
-- 同一 QQ 的第二条连接在 Adapter 和 Registry 两层被拒绝，原连接不受影响。
-- 停止旧 Provider并确认注销后，同一 QQ 可连接新 Provider并复用 Presence。
-- 切换只增加 ConnectionGeneration，不改变 ConversationGeneration 或 RouteGeneration。
-- `SNOWLUMA_NOVNC_BIND_ADDRESS` 与 `SNOWLUMA_WEBUI_BIND_ADDRESS` 默认 `127.0.0.1`；
-  `0.0.0.0` 只作为显式部署选择，文档必须要求强密码和防火墙。
-- Release 日志和资产不包含 OneBot token、VNC 密码、Cookie 或登录目录。
-
-不得宣称某个 Provider 能降低腾讯账号风控风险。
-
-## 发布失败
-
-- Quality、migration smoke、匿名拉取或 digest 校验任一失败：不创建 GitHub Release，不更新
-  `latest`。
-- 已推送不可变版本镜像但 Release 未完成：修复 workflow 后在同 tag SHA 重跑，不重建另一个
-  revision 覆盖它。
-- tag 指向错误 SHA：停止发布，删除尚未公开的错误 tag并重新走评审；不要覆盖已发布版本数据。
-- 生产数据库问题：停止写入并恢复升级前同一时点 DB/WAL/SHM 及匹配镜像，不运行 downgrade。
+生产热修沿用本地构建、传服务器加载的方式，明确记录代码提交、镜像与数据库版本。
+运行正常且未授权部署时，仓库基线推进不触发容器重建或数据库变更。
+执行部署时保留原 Compose 覆盖、挂载和可用恢复点，按升级指南只更新相关服务。
