@@ -17,8 +17,8 @@ Yuki 只读取 `MCP_CONFIG_PATH` 指定的 UTF-8 JSON，不扫描或导入其他
 使旧工具缓存失效。
 
 Secret 只能写成 `${ENV_NAME}` 并放在 `.env` 或宿主环境中。Yuki 不把解析后的 Header、Cookie、
-环境变量值写入日志、数据库、Prompt 或状态接口。麦当劳预设使用官方端点和 Bearer Token，完整启用
-方法见[麦当劳 MCP](mcdonalds.md)。其他 Server 的 URL 和鉴权方式仍以对应服务提供者为准。
+环境变量值写入日志、数据库、Prompt 或状态接口。Server 的 URL 和鉴权方式以对应服务提供者为准。
+麦当劳连接已退出默认配置，不再提供其工具、Bundle 或自动化委托。
 
 `reconnectDelaySeconds` 控制 `keep_alive` / `lazy_keep_alive` 断线后的重试间隔。重试没有
 代码内固定次数上限；停用 Server 或关闭应用会取消恢复任务。

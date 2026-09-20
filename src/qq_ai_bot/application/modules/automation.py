@@ -125,7 +125,6 @@ class AutomationModule:
             ledger=self._ledger,
             memories=self._memories,
             relationships=self._relationships,
-            admin_actions=self._admin_actions,
             web_provider=self._web_provider,
             gateway_factory=gateway_factory,
             emoji_repository=self._emoji_repository,

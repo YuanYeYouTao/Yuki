@@ -269,13 +269,6 @@ class AutomationValidator:
             if not isinstance(action, str) or action not in provenance.original_text:
                 raise ValueError("通用 OneBot action 必须明确出现在当前真实消息中")
             cls._validate_onebot_params(arguments.get("params"), provenance)
-        elif call == "admin.execute_action":
-            if provenance.permission is not PermissionLevel.SUPERUSER:
-                raise PermissionError(f"{call} 只允许超级管理员委托")
-            if arguments.get("user_id"):
-                cls._validate_user_target(arguments["user_id"], provenance)
-            if arguments.get("group_id"):
-                cls._validate_group_target(arguments["group_id"], provenance)
         elif call in {"config.set", "config.get"}:
             if provenance.permission is not PermissionLevel.SUPERUSER:
                 raise PermissionError(f"{call} 只允许超级管理员委托")
@@ -358,7 +351,6 @@ _SEND_EITHER_CALLS = frozenset(
     {
         "emoji.send",
         "emoji.send_by_id",
-        "admin.execute_action",
     }
 )
 

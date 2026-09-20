@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any, Literal, cast
+from typing import Any
 
 from qq_ai_bot.admin.action_service import ActionRegistry, AdminActionService, TargetResolver
 from qq_ai_bot.admin.audit import AdminAuditService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import AdminActor, ConfigChangeResult, EffectiveConfigValue
-from qq_ai_bot.admin.permission_catalog import PermissionCatalogService
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
@@ -73,8 +72,9 @@ class CapabilityRegistry:
                 name="admin_set_config",
                 description=(
                     "设置一个注册配置覆盖；后端执行类型、范围、作用域与权限校验。"
-                    "不知道 key/范围时先用 admin_list_capabilities 的 focused+category/query "
-                    "内部查找，查到后继续调用本工具，不要把查询结果发给用户。"
+                    "不知道 key/范围时用 get_my_capabilities，使用 mode=focused"
+                    " 和 query=问题关键词 "
+                    "查询权限与配置目录；使用返回的真实 key 和作用域。"
                 ),
                 parameters=_object_schema(
                     {
@@ -106,12 +106,14 @@ class CapabilityRegistry:
                     "当前消息真实 @ 的用户用 mentioned_user；本人用 self；当前群用 current_group。"
                     "action 参数规则：relationship.get/history 只需 target；"
                     "relationship.set_affection/set_trust 还需 value=0..100；"
-                    "relationship.adjust_affection 还需 delta=-20..20；memory.add 需 content，"
+                    "relationship.adjust_affection 还需 d"
+                    "elta=-20..20；memory.add 需 content，"
                     "memory.update 需 memory_id+content，memory.delete 需 memory_id；"
                     "memory.prune 需 max_importance=1..5 和 older_than_days=1..3650；"
                     "preference.set 需 key+value，preference.delete 需 key；"
                     "表情 action 使用 emoji_id（可为唯一前缀）；emoji.list 可选 status；"
-                    "emoji.adopt/unadopt 可选 scope_type=global|group 和 scope_id=current_group；"
+                    "emoji.adopt/unadopt 可选 scope_type=gl"
+                    "obal|group 和 scope_id=current_group；"
                     "emoji.pin 还需 enabled。其余人物/群 action 只需 target。"
                     "speech profile/reference action 使用 profile_id；speech.test 使用 text，"
                     "可选 profile_id 与 style_hint。"
@@ -278,7 +280,6 @@ class AdminCapabilityService:
         actions: AdminActionService,
         registry: CapabilityRegistry | None = None,
         audit: AdminAuditService | None = None,
-        permission_catalog: PermissionCatalogService | None = None,
         memory_rebuild: MemoryRebuildService | None = None,
     ) -> None:
         self._settings = settings
@@ -286,11 +287,6 @@ class AdminCapabilityService:
         self._actions = actions
         self.registry = registry or CapabilityRegistry(actions.registry)
         self._audit = audit
-        self._permission_catalog = permission_catalog or PermissionCatalogService(
-            settings=settings,
-            config_registry=runtime_config.registry,
-            action_registry=actions.registry,
-        )
         self._memory_rebuild = memory_rebuild
 
     def definitions(self) -> tuple[ChatTool, ...]:
@@ -340,8 +336,6 @@ class AdminCapabilityService:
             actor = self._actor(runtime)
             if name.startswith("admin_memory_rebuild_"):
                 return self._result(data=await self._execute_memory_rebuild(name, arguments, actor))
-            if name == "admin_list_capabilities":
-                return self._result(data=self._list_capabilities(arguments, actor, runtime))
             if name == "admin_get_config":
                 return self._result(
                     data=await self._get_config(arguments, actor),
@@ -510,22 +504,6 @@ class AdminCapabilityService:
             decision_actor_type="admin",
             decision_actor_id="admin_agent",
         )
-
-    def _list_capabilities(
-        self,
-        arguments: dict[str, Any],
-        actor: AdminActor,
-        runtime: ToolRuntime,
-    ) -> dict[str, Any]:
-        mode, category, query = _capability_options(arguments)
-        inbound = runtime.require_inbound()
-        if actor.user_id != inbound.sender.user_id:
-            raise PermissionError("权限目录没有绑定到当前真实发送者")
-        return self._permission_catalog.report_for_message(
-            inbound,
-            category=category,
-            query=query,
-        ).to_model_dict(mode)
 
     async def _get_config(
         self,
@@ -731,23 +709,3 @@ def _required_string(arguments: dict[str, Any], key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{key} 必须是非空字符串")
     return value.strip()
-
-
-def _capability_options(
-    arguments: dict[str, Any],
-) -> tuple[Literal["summary", "focused", "full"], str | None, str | None]:
-    extra = set(arguments) - {"mode", "category", "query"}
-    if extra:
-        raise ValueError("能力查询只接受 mode、category、query")
-    raw_mode = arguments.get("mode", "summary")
-    if raw_mode not in {"summary", "focused", "full"}:
-        raise ValueError("mode 必须是 summary、focused 或 full")
-    category = arguments.get("category")
-    query = arguments.get("query")
-    if category is not None and not isinstance(category, str):
-        raise ValueError("category 必须是字符串")
-    if query is not None and not isinstance(query, str):
-        raise ValueError("query 必须是字符串")
-    if raw_mode == "focused" and not (category or query):
-        raise ValueError("focused 模式必须提供 category 或 query")
-    return cast(Literal["summary", "focused", "full"], raw_mode), category, query

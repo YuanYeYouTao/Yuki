@@ -12,7 +12,7 @@
 ## Streamable HTTP
 
 `url` 使用官方 SDK 的 Streamable HTTP Client。Yuki 不对外开放新端口，也不会在退出时终止远程
-HTTP Server。Header 支持环境变量插值，重定向默认不跟随。麦当劳示例同样见配置模板。
+HTTP Server。Header 支持环境变量插值，重定向默认不跟随。连接字段见配置模板。
 
 `eager` 和 `keep_alive` 在启动时发现工具；lazy 模式不会因 `/healthz` 被连接。连接失败会保留真实
 错误类别。`keep_alive` 和首次使用后的 `lazy_keep_alive` 按 Server 的

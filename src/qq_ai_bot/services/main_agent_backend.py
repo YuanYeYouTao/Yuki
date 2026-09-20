@@ -110,7 +110,6 @@ class MainAgentBackend(AgentToolBackend):
         self._requestable_catalog: UnifiedToolCatalog | None = None
         self._provider_registry: ToolProviderRegistry | None = None
         self._capability_runtime: TurnCapabilityRuntime | None = None
-        self._requested_tool_names: set[str] = set()
         self._callable_tool_names: set[str] = set()
         self._tool_turn_recorded = False
         self._request_tools_called = False
@@ -505,8 +504,8 @@ class MainAgentBackend(AgentToolBackend):
                 return json.dumps(
                     {
                         "ok": False,
-                        "error": "capability_not_loaded",
-                        "detail": "记忆写入定位尚未失败，本轮不能提前加载其他能力。",
+                        "error": "memory_write_scope_restricted",
+                        "detail": "当前记忆写入授权范围内尚未开放补查；目录查询不会扩大权限。",
                     },
                     ensure_ascii=False,
                 )
@@ -523,25 +522,8 @@ class MainAgentBackend(AgentToolBackend):
             name not in self._callable_tool_names
             and self._service._agent_runner.main_contract is None
         ):
-            requestable = (
-                self._requestable_catalog.by_model_name(name)
-                if self._requestable_catalog is not None
-                else None
-            )
-            if requestable is None:
-                return json.dumps(
-                    {"ok": False, "error": "unknown_capability"},
-                    ensure_ascii=False,
-                )
             return json.dumps(
-                {
-                    "ok": False,
-                    "error": "capability_not_loaded",
-                    "detail": (
-                        "该工具未在本轮正式加载；请先调用 request_tools 按能力描述请求，"
-                        "再使用返回的真实工具名"
-                    ),
-                },
+                {"ok": False, "error": "main_agent_contract_unavailable"},
                 ensure_ascii=False,
             )
         entry = self._catalog.by_model_name(name) if self._catalog is not None else None
@@ -1021,57 +1003,10 @@ class MainAgentBackend(AgentToolBackend):
             if not payload.get("ok"):
                 self._service._tool_metrics.record_request_tools_zero_result()
             return json.dumps(payload, ensure_ascii=False)
-        payload = await capability_runtime.request_tools(
-            CapabilityQuery(
-                text=query.strip(),
-                origin=self._runtime.origin,
-                limit=max_results,
-                affinity_namespace_ids=capability_runtime.affinity_namespace_ids,
-            )
+        return json.dumps(
+            {"ok": False, "error": "main_agent_contract_unavailable"},
+            ensure_ascii=False,
         )
-        loaded = payload.get("data") if payload.get("ok") else None
-        loaded_tools = ()
-        if isinstance(loaded, dict):
-            raw_loaded = loaded.get("loaded_tools")
-            if isinstance(raw_loaded, list):
-                loaded_tools = tuple(raw_loaded)
-        if not payload.get("ok") or not loaded_tools:
-            self._service._tool_metrics.record_request_tools_zero_result()
-            logger.info(
-                "agent_request_tools_result conversation_hash=%s loaded_count=0",
-                identifier_hash(self._runtime.conversation_key) or "missing",
-            )
-            return json.dumps(payload, ensure_ascii=False)
-        loaded_names = {
-            str(item.get("name"))
-            for item in loaded_tools
-            if isinstance(item, dict) and item.get("name")
-        }
-        loaded_write = capability_runtime.requested_exclusive_write()
-        session = self._memory()
-        if loaded_write and session is not None:
-            session.request_exclusive_write()
-        if (
-            not self._exclusive_write()
-            and not self._eager_memory_read()
-            and any(
-                isinstance(item, dict)
-                and str(item.get("namespace", "")).startswith("memory.")
-                and str(item.get("namespace")) != "memory.state.write"
-                for item in loaded_tools
-            )
-        ):
-            self._service._tool_metrics.record_automatic_memory_read_tools_loaded()
-        logger.info(
-            "agent_request_tools_result conversation_hash=%s loaded_count=%d",
-            identifier_hash(self._runtime.conversation_key) or "missing",
-            len(loaded_names),
-        )
-        self._requested_tool_names.update(loaded_names)
-        self._catalog = capability_runtime.authorized_catalog
-        self._requestable_catalog = self._catalog
-        self._callable_tool_names = set(capability_runtime.callable_capability_ids())
-        return json.dumps(payload, ensure_ascii=False)
 
     def _retry_identity(self, call: ToolCall) -> tuple[str, str] | None:
         if not self._is_mutating_call(call):

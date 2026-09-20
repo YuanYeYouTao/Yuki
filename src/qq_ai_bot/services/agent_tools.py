@@ -384,10 +384,10 @@ class AgentToolService:
                 name="get_my_capabilities",
                 description=(
                     f"给 {bot_name} 当前模型轮内部查询真实发送者本人能够修改、管理和读取的权限。"
-                    "当用户问‘我能改什么’‘有哪些设置’‘权限范围’‘能改多少参数’"
-                    "或类似问题时必须调用。结果不得原样复制给用户，也不会写入长期上下文；"
+                    "用于查询可修改的配置、管理操作及读取范围；"
+                    "按问题整理返回内容；"
                     "默认 summary，具体问题用 focused+category/query，只有明确要求完整清单"
-                    "才用 full。不能查询他人。它不是工具发现接口；需要当前未加载的操作工具时"
+                    "才用 full。不能查询他人。它不是工具发现接口；需要查询工具用法时"
                     "应调用 request_tools，不要从权限目录猜测工具名。"
                 ),
                 parameters=_object_schema(
@@ -621,7 +621,7 @@ class AgentToolService:
                 ChatTool(
                     name="memory_change",
                     description=(
-                        f"{bot_name} 唯一的长期记忆变更工具。visibility 只对 "
+                        "依据当前用户真实入站证据修改长期记忆的日常入口。visibility 只对 "
                         "target.scope_type=self 生效；其他目标误填 current_scope 或 global "
                         "会被后端忽略。只能根据当前用户这条真实入站消息"
                         "创建、纠正、撤销、恢复、争议、合并、改归属或更新记忆元数据；"
@@ -634,7 +634,8 @@ class AgentToolService:
                         "判断时变更，SELF 的 visibility"
                         "只能用 current_scope 或 global；global 只适合抽象偏好、反思和原则，"
                         "SELF 的 category 必须精确使用 self_fact、self_preference、self_episode、"
-                        "self_reflection 或 self_principle；self_episode 必须与 kind=episode 配对，"
+                        "self_reflection 或 self_principle；"
+                        "self_episode 必须与 kind=episode 配对，"
                         "私聊原始经历只能保存为当前私聊可见，不能提升为 global；不能修改 "
                         "identity/core/safety/system/permission/"
                         "runtime 等保护键。工具回执中的 applied_operation 和 outcome"
@@ -880,7 +881,8 @@ class AgentToolService:
                 ChatTool(
                     name="send_voice",
                     description=(
-                        "为本轮最终回复生成语音。mode 选择只发语音或文字加语音；"
+                        "设置本轮最终回复的语音交付，不用于向其他目标主动发送指定文本。"
+                        "mode 选择只发语音或文字加语音；"
                         "request_basis 只用于频率与审计归类，不扩大权限。"
                         "是否发送由后端校验功能、音色和发送回执后决定。"
                         "不能指定 profile、模型、参考音频、文件或路径。"
@@ -2465,7 +2467,8 @@ class AgentToolService:
         correlation = current_runtime_turn_correlation()
         logger.info(
             "memory_read_intent correlation_id=%s tool=%s mode=%s purpose=%s "
-            "explicit_fields=%s entities_count=%d kinds_count=%d temporal_constraint=%s",
+            "explicit_fields=%s entities_count=%d "
+            "kinds_count=%d temporal_constraint=%s",
             correlation.turn_id if correlation else "unbound",
             _MEMORY_READ_TOOL.get(),
             intent.mode.value,
