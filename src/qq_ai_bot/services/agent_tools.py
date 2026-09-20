@@ -8,7 +8,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from typing import Any, Literal, Protocol, cast
 
@@ -261,12 +261,17 @@ class ToolRuntime:
         if self.inbound is not None:
             incoming = ToolActor.from_inbound(self.inbound)
             if (
-                incoming.user_id != self.actor_user_id
-                or incoming.group_id != self.current_group_id
-                or incoming.event_id != self.effective_trigger_event_id
+                (self.actor_user_id and incoming.user_id != self.actor_user_id)
+                or (
+                    self.current_group_id is not None and incoming.group_id != self.current_group_id
+                )
+                or (
+                    incoming.event_id is not None
+                    and incoming.event_id != self.effective_trigger_event_id
+                )
             ):
                 raise PermissionError("tool_actor_context_mismatch")
-            return incoming
+            return replace(incoming, event_id=self.effective_trigger_event_id, origin=self.origin)
         actor: ToolActor | None = self.actor_context
         if (
             actor is None

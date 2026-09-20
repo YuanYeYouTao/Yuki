@@ -425,6 +425,9 @@ async def test_plugin_callback_pending_is_queryable_after_callback_returns(
                 row,
                 json.loads(row["source_json"]),
             )
+            tasks = tuple(main_turn._RUNNING.values())
+            if tasks:
+                await asyncio.wait_for(asyncio.gather(*tasks), 10)
             assert (
                 provider.requests[1].messages[: len(provider.requests[0].messages)]
                 == provider.requests[0].messages
