@@ -290,7 +290,6 @@ class WorkScheduler:
                 item["source_key"],
                 source,
                 validate,
-                deliver,
                 child,
                 work_id=item["id"],
             ) as control:
@@ -415,10 +414,6 @@ class WorkScheduler:
 
                     if control.session and control.session.recovered_delivery == "delivery":
                         await resume_delivery_plan(control, ResumeSender())
-                    elif result.text and not result.suppress_delivery:
-                        from qq_ai_bot.runtime.work_delivery import deliver_final_text
-
-                        await deliver_final_text(control, result.text, deliver)
                 finally:
                     if self.app.chat._active_work.get(key) is control:
                         self.app.chat._active_work.pop(key, None)

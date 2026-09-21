@@ -21,17 +21,10 @@ from qq_ai_bot.admin.permission_catalog import CapabilityReport, PermissionCatal
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities.results import normalize_legacy_result
 from qq_ai_bot.config import Settings
-from qq_ai_bot.conversation.delivery import ReplyControlState, ReplySequenceSpec
-from qq_ai_bot.conversation.reply import ReplyEffect
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import ChatTool, InboundMessage, PromptRequestDiagnostics
 from qq_ai_bot.domain.tool_actor import ToolActor
-from qq_ai_bot.emoji.models import (
-    EmojiPlacement,
-    EmojiReplyMode,
-    PendingReplyEffect,
-)
 from qq_ai_bot.memory.attribution import MemoryExposure, MemoryExposureRegistry
 from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE, MemoryContextService
 from qq_ai_bot.memory.enums import (
@@ -74,11 +67,9 @@ from qq_ai_bot.persistence.repositories import (
 )
 from qq_ai_bot.sandbox.environment_tools import EXECUTION_TOOLS, READ_TOOLS, SANDBOX_TOOLS
 from qq_ai_bot.services.evidence_state import evidence_state
-from qq_ai_bot.services.reply_target import ReplyTargetControl
 from qq_ai_bot.services.turn_coordinator import TurnToken
-from qq_ai_bot.speech.models import VoiceMode, VoicePreferenceMode
+from qq_ai_bot.speech.models import VoicePreferenceMode
 from qq_ai_bot.speech.preference_service import VoicePreferenceService
-from qq_ai_bot.speech.reply_effect import PendingVoiceReplyEffect
 from qq_ai_bot.time.formatting import local_iso
 from qq_ai_bot.web.base import WebSearchError, WebSearchProvider, normalize_public_url
 from qq_ai_bot.web.models import (
@@ -171,7 +162,6 @@ class ToolRuntime:
     conversation_key: str = ""
     trigger_message_id: str = ""
     trigger_event_id: int | None = None
-    source_display_requested: bool = False
     actor_user_id: str = ""
     actor_context: ToolActor | None = None
     actor_is_superuser: bool = False
@@ -187,10 +177,8 @@ class ToolRuntime:
     history_limit: int | None = None
     turn_token: TurnToken | None = None
     turn_snapshot: ConversationTurnSnapshot | None = None
-    reply_effects: list[ReplyEffect] | None = None
-    reply_target_control: ReplyTargetControl | None = None
-    reply_control: ReplyControlState | None = None
-    voice_spontaneous_allowed: bool = True
+    visible_event_ids: frozenset[int] = frozenset()
+    voice_delivery_allowed: bool = True
     selection_query: str = ""
     max_model_requests_override: int | None = None
     max_tool_calls_override: int | None = None
@@ -918,63 +906,6 @@ class AgentToolService:
                     ),
                 )
             )
-        if runtime.declaration_only or self._voice_available_for_turn(runtime):
-            tools.append(
-                ChatTool(
-                    name="send_voice",
-                    description=(
-                        "设置本轮最终回复的语音交付，不用于向其他目标主动发送指定文本。"
-                        "mode 选择只发语音或文字加语音；"
-                        "request_basis 只用于频率与审计归类，不扩大权限。"
-                        "是否发送由后端校验功能、音色和发送回执后决定。"
-                        "不能指定 profile、模型、参考音频、文件或路径。"
-                    ),
-                    parameters=_object_schema(
-                        {
-                            "mode": {
-                                "type": "string",
-                                "enum": ["voice_only", "text_and_voice"],
-                            },
-                            "request_basis": {
-                                "type": "string",
-                                "enum": ["user_requested", "agent_initiated"],
-                            },
-                            "style_hint": {"type": "string", "maxLength": 128},
-                            "language": {
-                                "type": "string",
-                                "enum": ["auto", "zh", "jp"],
-                            },
-                        },
-                        required=("mode", "request_basis"),
-                    ),
-                )
-            )
-        if runtime.declaration_only or self._emoji_available_for_turn(runtime):
-            tools.append(
-                ChatTool(
-                    name="send_emoji",
-                    description=(
-                        "为本轮最终回复发送一张已采用表情。mode=emoji_only 表示表情就是全部"
-                        "可见输出；with_text 表示配合正文。placement 决定相对正文的位置。"
-                        "不要在正文里用占位符假装已经发表情。"
-                    ),
-                    parameters=_object_schema(
-                        {
-                            "mode": {
-                                "type": "string",
-                                "enum": ["emoji_only", "with_text"],
-                            },
-                            "placement": {
-                                "type": "string",
-                                "enum": ["before_text", "after_text", "only"],
-                            },
-                            "goal": {"type": "string", "maxLength": 300},
-                            "emotion": {"type": "string", "maxLength": 100},
-                        },
-                        required=("mode", "placement", "goal"),
-                    ),
-                )
-            )
         if runtime.declaration_only or (
             self._voice_available_for_turn(runtime)
             and not runtime.read_only
@@ -989,7 +920,7 @@ class AgentToolService:
                 ChatTool(
                     name="set_voice_preference",
                     description=(
-                        "把当前用户的长期语音偏好写入数据库。一次性用语音请调用 send_voice，"
+                        "把当前用户的长期语音偏好写入数据库。一次性语音作为发送内容处理，"
                         "不要用本工具。必须在回执确认写入后才能声称偏好已保存。"
                     ),
                     parameters=_object_schema(
@@ -1000,62 +931,6 @@ class AgentToolService:
                             }
                         },
                         required=("mode",),
-                    ),
-                )
-            )
-        if runtime.declaration_only or runtime.origin in {
-            TurnOrigin.USER_MESSAGE,
-            TurnOrigin.AUTONOMOUS_GROUP,
-            TurnOrigin.SCHEDULED_AUTOMATION,
-        }:
-            tools.append(
-                ChatTool(
-                    name="set_reply_layout",
-                    description=(
-                        "设置本轮正文拆成几条 QQ 消息以及切分方式。max_messages 会被后端"
-                        "限制在安全上限以内。默认不要预测条数；只有用户明确要求分条或"
-                        "内容确实适合拆分时才调用。"
-                    ),
-                    parameters=_object_schema(
-                        {
-                            "max_messages": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 20,
-                            },
-                            "split_hint": {
-                                "type": "string",
-                                "enum": ["auto", "sentence", "paragraph"],
-                            },
-                        },
-                        required=("max_messages",),
-                    ),
-                )
-            )
-        if runtime.declaration_only or runtime.origin in {
-            TurnOrigin.AUTONOMOUS_GROUP,
-            TurnOrigin.PLUGIN_BACKGROUND,
-        }:
-            tools.append(
-                ChatTool(
-                    name="decline_reply",
-                    description=(
-                        "决定本轮不回复。只能在尚未执行任何工具或回复效果时作为本批唯一调用。"
-                        "调用后不会再发消息。reason_code 必须是固定枚举，不要写自由文本理由。"
-                    ),
-                    parameters=_object_schema(
-                        {
-                            "reason_code": {
-                                "type": "string",
-                                "enum": [
-                                    "not_relevant",
-                                    "would_interrupt",
-                                    "insufficient_context",
-                                    "duplicate",
-                                ],
-                            }
-                        },
-                        required=("reason_code",),
                     ),
                 )
             )
@@ -1198,16 +1073,26 @@ class AgentToolService:
                             "failed",
                             "uncertain",
                         }:
+                            uncertain = social_result.get("status") == "uncertain"
+                            sent_parts = int(social_result.get("sent_messages") or 0)
                             return self._result(
-                                error=str(social_result.get("error") or "delivery_uncertain"),
+                                error=str(
+                                    social_result.get("error")
+                                    or ("delivery_uncertain" if uncertain else "delivery_failed")
+                                ),
                                 detail=(
                                     "读取账号不明确；从 presences 选择 presence_id，勿换号试读"
                                     if name == "read_conversation_history"
                                     else "文件已发送成功，附带文字未确认发送；不要重发文件"
                                     if social_result.get("error") == "file_sent_caption_unconfirmed"
-                                    else "发送未确认成功，不要重复发送；请根据实际工具结果说明情况"
+                                    else "部分分条已确认发送；不要重发已成功的分条"
+                                    if sent_parts
+                                    else "发送结果未知，不要重发；请根据回执说明情况"
+                                    if uncertain
+                                    else "发送前或发送时明确失败，未确认有消息送达"
                                 ),
                                 data=social_result,
+                                uncertain=uncertain,
                             )
                         return self._result(data=social_result)
                     except SocialError as exc:
@@ -1297,16 +1182,8 @@ class AgentToolService:
                     return await self._read_webpage(arguments, runtime)
                 if name == "call_onebot_api":
                     return await self._call_onebot(arguments, runtime)
-                if name == "send_voice":
-                    return self._queue_voice(arguments, runtime)
-                if name == "send_emoji":
-                    return self._queue_emoji(arguments, runtime)
                 if name == "set_voice_preference":
                     return await self._set_voice_preference(arguments, runtime)
-                if name == "set_reply_layout":
-                    return self._set_reply_layout(arguments, runtime)
-                if name == "decline_reply":
-                    return self._decline_reply(arguments, runtime)
                 return self._result(error="unknown_tool", detail=f"未知工具：{name}")
             except WebSearchError as exc:
                 return self._web_result(error=exc.code, detail=exc.detail)
@@ -1337,112 +1214,15 @@ class AgentToolService:
     @staticmethod
     def _voice_available_for_turn(runtime: ToolRuntime) -> bool:
         config = runtime.runtime_config
-        if config is None or runtime.reply_effects is None or not config.speech.enabled:
+        if config is None or not config.speech.enabled:
             return False
-        if not config.speech.agent_effects_enabled:
+        if not config.speech.agent_delivery_enabled:
             return False
         return (
             config.speech.private_enabled
             if runtime.effective_scope_type is ScopeType.PRIVATE
             else config.speech.group_enabled
         )
-
-    @staticmethod
-    def _emoji_available_for_turn(runtime: ToolRuntime) -> bool:
-        config = runtime.runtime_config
-        if config is None or runtime.reply_effects is None:
-            return False
-        return bool(config.emoji.enabled)
-
-    def _queue_voice(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
-        queue = runtime.reply_effects
-        if queue is None or not self._voice_available_for_turn(runtime):
-            return self._result(error="speech_unavailable", detail="当前回复没有启用语音效果")
-        extra = set(arguments) - {"mode", "request_basis", "style_hint", "language"}
-        if extra:
-            return self._result(error="invalid_arguments", detail="语音工具参数包含未知字段")
-        mode = arguments.get("mode")
-        request_basis = arguments.get("request_basis")
-        if mode not in {"voice_only", "text_and_voice"}:
-            return self._result(
-                error="invalid_arguments",
-                detail="mode 必须是 voice_only 或 text_and_voice",
-            )
-        if request_basis not in {"user_requested", "agent_initiated"}:
-            return self._result(
-                error="invalid_arguments",
-                detail="request_basis 必须是 user_requested 或 agent_initiated",
-            )
-        if request_basis == "agent_initiated" and not runtime.voice_spontaneous_allowed:
-            return self._result(error="voice_cadence_limited", detail="当前会话不宜再自发语音")
-        if any(isinstance(item, PendingVoiceReplyEffect) for item in queue):
-            return self._result(error="speech_effect_limit", detail="本轮已经排队了一条语音")
-        style_hint = arguments.get("style_hint", "")
-        language = arguments.get("language", "auto")
-        if not isinstance(style_hint, str) or len(style_hint) > 128:
-            return self._result(error="invalid_arguments", detail="style_hint 最多 128 字符")
-        if any(token in style_hint for token in ("/", "\\", "://")):
-            return self._result(error="invalid_arguments", detail="style_hint 不能包含路径")
-        if language not in {"auto", "zh", "jp"}:
-            return self._result(error="invalid_arguments", detail="language 必须是 auto、zh 或 jp")
-        voice_mode = VoiceMode.VOICE if mode == "voice_only" else VoiceMode.TEXT_AND_VOICE
-        queue.append(
-            PendingVoiceReplyEffect(
-                style_hint=" ".join(style_hint.split()),
-                language_hint=language,
-                mode=voice_mode,
-                request_basis=request_basis,
-                source="agent_explicit_request",
-            )
-        )
-        if runtime.reply_control is not None:
-            runtime.reply_control.mark_effect()
-            runtime.reply_control.voice_request_basis = request_basis
-        return self._result(
-            data={"queued": True, "effect": "voice", "mode": mode, "request_basis": request_basis}
-        )
-
-    def _queue_emoji(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
-        queue = runtime.reply_effects
-        if queue is None or not self._emoji_available_for_turn(runtime):
-            return self._result(error="emoji_unavailable", detail="当前回复没有启用表情效果")
-        extra = set(arguments) - {"mode", "placement", "goal", "emotion"}
-        if extra:
-            return self._result(error="invalid_arguments", detail="表情工具参数包含未知字段")
-        mode = arguments.get("mode")
-        placement = arguments.get("placement")
-        goal = arguments.get("goal", "")
-        emotion = arguments.get("emotion", "")
-        if mode not in {"emoji_only", "with_text"}:
-            return self._result(
-                error="invalid_arguments",
-                detail="mode 必须是 emoji_only 或 with_text",
-            )
-        if placement not in {"before_text", "after_text", "only"}:
-            return self._result(error="invalid_arguments", detail="placement 无效")
-        if not isinstance(goal, str) or not goal.strip() or len(goal) > 300:
-            return self._result(error="invalid_arguments", detail="goal 必须是 1 到 300 字符")
-        if not isinstance(emotion, str) or len(emotion) > 100:
-            return self._result(error="invalid_arguments", detail="emotion 最多 100 字符")
-        if mode == "emoji_only":
-            placement = "only"
-        if any(isinstance(item, PendingReplyEffect) for item in queue):
-            return self._result(error="emoji_effect_limit", detail="本轮已经排队了一条表情")
-        queue.append(
-            PendingReplyEffect(
-                mode=(
-                    EmojiReplyMode.EMOJI_ONLY if mode == "emoji_only" else EmojiReplyMode.PREFERRED
-                ),
-                placement=EmojiPlacement(placement),
-                goal=" ".join(goal.split()),
-                emotion=" ".join(emotion.split()),
-                explicit_request=True,
-                source="agent",
-            )
-        )
-        if runtime.reply_control is not None:
-            runtime.reply_control.mark_effect()
-        return self._result(data={"queued": True, "effect": "emoji", "mode": mode})
 
     async def _set_voice_preference(
         self,
@@ -1475,8 +1255,6 @@ class AgentToolService:
         )
         if saved is None:
             return self._result(error="voice_preference_not_written", detail="语音偏好没有写入")
-        if runtime.reply_control is not None:
-            runtime.reply_control.mark_effect()
         return self._result(
             data={
                 "written": True,
@@ -1484,60 +1262,6 @@ class AgentToolService:
                 "confirmation": "persisted",
             }
         )
-
-    def _set_reply_layout(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
-        control = runtime.reply_control
-        if control is None:
-            return self._result(error="reply_control_unavailable", detail="本轮没有布局控制")
-        extra = set(arguments) - {"max_messages", "split_hint"}
-        if extra:
-            return self._result(error="invalid_arguments", detail="布局工具参数包含未知字段")
-        max_messages = arguments.get("max_messages")
-        split_hint = arguments.get("split_hint", "auto")
-        hard_max = 10
-        if runtime.runtime_config is not None:
-            hard_max = runtime.runtime_config.reply.hard_max_messages
-        if not isinstance(max_messages, int) or isinstance(max_messages, bool):
-            return self._result(error="invalid_arguments", detail="max_messages 必须是整数")
-        if max_messages < 1:
-            return self._result(error="invalid_arguments", detail="max_messages 至少为 1")
-        if split_hint not in {"auto", "sentence", "paragraph"}:
-            return self._result(error="invalid_arguments", detail="split_hint 无效")
-        clamped = min(max_messages, hard_max)
-        control.spec = ReplySequenceSpec(max_messages=clamped, split_hint=split_hint)
-        control.layout_applied = True
-        return self._result(
-            data={"max_messages": clamped, "split_hint": split_hint, "hard_max": hard_max}
-        )
-
-    def _decline_reply(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
-        control = runtime.reply_control
-        if runtime.origin not in {TurnOrigin.AUTONOMOUS_GROUP, TurnOrigin.PLUGIN_BACKGROUND}:
-            return self._result(error="decline_reply_forbidden", detail="当前轮次不能拒绝回复")
-        if control is None:
-            return self._result(error="reply_control_unavailable", detail="本轮没有回复控制")
-        extra = set(arguments) - {"reason_code"}
-        if extra:
-            return self._result(
-                error="invalid_arguments",
-                detail="decline_reply 只接受 reason_code",
-            )
-        reason = arguments.get("reason_code")
-        if reason not in {
-            "not_relevant",
-            "would_interrupt",
-            "insufficient_context",
-            "duplicate",
-        }:
-            return self._result(error="invalid_arguments", detail="reason_code 无效")
-        if control.had_effect or control.declined or control.layout_applied:
-            return self._result(
-                error="decline_reply_after_effect",
-                detail="已经产生效果后不能拒绝回复",
-            )
-        control.declined = True
-        control.decline_reason = str(reason)
-        return self._result(data={"declined": True, "reason_code": reason})
 
     def _my_capabilities(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
         """Return only the report derived from this authoritative inbound event."""
@@ -3381,6 +3105,7 @@ class AgentToolService:
         error: str | None = None,
         detail: str = "",
         retryable: bool = False,
+        uncertain: bool = False,
         defer_budget: bool = False,
     ) -> str:
         if error:
@@ -3390,6 +3115,8 @@ class AgentToolService:
                 "detail": detail,
                 "retryable": retryable,
             }
+            if uncertain:
+                payload["uncertain"] = True
             if data is not None:
                 payload["data"] = data
         else:

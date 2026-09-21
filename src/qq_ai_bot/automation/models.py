@@ -176,6 +176,14 @@ class AutomationRecord(StrictModel):
     canonical_presence_id: str | None = None
 
 
+class AutomationCreatorIdentity(StrictModel):
+    """Safe creator projection for owner-independent automation reads."""
+
+    person_id: str | None
+    external_account_id: str
+    display_name: str | None = None
+
+
 class AutomationRunRecord(StrictModel):
     id: int
     automation_id: int

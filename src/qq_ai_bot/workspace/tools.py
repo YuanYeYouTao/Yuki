@@ -101,8 +101,7 @@ def workspace_tools() -> tuple[ChatTool, ...]:
         tool(
             "workspace_publish",
             "把选定文件制作成不可变 artifact 快照，返回 artifact_id，"
-            "再由 send_private_message/send_group"
-            "_message 等现有发送工具交付。修改工作文件不改变已发布快照。",
+            "再由 send_message 发送。修改工作文件不改变已发布快照。",
             {**path, **version, "name": {"type": "string", "maxLength": 128}},
             ("path",),
         ),

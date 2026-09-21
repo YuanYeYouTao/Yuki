@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from tests.conftest import build_harness, make_settings
 
 from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.conversation.delivery import ReplyControlState, default_reply_spec
 from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
 from qq_ai_bot.conversation.rollup.renderer import rollup_source_projection
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
@@ -42,7 +42,6 @@ from qq_ai_bot.services.context_assembler import (
     _HistoryPromptWindow,
 )
 from qq_ai_bot.services.prompt_composer import PromptComposer
-from qq_ai_bot.services.reply_target import ReplyTargetControl
 from qq_ai_bot.time.models import TimeContext
 
 _OCCURRED = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
@@ -126,6 +125,7 @@ def _assembled(
     current: ChatMessage,
     metadata: dict[str, object] | None = None,
     rollup_text: str = "",
+    automation_snapshot: str = "",
 ) -> AssembledContext:
     return AssembledContext(
         metadata_payload=metadata or {},
@@ -148,6 +148,7 @@ def _assembled(
         prompt_effective_coverage=0,
         prompt_rollup_revision=0,
         prompt_raw_tail_end_event_id=3,
+        automation_snapshot=automation_snapshot,
     )
 
 
@@ -680,10 +681,83 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
     )
 
 
+def test_automation_snapshot_changes_only_current_input_not_stable_prefix() -> None:
+    settings = make_settings("sqlite+aiosqlite:///:memory:")
+    composer = PromptComposer(settings)
+    runtime = MagicMock()
+    runtime.plugins.max_total_prompt_characters = 8_000
+    base = _assembled(
+        history=(ChatMessage(role="user", content="history"),),
+        current=ChatMessage(role="user", content="现在说话"),
+        automation_snapshot="当前群没有 active 自动化任务。",
+    )
+    changed = replace(
+        base,
+        automation_snapshot=(
+            "当前群任务（默认 active）：\n[ID 85] 每小时补充日记；下次：2026-09-21 21:55:00"
+        ),
+    )
+    first = composer.compose(
+        inbound=None,
+        context=base,
+        runtime=runtime,
+        visual_observation=None,
+        visual_failure=False,
+    )
+    second = composer.compose(
+        inbound=None,
+        context=changed,
+        runtime=runtime,
+        visual_observation=None,
+        visual_failure=False,
+    )
+    assert first.messages[0] == second.messages[0]
+    assert first.metrics.stable_prefix_hash == second.metrics.stable_prefix_hash
+    assert first.metrics.conversation_prefix_hash == second.metrics.conversation_prefix_hash
+    assert first.messages[-1] != second.messages[-1]
+    first_instructions, first_inputs = DeepSeekResponsesProvider._convert_messages(first.messages)
+    second_instructions, second_inputs = DeepSeekResponsesProvider._convert_messages(
+        second.messages
+    )
+    assert first_instructions == second_instructions
+    assert first_inputs[:-1] == second_inputs[:-1]
+    assert "ID 85" not in str(first_inputs[-1])
+    assert "ID 85" in str(second_inputs[-1])
+
+
+@pytest.mark.asyncio
+async def test_group_automation_snapshot_is_compact_and_bounded() -> None:
+    assembler = _assembler()
+    rows = tuple(
+        SimpleNamespace(
+            id=index,
+            name=f"任务 {index} 给远野处理日记",
+            next_run_at=_OCCURRED + timedelta(minutes=index),
+            timezone="Asia/Shanghai",
+        )
+        for index in range(1, 11)
+    )
+    repository = MagicMock()
+    repository.list_active_for_external_group = AsyncMock(return_value=rows)
+    assembler.set_automation_repository(repository)
+    snapshot = await assembler._current_group_automation_snapshot("2001")
+    assert "[ID 1] 任务 1 给远野处理日记；下次：" in snapshot
+    assert "[active]" not in snapshot
+    assert "owner" not in snapshot
+    assert "[ID 8]" in snapshot
+    assert "[ID 9]" not in snapshot
+    assert "另有 2 项，调用 automation_list 查看。" in snapshot
+    assert len(snapshot) <= 1_250
+    repository.list_active_for_external_group.assert_awaited_once_with("2001", limit=100)
+
+
 @pytest.mark.asyncio
 async def test_external_wakeup_and_ordinary_turn_send_the_same_provider_shape(
-    database: Database,
+    database: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from qq_ai_bot.services.main_agent_backend import MainAgentBackend
+
+    monkeypatch.setattr(MainAgentBackend, "response_feedback", lambda *_args: None)
     provider = FakeLLMProvider(lambda _request: "ok")
     harness = build_harness(database, make_settings(database.url), provider)
     chat = harness.processor._chat
@@ -715,7 +789,7 @@ async def test_external_wakeup_and_ordinary_turn_send_the_same_provider_shape(
         "runtime_config": runtime_config,
         "tools_closed": False,
         "read_only": False,
-        "reply_target_control": ReplyTargetControl(visible_event_ids=frozenset({1, 2})),
+        "visible_event_ids": frozenset({1, 2}),
         "selection_query": "same capability-neutral query",
         "scope_type": ScopeType.PRIVATE,
         "bot_user_id": "8000",
@@ -843,15 +917,12 @@ def test_provider_cache_shape_excludes_only_the_current_user_tail() -> None:
 
 
 @pytest.mark.asyncio
-async def test_plugin_wakeup_can_decline_without_creating_a_fake_reply(
+async def test_plugin_wakeup_can_end_without_creating_a_fake_reply(
     database: Database,
 ) -> None:
     harness = build_harness(database, make_settings(database.url))
     chat = harness.processor._chat
     runtime_config = await chat._runtime_config.snapshot(user_id="1001", group_id=None)
-    control = ReplyControlState(
-        spec=default_reply_spec(hard_max_messages=runtime_config.reply.hard_max_messages)
-    )
     runtime = ToolRuntime(
         inbound=None,
         gateway=None,
@@ -863,7 +934,6 @@ async def test_plugin_wakeup_can_decline_without_creating_a_fake_reply(
         trigger_event_id=2,
         runtime_config=runtime_config,
         origin=TurnOrigin.PLUGIN_BACKGROUND,
-        reply_control=control,
         scope_type=ScopeType.PRIVATE,
         bot_user_id="8000",
         conversation_id="conv-stable",
@@ -873,16 +943,9 @@ async def test_plugin_wakeup_can_decline_without_creating_a_fake_reply(
     )
 
     definitions = chat._tools.definitions(runtime)
-    assert "decline_reply" in {tool.name for tool in definitions}
-    result = json.loads(
-        await chat._tools.execute(
-            "decline_reply",
-            '{"reason_code":"not_relevant"}',
-            runtime,
-        )
-    )
-    assert result["ok"] is True
-    assert control.declined is True
+    names = {tool.name for tool in definitions}
+    assert "send_message" in names
+    assert "decline_reply" not in names
 
 
 @pytest.mark.asyncio

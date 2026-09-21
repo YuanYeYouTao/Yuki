@@ -1,8 +1,8 @@
 # Plugin Speech API
 
-Plugin API 2.0 提供 `ctx.speech`：status、list/get profile、list styles、synthesize、
-queue_reply_voice、send_private 和 send_group。权限为 `speech.profile.read`、
-`speech.generate`、`speech.reply_effect`、`speech.send`、`speech.manage` 和
+Plugin API 3.0 提供 `ctx.speech`：status、list/get profile、list styles、synthesize、
+send_private 和 send_group。权限为 `speech.profile.read`、`speech.generate`、
+`speech.send`、`speech.manage` 和
 `speech.provider.register`。
 
 合成返回 `GeneratedSpeechHandle`，只包含 Handle、generation、profile、时长和到期时间；

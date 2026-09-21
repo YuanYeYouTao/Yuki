@@ -56,7 +56,6 @@ async def background_attempt_reservation():
 
     repository.finish_turn = AsyncMock(side_effect=finish)
     runtime = SimpleNamespace(
-        reply=SimpleNamespace(cancel_on_new_message=True),
         conversation_policy=lambda: SimpleNamespace(interrupt_autonomous_on_new_message=True),
     )
     chat = SimpleNamespace(

@@ -12,11 +12,9 @@ from qq_ai_bot.application.modules.model_runtime import ModelRuntimeBundle
 from qq_ai_bot.application.modules.persistence import PersistenceBundle
 from qq_ai_bot.capabilities import ToolArtifactWriter
 from qq_ai_bot.config import Settings
-from qq_ai_bot.conversation.cadence import ReplyEffectRepository
 from qq_ai_bot.conversation.features import AdmissionFeatureBuilder
 from qq_ai_bot.conversation.rollup.service import ConversationRollupService
 from qq_ai_bot.conversation.rollup.worker import ConversationRollupWorker
-from qq_ai_bot.emoji.effects import EmojiReplyEffectService
 from qq_ai_bot.memory.attribution import MemoryAttributionWorker
 from qq_ai_bot.memory.auditing import (
     MemoryAuditCoordinator,
@@ -57,13 +55,8 @@ from qq_ai_bot.services.relationship_evaluator import (
     RelationshipEvaluator,
 )
 from qq_ai_bot.services.relationship_worker import RelationshipWorker
-from qq_ai_bot.services.reply_sequence import ReplySequenceManager
-from qq_ai_bot.services.source_policy import SourceDisplayPolicy
-from qq_ai_bot.services.source_renderer import SourceRenderer
 from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
 from qq_ai_bot.speech.preference_service import VoicePreferenceService
-from qq_ai_bot.speech.reply_effect import VoiceReplyEffectService
-from qq_ai_bot.speech.service import SpeechService
 from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.web.base import WebSearchProvider
 
@@ -72,7 +65,6 @@ from qq_ai_bot.web.base import WebSearchProvider
 class ConversationBundle:
     prompt_registry: PromptRegistry
     admission_features: AdmissionFeatureBuilder
-    reply_sequence: ReplySequenceManager
     relationship_evaluator: RelationshipEvaluator
     deduplication: DeduplicationService
     rate_limiter: SlidingWindowRateLimiter
@@ -108,9 +100,6 @@ class ConversationModule:
         effect_gate: ConversationEffectGate,
         time_service: TimeContextService,
         web_provider: WebSearchProvider | None,
-        emoji_effects: EmojiReplyEffectService,
-        speech: SpeechService,
-        speech_effects: VoiceReplyEffectService,
         voice_preferences: VoicePreferenceService,
         memory_embeddings: MemoryEmbeddingRuntime,
         tool_artifacts: ToolArtifactWriter | None = None,
@@ -126,9 +115,6 @@ class ConversationModule:
         self._effect_gate = effect_gate
         self._time_service = time_service
         self._web_provider = web_provider
-        self._emoji_effects = emoji_effects
-        self._speech = speech
-        self._speech_effects = speech_effects
         self._voice_preferences = voice_preferences
         self._memory_embeddings = memory_embeddings
         self._tool_artifacts = tool_artifacts
@@ -147,7 +133,6 @@ class ConversationModule:
             ledger=persistence.ledger,
             relationships=persistence.relationships,
         )
-        reply_sequence = ReplySequenceManager(self._turns)
         _route, chat_profile = self._model_runtime.router.route(ModelTask.CHAT_AGENT)
         relationship_evaluator: RelationshipEvaluator
         if chat_profile.provider.casefold() == "fake":
@@ -252,16 +237,10 @@ class ConversationModule:
             relationships=persistence.relationships,
             tools=agent_tools,
             web_sources=persistence.web_sources,
-            source_policy=SourceDisplayPolicy(),
-            source_renderer=SourceRenderer(),
             runtime_config=self._runtime_config,
             time_service=self._time_service,
             prompt_composer=PromptComposer(settings, prompt_registry),
             turn_coordinator=self._turns,
-            reply_sequence=reply_sequence,
-            emoji_effects=self._emoji_effects,
-            speech_effects=self._speech_effects,
-            reply_effects=ReplyEffectRepository(persistence.database),
             voice_preferences=self._voice_preferences,
             tool_artifacts=self._tool_artifacts,
             tool_invocations=self._tool_invocations,
@@ -352,7 +331,6 @@ class ConversationModule:
         return ConversationBundle(
             prompt_registry,
             admission_features,
-            reply_sequence,
             relationship_evaluator,
             deduplication,
             rate_limiter,

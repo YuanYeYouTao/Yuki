@@ -259,15 +259,6 @@ class EmojiFacade(Protocol):
         placement: str = "after_text",
     ) -> PluginResult: ...
 
-    async def queue_reply_effect(
-        self,
-        *,
-        goal: str,
-        emotion: str = "",
-        mode: str = "optional",
-        placement: str = "after_text",
-    ) -> PluginResult: ...
-
     async def adopt(
         self, emoji_id: str, *, scope_type: str = "global", scope_id: str = ""
     ) -> PluginResult: ...
@@ -293,14 +284,6 @@ class SpeechFacade(Protocol):
         profile_id: str = "",
         style_hint: str = "",
     ) -> GeneratedSpeechHandle: ...
-
-    async def queue_reply_voice(
-        self,
-        *,
-        profile_id: str = "",
-        style_hint: str = "",
-        mode: str = "optional",
-    ) -> PluginResult: ...
 
     async def send_private(self, user_id: str, handle: GeneratedSpeechHandle) -> PluginResult: ...
 

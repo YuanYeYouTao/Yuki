@@ -10,12 +10,12 @@ from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
 from qq_ai_bot.settings_domains import SpeechSettings
 from qq_ai_bot.speech.admin import SpeechAdminService
 from qq_ai_bot.speech.cache import SpeechCache
+from qq_ai_bot.speech.delivery import VoiceDeliveryService
 from qq_ai_bot.speech.genie_client import GenieWorkerClient
 from qq_ai_bot.speech.paths import SpeechPathPolicy
 from qq_ai_bot.speech.preference_repository import VoicePreferenceRepository
 from qq_ai_bot.speech.preference_service import VoicePreferenceService
 from qq_ai_bot.speech.profiles import VoiceProfileService
-from qq_ai_bot.speech.reply_effect import VoiceReplyEffectService
 from qq_ai_bot.speech.repository import SpeechGenerationRepository, VoiceProfileRepository
 from qq_ai_bot.speech.service import GenieTTSProvider, SpeechService
 
@@ -29,7 +29,7 @@ class SpeechBundle:
     provider: GenieTTSProvider
     service: SpeechService
     profiles: VoiceProfileService
-    effects: VoiceReplyEffectService
+    delivery: VoiceDeliveryService
     admin: SpeechAdminService
 
 
@@ -86,7 +86,7 @@ class SpeechModule:
             paths=paths,
             loader=worker if settings.speech_enabled else None,
         )
-        effects = VoiceReplyEffectService(
+        delivery = VoiceDeliveryService(
             service,
             bot_display_name=self._bot_display_name,
             bot_voice_name=self._bot_voice_name,
@@ -107,6 +107,6 @@ class SpeechModule:
             provider,
             service,
             profiles,
-            effects,
+            delivery,
             admin,
         )

@@ -1,4 +1,4 @@
-"""Conversation Runtime and Plugin API 2.0 runtime configuration declarations."""
+"""Conversation Runtime and Plugin API 3.0 runtime configuration declarations."""
 
 from __future__ import annotations
 
@@ -10,17 +10,6 @@ def planner_plugin_config_specs() -> tuple[ConfigSpec, ...]:
     """Return reviewed conversation, reply-sequence, and plugin host settings."""
 
     return (
-        _spec(
-            "reply.cancel_on_new_message",
-            "新消息停止剩余分句",
-            "新消息到达后是否停止旧轮次尚未发送的消息。",
-            value_type="boolean",
-            scopes=_GGU,
-            env_alias="REPLY_SEQUENCE_CANCEL_ON_NEW_MESSAGE",
-            getter=_field("reply_sequence_cancel_on_new_message"),
-            settings_fields=("reply_sequence_cancel_on_new_message",),
-            category="reply",
-        ),
         _spec(
             "reply.hard_max_messages",
             "回复消息硬上限",
@@ -184,18 +173,6 @@ def planner_plugin_config_specs() -> tuple[ConfigSpec, ...]:
             env_alias="PLUGIN_DIRECTORY",
             getter=lambda settings: str(settings.plugin_directory),
             settings_fields=("plugin_directory",),
-            category="plugins",
-        ),
-        _spec(
-            "plugins.api_version",
-            "Plugin API 版本",
-            "重启后 Host 接受的 Plugin API major.minor 版本。",
-            value_type="string",
-            scopes=_G,
-            mode=ConfigApplyMode.RESTART_REQUIRED,
-            env_alias="PLUGIN_API_VERSION",
-            getter=_field("plugin_api_version"),
-            settings_fields=("plugin_api_version",),
             category="plugins",
         ),
     )

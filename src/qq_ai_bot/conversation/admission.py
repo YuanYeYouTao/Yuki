@@ -12,11 +12,18 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol
 
 from qq_ai_bot.runtime.authority import TurnSceneFacts
-from qq_ai_bot.runtime.turn import UntrustedContent
 
 if TYPE_CHECKING:
     from qq_ai_bot.admin.models import RuntimeConfigSnapshot
     from qq_ai_bot.domain.messages import InboundMessage
+
+
+@dataclass(frozen=True, slots=True)
+class UntrustedContent:
+    """Model-visible text that cannot grant authority or change policy."""
+
+    text: str
+    source: str = "user_message"
 
 
 class AdmissionMode(StrEnum):

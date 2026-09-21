@@ -17,7 +17,7 @@ use_when = [
 ]
 
 [tool.automation_list]
-aliases = ["任务列表", "我的定时任务"]
+aliases = ["任务列表", "所有定时任务", "自动化任务"]
 
 [tool.automation_cancel]
 aliases = ["取消任务", "取消定时"]

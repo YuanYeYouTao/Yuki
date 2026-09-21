@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-PLUGIN_API_VERSION = "2.0"
+PLUGIN_API_VERSION = "3.0"
 _API_VERSION = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 
 DEFAULT_FEATURES: frozenset[str] = frozenset(
@@ -27,14 +27,9 @@ DEFAULT_FEATURES: frozenset[str] = frozenset(
 )
 
 
-def api_major(version: str) -> int:
-    match = _API_VERSION.fullmatch(version.strip())
-    if match is None:
-        raise ValueError("plugin API version must use MAJOR.MINOR")
-    return int(match.group(1))
-
-
 def is_api_compatible(requested: str, host: str = PLUGIN_API_VERSION) -> bool:
-    """Plugin API is compatible only within the same major version."""
+    """Load only the exact SDK contract implemented by this Host."""
 
-    return api_major(requested) == api_major(host)
+    requested = requested.strip()
+    host = host.strip()
+    return _API_VERSION.fullmatch(requested) is not None and requested == host

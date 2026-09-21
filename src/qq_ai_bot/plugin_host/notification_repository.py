@@ -686,7 +686,6 @@ class PluginNotificationRepository:
         *,
         attempt: int,
         generation: int,
-        text: str,
         tool_calls_used: int,
         model_requests: int,
     ) -> bool:
@@ -706,56 +705,12 @@ class PluginNotificationRepository:
                 _cancel_turn(job, category=category, now=now)
                 return False
             job.status = "completed"
-            job.generated_text = text[:24_000]
+            job.generated_text = ""
             job.tool_calls_used = tool_calls_used
             job.model_requests = model_requests
             job.lease_until = None
             job.updated_at = now
             job.completed_at = now
-            if text.strip():
-                existing = await session.scalar(
-                    select(PluginNotificationOutboxModel).where(
-                        PluginNotificationOutboxModel.source_event_id == job.source_event_id,
-                        PluginNotificationOutboxModel.part_key == "agent_reply",
-                    )
-                )
-                if existing is None:
-                    notification_id = await session.scalar(
-                        select(PluginNotificationOutboxModel.notification_id)
-                        .where(PluginNotificationOutboxModel.source_event_id == job.source_event_id)
-                        .limit(1)
-                    ) or _notification_id(
-                        job.plugin_id,
-                        f"source:{job.source_event_id}",
-                        job.target_type,
-                        job.canonical_target_person_id or job.canonical_target_space_id or "",
-                    )
-                    reply = PluginNotificationOutboxModel(
-                        notification_id=notification_id,
-                        part_key="agent_reply",
-                        source_event_id=job.source_event_id,
-                        plugin_id=job.plugin_id,
-                        target_type=job.target_type,
-                        target_id=job.target_id,
-                        bot_user_id=job.bot_user_id,
-                        part_type="agent_reply",
-                        text=text[:12_000],
-                        media_handle_id=None,
-                        status="pending",
-                        attempts=0,
-                        max_attempts=5,
-                        next_attempt_at=now,
-                        lease_until=None,
-                        platform_message_id=None,
-                        last_error_category=None,
-                        created_at=now,
-                        updated_at=now,
-                        sent_at=None,
-                    )
-                    event = await session.get(ChatEventModel, job.source_event_id)
-                    inherit_queued_canonicals(reply, parent=job, event=event)
-                    await require_queued_work_readable(session, reply)
-                    session.add(reply)
             return True
 
     async def fail_turn(self, job_id: int, *, attempt: int, error_category: str) -> bool:

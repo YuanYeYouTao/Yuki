@@ -519,14 +519,17 @@ _BASE_SELF_SERVICE_CAPABILITIES = (
         target_scopes=("self", "current_group"),
     ),
     CapabilityDescriptor(
-        id="command:automation.list:self",
+        id="command:automation.list:global",
         kind=CapabilityKind.COMMAND,
         category="automation",
-        display_name="列出本人自动化",
-        description="列出当前发送者仍在运行或暂停的任务，并显示稳定的自动化 ID。",
+        display_name="列出 Yuki 自动化",
+        description=(
+            "读取带创建者身份的 Yuki 全局自动化任务简表；读取不授予修改权限，"
+            "暂停、更新、取消和立即运行仍只允许任务所有者。"
+        ),
         minimum_level=PermissionLevel.USER,
         mutating=False,
-        target_scopes=("self",),
+        target_scopes=("global",),
     ),
     CapabilityDescriptor(
         id="command:automation.list_history:self",
@@ -541,14 +544,17 @@ _BASE_SELF_SERVICE_CAPABILITIES = (
         target_scopes=("self",),
     ),
     CapabilityDescriptor(
-        id="command:automation.get:self",
+        id="command:automation.get:global",
         kind=CapabilityKind.COMMAND,
         category="automation",
-        display_name="查看本人自动化",
-        description="通过自然语言工具或 /ai automation show 查看当前发送者自己的任务。",
+        display_name="查看 Yuki 自动化",
+        description=(
+            "自然语言工具可按稳定 ID 查看包含创建者身份的任务安全摘要；"
+            "/ai automation show 仍是当前发送者本人的管理命令。"
+        ),
         minimum_level=PermissionLevel.USER,
         mutating=False,
-        target_scopes=("self",),
+        target_scopes=("global",),
     ),
     CapabilityDescriptor(
         id="command:automation.update:self",

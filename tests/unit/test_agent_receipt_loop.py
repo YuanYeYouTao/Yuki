@@ -178,7 +178,7 @@ async def test_real_memory_receipt_returns_to_model_without_reusing_write_author
             )
         receipt = json.loads([m.content for m in request.messages if m.role == "tool"][-1])
         assert not receipt["ok"]  # A second write does not reuse this turn's authority.
-        return "好，我记住你现在住上海了。"
+        return ChatResponse("", 0)
 
     provider = FakeLLMProvider(respond)
     harness = build_harness(database, make_settings(database.url), provider)
@@ -198,7 +198,7 @@ async def test_real_memory_receipt_returns_to_model_without_reusing_write_author
     )
     assert result.reason == "chat"
     assert len(responses_seen) == 3
-    assert [m.text for m in sender.messages] == ["好，我记住你现在住上海了。"]
+    assert not sender.messages
     assert len(await facts.list_person("1001", limit=20)) == 1
     for before, after in pairwise(provider.requests):
         assert after.tools == before.tools

@@ -97,7 +97,12 @@ class ToolInvocationCoordinator:
                     )
                 )
                 results[call.id] = (
-                    await session.execute(call, invoke, side_effecting=side_effecting)
+                    await session.execute(
+                        call,
+                        invoke,
+                        side_effecting=side_effecting,
+                        allow_pending=call.function.name == "send_message",
+                    )
                     if session
                     else await invoke()
                 )

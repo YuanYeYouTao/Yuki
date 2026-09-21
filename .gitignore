@@ -26,6 +26,7 @@ logs/
 /social-transfer/
 /sandbox-runtime/
 .cache/
+.workbuddy/
 config/system_prompt.md
 config/model_profiles.toml
 config/mcp.json

@@ -7,9 +7,6 @@ import re
 from qq_ai_bot.llm.base import LLMEmptyResponseError
 
 _CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-_MARKDOWN_LINK = re.compile(r"\[([^\]]+)]\(((?:https?://|mailto:)[^)]+)\)")
-_HEADING = re.compile(r"(?m)^\s{0,3}#{1,6}\s+")
-_HORIZONTAL_RULE = re.compile(r"(?m)^\s*[-*_]{3,}\s*$")
 _INTERNAL_HISTORY_MARKER = re.compile(
     r"\[(?:(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]) )?"
     r"(?:[01]\d|2[0-3]):[0-5]\d(?: QQ [1-9]\d{4,19})?\]\s*"
@@ -23,7 +20,6 @@ _MAIN_AGENT_IDENTITY_MARKER = re.compile(
     r"\[[^\]\r\n]{1,128}\|QQ:[1-9]\d{4,19}\][ \t]*(?:\n[ \t]*)?"
 )
 _MAIN_AGENT_EVENT_PREFIX = re.compile(r"(?m)^[ \t]*#\d{1,19}(?:\|[^>\r\n]{1,768})?>?[ \t]*")
-_BLOCKQUOTE_PREFIX = re.compile(r"(?m)^[ \t]*>[ \t]+")
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[。！？!?；;])")
 
 
@@ -44,14 +40,8 @@ def strip_internal_history_markers(text: str) -> str:
     return _MAIN_AGENT_EVENT_PREFIX.sub("", cleaned)
 
 
-def strip_echoed_blockquote_prefixes(text: str) -> str:
-    """Remove leaked markdown quote markers from outbound QQ text only."""
-
-    return _BLOCKQUOTE_PREFIX.sub("", text)
-
-
-def clean_model_output(text: str, *, max_characters: int) -> str:
-    """Validate model text and remove backend-only history annotations."""
+def sanitize_model_output(text: str, *, max_characters: int) -> str:
+    """Remove only control characters and internal prompt envelopes."""
 
     cleaned = sanitize_input(text)
     if not cleaned:
@@ -59,10 +49,6 @@ def clean_model_output(text: str, *, max_characters: int) -> str:
     # Identity envelopes belong only to model input. Treat an echoed envelope as
     # an internal annotation wherever it appears, never as ordinary QQ text.
     cleaned = strip_internal_history_markers(cleaned)
-    cleaned = strip_echoed_blockquote_prefixes(cleaned)
-    cleaned = _MARKDOWN_LINK.sub(r"\1 (\2)", cleaned)
-    cleaned = _HEADING.sub("", cleaned)
-    cleaned = _HORIZONTAL_RULE.sub("", cleaned)
     cleaned = cleaned.strip()
     if not cleaned:
         raise LLMEmptyResponseError("model returned empty content")

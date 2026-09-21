@@ -28,18 +28,14 @@ class AgentArguments(CapabilityArguments):
     context_profile: Literal["none", "creator_private", "current_group"] = "none"
     max_tool_calls: int = Field(default=32, ge=0, le=160)
     max_model_requests: int = Field(default=24, ge=1, le=120)
-    # Historical persisted DSL metadata only; never an execution allowlist.
-    allowed_capabilities: tuple[str, ...] = Field(default=(), max_length=128)
 
 
 class SendPrivateArguments(CapabilityArguments):
-    reply_state: dict[str, Any] | str | None = None
     user_id: str = Field(min_length=1, max_length=64)
     text: str = Field(min_length=1, max_length=12000)
 
 
 class SendGroupArguments(CapabilityArguments):
-    reply_state: dict[str, Any] | str | None = None
     group_id: str = Field(min_length=1, max_length=64)
     text: str = Field(min_length=1, max_length=12000)
 
@@ -296,7 +292,7 @@ def build_capability_registry(
         (
             "speech.send_private",
             "自动化语音发送：用 user_id 和 text 向任务所有者发送指定文本"
-            "。profile_id 可省略；不同于本轮回复布局 send_voice。",
+            "。profile_id 可省略；此项是显式 DSL 步骤，Agent 发送使用 send_message。",
             SpeechSendPrivateArguments,
             PermissionLevel.USER,
             RiskClass.SEND,
@@ -305,7 +301,7 @@ def build_capability_registry(
         (
             "speech.send_group",
             "自动化语音发送：用 group_id 和 text 向创建时授权群发送指定文"
-            "本。profile_id 可省略；不同于本轮回复布局 send_voice。",
+            "本。profile_id 可省略；此项是显式 DSL 步骤，Agent 发送使用 send_message。",
             SpeechSendGroupArguments,
             PermissionLevel.USER,
             RiskClass.SEND,

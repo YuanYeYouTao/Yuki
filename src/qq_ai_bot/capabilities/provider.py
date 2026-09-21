@@ -27,15 +27,12 @@ _ALL_ORIGINS = frozenset(TurnOrigin)
 _DIRECT_ORIGINS = frozenset(
     {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP, TurnOrigin.SCHEDULED_AUTOMATION}
 )
-_DECLINE_REPLY_ORIGINS = frozenset({TurnOrigin.AUTONOMOUS_GROUP, TurnOrigin.PLUGIN_BACKGROUND})
-_REPLY_LAYOUT_ORIGINS = _DIRECT_ORIGINS
 _SOCIAL_ORIGINS = _DIRECT_ORIGINS
 _RESIDENT_YUKI_TOOLS = (
     frozenset(
         {
             "find_contacts",
-            "send_private_message",
-            "send_group_message",
+            "send_message",
             "poke_person",
             "get_group_members",
             "read_conversation_history",
@@ -58,16 +55,11 @@ _ORIGIN_OVERRIDES: dict[str, frozenset[TurnOrigin]] = {
     **{name: _ALL_ORIGINS for name in SANDBOX_TOOLS | WORKSPACE_TOOLS},
     "find_contacts": _ALL_ORIGINS,
     "read_conversation_history": _ALL_ORIGINS,
-    "send_private_message": _SOCIAL_ORIGINS,
-    "send_group_message": _SOCIAL_ORIGINS,
+    "send_message": _SOCIAL_ORIGINS | frozenset({TurnOrigin.PLUGIN_BACKGROUND}),
     "poke_person": _SOCIAL_ORIGINS,
     "get_group_members": _SOCIAL_ORIGINS,
     "recall_own_message": _SOCIAL_ORIGINS,
-    "decline_reply": _DECLINE_REPLY_ORIGINS,
     "set_voice_preference": _DIRECT_ORIGINS,
-    "set_reply_layout": _REPLY_LAYOUT_ORIGINS,
-    "send_voice": _REPLY_LAYOUT_ORIGINS,
-    "send_emoji": _REPLY_LAYOUT_ORIGINS,
 }
 
 _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
@@ -102,8 +94,7 @@ _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
     "get_code_run": ("sandbox.read", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
     "cancel_code_run": ("sandbox.cancel", CapabilityEffect.WRITE_STATE, CapabilityRisk.MUTATE),
     "find_contacts": ("social.contacts", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
-    "send_private_message": ("social.send", CapabilityEffect.PLATFORM_SEND, CapabilityRisk.MUTATE),
-    "send_group_message": ("social.send", CapabilityEffect.PLATFORM_SEND, CapabilityRisk.MUTATE),
+    "send_message": ("social.send", CapabilityEffect.PLATFORM_SEND, CapabilityRisk.MUTATE),
     "poke_person": ("social.poke", CapabilityEffect.PLATFORM_MUTATE, CapabilityRisk.MUTATE),
     "get_group_members": ("social.members", CapabilityEffect.EXTERNAL_READ, CapabilityRisk.READ),
     "read_conversation_history": (
@@ -183,27 +174,10 @@ _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
         CapabilityEffect.PLATFORM_MUTATE,
         CapabilityRisk.MUTATE,
     ),
-    "send_voice": ("reply.voice", CapabilityEffect.REPLY_EFFECT, CapabilityRisk.READ),
-    "send_emoji": ("reply.emoji", CapabilityEffect.REPLY_EFFECT, CapabilityRisk.READ),
-    "set_reply_layout": (
-        "reply.layout",
-        CapabilityEffect.REPLY_EFFECT,
-        CapabilityRisk.READ,
-    ),
-    "set_reply_target": (
-        "reply.target",
-        CapabilityEffect.REPLY_EFFECT,
-        CapabilityRisk.READ,
-    ),
     "set_voice_preference": (
         "reply.voice.preference.write",
         CapabilityEffect.WRITE_STATE,
         CapabilityRisk.MUTATE,
-    ),
-    "decline_reply": (
-        "reply.admission.decline",
-        CapabilityEffect.REPLY_EFFECT,
-        CapabilityRisk.READ,
     ),
 }
 
@@ -220,12 +194,8 @@ _CORE_USE_WHEN: dict[str, tuple[str, ...]] = {
     "web_search": ("搜索", "联网", "查资料", "最新新闻", "搜下", "上网"),
     "read_webpage": ("打开网页", "阅读链接", "看这个URL"),
     "call_onebot_api": ("禁言", "踢人", "QQ群操作"),
-    "send_voice": ("语音", "朗读", "说出来"),
-    "send_emoji": ("表情", "表情包", "发个表情"),
-    "set_reply_layout": ("分条", "拆成几条", "分开发"),
-    "set_reply_target": ("引用这条", "回复那条消息"),
+    "send_message": ("发消息", "回复", "语音", "表情", "引用这条"),
     "set_voice_preference": ("以后用语音", "默认语音", "不要语音"),
-    "decline_reply": ("不用回", "先不插话"),
     "read_tool_artifact": ("读取工具结果", "artifact"),
 }
 
@@ -331,11 +301,8 @@ _CORE_SEARCH_TAGS: dict[str, tuple[str, ...]] = {
     ),
     "read_webpage": ("网页", "链接", "URL", "打开网页", "读取页面", "看这个链接"),
     "call_onebot_api": ("QQ群", "好友", "禁言", "踢人", "群设置", "QQ操作"),
-    "send_voice": ("语音", "朗读", "说出来", "用语音"),
-    "send_emoji": ("表情", "表情包", "发个表情", "来张图"),
-    "set_reply_layout": ("分条", "拆成几条", "分开发", "一条一条"),
+    "send_message": ("发消息", "回复", "语音", "表情", "来张图"),
     "set_voice_preference": ("以后用语音", "默认语音", "不要语音", "语音偏好"),
-    "decline_reply": ("不用回", "先不插话", "这条无关"),
 }
 
 _ADMIN_READ = frozenset({"admin_get_config", "admin_get_history"})

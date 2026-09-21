@@ -29,7 +29,6 @@ from qq_ai_bot.automation.authority import DelegatedAuthority
 from qq_ai_bot.automation.models import AutomationRecord, TurnOrigin
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.control_plane.principal import ControlPrincipal
-from qq_ai_bot.conversation.reply import ReplyEffect
 from qq_ai_bot.conversation.scope import runtime_conversation_key
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage
@@ -42,7 +41,6 @@ from qq_ai_bot.emoji.models import (
     EmojiPlacement,
     EmojiReplyMode,
     EmojiSelectionRequest,
-    PendingReplyEffect,
 )
 from qq_ai_bot.emoji.repository import EmojiRepository
 from qq_ai_bot.emoji.selector import EmojiSelector
@@ -87,10 +85,9 @@ from qq_ai_bot.services.agent_runner import (
 )
 from qq_ai_bot.services.media_resolver import OneBotMediaGateway
 from qq_ai_bot.services.vision_service import VisionProcessingError, VisionService
-from qq_ai_bot.speech.models import VoiceMode, VoiceProfile
+from qq_ai_bot.speech.models import VoiceProfile
 from qq_ai_bot.speech.profiles import VoiceProfileService
 from qq_ai_bot.speech.provider import SpeechSynthesisRequest, SynthesizedSpeech
-from qq_ai_bot.speech.reply_effect import PendingVoiceReplyEffect
 from qq_ai_bot.speech.service import SpeechService
 from qq_ai_bot.time.models import TimeContext
 from qq_ai_bot.vision.models import VisualObservation
@@ -230,7 +227,6 @@ class PluginInvocation:
     source_event_id: int | None = None
     visual_observation: VisualObservation | None = field(default=None, repr=False)
     web_was_used: bool = False
-    reply_effects: list[ReplyEffect] | None = field(default=None, repr=False)
     legacy_conversation_key: str | None = None
     person_id: str | None = None
     space_id: str | None = None
@@ -624,10 +620,6 @@ class HostPluginContext:
                 cast(Iterable[str], getattr(runtime, "allowed_capabilities", ()))
             ),
             web_was_used=web_was_used,
-            reply_effects=cast(
-                list[ReplyEffect] | None,
-                getattr(runtime, "reply_effects", None),
-            ),
         )
         return self.bind(invocation)
 
@@ -2171,42 +2163,6 @@ class _EmojiFacade:
             }
         )
 
-    async def queue_reply_effect(
-        self,
-        *,
-        goal: str,
-        emotion: str = "",
-        mode: str = "optional",
-        placement: str = "after_text",
-    ) -> PluginResult:
-        invocation = self._host._require(PluginPermission.EMOJI_SEND)
-        assert invocation is not None
-        queue = invocation.reply_effects
-        runtime = await _runtime_snapshot(self._host, invocation)
-        if queue is None:
-            return PluginResult(
-                ok=False,
-                error_code="emoji.reply_effect_unavailable",
-                detail="current invocation has no reply-effect queue",
-            )
-        if len(queue) >= runtime.emoji.max_effects_per_reply:
-            return PluginResult(
-                ok=False,
-                error_code="emoji.effect_limit",
-                detail="reply-effect limit reached",
-            )
-        queue.append(
-            PendingReplyEffect(
-                mode=EmojiReplyMode(mode),
-                placement=EmojiPlacement(placement),
-                goal=_bounded_text(goal, maximum=300, field_name="goal"),
-                emotion=_bounded_optional_text(emotion, maximum=100),
-                explicit_request=mode in {"preferred", "emoji_only"},
-                source="plugin",
-            )
-        )
-        return PluginResult(data={"queued": True})
-
     async def adopt(
         self,
         emoji_id: str,
@@ -2341,35 +2297,6 @@ class _SpeechFacade:
             duration_milliseconds=generated.duration_milliseconds,
             expires_at=None,
         )
-
-    async def queue_reply_voice(
-        self,
-        *,
-        profile_id: str = "",
-        style_hint: str = "",
-        mode: str = "optional",
-    ) -> PluginResult:
-        invocation = self._host._require(PluginPermission.SPEECH_REPLY_EFFECT)
-        assert invocation is not None
-        runtime = await _runtime_snapshot(self._host, invocation)
-        if not runtime.speech.plugin_enabled:
-            return _unavailable("plugin speech access is disabled")
-        if invocation.reply_effects is None:
-            return _unavailable("current invocation has no reply-effect queue")
-        if profile_id:
-            profiles = _require_service(self._host._services.voice_profiles, "voice profiles")
-            profile = await profiles.get_profile(profile_id)
-            if profile is None or not profile.enabled:
-                return _unavailable("voice profile is unavailable")
-        invocation.reply_effects.append(
-            PendingVoiceReplyEffect(
-                profile_id=profile_id,
-                style_hint=style_hint,
-                mode=VoiceMode(mode),
-                source="plugin",
-            )
-        )
-        return PluginResult(data={"queued": True})
 
     async def send_private(
         self,

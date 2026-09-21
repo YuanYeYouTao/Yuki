@@ -18,8 +18,8 @@ from qq_ai_bot.social.models import OperationStatus, SocialError, SocialReceipt,
 
 _ACTIONS = frozenset(
     {
-        "send_private_message",
-        "send_group_message",
+        "send_message",
+        "send_message_sequence",
         "send_file_caption",
         "poke_person",
         "recall_own_message",

@@ -18,6 +18,7 @@ from qq_ai_bot.automation.registry import (
     CapabilityHandler,
     CapabilityResult,
 )
+from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, PromptRequestDiagnostics
@@ -102,6 +103,7 @@ class AutomationCapabilityHandlers:
         ledger: EventLedgerRepository,
         memories: MemoryFactService,
         relationships: RelationshipRepository,
+        automation_repository: AutomationRepository | None = None,
         web_provider: WebSearchProvider | None,
         gateway_factory: GatewayFactory,
         emoji_repository: EmojiRepository | None = None,
@@ -121,6 +123,7 @@ class AutomationCapabilityHandlers:
         self._ledger = ledger
         self._memories = memories
         self._relationships = relationships
+        self._automation_repository = automation_repository
         self._web = web_provider
         self._gateway_factory = gateway_factory
         self._emoji_repository = emoji_repository
@@ -240,25 +243,9 @@ class AutomationCapabilityHandlers:
             if composition.commit_projection is not None:
                 await composition.commit_projection()
 
-        async def deliver_progress(text: str, call_key: str) -> dict[str, Any]:
-            await validate_context()
-            gateway = self._gateway_factory(context)
-            receipt = (
-                await gateway.send_group(context.current_group_id, text)
-                if context.current_group_id
-                else await gateway.send_private(context.creator_user_id, text)
-            )
-            message_id = receipt.get("message_id") if isinstance(receipt, dict) else receipt
-            return {
-                "transport_accepted": bool(message_id),
-                "message_id": message_id,
-                "call_key": call_key,
-            }
-
         runtime = replace(
             runtime,
             before_model_request=validate_context,
-            deliver_progress=deliver_progress,
             prompt_diagnostics=PromptRequestDiagnostics(
                 conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
                 prompt_snapshot_fingerprint=composition.metrics.prompt_snapshot_fingerprint,
@@ -271,18 +258,9 @@ class AutomationCapabilityHandlers:
         contract = self._agent_runner.main_contract
         if contract is None:
             raise AutomationExecutionError("main_agent_services_unavailable")
-        from qq_ai_bot.conversation.delivery import ReplyControlState, default_reply_spec
-        from qq_ai_bot.services.reply_target import ReplyTargetControl
-
         tool_runtime = ToolRuntime(
             inbound=None,
-            reply_effects=[],
-            reply_target_control=ReplyTargetControl(
-                visible_event_ids=composition.visible_event_ids
-            ),
-            reply_control=ReplyControlState(
-                default_reply_spec(hard_max_messages=snapshot.reply.hard_max_messages)
-            ),
+            visible_event_ids=composition.visible_event_ids,
             gateway=cast(OneBotToolGateway | None, runtime.gateway),
             allow_generic_onebot=context.authority.actor_is_superuser,
             allow_work_environment=True,
@@ -359,7 +337,6 @@ class AutomationCapabilityHandlers:
             data={
                 "text": result.text,
                 "tool_calls_used": result.tool_calls_used,
-                "reply_state": backend.export_reply_state(),
             },
             llm_calls=result.model_requests,
             tool_calls=result.tool_calls_used,
@@ -386,7 +363,7 @@ class AutomationCapabilityHandlers:
             arguments,
             context,
             self._gateway_factory(context),
-            chat=contract.chat if contract is not None else None,
+            runtime_config=contract.chat._runtime_config if contract is not None else None,
         )
         return CapabilityResult(data={"sent": bool(count)}, messages_sent=count)
 
@@ -760,6 +737,7 @@ class AutomationCapabilityHandlers:
             instruction=str(arguments["instruction"]),
             profile=str(arguments.get("context_profile") or "none"),
             current_time=self._time.at(context.actual_started_at, context.timezone),
+            automation_repository=getattr(self, "_automation_repository", None),
         )
         composition = await self._main_turn_service().compose(
             inbound=None,

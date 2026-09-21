@@ -200,8 +200,8 @@ async def test_memory_partition_stays_off_conversation_id_and_refuses_legacy_rep
 
 
 @pytest.mark.asyncio
-async def test_plugin_api_remains_2_0_and_host_state_uses_primary_alias() -> None:
-    assert PLUGIN_API_VERSION == "2.0"
+async def test_plugin_api_is_3_0_and_host_state_uses_primary_alias() -> None:
+    assert PLUGIN_API_VERSION == "3.0"
     now = datetime.now(UTC)
     current = CurrentMessage(
         message_id="1",
@@ -362,7 +362,7 @@ async def test_plugin_host_state_does_not_split_on_subject(database: Database) -
         plugin_id="demo.plugin",
         name="Demo",
         version="1.0.0",
-        plugin_api="2.0",
+        plugin_api="3.0",
         yuki_requires=">=3.0.0,<4.0",
         manifest_hash=("ab" * 32),
         entrypoint="plugin:Demo",

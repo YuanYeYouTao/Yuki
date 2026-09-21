@@ -18,6 +18,58 @@ from qq_ai_bot.social.service import SocialContext, SocialService
 async def invoke_social(
     service: SocialService, name: str, arguments: dict[str, Any], runtime: Any
 ) -> dict[str, Any]:
+    if name == "send_message" and runtime.origin is TurnOrigin.PLUGIN_BACKGROUND:
+        from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+        from qq_ai_bot.persistence.models import ChatEventModel
+
+        invocation = current_invocation.get()
+        event_id = runtime.effective_trigger_event_id
+        conversation_id = runtime.effective_conversation_id
+        if (
+            invocation is None
+            or not invocation.call_id
+            or runtime.inbound is not None
+            or runtime.read_only
+            or runtime.tools_closed
+            or not isinstance(event_id, int)
+            or not conversation_id
+            or arguments.get("target") is not None
+        ):
+            raise SocialError("permission_denied")
+        async with service.database.sessions() as session:
+            event = await session.get(ChatEventModel, event_id)
+            conversation = await session.get(CanonicalConversationModel, conversation_id)
+            if (
+                event is None
+                or conversation is None
+                or event.canonical_conversation_id != conversation_id
+                or event.direction != "external"
+                or event.event_kind != "external_event"
+                or event.origin != "plugin_background"
+                or event.suppression_status != "keeper"
+                or not event.source_plugin_id
+                or (runtime.space_id or None) != (conversation.space_id or None)
+                or (runtime.person_id or None) != (conversation.person_id or None)
+            ):
+                raise SocialError("permission_denied")
+        context = SocialContext(
+            turn_id=f"{conversation_id}:plugin-event:{event_id}",
+            call_id=invocation.call_id,
+            conversation_id=conversation_id,
+            person_refs=(
+                {"current_speaker": runtime.person_id} if runtime.person_id is not None else {}
+            ),
+            space_id=runtime.space_id,
+            origin="plugin_background",
+            caused_by_event_id=event_id,
+            visible_event_ids=frozenset(getattr(runtime, "visible_event_ids", ())),
+        )
+        try:
+            return await service.execute(name, arguments, context)
+        except RouteSendError as exc:
+            raise SocialError(exc.category) from exc
+        except ValidationError as exc:
+            raise SocialError("invalid_message_arguments") from exc
     if getattr(runtime, "read_scope", None) is not None and name in {
         "read_conversation_history",
         "find_contacts",
@@ -96,12 +148,19 @@ async def invoke_social(
         person_refs={key: by_account[value] for key, value in refs.items() if value in by_account},
         account_refs={key: value for key, value in refs.items() if value in by_account},
         space_id=runtime.space_id or getattr(inbound, "space_id", None),
-        reply_message_id=inbound.message_id
-        if inbound is not None and inbound.scope_type == "private"
-        else None,
+        trigger_event_id=(
+            getattr(runtime, "effective_trigger_event_id", None) if inbound is not None else None
+        ),
         reply_presence_id=inbound.presence_id
         if inbound is not None and inbound.scope_type == "private"
         else None,
+        visible_event_ids=frozenset(getattr(runtime, "visible_event_ids", ())),
+        actor=actor,
+        runtime_snapshot=getattr(runtime, "runtime_config", None),
+        turn_token=getattr(runtime, "turn_token", None),
+        conversation_key=getattr(runtime, "conversation_key", ""),
+        voice_delivery_allowed=bool(getattr(runtime, "voice_delivery_allowed", True)),
+        inbound=inbound,
     )
     try:
         return await service.execute(name, arguments, context)

@@ -18,6 +18,7 @@ from qq_ai_bot.automation.authority import (
 from qq_ai_bot.automation.compiler import AutomationCompiler, ExecutionPlan, TaskSpec
 from qq_ai_bot.automation.creation_key import creation_key as _creation_key
 from qq_ai_bot.automation.models import (
+    AutomationCreatorIdentity,
     AutomationRecord,
     AutomationRunRecord,
     AutomationScript,
@@ -98,14 +99,17 @@ class AutomationService:
     ) -> tuple[AutomationRecord, ...]:
         """Exact structured candidates only; the Agent decides whether to create."""
         task = TaskSpec.model_validate(task_payload)
-        creator, _permission, provenance = await self._creator_context(actor)
+        _creator, _permission, provenance = await self._creator_context(actor)
         plan = self._compiler.compile(
             task,
             provenance,
             default_timezone=await self._time.timezone_for(actor.user_id),
         )
         expected = plan.script.model_dump(mode="json", exclude={"name"}, exclude_none=True)
-        rows = await self._repository.list_current_for_creator(creator, limit=200)
+        rows = await self._repository.list_directory(
+            statuses=(AutomationStatus.ACTIVE, AutomationStatus.PAUSED),
+            limit=200,
+        )
         return tuple(
             row
             for row in rows
@@ -320,6 +324,54 @@ class AutomationService:
         self._require_enabled()
         creator_person_id = await self._resolve_creator_person(creator_user_id)
         return await self._repository.list_current_for_creator(creator_person_id)
+
+    async def list_directory(
+        self,
+        *,
+        status: str = "active",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[AutomationRecord, ...]:
+        """Return the bounded Yuki-wide safe task directory, independent of owner."""
+
+        self._require_enabled()
+        statuses = {
+            "active": (AutomationStatus.ACTIVE,),
+            "paused": (AutomationStatus.PAUSED,),
+            "current": (AutomationStatus.ACTIVE, AutomationStatus.PAUSED),
+            "terminal": (
+                AutomationStatus.COMPLETED,
+                AutomationStatus.CANCELLED,
+                AutomationStatus.FAILED,
+                AutomationStatus.BLOCKED,
+            ),
+            "all": tuple(AutomationStatus),
+        }.get(status)
+        if statuses is None:
+            raise ValueError("status 必须是 active、paused、current、terminal 或 all")
+        return await self._repository.list_directory(
+            statuses=statuses,
+            limit=limit,
+            offset=offset,
+        )
+
+    async def get_visible(self, automation_id: int) -> AutomationRecord:
+        """Return one task for safe read projection without granting mutation rights."""
+
+        self._require_enabled()
+        row = await self._repository.get(automation_id)
+        if row is None:
+            raise ValueError("自动化任务不存在")
+        return row
+
+    async def creator_identities(
+        self,
+        rows: tuple[AutomationRecord, ...],
+    ) -> dict[int, AutomationCreatorIdentity]:
+        """Return safe creator metadata for global task directory results."""
+
+        self._require_enabled()
+        return await self._repository.creator_identities(rows)
 
     async def list_completed(self, creator_user_id: str) -> tuple[AutomationRecord, ...]:
         """Return terminal tasks in a separate newest-first history queue."""
@@ -649,8 +701,10 @@ class AutomationService:
         creator_person_id: str,
     ) -> AutomationRecord:
         row = await self._repository.get(automation_id)
-        if row is None or row.canonical_creator_person_id != creator_person_id:
-            raise ValueError("没有找到属于当前用户的自动化任务")
+        if row is None:
+            raise ValueError("自动化任务不存在")
+        if row.canonical_creator_person_id != creator_person_id:
+            raise PermissionError("任务存在，但当前主体不是任务所有者，不能修改")
         return row
 
     def _require_enabled(self) -> None:

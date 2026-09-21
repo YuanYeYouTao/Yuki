@@ -29,7 +29,6 @@ _READ_EFFECTS = frozenset(
     {
         CapabilityEffect.READ_STATE,
         CapabilityEffect.EXTERNAL_READ,
-        CapabilityEffect.REPLY_EFFECT,
     }
 )
 
@@ -45,7 +44,6 @@ class CapabilityPolicyContext:
     read_only: bool = False
     memory_view: MemoryCapabilityView | None = None
     artifact_available: bool = False
-    reply_target_available: bool = False
 
 
 class CapabilityPolicyEngine:
@@ -87,8 +85,6 @@ class CapabilityPolicyEngine:
                 if descriptor.namespace_id != exclusive:
                     continue
             if descriptor.model_name == "read_tool_artifact" and not context.artifact_available:
-                continue
-            if descriptor.model_name == "set_reply_target" and not context.reply_target_available:
                 continue
             if descriptor.risk is CapabilityRisk.DESTRUCTIVE and context.origin not in {
                 TurnOrigin.USER_MESSAGE,

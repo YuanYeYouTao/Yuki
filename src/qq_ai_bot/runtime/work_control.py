@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 
 WORK_CONTROL_NAMES = frozenset(
-    {"task_control", "report_progress", "subagent_start", "subagent_control", "subagent_message"}
+    {"task_control", "subagent_start", "subagent_control", "subagent_message"}
 )
 
 
@@ -36,10 +36,10 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                 "action=accept，并填写 goal、output_kind；成功后下一步才调用执行工具。"
                 "已有 work_id 的同一工作直接继续，不重复 accept；不要先试执行再补登记。"
                 "新一轮要续接 available_work 中的原目标，单独使用 resume 和 work_id；不重复登记。"
-                "普通聊天直接生成正文，不必登记；也可显式用 answer 和 text 回复。"
+                "普通聊天不必登记；需要发言用 send_message。"
                 "新输入另提独立工作时再次 accept 排队，不能用 update 覆盖旧目标；"
                 "update 仅修正当前目标；wait 必须有真实待完成 run_id；"
-                "need_input 必须说明缺失信息；complete 仅提出结束，后端核对交付后提交。"
+                "need_input 必须说明缺失信息；complete 提出结束，后端核对未决执行和 artifact。"
                 "不能把口头承诺当作开始或完成，不能在同批混合此工具与其他副作用。"
             ),
             parameters={
@@ -48,7 +48,6 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                     "action": {
                         "type": "string",
                         "enum": [
-                            "answer",
                             "accept",
                             "resume",
                             "update",
@@ -75,27 +74,10 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                         ),
                     },
                     "artifact_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 8},
-                    "text": {"type": "string", "maxLength": 8000},
                     "reason": {"type": "string", "maxLength": 1000},
                     "run_id": {"type": "string", "maxLength": 36},
                 },
                 "required": ["action"],
-                "additionalProperties": False,
-            },
-        ),
-        ChatTool(
-            name="report_progress",
-            result_cacheable=False,
-            description=(
-                "在当前获授权的会话发送简短过程说明，之后继续工作。"
-                "只有确实启动了执行才说正在做；只登记可说已接下。"
-                "返回真实投递回执，不要在最终回复重复这段已发送内容。"
-                "没有当前会话发送授权的生成入口不可使用。"
-            ),
-            parameters={
-                "type": "object",
-                "properties": {"text": {"type": "string", "minLength": 1, "maxLength": 1000}},
-                "required": ["text"],
                 "additionalProperties": False,
             },
         ),
@@ -110,7 +92,6 @@ class WorkControl:
     source: dict[str, Any]
     # Callbacks are installed by the trusted entrypoint, never by model arguments.
     validate: Callable[[], Awaitable[None]]
-    deliver_progress: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None
     resolve_child: Callable[[str], Awaitable[dict[str, Any] | None]] | None = None
     session: WorkSession | None = None
     current_message: ChatMessage | None = None
@@ -118,9 +99,7 @@ class WorkControl:
     ending: str | None = None
     known_effects: list[dict[str, Any]] = field(default_factory=list)
     corrections: int = 0
-    progress_count: int = 0
     final_delivery: bool = False
-    chat_answer: str | None = None
     requests_started: int = 0
     segment_model_limit: int = 24
     tools_started: int = 0
@@ -270,7 +249,6 @@ class WorkControl:
             await self.repository.stage(self.lease, selected, attempt)
             self.staged_attempt = attempt
             self.ending = None
-            self.chat_answer = None
             self.completion_delivered = False
             self.corrections = 0
         return tuple(messages)
@@ -351,12 +329,13 @@ class WorkControl:
         collect(body)
         delivered: list[str] = []
         caption_delivered = False
+        delivered_message = False
         try:
             args = json.loads(arguments)
         except ValueError:
             args = {}
         if (
-            name in {"send_private_message", "send_group_message"}
+            name == "send_message"
             and isinstance(args, dict)
             and isinstance(args.get("artifact_id"), str)
         ):
@@ -376,13 +355,24 @@ class WorkControl:
                         )
                     )
                 )
+        if name == "send_message" and isinstance(args, dict):
+            delivered_message = bool(
+                isinstance(args.get("text"), str)
+                and args["text"].strip()
+                and (
+                    caption_delivered
+                    if args.get("attachment_kind") == "file"
+                    else body.get("status") == "succeeded"
+                )
+            )
         entry = {
             "tool": name,
             "side_effecting": side_effecting,
             "artifacts": artifacts,
             "delivered_artifacts": delivered,
             "caption_delivered": caption_delivered,
-            "delivery_target": body.get("target") if delivered else None,
+            "delivered_message": delivered_message,
+            "delivery_target": body.get("target") if delivered or delivered_message else None,
             "run_id": identity,
             "ok": bool(value.get("ok", not value.get("error")))
             and not body.get("error")
@@ -411,9 +401,7 @@ class WorkControl:
             await self.validate()
             if not await self.repository.valid(self.lease):
                 raise WorkConflict("work_activation_obsolete")
-            if name == "report_progress":
-                result = await self._progress(args, call_key)
-            elif name == "task_control":
+            if name == "task_control":
                 result = await self._control(args, call_key)
             elif name.startswith("subagent_"):
                 from qq_ai_bot.runtime.subagent_tools import execute_subagent
@@ -470,19 +458,6 @@ class WorkControl:
             )
             self.handoff_work_id = identity
             return {"resumed_work_id": identity, "state": "queued", "continue_original_chain": True}
-        if action == "answer":
-            text = args.get("text")
-            if not isinstance(text, str) or not 1 <= len(text.strip()) <= 8000:
-                raise ValueError("chat_answer_required")
-            if self.current is not None:
-                background = await self.background_state()
-                if background is not None:
-                    self.ending = background
-                    self.chat_answer = text
-                    return {"chat_answer_prepared": True, "background_state": background}
-                return await self._progress({"text": text}, call_key)
-            self.chat_answer = text
-            return {"chat_answer_prepared": True}
         if action == "accept":
             if self.current is not None:
                 return await self._queue_work(args)
@@ -559,7 +534,7 @@ class WorkControl:
             self.ending = "waiting_external"
         elif action in {"need_input", "fail"}:
             if action == "fail" and await self.background_state() is not None:
-                raise ValueError("unfinished_subagents_use_answer_or_wait_cancel_explicitly")
+                raise ValueError("unfinished_subagents_use_wait_or_cancel_explicitly")
             reason = args.get("reason")
             if not isinstance(reason, str) or not reason.strip() or len(reason) > 1000:
                 raise ValueError("work_reason_required")
@@ -625,6 +600,26 @@ class WorkControl:
                         for identity in effect.get("delivered_artifacts", [])
                     }
                     self.completion_delivered = set(selected) <= explained
+            elif kind == "answer" and self.source.get("delivery_contract") != "return_to_caller":
+                from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+
+                async with self.repository.database.sessions() as session:
+                    conversation = await session.get(
+                        CanonicalConversationModel, self.lease.conversation_id
+                    )
+                if conversation is None:
+                    raise ValueError("work_delivery_conversation_missing")
+                target = {
+                    "kind": "space" if conversation.space_id else "person",
+                    "id": conversation.space_id or conversation.person_id,
+                }
+                self.completion_delivered = any(
+                    effect.get("delivered_message") and effect.get("delivery_target") == target
+                    for effect in self.known_effects
+                )
+                # Explicit completion may be silent. The model's final text is
+                # internal state; it never becomes a fallback outbound message.
+                self.final_delivery = True
             elif kind == "state_change" and not any(
                 effect.get("ok") and effect.get("side_effecting", True)
                 for effect in self.known_effects
@@ -718,36 +713,6 @@ class WorkControl:
             ):
                 result.append({"work_id": row["id"], "goal": row["goal"], "state": row["state"]})
         return result[:16]
-
-    async def _progress(self, args: dict[str, Any], call_key: str) -> dict[str, Any]:
-        if self.deliver_progress is None:
-            raise ValueError("progress_delivery_not_authorized")
-        if self.current is None:
-            raise ValueError("accept_work_before_progress")
-        text = args.get("text")
-        if not isinstance(text, str) or not 1 <= len(text.strip()) <= 1000:
-            raise ValueError("invalid_progress_text")
-        from qq_ai_bot.runtime.delivery_intents import reserve
-
-        if not await reserve(self, call_key, "progress", {"text": text}):
-            return {"delivered": False, "suppressed": True, "continue_work": True}
-        if not await self.repository.prepare_effect(
-            self.lease, self.current["id"], call_key, "progress"
-        ):
-            return {"already_recorded": True, "replay_forbidden": True}
-        try:
-            outcome = await self.deliver_progress(text, call_key)
-        except BaseException:
-            await self.repository.record_effect(
-                call_key, "unknown", {"error": "delivery_outcome_unknown"}
-            )
-            raise
-        accepted = bool(outcome.get("transport_accepted"))
-        state = "accepted" if accepted else "unknown" if outcome.get("uncertain") else "failed"
-        await self.repository.record_effect(call_key, state, outcome)
-        if accepted:
-            self.progress_count += 1
-        return {"delivered": accepted, "receipt": outcome, "continue_work": True}
 
     async def settle(self, *, delivered: bool, pending_inputs: bool) -> None:
         from qq_ai_bot.runtime.work_supervisor import settle

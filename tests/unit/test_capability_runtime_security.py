@@ -400,7 +400,6 @@ def test_schema_conflict_rebuilds_only_without_side_effects() -> None:
         kernel_tools=(request_tools_definition(),),
         query="search",
         artifact_available=False,
-        reply_target_available=False,
         priority_ids=("web_search",),
     )
     assert runtime._apply_plan(runtime._plan) == SCHEMA_REVISION_CONFLICT

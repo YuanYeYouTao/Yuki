@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from qq_ai_bot.automation.compiler import ExecutionPlan
-from qq_ai_bot.automation.models import AutomationRecord
+from qq_ai_bot.automation.models import AutomationCreatorIdentity, AutomationRecord
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.services.agent_tools import ToolRuntime
@@ -163,7 +163,7 @@ def _task_intent_schema() -> dict[str, object]:
 
 
 class AutomationToolService:
-    """Expose owner-scoped task management bound to the current real event."""
+    """Expose global safe reads and owner-scoped mutations to the main Agent."""
 
     _NAMES = frozenset(
         {
@@ -185,7 +185,7 @@ class AutomationToolService:
     )
     _ALLOWED_ARGUMENTS: ClassVar[dict[str, frozenset[str]]] = {
         "automation_create": frozenset({"task", "max_runs"}),
-        "automation_list": frozenset({"match_task", "max_runs"}),
+        "automation_list": frozenset({"match_task", "max_runs", "status", "limit", "cursor"}),
         "automation_list_history": frozenset({"limit"}),
         "automation_get": frozenset({"automation_id"}),
         "automation_update": frozenset({"automation_id", "task"}),
@@ -218,9 +218,10 @@ class AutomationToolService:
             ChatTool(
                 name="automation_list",
                 description=(
-                    "只列出当前执行主体仍在运行或暂停的任务。每条任务返回并显示稳定的 "
-                    "automation_id，后续查看、修改或取消必须使用该 ID；不要生成临时编号。"
-                    "已结束任务请使用 automation_list_history。"
+                    "列出 Yuki 的全局自动化任务简表，不按当前发言人过滤。默认只列 active，"
+                    "每条返回稳定 automation_id、任务内容、下次时间和创建者；"
+                    "查看 paused、terminal 或 all 时传 status。"
+                    "能看到任务不代表当前主体能修改，写操作仍由后端核验所有者。"
                     "传入 match_task 可查询结构化等价的待执行任务；"
                     "忽略显示名称，比较目标、时间、上下文和交付范围，不会自动合并或创建任务。"
                 ),
@@ -228,6 +229,12 @@ class AutomationToolService:
                     {
                         "match_task": task_schema,
                         "max_runs": {"type": "integer", "minimum": 1},
+                        "status": {
+                            "type": "string",
+                            "enum": ["active", "paused", "current", "terminal", "all"],
+                        },
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                        "cursor": {"type": "string", "maxLength": 20},
                     }
                 ),
             ),
@@ -243,7 +250,10 @@ class AutomationToolService:
             ),
             ChatTool(
                 name="automation_get",
-                description="查看当前执行主体自己的一个自动化任务。",
+                description=(
+                    "按稳定 automation_id 查看一个任务的安全摘要；"
+                    "读取不授予修改权限，写操作仍只允许任务所有者。"
+                ),
                 parameters=_object_schema(id_schema, required=("automation_id",)),
             ),
             ChatTool(
@@ -349,19 +359,36 @@ class AutomationToolService:
                     mutation_committed=True,
                 )
             if name == "automation_list":
-                automations = (
-                    await self._service.find_equivalent_task(
+                maximum = arguments.get("limit", 50)
+                if isinstance(maximum, bool) or not isinstance(maximum, int):
+                    raise ValueError("limit 必须是整数")
+                cursor = arguments.get("cursor") or "0"
+                if not isinstance(cursor, str) or not cursor.isdigit():
+                    raise ValueError("cursor 必须是非负整数字符串")
+                offset = int(cursor)
+                matched = arguments.get("match_task") is not None
+                if matched:
+                    automations = await self._service.find_equivalent_task(
                         arguments["match_task"],
                         actor=actor,
                         max_runs=arguments.get("max_runs"),
                     )
-                    if arguments.get("match_task") is not None
-                    else await self._service.list_current(actor.user_id)
-                )
+                    page = automations[offset : offset + maximum]
+                    has_more = offset + maximum < len(automations)
+                else:
+                    fetched = await self._service.list_directory(
+                        status=str(arguments.get("status") or "active"),
+                        limit=maximum + 1,
+                        offset=offset,
+                    )
+                    page = fetched[:maximum]
+                    has_more = len(fetched) > maximum
+                creators = await self._service.creator_identities(tuple(page))
                 return _result(
                     data={
-                        "timezone": await self._service.timezone(actor.user_id),
-                        "current_tasks": [_record(row) for row in automations],
+                        "default_status": "active",
+                        "tasks": [_directory_record(row, creator=creators[row.id]) for row in page],
+                        "next_cursor": str(offset + maximum) if has_more else None,
                     }
                 )
             if name == "automation_list_history":
@@ -398,9 +425,9 @@ class AutomationToolService:
                 )
             automation_id = _automation_id(arguments)
             if name == "automation_get":
-                return _result(
-                    data=_record(await self._service.require_owned(automation_id, actor.user_id))
-                )
+                row = await self._service.get_visible(automation_id)
+                creators = await self._service.creator_identities((row,))
+                return _result(data=_directory_record(row, creator=creators[row.id]))
             if name == "automation_update":
                 row, plan = await self._service.update_task(
                     automation_id,
@@ -511,6 +538,22 @@ def _record(
         payload["warnings"] = plan.warnings
     if persisted:
         payload["confirmation"] = "persisted"
+    return payload
+
+
+def _directory_record(
+    row: AutomationRecord,
+    *,
+    creator: AutomationCreatorIdentity,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "automation_id": row.id,
+        "task": row.name,
+        "next_run_at_local": local_iso(row.next_run_at, row.timezone),
+        "creator": creator.model_dump(mode="json"),
+    }
+    if row.status.value != "active":
+        payload["status"] = row.status.value
     return payload
 
 

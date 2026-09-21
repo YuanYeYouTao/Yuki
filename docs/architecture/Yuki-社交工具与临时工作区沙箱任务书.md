@@ -2,6 +2,10 @@
 
 # Yuki QQ 社交工具、临时工作区与 Python 沙箱任务书
 
+> 现行替代：主 Agent 发送入口已统一为 `send_message`。下文
+> `send_private_message` / `send_group_message`、委托白名单和社交发送限频描述仅是 3.8.2
+> 基线记录，不得作为当前实现合同；参见 [主 Agent 执行与恢复合同](main-agent-runtime.md)。
+
 ## 基线、目标与交付边界
 
 从 `ab4db69` 建立 `codex/social-workspace-sandbox`，保留记忆修复。

@@ -338,8 +338,8 @@ async def test_whoami_and_forgetme_are_caller_scoped(database: Database) -> None
     assert await harness.profiles.get(user_id="1002") is not None
 
     config_change = await harness.processor._runtime_config.set_override(
-        "reply.cancel_on_new_message",
-        False,
+        "reply.hard_max_messages",
+        8,
         scope_type="user",
         scope_id="1001",
         actor_user_id="9000",

@@ -24,6 +24,88 @@ from qq_ai_bot.workspace.store import WorkspaceStore
 
 
 @pytest.mark.asyncio
+async def test_send_message_bypasses_work_admission_without_reclassifying_mutations(database):
+    chat = build_harness(database, make_settings(database.url)).processor._chat
+    executed = []
+
+    class Control:
+        current = None
+
+        async def pending(self):
+            return True
+
+    class Backend:
+        def begin_batch(self, calls, runtime):
+            pass
+
+        def is_side_effecting(self, name, arguments, runtime):
+            return True
+
+        def parallel_safe(self, name, runtime):
+            return False
+
+        async def execute(self, name, arguments, runtime):
+            executed.append(name)
+            return json.dumps({"ok": True})
+
+    config = await chat._runtime_config.snapshot()
+    runtime = AgentRuntime(
+        origin=TurnOrigin.USER_MESSAGE,
+        actor_user_id="10001",
+        actor_is_superuser=False,
+        delegated_authority=None,
+        conversation_key="work-admission-send",
+        current_group_id=None,
+        bot_user_id="80001",
+        gateway=None,
+        runtime_config=config,
+        current_time=chat._time.current_default(),
+        allowed_capabilities=frozenset(),
+        max_tool_calls=8,
+        max_model_requests=8,
+        work_control=Control(),
+    )
+    backend = Backend()
+
+    async def run_one(name):
+        call = ToolCall(name, ToolFunction(name, "{}"))
+        return await chat._agent_runner._execute_tool_batch(
+            (call,),
+            backend,
+            runtime,
+            remaining_calls=8,
+            max_parallel_calls=1,
+            reusable_results={},
+            cacheable_names=frozenset(),
+            declared_names=frozenset({"send_message", "workspace_write"}),
+        )
+
+    sent = await run_one("send_message")
+    assert sent.executed_count == 1
+    assert json.loads(sent.calls[0][1])["ok"] is True
+    blocked = await run_one("workspace_write")
+    assert blocked.executed_count == 0
+    assert json.loads(blocked.calls[0][1])["error"] == "accept_work_before_execution"
+    assert executed == ["send_message"]
+
+    send_call = ToolCall("send-batched", ToolFunction("send_message", "{}"))
+    write_call = ToolCall("write-batched", ToolFunction("workspace_write", "{}"))
+    batched = await chat._agent_runner._execute_tool_batch(
+        (send_call, write_call),
+        backend,
+        runtime,
+        remaining_calls=8,
+        max_parallel_calls=1,
+        reusable_results={},
+        cacheable_names=frozenset(),
+        declared_names=frozenset({"send_message", "workspace_write"}),
+    )
+    assert json.loads(batched.calls[0][1])["ok"] is True
+    assert json.loads(batched.calls[1][1])["error"] == "accept_work_before_execution"
+    assert executed == ["send_message", "send_message"]
+
+
+@pytest.mark.asyncio
 async def test_neutral_answer_is_delivered_without_registration_request(database, tmp_path):
     env = await social_env(database, tmp_path)
     provider = FakeLLMProvider(lambda request: "Yuki 是用 Python 写的。")

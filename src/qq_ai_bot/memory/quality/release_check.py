@@ -207,12 +207,12 @@ class MemoryReleaseCheck:
                 compatible = bool(requires) and SpecifierSet(requires).contains(__version__)
             except InvalidSpecifier:
                 compatible = False
-            if raw.get("plugin_api") != "2.0" or not compatible:
+            if raw.get("plugin_api") != "3.0" or not compatible:
                 incompatible.append(path.parent.name)
         return self._item(
             "plugin_api_compatibility",
             not incompatible,
-            f"{len(manifests)} manifests declare Plugin API 2.0 compatibility"
+            f"{len(manifests)} manifests declare Plugin API 3.0 compatibility"
             if not incompatible
             else f"incompatible manifests: {','.join(sorted(incompatible))}",
         )

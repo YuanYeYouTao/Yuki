@@ -73,10 +73,13 @@ async def deliver_report(social: SocialService, cycle: dict[str, Any]) -> dict[s
         ):
             raise ValueError("reflection_report_source_missing")
         target = conversation.space_id or conversation.person_id
-        group = bool(conversation.space_id)
+        target_kind = "space" if conversation.space_id else "person"
     return await social.execute(
-        "send_group_message" if group else "send_private_message",
-        {"target_id": target, "text": format_report(cycle)},
+        "send_message",
+        {
+            "target": {"kind": target_kind, "target_id": target},
+            "text": format_report(cycle),
+        },
         SocialContext(
             turn_id=cycle["id"],
             call_id="final-report",

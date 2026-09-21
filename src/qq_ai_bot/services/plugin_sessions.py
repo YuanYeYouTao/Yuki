@@ -170,7 +170,7 @@ class PluginAgentSessionService:
             )
             messages = self._compose_messages(authority, session, history)
             now = datetime.now(UTC)
-            # Tools deliberately remain unavailable in Plugin API 2.0's first
+            # Tools deliberately remain unavailable in the current Plugin API
             # session runtime.  Capability intersections are still persisted
             # and passed through AgentRuntime for a future reviewed backend.
             # Isolated plugin Agent sessions have no Conversation column; never

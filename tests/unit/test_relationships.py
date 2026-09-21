@@ -36,6 +36,7 @@ from qq_ai_bot.identity.canonical_repository import (
 from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel
 from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.llm.base import LLMProvider, LLMUnavailableError
+from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
@@ -499,13 +500,17 @@ async def test_direct_score_request_cannot_become_a_positive_change(database: Da
 async def test_relationship_evaluation_failure_does_not_change_completed_chat(
     database: Database,
 ) -> None:
-    harness = build_harness(database, make_settings(database.url))
+    harness = build_harness(
+        database,
+        make_settings(database.url),
+        FakeLLMProvider(lambda _: ChatResponse("", 0)),
+    )
     sender = MemorySender()
     result = await harness.processor.handle(
         inbound("你好", message_id="reply-before-evaluation"),
         sender,
     )
-    assert result.reason == "chat" and sender.messages
+    assert result.reason == "chat" and not sender.messages
     worker = RelationshipWorker(
         settings=harness.settings,
         jobs=harness.relationship_jobs,
@@ -518,7 +523,7 @@ async def test_relationship_evaluation_failure_does_not_change_completed_chat(
 
 
 @pytest.mark.asyncio
-async def test_only_successful_direct_chat_enqueues_relationship_job(database: Database) -> None:
+async def test_silent_direct_chat_does_not_enqueue_relationship_job(database: Database) -> None:
     harness = build_harness(database, make_settings(database.url))
     observed = await harness.processor.handle(
         inbound("未触发群聊", message_id="observe", group_id="2001"),
@@ -538,16 +543,16 @@ async def test_only_successful_direct_chat_enqueues_relationship_job(database: D
 
     message = inbound("普通聊天", message_id="successful")
     await harness.processor.handle(message, MemorySender())
-    assert await harness.relationship_jobs.pending_count() == 1
+    assert await harness.relationship_jobs.pending_count() == 0
     duplicate = await harness.processor.handle(message, MemorySender())
     assert duplicate.reason == "duplicate"
-    assert await harness.relationship_jobs.pending_count() == 1
+    assert await harness.relationship_jobs.pending_count() == 0
 
     await harness.processor.handle(
         inbound("发送失败", message_id="send-failure"),
         MemorySender(fail=True),
     )
-    assert await harness.relationship_jobs.pending_count() == 1
+    assert await harness.relationship_jobs.pending_count() == 0
 
 
 @pytest.mark.asyncio
@@ -712,7 +717,7 @@ class ToolDefinitionProvider(LLMProvider):
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
         self.request = request
-        return ChatResponse(content="正常回答", latency_seconds=0)
+        return ChatResponse(content="", latency_seconds=0)
 
 
 @pytest.mark.asyncio
@@ -790,7 +795,7 @@ async def test_relationship_context_contains_only_current_speaker_relationship(
     )
     assert '"stage":"friendly"' in context
     assert '"stage":"distant"' not in context
-    assert "好感度" not in sender.messages[0].text
+    assert not sender.messages
 
 
 async def _add_canonical_person_with_aliases(

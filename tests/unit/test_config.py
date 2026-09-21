@@ -312,7 +312,7 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
         "get_self_memories",
         "web_search",
         "automation_create",
-        "send_emoji",
+        "send_message",
     )
     assert settings.tooling_schema_token_budget == 12000
     assert settings.mcp_selected_tool_limit == 16
@@ -333,7 +333,6 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
     assert settings.emoji_selector_score_gap == 0.75
     assert settings.emoji_selector_timeout_seconds == 2
     assert not settings.plugin_system_enabled
-    assert settings.plugin_api_version == "2.0"
     assert settings.plugin_ai_session_max_history_messages == 200
     assert settings.plugin_external_event_context_limit == 10
     assert settings.plugin_external_event_context_characters == 6000
@@ -346,8 +345,6 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
     assert Settings.model_validate({"conversation_autonomous_debounce_seconds": 0})
     assert Settings.model_validate({"conversation_autonomous_debounce_seconds": 61})
     assert Settings.model_validate({"reply_hard_max_messages": 21})
-    with pytest.raises(ValidationError, match="PLUGIN_API_VERSION"):
-        Settings.model_validate({"plugin_api_version": "v1"})
     with pytest.raises(ValidationError, match="total plugin prompt budget"):
         Settings.model_validate(
             {

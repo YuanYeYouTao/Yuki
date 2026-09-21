@@ -8,8 +8,8 @@ from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
 from qq_ai_bot.emoji.classifier import EmojiClassifier
 from qq_ai_bot.emoji.collector import EmojiCollector
+from qq_ai_bot.emoji.delivery import EmojiDeliveryService
 from qq_ai_bot.emoji.detector import EmojiCandidateDetector
-from qq_ai_bot.emoji.effects import EmojiReplyEffectService
 from qq_ai_bot.emoji.grid import EmojiGridBuilder
 from qq_ai_bot.emoji.lifecycle import EmojiLifecycleService
 from qq_ai_bot.emoji.replacement import EmojiReplacementService
@@ -33,7 +33,7 @@ class EmojiBundle:
     lifecycle: EmojiLifecycleService
     collector: EmojiCollector
     selector: EmojiSelector
-    effects: EmojiReplyEffectService
+    delivery: EmojiDeliveryService
     worker: EmojiWorker | None
 
 
@@ -92,7 +92,7 @@ class EmojiModule:
             preprocessor=self._preprocessor,
             provider=self._vision_provider,
         )
-        effects = EmojiReplyEffectService(
+        delivery = EmojiDeliveryService(
             selector=selector,
             repository=self._repository,
             storage=storage,
@@ -113,7 +113,7 @@ class EmojiModule:
                 runtime_config=self._runtime_config,
             )
         self._lifecycle.register("emoji_collector", close=collector.close)
-        return EmojiBundle(storage, emoji_lifecycle, collector, selector, effects, worker)
+        return EmojiBundle(storage, emoji_lifecycle, collector, selector, delivery, worker)
 
     @staticmethod
     def register_worker(bundle: EmojiBundle, lifecycle: LifecycleRegistry) -> None:

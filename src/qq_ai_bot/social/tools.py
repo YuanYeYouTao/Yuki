@@ -15,7 +15,7 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
         },
     }
     message: dict[str, object] = {
-        "text": {"type": "string", "maxLength": 4000},
+        "text": {"type": "string", "maxLength": 12000},
         "artifact_id": {"type": "string", "description": "工作区对象 ID，不是路径或 URL"},
         "attachment_kind": {
             "type": "string",
@@ -92,20 +92,56 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
             ("kind",),
         ),
         tool(
-            "send_private_message",
-            "回复当前私聊对象使用 subject_ref=current_speaker，经当前接收账号发送；"
-            "联系其他人须主动路由可用。target_id 只接受 canonical UUID，不接受 QQ 号。"
-            "目标只选一种；uncertain 不要重发。",
-            {**selector, **message},
-        ),
-        tool(
-            "send_group_message",
-            "群内真正 @某人也必须用本工具的 mentions；普通回复文字不能产生 @。"
-            "省略群目标即当前群。Yuki 可向启用且允许主动发言的群发送。"
-            "目标只选一种；不解暂停、不换号试发。",
+            "send_message",
+            "回复当前用户或向外发消息时调用此工具；普通最终正文只是内部结果，不会送达。"
+            "一次调用的纯文本会按回复分条规则自动发送为一条或多条，每条均有投递回执；"
+            "也可以主动多次调用，发送后仍可继续工作。"
+            "省略 target 默认当前群或当前私聊；发给其他人或群时用 canonical 目标，"
+            "由后端选择私聊或群聊及发送账号。结果 uncertain 时不要重发。"
+            "群内真正 @某人使用 mentions，正文中的 @名字不会产生提醒。",
             {
-                **group_selector,
+                "target": {
+                    "type": "object",
+                    "description": (
+                        "可选；省略时发送到当前群或当前私聊。明确发给别处时须指定 kind 和唯一标识。"
+                    ),
+                    "properties": {
+                        "kind": {"type": "string", "enum": ["person", "space"]},
+                        **selector,
+                    },
+                    "required": ["kind"],
+                    "additionalProperties": False,
+                },
                 **message,
+                "voice": {
+                    "type": "object",
+                    "description": "将 text 合成为语音并立即发送；若还要文字，请再单独发送一条。",
+                    "properties": {
+                        "style_hint": {"type": "string", "maxLength": 128},
+                        "language": {"type": "string", "enum": ["auto", "zh", "jp"]},
+                        "request_basis": {
+                            "type": "string",
+                            "enum": ["user_requested", "agent_initiated"],
+                        },
+                    },
+                    "required": ["request_basis"],
+                    "additionalProperties": False,
+                },
+                "emoji": {
+                    "type": "object",
+                    "description": "选择一张已采用表情并立即发送；可与 text 同一条发送。",
+                    "properties": {
+                        "goal": {"type": "string", "maxLength": 300},
+                        "emotion": {"type": "string", "maxLength": 100},
+                    },
+                    "required": ["goal"],
+                    "additionalProperties": False,
+                },
+                "reply_to_event_id": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "可选；当前上下文中可见的内部 #EventRecord.id，非 QQ 消息号。",
+                },
                 "mentions": {
                     "type": "array",
                     "maxItems": 20,

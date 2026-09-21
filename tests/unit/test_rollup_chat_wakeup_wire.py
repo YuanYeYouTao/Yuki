@@ -23,6 +23,7 @@ async def test_rollup_interrupt_reenters_main_contract(database, tmp_path, monke
         [
             ("request_tools", {"query": "读取记录"}),
             ("request_tools", {"query": "读取记录"}),
+            ("send_message", {"text": "已经记录好了。"}),
             (None, None),
         ]
     )
@@ -30,7 +31,7 @@ async def test_rollup_interrupt_reenters_main_contract(database, tmp_path, monke
     def respond(request):
         name, arguments = next(steps)
         if name is None:
-            return ChatResponse("已经记录好了。", 0)
+            return ChatResponse("内部完成回执", 0)
         return ChatResponse(
             "",
             0,
@@ -113,14 +114,18 @@ async def test_rollup_interrupt_reenters_main_contract(database, tmp_path, monke
     result = await harness.processor.handle(message, sender)
     await wire.aclose()
     assert result.reason == "chat", result
-    assert sender.messages
+    assert not sender.messages
 
-    assert len(provider.requests) == 3
+    assert len(provider.requests) == 4
     assert any("等待期间的新补充" in (m.content or "") for m in provider.requests[1].messages)
-    assert provider.requests[0].tools == provider.requests[1].tools == provider.requests[2].tools
-    assert provider.requests[1].native_tools == provider.requests[2].native_tools
+    assert all(request.tools == provider.requests[0].tools for request in provider.requests[1:])
+    assert all(
+        request.native_tools == provider.requests[1].native_tools
+        for request in provider.requests[2:]
+    )
     assert not chat.rollup_wakeups.states
-    assert captured[0]["tools"] == captured[1]["tools"] == captured[2]["tools"]
+    assert len({json.dumps(item["tools"], sort_keys=True) for item in captured}) == 1
+    assert '"name":"send_message"' in json.dumps(captured, separators=(",", ":"))
     history_key = "input" if protocol == "responses" else "messages"
-    assert captured[2][history_key][: len(captured[1][history_key])] == captured[1][history_key]
+    assert captured[3][history_key][: len(captured[1][history_key])] == captured[1][history_key]
     assert len(consumed) == 1 and consumed[0][1] > 0

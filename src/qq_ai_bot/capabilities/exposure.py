@@ -18,9 +18,7 @@ from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.runtime.contracts import CapabilityExposureSnapshot, MemoryCapabilityView
 
 RESIDENT_KERNEL_TOOLS = frozenset({REQUEST_TOOLS_NAME})
-CONDITIONAL_KERNEL_TOOLS = frozenset(
-    {"get_my_capabilities", "read_tool_artifact", "set_reply_target"}
-)
+CONDITIONAL_KERNEL_TOOLS = frozenset({"get_my_capabilities", "read_tool_artifact"})
 DEFAULT_LEXICAL_CANDIDATE_LIMIT = 10
 DEFAULT_NON_RESIDENT_LIMIT = 8
 DEFAULT_FIRST_ROUND_HARD_CAP = 16
@@ -157,7 +155,6 @@ class AuthorityFirstExposurePlanner:
         kernel_tools: tuple[ChatTool, ...],
         query: str,
         artifact_available: bool,
-        reply_target_available: bool,
         priority_ids: tuple[str, ...] = (),
     ) -> ExposurePlan:
         by_id = {entry.descriptor.model_name: entry for entry in catalog.entries}
@@ -189,8 +186,6 @@ class AuthorityFirstExposurePlanner:
             if name == "get_my_capabilities":
                 continue
             if name == "read_tool_artifact" and not artifact_available:
-                continue
-            if name == "set_reply_target" and not reply_target_available:
                 continue
             add(candidate)
 

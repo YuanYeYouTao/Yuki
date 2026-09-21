@@ -662,7 +662,6 @@ class MessageProcessor:
         )
         self._chat.configure_runtime_controls(runtime_snapshot)
         self._turn_coordinator.configure_policy(
-            cancel_replies_on_new_message=runtime_snapshot.reply.cancel_on_new_message,
             interrupt_autonomous_on_new_message=(
                 runtime_snapshot.conversation_policy().interrupt_autonomous_on_new_message
             ),

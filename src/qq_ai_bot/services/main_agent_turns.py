@@ -290,9 +290,6 @@ class MainAgentTurnService:
                         suppress_delivery=True,
                     )
                 if isinstance(saved.get("sync_result"), str):
-                    restore_reply = getattr(backend, "restore_reply_state", None)
-                    if callable(restore_reply):
-                        restore_reply(saved.get("sync_reply_state", {}))
                     return AgentRunResult(
                         text=saved["sync_result"],
                         suppress_delivery=bool(saved.get("sync_suppress_delivery", False)),
@@ -304,7 +301,6 @@ class MainAgentTurnService:
                     )
 
             # Synchronous plugin/automation calls return to their owning step.
-            # Their owner supplies an explicit progress-delivery callback.
             async with activate_work(
                 repository,
                 runtime.canonical_conversation_id,
@@ -320,7 +316,6 @@ class MainAgentTurnService:
                 },
                 validate,
             ) as bounded:
-                bounded.deliver_progress = runtime.deliver_progress
                 if bounded.current is None and runtime.invocation_goal:
                     await bounded.execute(
                         "task_control",
@@ -347,7 +342,6 @@ class MainAgentTurnService:
                             bounded.current["id"],
                             {
                                 "sync_result": result.text,
-                                "sync_reply_state": getattr(backend, "export_reply_state", dict)(),
                                 "sync_suppress_delivery": result.suppress_delivery,
                             },
                         )

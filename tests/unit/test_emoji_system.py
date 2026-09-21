@@ -64,8 +64,6 @@ def _runtime(**updates: object) -> EmojiRuntimeConfig:
         selector_candidate_count=3,
         selector_score_gap=0.75,
         selector_timeout_seconds=2,
-        max_effects_per_reply=1,
-        spontaneous_frequency=0.15,
         near_duplicate_enabled=True,
         near_duplicate_distance=6,
         same_emoji_cooldown_seconds=0,

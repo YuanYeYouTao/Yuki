@@ -88,7 +88,7 @@ async def social_env(database, tmp_path):
 
 async def test_recall_uses_original_presence(social_env, route_state):
     env = social_env
-    sent = await env.service.execute("send_group_message", {"text": "hello"}, env.context)
+    sent = await env.service.execute("send_message", {"text": "hello"}, env.context)
     other = Bot("80002")
     async with env.db.sessions() as session, session.begin():
         second = await ensure_presence(session, other.self_id)
@@ -158,7 +158,7 @@ async def test_multiple_space_bindings_require_explicit_selection(social_env):
 
 async def test_recall_rechecks_connection_before_claim(social_env, monkeypatch):
     env = social_env
-    sent = await env.service.execute("send_group_message", {"text": "hello"}, env.context)
+    sent = await env.service.execute("send_message", {"text": "hello"}, env.context)
     async with env.db.sessions() as session:
         event = await session.scalar(
             select(ChatEventModel).where(
@@ -271,7 +271,7 @@ async def test_real_mentions_preserve_segments_and_replay(social_env, attachment
     if attachment:
         artifact = env.store.write("hello.txt", b"hello")
         args.update(artifact_id=artifact["artifact_id"], attachment_kind=attachment)
-    result = await env.service.execute("send_group_message", args, env.context)
+    result = await env.service.execute("send_message", args, env.context)
     assert result["status"] == "succeeded"
     sends = [params for action, params in env.bot.calls if action == "send_group_msg"]
     assert len(sends) == 1
@@ -284,7 +284,7 @@ async def test_real_mentions_preserve_segments_and_replay(social_env, attachment
         ).all()
         assert any('"at"' in str(event.segments_json) for event in events)
     effects = [call for call in env.bot.calls if call[0] in {"send_group_msg", "upload_group_file"}]
-    assert await env.service.execute("send_group_message", args, env.context) == result
+    assert await env.service.execute("send_message", args, env.context) == result
     assert effects == [
         call for call in env.bot.calls if call[0] in {"send_group_msg", "upload_group_file"}
     ]
@@ -326,7 +326,7 @@ async def current_speaker_mention(env):
     try:
         result = await invoke_social(
             env.service,
-            "send_group_message",
+            "send_message",
             {
                 "mentions": [{"subject_ref": "current_speaker"}],
                 "text": "test",
@@ -344,14 +344,14 @@ async def test_mentions_reject_ambiguous_or_nonmember_accounts(social_env):
     binding = await add_second_account(env)
     with pytest.raises(SocialError, match="binding_ambiguous"):
         await env.service.execute(
-            "send_group_message",
+            "send_message",
             {"mentions": [{"target_id": env.person}], "text": "hello"},
             env.context,
         )
     env.bot.missing.add("10002")
     with pytest.raises(SocialError, match="group_member_unavailable"):
         await env.service.execute(
-            "send_group_message",
+            "send_message",
             {"mentions": [{"target_id": env.person, "binding_id": binding}]},
             env.context,
         )

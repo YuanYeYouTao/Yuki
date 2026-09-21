@@ -88,7 +88,6 @@ class AgentRuntime:
     context_token_limit: int | None = None
     invocation_source: dict[str, Any] | None = None
     invocation_goal: str | None = None
-    deliver_progress: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,9 +238,7 @@ class AgentRunner:
         previous_batch_fingerprint: tuple[tuple[str, str, str], ...] | None = None
         repeated_batch_count = 0
         no_progress_recovery = False
-        force_finalization = False
         reusable_tool_results: dict[tuple[str, str], str] = {}
-        finalization_prompt_added = False
         await self._prepare_tools(tools, runtime)
         if runtime.work_control is not None:
             from dataclasses import asdict
@@ -264,12 +261,6 @@ class AgentRunner:
             ).hexdigest()
             runtime.work_control.session = WorkSession(runtime.work_control, contract)
             transcript = await runtime.work_control.session.restore(transcript)
-            restore_reply = getattr(tools, "restore_reply_state", None)
-            if callable(restore_reply) and "reply_state" in runtime.work_control.session.progress:
-                restore_reply(runtime.work_control.session.progress["reply_state"])
-            runtime.work_control.session.reply_state_reader = getattr(
-                tools, "export_reply_state", None
-            )
             repeated_batch_count = int(runtime.work_control.session.progress.get("repeats", 0))
             if runtime.work_control.handoff_work_id is not None:
                 await runtime.work_control.session.save("paired")
@@ -349,28 +340,6 @@ class AgentRunner:
                 native_definitions = self._merge_native_tools(
                     continuation_native_tools, native_definitions
                 )
-            finalization_only = force_finalization or (
-                runtime.work_control is None and request_index + 1 >= runtime.max_model_requests
-            )
-            if finalization_only:
-                # Chat Completions can omit tools entirely. Responses continuations
-                # must retain every previously declared schema, so keep those
-                # definitions but force tool_choice=none below.
-                if transcript.continuation is None and fixed_definitions is None:
-                    definitions = ()
-                    native_definitions = ()
-                if not finalization_prompt_added:
-                    transcript.append(
-                        ChatMessage(
-                            role="system",
-                            content=(
-                                "这是本轮预留的最终回复请求。不得继续调用工具；请只根据"
-                                "当前对话和已经取得的工具结果，给出简短、真实的最终答复。"
-                                "不得声称未成功的操作已经完成。"
-                            ),
-                        )
-                    )
-                    finalization_prompt_added = True
             if (
                 no_progress_recovery
                 and transcript.continuation is None
@@ -416,7 +385,7 @@ class AgentRunner:
                     tools=definitions,
                     tool_choice=(
                         "none"
-                        if (compacting or finalization_only or no_progress_recovery)
+                        if (compacting or no_progress_recovery)
                         and (definitions or native_definitions)
                         else ("auto" if definitions or native_definitions else None)
                     ),
@@ -436,7 +405,7 @@ class AgentRunner:
                     request_index + 1,
                     definitions,
                     native_definitions,
-                    finalization=finalization_only,
+                    finalization=False,
                     web_mode=web_mode.value,
                 )
                 execute = (
@@ -665,14 +634,13 @@ class AgentRunner:
                         )
                     )
                     continue
-                # A neutral turn may answer directly. Admission is enforced before
-                # executing work tools, not by forcing every answer through a tool.
+                # The final body is internal; the main backend can reject an
+                # unsent user-facing answer without implicitly delivering it.
                 if "[提及" in content:
                     if (
                         not mention_recovery_used
-                        and not finalization_only
                         and request_index + 1 < runtime.max_model_requests
-                        and any(tool.name == "send_group_message" for tool in definitions)
+                        and any(tool.name == "send_message" for tool in definitions)
                     ):
                         mention_recovery_used = True
                         if response.continuation is None:
@@ -683,7 +651,7 @@ class AgentRunner:
                                 content=(
                                     "上一回复含 [提及…] 历史占位标记，已拦截且未发送；"
                                     "该占位标记不是发送回执。若用户要求提醒成员，"
-                                    "先明确人物，再用 send_group_message.mentions 发送；"
+                                    "先明确人物，再用 send_message.mentions 发送；"
                                     "普通正文和 @名字都不能触发提醒。无法执行时如实说明。"
                                 ),
                             )
@@ -699,8 +667,6 @@ class AgentRunner:
                     if response.continuation is None and not response.tool_calls:
                         transcript.append(ChatMessage(role="assistant", content=content))
                     transcript.append(ChatMessage(role="system", content=issue))
-                    if runtime.work_control is not None:
-                        runtime.work_control.chat_answer = None
                     continue
                 if tools is not None:
                     content = tools.finalize(content, runtime)
@@ -710,25 +676,29 @@ class AgentRunner:
                     and tools.has_visible_effects()  # type: ignore[attr-defined]
                 )
                 if not content.strip() and not has_visible_effects:
-                    if empty_retries >= 2 or request_index + 1 >= runtime.max_model_requests:
-                        raise LLMEmptyResponseError("model returned no final answer")
-                    empty_retries += 1
-                    logger.warning(
-                        "agent_empty_final_retry retry=%d tool_calls_used=%d",
-                        empty_retries,
-                        calls_used,
-                    )
-                    transcript.append(
-                        ChatMessage(
-                            role="system",
-                            content=(
-                                "上一响应正文为空；回执仍保留，不能据此断言整个任务完成。"
-                                "根据目标和真实结果选择继续执行、等待或回答；"
-                                "不要重复已经成功的工具调用，也不要只描述发送模式。"
-                            ),
+                    allow_silence = getattr(tools, "allow_silent_final", None)
+                    if callable(allow_silence) and allow_silence(runtime):
+                        logger.info("agent_silent_final origin=%s", runtime.origin.value)
+                    else:
+                        if empty_retries >= 2 or request_index + 1 >= runtime.max_model_requests:
+                            raise LLMEmptyResponseError("model returned no final answer")
+                        empty_retries += 1
+                        logger.warning(
+                            "agent_empty_final_retry retry=%d tool_calls_used=%d",
+                            empty_retries,
+                            calls_used,
                         )
-                    )
-                    continue
+                        transcript.append(
+                            ChatMessage(
+                                role="system",
+                                content=(
+                                    "上一响应正文为空；回执仍保留，不能据此断言整个任务完成。"
+                                    "根据目标和真实结果选择继续执行、等待或回答；"
+                                    "不要重复已经成功的工具调用，也不要只描述发送模式。"
+                                ),
+                            )
+                        )
+                        continue
                 if control is not None and control.current is not None and control.ending is None:
                     # Infer lifecycle completion from a real final answer, but use
                     # the same receipt validation as explicit task_control.complete.
@@ -771,26 +741,6 @@ class AgentRunner:
                     await control.session.save("paired")
                 return AgentRunResult(
                     text=content,
-                    tool_calls_used=calls_used,
-                    model_requests=request_index + 1,
-                    web_was_used=web_was_used,
-                    native_tool_events=tuple(native_events),
-                    citations=tuple(citations),
-                    response_status=response_status,
-                )
-            if finalization_only:
-                logger.warning(
-                    "agent_finalization_tool_call_rejected tool_calls=%d model_requests=%d",
-                    len(response.tool_calls),
-                    request_index + 1,
-                )
-                exhausted = (
-                    tools.exhausted(runtime)
-                    if tools is not None
-                    else "工具调用次数过多，Agent 已停止。"
-                )
-                return AgentRunResult(
-                    text=exhausted,
                     tool_calls_used=calls_used,
                     model_requests=request_index + 1,
                     web_was_used=web_was_used,
@@ -915,7 +865,8 @@ class AgentRunner:
                     )
                 if (
                     runtime.work_control.ending == "completed"
-                    and runtime.work_control.completion_delivered
+                    and runtime.work_control.source.get("delivery_contract") != "return_to_caller"
+                    and not runtime.work_control.lease.work_id
                     and not await runtime.work_control.pending()
                 ):
                     runtime.work_control.final_delivery = True
@@ -943,44 +894,6 @@ class AgentRunner:
                         suppress_delivery=True,
                         work_state=runtime.work_control.ending,
                     )
-            if runtime.work_control is not None and runtime.work_control.chat_answer is not None:
-                content = runtime.work_control.chat_answer
-                feedback = getattr(tools, "response_feedback", None)
-                issue = feedback(content, runtime) if callable(feedback) else None
-                if issue:
-                    if answer_recovery_used or request_index + 1 >= runtime.max_model_requests:
-                        raise LLMError("model repeated an unsupported final response")
-                    answer_recovery_used = True
-                    if response.continuation is None and not response.tool_calls:
-                        transcript.append(ChatMessage(role="assistant", content=content))
-                    transcript.append(ChatMessage(role="system", content=issue))
-                    if runtime.work_control is not None:
-                        runtime.work_control.chat_answer = None
-                    continue
-                if tools is not None:
-                    content = tools.finalize(content, runtime)
-                return AgentRunResult(
-                    text=content,
-                    tool_calls_used=calls_used,
-                    model_requests=request_index + 1,
-                    web_was_used=web_was_used,
-                    native_tool_events=tuple(native_events),
-                    citations=tuple(citations),
-                    response_status=response_status,
-                )
-            if tools is not None:
-                declined = getattr(tools, "declined_reply", None)
-                if callable(declined) and declined():
-                    return AgentRunResult(
-                        text="",
-                        tool_calls_used=calls_used,
-                        model_requests=request_index + 1,
-                        web_was_used=web_was_used,
-                        native_tool_events=tuple(native_events),
-                        citations=tuple(citations),
-                        response_status=response_status,
-                        suppress_delivery=True,
-                    )
             fingerprint = tuple(
                 (call.function.name, self._tool_call_signature(call)[1], result)
                 for call, result, _was_executed in batch
@@ -1005,7 +918,6 @@ class AgentRunner:
 
                     raise WorkNoProgress("repeated_tool_results")
                 no_progress_recovery = True
-                force_finalization = True
                 logger.warning(
                     "agent_tool_no_progress_detected repeated_batches=%d tool_calls_used=%d",
                     repeated_batch_count,
@@ -1021,16 +933,6 @@ class AgentRunner:
                             ),
                         )
                     )
-            if runtime.work_control is None and (
-                calls_used >= runtime.max_tool_calls
-                or (request_index + 2 >= runtime.max_model_requests)
-            ):
-                force_finalization = True
-                logger.info(
-                    "agent_final_reply_budget_reserved tool_calls_used=%d model_requests=%d",
-                    calls_used,
-                    request_index + 1,
-                )
             if tools is not None:
                 effect_probe = getattr(tools, "did_use_web", None)
                 if callable(effect_probe) and effect_probe():
@@ -1081,16 +983,6 @@ class AgentRunner:
         """Execute each semantic call once and fan its result out to duplicate IDs."""
 
         control = runtime.work_control
-        if control is not None and await control.pending():
-            result = json.dumps(
-                {"ok": False, "error": "new_input_before_execution", "executed": False}
-            )
-            return CoordinatedToolResult(
-                calls=tuple((call, result, False) for call in calls),
-                executed_count=0,
-                reused_count=0,
-            )
-
         control_calls = [call for call in calls if call.function.name in WORK_CONTROL_NAMES]
         if control_calls:
             if len(calls) != 1:
@@ -1135,13 +1027,14 @@ class AgentRunner:
                 reused_count=0,
             )
 
-        if (
-            control is not None
+        work_admission_blocked = {
+            call.id
+            for call in calls
+            if control is not None
             and control.current is None
-            and any(self._is_side_effecting(tools, call, runtime) for call in calls)
-        ):
-            result = json.dumps({"ok": False, "error": "accept_work_before_execution"})
-            return CoordinatedToolResult(tuple((call, result, False) for call in calls), 0)
+            and call.function.name != "send_message"
+            and self._is_side_effecting(tools, call, runtime)
+        }
 
         signatures = {call.id: self._tool_call_signature(call) for call in calls}
         first_call_by_signature: dict[tuple[str, str], ToolCall] = {}
@@ -1150,6 +1043,11 @@ class AgentRunner:
         aliases: dict[str, str] = {}
         unique_calls: list[ToolCall] = []
         for call in calls:
+            if call.id in work_admission_blocked:
+                rejected_by_id[call.id] = json.dumps(
+                    {"ok": False, "error": "accept_work_before_execution"}
+                )
+                continue
             if call.function.name not in declared_names:
                 rejected_by_id[call.id] = json.dumps(
                     {
@@ -1186,7 +1084,10 @@ class AgentRunner:
                     if call.function.name != "memory_change"
                     and self._is_side_effecting(tools, call, runtime)
                 ]
-                if conflicting:
+                non_delivery_conflicts = [
+                    call for call in conflicting if call.function.name != "send_message"
+                ]
+                if non_delivery_conflicts:
                     violation = json.dumps(
                         {
                             "ok": False,
@@ -1200,25 +1101,19 @@ class AgentRunner:
                         executed_count=0,
                         reused_count=0,
                     )
-            decline_calls = [call for call in unique_calls if call.function.name == "decline_reply"]
-            if decline_calls:
-                prior_effects = getattr(tools, "has_prior_reply_effects", None)
-                mixed = len(unique_calls) != 1 or len(calls) != 1
-                already_used = bool(callable(prior_effects) and prior_effects())
-                if mixed or already_used:
-                    violation = json.dumps(
+                for call in conflicting:
+                    rejected_by_id[call.id] = json.dumps(
                         {
                             "ok": False,
-                            "error": "decline_reply_batch_rejected",
-                            "detail": "decline_reply 必须是尚未产生效果时的单独调用。",
+                            "error": "delivery_requires_observed_result",
+                            "executed": False,
+                            "detail": "先观察记忆写入的真实回执，再决定要发送的内容。",
                         },
                         ensure_ascii=False,
                     )
-                    return CoordinatedToolResult(
-                        calls=tuple((call, violation, False) for call in calls),
-                        executed_count=0,
-                        reused_count=0,
-                    )
+                unique_calls = [
+                    call for call in unique_calls if call.function.name != "send_message"
+                ]
             tools.begin_batch(tuple(unique_calls), runtime)
         coordinated = await self._tool_coordinator.execute_batch(
             tuple(unique_calls),

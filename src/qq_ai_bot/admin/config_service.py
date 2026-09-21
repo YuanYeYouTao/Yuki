@@ -1477,7 +1477,6 @@ class RuntimeConfigService:
                 delay_min_seconds=delay_min,
                 delay_max_seconds=delay_max,
                 max_qq_message_chars=int(cast(int, value("reply.max_qq_message_chars"))),
-                cancel_on_new_message=bool(value("reply.cancel_on_new_message")),
                 hard_max_messages=int(cast(int, value("reply.hard_max_messages"))),
             ),
             llm=LLMRuntimeConfig(
@@ -1629,10 +1628,6 @@ class RuntimeConfigService:
                 selector_timeout_seconds=float(
                     cast(float | int, value("emoji.selector_timeout_seconds"))
                 ),
-                max_effects_per_reply=int(cast(int, value("emoji.max_effects_per_reply"))),
-                spontaneous_frequency=float(
-                    cast(float | int, value("emoji.spontaneous_frequency"))
-                ),
                 near_duplicate_enabled=bool(value("emoji.near_duplicate_enabled")),
                 near_duplicate_distance=int(cast(int, value("emoji.near_duplicate_distance"))),
                 same_emoji_cooldown_seconds=int(
@@ -1658,7 +1653,7 @@ class RuntimeConfigService:
                 root=str(value("speech.root")),
                 genie_data_dir=str(value("genie.data_dir")),
                 default_profile=str(value("speech.default_profile") or ""),
-                agent_effects_enabled=bool(value("speech.agent_effects_enabled")),
+                agent_delivery_enabled=bool(value("speech.agent_delivery_enabled")),
                 default_mode=str(value("speech.default_mode")),
                 split_sentence=bool(value("speech.split_sentence")),
                 max_synthesis_characters=(
@@ -1681,9 +1676,6 @@ class RuntimeConfigService:
                 automation_enabled=bool(value("speech.automation_enabled")),
                 plugin_enabled=bool(value("speech.plugin_enabled")),
                 text_fallback_enabled=bool(value("speech.text_fallback_enabled")),
-                spontaneous_frequency=float(
-                    cast(float | int, value("speech.spontaneous_frequency"))
-                ),
             ),
             conversation=ConversationRuntimeConfig(
                 autonomous_enabled=bool(value("conversation.autonomous_enabled")),

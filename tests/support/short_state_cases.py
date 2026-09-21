@@ -76,9 +76,7 @@ async def run_short_state_cases(database, tmp_path, context):
     copied[0].parameters["injected"] = True
     assert await contract.definitions() == declared
     assert contract.revision == revision
-    assert {"update_short_state", "call_onebot_api", "decline_reply", "set_reply_layout"} <= {
-        t.name for t in declared
-    }
+    assert {"update_short_state", "call_onebot_api", "send_message"} <= {t.name for t in declared}
     config = await chat._runtime_config.snapshot()
     runtime = AgentRuntime(
         origin=TurnOrigin.USER_MESSAGE,
@@ -224,7 +222,7 @@ async def run_short_state_cases(database, tmp_path, context):
     assert calls == 2
     assert provider.requests[start].tools == provider.requests[start + 1].tools == declared
     assert provider.requests[start].messages[-1] == provider.requests[start + 1].messages[2]
-    assert provider.requests[start + 1].tool_choice == "none"
+    assert provider.requests[start + 1].tool_choice == "auto"
     provider._responder = lambda request: "91"
     await chat._main_turns.run(await state.inject(initial), runtime, ShortStateOnlyBackend(state))
     assert "91" in provider.requests[-1].messages[-1].content

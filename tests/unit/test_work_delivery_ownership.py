@@ -114,7 +114,7 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
                 "accept",
             ),
             call(
-                "send_group_message",
+                "send_message",
                 {
                     "artifact_id": artifact["artifact_id"],
                     "attachment_kind": "file",
@@ -220,7 +220,7 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
                     "resend-accept",
                 ),
                 call(
-                    "send_group_message",
+                    "send_message",
                     {
                         "artifact_id": artifact["artifact_id"],
                         "attachment_kind": "file",
@@ -283,7 +283,7 @@ async def test_file_receipt_survives_caption_failure_and_other_targets_still_nee
         "task_control", {"action": "accept", "goal": "file", "output_kind": "artifact"}, "accept"
     )
     control.observe_result(
-        "send_group_message",
+        "send_message",
         json.dumps(
             {
                 "ok": True,

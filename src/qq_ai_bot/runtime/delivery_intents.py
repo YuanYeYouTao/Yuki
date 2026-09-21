@@ -70,9 +70,7 @@ async def reserve(
             )
         ).all()
         used = sum(row.message_count for row in recent)
-        allowed = used + count <= (15 if kind == "progress" else 16)
-        if kind == "progress" and control.progress_count >= 4:
-            allowed = False
+        allowed = used + count <= 16
         not_before = (recent[0].created + 60) if recent else now + 60
         if prior:
             await session.execute(
@@ -109,7 +107,7 @@ async def reserve(
                 .returning(work.c.sent_messages)
             )
             control.current["sent_messages"] = total
-    if not allowed and kind != "progress":
+    if not allowed:
         raise DeliveryDeferred("delivery_window_deferred", not_before=not_before)
     return bool(allowed)
 

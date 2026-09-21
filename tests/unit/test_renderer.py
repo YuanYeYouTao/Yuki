@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from qq_ai_bot.services.renderer import clean_model_output
+from qq_ai_bot.services.renderer import sanitize_model_output
 
 
 @pytest.mark.parametrize(
@@ -16,8 +16,17 @@ from qq_ai_bot.services.renderer import clean_model_output
         ("#37483 第一行\n#37484>第二行", "第一行\n第二行"),
     ),
 )
-def test_clean_model_output_strips_line_leading_event_numbers(
+def test_sanitize_model_output_strips_line_leading_event_numbers(
     raw: str,
     expected: str,
 ) -> None:
-    assert clean_model_output(raw, max_characters=12_000) == expected
+    assert sanitize_model_output(raw, max_characters=12_000) == expected
+
+
+def test_sanitize_model_output_preserves_model_authored_sources_and_links() -> None:
+    text = (
+        "结论。[1]\n\n来源：\n1. 模型选择的来源\n"
+        "https://example.com/reference\n[说明](https://example.org/details)"
+    )
+
+    assert sanitize_model_output(text, max_characters=12_000) == text

@@ -152,14 +152,14 @@ class EmojiPreparationResult(_FrozenModel):
 
 
 class EmojiIntent(StrEnum):
-    """Whether the current user explicitly requested an emoji reply effect."""
+    """Whether the current user explicitly requested an emoji delivery."""
 
     NEUTRAL = "neutral"
     EXPLICIT_REQUEST = "explicit_request"
 
 
 class EmojiReplyPlan(_FrozenModel):
-    """Reply-effect behavioural intent; it never contains an asset identifier."""
+    """Emoji delivery intent; it never contains an asset identifier."""
 
     # The LLM boundary model accepts JSON enum strings. Other persisted/runtime
     # emoji models remain strict.
@@ -189,8 +189,8 @@ class EmojiReplyPlan(_FrozenModel):
         return self.mode is EmojiReplyMode.EMOJI_ONLY or self.placement is EmojiPlacement.ONLY
 
 
-class PendingReplyEffect(_FrozenModel):
-    """A queued user-visible effect created by the Agent tool, plugin, or automation."""
+class EmojiDeliveryRequest(_FrozenModel):
+    """One explicit Agent request for backend-selected emoji media."""
 
     kind: Literal["emoji"] = "emoji"
     mode: EmojiReplyMode
@@ -198,7 +198,6 @@ class PendingReplyEffect(_FrozenModel):
     goal: str = Field(default="", max_length=300)
     emotion: str = Field(default="", max_length=100)
     explicit_request: bool = False
-    source: Literal["planner", "agent", "plugin", "automation"]
 
 
 class StoredEmojiMedia(_FrozenModel):
