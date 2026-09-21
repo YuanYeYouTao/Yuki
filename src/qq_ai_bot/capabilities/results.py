@@ -312,7 +312,6 @@ def resolve_mutation_commit(
     if descriptor.effect in {
         CapabilityEffect.READ_STATE,
         CapabilityEffect.EXTERNAL_READ,
-        CapabilityEffect.REPLY_EFFECT,
     }:
         return False
     if descriptor.effect in {

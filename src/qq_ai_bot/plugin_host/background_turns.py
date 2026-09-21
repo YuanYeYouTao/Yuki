@@ -310,7 +310,6 @@ class PluginBackgroundTurnWorker:
         )
         self._chat.configure_runtime_controls(runtime)
         self._turns.configure_policy(
-            cancel_replies_on_new_message=runtime.reply.cancel_on_new_message,
             interrupt_autonomous_on_new_message=(
                 runtime.conversation_policy().interrupt_autonomous_on_new_message
             ),
@@ -377,8 +376,7 @@ class PluginBackgroundTurnWorker:
             if not completed:
                 return
             logger.info(
-                "plugin_background_turn_completed plugin_id=%s event_id=%d "
-                "model_requests=%d",
+                "plugin_background_turn_completed plugin_id=%s event_id=%d model_requests=%d",
                 job.plugin_id,
                 event.id,
                 result.model_requests,

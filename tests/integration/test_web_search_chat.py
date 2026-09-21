@@ -132,14 +132,7 @@ class WebToolLLM(LLMProvider):
             assert result["evidence_state"]["delivery"] == "staged"
         if not result.get("ok"):
             return ChatResponse(content="联网查询暂时失败，请稍后再试。", latency_seconds=0)
-        return ChatResponse(
-            content=(
-                "DeepSeek 最近更新了工具调用能力。[1]\n\n"
-                "来源：\n1. 模型编造来源\nhttps://fake.example/not-real\n"
-                "https://example.com/deepseek-update"
-            ),
-            latency_seconds=0,
-        )
+        return ChatResponse(content="", latency_seconds=0)
 
 
 class ToolGatewaySender(MemorySender):
@@ -221,7 +214,7 @@ class WebThenOneBotLLM(LLMProvider):
                     ),
                 ),
             )
-        return ChatResponse(content="已按授权完成操作。", latency_seconds=0)
+        return ChatResponse(content="", latency_seconds=0)
 
 
 class RepeatedWebToolLLM(LLMProvider):
@@ -247,7 +240,7 @@ class RepeatedWebToolLLM(LLMProvider):
                 ),
             )
         assert "web_tool_limit_exceeded" in (request.messages[-1].content or "")
-        return ChatResponse(content="已根据前三次搜索完成回答。", latency_seconds=0)
+        return ChatResponse(content="", latency_seconds=0)
 
 
 class NativeWebLLM(LLMProvider):
@@ -256,7 +249,7 @@ class NativeWebLLM(LLMProvider):
     async def complete(self, request: ChatRequest) -> ChatResponse:
         del request
         return ChatResponse(
-            content="公开文档确认了该信息：https://example.com/native-docs",
+            content="",
             latency_seconds=0,
             native_tool_events=(
                 NativeToolEvent(
@@ -313,7 +306,7 @@ class NativeSourceFailureThenTavilyLLM(LLMProvider):
                 ),
             )
         assert request.messages[-1].role == "tool"
-        return ChatResponse(content="已通过备用搜索核验。", latency_seconds=0)
+        return ChatResponse(content="", latency_seconds=0)
 
 
 class DomainRoutedTavilyLLM(LLMProvider):
@@ -350,7 +343,7 @@ class DomainRoutedTavilyLLM(LLMProvider):
             )
         payload = json.loads(request.messages[-1].content or "{}")
         assert payload["ok"] is True
-        return ChatResponse(content="这个仓库是 Yuki QQ 机器人项目。", latency_seconds=0)
+        return ChatResponse(content="", latency_seconds=0)
 
 
 class TargetMissThenTavilyLLM(LLMProvider):
@@ -382,7 +375,7 @@ class TargetMissThenTavilyLLM(LLMProvider):
                     ),
                 ),
             )
-        return ChatResponse(content="Tavily 已经读取到指定页面。", latency_seconds=0)
+        return ChatResponse(content="", latency_seconds=0)
 
 
 def web_settings(database: Database):
@@ -395,7 +388,7 @@ def web_settings(database: Database):
 
 
 @pytest.mark.asyncio
-async def test_native_web_sources_are_persisted_before_backend_rendering(
+async def test_native_web_sources_are_persisted_without_implicit_rendering(
     database: Database,
 ) -> None:
     settings = make_settings(
@@ -412,10 +405,8 @@ async def test_native_web_sources_are_persisted_before_backend_rendering(
         sender,
     )
 
-    assert result.sent_messages == 1
-    assert sender.messages[0].text == (
-        "公开文档确认了该信息：\n\n来源：\n1. Native docs\n   https://example.com/native-docs"
-    )
+    assert result.sent_messages == 0
+    assert not sender.messages
     source = await harness.ledger.find_by_platform_message(
         bot_user_id="8000", platform_message_id="native-visible"
     )
@@ -454,9 +445,8 @@ async def test_chat_completions_profile_can_request_tavily_without_native(
         sender,
     )
 
-    assert result.sent_messages == 1
-    assert sender.messages[0].text.startswith("已通过备用搜索核验。\n\n来源：")
-    assert "https://example.com/deepseek-update" in sender.messages[0].text
+    assert result.sent_messages == 0
+    assert not sender.messages
     assert len(llm.requests) == 2
     assert llm.requests[0].tools == llm.requests[1].tools
 
@@ -496,7 +486,7 @@ async def test_domain_text_does_not_fabricate_a_deployment_route(
     )
 
     assert result.reason == "chat"
-    assert [message.text for message in sender.messages] == ["这个仓库是 Yuki QQ 机器人项目。"]
+    assert not sender.messages
     assert web.extract_requests == [(target_url, "这个项目是什么")]
     assert len(llm.requests) == 2
     assert llm.requests[0].tools == llm.requests[1].tools
@@ -575,7 +565,7 @@ async def test_chat_completions_url_read_uses_read_webpage(
     )
 
     assert result.reason == "chat"
-    assert [message.text for message in sender.messages] == ["Tavily 已经读取到指定页面。"]
+    assert not sender.messages
     assert web.extract_requests == [(target_url, "读取用户指定的网页")]
     assert len(llm.requests) == 2
     assert llm.requests[0].tools == llm.requests[1].tools
@@ -587,7 +577,7 @@ async def test_chat_completions_url_read_uses_read_webpage(
 
 
 @pytest.mark.asyncio
-async def test_normal_web_answer_hides_sources_and_model_generated_links(
+async def test_web_result_observation_stays_redacted_without_implicit_delivery(
     database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -603,7 +593,7 @@ async def test_normal_web_answer_hides_sources_and_model_generated_links(
     )
 
     assert result.reason == "chat"
-    assert [message.text for message in sender.messages] == ["DeepSeek 最近更新了工具调用能力。"]
+    assert not sender.messages
     assert web.search_requests[0].query == "最新 DeepSeek 更新"
     observations = [
         json.loads(record.getMessage().removeprefix("agent_evidence "))
@@ -625,97 +615,6 @@ async def test_normal_web_answer_hides_sources_and_model_generated_links(
 
 
 @pytest.mark.asyncio
-async def test_explicit_request_sends_backend_rendered_real_sources(
-    database: Database,
-) -> None:
-    llm = WebToolLLM()
-    harness = build_harness(
-        database,
-        web_settings(database),
-        llm,
-        web_provider=FakeWebSearchProvider(response=web_response()),
-    )
-    sender = MemorySender()
-
-    result = await harness.processor.handle(
-        event(
-            "最近 DeepSeek 有什么更新？请附上来源。",
-            message_id="web-visible",
-        ),
-        sender,
-    )
-
-    assert result.sent_messages == 1
-    assert sender.messages[0].text == (
-        "DeepSeek 最近更新了工具调用能力。\n\n"
-        "来源：\n1. DeepSeek 官方更新\n   https://example.com/deepseek-update"
-    )
-    assert "fake.example" not in "\n".join(message.text for message in sender.messages)
-
-
-@pytest.mark.asyncio
-async def test_source_followup_skips_llm_and_uses_previous_persisted_run(
-    database: Database,
-) -> None:
-    llm = WebToolLLM()
-    harness = build_harness(
-        database,
-        web_settings(database),
-        llm,
-        web_provider=FakeWebSearchProvider(response=web_response()),
-    )
-    await harness.processor.handle(
-        event("最近 DeepSeek 有什么更新？", message_id="web-first"),
-        MemorySender(),
-    )
-    request_count = len(llm.requests)
-    followup_sender = MemorySender()
-
-    result = await harness.processor.handle(
-        event("来源呢？", message_id="web-followup"),
-        followup_sender,
-    )
-
-    assert result.sent_messages == 1
-    assert len(llm.requests) == request_count
-    assert followup_sender.messages[0].text.startswith("来源：")
-
-
-@pytest.mark.asyncio
-async def test_private_sources_are_isolated_while_group_sources_are_shared(
-    database: Database,
-) -> None:
-    llm = WebToolLLM()
-    harness = build_harness(
-        database,
-        web_settings(database),
-        llm,
-        web_provider=FakeWebSearchProvider(response=web_response()),
-    )
-    await harness.processor.handle(
-        event("查询更新", message_id="private-owner", user_id="1001"),
-        MemorySender(),
-    )
-    private_other = MemorySender()
-    await harness.processor.handle(
-        event("来源呢", message_id="private-other", user_id="1002"),
-        private_other,
-    )
-    assert private_other.messages[0].text == "当前对话中没有可提供的联网来源。"
-
-    await harness.processor.handle(
-        event("查询更新", message_id="group-owner", user_id="1001", group_id="2001"),
-        MemorySender(),
-    )
-    group_other = MemorySender()
-    await harness.processor.handle(
-        event("来源呢", message_id="group-other", user_id="1002", group_id="2001"),
-        group_other,
-    )
-    assert "DeepSeek 官方更新" in group_other.messages[0].text
-
-
-@pytest.mark.asyncio
 async def test_web_failure_is_returned_to_llm_for_a_natural_answer(database: Database) -> None:
     llm = WebToolLLM()
     harness = build_harness(
@@ -733,8 +632,8 @@ async def test_web_failure_is_returned_to_llm_for_a_natural_answer(database: Dat
         sender,
     )
 
-    assert result.reason == "chat"
-    assert sender.messages[0].text == "联网查询暂时失败，请稍后再试。"
+    assert result.reason == "llm_failure"
+    assert sender.messages[0].text == "AI 服务暂时不可用，请稍后重试。"
 
 
 @pytest.mark.asyncio
@@ -760,7 +659,7 @@ async def test_web_lookup_can_be_followed_by_superuser_onebot_tool(
     assert sender.api_calls == [
         ("send_private_msg", {"user_id": "12345678", "message": "授权发送"})
     ]
-    assert sender.messages[0].text == "已按授权完成操作。"
+    assert not sender.messages
 
 
 @pytest.mark.asyncio
@@ -777,7 +676,7 @@ async def test_each_turn_executes_at_most_three_web_tools(database: Database) ->
 
     assert result.reason == "chat"
     assert len(web.search_requests) == 3
-    assert sender.messages[0].text == "已根据前三次搜索完成回答。"
+    assert not sender.messages
 
 
 def _native_first_settings(database: Database):
@@ -805,7 +704,7 @@ async def test_spoken_search_phrase_exposes_web_search_in_native_first_mode(
         event("这个说法你搜下", message_id="spoken-search"),
         MemorySender(),
     )
-    assert result.reason == "chat"
+    assert result.reason == "llm_failure"
     assert llm.requests
     first = llm.requests[0]
     assert "web_search" not in {tool.name for tool in first.tools}
@@ -828,7 +727,7 @@ async def test_mixed_tools_stay_visible_and_missing_native_sources_do_not_restar
         async def complete(self, request: ChatRequest) -> ChatResponse:
             self.requests.append(request)
             return ChatResponse(
-                content="搜索未取得可核验来源，暂时无法确认。",
+                    content="",
                 latency_seconds=0,
                 native_tool_events=(
                     NativeToolEvent(
@@ -880,7 +779,7 @@ async def test_native_first_public_url_does_not_pin_read_webpage(
         event("https://docs.example.org/required-page", message_id="url-pin"),
         MemorySender(),
     )
-    assert result.reason == "chat"
+    assert result.reason == "llm_failure"
     assert llm.requests
     first = llm.requests[0]
     names = {tool.name for tool in first.tools}

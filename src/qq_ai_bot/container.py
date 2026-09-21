@@ -239,11 +239,10 @@ class ApplicationContainer:
         self.emoji_lifecycle = emoji.lifecycle
         self.emoji_collector = emoji.collector
         self.emoji_selector = emoji.selector
-        self.emoji_effects = emoji.effects
+        self.emoji_delivery = emoji.delivery
         self.emoji_worker = emoji.worker
         self.concurrency = ConcurrencyManager(settings.global_llm_concurrency)
         self.turn_coordinator = ConversationTurnCoordinator(
-            cancel_replies_on_new_message=settings.reply_sequence_cancel_on_new_message,
             interrupt_autonomous_on_new_message=(
                 settings.conversation_interrupt_autonomous_on_new_message
             ),
@@ -268,7 +267,7 @@ class ApplicationContainer:
         self.speech_provider = speech.provider
         self.speech = speech.service
         self.voice_profile_service = speech.profiles
-        self.speech_effects = speech.effects
+        self.speech_delivery = speech.delivery
         self.speech_admin = speech.admin
         self.conversation_module = ConversationModule(
             settings=settings,
@@ -281,9 +280,6 @@ class ApplicationContainer:
             effect_gate=self.conversation_effect_gate,
             time_service=self.time_context,
             web_provider=self.web_provider,
-            emoji_effects=self.emoji_effects,
-            speech=self.speech,
-            speech_effects=self.speech_effects,
             voice_preferences=self.voice_preference_service,
             memory_embeddings=self.memory_embeddings,
             tool_artifacts=self.tool_artifacts,
@@ -293,7 +289,6 @@ class ApplicationContainer:
         self.conversation = conversation
         self.prompt_registry = conversation.prompt_registry
         self.admission_features = conversation.admission_features
-        self.reply_sequence = conversation.reply_sequence
         self.relationship_evaluator = conversation.relationship_evaluator
         self.deduplication = conversation.deduplication
         self.rate_limiter = conversation.rate_limiter
@@ -305,9 +300,8 @@ class ApplicationContainer:
         )
         self.agent_tools.social_service = self.social_service
         self.social_service.runtime_config = self.runtime_config
-        self.social_service.speech_effects = self.speech_effects
-        self.social_service.emoji_effects = self.emoji_effects
-        self.social_service.reply_effects = conversation.chat._reply_effects
+        self.social_service.speech_delivery = self.speech_delivery
+        self.social_service.emoji_delivery = self.emoji_delivery
         from qq_ai_bot.workspace.service import WorkspaceService
         from qq_ai_bot.workspace.store import WorkspaceStore
 
@@ -513,9 +507,9 @@ class ApplicationContainer:
         self.emoji_collector.set_event_publisher(self.plugin_events)
         self.emoji_lifecycle.set_event_publisher(self.plugin_events)
         self.emoji_selector.set_event_publisher(self.plugin_events)
-        self.emoji_effects.set_event_publisher(self.plugin_events)
+        self.emoji_delivery.set_event_publisher(self.plugin_events)
         self.speech.set_event_publisher(self.plugin_events)
-        self.speech_effects.set_event_publisher(self.plugin_events)
+        self.speech_delivery.set_event_publisher(self.plugin_events)
         self.voice_profile_service.set_event_publisher(self.plugin_events)
         self.emoji_selector.set_plugin_signals(self.plugin_emoji_signals)
         self.chat.set_plugin_tools(self.plugin_tools)

@@ -614,8 +614,7 @@ class WorkControl:
                     "id": conversation.space_id or conversation.person_id,
                 }
                 self.completion_delivered = any(
-                    effect.get("delivered_message")
-                    and effect.get("delivery_target") == target
+                    effect.get("delivered_message") and effect.get("delivery_target") == target
                     for effect in self.known_effects
                 )
                 # Explicit completion may be silent. The model's final text is

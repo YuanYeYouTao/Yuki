@@ -956,10 +956,10 @@ async def test_web_result_can_be_followed_by_authorized_admin_mutation(database)
                     "id": "mutate",
                     "call": "config.set",
                     "arguments": {
-                        "key": "reply.cancel_on_new_message",
+                        "key": "reply.hard_max_messages",
                         "scope_type": "global",
                         "scope_id": "",
-                        "value": False,
+                        "value": 8,
                     },
                 },
             ],

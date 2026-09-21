@@ -1,4 +1,4 @@
-"""Stable Plugin API v2 permission names."""
+"""Stable Plugin API v3 permission names."""
 
 from __future__ import annotations
 
@@ -43,12 +43,10 @@ class PluginPermission(StrEnum):
     EMOJI_READ = "emoji.read"
     EMOJI_COLLECT = "emoji.collect"
     EMOJI_SELECT = "emoji.select"
-    EMOJI_SEND = "emoji.send"
     EMOJI_MANAGE = "emoji.manage"
     EMOJI_HOOK = "emoji.hook"
     SPEECH_PROFILE_READ = "speech.profile.read"
     SPEECH_GENERATE = "speech.generate"
-    SPEECH_REPLY_EFFECT = "speech.reply_effect"
     SPEECH_SEND = "speech.send"
     SPEECH_MANAGE = "speech.manage"
     SPEECH_PROVIDER_REGISTER = "speech.provider.register"

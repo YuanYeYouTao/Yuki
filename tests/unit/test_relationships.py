@@ -36,6 +36,7 @@ from qq_ai_bot.identity.canonical_repository import (
 from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel
 from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.llm.base import LLMProvider, LLMUnavailableError
+from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
@@ -499,7 +500,11 @@ async def test_direct_score_request_cannot_become_a_positive_change(database: Da
 async def test_relationship_evaluation_failure_does_not_change_completed_chat(
     database: Database,
 ) -> None:
-    harness = build_harness(database, make_settings(database.url))
+    harness = build_harness(
+        database,
+        make_settings(database.url),
+        FakeLLMProvider(lambda _: ChatResponse("", 0)),
+    )
     sender = MemorySender()
     result = await harness.processor.handle(
         inbound("你好", message_id="reply-before-evaluation"),
@@ -712,7 +717,7 @@ class ToolDefinitionProvider(LLMProvider):
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
         self.request = request
-        return ChatResponse(content="正常回答", latency_seconds=0)
+        return ChatResponse(content="", latency_seconds=0)
 
 
 @pytest.mark.asyncio

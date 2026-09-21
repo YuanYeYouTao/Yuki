@@ -20,6 +20,7 @@ from qq_ai_bot.asr.service import ASRService
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.conversation.rollup.renderer import rollup_source_projection
 from qq_ai_bot.domain.audio import AudioTranscript, parse_transcripts, serialize_transcripts
+from qq_ai_bot.domain.messages import ChatResponse
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.persistence.database import Database
@@ -159,7 +160,7 @@ async def test_record_conversion_prefers_bytes_and_refuses_container_path():
 async def test_voice_reaches_main_agent_history_search_and_rollup(
     database: Database, decoder, group
 ):
-    provider = FakeLLMProvider(lambda _: "记住了，你喜欢草莓。")
+    provider = FakeLLMProvider(lambda _: ChatResponse("", 0))
     harness = build_harness(database, make_settings(database.url), provider)
     recognizer = Recognizer()
     asr = ASRService(settings=harness.settings.asr, provider=recognizer, resolver=MediaResolver())

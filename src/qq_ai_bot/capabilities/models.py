@@ -20,7 +20,6 @@ class CapabilityEffect(StrEnum):
     EXTERNAL_READ = "external_read"
     PLATFORM_SEND = "platform_send"
     PLATFORM_MUTATE = "platform_mutate"
-    REPLY_EFFECT = "reply_effect"
 
 
 class CapabilityRisk(StrEnum):

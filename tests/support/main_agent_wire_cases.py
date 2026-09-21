@@ -63,6 +63,10 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
         chain.append(payload)
         first = len(chain) == 1
         denied = current_entry in {"automation-generate", "sdk-generate"} and len(chain) == 2
+        explicit_delivery = (
+            current_entry in {"private", "admin-group", "private-followup"}
+            and len(chain) == 2
+        )
         call_id = f"state-{current_entry}"
         arguments = json.dumps(
             {
@@ -72,12 +76,17 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             }
         )
         tool_name = "update_short_state"
+        if explicit_delivery:
+            call_id = f"send-{current_entry}"
+            tool_name = "send_message"
+            arguments = json.dumps({"text": "已完成"}, ensure_ascii=False)
         if denied:
             call_id = "denied-send"
             tool_name = denied_name
             arguments = json.dumps({"user_id": "1001", "text": "must not send"})
         if protocol is ModelProtocol.RESPONSES:
             assert request.url.path == "/responses"
+            output_text = "已完成"
             output = (
                 {
                     "type": "function_call",
@@ -87,13 +96,13 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
                     "arguments": arguments,
                     "status": "completed",
                 }
-                if first or denied
+                if first or denied or explicit_delivery
                 else {
                     "type": "message",
                     "id": f"msg-{current_entry}",
                     "role": "assistant",
                     "status": "completed",
-                    "content": [{"type": "output_text", "text": "已完成"}],
+                    "content": [{"type": "output_text", "text": output_text}],
                 }
             )
             response = {
@@ -103,6 +112,7 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             }
         else:
             assert request.url.path == "/chat/completions"
+            output_text = "已完成"
             message = (
                 {
                     "role": "assistant",
@@ -115,14 +125,16 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
                         }
                     ],
                 }
-                if first or denied
-                else {"role": "assistant", "content": "已完成"}
+                if first or denied or explicit_delivery
+                else {"role": "assistant", "content": output_text}
             )
             response = {
                 "choices": [
                     {
                         "message": message,
-                        "finish_reason": "tool_calls" if first or denied else "stop",
+                        "finish_reason": (
+                            "tool_calls" if first or denied or explicit_delivery else "stop"
+                        ),
                     }
                 ]
             }
@@ -217,7 +229,8 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             )
             sender = MemorySender()
             result = await harness.processor.handle(message, sender)
-            assert result.reason == "chat" and not sender.messages
+            assert result.reason == "chat" and result.sent_messages == 0
+            assert not sender.messages
             if name == "private":
                 from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
 
@@ -226,27 +239,32 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
                 chat._main_turns = MainAgentTurnService(
                     chat._prompt_composer, chat._agent_runner, database
                 )
-                from qq_ai_bot.domain.messages import AttachmentKind, OutboundMedia, OutboundMessage
+                from qq_ai_bot.domain.messages import (
+                    AttachmentKind,
+                    OutboundMedia,
+                    OutboundMessage,
+                    OutboundSendReceipt,
+                )
 
                 for kind, label in (
                     (AttachmentKind.IMAGE, "wire-image"),
                     (AttachmentKind.FILE, "wire-file"),
                     (AttachmentKind.AUDIO, "wire-voice"),
                 ):
-                    await chat._deliver_and_record(
+                    await chat._record_outbound_message(
                         message,
-                        sender,
                         OutboundMessage(
                             text=label, media=(OutboundMedia(kind=kind, summary=label),)
                         ),
-                        None,
+                        OutboundSendReceipt(platform_message_id=f"{protocol.value}-{label}"),
                         origin=TurnOrigin.USER_MESSAGE.value,
                     )
-                await chat._deliver_and_record(
+                await chat._record_outbound_message(
                     message,
-                    sender,
                     OutboundMessage(text="wire-file-caption"),
-                    None,
+                    OutboundSendReceipt(
+                        platform_message_id=f"{protocol.value}-wire-file-caption"
+                    ),
                     origin=TurnOrigin.USER_MESSAGE.value,
                 )
                 current_entry = "private-followup"
@@ -515,7 +533,14 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
     assert len(captured) == 9
     fixed = None
     for name, chain in captured.items():
-        assert len(chain) == (3 if name in {"automation-generate", "sdk-generate"} else 2), (
+        three_step = {
+            "private",
+            "admin-group",
+            "private-followup",
+            "automation-generate",
+            "sdk-generate",
+        }
+        assert len(chain) == (3 if name in three_step else 2), (
             protocol,
             name,
             len(chain),
@@ -535,7 +560,7 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             old, new = first["messages"], second["messages"]
             outputs = [item["content"] for item in new[len(old) :] if item.get("role") == "tool"]
         assert new[: len(old)] == old
-        assert len(outputs) == (2 if name in {"automation-generate", "sdk-generate"} else 1)
+        assert len(outputs) == (2 if name in three_step else 1)
         assert json.loads(outputs[0])["ok"] is True
         if name in {"automation-generate", "sdk-generate"}:
             denied = json.loads(outputs[-1])

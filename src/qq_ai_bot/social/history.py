@@ -51,7 +51,10 @@ async def resolve_history_target(
             or receipt.source_conversation_id != context.conversation_id
             or receipt.action
             not in {
-                "send_message", "send_private_message", "send_group_message", "send_file_caption"
+                "send_message",
+                "send_private_message",
+                "send_group_message",
+                "send_file_caption",
             }
             or not receipt.presence_id
         ):

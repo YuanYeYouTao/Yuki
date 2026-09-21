@@ -125,7 +125,7 @@ class MemoryFact(_MemoryModel):
 
     @property
     def user_id(self) -> str | None:
-        """Legacy-shaped projection retained by the Plugin API 2.0 adapter."""
+        """External account projection used by the Plugin memory facade."""
 
         return self.subject_user_id
 

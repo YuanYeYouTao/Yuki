@@ -1,4 +1,4 @@
-"""Plugin API v2 host application module."""
+"""Plugin API v3 host application module."""
 
 from __future__ import annotations
 
@@ -36,6 +36,7 @@ from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.plugin_sessions import PluginAgentSessionService
 from qq_ai_bot.services.prompt_registry import PromptRegistry
 from qq_ai_bot.settings_domains import PluginSettings
+from yuki_plugin_sdk.api import PLUGIN_API_VERSION
 
 InvocationScope = Callable[..., Any]
 
@@ -137,7 +138,7 @@ class PluginModule:
             discovery=PluginDiscovery(
                 settings.plugin_directory,
                 yuki_version=self._yuki_version,
-                plugin_api=settings.plugin_api_version,
+                plugin_api=PLUGIN_API_VERSION,
             ),
             installations=installations,
             loader=PluginLoader(),

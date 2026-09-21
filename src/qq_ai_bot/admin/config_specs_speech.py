@@ -91,20 +91,6 @@ def speech_config_specs() -> tuple[ConfigSpec, ...]:
             settings_fields=("speech_default_profile",),
             category="speech",
         ),
-        _spec(
-            "speech.spontaneous_frequency",
-            "日常自主语音频率",
-            "用户未主动询问语音时，Conversation Runtime 允许主动语音的目标频率，范围 0..1。",
-            aliases=("主动语音频率", "语音频率"),
-            value_type="number",
-            minimum=0,
-            maximum=1,
-            scopes=_GGU,
-            env_alias="SPEECH_SPONTANEOUS_FREQUENCY",
-            getter=_field("speech_spontaneous_frequency"),
-            settings_fields=("speech_spontaneous_frequency",),
-            category="speech",
-        ),
         *(
             _spec(
                 key,
@@ -132,15 +118,15 @@ def speech_config_specs() -> tuple[ConfigSpec, ...]:
                 field_name,
             ) in (
                 (
-                    "speech.agent_effects_enabled",
-                    "Agent 语音效果",
+                    "speech.agent_delivery_enabled",
+                    "Agent 语音投递",
                     "允许 Main Agent 通过 send_message.voice 发送语音。",
                     (),
                     "boolean",
                     None,
                     (),
-                    "SPEECH_AGENT_EFFECTS_ENABLED",
-                    "speech_agent_effects_enabled",
+                    "SPEECH_AGENT_DELIVERY_ENABLED",
+                    "speech_agent_delivery_enabled",
                 ),
                 (
                     "speech.default_mode",

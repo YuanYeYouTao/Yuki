@@ -33,13 +33,11 @@ class AgentArguments(CapabilityArguments):
 
 
 class SendPrivateArguments(CapabilityArguments):
-    reply_state: dict[str, Any] | str | None = None
     user_id: str = Field(min_length=1, max_length=64)
     text: str = Field(min_length=1, max_length=12000)
 
 
 class SendGroupArguments(CapabilityArguments):
-    reply_state: dict[str, Any] | str | None = None
     group_id: str = Field(min_length=1, max_length=64)
     text: str = Field(min_length=1, max_length=12000)
 

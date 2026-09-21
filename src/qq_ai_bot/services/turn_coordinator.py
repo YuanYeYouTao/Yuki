@@ -16,7 +16,7 @@ from qq_ai_bot.domain.messages import InboundMessage
 if TYPE_CHECKING:
     from qq_ai_bot.persistence.event_repository import ConversationReadVersion
 
-TurnStage = Literal["admission", "generation", "reply"]
+TurnStage = Literal["admission", "generation"]
 
 
 class TurnInterruptedError(RuntimeError):
@@ -33,10 +33,6 @@ class HistorySourceChangedError(TurnSupersededError):
     def __init__(self, version: ConversationReadVersion) -> None:
         super().__init__("context source changed before model invocation or history assembly")
         self.version = version
-
-
-class ReplySequenceCancelled(RuntimeError):
-    """Unsent reply chunks were cancelled after the conversation advanced."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,10 +59,8 @@ class ConversationTurnCoordinator:
     def __init__(
         self,
         *,
-        cancel_replies_on_new_message: bool = True,
         interrupt_autonomous_on_new_message: bool = True,
     ) -> None:
-        self._cancel_replies = cancel_replies_on_new_message
         self._interrupt_autonomous = interrupt_autonomous_on_new_message
         self._states: dict[str, _TurnState] = {}
         self._guard = asyncio.Lock()
@@ -74,12 +68,10 @@ class ConversationTurnCoordinator:
     def configure_policy(
         self,
         *,
-        cancel_replies_on_new_message: bool,
         interrupt_autonomous_on_new_message: bool,
     ) -> None:
         """Apply HOT cancellation policy before admitting a new real message."""
 
-        self._cancel_replies = cancel_replies_on_new_message
         self._interrupt_autonomous = interrupt_autonomous_on_new_message
 
     @staticmethod
@@ -107,10 +99,6 @@ class ConversationTurnCoordinator:
             if observation and state.protected_version == state.version:
                 return TurnToken(conversation_key, state.version, state.origin)
             previous_origin = state.origin
-            if self._cancel_replies:
-                reply = state.tasks.get("reply")
-                if reply is not None and not reply.done():
-                    to_cancel.add(reply)
             if (
                 self._interrupt_autonomous
                 and previous_origin in {TurnOrigin.AUTONOMOUS_GROUP, TurnOrigin.PLUGIN_BACKGROUND}
@@ -176,8 +164,6 @@ class ConversationTurnCoordinator:
         except asyncio.CancelledError as exc:
             if stage == "admission":
                 raise TurnInterruptedError("turn interrupted by a newer message") from exc
-            if stage == "reply":
-                raise ReplySequenceCancelled("reply sequence cancelled") from exc
             raise TurnSupersededError("generation superseded by a newer message") from exc
         finally:
             async with self._guard:
@@ -272,7 +258,7 @@ class ConversationTurnCoordinator:
                         state.holders.pop(task, None)
 
     async def cancel_interruptible(self, conversation_key: str) -> bool:
-        """Explicitly cancel registered admission/generation/reply work for `/ai stop`."""
+        """Explicitly cancel registered admission/generation work for `/ai stop`."""
 
         async with self._guard:
             state = self._states.get(conversation_key)

@@ -31,7 +31,6 @@ class WorkSession:
         self.sequence = 0
         self.recovered_delivery: str | None = None
         self.progress: dict[str, Any] = {}
-        self.reply_state_reader: Callable[[], dict[str, Any]] | None = None
         self.initial: TurnTranscript | None = None
         self.handoff_work_id: str | None = None
 
@@ -189,8 +188,6 @@ class WorkSession:
         if self.control.current is None:
             return
         assert self.transcript is not None
-        if self.reply_state_reader is not None:
-            self.progress["reply_state"] = self.reply_state_reader()
         self.handoff_work_id = self.control.handoff_work_id or self.handoff_work_id
         self.pending = [
             {"id": call.id, "name": call.function.name, "arguments": call.function.arguments}
@@ -225,17 +222,27 @@ class WorkSession:
             raise
 
     async def execute(
-        self, call: ToolCall, invoke: Callable[[], Awaitable[str]], *, side_effecting: bool = True
+        self,
+        call: ToolCall,
+        invoke: Callable[[], Awaitable[str]],
+        *,
+        side_effecting: bool = True,
+        allow_pending: bool = False,
     ) -> str:
         control = self.control
         if control.current is None:
             return await invoke()
-        if await control.pending():
+        if not allow_pending and await control.pending():
             return json.dumps(
                 {"ok": False, "executed": False, "error": "new_input_before_execution"}
             )
-        await control.validate()
-        if side_effecting and any(effect.get("uncertain") for effect in control.known_effects):
+        if not allow_pending:
+            await control.validate()
+        if (
+            side_effecting
+            and not allow_pending
+            and any(effect.get("uncertain") for effect in control.known_effects)
+        ):
             return json.dumps(
                 {
                     "ok": False,

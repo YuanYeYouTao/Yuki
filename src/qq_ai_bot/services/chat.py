@@ -26,9 +26,6 @@ from qq_ai_bot.capabilities.runtime import (
     CapabilityIndexCache,
 )
 from qq_ai_bot.config import Settings
-from qq_ai_bot.conversation.cadence import ReplyEffectRepository
-from qq_ai_bot.conversation.delivery import ReplyControlState, default_reply_spec
-from qq_ai_bot.conversation.reply import ReplyEffect
 from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
 from qq_ai_bot.conversation.rollup.repository import (
     ConversationRollupRepository,
@@ -52,7 +49,6 @@ from qq_ai_bot.domain.messages import (
     PromptRequestDiagnostics,
 )
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
-from qq_ai_bot.emoji.effects import EmojiReplyEffectService
 from qq_ai_bot.llm.base import LLMEmptyResponseError
 from qq_ai_bot.memory.attribution import (
     MemoryAttributionWorker,
@@ -117,11 +113,7 @@ from qq_ai_bot.services.plugin_events import (
     publish_notification,
 )
 from qq_ai_bot.services.prompt_composer import PromptComposer
-from qq_ai_bot.services.renderer import clean_model_output, split_qq_message
-from qq_ai_bot.services.reply_sequence import ReplySequenceManager
-from qq_ai_bot.services.reply_target import ReplyTargetControl, ReplyTargetResolver
-from qq_ai_bot.services.source_policy import SourceDisplayPolicy
-from qq_ai_bot.services.source_renderer import SourceRenderer
+from qq_ai_bot.services.renderer import sanitize_model_output
 from qq_ai_bot.services.turn_coordinator import (
     ConversationTurnCoordinator,
     TurnSupersededError,
@@ -129,7 +121,6 @@ from qq_ai_bot.services.turn_coordinator import (
 )
 from qq_ai_bot.speech.models import VoicePreferenceMode
 from qq_ai_bot.speech.preference_service import VoicePreferenceService
-from qq_ai_bot.speech.reply_effect import VoiceReplyEffectService
 from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.vision.models import VisualObservation
 from qq_ai_bot.web.models import WebMode, WebSearchResponse
@@ -341,18 +332,12 @@ class ChatService:
         web_sources: WebSearchSourceRepository,
         runtime_config: RuntimeConfigService,
         time_service: TimeContextService,
-        source_policy: SourceDisplayPolicy | None = None,
-        source_renderer: SourceRenderer | None = None,
         memory_context: MemoryContextService | None = None,
         memory_partition_lookup: MemoryPartitionLookup,
         memory_attribution: MemoryAttributionWorker | None = None,
         context_assembler: ContextAssembler | None = None,
         prompt_composer: PromptComposer | None = None,
         turn_coordinator: ConversationTurnCoordinator | None = None,
-        reply_sequence: ReplySequenceManager | None = None,
-        emoji_effects: EmojiReplyEffectService | None = None,
-        speech_effects: VoiceReplyEffectService | None = None,
-        reply_effects: ReplyEffectRepository | None = None,
         voice_preferences: VoicePreferenceService | None = None,
         event_publisher: LifecycleEventPublisher | None = None,
         tool_artifacts: ToolArtifactWriter | None = None,
@@ -384,8 +369,6 @@ class ChatService:
         self._relationships = relationships
         self._tools = tools
         self._web_sources = web_sources
-        self._source_policy = source_policy or SourceDisplayPolicy()
-        self._source_renderer = source_renderer or SourceRenderer()
         self._runtime_config = runtime_config
         self._agent_runner = AgentRunner(models, concurrency)
         self._capability_index = CapabilityIndexCache()
@@ -436,16 +419,10 @@ class ChatService:
 
         self.rollup_wakeups = RollupWakeups(self._ledger._database)
         self._turn_coordinator = turn_coordinator or ConversationTurnCoordinator(
-            cancel_replies_on_new_message=settings.reply_sequence_cancel_on_new_message,
             interrupt_autonomous_on_new_message=(
                 settings.conversation_interrupt_autonomous_on_new_message
             ),
         )
-        self._reply_sequence = reply_sequence or ReplySequenceManager(self._turn_coordinator)
-        self._reply_target_resolver = ReplyTargetResolver(self._ledger)
-        self._emoji_effects = emoji_effects
-        self._speech_effects = speech_effects
-        self._reply_effects = reply_effects
         self._voice_preferences = voice_preferences
         self._event_publisher = event_publisher
 
@@ -913,7 +890,6 @@ class ChatService:
                     if not await self._validate_turn_snapshot(turn_snapshot):
                         raise TurnSupersededError("work authority changed")
 
-
                 async def resolve_child(run_id: str) -> dict[str, Any] | None:
                     client = self._tools.sandbox_client
                     if client is None or client.tasks is None:
@@ -970,23 +946,6 @@ class ChatService:
                 user_id=inbound.sender.user_id,
                 group_id=inbound.group_id,
             )
-            if not visual_input_present and self._source_policy.standalone_request(content):
-                sources = await self._web_sources.latest(conversation_key)
-                source_text = self._source_renderer.render(
-                    sources,
-                    maximum=runtime_config.web.extract_max_results,
-                )
-                reply = source_text or "当前对话中没有可提供的联网来源。"
-                await self._deliver_and_record(
-                    inbound,
-                    sender,
-                    OutboundMessage(text=reply),
-                    turn_snapshot,
-                    origin=turn_origin.value,
-                )
-                return 1
-
-            source_display_requested = self._source_policy.requested(content)
             memory_session = self._open_memory_session(
                 inbound,
                 identity,
@@ -1044,18 +1003,9 @@ class ChatService:
                 if callable(getattr(sender, "call_api", None))
                 else None
             )
-            reply_target_control = ReplyTargetControl(visible_event_ids=visible_event_ids)
-            reply_control = ReplyControlState(
-                spec=default_reply_spec(hard_max_messages=runtime_config.reply.hard_max_messages)
-            )
-            reply_effects: list[ReplyEffect] = []
             if self._memory_context is not None and memory_session is not None:
                 self._memory_context.metrics.record_runtime_access(memory_session.contract)
-            voice_spontaneous_allowed = await self._voice_spontaneous_allowed(
-                conversation_key,
-                inbound.sender.user_id,
-                runtime_config,
-            )
+            voice_delivery_allowed = await self._voice_delivery_allowed(inbound.sender.user_id)
             runtime = ToolRuntime(
                 inbound=inbound,
                 gateway=gateway,
@@ -1068,7 +1018,6 @@ class ChatService:
                 allow_automation=not visual_input_present,
                 conversation_key=conversation_key,
                 trigger_message_id=inbound.message_id,
-                source_display_requested=source_display_requested,
                 actor_user_id=inbound.sender.user_id,
                 actor_is_superuser=inbound.sender.user_id in self._settings.superusers,
                 current_group_id=inbound.group_id,
@@ -1078,10 +1027,8 @@ class ChatService:
                 read_only=False,
                 turn_token=turn_token,
                 turn_snapshot=turn_snapshot,
-                reply_effects=reply_effects,
-                reply_target_control=reply_target_control,
-                reply_control=reply_control,
-                voice_spontaneous_allowed=voice_spontaneous_allowed,
+                visible_event_ids=visible_event_ids,
+                voice_delivery_allowed=voice_delivery_allowed,
                 selection_query=content,
                 memory_turn_id=memory_turn_id,
                 memory_exposures=automatic_memory_exposures,
@@ -1139,6 +1086,7 @@ class ChatService:
             if work_control is not None and work_control.final_delivery and work_control.session:
                 await work_control.session.save("delivered")
             return completed_agent.messages_sent
+
     def _open_memory_session(
         self,
         inbound: InboundMessage,
@@ -1206,23 +1154,12 @@ class ChatService:
         )
         await session.close()
 
-    async def _voice_spontaneous_allowed(
-        self,
-        conversation_key: str,
-        user_id: str,
-        runtime: RuntimeConfigSnapshot,
-    ) -> bool:
+    async def _voice_delivery_allowed(self, user_id: str) -> bool:
         if self._voice_preferences is not None:
             mode = await self._voice_preferences.current_mode(user_id)
             if mode is VoicePreferenceMode.TEXT_ONLY:
                 return False
-        if self._reply_effects is None:
-            return True
-        cadence = await self._reply_effects.voice_cadence(conversation_key)
-        return self._reply_effects.spontaneous_allowed(
-            cadence,
-            frequency=runtime.speech.spontaneous_frequency,
-        )
+        return True
 
     async def _save_native_web_response(
         self,
@@ -1547,38 +1484,6 @@ class ChatService:
         except (EffectGateTimeoutError, EffectPermitRejectedError) as exc:
             raise TurnSupersededError("turn effect permit was rejected") from exc
 
-    async def _send_with_fence(
-        self,
-        sender: OutboundSender,
-        message: OutboundMessage,
-        snapshot: ConversationTurnSnapshot | None,
-    ) -> OutboundSendReceipt:
-        async def send() -> OutboundSendReceipt:
-            receipt = await sender.send(message)
-            if not isinstance(receipt, OutboundSendReceipt):
-                raise TypeError("outbound sender returned no delivery receipt")
-            return receipt
-
-        return await self._run_effect(snapshot, send)
-
-    async def _deliver_and_record(
-        self,
-        inbound: InboundMessage,
-        sender: OutboundSender,
-        message: OutboundMessage,
-        snapshot: ConversationTurnSnapshot | None,
-        *,
-        origin: str,
-    ) -> OutboundSendReceipt:
-        async def deliver() -> OutboundSendReceipt:
-            receipt = await sender.send(message)
-            if not isinstance(receipt, OutboundSendReceipt):
-                raise TypeError("outbound sender returned no delivery receipt")
-            await self._record_outbound_message(inbound, message, receipt, origin=origin)
-            return receipt
-
-        return await self._run_effect(snapshot, deliver)
-
     async def generate_main_agent_wakeup(
         self,
         *,
@@ -1644,7 +1549,7 @@ class ChatService:
             read_only=False,
             turn_token=turn_token,
             turn_snapshot=turn_snapshot,
-            reply_target_control=ReplyTargetControl(visible_event_ids=context.visible_event_ids),
+            visible_event_ids=context.visible_event_ids,
             selection_query=f"{event.content}\n{trigger.agent_intent}".strip(),
             prompt_diagnostics=PromptRequestDiagnostics(
                 conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
@@ -1677,7 +1582,7 @@ class ChatService:
         completed = await self._run_agent(conversation_key, composition.messages, tool_runtime)
         result = completed.result
         try:
-            rendered = clean_model_output(
+            rendered = sanitize_model_output(
                 result.text,
                 max_characters=self._settings.max_output_characters,
             )
@@ -1703,43 +1608,6 @@ class ChatService:
         except json.JSONDecodeError:
             return {"ok": False, "error": "invalid_tool_result"}
         return payload if isinstance(payload, dict) else {"ok": False}
-
-    @staticmethod
-    def _admin_failure_text(result: dict[str, object]) -> str:
-        detail = str(
-            result.get("public_message")
-            or result.get("detail")
-            or result.get("error")
-            or result.get("error_code")
-            or "未知错误"
-        )
-        return f"操作未完成：{detail}"
-
-    def _render_chunks(
-        self,
-        rendered: str,
-        runtime: RuntimeConfigSnapshot,
-    ) -> tuple[str, ...]:
-        return split_qq_message(
-            rendered,
-            limit=runtime.reply.max_qq_message_chars,
-        )
-
-    async def _record_outbound(
-        self,
-        inbound: InboundMessage,
-        content: str,
-        receipt: OutboundSendReceipt,
-        *,
-        reply_to_message_id: str | None = None,
-        origin: str = TurnOrigin.USER_MESSAGE.value,
-    ) -> bool:
-        return await self._record_outbound_message(
-            inbound,
-            OutboundMessage(text=content, reply_to_message_id=reply_to_message_id),
-            receipt,
-            origin=origin,
-        )
 
     async def _record_outbound_message(
         self,

@@ -77,13 +77,11 @@ class TerminalFinalizationSource(StrEnum):
     """Host components trusted to end the agent loop from a tool batch."""
 
     HOST_MEMORY_FINALIZER = "host_memory_finalizer"
-    HOST_REPLY_CONTROL = "host_reply_control"
 
 
 TRUSTED_TERMINAL_SOURCES = frozenset(
     {
         TerminalFinalizationSource.HOST_MEMORY_FINALIZER,
-        TerminalFinalizationSource.HOST_REPLY_CONTROL,
     }
 )
 

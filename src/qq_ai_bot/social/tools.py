@@ -15,7 +15,7 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
         },
     }
     message: dict[str, object] = {
-        "text": {"type": "string", "maxLength": 4000},
+        "text": {"type": "string", "maxLength": 12000},
         "artifact_id": {"type": "string", "description": "工作区对象 ID，不是路径或 URL"},
         "attachment_kind": {
             "type": "string",
@@ -103,8 +103,7 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
                 "target": {
                     "type": "object",
                     "description": (
-                        "可选；省略时发送到当前群或当前私聊。"
-                        "明确发给别处时须指定 kind 和唯一标识。"
+                        "可选；省略时发送到当前群或当前私聊。明确发给别处时须指定 kind 和唯一标识。"
                     ),
                     "properties": {
                         "kind": {"type": "string", "enum": ["person", "space"]},

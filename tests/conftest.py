@@ -54,8 +54,6 @@ from qq_ai_bot.services.processor import DirectPluginCommandResolver, MessagePro
 from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
 from qq_ai_bot.services.relationship_evaluator import FakeRelationshipEvaluator
 from qq_ai_bot.services.relationship_worker import RelationshipWorker
-from qq_ai_bot.services.source_policy import SourceDisplayPolicy
-from qq_ai_bot.services.source_renderer import SourceRenderer
 from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
 from qq_ai_bot.services.user_profiles import UserProfileService
 from qq_ai_bot.services.vision_rate_limit import VisionRateLimiter
@@ -225,7 +223,6 @@ def build_harness(
         timeout_seconds=settings.conversation_rollup_model_timeout_seconds,
     )
     turn_coordinator = ConversationTurnCoordinator(
-        cancel_replies_on_new_message=settings.reply_sequence_cancel_on_new_message,
         interrupt_autonomous_on_new_message=(
             settings.conversation_interrupt_autonomous_on_new_message
         ),
@@ -251,8 +248,6 @@ def build_harness(
         relationships=relationships,
         tools=agent_tools,
         web_sources=web_sources,
-        source_policy=SourceDisplayPolicy(),
-        source_renderer=SourceRenderer(),
         runtime_config=runtime_config,
         time_service=time_service,
         memory_partition_lookup=DatabaseMemoryPartitionLookup(database),

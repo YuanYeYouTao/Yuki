@@ -577,7 +577,7 @@ async def test_send_message_reuses_automatic_reply_splitting(
     from qq_ai_bot.admin.models import ReplyRuntimeConfig
 
     env = await social_env(database, tmp_path)
-    snapshot = SimpleNamespace(reply=ReplyRuntimeConfig(0, 0, 1800, False, 10))
+    snapshot = SimpleNamespace(reply=ReplyRuntimeConfig(0, 0, 1800, 10))
     context = replace(env.context, runtime_snapshot=snapshot)
     args = {"text": "第一段\n第二段\n第三段"}
     result = await env.service.execute("send_message", args, context)
@@ -631,7 +631,7 @@ async def test_send_message_split_stops_on_uncertain_part_without_resending(
     from qq_ai_bot.admin.models import ReplyRuntimeConfig
 
     env = await social_env(database, tmp_path)
-    snapshot = SimpleNamespace(reply=ReplyRuntimeConfig(0, 0, 1800, False, 10))
+    snapshot = SimpleNamespace(reply=ReplyRuntimeConfig(0, 0, 1800, 10))
     context = replace(env.context, runtime_snapshot=snapshot)
     args = {"text": "第一段\n第二段\n第三段"}
     original_call = env.bot.call_api
@@ -655,7 +655,7 @@ async def test_send_message_split_stops_on_uncertain_part_without_resending(
     assert sends == 2
     changed = replace(
         context,
-        runtime_snapshot=SimpleNamespace(reply=ReplyRuntimeConfig(0, 0, 2, False, 10)),
+        runtime_snapshot=SimpleNamespace(reply=ReplyRuntimeConfig(0, 0, 2, 10)),
     )
     with pytest.raises(SocialError, match="idempotency_conflict"):
         await env.service.execute("send_message", args, changed)
@@ -676,7 +676,7 @@ async def test_send_message_split_reports_confirmed_failure_not_uncertainty(
     env = await social_env(database, tmp_path)
     context = replace(
         env.context,
-        runtime_snapshot=SimpleNamespace(reply=ReplyRuntimeConfig(0, 0, 1800, False, 10)),
+        runtime_snapshot=SimpleNamespace(reply=ReplyRuntimeConfig(0, 0, 1800, 10)),
     )
     original_effect = env.service._effect
     calls = 0
@@ -689,9 +689,7 @@ async def test_send_message_split_reports_confirmed_failure_not_uncertainty(
         return await original_effect(*args, **kwargs)
 
     monkeypatch.setattr(env.service, "_effect", reject_second)
-    result = await env.service.execute(
-        "send_message", {"text": "第一段\n第二段\n第三段"}, context
-    )
+    result = await env.service.execute("send_message", {"text": "第一段\n第二段\n第三段"}, context)
     assert result["status"] == "failed"
     assert result["error"] == "confirmed_rejection"
     assert result["sent_messages"] == 1
@@ -700,9 +698,7 @@ async def test_send_message_split_reports_confirmed_failure_not_uncertainty(
 
 
 @pytest.mark.asyncio
-async def test_send_message_explicit_person(
-    database: Database, tmp_path: Path
-) -> None:
+async def test_send_message_explicit_person(database: Database, tmp_path: Path) -> None:
     from dataclasses import replace
 
     from tests.support.social_identity_cases import social_env
@@ -826,7 +822,7 @@ async def test_send_message_media_uses_same_receipt_and_no_replay(
             ),
         )
     )
-    env.service.speech_effects = SimpleNamespace(
+    env.service.speech_delivery = SimpleNamespace(
         prepare=AsyncMock(return_value=SimpleNamespace(message=voice_message)),
         record_success=AsyncMock(),
     )
@@ -835,10 +831,10 @@ async def test_send_message_media_uses_same_receipt_and_no_replay(
         call_id="voice",
         actor=SimpleNamespace(),
         runtime_snapshot=SimpleNamespace(
-            speech=SimpleNamespace(enabled=True, agent_effects_enabled=True),
+            speech=SimpleNamespace(enabled=True, agent_delivery_enabled=True),
             emoji=SimpleNamespace(enabled=True),
         ),
-        voice_spontaneous_allowed=True,
+        voice_delivery_allowed=True,
     )
     voice_args = {
         "target": {"kind": "person", "target_id": env.person},
@@ -849,8 +845,8 @@ async def test_send_message_media_uses_same_receipt_and_no_replay(
     assert sent["status"] == "succeeded"
     assert env.bot.calls[-1][1]["message"][0]["type"] == "record"
     assert await env.service.execute("send_message", voice_args, context) == sent
-    env.service.speech_effects.prepare.assert_awaited_once()
-    env.service.speech_effects.record_success.assert_awaited_once()
+    env.service.speech_delivery.prepare.assert_awaited_once()
+    env.service.speech_delivery.record_success.assert_awaited_once()
 
     emoji_message = OutboundMessage(
         media=(
@@ -863,7 +859,7 @@ async def test_send_message_media_uses_same_receipt_and_no_replay(
             ),
         )
     )
-    env.service.emoji_effects = SimpleNamespace(
+    env.service.emoji_delivery = SimpleNamespace(
         prepare=AsyncMock(
             return_value=EmojiPreparationResult(
                 status=EmojiPreparationStatus.READY,
@@ -885,7 +881,7 @@ async def test_send_message_media_uses_same_receipt_and_no_replay(
     assert emoji_receipt["status"] == "succeeded"
     assert [part["type"] for part in env.bot.calls[-1][1]["message"]] == ["text", "image"]
     assert await env.service.execute("send_message", emoji_args, emoji_context) == emoji_receipt
-    env.service.emoji_effects.prepare.assert_awaited_once()
+    env.service.emoji_delivery.prepare.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -957,7 +953,7 @@ async def test_chat_agent_sends_only_via_explicit_tool(database: Database, tmp_p
     assert result.reason == "chat" and result.sent_messages == 2
     assert [action for action, _ in env.bot.calls if action == "send_group_msg"] == [
         "send_group_msg",
-        "send_group_msg"
+        "send_group_msg",
     ]
     assert not sender.messages
     assert await harness.relationship_jobs.pending_count() == 1
@@ -1091,16 +1087,12 @@ async def test_chat_agent_can_choose_silent_final(database: Database, tmp_path: 
     assert calls == 1
     assert not sender.messages
     assert not [
-        action
-        for action, _ in env.bot.calls
-        if action in {"send_group_msg", "send_private_msg"}
+        action for action, _ in env.bot.calls if action in {"send_group_msg", "send_private_msg"}
     ]
 
 
 @pytest.mark.asyncio
-async def test_chat_agent_rejects_repeated_unsent_final(
-    database: Database, tmp_path: Path
-) -> None:
+async def test_chat_agent_rejects_repeated_unsent_final(database: Database, tmp_path: Path) -> None:
     from tests.conftest import MemorySender, build_harness, make_settings
     from tests.support.social_identity_cases import social_env
 
@@ -1126,30 +1118,28 @@ async def test_chat_agent_rejects_repeated_unsent_final(
     chat._agent_runner.main_contract = MainAgentContract(chat, ShortState(env.store))
     sender = MemorySender()
     result = await harness.processor.handle(
-            InboundMessage(
-                message_id="repeated-unsent-inbound",
-                event_type="message:test",
-                scope_type=ScopeType.GROUP,
-                sender=SenderIdentity("10001"),
-                text="回我一句",
-                bot_user_id="80001",
-                group_id="20001",
-                mentions_bot=True,
-                conversation_id=env.context.conversation_id,
-                legacy_conversation_key=ConversationScope.group("80001", "20001").key,
-                person_id=env.person,
-                space_id=env.space,
-                presence_id=env.presence,
-            ),
-            sender,
-        )
+        InboundMessage(
+            message_id="repeated-unsent-inbound",
+            event_type="message:test",
+            scope_type=ScopeType.GROUP,
+            sender=SenderIdentity("10001"),
+            text="回我一句",
+            bot_user_id="80001",
+            group_id="20001",
+            mentions_bot=True,
+            conversation_id=env.context.conversation_id,
+            legacy_conversation_key=ConversationScope.group("80001", "20001").key,
+            person_id=env.person,
+            space_id=env.space,
+            presence_id=env.presence,
+        ),
+        sender,
+    )
     assert result.reason == "llm_failure"
     assert len(requests) == 2
     assert sender.messages
     assert not [
-        action
-        for action, _ in env.bot.calls
-        if action in {"send_group_msg", "send_private_msg"}
+        action for action, _ in env.bot.calls if action in {"send_group_msg", "send_private_msg"}
     ]
 
 
@@ -1188,7 +1178,6 @@ async def test_plugin_background_send_is_bound_to_frozen_job_target(
         tools_closed=False,
         space_id=env.space,
         person_id=None,
-        reply_target_control=None,
     )
     token = current_invocation.set(ToolInvocationContext(runtime, call_id="plugin-send"))
     try:

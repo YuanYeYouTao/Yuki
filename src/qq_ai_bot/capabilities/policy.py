@@ -29,7 +29,6 @@ _READ_EFFECTS = frozenset(
     {
         CapabilityEffect.READ_STATE,
         CapabilityEffect.EXTERNAL_READ,
-        CapabilityEffect.REPLY_EFFECT,
     }
 )
 

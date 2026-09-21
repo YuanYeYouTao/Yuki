@@ -690,7 +690,7 @@ async def test_unique_event_key_is_unchanged(database: Database) -> None:
         request=_request(event_key="other-key"),
     )
     event_ids, _parts, _intents = await _state(database)
-    assert PLUGIN_API_VERSION == "2.0"
+    assert PLUGIN_API_VERSION == "3.0"
     assert second.deduplicated is True
     assert second.source_event_id == first.source_event_id
     assert other_target.source_event_id != first.source_event_id

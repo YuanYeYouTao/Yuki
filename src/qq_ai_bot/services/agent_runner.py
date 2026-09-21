@@ -261,12 +261,6 @@ class AgentRunner:
             ).hexdigest()
             runtime.work_control.session = WorkSession(runtime.work_control, contract)
             transcript = await runtime.work_control.session.restore(transcript)
-            restore_reply = getattr(tools, "restore_reply_state", None)
-            if callable(restore_reply) and "reply_state" in runtime.work_control.session.progress:
-                restore_reply(runtime.work_control.session.progress["reply_state"])
-            runtime.work_control.session.reply_state_reader = getattr(
-                tools, "export_reply_state", None
-            )
             repeated_batch_count = int(runtime.work_control.session.progress.get("repeats", 0))
             if runtime.work_control.handoff_work_id is not None:
                 await runtime.work_control.session.save("paired")
@@ -989,16 +983,6 @@ class AgentRunner:
         """Execute each semantic call once and fan its result out to duplicate IDs."""
 
         control = runtime.work_control
-        if control is not None and await control.pending():
-            result = json.dumps(
-                {"ok": False, "error": "new_input_before_execution", "executed": False}
-            )
-            return CoordinatedToolResult(
-                calls=tuple((call, result, False) for call in calls),
-                executed_count=0,
-                reused_count=0,
-            )
-
         control_calls = [call for call in calls if call.function.name in WORK_CONTROL_NAMES]
         if control_calls:
             if len(calls) != 1:
@@ -1043,19 +1027,14 @@ class AgentRunner:
                 reused_count=0,
             )
 
-        if (
-            control is not None
+        work_admission_blocked = {
+            call.id
+            for call in calls
+            if control is not None
             and control.current is None
-            # Sending is an explicit conversation output, not work execution.
-            # Keep its mutation risk, receipt, routing and permission checks intact.
-            and any(
-                call.function.name != "send_message"
-                and self._is_side_effecting(tools, call, runtime)
-                for call in calls
-            )
-        ):
-            result = json.dumps({"ok": False, "error": "accept_work_before_execution"})
-            return CoordinatedToolResult(tuple((call, result, False) for call in calls), 0)
+            and call.function.name != "send_message"
+            and self._is_side_effecting(tools, call, runtime)
+        }
 
         signatures = {call.id: self._tool_call_signature(call) for call in calls}
         first_call_by_signature: dict[tuple[str, str], ToolCall] = {}
@@ -1064,6 +1043,11 @@ class AgentRunner:
         aliases: dict[str, str] = {}
         unique_calls: list[ToolCall] = []
         for call in calls:
+            if call.id in work_admission_blocked:
+                rejected_by_id[call.id] = json.dumps(
+                    {"ok": False, "error": "accept_work_before_execution"}
+                )
+                continue
             if call.function.name not in declared_names:
                 rejected_by_id[call.id] = json.dumps(
                     {
@@ -1100,7 +1084,10 @@ class AgentRunner:
                     if call.function.name != "memory_change"
                     and self._is_side_effecting(tools, call, runtime)
                 ]
-                if conflicting:
+                non_delivery_conflicts = [
+                    call for call in conflicting if call.function.name != "send_message"
+                ]
+                if non_delivery_conflicts:
                     violation = json.dumps(
                         {
                             "ok": False,
@@ -1114,6 +1101,19 @@ class AgentRunner:
                         executed_count=0,
                         reused_count=0,
                     )
+                for call in conflicting:
+                    rejected_by_id[call.id] = json.dumps(
+                        {
+                            "ok": False,
+                            "error": "delivery_requires_observed_result",
+                            "executed": False,
+                            "detail": "先观察记忆写入的真实回执，再决定要发送的内容。",
+                        },
+                        ensure_ascii=False,
+                    )
+                unique_calls = [
+                    call for call in unique_calls if call.function.name != "send_message"
+                ]
             tools.begin_batch(tuple(unique_calls), runtime)
         coordinated = await self._tool_coordinator.execute_batch(
             tuple(unique_calls),

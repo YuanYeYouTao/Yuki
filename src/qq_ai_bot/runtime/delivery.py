@@ -25,7 +25,7 @@ class DeliveryItemSource(StrEnum):
     """Which trusted host component produced the outbound item."""
 
     AGENT_REPLY = "agent_reply"
-    REPLY_EFFECT = "reply_effect"
+    AGENT_MEDIA = "agent_media"
     AUTOMATION_STEP = "automation_step"
     PLUGIN_EMIT = "plugin_emit"
     RECOVERY_NOTICE = "recovery_notice"

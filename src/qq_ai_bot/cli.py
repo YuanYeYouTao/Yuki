@@ -1,4 +1,4 @@
-"""Administrative CLI for migrations, QQ Provider config, and Plugin API 2.0."""
+"""Administrative CLI for migrations, QQ Provider config, and Plugin API 3.0."""
 
 from __future__ import annotations
 
@@ -76,6 +76,7 @@ from qq_ai_bot.speech.profiles import VoiceProfileService
 from qq_ai_bot.speech.provider import SpeechSynthesisRequest
 from qq_ai_bot.speech.repository import SpeechGenerationRepository, VoiceProfileRepository
 from qq_ai_bot.speech.service import GenieTTSProvider, SpeechService
+from yuki_plugin_sdk.api import PLUGIN_API_VERSION
 from yuki_plugin_sdk.testing.contract import run_plugin_contract_tests
 
 
@@ -179,7 +180,7 @@ def _render_snowluma_config(settings: Settings, output: Path) -> None:
 
 
 def _add_plugin_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    plugin = subparsers.add_parser("plugin", help="管理本地可信 Plugin API 2.0 插件")
+    plugin = subparsers.add_parser("plugin", help="管理本地可信 Plugin API 3.0 插件")
     commands = plugin.add_subparsers(dest="plugin_command", required=True)
     commands.add_parser("list")
     commands.add_parser("discover")
@@ -776,7 +777,7 @@ async def _plugin_command(settings: Settings, args: argparse.Namespace) -> int:
         await asyncio.to_thread(
             target.write_text,
             (
-                "# Yuki Plugin API 2.0\n\n"
+                "# Yuki Plugin API 3.0\n\n"
                 "由 `qq-ai-bot-cli plugin docs` 生成。完整手册位于 "
                 "`docs/plugin-development/`。\n"
             ),
@@ -792,7 +793,7 @@ async def _plugin_command(settings: Settings, args: argparse.Namespace) -> int:
             discovery = PluginDiscovery(
                 settings.plugin_directory,
                 yuki_version=__version__,
-                plugin_api=settings.plugin_api_version,
+                plugin_api=PLUGIN_API_VERSION,
             )
             records = discovery.discover()
             for discovered in records:

@@ -21,8 +21,6 @@ from qq_ai_bot.admin.permission_catalog import CapabilityReport, PermissionCatal
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities.results import normalize_legacy_result
 from qq_ai_bot.config import Settings
-from qq_ai_bot.conversation.delivery import ReplyControlState
-from qq_ai_bot.conversation.reply import ReplyEffect
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import ChatTool, InboundMessage, PromptRequestDiagnostics
@@ -69,7 +67,6 @@ from qq_ai_bot.persistence.repositories import (
 )
 from qq_ai_bot.sandbox.environment_tools import EXECUTION_TOOLS, READ_TOOLS, SANDBOX_TOOLS
 from qq_ai_bot.services.evidence_state import evidence_state
-from qq_ai_bot.services.reply_target import ReplyTargetControl
 from qq_ai_bot.services.turn_coordinator import TurnToken
 from qq_ai_bot.speech.models import VoicePreferenceMode
 from qq_ai_bot.speech.preference_service import VoicePreferenceService
@@ -165,7 +162,6 @@ class ToolRuntime:
     conversation_key: str = ""
     trigger_message_id: str = ""
     trigger_event_id: int | None = None
-    source_display_requested: bool = False
     actor_user_id: str = ""
     actor_context: ToolActor | None = None
     actor_is_superuser: bool = False
@@ -181,10 +177,8 @@ class ToolRuntime:
     history_limit: int | None = None
     turn_token: TurnToken | None = None
     turn_snapshot: ConversationTurnSnapshot | None = None
-    reply_effects: list[ReplyEffect] | None = None
-    reply_target_control: ReplyTargetControl | None = None
-    reply_control: ReplyControlState | None = None
-    voice_spontaneous_allowed: bool = True
+    visible_event_ids: frozenset[int] = frozenset()
+    voice_delivery_allowed: bool = True
     selection_query: str = ""
     max_model_requests_override: int | None = None
     max_tool_calls_override: int | None = None
@@ -1222,7 +1216,7 @@ class AgentToolService:
         config = runtime.runtime_config
         if config is None or not config.speech.enabled:
             return False
-        if not config.speech.agent_effects_enabled:
+        if not config.speech.agent_delivery_enabled:
             return False
         return (
             config.speech.private_enabled
@@ -1268,7 +1262,6 @@ class AgentToolService:
                 "confirmation": "persisted",
             }
         )
-
 
     def _my_capabilities(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
         """Return only the report derived from this authoritative inbound event."""

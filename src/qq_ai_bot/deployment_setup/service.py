@@ -33,6 +33,7 @@ from qq_ai_bot.speech.paths import SpeechPathPolicy
 from qq_ai_bot.speech.profiles import VoiceProfileService
 from qq_ai_bot.speech.repository import VoiceProfileRepository
 from qq_ai_bot.web.models import WebMode
+from yuki_plugin_sdk.api import PLUGIN_API_VERSION
 
 _ENV_LINE = re.compile(r"^(?P<prefix>\s*(?:export\s+)?)(?P<key>[A-Za-z_][A-Za-z0-9_]*)=")
 _SAFE_ENV_VALUE = re.compile(r"^[A-Za-z0-9_./:@+,-]*$")
@@ -647,7 +648,7 @@ async def apply_pending_plugins(paths: SetupPaths, settings: Settings) -> int:
     discovery = PluginDiscovery(
         settings.plugin_directory,
         yuki_version=__version__,
-        plugin_api=settings.plugin_api_version,
+        plugin_api=PLUGIN_API_VERSION,
     )
     database = Database(settings.database_url)
     repository = PluginInstallationRepository(database)

@@ -290,9 +290,6 @@ class MainAgentTurnService:
                         suppress_delivery=True,
                     )
                 if isinstance(saved.get("sync_result"), str):
-                    restore_reply = getattr(backend, "restore_reply_state", None)
-                    if callable(restore_reply):
-                        restore_reply(saved.get("sync_reply_state", {}))
                     return AgentRunResult(
                         text=saved["sync_result"],
                         suppress_delivery=bool(saved.get("sync_suppress_delivery", False)),
@@ -345,7 +342,6 @@ class MainAgentTurnService:
                             bounded.current["id"],
                             {
                                 "sync_result": result.text,
-                                "sync_reply_state": getattr(backend, "export_reply_state", dict)(),
                                 "sync_suppress_delivery": result.suppress_delivery,
                             },
                         )

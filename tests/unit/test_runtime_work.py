@@ -103,6 +103,7 @@ async def test_work_control_has_no_progress_tool_and_preserves_checkpoint(databa
     repository = WorkRepository(database)
     lease = await repository.acquire(env.context.conversation_id, 1)
     assert lease
+
     async def validate():
         assert await repository.valid(lease)
 
@@ -119,9 +120,9 @@ async def test_work_control_has_no_progress_tool_and_preserves_checkpoint(databa
     )["ok"]
     identity = control.current["id"]
     await repository.checkpoint(lease, identity, {"transcript_ref": "preserved"})
-    assert not json.loads(
-        await control.execute("report_progress", {"text": "accepted"}, "p1")
-    )["ok"]
+    assert not json.loads(await control.execute("report_progress", {"text": "accepted"}, "p1"))[
+        "ok"
+    ]
     persisted = await repository.get(identity)
     assert persisted["state"] == "running"
     assert json.loads(persisted["checkpoint_json"])["transcript_ref"] == "preserved"

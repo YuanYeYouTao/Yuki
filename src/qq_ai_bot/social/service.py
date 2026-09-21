@@ -18,7 +18,6 @@ from sqlalchemy import select
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.conversation.canonical_db_models import PersonActiveRouteModel, SpaceActiveRouteModel
-from qq_ai_bot.conversation.delivery import default_reply_spec
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.gateway.providers.napcat import NapCatProvider
 from qq_ai_bot.gateway.providers.snowluma import SnowLumaProvider
@@ -33,7 +32,7 @@ from qq_ai_bot.identity.routing import PresenceRouter, ResolvedSend
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
-from qq_ai_bot.services.reply_sequence import ReplySequenceManager
+from qq_ai_bot.services.message_splitter import OutboundMessageSplitter
 from qq_ai_bot.social.models import OperationStatus, SocialError, SocialMessage, SocialTarget
 from qq_ai_bot.social.repository import SocialOperationRepository
 from qq_ai_bot.social.transfer import ArtifactTransfer
@@ -57,7 +56,7 @@ class SocialContext:
     runtime_snapshot: Any = None
     turn_token: Any = None
     conversation_key: str = ""
-    voice_spontaneous_allowed: bool = False
+    voice_delivery_allowed: bool = True
     inbound: Any = None
     # Backend-only proof from the current private inbound event, never tool arguments.
     reply_message_id: str | None = None
@@ -78,9 +77,8 @@ class SocialService:
         self._directory_checked_at = float("-inf")
         self.runtime_config: RuntimeConfigService | None = None
         self.transfer: ArtifactTransfer | None = None
-        self.speech_effects: Any = None
-        self.emoji_effects: Any = None
-        self.reply_effects: Any = None
+        self.speech_delivery: Any = None
+        self.emoji_delivery: Any = None
 
     @staticmethod
     async def _call(route: ResolvedSend, action: str, params: dict[str, Any]) -> Any:
@@ -407,9 +405,8 @@ class SocialService:
             or event.canonical_conversation_id != context.conversation_id
             or event.bot_user_id != route.sender_account_id
             or event.scope_type != ("group" if target.kind == "space" else "private")
-            or (
-                event.group_id if target.kind == "space" else event.private_peer_user_id
-            ) != route.external_target_id
+            or (event.group_id if target.kind == "space" else event.private_peer_user_id)
+            != route.external_target_id
             or not event.platform_message_id.isdigit()
         ):
             raise SocialError("reply_event_unavailable")
@@ -467,34 +464,23 @@ class SocialService:
         prior = await self.receipts.find(context.turn_id, context.call_id)
         if prior is not None and prior.action == "send_message":
             # Calls created before sequence support retain their original receipt.
-            return await self.execute(
-                "send_message", args, replace(context, sequence_part_index=0)
-            )
+            return await self.execute("send_message", args, replace(context, sequence_part_index=0))
         message = SocialMessage.model_validate(
             {key: value for key, value in args.items() if key in SocialMessage.model_fields}
         )
-        if not message.text or any(
-            (message.artifact_id, message.voice, message.emoji)
-        ):
-            return await self.execute(
-                "send_message", args, replace(context, sequence_part_index=0)
-            )
+        if not message.text or any((message.artifact_id, message.voice, message.emoji)):
+            return await self.execute("send_message", args, replace(context, sequence_part_index=0))
         snapshot = context.runtime_snapshot
         if snapshot is None and self.runtime_config is not None:
             snapshot = await self.runtime_config.snapshot()
         if snapshot is None:
-            return await self.execute(
-                "send_message", args, replace(context, sequence_part_index=0)
-            )
-        chunks = ReplySequenceManager.render(
+            return await self.execute("send_message", args, replace(context, sequence_part_index=0))
+        chunks = OutboundMessageSplitter.render(
             message.text,
-            spec=default_reply_spec(hard_max_messages=snapshot.reply.hard_max_messages),
             runtime=snapshot,
         )
         if len(chunks) <= 1 and prior is None:
-            return await self.execute(
-                "send_message", args, replace(context, sequence_part_index=0)
-            )
+            return await self.execute("send_message", args, replace(context, sequence_part_index=0))
         selected = args.get("target") or {}
         if not isinstance(selected, dict):
             raise SocialError("invalid_message_arguments")
@@ -698,7 +684,10 @@ class SocialService:
                 "next_cursor": str(offset + limit) if offset + limit < len(rows) else None,
             }
         if name not in {
-            "send_message", "send_private_message", "send_group_message", "poke_person"
+            "send_message",
+            "send_private_message",
+            "send_group_message",
+            "poke_person",
         }:
             raise SocialError("unknown_tool")
         message = (
@@ -708,9 +697,8 @@ class SocialService:
                 {
                     key: value
                     for key, value in args.items()
-                    if key in {
-                        "text", "artifact_id", "attachment_kind", "mentions", "voice", "emoji"
-                    }
+                    if key
+                    in {"text", "artifact_id", "attachment_kind", "mentions", "voice", "emoji"}
                 }
             )
         )
@@ -732,8 +720,7 @@ class SocialService:
             and (
                 context.trigger_event_id is not None
                 or (
-                    context.origin == "plugin_background"
-                    and context.caused_by_event_id is not None
+                    context.origin == "plugin_background" and context.caused_by_event_id is not None
                 )
             )
         )
@@ -758,9 +745,7 @@ class SocialService:
             params = {
                 "user_id" if target.kind == "person" else "group_id": int(route.external_target_id),
                 "message": (
-                    [{"type": "text", "data": {"text": message.text}}]
-                    if message.text
-                    else []
+                    [{"type": "text", "data": {"text": message.text}}] if message.text else []
                 ),
             }
             if args.get("reply_to_event_id") is not None:
@@ -856,25 +841,29 @@ class SocialService:
             prior = await self.receipts.find(context.turn_id, context.call_id)
             if prior is not None and prior.status is not OperationStatus.PREPARED:
                 return await self._effect(
-                    name, args, context, target, route, action, params,
-                    content=message.text, route_target=route_target,
+                    name,
+                    args,
+                    context,
+                    target,
+                    route,
+                    action,
+                    params,
+                    content=message.text,
+                    route_target=route_target,
                 )
             if context.actor is None or context.runtime_snapshot is None:
                 raise SocialError("media_context_unavailable")
             if message.voice is not None:
-                if self.speech_effects is None:
+                if self.speech_delivery is None:
                     raise SocialError("speech_unavailable")
                 speech_config = context.runtime_snapshot.speech
-                if not speech_config.enabled or not speech_config.agent_effects_enabled:
+                if not speech_config.enabled or not speech_config.agent_delivery_enabled:
                     raise SocialError("speech_unavailable")
-                if (
-                    message.voice.request_basis == "agent_initiated"
-                    and not context.voice_spontaneous_allowed
-                ):
-                    raise SocialError("voice_cadence_limited")
+                if not context.voice_delivery_allowed:
+                    raise SocialError("voice_delivery_disabled")
                 from qq_ai_bot.speech.models import VoiceMode
 
-                prepared = await self.speech_effects.prepare(
+                prepared = await self.speech_delivery.prepare(
                     actor=context.actor,
                     response_text=message.text,
                     runtime=context.runtime_snapshot,
@@ -890,9 +879,7 @@ class SocialService:
                 if media.local_path is None:
                     raise SocialError("speech_media_unavailable")
                 data = await asyncio.to_thread(Path(media.local_path).read_bytes)
-                quoted = [
-                    segment for segment in params["message"] if segment["type"] == "reply"
-                ]
+                quoted = [segment for segment in params["message"] if segment["type"] == "reply"]
                 params["message"] = [
                     *quoted,
                     {
@@ -901,7 +888,8 @@ class SocialService:
                     },
                 ]
                 del data
-                ledger_segments = (*quoted,
+                ledger_segments = (
+                    *quoted,
                     {
                         "type": "record",
                         "data": {
@@ -919,25 +907,24 @@ class SocialService:
                 outbound = prepared.message
             else:
                 assert message.emoji is not None
-                if self.emoji_effects is None:
+                if self.emoji_delivery is None:
                     raise SocialError("emoji_unavailable")
                 if not context.runtime_snapshot.emoji.enabled:
                     raise SocialError("emoji_unavailable")
                 from qq_ai_bot.emoji.models import (
+                    EmojiDeliveryRequest,
                     EmojiPlacement,
                     EmojiPreparationStatus,
                     EmojiReplyMode,
-                    PendingReplyEffect,
                 )
 
-                prepared_emoji = await self.emoji_effects.prepare(
-                    PendingReplyEffect(
+                prepared_emoji = await self.emoji_delivery.prepare(
+                    EmojiDeliveryRequest(
                         mode=EmojiReplyMode.PREFERRED,
                         placement=EmojiPlacement.AFTER_TEXT,
                         goal=message.emoji.goal,
                         emotion=message.emoji.emotion,
                         explicit_request=True,
-                        source="agent",
                     ),
                     actor=context.actor,
                     response_text=message.text,
@@ -973,7 +960,13 @@ class SocialService:
                 content = message.text
                 outbound = prepared_emoji.message
             receipt = await self._effect(
-                name, args, context, target, route, action, params,
+                name,
+                args,
+                context,
+                target,
+                route,
+                action,
+                params,
                 content=content,
                 ledger_segments=ledger_segments,
                 route_target=route_target,
@@ -981,13 +974,13 @@ class SocialService:
             if receipt.get("status") == OperationStatus.SUCCEEDED:
                 try:
                     if message.voice is not None:
-                        await self.speech_effects.record_success(outbound)
+                        await self.speech_delivery.record_success(outbound)
                     else:
-                        await self.emoji_effects.record_send_accepted(
-                            outbound, source="reply_effect"
+                        await self.emoji_delivery.record_send_accepted(
+                            outbound, source="agent_delivery"
                         )
                         if context.inbound is not None:
-                            await self.emoji_effects.record_success(
+                            await self.emoji_delivery.record_success(
                                 outbound,
                                 inbound=context.inbound,
                                 source="agent",
@@ -1173,13 +1166,6 @@ class SocialService:
                 raise
         completed = await self.receipts.get(receipt.operation_id)
         await self._record_work_delivery(completed)
-        if (
-            name == "send_message"
-            and completed.status is OperationStatus.SUCCEEDED
-            and content is not None
-            and not args.get("artifact_id")
-        ):
-            await self._record_send_cadence(args, context, target, route)
         if caption or caption_segments:
             if completed.status is OperationStatus.SUCCEEDED:
                 caption_context = replace(
@@ -1239,41 +1225,6 @@ class SocialService:
             await record(control, receipt.operation_id, state, receipt.model_dump(mode="json"))
         except Exception:
             logging.getLogger(__name__).exception("social_work_delivery_record_failed")
-
-    async def _record_send_cadence(
-        self,
-        args: dict[str, Any],
-        context: SocialContext,
-        target: SocialTarget,
-        route: ResolvedSend,
-    ) -> None:
-        if self.reply_effects is None or not context.conversation_key:
-            return
-        current_target = (
-            context.space_id
-            if target.kind == "space"
-            else context.person_refs.get("current_speaker")
-        )
-        if str(target.id) != current_target:
-            return
-        voice = args.get("voice")
-        try:
-            await self.reply_effects.record(
-                conversation_key=context.conversation_key,
-                source_event_id=f"send_message:{context.turn_id}:{context.call_id}",
-                trigger_event_id=context.trigger_event_id,
-                text_sent=bool(args.get("text") and not voice),
-                voice_sent=bool(voice),
-                emoji_sent=bool(args.get("emoji")),
-                voice_request_basis=(
-                    voice.get("request_basis", "none") if isinstance(voice, dict) else "none"
-                ),
-                canonical_conversation_id=context.conversation_id,
-                bot_user_id=route.sender_account_id,
-                ingress_presence_id=route.presence_id,
-            )
-        except Exception:
-            logging.getLogger(__name__).exception("social_send_cadence_record_failed")
 
     async def _file_result(self, operation_id: str) -> dict[str, Any]:
         file = await self.receipts.get(operation_id)

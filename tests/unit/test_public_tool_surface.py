@@ -68,8 +68,12 @@ async def test_one_manifest_without_legacy_aliases(database, tmp_path):
         "workspace_write",
     } <= set(names)
     assert not {
-        "send_voice", "send_emoji", "send_group_voice", "send_target_emoji",
-        "automation_create_task", "report_progress",
+        "send_voice",
+        "send_emoji",
+        "send_group_voice",
+        "send_target_emoji",
+        "automation_create_task",
+        "report_progress",
     } & set(names)
     task_schema = next(t for t in tools if t.name == "automation_create").parameters["properties"][
         "task"
@@ -117,42 +121,9 @@ async def test_revocation_precedes_every_common_tool(database, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_reply_intents_survive_backend_recreation(database, tmp_path):
-    from qq_ai_bot.conversation.delivery import ReplyControlState, ReplySequenceSpec
-    from qq_ai_bot.emoji.models import EmojiPlacement, EmojiReplyMode, PendingReplyEffect
-    from qq_ai_bot.speech.models import VoiceMode
-    from qq_ai_bot.speech.reply_effect import PendingVoiceReplyEffect
-
-    chat, _, runtime = await setup(database, tmp_path)
-    effects = [
-        PendingVoiceReplyEffect(mode=VoiceMode.VOICE),
-        PendingReplyEffect(
-            mode=EmojiReplyMode.PREFERRED, placement=EmojiPlacement.AFTER_TEXT, source="agent"
-        ),
-    ]
-    backend = MainAgentBackend(
-        chat,
-        replace(
-            runtime, reply_effects=effects, reply_control=ReplyControlState(ReplySequenceSpec(2))
-        ),
-    )
-    saved = json.loads(json.dumps(backend.export_reply_state()))
-    restored_effects = []
-    control = ReplyControlState(ReplySequenceSpec(10))
-    restored = MainAgentBackend(
-        chat, replace(runtime, reply_effects=restored_effects, reply_control=control)
-    )
-    restored.restore_reply_state(saved)
-    assert restored_effects == effects
-    assert control.spec.max_messages == 2
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("superuser", [False, True])
 async def test_chat_and_scheduled_callable_catalogs_match(database, tmp_path, superuser):
     from tests.unit.test_automation_runtime import _inbound
-
-    from qq_ai_bot.conversation.delivery import ReplyControlState, ReplySequenceSpec
 
     chat, _, scheduled = await setup(database, tmp_path)
     scheduled = replace(
@@ -160,8 +131,6 @@ async def test_chat_and_scheduled_callable_catalogs_match(database, tmp_path, su
         actor_is_superuser=superuser,
         allow_admin_actions=superuser,
         allow_generic_onebot=superuser,
-        reply_effects=[],
-        reply_control=ReplyControlState(ReplySequenceSpec(10)),
     )
     normal = replace(
         scheduled, inbound=_inbound(), actor_context=None, origin=TurnOrigin.USER_MESSAGE
@@ -215,30 +184,16 @@ async def test_scheduled_social_uses_actor_without_qq_message(database, tmp_path
 
 
 @pytest.mark.asyncio
-async def test_scheduled_reply_prepares_voice_with_common_service(database, tmp_path):
+async def test_scheduled_reply_delivers_generated_text(database, tmp_path):
     from datetime import UTC, datetime
 
     from qq_ai_bot.automation.authority import AuthorityContext
     from qq_ai_bot.automation.delivery import deliver_reply
     from qq_ai_bot.automation.models import AutomationContext
     from qq_ai_bot.automation.registry import CapabilityExecutionContext
-    from qq_ai_bot.domain.messages import AttachmentKind, OutboundMedia, OutboundMessage
 
     chat, _, runtime = await setup(database, tmp_path)
-    prepared = SimpleNamespace(
-        message=OutboundMessage(
-            media=(
-                OutboundMedia(kind=AttachmentKind.AUDIO, local_path="/voice.wav", generation_id=2),
-            )
-        ),
-        suppress_text=True,
-    )
-    chat._speech_effects = SimpleNamespace(
-        prepare=AsyncMock(return_value=prepared), record_success=AsyncMock()
-    )
-    gateway = SimpleNamespace(
-        send_private=AsyncMock(), send_voice=AsyncMock(return_value={"message_id": "9"})
-    )
+    gateway = SimpleNamespace(send_private=AsyncMock())
     now = datetime.now(UTC)
     context = CapabilityExecutionContext(
         authority=AuthorityContext(
@@ -265,17 +220,10 @@ async def test_scheduled_reply_prepares_voice_with_common_service(database, tmp_
         {
             "text": "完成了",
             "user_id": "10001",
-            "reply_state": {"effects": [{"kind": "voice", "mode": "voice"}]},
         },
         context,
         gateway,
-        chat=chat,
+        runtime_config=chat._runtime_config,
     )
     assert count == 1
-    gateway.send_voice.assert_awaited_once()
-    gateway.send_private.assert_not_awaited()
-    assert (
-        chat._speech_effects.prepare.await_args.kwargs["actor"].origin
-        is TurnOrigin.SCHEDULED_AUTOMATION
-    )
-    chat._speech_effects.record_success.assert_awaited_once()
+    gateway.send_private.assert_awaited_once_with("10001", "完成了")

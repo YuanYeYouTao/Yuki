@@ -11,7 +11,6 @@ import pytest
 from tests.conftest import build_harness, make_settings
 
 from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.conversation.delivery import ReplyControlState, default_reply_spec
 from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
 from qq_ai_bot.conversation.rollup.renderer import rollup_source_projection
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
@@ -42,7 +41,6 @@ from qq_ai_bot.services.context_assembler import (
     _HistoryPromptWindow,
 )
 from qq_ai_bot.services.prompt_composer import PromptComposer
-from qq_ai_bot.services.reply_target import ReplyTargetControl
 from qq_ai_bot.time.models import TimeContext
 
 _OCCURRED = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
@@ -682,8 +680,11 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
 
 @pytest.mark.asyncio
 async def test_external_wakeup_and_ordinary_turn_send_the_same_provider_shape(
-    database: Database,
+    database: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from qq_ai_bot.services.main_agent_backend import MainAgentBackend
+
+    monkeypatch.setattr(MainAgentBackend, "response_feedback", lambda *_args: None)
     provider = FakeLLMProvider(lambda _request: "ok")
     harness = build_harness(database, make_settings(database.url), provider)
     chat = harness.processor._chat
@@ -715,7 +716,7 @@ async def test_external_wakeup_and_ordinary_turn_send_the_same_provider_shape(
         "runtime_config": runtime_config,
         "tools_closed": False,
         "read_only": False,
-        "reply_target_control": ReplyTargetControl(visible_event_ids=frozenset({1, 2})),
+        "visible_event_ids": frozenset({1, 2}),
         "selection_query": "same capability-neutral query",
         "scope_type": ScopeType.PRIVATE,
         "bot_user_id": "8000",
@@ -849,9 +850,6 @@ async def test_plugin_wakeup_can_end_without_creating_a_fake_reply(
     harness = build_harness(database, make_settings(database.url))
     chat = harness.processor._chat
     runtime_config = await chat._runtime_config.snapshot(user_id="1001", group_id=None)
-    control = ReplyControlState(
-        spec=default_reply_spec(hard_max_messages=runtime_config.reply.hard_max_messages)
-    )
     runtime = ToolRuntime(
         inbound=None,
         gateway=None,
@@ -863,7 +861,6 @@ async def test_plugin_wakeup_can_end_without_creating_a_fake_reply(
         trigger_event_id=2,
         runtime_config=runtime_config,
         origin=TurnOrigin.PLUGIN_BACKGROUND,
-        reply_control=control,
         scope_type=ScopeType.PRIVATE,
         bot_user_id="8000",
         conversation_id="conv-stable",
@@ -876,7 +873,6 @@ async def test_plugin_wakeup_can_end_without_creating_a_fake_reply(
     names = {tool.name for tool in definitions}
     assert "send_message" in names
     assert "decline_reply" not in names
-    assert control.declined is False
 
 
 @pytest.mark.asyncio

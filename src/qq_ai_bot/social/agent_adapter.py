@@ -62,9 +62,7 @@ async def invoke_social(
             space_id=runtime.space_id,
             origin="plugin_background",
             caused_by_event_id=event_id,
-            visible_event_ids=frozenset(
-                getattr(getattr(runtime, "reply_target_control", None), "visible_event_ids", ())
-            ),
+            visible_event_ids=frozenset(getattr(runtime, "visible_event_ids", ())),
         )
         try:
             return await service.execute(name, arguments, context)
@@ -151,21 +149,17 @@ async def invoke_social(
         account_refs={key: value for key, value in refs.items() if value in by_account},
         space_id=runtime.space_id or getattr(inbound, "space_id", None),
         trigger_event_id=(
-            getattr(runtime, "effective_trigger_event_id", None)
-            if inbound is not None
-            else None
+            getattr(runtime, "effective_trigger_event_id", None) if inbound is not None else None
         ),
         reply_presence_id=inbound.presence_id
         if inbound is not None and inbound.scope_type == "private"
         else None,
-        visible_event_ids=frozenset(
-            getattr(getattr(runtime, "reply_target_control", None), "visible_event_ids", ())
-        ),
+        visible_event_ids=frozenset(getattr(runtime, "visible_event_ids", ())),
         actor=actor,
         runtime_snapshot=getattr(runtime, "runtime_config", None),
         turn_token=getattr(runtime, "turn_token", None),
         conversation_key=getattr(runtime, "conversation_key", ""),
-        voice_spontaneous_allowed=bool(getattr(runtime, "voice_spontaneous_allowed", False)),
+        voice_delivery_allowed=bool(getattr(runtime, "voice_delivery_allowed", True)),
         inbound=inbound,
     )
     try:

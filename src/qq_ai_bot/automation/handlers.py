@@ -255,18 +255,9 @@ class AutomationCapabilityHandlers:
         contract = self._agent_runner.main_contract
         if contract is None:
             raise AutomationExecutionError("main_agent_services_unavailable")
-        from qq_ai_bot.conversation.delivery import ReplyControlState, default_reply_spec
-        from qq_ai_bot.services.reply_target import ReplyTargetControl
-
         tool_runtime = ToolRuntime(
             inbound=None,
-            reply_effects=[],
-            reply_target_control=ReplyTargetControl(
-                visible_event_ids=composition.visible_event_ids
-            ),
-            reply_control=ReplyControlState(
-                default_reply_spec(hard_max_messages=snapshot.reply.hard_max_messages)
-            ),
+            visible_event_ids=composition.visible_event_ids,
             gateway=cast(OneBotToolGateway | None, runtime.gateway),
             allow_generic_onebot=context.authority.actor_is_superuser,
             allow_work_environment=True,
@@ -343,7 +334,6 @@ class AutomationCapabilityHandlers:
             data={
                 "text": result.text,
                 "tool_calls_used": result.tool_calls_used,
-                "reply_state": backend.export_reply_state(),
             },
             llm_calls=result.model_requests,
             tool_calls=result.tool_calls_used,
@@ -370,7 +360,7 @@ class AutomationCapabilityHandlers:
             arguments,
             context,
             self._gateway_factory(context),
-            chat=contract.chat if contract is not None else None,
+            runtime_config=contract.chat._runtime_config if contract is not None else None,
         )
         return CapabilityResult(data={"sent": bool(count)}, messages_sent=count)
 

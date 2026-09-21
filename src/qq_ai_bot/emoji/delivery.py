@@ -1,4 +1,4 @@
-"""Resolve queued emoji intents into transport-neutral outbound media."""
+"""Resolve an explicit emoji request into transport-neutral outbound media."""
 
 from __future__ import annotations
 
@@ -11,12 +11,12 @@ from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.domain.messages import AttachmentKind, InboundMessage, OutboundMedia, OutboundMessage
 from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.emoji.models import (
+    EmojiDeliveryRequest,
     EmojiLifecycleStatus,
     EmojiPreparationResult,
     EmojiPreparationStatus,
     EmojiReplyMode,
     EmojiSelectionRequest,
-    PendingReplyEffect,
 )
 from qq_ai_bot.emoji.repository import EmojiRepository
 from qq_ai_bot.emoji.selector import EmojiSelector
@@ -27,7 +27,7 @@ from yuki_plugin_sdk.events import EventName
 logger = logging.getLogger(__name__)
 
 
-class EmojiReplyEffectService:
+class EmojiDeliveryService:
     def __init__(
         self,
         *,
@@ -48,13 +48,13 @@ class EmojiReplyEffectService:
 
     async def prepare(
         self,
-        effect: PendingReplyEffect,
+        request: EmojiDeliveryRequest,
         *,
         actor: ToolActor,
         response_text: str,
         runtime: RuntimeConfigSnapshot,
     ) -> EmojiPreparationResult:
-        if effect.mode is EmojiReplyMode.NONE:
+        if request.mode is EmojiReplyMode.NONE:
             return EmojiPreparationResult(
                 status=EmojiPreparationStatus.NO_CANDIDATE,
                 reason_code="effect_disabled",
@@ -62,7 +62,7 @@ class EmojiReplyEffectService:
         await publish_notification(
             self._event_publisher,
             EventName.EMOJI_QUEUED,
-            {"source": effect.source, "mode": effect.mode.value},
+            {"source": "agent", "mode": request.mode.value},
         )
         try:
             selection = await self._selector.select(
@@ -70,11 +70,11 @@ class EmojiReplyEffectService:
                     actor_user_id=actor.user_id,
                     group_id=actor.group_id,
                     reply_text=response_text[:4000],
-                    goal=effect.goal,
-                    emotion=effect.emotion,
-                    explicit_request=effect.explicit_request,
-                    mode=effect.mode,
-                    placement=effect.placement,
+                    goal=request.goal,
+                    emotion=request.emotion,
+                    explicit_request=request.explicit_request,
+                    mode=request.mode,
+                    placement=request.placement,
                 ),
                 runtime=runtime.emoji,
                 vision_runtime=runtime.vision,
@@ -85,7 +85,7 @@ class EmojiReplyEffectService:
             return await self._failed(
                 EmojiPreparationStatus.REPOSITORY_UNAVAILABLE,
                 reason_code="repository_query_failed",
-                source=effect.source,
+                source="agent",
                 exception=exc,
                 retryable=True,
             )
@@ -93,20 +93,20 @@ class EmojiReplyEffectService:
             return await self._failed(
                 EmojiPreparationStatus.UNEXPECTED_FAILURE,
                 reason_code="selection_failed",
-                source=effect.source,
+                source="agent",
                 exception=exc,
             )
         if selection.emoji_id is None:
             logger.warning(
                 "emoji_reply_prepare_declined reason=%s source=%s mode=%s",
                 selection.reason,
-                effect.source,
-                effect.mode.value,
+                "agent",
+                request.mode.value,
             )
             await publish_notification(
                 self._event_publisher,
                 EventName.EMOJI_PREPARE_NO_CANDIDATE,
-                {"source": effect.source, "reason_code": selection.reason or "no_candidate"},
+                {"source": "agent", "reason_code": selection.reason or "no_candidate"},
             )
             return EmojiPreparationResult(
                 status=EmojiPreparationStatus.NO_CANDIDATE,
@@ -120,7 +120,7 @@ class EmojiReplyEffectService:
             return await self._failed(
                 EmojiPreparationStatus.REPOSITORY_UNAVAILABLE,
                 reason_code="repository_asset_lookup_failed",
-                source=effect.source,
+                source="agent",
                 exception=exc,
                 retryable=True,
             )
@@ -129,7 +129,7 @@ class EmojiReplyEffectService:
             return await self._failed(
                 EmojiPreparationStatus.ASSET_MISSING,
                 reason_code="asset_missing",
-                source=effect.source,
+                source="agent",
             )
         try:
             content = self._storage.read(asset.relative_path)
@@ -149,7 +149,7 @@ class EmojiReplyEffectService:
             return await self._failed(
                 EmojiPreparationStatus.STORAGE_MISSING,
                 reason_code="storage_missing",
-                source=effect.source,
+                source="agent",
                 exception=exc,
             )
         summary = asset.description or f"{self._bot_display_name} 发送了一张表情图片"
@@ -169,16 +169,16 @@ class EmojiReplyEffectService:
             self._event_publisher,
             EventName.EMOJI_PREPARE_READY,
             {
-                "source": effect.source,
-                "mode": effect.mode.value,
+                "source": "agent",
+                "mode": request.mode.value,
                 "reason_code": selection.reason,
                 "selected_by": selection.selected_by,
             },
         )
         logger.info(
             "emoji_prepare_ready source=%s mode=%s selected_by=%s",
-            effect.source,
-            effect.mode.value,
+            "agent",
+            request.mode.value,
             selection.selected_by,
         )
         return EmojiPreparationResult(

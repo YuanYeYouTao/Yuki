@@ -32,7 +32,7 @@ async def test_send_message_bypasses_work_admission_without_reclassifying_mutati
         current = None
 
         async def pending(self):
-            return False
+            return True
 
     class Backend:
         def begin_batch(self, calls, runtime):
@@ -87,6 +87,22 @@ async def test_send_message_bypasses_work_admission_without_reclassifying_mutati
     assert blocked.executed_count == 0
     assert json.loads(blocked.calls[0][1])["error"] == "accept_work_before_execution"
     assert executed == ["send_message"]
+
+    send_call = ToolCall("send-batched", ToolFunction("send_message", "{}"))
+    write_call = ToolCall("write-batched", ToolFunction("workspace_write", "{}"))
+    batched = await chat._agent_runner._execute_tool_batch(
+        (send_call, write_call),
+        backend,
+        runtime,
+        remaining_calls=8,
+        max_parallel_calls=1,
+        reusable_results={},
+        cacheable_names=frozenset(),
+        declared_names=frozenset({"send_message", "workspace_write"}),
+    )
+    assert json.loads(batched.calls[0][1])["ok"] is True
+    assert json.loads(batched.calls[1][1])["error"] == "accept_work_before_execution"
+    assert executed == ["send_message", "send_message"]
 
 
 @pytest.mark.asyncio

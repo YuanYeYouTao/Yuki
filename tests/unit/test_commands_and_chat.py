@@ -92,12 +92,12 @@ async def test_delivery_failure_keeps_normal_answer(
                     ),
                 ),
             )
-        if model_calls == 3:
-            result = json.loads([m.content for m in request.messages if m.role == "tool"][-1])
-            assert result.get("error", result.get("error_code")) != "tools_closed", result
-            assert result.get("ok") is True, result
-            return "文件已生成，但未确认发送成功。"
-        return "可以正常聊天。"
+        if model_calls >= 3:
+            if model_calls == 3:
+                result = json.loads([m.content for m in request.messages if m.role == "tool"][-1])
+                assert result.get("error", result.get("error_code")) != "tools_closed", result
+                assert result.get("ok") is True, result
+            return ChatResponse("", 0)
 
     class Delivery:
         def __init__(self):
@@ -319,7 +319,7 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     )
     admin_text = admin_sender.messages[0].text
     assert "当前权限：超级管理员" in admin_text
-    assert "可修改运行时配置参数：240 项" in admin_text
+    assert "可修改运行时配置参数：231 项" in admin_text
     assert "管理员业务接口：44 项，其中修改型 33 项" in admin_text
     assert "conversation.autonomous_batch_limit" in admin_text
     assert "relationship.set_affection" in admin_text
@@ -447,7 +447,7 @@ async def test_superuser_can_persistently_toggle_private_users(database: Databas
         inbound("hello", message_id="new-private-user", user_id="12345678"),
         target_sender,
     )
-    assert allowed.reason == "chat"
+    assert allowed.reason == "llm_failure"
 
     disabled_sender = MemorySender()
     await harness.processor.handle(
@@ -489,7 +489,7 @@ async def test_superuser_can_toggle_any_group_by_id(database: Database) -> None:
         ),
         MemorySender(),
     )
-    assert enabled.reason == "chat"
+    assert enabled.reason == "llm_failure"
 
     await harness.processor.handle(
         inbound(
@@ -619,7 +619,7 @@ async def test_stop_cancels_only_current_task(
     monkeypatch.setattr(TurnMemorySession, "close", track_close)
 
     caplog.set_level("INFO", logger="qq_ai_bot.services.evidence_observation")
-    provider = FakeLLMProvider(delay_seconds=5)
+    provider = FakeLLMProvider(lambda _request: ChatResponse("", 0), delay_seconds=5)
     entered, started = _arm_provider_entry(provider)
     harness = build_harness(database, make_settings(database.url), provider)
     chat_sender = MemorySender()
@@ -695,7 +695,11 @@ async def test_empty_model_response_is_user_safe(database: Database) -> None:
     # within the existing request budget; never leak the placeholder as a fake @.
     for repair in (False, True):
 
-        def mention_response(request: ChatRequest, repair: bool = repair) -> str:
+        def mention_response(
+            request: ChatRequest, repair: bool = repair
+        ) -> str | ChatResponse:
+            if any("上一段最终正文没有发送" in str(m.content) for m in request.messages):
+                return ChatResponse("", 0)
             if repair and any("已拦截且未发送" in str(m.content) for m in request.messages):
                 return "请先确认要提醒的具体账号。"
             return "[提及ICE] 喊你呢\n\n@完了"
@@ -706,14 +710,12 @@ async def test_empty_model_response_is_user_safe(database: Database) -> None:
         await mention_harness.processor.handle(
             inbound("at ice", message_id=f"mention-placeholder-{repair}"), mention_sender
         )
-        assert len(mention_provider.requests) == 2
+        assert len(mention_provider.requests) == (3 if repair else 2)
         assert mention_provider.requests[0].tools == mention_provider.requests[1].tools
         assert all("[提及" not in str(message.text) for message in mention_sender.messages)
         assert all("@完了" not in str(message.text) for message in mention_sender.messages)
-        assert (
-            not mention_sender.messages
-            if repair
-            else any("AI 服务暂时不可用" in message.text for message in mention_sender.messages)
+        assert any("AI 服务暂时不可用" in message.text for message in mention_sender.messages) is (
+            not repair
         )
 
 
@@ -754,7 +756,7 @@ async def test_ordinary_chat_keeps_generic_tool_request_gateway(
 async def test_mutation_turn_uses_auto_with_only_write_tool_and_receipt_contract(
     database: Database,
 ) -> None:
-    provider = FakeLLMProvider(lambda _request: "需要你指明哪条记忆")
+    provider = FakeLLMProvider(lambda _request: ChatResponse("", 0))
     harness = build_harness(database, make_settings(database.url), provider)
     harness.processor._chat._tools._memory_mutations = object()  # type: ignore[assignment]
     sender = MemorySender()
@@ -807,14 +809,16 @@ async def test_unused_planner_fallback_no_longer_blocks_the_agent(
         sender,
     )
 
-    assert result.reason == "chat"
-    assert len(provider.requests) == 1
-    assert not sender.messages
+    # This fixture has no SocialService transport, so the explicit-send contract
+    # correctly rejects the provider's unsent final after context assembly.
+    assert result.reason == "llm_failure"
+    assert len(provider.requests) == 2
+    assert sender.messages[0].text == "AI 服务暂时不可用，请稍后重试。"
 
 
 @pytest.mark.asyncio
 async def test_ordinary_chat_always_assembles_agent_context(
-    database: Database, monkeypatch: pytest.MonkeyPatch
+    database: Database,
 ) -> None:
     provider = FakeLLMProvider(lambda _request: "表情也要先走 Main Agent")
     harness = build_harness(
@@ -824,29 +828,14 @@ async def test_ordinary_chat_always_assembles_agent_context(
     )
     sender = MemorySender()
 
-    chat = harness.processor._chat
-    send_sequence = chat._reply_sequence.send
-    checked = []
-
-    async def inspect_handoff(**kwargs):
-        key = kwargs["token"].conversation_key
-        # The real Main Agent has finished; reply tracking has not started yet.
-        assert not chat._turn_coordinator._states[key].tasks
-        assert await chat._turn_coordinator.begin_background(key) is None
-        checked.append(key)
-        return await send_sequence(**kwargs)
-
-    monkeypatch.setattr(chat._reply_sequence, "send", inspect_handoff)
-
     result = await harness.processor.handle(
         inbound("发个表情", message_id="emoji-still-calls-agent"),
         sender,
     )
 
-    assert result.reason == "chat"
-    assert not checked
-    assert len(provider.requests) == 1
-    assert not sender.messages
+    assert result.reason == "llm_failure"
+    assert len(provider.requests) == 2
+    assert sender.messages[0].text == "AI 服务暂时不可用，请稍后重试。"
     request = provider.requests[0]
     assert "event_bound_memory_refs" in request.messages[-1].content
     assert "available_memory_subjects" not in request.messages[-1].content
@@ -858,7 +847,7 @@ async def test_ordinary_chat_always_assembles_agent_context(
 
 @pytest.mark.asyncio
 async def test_group_mention_without_text_starts_a_natural_chat_turn(database: Database) -> None:
-    provider = FakeLLMProvider(lambda _request: "在呢，怎么啦？")
+    provider = FakeLLMProvider(lambda _request: ChatResponse("", 0))
     harness = build_harness(database, make_settings(database.url), provider)
     sender = MemorySender()
 
@@ -887,7 +876,7 @@ async def test_group_mention_without_text_starts_a_natural_chat_turn(database: D
 
 @pytest.mark.asyncio
 async def test_unsupported_message_degrades_without_calling_llm(database: Database) -> None:
-    provider = FakeLLMProvider()
+    provider = FakeLLMProvider(lambda _request: ChatResponse("", 0))
     harness = build_harness(database, make_settings(database.url), provider)
     sender = MemorySender()
     result = await harness.processor.handle(
@@ -917,7 +906,7 @@ async def test_native_images_use_full_chat_without_external_vision(
     stream = io.BytesIO()
     Image.new("RGB", (32, 32), "red").save(stream, format="PNG")
     image_data = "base64://" + base64.b64encode(stream.getvalue()).decode()
-    provider = FakeLLMProvider()
+    provider = FakeLLMProvider(lambda _request: ChatResponse("", 0))
     harness = build_harness(database, make_settings(database.url), provider)
     resolver = MediaResolver()
     harness.processor._native_images = AttachmentInputService(
@@ -1129,7 +1118,11 @@ async def test_native_images_use_full_chat_without_external_vision(
 
 @pytest.mark.asyncio
 async def test_silent_final_never_tries_transport_or_persists_assistant(database: Database) -> None:
-    harness = build_harness(database, make_settings(database.url))
+    harness = build_harness(
+        database,
+        make_settings(database.url),
+        FakeLLMProvider(lambda _request: ChatResponse("", 0)),
+    )
     sender = MemorySender(fail=True)
     result = await harness.processor.handle(inbound("hello", message_id="send-fail"), sender)
     assert result.reason == "chat"

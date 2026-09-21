@@ -387,13 +387,11 @@ class Settings(BaseSettings):
     conversation_history_around_before: int = Field(default=6, ge=0)
     conversation_history_around_after: int = Field(default=6, ge=0)
     conversation_history_around_limit: int = Field(default=24, ge=1)
-    reply_sequence_cancel_on_new_message: bool = True
     reply_hard_max_messages: int = 10
 
     # Local in-process plugins.  Approval is API governance, not a Python sandbox.
     plugin_system_enabled: bool = False
     plugin_directory: Path = Path("plugins")
-    plugin_api_version: str = "2.0"
     plugin_direct_command_bindings: dict[str, str] = Field(default_factory=dict)
     plugin_hook_timeout_seconds: float = 3.0
     plugin_start_timeout_seconds: float = 10.0
@@ -473,7 +471,7 @@ class Settings(BaseSettings):
     vision_per_group_requests_per_minute: int = 60
     vision_analysis_retention_days: int = 7
 
-    # Persistent emoji collection and reply effects. Recognition reuses the
+    # Persistent emoji collection and explicit media delivery. Recognition reuses the
     # configured VisionProvider; no second visual client or review pipeline exists.
     emoji_enabled: bool = True
     emoji_collection_enabled: bool = True
@@ -488,8 +486,6 @@ class Settings(BaseSettings):
     emoji_selector_candidate_count: int = 3
     emoji_selector_score_gap: float = 0.75
     emoji_selector_timeout_seconds: float = 2.0
-    emoji_max_effects_per_reply: int = 1
-    emoji_spontaneous_frequency: float = Field(default=0.15, ge=0, le=1)
     emoji_near_duplicate_enabled: bool = True
     emoji_near_duplicate_distance: int = 6
     emoji_same_emoji_cooldown_seconds: int = 300
@@ -524,7 +520,7 @@ class Settings(BaseSettings):
     speech_default_profile: str = ""
     speech_worker_start_timeout_seconds: float = 30.0
     speech_worker_request_timeout_seconds: float = 120.0
-    speech_agent_effects_enabled: bool = True
+    speech_agent_delivery_enabled: bool = True
     speech_default_mode: str = "optional"
     speech_split_sentence: bool = True
     speech_max_synthesis_characters: int | None = None
@@ -535,7 +531,6 @@ class Settings(BaseSettings):
     speech_automation_enabled: bool = True
     speech_plugin_enabled: bool = True
     speech_text_fallback_enabled: bool = True
-    speech_spontaneous_frequency: float = Field(default=0.15, ge=0, le=1)
     speech_jp_katakana_enabled: bool = True
 
     automation_enabled: bool = False
@@ -659,14 +654,6 @@ class Settings(BaseSettings):
             ZoneInfo(normalized)
         except (ZoneInfoNotFoundError, ValueError) as exc:
             raise ValueError("MEMORY_DREAM_TIMEZONE must be a valid IANA timezone") from exc
-        return normalized
-
-    @field_validator("plugin_api_version")
-    @classmethod
-    def _valid_plugin_api_version(cls, value: str) -> str:
-        normalized = value.strip()
-        if re.fullmatch(r"[1-9][0-9]*\.[0-9]+", normalized) is None:
-            raise ValueError("PLUGIN_API_VERSION must use major.minor format")
         return normalized
 
     @field_validator("plugin_directory")

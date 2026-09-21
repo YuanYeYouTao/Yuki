@@ -39,6 +39,7 @@ from qq_ai_bot.deployment_setup.service import (
 )
 from qq_ai_bot.deployment_setup.terminal import BackRequested, QuitRequested, TerminalUI
 from qq_ai_bot.plugin_host.discovery import PluginDiscovery
+from yuki_plugin_sdk.api import PLUGIN_API_VERSION
 
 _SECTIONS = (
     "basic",
@@ -800,7 +801,11 @@ def _select_plugins(
     *,
     initial: bool,
 ) -> tuple[str, ...]:
-    discovery = PluginDiscovery(paths.root / "plugins", yuki_version=__version__, plugin_api="2.0")
+    discovery = PluginDiscovery(
+        paths.root / "plugins",
+        yuki_version=__version__,
+        plugin_api=PLUGIN_API_VERSION,
+    )
     selected: list[str] = []
     found = discovery.discover()
     valid = tuple(item.manifest for item in found if item.manifest is not None)

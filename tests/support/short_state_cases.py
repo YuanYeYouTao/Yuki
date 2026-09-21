@@ -76,9 +76,7 @@ async def run_short_state_cases(database, tmp_path, context):
     copied[0].parameters["injected"] = True
     assert await contract.definitions() == declared
     assert contract.revision == revision
-    assert {"update_short_state", "call_onebot_api", "send_message"} <= {
-        t.name for t in declared
-    }
+    assert {"update_short_state", "call_onebot_api", "send_message"} <= {t.name for t in declared}
     config = await chat._runtime_config.snapshot()
     runtime = AgentRuntime(
         origin=TurnOrigin.USER_MESSAGE,

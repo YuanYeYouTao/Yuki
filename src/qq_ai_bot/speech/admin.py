@@ -253,7 +253,6 @@ class SpeechAdminService:
                 "reference_key": result.reference_key,
                 "target_language": result.target_language,
                 "duration_milliseconds": result.duration_milliseconds,
-                "queued_reply_effect": False,
             }
         raise KeyError(action)
 

@@ -239,7 +239,6 @@ class ReplyRuntimeConfig:
     delay_min_seconds: float
     delay_max_seconds: float
     max_qq_message_chars: int
-    cancel_on_new_message: bool
     hard_max_messages: int
 
 
@@ -354,8 +353,6 @@ class EmojiRuntimeConfig:
     selector_candidate_count: int
     selector_score_gap: float
     selector_timeout_seconds: float
-    max_effects_per_reply: int
-    spontaneous_frequency: float
     near_duplicate_enabled: bool
     near_duplicate_distance: int
     same_emoji_cooldown_seconds: int
@@ -379,7 +376,7 @@ class SpeechRuntimeConfig:
     root: str
     genie_data_dir: str
     default_profile: str
-    agent_effects_enabled: bool
+    agent_delivery_enabled: bool
     default_mode: str
     split_sentence: bool
     max_synthesis_characters: int | None
@@ -390,7 +387,6 @@ class SpeechRuntimeConfig:
     automation_enabled: bool
     plugin_enabled: bool
     text_fallback_enabled: bool
-    spontaneous_frequency: float = 0.15
 
 
 @dataclass(frozen=True, slots=True)

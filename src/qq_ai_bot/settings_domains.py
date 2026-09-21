@@ -111,7 +111,6 @@ class ConversationSettings(DomainSettings):
     agent_max_tool_calls: int = Field(gt=0)
     agent_max_model_requests: int = Field(gt=0)
     agent_tool_result_max_characters: int = Field(gt=0)
-    reply_sequence_cancel_on_new_message: bool
     reply_hard_max_messages: int = Field(gt=0)
     conversation_autonomous_enabled: bool
     conversation_autonomous_debounce_seconds: float = Field(ge=0)
@@ -155,7 +154,6 @@ class ConversationSettings(DomainSettings):
 class PluginSettings(DomainSettings):
     plugin_system_enabled: bool
     plugin_directory: Path
-    plugin_api_version: str
     plugin_direct_command_bindings: dict[str, str] = Field(default_factory=dict)
     plugin_hook_timeout_seconds: float = Field(gt=0)
     plugin_start_timeout_seconds: float = Field(gt=0)
@@ -482,8 +480,6 @@ class EmojiSettings(DomainSettings):
     emoji_selector_candidate_count: int = Field(gt=0)
     emoji_selector_score_gap: float = Field(ge=0)
     emoji_selector_timeout_seconds: float = Field(gt=0)
-    emoji_max_effects_per_reply: int = Field(gt=0)
-    emoji_spontaneous_frequency: float = Field(ge=0, le=1)
     emoji_near_duplicate_enabled: bool
     emoji_near_duplicate_distance: int = Field(ge=0, le=64)
     emoji_same_emoji_cooldown_seconds: int = Field(ge=0)
@@ -520,7 +516,7 @@ class SpeechSettings(DomainSettings):
     speech_default_profile: str
     speech_worker_start_timeout_seconds: float = Field(gt=0)
     speech_worker_request_timeout_seconds: float = Field(gt=0)
-    speech_agent_effects_enabled: bool
+    speech_agent_delivery_enabled: bool
     speech_default_mode: str
     speech_split_sentence: bool
     speech_max_synthesis_characters: int | None = Field(default=None, gt=0)
@@ -531,7 +527,6 @@ class SpeechSettings(DomainSettings):
     speech_automation_enabled: bool
     speech_plugin_enabled: bool
     speech_text_fallback_enabled: bool
-    speech_spontaneous_frequency: float = Field(ge=0, le=1)
     speech_jp_katakana_enabled: bool
 
 
