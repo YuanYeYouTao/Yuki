@@ -317,7 +317,9 @@ max_runs: optional integer
 - `target_scope=all`
 - 有界分页，不一次把全库塞进模型上下文
 
-默认展示参考 `/ai automation list` 的单行格式，但进一步去掉每条重复的 `[active]`：
+默认展示参考 `/ai automation list` 的单行格式，但进一步去掉每条重复的 `[active]`。按需调用
+`automation_list` 时，每项另返回创建者的稳定 Person ID、外部账号 ID 和可用显示名；这些身份字段
+只属于工具查询结果，不进入每轮自动注入的极简快照：
 
 ```text
 当前任务（Asia/Shanghai，默认 active）：
@@ -568,7 +570,8 @@ active tasks targeting this group
 
 ### 11.2 自动化目录
 
-- A 创建目标为当前群的任务；B 的 `automation_list` 能看到相同的 `ID + 任务内容 + 下次时间`。
+- A 创建目标为当前群的任务；B 的 `automation_list` 能看到相同的
+  `ID + 任务内容 + 下次时间 + 创建者`。
 - B 尝试 update/pause/cancel/run_now 时后端拒绝，任务不变。
 - `automation_get` 能区分不存在与存在但不可管理。
 - `match_task` 能找到其他 owner 创建的同群等价候选，但不自动合并。
@@ -582,7 +585,8 @@ active tasks targeting this group
 - 群聊即使无任务也只带一行明确的空快照。
 - 数据库查询失败时标记 unavailable，不伪装为空。
 - 当前群只预取该群 active 任务；paused/terminal 按需调用工具，不泄漏其他私聊任务。
-- 每条快照严格限制为 `ID + 任务内容 + 下次时间`，active 状态和人物字段不重复。
+- 每轮自动注入的快照严格限制为 `ID + 任务内容 + 下次时间`，active 状态和人物字段不重复；
+  按需调用 `automation_list/get` 的结果仍包含创建者。
 - 快照最多 8 项、1,200 字符，溢出只给数量和 `automation_list` 提示。
 - 不同任务快照下 system/instructions、tools、native_tools 完全一致。
 - 对最终 DeepSeek Responses/OpenAI-compatible Provider payload 做序列化比较，不只比较内部 metrics。

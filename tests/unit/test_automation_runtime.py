@@ -471,7 +471,24 @@ async def test_create_tool_compiles_and_confirms_database_persistence(database) 
     )
     tasks = listed["data"]["tasks"]
     assert {task["automation_id"] for task in tasks} == {automation_id, other.id}
-    assert all(set(task) == {"automation_id", "task", "next_run_at_local"} for task in tasks)
+    assert all(
+        set(task) == {"automation_id", "task", "next_run_at_local", "creator"} for task in tasks
+    )
+    by_id = {task["automation_id"]: task for task in tasks}
+    assert by_id[automation_id]["creator"]["external_account_id"] == "10001"
+    assert by_id[other.id]["creator"] == {
+        "person_id": other.canonical_creator_person_id,
+        "external_account_id": "20002",
+        "display_name": "其他人",
+    }
+    got = json.loads(
+        await AutomationToolService(service).execute(
+            "automation_get",
+            json.dumps({"automation_id": other.id}),
+            runtime,
+        )
+    )
+    assert got["data"]["creator"] == by_id[other.id]["creator"]
     assert listed["data"]["default_status"] == "active"
     assert listed["data"]["next_cursor"] is None
     assert "number" not in tasks[0]

@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from qq_ai_bot.automation.compiler import ExecutionPlan
-from qq_ai_bot.automation.models import AutomationRecord
+from qq_ai_bot.automation.models import AutomationCreatorIdentity, AutomationRecord
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.services.agent_tools import ToolRuntime
@@ -219,7 +219,7 @@ class AutomationToolService:
                 name="automation_list",
                 description=(
                     "列出 Yuki 的全局自动化任务简表，不按当前发言人过滤。默认只列 active，"
-                    "每条只返回稳定 automation_id、任务内容和下次时间；"
+                    "每条返回稳定 automation_id、任务内容、下次时间和创建者；"
                     "查看 paused、terminal 或 all 时传 status。"
                     "能看到任务不代表当前主体能修改，写操作仍由后端核验所有者。"
                     "传入 match_task 可查询结构化等价的待执行任务；"
@@ -383,10 +383,11 @@ class AutomationToolService:
                     )
                     page = fetched[:maximum]
                     has_more = len(fetched) > maximum
+                creators = await self._service.creator_identities(tuple(page))
                 return _result(
                     data={
                         "default_status": "active",
-                        "tasks": [_directory_record(row) for row in page],
+                        "tasks": [_directory_record(row, creator=creators[row.id]) for row in page],
                         "next_cursor": str(offset + maximum) if has_more else None,
                     }
                 )
@@ -424,9 +425,9 @@ class AutomationToolService:
                 )
             automation_id = _automation_id(arguments)
             if name == "automation_get":
-                return _result(
-                    data=_directory_record(await self._service.get_visible(automation_id))
-                )
+                row = await self._service.get_visible(automation_id)
+                creators = await self._service.creator_identities((row,))
+                return _result(data=_directory_record(row, creator=creators[row.id]))
             if name == "automation_update":
                 row, plan = await self._service.update_task(
                     automation_id,
@@ -540,11 +541,16 @@ def _record(
     return payload
 
 
-def _directory_record(row: AutomationRecord) -> dict[str, Any]:
+def _directory_record(
+    row: AutomationRecord,
+    *,
+    creator: AutomationCreatorIdentity,
+) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "automation_id": row.id,
         "task": row.name,
         "next_run_at_local": local_iso(row.next_run_at, row.timezone),
+        "creator": creator.model_dump(mode="json"),
     }
     if row.status.value != "active":
         payload["status"] = row.status.value

@@ -18,6 +18,7 @@ from qq_ai_bot.automation.authority import (
 from qq_ai_bot.automation.compiler import AutomationCompiler, ExecutionPlan, TaskSpec
 from qq_ai_bot.automation.creation_key import creation_key as _creation_key
 from qq_ai_bot.automation.models import (
+    AutomationCreatorIdentity,
     AutomationRecord,
     AutomationRunRecord,
     AutomationScript,
@@ -362,6 +363,15 @@ class AutomationService:
         if row is None:
             raise ValueError("自动化任务不存在")
         return row
+
+    async def creator_identities(
+        self,
+        rows: tuple[AutomationRecord, ...],
+    ) -> dict[int, AutomationCreatorIdentity]:
+        """Return safe creator metadata for global task directory results."""
+
+        self._require_enabled()
+        return await self._repository.creator_identities(rows)
 
     async def list_completed(self, creator_user_id: str) -> tuple[AutomationRecord, ...]:
         """Return terminal tasks in a separate newest-first history queue."""

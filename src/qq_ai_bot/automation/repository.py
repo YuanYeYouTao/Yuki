@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.automation.authority import DelegatedAuthority
 from qq_ai_bot.automation.models import (
+    AutomationCreatorIdentity,
     AutomationRecord,
     AutomationRunRecord,
     AutomationScript,
@@ -264,6 +265,40 @@ class AutomationRepository:
                 )
             ).all()
         return tuple(_automation_record(row) for row in rows)
+
+    async def creator_identities(
+        self,
+        rows: tuple[AutomationRecord, ...],
+    ) -> dict[int, AutomationCreatorIdentity]:
+        """Resolve task creators in one read without changing ownership semantics."""
+
+        person_ids = {
+            row.canonical_creator_person_id
+            for row in rows
+            if row.canonical_creator_person_id is not None
+        }
+        account_ids = {row.creator_user_id for row in rows}
+        bindings: dict[tuple[str, str], IdentityBindingModel] = {}
+        if person_ids and account_ids:
+            query = select(IdentityBindingModel).where(
+                IdentityBindingModel.person_id.in_(person_ids),
+                IdentityBindingModel.platform == IDENTITY_PLATFORM,
+                IdentityBindingModel.external_account_id.in_(account_ids),
+            )
+            async with self._database.sessions() as session:
+                found = (await session.scalars(query)).all()
+            bindings = {
+                (binding.person_id, binding.external_account_id): binding for binding in found
+            }
+        result: dict[int, AutomationCreatorIdentity] = {}
+        for row in rows:
+            binding = bindings.get((row.canonical_creator_person_id or "", row.creator_user_id))
+            result[row.id] = AutomationCreatorIdentity(
+                person_id=row.canonical_creator_person_id,
+                external_account_id=row.creator_user_id,
+                display_name=binding.display_name or None if binding is not None else None,
+            )
+        return result
 
     async def list_active_for_external_group(
         self,
