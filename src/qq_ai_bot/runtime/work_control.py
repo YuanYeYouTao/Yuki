@@ -335,7 +335,7 @@ class WorkControl:
         except ValueError:
             args = {}
         if (
-            name in {"send_message", "send_private_message", "send_group_message"}
+            name == "send_message"
             and isinstance(args, dict)
             and isinstance(args.get("artifact_id"), str)
         ):

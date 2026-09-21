@@ -52,6 +52,9 @@ async def resolve_history_target(
             or receipt.action
             not in {
                 "send_message",
+                # Immutable receipts created before contract v5 keep their
+                # original action label. They are history anchors only; the
+                # old tools are not executable.
                 "send_private_message",
                 "send_group_message",
                 "send_file_caption",

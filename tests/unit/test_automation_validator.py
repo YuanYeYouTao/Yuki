@@ -407,7 +407,7 @@ def test_explicit_target_must_be_a_complete_numeric_token() -> None:
         )
 
 
-def test_yuki_agent_ignores_historical_tool_selection() -> None:
+def test_yuki_agent_rejects_retired_tool_selection() -> None:
     payload = _script().model_dump(mode="json")
     payload["steps"] = [
         {
@@ -428,23 +428,23 @@ def test_yuki_agent_ignores_historical_tool_selection() -> None:
         max_tool_calls=3,
         max_messages=0,
     )
-    ordinary = _validator().validate(
-        AutomationScript.model_validate(payload),
-        _provenance(),
-        now_utc=datetime(2026, 7, 27, tzinfo=UTC),
-    )
-    assert ordinary.required_capabilities == ("yuki.agent",)
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        _validator().validate(
+            AutomationScript.model_validate(payload),
+            _provenance(),
+            now_utc=datetime(2026, 7, 27, tzinfo=UTC),
+        )
 
     payload["steps"][0]["arguments"]["allowed_capabilities"] = [
         "onebot.call_api",
         "config.set",
     ]
-    admin = _validator().validate(
-        AutomationScript.model_validate(payload),
-        _provenance(superuser=True),
-        now_utc=datetime(2026, 7, 27, tzinfo=UTC),
-    )
-    assert admin.required_capabilities == ("yuki.agent",)
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        _validator().validate(
+            AutomationScript.model_validate(payload),
+            _provenance(superuser=True),
+            now_utc=datetime(2026, 7, 27, tzinfo=UTC),
+        )
 
 
 def test_yuki_agent_context_and_nested_limits_must_match_script() -> None:

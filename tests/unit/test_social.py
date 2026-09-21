@@ -192,12 +192,22 @@ async def test_social_receipt_claim_replay_and_interrupted_delivery(database: Da
     repository = SocialOperationRepository(database)
     target = SocialTarget(kind="person", id=UUID(person))
 
+    with pytest.raises(SocialError, match="invalid_operation"):
+        await repository.prepare(
+            source_turn_id="retired-turn",
+            tool_call_id="retired-call",
+            source_conversation_id=conversation.conversation_id,
+            action="send_private_message",
+            target=target,
+            payload={"text": "retired"},
+        )
+
     async def prepare(text: str = "hello"):
         return await repository.prepare(
             source_turn_id="turn-1",
             tool_call_id="call-1",
             source_conversation_id=conversation.conversation_id,
-            action="send_private_message",
+            action="send_message",
             target=target,
             payload={"text": text},
         )
@@ -299,10 +309,10 @@ async def test_social_gateway_delivery_and_fail_closed(database: Database, tmp_p
     store = WorkspaceStore(tmp_path / "workspace")
     service.transfer = ArtifactTransfer(store, tmp_path / "transfer", "/transfer")
     context = SocialContext("turn", "text", conversation_id)
-    args = {"target_id": person, "text": "reply"}
-    first = await service.execute("send_private_message", args, context)
+    args = {"target": {"kind": "person", "target_id": person}, "text": "reply"}
+    first = await service.execute("send_message", args, context)
     assert first["status"] == "succeeded" and len(bot.calls) == 1
-    assert await service.execute("send_private_message", args, context) == first
+    assert await service.execute("send_message", args, context) == first
     async with database.sessions() as session:
         outbound = await session.scalar(
             select(ChatEventModel).where(
@@ -322,18 +332,22 @@ async def test_social_gateway_delivery_and_fail_closed(database: Database, tmp_p
     assert recalled["status"] == "succeeded" and bot.calls[-1][0] == "delete_msg"
     artifact = store.write("report.txt", b"report")
     sent = await service.execute(
-        "send_private_message",
-        {"target_id": person, "artifact_id": artifact["artifact_id"], "attachment_kind": "file"},
+        "send_message",
+        {
+            "target": {"kind": "person", "target_id": person},
+            "artifact_id": artifact["artifact_id"],
+            "attachment_kind": "file",
+        },
         SocialContext("turn", "file", conversation_id),
     )
     assert sent["status"] == "succeeded" and bot.calls[-1][0] == "upload_private_file"
     assert list((tmp_path / "transfer").iterdir()) == []
     bot.fail = True
     uncertain_context = SocialContext("turn", "timeout", conversation_id)
-    uncertain = await service.execute("send_private_message", args, uncertain_context)
+    uncertain = await service.execute("send_message", args, uncertain_context)
     assert uncertain["status"] == "uncertain"
     count = len(bot.calls)
-    assert await service.execute("send_private_message", args, uncertain_context) == uncertain
+    assert await service.execute("send_message", args, uncertain_context) == uncertain
     assert len(bot.calls) == count
     bot.fail = False
     from qq_ai_bot.conversation.canonical_db_models import PersonActiveRouteModel
@@ -348,11 +362,15 @@ async def test_social_gateway_delivery_and_fail_closed(database: Database, tmp_p
         row = await session.get(CanonicalPersonModel, unknown)
         row.enabled = True
     with pytest.raises(SocialError, match="contact_not_allowed"):
-        await service.execute("send_private_message", {"target_id": unknown, "text": "no"}, context)
+        await service.execute(
+            "send_message",
+            {"target": {"kind": "person", "target_id": unknown}, "text": "no"},
+            SocialContext("turn", "unknown", conversation_id),
+        )
     assert await router.cas_takeover_space(space_id) in {"taken", "unchanged"}
     group = await service.execute(
-        "send_group_message",
-        {"target_id": space_id, "text": "group"},
+        "send_message",
+        {"target": {"kind": "space", "target_id": space_id}, "text": "group"},
         SocialContext("turn", "group", conversation_id),
     )
     assert group["status"] == "succeeded"
@@ -377,7 +395,7 @@ async def test_social_gateway_delivery_and_fail_closed(database: Database, tmp_p
     count = len(bot.calls)
     with pytest.raises(SocialError, match="route_paused"):
         await service.execute(
-            "send_private_message", args, SocialContext("turn", "paused", conversation_id)
+            "send_message", args, SocialContext("turn", "paused", conversation_id)
         )
     assert len(bot.calls) == count
     # A paused proactive route does not block a proven reply to the private sender.
@@ -417,8 +435,12 @@ async def test_social_gateway_delivery_and_fail_closed(database: Database, tmp_p
         paused = await session.get(PersonActiveRouteModel, person)
         assert paused.paused
     replied = await service.execute(
-        "send_private_message",
-        {"target_id": person, "artifact_id": artifact["artifact_id"], "attachment_kind": "file"},
+        "send_message",
+        {
+            "target": {"kind": "person", "target_id": person},
+            "artifact_id": artifact["artifact_id"],
+            "attachment_kind": "file",
+        },
         reply_context,
     )
     assert replied["status"] == "succeeded" and bot.calls[-1][0] == "upload_private_file"
@@ -441,7 +463,7 @@ async def test_social_gateway_delivery_and_fail_closed(database: Database, tmp_p
             )
         item = store.write(f"caption-{index}.txt", b"hello world")
         combined_args = {
-            "target_id": person,
+            "target": {"kind": "person", "target_id": person},
             "artifact_id": item["artifact_id"],
             "attachment_kind": "file",
             "text": "hello caption",
@@ -449,7 +471,7 @@ async def test_social_gateway_delivery_and_fail_closed(database: Database, tmp_p
         combined_context = replace(reply_context, call_id=f"caption-{index}")
         bot.fail_action = failing_action
         before = len(bot.calls)
-        combined = await service.execute("send_private_message", combined_args, combined_context)
+        combined = await service.execute("send_message", combined_args, combined_context)
         actions = [action for action, _ in bot.calls[before:]]
         assert actions == (
             ["upload_private_file"]
@@ -470,10 +492,7 @@ async def test_social_gateway_delivery_and_fail_closed(database: Database, tmp_p
             assert combined["error"] == "file_sent_caption_unconfirmed"
         count = len(bot.calls)
         store.delete(item["artifact_id"], expected_revision=item["revision"])
-        assert (
-            await service.execute("send_private_message", combined_args, combined_context)
-            == combined
-        )
+        assert await service.execute("send_message", combined_args, combined_context) == combined
         assert len(bot.calls) == count
         async with database.sessions() as session:
             file_event = (
@@ -493,7 +512,7 @@ async def test_social_gateway_delivery_and_fail_closed(database: Database, tmp_p
     # Crash after a confirmed upload but before caption dispatch: do not resume
     # either network action when the same tool call is replayed.
     interrupted_args = {
-        "target_id": person,
+        "target": {"kind": "person", "target_id": person},
         "artifact_id": artifact["artifact_id"],
         "attachment_kind": "file",
         "text": "pending caption",
@@ -503,7 +522,7 @@ async def test_social_gateway_delivery_and_fail_closed(database: Database, tmp_p
         source_turn_id=interrupted_context.turn_id,
         tool_call_id=interrupted_context.call_id,
         source_conversation_id=conversation_id,
-        action="send_private_message",
+        action="send_message",
         target=SocialTarget(kind="person", id=UUID(person)),
         payload=interrupted_args,
     )
@@ -517,11 +536,17 @@ async def test_social_gateway_delivery_and_fail_closed(database: Database, tmp_p
         )
     before = len(bot.calls)
     interrupted_result = await service.execute(
-        "send_private_message", interrupted_args, interrupted_context
+        "send_message", interrupted_args, interrupted_context
     )
     assert interrupted_result["file"]["status"] == "succeeded"
     assert interrupted_result["caption"]["status"] == "not_sent"
     assert len(bot.calls) == before
+    with pytest.raises(SocialError, match="unknown_tool"):
+        await service.execute(
+            "send_private_message",
+            {"target_id": person, "text": "retired"},
+            SocialContext("turn", "retired", conversation_id),
+        )
     registry.disconnect(bot)
     with pytest.raises(Exception, match="disconnected"):
         await service.send_route(SocialTarget(kind="person", id=UUID(person)), reply_context)

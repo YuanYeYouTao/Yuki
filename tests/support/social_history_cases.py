@@ -103,7 +103,9 @@ async def history_agent_loop(env):
 async def history_receipt(env):
     assert await env.router.cas_takeover_person(env.person) == "taken"
     sent = await env.service.execute(
-        "send_private_message", {"target_id": env.person, "text": "hi"}, env.context
+        "send_message",
+        {"target": {"kind": "person", "target_id": env.person}, "text": "hi"},
+        env.context,
     )
     assert sent["status"] == "succeeded"
     await add_second_account(env)

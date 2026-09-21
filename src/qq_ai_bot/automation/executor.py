@@ -59,8 +59,6 @@ _SEND_CAPABILITIES = frozenset(
     {
         "onebot.send_private_message",
         "onebot.send_group_message",
-        "social.send_private_message",
-        "social.send_group_message",
         "social.poke_person",
         "speech.send_private",
         "speech.send_group",

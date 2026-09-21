@@ -23,10 +23,6 @@ class OneBotSendError(RuntimeError):
         self.dispatched = dispatched
 
 
-class ConfirmedQuoteRejection(OneBotSendError):
-    """Only an explicit gateway rejection proving nonacceptance permits quote fallback."""
-
-
 class OneBotSender:
     """Send plain text, optionally quoting one backend-validated message."""
 

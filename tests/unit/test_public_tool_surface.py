@@ -170,8 +170,8 @@ async def test_scheduled_social_uses_actor_without_qq_message(database, tmp_path
     try:
         await invoke_social(
             service,
-            "send_private_message",
-            {"subject_ref": "current_speaker", "text": "hi"},
+            "send_message",
+            {"text": "hi"},
             runtime,
         )
     finally:

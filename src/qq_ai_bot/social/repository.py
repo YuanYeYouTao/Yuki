@@ -20,8 +20,6 @@ _ACTIONS = frozenset(
     {
         "send_message",
         "send_message_sequence",
-        "send_private_message",
-        "send_group_message",
         "send_file_caption",
         "poke_person",
         "recall_own_message",

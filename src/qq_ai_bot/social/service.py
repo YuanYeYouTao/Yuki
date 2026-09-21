@@ -671,7 +671,7 @@ class SocialService:
                 raise SocialError("target_selector_conflict")
             target_args = selected
         else:
-            kind = "space" if name in {"send_group_message", "get_group_members"} else "person"
+            kind = "space" if name == "get_group_members" else "person"
             target_args = args
         target = await self.target(kind, target_args, context)
         if name == "get_group_members":
@@ -710,12 +710,7 @@ class SocialService:
                 "items": items,
                 "next_cursor": str(offset + limit) if offset + limit < len(rows) else None,
             }
-        if name not in {
-            "send_message",
-            "send_private_message",
-            "send_group_message",
-            "poke_person",
-        }:
+        if name not in {"send_message", "poke_person"}:
             raise SocialError("unknown_tool")
         message = (
             None

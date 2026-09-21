@@ -736,7 +736,7 @@ async def test_artifact_completion_requires_verified_delivery(database, tmp_path
     control.observe_result("workspace_publish", '{"ok":true,"data":{"artifact_id":"png"}}', True)
     assert not json.loads(await control.execute("task_control", finish, "unsent"))["ok"]
     control.observe_result(
-        "send_group_message",
+        "send_message",
         '{"ok":true,"data":{"status":"succeeded"}}',
         True,
         arguments='{"artifact_id":"png"}',

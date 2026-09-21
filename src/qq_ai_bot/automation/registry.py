@@ -28,8 +28,6 @@ class AgentArguments(CapabilityArguments):
     context_profile: Literal["none", "creator_private", "current_group"] = "none"
     max_tool_calls: int = Field(default=32, ge=0, le=160)
     max_model_requests: int = Field(default=24, ge=1, le=120)
-    # Historical persisted DSL metadata only; never an execution allowlist.
-    allowed_capabilities: tuple[str, ...] = Field(default=(), max_length=128)
 
 
 class SendPrivateArguments(CapabilityArguments):

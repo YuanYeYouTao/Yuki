@@ -70,6 +70,6 @@ async def guarded_agent_calls(handlers, context, provider):
             inbound=None, gateway=None, allow_generic_onebot=False, before_model_request=revoked
         ),
     )
-    for name in ("send_private_message", "update_short_state"):
+    for name in ("update_short_state",):
         with pytest.raises(AutomationExecutionError, match="automation_inactive"):
             await backend.execute(name, "{}", None)

@@ -519,7 +519,7 @@ _BASE_SELF_SERVICE_CAPABILITIES = (
         target_scopes=("self", "current_group"),
     ),
     CapabilityDescriptor(
-        id="command:automation.list:self",
+        id="command:automation.list:global",
         kind=CapabilityKind.COMMAND,
         category="automation",
         display_name="列出 Yuki 自动化",
@@ -544,7 +544,7 @@ _BASE_SELF_SERVICE_CAPABILITIES = (
         target_scopes=("self",),
     ),
     CapabilityDescriptor(
-        id="command:automation.get:self",
+        id="command:automation.get:global",
         kind=CapabilityKind.COMMAND,
         category="automation",
         display_name="查看 Yuki 自动化",

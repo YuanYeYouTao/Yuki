@@ -243,13 +243,13 @@ canonical args 必须成为以下内容的唯一来源：
 
 ### A6. 引用失败语义
 
-当前 `ConfirmedQuoteRejection` 类型仍存在，但新社交路径没有使用它；所有网关异常目前统一进入 uncertain/failed 流程。
+实施前 `ConfirmedQuoteRejection` 类型仍存在，但新社交路径没有使用它；所有网关异常统一进入 uncertain/failed 流程。
 
-本任务应顺带收口这一遗留：
+实施已收口这一遗留：
 
 - 只有网关明确证明“带引用的消息未被接受”时，才允许去掉 reply segment 后重试一次。
 - 超时、断连、取消、无回执或任何可能已投递的情况保持 `uncertain`，禁止重试。
-- 如果当前网关层无法可靠产出“确认未接纳”的分类，则删除死类型和过时文档，不得靠错误字符串猜测。
+- 当前网关层无法可靠产出“确认未接纳”的分类，因此已删除死类型；不得靠错误字符串猜测。
 
 这是兼容性修复，不得恢复旧回复队列或自动最终回复。
 
@@ -492,7 +492,7 @@ active tasks targeting this group
 - `docs/operations/social-workspace-sandbox.md`
 - `docs/architecture/README.md` 中对应入口（如新增独立现行文档）
 
-其中 `social-workspace-sandbox.md` 当前仍有明确过时内容：
+其中 `social-workspace-sandbox.md` 在实施前有以下过时内容，现已改正文：
 
 - 仍使用 `send_private_message` / `send_group_message` 名称。
 - 仍声称 send/poke 存在每目标/全局分钟限流。
@@ -502,11 +502,17 @@ active tasks targeting this group
 
 ### D2. 删除确认死亡的代码
 
-仅在引用扫描和回归证明无调用后删除：
+引用扫描和回归证明无调用后已删除：
 
 - 无法产生或消费的 `ConfirmedQuoteRejection`
 - 只服务于已删除旧发送工具的适配分支
 - 过时测试 fixture 和文档示例
+
+第二轮清理进一步完成：Self Reflection 管理报告迁移到 `send_message`；
+`SocialService`、工作交付观察器和新回执写入仓库不再接受
+`send_private_message` / `send_group_message`。旧回执 action 只作为不可变历史锚点读取，
+不构成可执行兼容入口。Agentic 自动化脚本中的无效 `allowed_capabilities` 元数据由
+迁移 0064 物理删除并重算脚本哈希；显式调度 DSL 的 `onebot.send_*` 不属于旧 Agent 工具，继续保留。
 
 不建立兼容别名，不保留“以后可能有用”的双链路。
 
