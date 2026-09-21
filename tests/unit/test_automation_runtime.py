@@ -794,6 +794,94 @@ async def test_pause_resume_cancel_and_run_now(database) -> None:
 
 
 @pytest.mark.asyncio
+async def test_superuser_can_manage_another_creators_automation_without_taking_ownership(
+    database,
+) -> None:
+    clock = FakeClock(datetime(2026, 9, 22, tzinfo=UTC))
+    settings = make_settings(
+        database.url,
+        automation_enabled=True,
+        superusers_csv="9000",
+    )
+    repository = AutomationRepository(database)
+    service = AutomationService(
+        settings=settings,
+        repository=repository,
+        registry=build_capability_registry(),
+        time_service=TimeContextService(database, clock=clock),
+    )
+    owner = _inbound("10001")
+    row = await service.create(
+        _script(),
+        actor=ToolActor.from_inbound(owner),
+        conversation_key="private:10001",
+    )
+
+    from qq_ai_bot.identity.canonical_repository import ensure_person
+
+    async with database.sessions.begin() as session:
+        await ensure_person(session, "20002", display_name="普通用户")
+        await ensure_person(session, "9000", display_name="超级管理员")
+
+    with pytest.raises(PermissionError, match="不是任务所有者"):
+        await service.pause(
+            row.id,
+            actor=ToolActor.from_inbound(_inbound("20002")),
+            conversation_key="private:20002",
+        )
+
+    superuser_inbound = replace(
+        _inbound("9000"),
+        source_event_id=3,
+        message_id="superuser-manage-automation",
+    )
+    superuser = ToolActor.from_inbound(superuser_inbound)
+    updated, _plan = await service.update_task(
+        row.id,
+        {
+            "name": "管理员代为修改",
+            "goal": "提醒原创建者进行测试",
+            "trigger": {"type": "after", "seconds": 120},
+            "strategy": "static",
+        },
+        actor=superuser,
+        conversation_key="private:9000",
+    )
+    delegated = DelegatedAuthority.model_validate(updated.authority_snapshot)
+    assert updated.canonical_creator_person_id == row.canonical_creator_person_id
+    assert updated.creator_user_id == "10001"
+    assert delegated.creator_user_id == "10001"
+    assert delegated.permission_level is PermissionLevel.USER
+
+    runtime = ToolRuntime(
+        inbound=superuser_inbound,
+        gateway=None,
+        allow_generic_onebot=False,
+        allow_automation=True,
+        conversation_key="private:9000",
+        trigger_message_id=superuser_inbound.message_id,
+        actor_user_id="9000",
+        current_group_id=None,
+    )
+    paused = json.loads(
+        await AutomationToolService(service).execute(
+            "automation_pause",
+            json.dumps({"automation_id": row.id}),
+            runtime,
+        )
+    )
+    assert paused["ok"] is True
+    assert paused["mutation_committed"] is True
+    assert await service.resume(row.id, actor=superuser, conversation_key="private:9000")
+    assert await service.run_now(row.id, actor=superuser, conversation_key="private:9000")
+    history_task, history_rows = await service.history(row.id, actor=superuser)
+    assert history_task.id == row.id
+    assert history_rows == ()
+    assert await service.cancel(row.id, actor=superuser, conversation_key="private:9000")
+    assert (await repository.get(row.id)).status is AutomationStatus.CANCELLED  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
 async def test_removed_dsl_step_blocks_but_current_actor_sees_new_capabilities(
     database,
 ) -> None:

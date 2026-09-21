@@ -221,7 +221,8 @@ class AutomationToolService:
                     "列出 Yuki 的全局自动化任务简表，不按当前发言人过滤。默认只列 active，"
                     "每条返回稳定 automation_id、任务内容、下次时间和创建者；"
                     "查看 paused、terminal 或 all 时传 status。"
-                    "能看到任务不代表当前主体能修改，写操作仍由后端核验所有者。"
+                    "能看到任务不代表当前主体能修改；普通用户只能管理自己的任务，"
+                    "超级管理员可以管理全部任务。"
                     "传入 match_task 可查询结构化等价的待执行任务；"
                     "忽略显示名称，比较目标、时间、上下文和交付范围，不会自动合并或创建任务。"
                 ),
@@ -252,14 +253,16 @@ class AutomationToolService:
                 name="automation_get",
                 description=(
                     "按稳定 automation_id 查看一个任务的安全摘要；"
-                    "读取不授予修改权限，写操作仍只允许任务所有者。"
+                    "读取不授予修改权限；普通用户只能管理自己的任务，"
+                    "超级管理员可以管理全部任务。"
                 ),
                 parameters=_object_schema(id_schema, required=("automation_id",)),
             ),
             ChatTool(
                 name="automation_update",
                 description=(
-                    "用完整的新 TaskSpec 编译并替换任务版本；只能修改当前发送者自己的任务。"
+                    "用完整的新 TaskSpec 编译并替换任务版本；普通用户只能修改自己的任务，"
+                    "超级管理员可以修改任意任务且不改变原创建者。"
                 ),
                 parameters=_object_schema(
                     {**id_schema, "task": task_schema},
@@ -276,7 +279,10 @@ class AutomationToolService:
             *(
                 ChatTool(
                     name=f"automation_{operation}",
-                    description=f"{description}当前执行主体自己的任务。",
+                    description=(
+                        f"{description}自动化任务。普通用户只能管理自己的任务，"
+                        "超级管理员可以管理全部任务。"
+                    ),
                     parameters=_object_schema(id_schema, required=("automation_id",)),
                 )
                 for operation, description in (
@@ -368,7 +374,7 @@ class AutomationToolService:
                 offset = int(cursor)
                 matched = arguments.get("match_task") is not None
                 if matched:
-                    automations = await self._service.find_equivalent_task(
+                    automations = await self._service.find_equivalent_directory_entries(
                         arguments["match_task"],
                         actor=actor,
                         max_runs=arguments.get("max_runs"),
@@ -456,10 +462,7 @@ class AutomationToolService:
                     automation_id, actor=actor, conversation_key=runtime.conversation_key
                 )
             elif name == "automation_history":
-                task = await self._service.require_owned(automation_id, actor.user_id)
-                history_rows = await self._service.history(
-                    automation_id, creator_user_id=actor.user_id
-                )
+                task, history_rows = await self._service.history(automation_id, actor=actor)
                 return _result(
                     data={
                         "runs": [

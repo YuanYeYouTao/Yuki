@@ -96,8 +96,27 @@ class AutomationService:
         *,
         actor: ToolActor,
         max_runs: int | None = None,
-    ) -> tuple[AutomationDirectoryEntry, ...]:
+    ) -> tuple[AutomationRecord, ...]:
         """Exact structured candidates only; the Agent decides whether to create."""
+
+        return tuple(
+            entry.record
+            for entry in await self.find_equivalent_directory_entries(
+                task_payload,
+                actor=actor,
+                max_runs=max_runs,
+            )
+        )
+
+    async def find_equivalent_directory_entries(
+        self,
+        task_payload: object,
+        *,
+        actor: ToolActor,
+        max_runs: int | None = None,
+    ) -> tuple[AutomationDirectoryEntry, ...]:
+        """Return exact candidates with creator projections for the Agent tool."""
+
         task = TaskSpec.model_validate(task_payload)
         _creator, _permission, provenance = await self._creator_context(actor)
         plan = self._compiler.compile(
@@ -132,16 +151,27 @@ class AutomationService:
             task = TaskSpec.model_validate(task_payload)
         except ValidationError as exc:
             raise ValueError(f"任务规格格式错误：{exc.errors()[0]['msg']}") from exc
+        (
+            existing,
+            owner_person_id,
+            owner_account_id,
+            owner_permission,
+            provenance,
+        ) = await self._management_context(automation_id, actor)
         plan = self._compiler.compile(
             task,
-            (await self._creator_context(actor))[2],
-            default_timezone=await self._time.timezone_for(actor.user_id),
+            provenance,
+            default_timezone=existing.timezone,
         )
-        row = await self.update(
-            automation_id,
+        row = await self._commit_update(
+            existing,
             plan.script,
             actor=actor,
             conversation_key=conversation_key,
+            owner_person_id=owner_person_id,
+            owner_account_id=owner_account_id,
+            owner_permission=owner_permission,
+            provenance=provenance,
         )
         return row, plan
 
@@ -267,8 +297,36 @@ class AutomationService:
         actor: ToolActor,
         conversation_key: str,
     ) -> AutomationRecord:
-        creator_person_id, permission, provenance = await self._creator_context(actor)
-        existing = await self._require_owned_person(automation_id, creator_person_id)
+        (
+            existing,
+            owner_person_id,
+            owner_account_id,
+            owner_permission,
+            provenance,
+        ) = await self._management_context(automation_id, actor)
+        return await self._commit_update(
+            existing,
+            script_payload,
+            actor=actor,
+            conversation_key=conversation_key,
+            owner_person_id=owner_person_id,
+            owner_account_id=owner_account_id,
+            owner_permission=owner_permission,
+            provenance=provenance,
+        )
+
+    async def _commit_update(
+        self,
+        existing: AutomationRecord,
+        script_payload: object,
+        *,
+        actor: ToolActor,
+        conversation_key: str,
+        owner_person_id: str,
+        owner_account_id: str,
+        owner_permission: PermissionLevel,
+        provenance: CreationProvenance,
+    ) -> AutomationRecord:
         try:
             script = AutomationScript.model_validate(script_payload)
         except ValidationError as exc:
@@ -280,11 +338,11 @@ class AutomationService:
             now_utc=now,
         )
         authority = DelegatedAuthority(
-            creator_user_id=actor.user_id,
-            bot_user_id=actor.bot_user_id,
+            creator_user_id=owner_account_id,
+            bot_user_id=existing.bot_user_id,
             created_from_message_id=actor.platform_message_id,
             created_at=now.isoformat(),
-            permission_level=permission,
+            permission_level=owner_permission,
             granted_capabilities=validated.required_capabilities,
             capability_schema_versions={
                 name: self._registry.require(name).schema_version
@@ -294,8 +352,8 @@ class AutomationService:
             current_group_id=actor.group_id,
         )
         row = await self._repository.update_script(
-            automation_id,
-            creator_person_id=creator_person_id,
+            existing.id,
+            creator_person_id=owner_person_id,
             validated=validated,
             authority=authority,
             now=now,
@@ -377,9 +435,28 @@ class AutomationService:
         creator_person_id = await self._resolve_creator_person(creator_user_id)
         return await self._require_owned_person(automation_id, creator_person_id)
 
+    async def require_manageable(
+        self,
+        automation_id: int,
+        actor: ToolActor,
+    ) -> AutomationRecord:
+        """Allow the canonical owner or a current superuser to manage one task."""
+
+        self._require_enabled()
+        actor_person_id, permission, _provenance = await self._creator_context(actor)
+        row = await self._repository.get(automation_id)
+        if row is None:
+            raise ValueError("自动化任务不存在")
+        if (
+            permission is not PermissionLevel.SUPERUSER
+            and row.canonical_creator_person_id != actor_person_id
+        ):
+            raise PermissionError("任务存在，但当前主体不是任务所有者，不能修改")
+        return row
+
     async def pause(self, automation_id: int, *, actor: ToolActor, conversation_key: str) -> bool:
-        creator_person_id = await self._resolve_creator_person(actor.user_id)
-        await self._require_owned_person(automation_id, creator_person_id)
+        row = await self.require_manageable(automation_id, actor)
+        creator_person_id = self._canonical_owner(row)
         changed = await self._repository.set_status(
             automation_id,
             creator_person_id=creator_person_id,
@@ -396,8 +473,8 @@ class AutomationService:
         return changed
 
     async def resume(self, automation_id: int, *, actor: ToolActor, conversation_key: str) -> bool:
-        creator_person_id = await self._resolve_creator_person(actor.user_id)
-        row = await self._require_owned_person(automation_id, creator_person_id)
+        row = await self.require_manageable(automation_id, actor)
+        creator_person_id = self._canonical_owner(row)
         now = self._time.clock.now()
         next_run = initial_run_at(row.script.schedule, now, row.timezone)
         changed = await self._repository.resume(
@@ -416,8 +493,8 @@ class AutomationService:
         return changed
 
     async def cancel(self, automation_id: int, *, actor: ToolActor, conversation_key: str) -> bool:
-        creator_person_id = await self._resolve_creator_person(actor.user_id)
-        await self._require_owned_person(automation_id, creator_person_id)
+        row = await self.require_manageable(automation_id, actor)
+        creator_person_id = self._canonical_owner(row)
         changed = await self._repository.set_status(
             automation_id,
             creator_person_id=creator_person_id,
@@ -434,8 +511,8 @@ class AutomationService:
         return changed
 
     async def run_now(self, automation_id: int, *, actor: ToolActor, conversation_key: str) -> bool:
-        creator_person_id = await self._resolve_creator_person(actor.user_id)
-        await self._require_owned_person(automation_id, creator_person_id)
+        row = await self.require_manageable(automation_id, actor)
+        creator_person_id = self._canonical_owner(row)
         changed = await self._repository.schedule_now(
             automation_id,
             creator_person_id=creator_person_id,
@@ -451,10 +528,10 @@ class AutomationService:
         return changed
 
     async def history(
-        self, automation_id: int, *, creator_user_id: str, limit: int = 20
-    ) -> tuple[AutomationRunRecord, ...]:
-        await self.require_owned(automation_id, creator_user_id)
-        return await self._repository.run_history(automation_id, limit=limit)
+        self, automation_id: int, *, actor: ToolActor, limit: int = 20
+    ) -> tuple[AutomationRecord, tuple[AutomationRunRecord, ...]]:
+        row = await self.require_manageable(automation_id, actor)
+        return row, await self._repository.run_history(automation_id, limit=limit)
 
     async def current_time(self, user_id: str) -> dict[str, str]:
         return (await self._time.current(user_id)).to_model_dict()
@@ -686,6 +763,48 @@ class AutomationService:
             permission,
             self._creation_provenance(actor, permission=permission),
         )
+
+    async def _management_context(
+        self,
+        automation_id: int,
+        actor: ToolActor,
+    ) -> tuple[
+        AutomationRecord,
+        str,
+        str,
+        PermissionLevel,
+        CreationProvenance,
+    ]:
+        """Authorize management while preserving the task owner's execution authority."""
+
+        row = await self.require_manageable(automation_id, actor)
+        owner_person_id = self._canonical_owner(row)
+        owner_accounts = await self._repository.active_creator_accounts(owner_person_id)
+        if row.creator_user_id not in owner_accounts:
+            raise PermissionError("自动化创建者的原账号绑定已失效")
+        owner_permission = permission_for_accounts(self._settings, (row.creator_user_id,))
+        provenance = CreationProvenance(
+            creator_user_id=row.creator_user_id,
+            bot_user_id=row.bot_user_id,
+            message_id=actor.platform_message_id,
+            original_text=actor.instruction,
+            current_group_id=actor.group_id,
+            mentioned_user_ids=actor.mentioned_user_ids,
+            permission=owner_permission,
+        )
+        return (
+            row,
+            owner_person_id,
+            row.creator_user_id,
+            owner_permission,
+            provenance,
+        )
+
+    @staticmethod
+    def _canonical_owner(row: AutomationRecord) -> str:
+        if row.canonical_creator_person_id is None:
+            raise PermissionError("自动化任务没有永久创建者，不能修改")
+        return row.canonical_creator_person_id
 
     async def _require_owned_person(
         self,
