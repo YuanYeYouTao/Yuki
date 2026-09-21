@@ -25,6 +25,7 @@ class OutboundMessageSplitter:
     ) -> tuple[str, ...]:
         hard_max = runtime.reply.hard_max_messages
         structured = _STRUCTURED_CHAT_OUTPUT.search(text) is not None
+        messages: tuple[str, ...]
         if structured:
             messages = (text,)
         else:
