@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from tests.conftest import make_settings
 
 from qq_ai_bot.automation.authority import (
@@ -462,6 +462,13 @@ async def test_create_tool_compiles_and_confirms_database_persistence(database) 
         ),
         conversation_key="private:20002",
     )
+    selected: list[str] = []
+
+    def capture_selects(_conn, _cursor, statement, _parameters, _context, _many) -> None:
+        if statement.lstrip().upper().startswith("SELECT"):
+            selected.append(statement)
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", capture_selects)
     listed = json.loads(
         await AutomationToolService(service).execute(
             "automation_list",
@@ -469,6 +476,9 @@ async def test_create_tool_compiles_and_confirms_database_persistence(database) 
             runtime,
         )
     )
+    event.remove(database.engine.sync_engine, "before_cursor_execute", capture_selects)
+    assert len(selected) == 1
+    assert "LEFT OUTER JOIN identity_bindings" in selected[0]
     tasks = listed["data"]["tasks"]
     assert {task["automation_id"] for task in tasks} == {automation_id, other.id}
     assert all(
@@ -481,13 +491,20 @@ async def test_create_tool_compiles_and_confirms_database_persistence(database) 
         "external_account_id": "20002",
         "display_name": "其他人",
     }
-    got = json.loads(
-        await AutomationToolService(service).execute(
-            "automation_get",
-            json.dumps({"automation_id": other.id}),
-            runtime,
+    selected.clear()
+    event.listen(database.engine.sync_engine, "before_cursor_execute", capture_selects)
+    try:
+        got = json.loads(
+            await AutomationToolService(service).execute(
+                "automation_get",
+                json.dumps({"automation_id": other.id}),
+                runtime,
+            )
         )
-    )
+    finally:
+        event.remove(database.engine.sync_engine, "before_cursor_execute", capture_selects)
+    assert len(selected) == 1
+    assert "LEFT OUTER JOIN identity_bindings" in selected[0]
     assert got["data"]["creator"] == by_id[other.id]["creator"]
     assert listed["data"]["default_status"] == "active"
     assert listed["data"]["next_cursor"] is None

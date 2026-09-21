@@ -18,7 +18,7 @@ from qq_ai_bot.automation.authority import (
 from qq_ai_bot.automation.compiler import AutomationCompiler, ExecutionPlan, TaskSpec
 from qq_ai_bot.automation.creation_key import creation_key as _creation_key
 from qq_ai_bot.automation.models import (
-    AutomationCreatorIdentity,
+    AutomationDirectoryEntry,
     AutomationRecord,
     AutomationRunRecord,
     AutomationScript,
@@ -96,7 +96,7 @@ class AutomationService:
         *,
         actor: ToolActor,
         max_runs: int | None = None,
-    ) -> tuple[AutomationRecord, ...]:
+    ) -> tuple[AutomationDirectoryEntry, ...]:
         """Exact structured candidates only; the Agent decides whether to create."""
         task = TaskSpec.model_validate(task_payload)
         _creator, _permission, provenance = await self._creator_context(actor)
@@ -111,10 +111,11 @@ class AutomationService:
             limit=200,
         )
         return tuple(
-            row
-            for row in rows
-            if row.max_runs == max_runs
-            and row.script.model_dump(mode="json", exclude={"name"}, exclude_none=True) == expected
+            entry
+            for entry in rows
+            if entry.record.max_runs == max_runs
+            and entry.record.script.model_dump(mode="json", exclude={"name"}, exclude_none=True)
+            == expected
         )
 
     async def update_task(
@@ -331,7 +332,7 @@ class AutomationService:
         status: str = "active",
         limit: int = 50,
         offset: int = 0,
-    ) -> tuple[AutomationRecord, ...]:
+    ) -> tuple[AutomationDirectoryEntry, ...]:
         """Return the bounded Yuki-wide safe task directory, independent of owner."""
 
         self._require_enabled()
@@ -355,23 +356,14 @@ class AutomationService:
             offset=offset,
         )
 
-    async def get_visible(self, automation_id: int) -> AutomationRecord:
+    async def get_visible(self, automation_id: int) -> AutomationDirectoryEntry:
         """Return one task for safe read projection without granting mutation rights."""
 
         self._require_enabled()
-        row = await self._repository.get(automation_id)
+        row = await self._repository.get_directory_entry(automation_id)
         if row is None:
             raise ValueError("自动化任务不存在")
         return row
-
-    async def creator_identities(
-        self,
-        rows: tuple[AutomationRecord, ...],
-    ) -> dict[int, AutomationCreatorIdentity]:
-        """Return safe creator metadata for global task directory results."""
-
-        self._require_enabled()
-        return await self._repository.creator_identities(rows)
 
     async def list_completed(self, creator_user_id: str) -> tuple[AutomationRecord, ...]:
         """Return terminal tasks in a separate newest-first history queue."""

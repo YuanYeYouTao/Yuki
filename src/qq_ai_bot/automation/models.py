@@ -184,6 +184,13 @@ class AutomationCreatorIdentity(StrictModel):
     display_name: str | None = None
 
 
+class AutomationDirectoryEntry(StrictModel):
+    """One task and its creator as returned by the global directory."""
+
+    record: AutomationRecord
+    creator: AutomationCreatorIdentity
+
+
 class AutomationRunRecord(StrictModel):
     id: int
     automation_id: int

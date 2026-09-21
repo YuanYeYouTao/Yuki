@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from qq_ai_bot.automation.compiler import ExecutionPlan
-from qq_ai_bot.automation.models import AutomationCreatorIdentity, AutomationRecord
+from qq_ai_bot.automation.models import AutomationDirectoryEntry, AutomationRecord
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.services.agent_tools import ToolRuntime
@@ -383,11 +383,10 @@ class AutomationToolService:
                     )
                     page = fetched[:maximum]
                     has_more = len(fetched) > maximum
-                creators = await self._service.creator_identities(tuple(page))
                 return _result(
                     data={
                         "default_status": "active",
-                        "tasks": [_directory_record(row, creator=creators[row.id]) for row in page],
+                        "tasks": [_directory_record(entry) for entry in page],
                         "next_cursor": str(offset + maximum) if has_more else None,
                     }
                 )
@@ -395,11 +394,11 @@ class AutomationToolService:
                 maximum = arguments.get("limit", 50)
                 if isinstance(maximum, bool) or not isinstance(maximum, int):
                     raise ValueError("limit 必须是整数")
-                automations = await self._service.list_completed(actor.user_id)
+                completed = await self._service.list_completed(actor.user_id)
                 return _result(
                     data={
                         "timezone": await self._service.timezone(actor.user_id),
-                        "completed_history": [_record(row) for row in automations[:maximum]],
+                        "completed_history": [_record(row) for row in completed[:maximum]],
                     }
                 )
             if name == "time_get_current":
@@ -425,9 +424,9 @@ class AutomationToolService:
                 )
             automation_id = _automation_id(arguments)
             if name == "automation_get":
-                row = await self._service.get_visible(automation_id)
-                creators = await self._service.creator_identities((row,))
-                return _result(data=_directory_record(row, creator=creators[row.id]))
+                return _result(
+                    data=_directory_record(await self._service.get_visible(automation_id))
+                )
             if name == "automation_update":
                 row, plan = await self._service.update_task(
                     automation_id,
@@ -541,16 +540,13 @@ def _record(
     return payload
 
 
-def _directory_record(
-    row: AutomationRecord,
-    *,
-    creator: AutomationCreatorIdentity,
-) -> dict[str, Any]:
+def _directory_record(entry: AutomationDirectoryEntry) -> dict[str, Any]:
+    row = entry.record
     payload: dict[str, Any] = {
         "automation_id": row.id,
         "task": row.name,
         "next_run_at_local": local_iso(row.next_run_at, row.timezone),
-        "creator": creator.model_dump(mode="json"),
+        "creator": entry.creator.model_dump(mode="json"),
     }
     if row.status.value != "active":
         payload["status"] = row.status.value

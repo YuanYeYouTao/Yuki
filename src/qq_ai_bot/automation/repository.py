@@ -6,7 +6,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import delete, func, or_, select, true, update
+from sqlalchemy import and_, delete, func, or_, select, true, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from qq_ai_bot.automation.authority import DelegatedAuthority
 from qq_ai_bot.automation.models import (
     AutomationCreatorIdentity,
+    AutomationDirectoryEntry,
     AutomationRecord,
     AutomationRunRecord,
     AutomationScript,
@@ -242,11 +243,20 @@ class AutomationRepository:
         statuses: tuple[AutomationStatus, ...],
         limit: int = 50,
         offset: int = 0,
-    ) -> tuple[AutomationRecord, ...]:
+    ) -> tuple[AutomationDirectoryEntry, ...]:
         """List a bounded, owner-independent task directory for the main Agent."""
 
-        query = select(AutomationModel).where(
-            AutomationModel.status.in_([status.value for status in statuses])
+        query = (
+            select(AutomationModel, IdentityBindingModel.display_name)
+            .outerjoin(
+                IdentityBindingModel,
+                and_(
+                    IdentityBindingModel.person_id == AutomationModel.canonical_creator_person_id,
+                    IdentityBindingModel.platform == IDENTITY_PLATFORM,
+                    IdentityBindingModel.external_account_id == AutomationModel.creator_user_id,
+                ),
+            )
+            .where(AutomationModel.status.in_([status.value for status in statuses]))
         )
         current = set(statuses) <= {AutomationStatus.ACTIVE, AutomationStatus.PAUSED}
         order = (
@@ -260,45 +270,33 @@ class AutomationRepository:
         )
         async with self._database.sessions() as session:
             rows = (
-                await session.scalars(
+                await session.execute(
                     query.order_by(*order).offset(max(0, offset)).limit(max(1, min(limit, 101)))
                 )
             ).all()
-        return tuple(_automation_record(row) for row in rows)
+        return tuple(_automation_directory_entry(row, display_name) for row, display_name in rows)
 
-    async def creator_identities(
-        self,
-        rows: tuple[AutomationRecord, ...],
-    ) -> dict[int, AutomationCreatorIdentity]:
-        """Resolve task creators in one read without changing ownership semantics."""
+    async def get_directory_entry(self, automation_id: int) -> AutomationDirectoryEntry | None:
+        """Read one task and its creator projection in a single database query."""
 
-        person_ids = {
-            row.canonical_creator_person_id
-            for row in rows
-            if row.canonical_creator_person_id is not None
-        }
-        account_ids = {row.creator_user_id for row in rows}
-        bindings: dict[tuple[str, str], IdentityBindingModel] = {}
-        if person_ids and account_ids:
-            query = select(IdentityBindingModel).where(
-                IdentityBindingModel.person_id.in_(person_ids),
-                IdentityBindingModel.platform == IDENTITY_PLATFORM,
-                IdentityBindingModel.external_account_id.in_(account_ids),
+        query = (
+            select(AutomationModel, IdentityBindingModel.display_name)
+            .outerjoin(
+                IdentityBindingModel,
+                and_(
+                    IdentityBindingModel.person_id == AutomationModel.canonical_creator_person_id,
+                    IdentityBindingModel.platform == IDENTITY_PLATFORM,
+                    IdentityBindingModel.external_account_id == AutomationModel.creator_user_id,
+                ),
             )
-            async with self._database.sessions() as session:
-                found = (await session.scalars(query)).all()
-            bindings = {
-                (binding.person_id, binding.external_account_id): binding for binding in found
-            }
-        result: dict[int, AutomationCreatorIdentity] = {}
-        for row in rows:
-            binding = bindings.get((row.canonical_creator_person_id or "", row.creator_user_id))
-            result[row.id] = AutomationCreatorIdentity(
-                person_id=row.canonical_creator_person_id,
-                external_account_id=row.creator_user_id,
-                display_name=binding.display_name or None if binding is not None else None,
-            )
-        return result
+            .where(AutomationModel.id == automation_id)
+        )
+        async with self._database.sessions() as session:
+            row = (await session.execute(query)).one_or_none()
+        if row is None:
+            return None
+        automation, display_name = row
+        return _automation_directory_entry(automation, display_name)
 
     async def list_active_for_external_group(
         self,
@@ -921,6 +919,21 @@ def _automation_record(row: AutomationModel) -> AutomationRecord:
         canonical_target_person_id=row.canonical_target_person_id,
         canonical_target_space_id=row.canonical_target_space_id,
         canonical_presence_id=row.canonical_presence_id,
+    )
+
+
+def _automation_directory_entry(
+    row: AutomationModel,
+    display_name: str | None,
+) -> AutomationDirectoryEntry:
+    record = _automation_record(row)
+    return AutomationDirectoryEntry(
+        record=record,
+        creator=AutomationCreatorIdentity(
+            person_id=record.canonical_creator_person_id,
+            external_account_id=record.creator_user_id,
+            display_name=display_name or None,
+        ),
     )
 
 
