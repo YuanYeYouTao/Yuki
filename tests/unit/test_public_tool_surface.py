@@ -88,13 +88,12 @@ async def test_scheduled_actor_uses_common_automation_receipt(database, tmp_path
     chat, _, runtime = await setup(database, tmp_path)
     service = SimpleNamespace(
         enabled=True,
-        list_current=AsyncMock(return_value=()),
-        timezone=AsyncMock(return_value="Asia/Shanghai"),
+        list_directory=AsyncMock(return_value=()),
     )
     chat.set_automation_tools(AutomationToolService(service))
     receipt = json.loads(await chat._automation_tools.execute("automation_list", "{}", runtime))
     assert receipt["ok"]
-    service.list_current.assert_awaited_once_with("10001")
+    service.list_directory.assert_awaited_once_with(status="active", limit=51, offset=0)
     assert runtime.inbound is None
     with pytest.raises(PermissionError):
         replace(runtime, actor_user_id="9000").require_actor()

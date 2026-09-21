@@ -7,7 +7,7 @@ import json
 import logging
 from dataclasses import dataclass, replace
 from datetime import UTC
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.registry import CapabilityExecutionContext
@@ -66,11 +66,14 @@ from qq_ai_bot.runtime.trigger import (
     WorkResumeTrigger,
 )
 from qq_ai_bot.services.rollup_wakeup import rollup_wakeup_history, rollup_wakeup_watermark
-from qq_ai_bot.time.formatting import local_iso
+from qq_ai_bot.time.formatting import local_iso, local_text
 from qq_ai_bot.time.models import TimeContext
 from qq_ai_bot.time.service import TimeContextService
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from qq_ai_bot.automation.repository import AutomationRepository
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +120,7 @@ class AssembledContext:
     history_event_fragments: tuple[tuple[tuple[int, ...], ChatMessage], ...] = ()
     current_event_id: int | None = None
     projection_scope: str = ""
+    automation_snapshot: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,6 +185,48 @@ class ContextAssembler:
         self._time = time_service
         self._rollups = rollup_repository
         self._rollup_service = rollup_service
+        self._automation_repository: AutomationRepository | None = None
+
+    def set_automation_repository(self, repository: AutomationRepository) -> None:
+        """Attach the shared read repository after application modules are built."""
+
+        self._automation_repository = repository
+
+    async def _current_group_automation_snapshot(self, group_id: str | None) -> str:
+        """Render the smallest useful active-task view for the current group."""
+
+        if group_id is None or self._automation_repository is None:
+            return ""
+        try:
+            rows = await self._automation_repository.list_active_for_external_group(
+                group_id,
+                limit=100,
+            )
+        except Exception:
+            logger.warning("automation_prompt_snapshot_unavailable", exc_info=True)
+            return "当前群任务状态不可用；需要时调用 automation_list 核实。"
+        return self._format_automation_snapshot(rows)
+
+    @staticmethod
+    def _format_automation_snapshot(rows: tuple[Any, ...]) -> str:
+        """Format active tasks without repeating owner, status, or schema data."""
+
+        if not rows:
+            return "当前群没有 active 自动化任务。"
+        lines = ["当前群任务（默认 active）："]
+        included = 0
+        for row in rows[:8]:
+            task = " ".join(row.name.split())[:96]
+            line = f"[ID {row.id}] {task}；下次：{local_text(row.next_run_at, row.timezone)}"
+            candidate = "\n".join((*lines, line))
+            if len(candidate) > 1_200:
+                break
+            lines.append(line)
+            included += 1
+        omitted = len(rows) - included
+        if omitted:
+            lines.append(f"另有 {omitted} 项，调用 automation_list 查看。")
+        return "\n".join(lines)
 
     async def assemble_plugin(
         self,
@@ -249,6 +295,7 @@ class ContextAssembler:
                 for _, ids, message in renderer.main_agent_history((row,))
             ),
             projection_scope=projection_scope,
+            automation_snapshot=await self._current_group_automation_snapshot(inbound.group_id),
         )
 
     @staticmethod
@@ -262,6 +309,7 @@ class ContextAssembler:
         instruction: str,
         profile: str,
         current_time: TimeContext,
+        automation_repository: AutomationRepository | None = None,
     ) -> AssembledContext:
         """Apply the declared read scope, then use the normal event projection.
 
@@ -335,6 +383,17 @@ class ContextAssembler:
         metadata_size = len(json.dumps(data, ensure_ascii=False))
         if history_size + metadata_size + len(content) > settings.max_context_characters:
             raise ConversationCoverageError("automation context requires explicit compaction")
+        automation_snapshot = ""
+        if profile == "current_group" and context.current_group_id and automation_repository:
+            try:
+                automation_rows = await automation_repository.list_active_for_external_group(
+                    context.current_group_id,
+                    limit=100,
+                )
+                automation_snapshot = ContextAssembler._format_automation_snapshot(automation_rows)
+            except Exception:
+                logger.warning("automation_prompt_snapshot_unavailable", exc_info=True)
+                automation_snapshot = "当前群任务状态不可用；需要时调用 automation_list 核实。"
         return AssembledContext(
             metadata_payload=data,
             history_messages=history,
@@ -368,6 +427,7 @@ class ContextAssembler:
                 for row in rows
                 for _, ids, message in renderer.main_agent_history((row,))
             ),
+            automation_snapshot=automation_snapshot,
         )
 
     async def assemble(
@@ -698,6 +758,7 @@ class ContextAssembler:
             history_fragments=bounded_messages.history_fragments,
             history_event_fragments=bounded_messages.history_event_fragments,
             current_event_id=current_event.id,
+            automation_snapshot=await self._current_group_automation_snapshot(inbound.group_id),
         )
 
     async def _assemble_actorless_turn(
@@ -903,6 +964,7 @@ class ContextAssembler:
             history_fragments=bounded_messages.history_fragments,
             history_event_fragments=bounded_messages.history_event_fragments,
             current_event_id=event.id,
+            automation_snapshot=await self._current_group_automation_snapshot(event.group_id),
         )
 
     @staticmethod

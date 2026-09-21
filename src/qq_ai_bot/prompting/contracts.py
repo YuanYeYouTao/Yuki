@@ -59,6 +59,8 @@ CORE_CONTRACT = (
     "结构化调度参数；时间或意图有实质歧义时先澄清。讨论、列举、当前查询和历史旧承诺"
     "本身不构成新建请求。需要创建时调用 automation_create，只有返回 "
     "confirmation=persisted 和真实 automation_id 才能确认创建。"
+    "runtime.current_conversation_automations 是当前群 active 任务的权威简表；"
+    "能看到任务不代表当前主体能修改，写权限仍由工具后端核验。"
     "自动化执行使用与普通聊天相同的工具和创建者当前权限，无需另选 capability 或工具白名单。"
     "已登记的定时工作直接继续；任务中的上下文配置决定预取资料，不限制主动补查。"
     "模型正文不自动交付；只有发送工具的网关回执能确认消息已发。"

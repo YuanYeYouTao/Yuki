@@ -29,10 +29,12 @@ from qq_ai_bot.identity.db_models import (
     SpaceBindingModel,
 )
 from qq_ai_bot.identity.routing import PresenceRouter, ResolvedSend
+from qq_ai_bot.llm.base import LLMEmptyResponseError
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from qq_ai_bot.services.message_splitter import OutboundMessageSplitter
+from qq_ai_bot.services.renderer import sanitize_model_output
 from qq_ai_bot.social.models import OperationStatus, SocialError, SocialMessage, SocialTarget
 from qq_ai_bot.social.repository import SocialOperationRepository
 from qq_ai_bot.social.transfer import ArtifactTransfer
@@ -79,6 +81,29 @@ class SocialService:
         self.transfer: ArtifactTransfer | None = None
         self.speech_delivery: Any = None
         self.emoji_delivery: Any = None
+
+    @staticmethod
+    def _canonical_send_arguments(args: dict[str, Any]) -> dict[str, Any]:
+        """Normalize model-owned text once before receipts or transport planning."""
+
+        canonical = dict(args)
+        raw_text = canonical.get("text", "")
+        if isinstance(raw_text, str):
+            try:
+                canonical["text"] = sanitize_model_output(
+                    raw_text,
+                    max_characters=12_000,
+                )
+            except LLMEmptyResponseError:
+                canonical["text"] = ""
+        if not canonical.get("text") and not any(
+            canonical.get(key) for key in ("artifact_id", "emoji", "mentions")
+        ):
+            raise SocialError("empty_message_after_sanitization")
+        SocialMessage.model_validate(
+            {key: value for key, value in canonical.items() if key in SocialMessage.model_fields}
+        )
+        return canonical
 
     @staticmethod
     async def _call(route: ResolvedSend, action: str, params: dict[str, Any]) -> Any:
@@ -558,6 +583,8 @@ class SocialService:
     async def execute(
         self, name: str, args: dict[str, Any], context: SocialContext
     ) -> dict[str, Any]:
+        if name == "send_message":
+            args = self._canonical_send_arguments(args)
         if name == "send_message" and context.sequence_part_index is None:
             return await self._send_message_sequence(args, context)
         if name == "read_conversation_history":

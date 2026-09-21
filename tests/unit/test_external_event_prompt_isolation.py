@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -124,6 +125,7 @@ def _assembled(
     current: ChatMessage,
     metadata: dict[str, object] | None = None,
     rollup_text: str = "",
+    automation_snapshot: str = "",
 ) -> AssembledContext:
     return AssembledContext(
         metadata_payload=metadata or {},
@@ -146,6 +148,7 @@ def _assembled(
         prompt_effective_coverage=0,
         prompt_rollup_revision=0,
         prompt_raw_tail_end_event_id=3,
+        automation_snapshot=automation_snapshot,
     )
 
 
@@ -676,6 +679,76 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
         item["role"] != "system" or "current summary" not in str(item["content"])
         for item in chat_payload
     )
+
+
+def test_automation_snapshot_changes_only_current_input_not_stable_prefix() -> None:
+    settings = make_settings("sqlite+aiosqlite:///:memory:")
+    composer = PromptComposer(settings)
+    runtime = MagicMock()
+    runtime.plugins.max_total_prompt_characters = 8_000
+    base = _assembled(
+        history=(ChatMessage(role="user", content="history"),),
+        current=ChatMessage(role="user", content="现在说话"),
+        automation_snapshot="当前群没有 active 自动化任务。",
+    )
+    changed = replace(
+        base,
+        automation_snapshot=(
+            "当前群任务（默认 active）：\n[ID 85] 每小时补充日记；下次：2026-09-21 21:55:00"
+        ),
+    )
+    first = composer.compose(
+        inbound=None,
+        context=base,
+        runtime=runtime,
+        visual_observation=None,
+        visual_failure=False,
+    )
+    second = composer.compose(
+        inbound=None,
+        context=changed,
+        runtime=runtime,
+        visual_observation=None,
+        visual_failure=False,
+    )
+    assert first.messages[0] == second.messages[0]
+    assert first.metrics.stable_prefix_hash == second.metrics.stable_prefix_hash
+    assert first.metrics.conversation_prefix_hash == second.metrics.conversation_prefix_hash
+    assert first.messages[-1] != second.messages[-1]
+    first_instructions, first_inputs = DeepSeekResponsesProvider._convert_messages(first.messages)
+    second_instructions, second_inputs = DeepSeekResponsesProvider._convert_messages(
+        second.messages
+    )
+    assert first_instructions == second_instructions
+    assert first_inputs[:-1] == second_inputs[:-1]
+    assert "ID 85" not in str(first_inputs[-1])
+    assert "ID 85" in str(second_inputs[-1])
+
+
+@pytest.mark.asyncio
+async def test_group_automation_snapshot_is_compact_and_bounded() -> None:
+    assembler = _assembler()
+    rows = tuple(
+        SimpleNamespace(
+            id=index,
+            name=f"任务 {index} 给远野处理日记",
+            next_run_at=_OCCURRED + timedelta(minutes=index),
+            timezone="Asia/Shanghai",
+        )
+        for index in range(1, 11)
+    )
+    repository = MagicMock()
+    repository.list_active_for_external_group = AsyncMock(return_value=rows)
+    assembler.set_automation_repository(repository)
+    snapshot = await assembler._current_group_automation_snapshot("2001")
+    assert "[ID 1] 任务 1 给远野处理日记；下次：" in snapshot
+    assert "[active]" not in snapshot
+    assert "owner" not in snapshot
+    assert "[ID 8]" in snapshot
+    assert "[ID 9]" not in snapshot
+    assert "另有 2 项，调用 automation_list 查看。" in snapshot
+    assert len(snapshot) <= 1_250
+    repository.list_active_for_external_group.assert_awaited_once_with("2001", limit=100)
 
 
 @pytest.mark.asyncio

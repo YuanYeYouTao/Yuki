@@ -26,7 +26,11 @@ from qq_ai_bot.identity.canonical_repository import (
     active_space_id_for,
     presence_id_for,
 )
-from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel
+from qq_ai_bot.identity.db_models import (
+    CanonicalPersonModel,
+    IdentityBindingModel,
+    SpaceBindingModel,
+)
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     AutomationModel,
@@ -229,6 +233,68 @@ class AutomationRepository:
                     query.order_by(AutomationModel.updated_at.desc()).limit(max(1, min(limit, 200)))
                 )
             ).all()
+        return tuple(_automation_record(row) for row in rows)
+
+    async def list_directory(
+        self,
+        *,
+        statuses: tuple[AutomationStatus, ...],
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[AutomationRecord, ...]:
+        """List a bounded, owner-independent task directory for the main Agent."""
+
+        query = select(AutomationModel).where(
+            AutomationModel.status.in_([status.value for status in statuses])
+        )
+        current = set(statuses) <= {AutomationStatus.ACTIVE, AutomationStatus.PAUSED}
+        order = (
+            (
+                AutomationModel.next_run_at.is_(None),
+                AutomationModel.next_run_at.asc(),
+                AutomationModel.id.asc(),
+            )
+            if current
+            else (AutomationModel.updated_at.desc(), AutomationModel.id.desc())
+        )
+        async with self._database.sessions() as session:
+            rows = (
+                await session.scalars(
+                    query.order_by(*order).offset(max(0, offset)).limit(max(1, min(limit, 101)))
+                )
+            ).all()
+        return tuple(_automation_record(row) for row in rows)
+
+    async def list_active_for_external_group(
+        self,
+        external_group_id: str,
+        *,
+        limit: int = 9,
+    ) -> tuple[AutomationRecord, ...]:
+        """Return active tasks targeting one canonical group, regardless of owner."""
+
+        query = (
+            select(AutomationModel)
+            .join(
+                SpaceBindingModel,
+                SpaceBindingModel.space_id == AutomationModel.canonical_target_space_id,
+            )
+            .where(
+                AutomationModel.status == AutomationStatus.ACTIVE.value,
+                SpaceBindingModel.platform == IDENTITY_PLATFORM,
+                SpaceBindingModel.external_space_id == external_group_id,
+                SpaceBindingModel.status == "active",
+            )
+            .distinct()
+            .order_by(
+                AutomationModel.next_run_at.is_(None),
+                AutomationModel.next_run_at.asc(),
+                AutomationModel.id.asc(),
+            )
+            .limit(max(1, min(limit, 100)))
+        )
+        async with self._database.sessions() as session:
+            rows = (await session.scalars(query)).all()
         return tuple(_automation_record(row) for row in rows)
 
     async def list_current_for_creator(

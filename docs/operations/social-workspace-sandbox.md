@@ -50,8 +50,9 @@ inbound Presence. The adapter supplies the event reference, never model argument
 the ledger must match the conversation, private human sender and ingress Presence.
 This does not unpause the proactive route. A reconnection may use only the same
 Presence; there is no fallback to another account. Other targets and automation
-still require their active route. Target enablement, idempotency and tool rate
-limits apply to both paths, with a final connection check before execution.
+still require their active route. Target enablement and idempotency apply to both
+paths, with a final connection check before execution. Social sends and pokes have
+no additional per-target or global minute rate limiter.
 Use `subject_ref=current_speaker` for the current sender; `target_id` is a canonical
 UUID, not a QQ number. Attachment IDs require `attachment_kind=image|file`.
 Validation/route failures do not delete already generated workspace artifacts.
@@ -83,14 +84,15 @@ protection still prevents gateway changes to the original transfer file.
 Preparation errors report `artifact_transfer_unavailable` before contacting the
 gateway; cleanup errors are logged without overwriting a confirmed send result.
 
-`send_private_message` and `send_group_message` accept text or workspace artifacts.
+`send_message` accepts text or workspace artifacts and selects private/group transport
+from its resolved target. Omitting the target sends to the current conversation.
 Images may include text. File uploads may include a caption: upload first, then send
 the text only after confirmed upload success, with separate durable receipts and
 separate target-ledger events. The combined tool result reports both stages; caption
 failure never erases file success. Replays return recorded outcomes without resending
 either stage, including after source expiry. A crash between stages can leave the
-caption unsent. Both stages count as one rate-limited tool operation, retain the same
-Presence, and recheck the route before dispatch. These network effects are not atomic.
+caption unsent. Both stages retain the same Presence and recheck the route before
+dispatch. These network effects are not atomic.
 File APIs may return no retractable message ID; such uploads are
 recorded in the target ledger but `recall_own_message` cannot invent a recall handle.
 Recall always uses the original Presence. Poke, members and recall have dedicated
@@ -98,9 +100,8 @@ methods; no arbitrary OneBot action is available through these tools.
 
 Receipts use source turn/call identity and a payload hash. `uncertain` means the
 gateway may have acted: do not automatically resend. Database persistence cannot be
-atomic with a network operation. Rate limits are global ConfigRegistry settings:
-send 3/target/minute and 10/global/minute; poke 1/target/minute and 5/global/minute.
-Ordinary final chat replies do not count against these new proactive-operation limits.
+atomic with a network operation. The model's final text is internal loop output and is
+not sent automatically; only an accepted `send_message` gateway receipt confirms delivery.
 
 ## Shared persistent storage
 
@@ -152,7 +153,7 @@ the resolved private route and reject conflicting selectors. Ordinary delegated
 group pokes may target known members only inside the automation's bound group;
 private and other-group overrides remain forbidden.
 
-`send_group_message.mentions` is an array of person selectors with optional
+`send_message.mentions` is an array of person selectors with optional
 `binding_id`. Each member is verified against the selected group, then serialized
 as a real OneBot `at` segment before the text. Plain `@name` text does not notify.
 Text, image and separately receipted file captions preserve these segments in the

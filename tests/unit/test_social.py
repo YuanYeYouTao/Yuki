@@ -566,6 +566,47 @@ async def test_send_message_defaults_to_current_group_and_replays_receipt(
 
 
 @pytest.mark.asyncio
+async def test_send_message_sanitizes_internal_event_prefix_before_effect(
+    database: Database, tmp_path: Path
+) -> None:
+    from dataclasses import replace
+
+    from sqlalchemy import select
+    from tests.support.social_identity_cases import social_env
+
+    from qq_ai_bot.persistence.models import ChatEventModel
+
+    env = await social_env(database, tmp_path)
+    context = replace(env.context, call_id="sanitize-event-prefix")
+    receipt = await env.service.execute(
+        "send_message",
+        {"text": "#62052>那刻度校完，我可就直接反超了喵"},
+        context,
+    )
+    assert receipt["status"] == "succeeded"
+    assert env.bot.calls[-1][1]["message"] == [
+        {"type": "text", "data": {"text": "那刻度校完，我可就直接反超了喵"}}
+    ]
+    async with database.sessions() as session:
+        row = await session.scalar(
+            select(ChatEventModel)
+            .where(ChatEventModel.direction == "outbound")
+            .order_by(ChatEventModel.id.desc())
+            .limit(1)
+        )
+    assert row is not None
+    assert row.content == "那刻度校完，我可就直接反超了喵"
+    before = len(env.bot.calls)
+    with pytest.raises(SocialError, match="empty_message_after_sanitization"):
+        await env.service.execute(
+            "send_message",
+            {"text": "#62052>"},
+            replace(context, call_id="sanitize-empty"),
+        )
+    assert len(env.bot.calls) == before
+
+
+@pytest.mark.asyncio
 async def test_send_message_reuses_automatic_reply_splitting(
     database: Database, tmp_path: Path
 ) -> None:

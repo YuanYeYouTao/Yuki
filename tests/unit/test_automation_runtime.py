@@ -447,6 +447,21 @@ async def test_create_tool_compiles_and_confirms_database_persistence(database) 
     assert result["data"]["compiled_strategy"] == "static"
     automation_id = result["data"]["automation_id"]
     assert (await service.require_owned(automation_id, "10001")).id == automation_id
+    from qq_ai_bot.identity.canonical_repository import ensure_person
+
+    async with database.sessions.begin() as session:
+        await ensure_person(session, "20002", display_name="其他人")
+    other = await service.create(
+        _script().model_copy(update={"name": "他人的提醒"}),
+        actor=ToolActor.from_inbound(
+            replace(
+                _inbound("20002"),
+                source_event_id=2,
+                message_id="automation-create-other",
+            )
+        ),
+        conversation_key="private:20002",
+    )
     listed = json.loads(
         await AutomationToolService(service).execute(
             "automation_list",
@@ -454,10 +469,19 @@ async def test_create_tool_compiles_and_confirms_database_persistence(database) 
             runtime,
         )
     )
-    task = listed["data"]["current_tasks"][0]
-    assert task["automation_id"] == automation_id
-    assert "number" not in task
+    tasks = listed["data"]["tasks"]
+    assert {task["automation_id"] for task in tasks} == {automation_id, other.id}
+    assert all(set(task) == {"automation_id", "task", "next_run_at_local"} for task in tasks)
+    assert listed["data"]["default_status"] == "active"
+    assert listed["data"]["next_cursor"] is None
+    assert "number" not in tasks[0]
     assert "numbering" not in listed["data"]
+    with pytest.raises(PermissionError):
+        await service.pause(
+            other.id,
+            actor=ToolActor.from_inbound(inbound),
+            conversation_key=runtime.conversation_key,
+        )
 
 
 @pytest.mark.asyncio
@@ -1409,3 +1433,7 @@ async def test_disabled_binding_fails_while_space_target_remains_canonical(datab
     )
     assert row.canonical_target_space_id == space
     assert row.canonical_target_person_id is None
+    assert [
+        item.id
+        for item in await AutomationRepository(database).list_active_for_external_group("2001")
+    ] == [row.id]

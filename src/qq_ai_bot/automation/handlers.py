@@ -18,6 +18,7 @@ from qq_ai_bot.automation.registry import (
     CapabilityHandler,
     CapabilityResult,
 )
+from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, PromptRequestDiagnostics
@@ -102,6 +103,7 @@ class AutomationCapabilityHandlers:
         ledger: EventLedgerRepository,
         memories: MemoryFactService,
         relationships: RelationshipRepository,
+        automation_repository: AutomationRepository | None = None,
         web_provider: WebSearchProvider | None,
         gateway_factory: GatewayFactory,
         emoji_repository: EmojiRepository | None = None,
@@ -121,6 +123,7 @@ class AutomationCapabilityHandlers:
         self._ledger = ledger
         self._memories = memories
         self._relationships = relationships
+        self._automation_repository = automation_repository
         self._web = web_provider
         self._gateway_factory = gateway_factory
         self._emoji_repository = emoji_repository
@@ -734,6 +737,7 @@ class AutomationCapabilityHandlers:
             instruction=str(arguments["instruction"]),
             profile=str(arguments.get("context_profile") or "none"),
             current_time=self._time.at(context.actual_started_at, context.timezone),
+            automation_repository=getattr(self, "_automation_repository", None),
         )
         composition = await self._main_turn_service().compose(
             inbound=None,

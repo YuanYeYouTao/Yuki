@@ -432,9 +432,14 @@ class ChatService:
         self._admin_tools = service
 
     def set_automation_tools(self, service: AutomationToolProvider) -> None:
-        """Attach owner-scoped scheduling tools without introducing a second Agent."""
+        """Attach scheduling tools without introducing a second Agent."""
 
         self._automation_tools = service
+
+    def set_automation_repository(self, repository: Any) -> None:
+        """Attach the shared task directory used by trusted runtime context."""
+
+        self._context_assembler.set_automation_repository(repository)
 
     def set_plugin_tools(self, service: PluginToolProvider) -> None:
         """Attach approved plugin tools without a parallel chat router."""

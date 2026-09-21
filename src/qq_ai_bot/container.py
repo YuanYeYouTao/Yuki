@@ -436,6 +436,7 @@ class ApplicationContainer:
         self.automation = automation.service
         self.automation_tools = automation.tools
         self.chat.set_automation_tools(self.automation_tools)
+        self.chat.set_automation_repository(self.automation_repository)
         self.automation_executor = automation.executor
         self.automation_worker = automation.worker
         self.mcp_automation_bridge = automation.mcp_bridge
