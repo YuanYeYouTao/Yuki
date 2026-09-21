@@ -1,6 +1,6 @@
 # Yuki 3.8.3 配置与升级
 
-<!-- release-baseline: version=3.8.3 schema=0063 -->
+<!-- release-baseline: version=3.8.3 schema=0064 -->
 
 3.8.3 正式版的目标数据库为 **0061**。应用版本推进不意味着需要新增迁移。
 已有生产环境若已是 0061，本轮无需新增迁移；经授权部署时只更新 Bot 镜像，保留独立 Manager 与持久环境。发布 Release 不会自动部署现有服务器。
