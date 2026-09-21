@@ -525,7 +525,7 @@ _BASE_SELF_SERVICE_CAPABILITIES = (
         display_name="列出 Yuki 自动化",
         description=(
             "读取带创建者身份的 Yuki 全局自动化任务简表；读取不授予修改权限，"
-            "暂停、更新、取消和立即运行仍只允许任务所有者。"
+            "普通用户只能管理自己的任务，超级管理员可以管理全部任务。"
         ),
         minimum_level=PermissionLevel.USER,
         mutating=False,
@@ -550,7 +550,7 @@ _BASE_SELF_SERVICE_CAPABILITIES = (
         display_name="查看 Yuki 自动化",
         description=(
             "自然语言工具可按稳定 ID 查看包含创建者身份的任务安全摘要；"
-            "/ai automation show 仍是当前发送者本人的管理命令。"
+            "/ai automation show 对普通用户保持 owner 范围，超级管理员可查看全部任务。"
         ),
         minimum_level=PermissionLevel.USER,
         mutating=False,

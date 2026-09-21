@@ -70,8 +70,9 @@ class AutomationCommandHandler:
         automation_id = int(parts[0])
         conversation_key = runtime_conversation_key(identity=identity, inbound=message)
         try:
-            current = await self._automation.require_owned(automation_id, message.sender.user_id)
+            actor = ToolActor.from_inbound(message)
             if operation == "show":
+                current = await self._automation.require_manageable(automation_id, actor)
                 timezone = await self._automation.timezone(message.sender.user_id)
                 return (
                     f"自动化 ID：{automation_id}\n名称：{current.name}\n"
@@ -80,10 +81,7 @@ class AutomationCommandHandler:
                     f"能力：{', '.join(current.required_capabilities)}"
                 )
             if operation == "history":
-                history_rows = await self._automation.history(
-                    automation_id,
-                    creator_user_id=message.sender.user_id,
-                )
+                _current, history_rows = await self._automation.history(automation_id, actor=actor)
                 if not history_rows:
                     return "该任务暂无执行记录。"
                 timezone = await self._automation.timezone(message.sender.user_id)
@@ -96,28 +94,28 @@ class AutomationCommandHandler:
             if operation == "pause":
                 changed = await self._automation.pause(
                     automation_id,
-                    actor=ToolActor.from_inbound(message),
+                    actor=actor,
                     conversation_key=conversation_key,
                 )
                 return "任务已暂停。" if changed else "任务状态没有改变。"
             if operation == "resume":
                 changed = await self._automation.resume(
                     automation_id,
-                    actor=ToolActor.from_inbound(message),
+                    actor=actor,
                     conversation_key=conversation_key,
                 )
                 return "任务已恢复。" if changed else "该任务不能恢复。"
             if operation == "cancel":
                 changed = await self._automation.cancel(
                     automation_id,
-                    actor=ToolActor.from_inbound(message),
+                    actor=actor,
                     conversation_key=conversation_key,
                 )
                 return "任务已取消。" if changed else "任务状态没有改变。"
             if operation == "run":
                 changed = await self._automation.run_now(
                     automation_id,
-                    actor=ToolActor.from_inbound(message),
+                    actor=actor,
                     conversation_key=conversation_key,
                 )
                 return "任务已进入待执行队列。" if changed else "该任务不能立即执行。"
