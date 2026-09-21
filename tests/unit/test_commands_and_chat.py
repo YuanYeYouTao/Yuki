@@ -695,9 +695,7 @@ async def test_empty_model_response_is_user_safe(database: Database) -> None:
     # within the existing request budget; never leak the placeholder as a fake @.
     for repair in (False, True):
 
-        def mention_response(
-            request: ChatRequest, repair: bool = repair
-        ) -> str | ChatResponse:
+        def mention_response(request: ChatRequest, repair: bool = repair) -> str | ChatResponse:
             if any("上一段最终正文没有发送" in str(m.content) for m in request.messages):
                 return ChatResponse("", 0)
             if repair and any("已拦截且未发送" in str(m.content) for m in request.messages):

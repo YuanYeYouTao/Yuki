@@ -64,8 +64,7 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
         first = len(chain) == 1
         denied = current_entry in {"automation-generate", "sdk-generate"} and len(chain) == 2
         explicit_delivery = (
-            current_entry in {"private", "admin-group", "private-followup"}
-            and len(chain) == 2
+            current_entry in {"private", "admin-group", "private-followup"} and len(chain) == 2
         )
         call_id = f"state-{current_entry}"
         arguments = json.dumps(
@@ -262,9 +261,7 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
                 await chat._record_outbound_message(
                     message,
                     OutboundMessage(text="wire-file-caption"),
-                    OutboundSendReceipt(
-                        platform_message_id=f"{protocol.value}-wire-file-caption"
-                    ),
+                    OutboundSendReceipt(platform_message_id=f"{protocol.value}-wire-file-caption"),
                     origin=TurnOrigin.USER_MESSAGE.value,
                 )
                 current_entry = "private-followup"

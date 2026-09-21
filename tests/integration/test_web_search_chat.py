@@ -727,7 +727,7 @@ async def test_mixed_tools_stay_visible_and_missing_native_sources_do_not_restar
         async def complete(self, request: ChatRequest) -> ChatResponse:
             self.requests.append(request)
             return ChatResponse(
-                    content="",
+                content="",
                 latency_seconds=0,
                 native_tool_events=(
                     NativeToolEvent(
