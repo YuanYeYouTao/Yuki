@@ -13,6 +13,7 @@ def upgrade() -> None:
         "ix_chat_events_conversation_author_id",
         "chat_events",
         ["canonical_conversation_id", "author_person_id", "id"],
+        if_not_exists=True,
     )
 
 
