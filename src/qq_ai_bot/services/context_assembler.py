@@ -63,6 +63,7 @@ from qq_ai_bot.prompting import ContextBudgeter, ContextContribution
 from qq_ai_bot.runtime.trigger import (
     ExternalEventTurnTrigger,
     SandboxTaskTurnTrigger,
+    SelfInitiativeTrigger,
     WorkResumeTrigger,
 )
 from qq_ai_bot.services.rollup_wakeup import rollup_wakeup_history, rollup_wakeup_watermark
@@ -156,8 +157,8 @@ class _UncoveredPromptView:
 
     history_rows: tuple[EventRecord, ...]
     rendered: tuple[tuple[int, tuple[int, ...], ChatMessage], ...]
-    record: EventRecord
-    fallback_event_id: int
+    record: EventRecord | None
+    fallback_event_id: int | None
     current_characters: int
     rendered_characters: int
 
@@ -227,6 +228,155 @@ class ContextAssembler:
         if omitted:
             lines.append(f"另有 {omitted} 项，调用 automation_list 查看。")
         return "\n".join(lines)
+
+    async def assemble_self_initiative(
+        self,
+        *,
+        trigger: SelfInitiativeTrigger,
+        runtime: RuntimeConfigSnapshot,
+        turn: ConversationTurnSnapshot,
+        memory_retrieval: MemoryRetrievalResult | None = None,
+    ) -> AssembledContext:
+        """Project the real group history for SELF, without a synthetic human event."""
+        identity = ConversationScope.group(trigger.bot_user_id, trigger.group_id)
+        await self._ensure_lightweight_backlog(
+            identity,
+            turn,
+            event_limit=runtime.context.local_event_limit,
+        )
+        snapshot = await self._load_history_snapshot(identity, turn=turn, before_event_id=None)
+        retrieval = memory_retrieval or await self._memory_context.retrieve_for_targets(
+            content=trigger.instruction,
+            targets=(
+                MemoryEntityTarget(
+                    role=MemoryTargetRole.CURRENT_GROUP,
+                    scope_type=MemoryScopeType.GROUP,
+                    group_id=trigger.group_id,
+                    block_id="current_group",
+                ),
+                MemoryEntityTarget(
+                    role=MemoryTargetRole.CURRENT_SELF,
+                    scope_type=MemoryScopeType.SELF,
+                    visibility_type=SelfMemoryVisibility.GROUP,
+                    visibility_group_id=trigger.group_id,
+                    block_id="current_self",
+                ),
+            ),
+            runtime=runtime,
+            memory_mode=MemoryContextMode.LEXICAL,
+        )
+        data: dict[str, Any] = {
+            "scene": {
+                "type": "group",
+                "group_id": trigger.group_id,
+                "trigger": "self_initiative",
+                "current_actor": "SELF",
+            },
+        }
+        for block in retrieval.blocks:
+            is_self = block.target.role is MemoryTargetRole.CURRENT_SELF
+            formatter = self_retrieval_fact_context if is_self else retrieval_fact_context
+            data["current_self" if is_self else "current_group"] = {
+                "facts": [
+                    formatter(hit, self._settings.default_timezone, include_budget_metadata=True)
+                    for hit in block.hits
+                ]
+            }
+        metadata, selected = self._fit_metadata(
+            data,
+            max(
+                1,
+                int(
+                    self._settings.max_context_characters
+                    * self._settings.context_metadata_budget_ratio
+                ),
+            ),
+        )
+        current = ChatMessage(
+            role="user",
+            content=json.dumps(
+                {
+                    "kind": "self_initiative",
+                    "initiative_run_id": trigger.run_id,
+                    "instruction": trigger.instruction,
+                    "current_actor": "SELF",
+                    "source_content_trust": "untrusted_context",
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
+        remaining = max(
+            0,
+            self._settings.max_context_characters
+            - len(json.dumps(metadata, ensure_ascii=False))
+            - self._external_digest_reserve(snapshot.recent),
+        )
+        snapshot, recent, rollup, shifted = await self._ensure_uncovered_fits_budget(
+            snapshot=snapshot,
+            recent=snapshot.recent,
+            current_event_id=None,
+            content=trigger.instruction,
+            yuki_account_ids=frozenset({trigger.bot_user_id}),
+            current_message_override=current,
+            remainder=remaining,
+            event_limit=runtime.context.local_event_limit,
+            identity=identity,
+            turn=turn,
+        )
+        external = self._external_event_context(recent)
+        metadata = self._with_external_digest(metadata, external)
+        bounded = self._bounded_history(
+            recent,
+            current_event_id=None,
+            content=trigger.instruction,
+            yuki_account_ids=frozenset({trigger.bot_user_id}),
+            current_message_override=current,
+            bot_display_name=self._settings.bot_display_name,
+            timezone=self._settings.default_timezone,
+            raw_history_window_shifted=shifted,
+        )
+        if snapshot.read_version is not None and not await self._ledger.read_version_matches(
+            snapshot.read_version
+        ):
+            from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
+
+            raise HistorySourceChangedError(snapshot.read_version)
+        return AssembledContext(
+            metadata_payload=metadata,
+            history_messages=bounded.history_messages,
+            current_message=current,
+            recent_delivery=self._recent_delivery(recent, self._settings.default_timezone),
+            current_time=self._time.current_default(),
+            current_relationship=None,
+            metrics=ContextMetrics(
+                len(json.dumps(metadata, ensure_ascii=False)),
+                sum(len(item.content or "") for item in bounded.history_messages),
+                len(bounded.history_messages),
+                len(current.content or ""),
+                shifted,
+                rollup_characters=len(rollup),
+                rollup_mode=snapshot.rollup_mode,
+                covered_to=snapshot.coverage_end or None,
+            ),
+            visible_event_ids=bounded.visible_event_ids,
+            external_events=external,
+            injected_memory_ids=selected,
+            history_anchor_event_id=bounded.history_anchor_event_id,
+            memory_exposures=self._memory_exposures(retrieval, selected),
+            rollup_text=rollup,
+            prompt_scope_id=turn.scope_id,
+            prompt_scope_key=turn.scope_key,
+            prompt_generation=turn.generation,
+            prompt_effective_coverage=snapshot.coverage_end,
+            prompt_rollup_revision=snapshot.revision,
+            prompt_raw_tail_end_event_id=recent[-1].id if recent else snapshot.coverage_end,
+            read_version=snapshot.read_version,
+            history_fragments=bounded.history_fragments,
+            history_event_fragments=bounded.history_event_fragments,
+            projection_scope="self_initiative",
+            automation_snapshot=await self._current_group_automation_snapshot(trigger.group_id),
+        )
 
     async def assemble_plugin(
         self,
@@ -468,6 +618,8 @@ class ContextAssembler:
             )
         if inbound is None or profile is None:
             raise ConversationCoverageError("message turn requires a real inbound actor")
+        if turn.trigger_event_id is None:
+            raise ConversationCoverageError("message turn requires a real event anchor")
 
         await self._ensure_lightweight_backlog(
             identity,
@@ -1649,7 +1801,16 @@ class ContextAssembler:
             timezone=self._settings.default_timezone,
             yuki_account_ids=yuki_account_ids,
         )
-        if current_event is not None:
+        if (
+            current_event is None
+            and current_event_id is None
+            and current_message_override is not None
+        ):
+            history_rows = recent
+            current_characters = len(current_message_override.content or "")
+            record = None
+            fallback = None
+        elif current_event is not None:
             history_rows = tuple(row for row in recent if row.id != current_event.id)
             current_message = current_message_override or renderer.reference_message(
                 current_event,

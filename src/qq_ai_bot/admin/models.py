@@ -232,6 +232,7 @@ class ConversationRuntimeConfig:
     autonomous_batch_limit: int
     autonomous_presence_window_seconds: int
     interrupt_autonomous_on_new_message: bool
+    semantic_participation_enabled: bool = False
 
 
 @dataclass(frozen=True, slots=True)

@@ -167,6 +167,7 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "canonical_conversation_id",
             "author_kind",
             "caused_by_event_id",
+            "reply_to_event_id",
         }
     ),
     "memory_facts": frozenset(

@@ -184,6 +184,7 @@ class ToolRuntime:
     max_tool_calls_override: int | None = None
     sandbox_source: dict[str, Any] | None = None
     execution_id: str = ""
+    initiative_run_id: str | None = None
     memory_turn_id: str = ""
     memory_exposures: tuple[MemoryExposure, ...] = ()
     memory_exposure_registry: MemoryExposureRegistry | None = None
@@ -261,6 +262,26 @@ class ToolRuntime:
                 raise PermissionError("tool_actor_context_mismatch")
             return replace(incoming, event_id=self.effective_trigger_event_id, origin=self.origin)
         actor: ToolActor | None = self.actor_context
+        if self.origin is TurnOrigin.SELF_INITIATIVE:
+            if (
+                actor is None
+                or actor.principal_kind != "self"
+                or actor.origin is not self.origin
+                or actor.user_id
+                or self.actor_user_id
+                or self.actor_is_superuser
+                or actor.person_id is not None
+                or self.person_id is not None
+                or not self.initiative_run_id
+                or actor.initiative_run_id != self.initiative_run_id
+                or actor.execution_id != self.execution_id
+                or actor.conversation_id != self.effective_conversation_id
+                or actor.presence_id != self.effective_presence_id
+                or actor.group_id != self.current_group_id
+                or self.effective_trigger_event_id is not None
+            ):
+                raise PermissionError("self_actor_context_mismatch")
+            return actor
         if (
             actor is None
             or actor.origin is not TurnOrigin.SCHEDULED_AUTOMATION
@@ -2524,7 +2545,7 @@ class AgentToolService:
             return runtime.inbound.sender.user_id
         if runtime.actor_context is not None:
             try:
-                return runtime.require_actor().user_id
+                return runtime.require_actor().user_id or None
             except PermissionError:
                 return None
         return None

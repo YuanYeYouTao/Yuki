@@ -44,6 +44,7 @@ from qq_ai_bot.identity.receipt_compat import (
     normalize_live_json,
     require_claimed_event,
     require_compatible_v2_live,
+    require_reply_source,
 )
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
@@ -109,6 +110,7 @@ class ScopedEventLedgerUnitOfWork:
             content=message.text,
             segments=tuple(segments),
             reply_to_message_id=message.reply_to_message_id,
+            reply_to_event_id=message.reply_to_event_id,
             occurred_at=message.received_at,
             sender_nickname=message.sender.nickname,
             sender_group_card=message.sender.group_card,
@@ -161,6 +163,7 @@ class ScopedEventLedgerUnitOfWork:
         content: str,
         segments: tuple[dict[str, Any], ...] = (),
         reply_to_message_id: str | None = None,
+        reply_to_event_id: int | None = None,
         occurred_at: datetime | None = None,
         sender_nickname: str = "",
         sender_group_card: str = "",
@@ -190,6 +193,7 @@ class ScopedEventLedgerUnitOfWork:
                 content=content,
                 segments=segments,
                 reply_to_message_id=reply_to_message_id,
+                reply_to_event_id=reply_to_event_id,
                 timestamp=timestamp,
                 observed_at=observed_at,
                 sender_nickname=sender_nickname,
@@ -217,6 +221,7 @@ class ScopedEventLedgerUnitOfWork:
                 content=content,
                 segments=segments,
                 reply_to_message_id=reply_to_message_id,
+                reply_to_event_id=reply_to_event_id,
                 timestamp=timestamp,
                 observed_at=observed_at,
                 sender_nickname=sender_nickname,
@@ -256,6 +261,7 @@ class ScopedEventLedgerUnitOfWork:
                 content=inbound.text,
                 segments=tuple(inbound.segments),
                 reply_to_message_id=inbound.reply_to_message_id,
+                reply_to_event_id=inbound.reply_to_event_id,
                 timestamp=inbound.received_at,
                 observed_at=now,
                 sender_nickname=inbound.sender.nickname,
@@ -717,6 +723,7 @@ class ScopedEventLedgerUnitOfWork:
         content: str,
         segments: tuple[dict[str, Any], ...],
         reply_to_message_id: str | None,
+        reply_to_event_id: int | None,
         timestamp: datetime,
         observed_at: datetime,
         sender_nickname: str,
@@ -743,6 +750,7 @@ class ScopedEventLedgerUnitOfWork:
             content=content,
             segments=segments,
             reply_to_message_id=reply_to_message_id,
+            reply_to_event_id=reply_to_event_id,
             timestamp=timestamp,
             observed_at=observed_at,
             sender_nickname=sender_nickname,
@@ -772,6 +780,7 @@ class ScopedEventLedgerUnitOfWork:
         content: str,
         segments: tuple[dict[str, Any], ...],
         reply_to_message_id: str | None,
+        reply_to_event_id: int | None,
         timestamp: datetime,
         observed_at: datetime,
         sender_nickname: str,
@@ -930,6 +939,9 @@ class ScopedEventLedgerUnitOfWork:
                     external_payload=external_payload,
                     caused_by_event_id=caused_by_event_id,
                 )
+        await require_reply_source(
+            session, conversation_id=conversation.id, reply_to_event_id=reply_to_event_id
+        )
         row = ChatEventModel(
             bot_user_id=scope.bot_user_id,
             platform_message_id=platform_message_id,
@@ -955,6 +967,7 @@ class ScopedEventLedgerUnitOfWork:
             visual_summary="",
             segments_json=json.dumps(segments, ensure_ascii=False, separators=(",", ":")),
             reply_to_message_id=reply_to_message_id,
+            reply_to_event_id=reply_to_event_id,
             origin=origin[:32],
             automation_id=automation_id,
             automation_run_id=automation_run_id,

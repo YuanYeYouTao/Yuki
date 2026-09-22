@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -439,6 +440,17 @@ class SelfReflectionRepository:
         bot_display_name: str = "Yuki",
         timezone: str = "Asia/Shanghai",
     ) -> tuple[SelfReflectionBatch, ...]:
+        if max_sessions > 0 and max_daily_calls > 0:
+            from qq_ai_bot.memory.self_reflection.initiative import claim_initiative
+
+            initiatives = await claim_initiative(
+                self._database,
+                max_characters=max_characters,
+                excluded_conversation_keys=excluded_conversation_keys,
+                cycle_id=cycle_id,
+            )
+            if initiatives:
+                return initiatives
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
             session.autoflush = False
@@ -788,6 +800,37 @@ class SelfReflectionRepository:
         *,
         limit: int = 8,
     ) -> tuple[StoredToolReceipt, ...]:
+        rows: Sequence[MemoryToolReceiptModel]
+        if batch.initiative_run_id is not None:
+            async with self._database.sessions() as session:
+                rows = list(
+                    await session.scalars(
+                        select(MemoryToolReceiptModel)
+                        .where(
+                            MemoryToolReceiptModel.initiative_run_id == batch.initiative_run_id,
+                            MemoryToolReceiptModel.canonical_space_id
+                            == batch.state.canonical_space_id,
+                            MemoryToolReceiptModel.canonical_person_id.is_(None),
+                            MemoryToolReceiptModel.id >= batch.first_receipt_id,
+                            MemoryToolReceiptModel.id <= batch.last_receipt_id,
+                        )
+                        .order_by(MemoryToolReceiptModel.id)
+                        .limit(max(1, limit))
+                    )
+                )
+            return tuple(
+                StoredToolReceipt(
+                    row.id,
+                    row.trigger_event_id,
+                    row.tool_name,
+                    row.success,
+                    row.result_excerpt,
+                    row.initiative_run_id,
+                    row.bot_user_id,
+                    _utc(row.created_at),
+                )
+                for row in rows
+            )
         async with self._database.sessions() as session:
             state_row = await session.get(MemorySelfReflectionStateModel, batch.state.id)
             if state_row is None:
@@ -816,6 +859,7 @@ class SelfReflectionRepository:
                 tool_name=row.tool_name,
                 success=row.success,
                 result_excerpt=row.result_excerpt,
+                occurred_at=_utc(row.created_at),
             )
             for row in rows
         )
@@ -840,6 +884,17 @@ class SelfReflectionRepository:
             run.retry_state = None
             run.checkpoint_json = None
             run.completed_at = now
+            if batch.initiative_run_id is not None:
+                from qq_ai_bot.memory.self_reflection.db_models import (
+                    InitiativeReflectionWindowModel,
+                )
+                from qq_ai_bot.memory.self_reflection.initiative import advance_cursor
+
+                window = await session.get(InitiativeReflectionWindowModel, run.id)
+                if window is None or window.initiative_run_id != batch.initiative_run_id:
+                    raise RuntimeError("initiative reflection window disappeared")
+                await advance_cursor(session, window)
+                return
             state = await session.get(MemorySelfReflectionStateModel, batch.state.id)
             if state is None:
                 raise RuntimeError("self-reflection state disappeared during completion")
@@ -926,6 +981,24 @@ class SelfReflectionRepository:
             json.loads(run.checkpoint_json).get("completed_counts") if run.checkpoint_json else None
         )
         if completed_counts is not None or (committed and run.checkpoint_json is None):
+            from qq_ai_bot.memory.self_reflection.db_models import InitiativeReflectionWindowModel
+            from qq_ai_bot.memory.self_reflection.initiative import advance_cursor
+
+            window = await session.get(InitiativeReflectionWindowModel, run.id)
+            if window is not None:
+                await advance_cursor(session, window)
+                run.status = "completed"
+                run.proposal_count = max(
+                    int(run.proposal_count),
+                    committed,
+                    completed_counts[0] if completed_counts else 0,
+                )
+                run.committed_count = max(int(run.committed_count), committed)
+                run.error_category = f"recovered:{error_category}"[:64]
+                run.checkpoint_json = None
+                run.retry_state = None
+                run.completed_at = now
+                return "completed"
             state = await session.scalar(
                 select(MemorySelfReflectionStateModel).where(
                     self._owner_state_filter(run.canonical_person_id, run.canonical_space_id)
@@ -1017,6 +1090,10 @@ class SelfReflectionRepository:
     async def cleanup_receipts(self) -> int:
         from sqlalchemy import delete
 
+        from qq_ai_bot.memory.self_reflection.db_models import (
+            InitiativeReflectionWindowModel as Window,
+        )
+
         async with self._database.sessions() as session, session.begin():
             session.autoflush = False
             referenced = (
@@ -1028,6 +1105,18 @@ class SelfReflectionRepository:
                 delete(MemoryToolReceiptModel).where(
                     MemoryToolReceiptModel.expires_at <= datetime.now(UTC),
                     ~referenced,
+                    ~select(Window.reflection_run_id)
+                    .join(
+                        MemorySelfReflectionRunModel,
+                        MemorySelfReflectionRunModel.id == Window.reflection_run_id,
+                    )
+                    .where(
+                        Window.initiative_run_id == MemoryToolReceiptModel.initiative_run_id,
+                        MemoryToolReceiptModel.id >= Window.first_receipt_id,
+                        MemoryToolReceiptModel.id <= Window.last_receipt_id,
+                        MemorySelfReflectionRunModel.status != "completed",
+                    )
+                    .exists(),
                 )
             )
             return int(cast(CursorResult[object], result).rowcount)

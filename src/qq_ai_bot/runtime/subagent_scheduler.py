@@ -11,7 +11,9 @@ from typing import Any
 
 from sqlalchemy import func, or_, select
 
+from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage, SenderIdentity
+from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.subagent_repository import SubagentRepository
 from qq_ai_bot.runtime.subagent_schema import children
@@ -21,7 +23,7 @@ from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_recovery_schema import recovery
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import work
-from qq_ai_bot.sandbox.source_recovery import recover_source
+from qq_ai_bot.sandbox.source_recovery import SelfTaskSource, recover_execution_source
 from qq_ai_bot.services.agent_runner import AgentRuntime
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.time.models import TimeContext
@@ -65,7 +67,8 @@ class SubagentScheduler:
     async def start(self) -> None:
         if self.app.database.subagents_enabled and self.app.settings.global_llm_concurrency < 2:
             raise ValueError("subagents_require_foreground_model_slot")
-        if self.app.settings.runtime_work_enabled and self.task is None:
+        # Admission switches must not orphan an already accepted child Work.
+        if self.task is None:
             self.definitions = tuple(
                 t
                 for t in await self.app.main_agent_contract.definitions()
@@ -153,7 +156,7 @@ class SubagentScheduler:
             row = await self.repository.get(identity)
             assert row is not None
             source = json.loads(row["source_json"])
-            recovered = await recover_source(
+            recovered = await recover_execution_source(
                 self.app.database, row["conversation_id"], source, request_id=identity
             )
             from qq_ai_bot.runtime.observability import RuntimeTurnCorrelation, bind_runtime_turn
@@ -166,8 +169,12 @@ class SubagentScheduler:
                     )
                 )
             )
-            original = await self.app.ledger.get_event(recovered.event_id)
-            if original is None:
+            original = (
+                await self.app.ledger.get_event(recovered.event_id)
+                if recovered.event_id is not None
+                else None
+            )
+            if original is None and not isinstance(recovered, SelfTaskSource):
                 raise WorkConflict("worker_source_deleted")
             child = await self.children.related(source["parent_work_id"], identity)
 
@@ -175,7 +182,7 @@ class SubagentScheduler:
                 if not await self.repository.valid(lease):
                     raise WorkConflict("worker_lease_obsolete")
                 if (
-                    await recover_source(
+                    await recover_execution_source(
                         self.app.database, row["conversation_id"], source, request_id=identity
                     )
                     != recovered
@@ -209,45 +216,80 @@ class SubagentScheduler:
                     await control.meter_active_time()
 
             pulse = asyncio.create_task(heartbeat())
+            if isinstance(recovered, SelfTaskSource):
+                group_id = recovered.external_target_id
+            else:
+                assert original is not None
+                group_id = original.group_id
             config = await self.app.runtime_config.snapshot(
-                user_id=recovered.actor_user_id, group_id=original.group_id
+                user_id=recovered.actor_user_id, group_id=group_id
             )
-            inbound = InboundMessage(
-                message_id=original.platform_message_id,
-                source_event_id=original.id,
-                event_type="message",
-                scope_type=original.scope_type,
-                sender=SenderIdentity(recovered.actor_user_id),
-                text=original.content,
-                bot_user_id=recovered.bot_user_id,
-                group_id=original.group_id,
-                received_at=original.occurred_at,
-                person_id=recovered.actor_person_id,
-                space_id=recovered.target_space_id,
-                conversation_id=recovered.conversation_id,
-                presence_id=recovered.presence_id,
+            inbound = (
+                InboundMessage(
+                    message_id=original.platform_message_id,
+                    source_event_id=original.id,
+                    event_type="message",
+                    scope_type=original.scope_type,
+                    sender=SenderIdentity(recovered.actor_user_id),
+                    text=original.content,
+                    bot_user_id=recovered.bot_user_id,
+                    group_id=original.group_id,
+                    received_at=original.occurred_at,
+                    person_id=recovered.actor_person_id,
+                    space_id=recovered.target_space_id,
+                    conversation_id=recovered.conversation_id,
+                    presence_id=recovered.presence_id,
+                )
+                if original is not None
+                else None
             )
             from qq_ai_bot.memory.runtime.resolver import MemoryStructuredCommand
             from qq_ai_bot.services.main_agent_backend import MainAgentBackend
 
-            memory = self.app.chat._open_memory_session(
-                inbound,
-                inbound.scope(),
-                row["goal"],
-                config,
-                autonomous=recovered.origin == "autonomous_group",
-                visual_input_present=False,
-                structured_command=MemoryStructuredCommand.NONE,
+            if isinstance(recovered, SelfTaskSource):
+                memory = await self.app.chat._open_self_memory_session(
+                    recovered.trigger(), config, row["goal"]
+                )
+            else:
+                assert inbound is not None
+                memory = self.app.chat._open_memory_session(
+                    inbound,
+                    inbound.scope(),
+                    row["goal"],
+                    config,
+                    autonomous=recovered.origin == "autonomous_group",
+                    visual_input_present=False,
+                    structured_command=MemoryStructuredCommand.NONE,
+                )
+            actor = (
+                ToolActor(
+                    user_id="",
+                    bot_user_id=recovered.bot_user_id,
+                    group_id=group_id,
+                    origin=TurnOrigin.SELF_INITIATIVE,
+                    instruction=recovered.content,
+                    execution_id=identity,
+                    conversation_id=recovered.conversation_id,
+                    presence_id=recovered.presence_id,
+                    principal_kind="self",
+                    initiative_run_id=recovered.run_id,
+                )
+                if isinstance(recovered, SelfTaskSource)
+                else None
             )
             tool_runtime = ToolRuntime(
                 inbound=inbound,
+                actor_context=actor,
                 gateway=None,
                 allow_generic_onebot=False,
                 actor_user_id=recovered.actor_user_id,
-                current_group_id=original.group_id,
+                current_group_id=group_id,
                 conversation_key=f"worker:{identity}",
-                trigger_message_id=original.platform_message_id,
-                trigger_event_id=original.id,
+                trigger_message_id=original.platform_message_id if original else "",
+                trigger_event_id=original.id if original else None,
+                initiative_run_id=(
+                    recovered.run_id if isinstance(recovered, SelfTaskSource) else None
+                ),
                 runtime_config=config,
                 origin=TurnOrigin(recovered.origin),
                 execution_id=identity,
@@ -257,6 +299,10 @@ class SubagentScheduler:
                 presence_id=recovered.presence_id,
                 person_id=recovered.actor_person_id,
                 space_id=recovered.target_space_id,
+                allow_work_environment=isinstance(recovered, SelfTaskSource),
+                scope_type=ScopeType.GROUP if isinstance(recovered, SelfTaskSource) else None,
+                bot_user_id=recovered.bot_user_id,
+                external_target_id=recovered.external_target_id,
             )
             runner = self.app.chat._agent_runner
             if self.definitions is None:
@@ -282,7 +328,7 @@ class SubagentScheduler:
                     actor_is_superuser=False,
                     delegated_authority=None,
                     conversation_key=f"worker:{identity}",
-                    current_group_id=original.group_id,
+                    current_group_id=group_id,
                     bot_user_id=recovered.bot_user_id,
                     gateway=None,
                     runtime_config=config,

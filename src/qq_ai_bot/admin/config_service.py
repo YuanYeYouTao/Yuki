@@ -1679,6 +1679,9 @@ class RuntimeConfigService:
             ),
             conversation=ConversationRuntimeConfig(
                 autonomous_enabled=bool(value("conversation.autonomous_enabled")),
+                semantic_participation_enabled=bool(
+                    value("conversation.semantic_participation_enabled")
+                ),
                 autonomous_debounce_seconds=float(
                     cast(float | int, value("conversation.autonomous_debounce_seconds"))
                 ),

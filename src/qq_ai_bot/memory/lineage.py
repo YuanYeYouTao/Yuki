@@ -11,6 +11,7 @@ from qq_ai_bot.memory.dream.db_models import (
     MemoryDreamOperationResultModel,
     MemoryDreamOperationSourceModel,
 )
+from qq_ai_bot.memory.self_reflection.db_models import InitiativeReflectionWindowModel
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
@@ -29,6 +30,7 @@ class MemoryLineageItem(BaseModel):
     source_fact_id: int | None = Field(default=None, gt=0)
     event_id: int | None = Field(default=None, gt=0)
     tool_receipt_id: int | None = Field(default=None, gt=0)
+    initiative_run_id: str | None = None
     operation_public_id: str | None = None
     excerpt: str | None = None
 
@@ -86,12 +88,26 @@ class MemoryLineageService:
                 )
             ).all()
         )
+        receipt_ids = {item.tool_receipt_id for item in direct if item.tool_receipt_id is not None}
+        origins = (
+            {
+                item.id: item.initiative_run_id
+                for item in await session.scalars(
+                    select(MemoryToolReceiptModel).where(MemoryToolReceiptModel.id.in_(receipt_ids))
+                )
+            }
+            if receipt_ids
+            else {}
+        )
         rows.extend(
             MemoryLineageItem(
                 kind="direct_evidence",
                 fact_id=fact_id,
                 event_id=item.event_id,
                 tool_receipt_id=item.tool_receipt_id,
+                initiative_run_id=(
+                    origins.get(item.tool_receipt_id) if item.tool_receipt_id is not None else None
+                ),
                 excerpt=item.excerpt,
             )
             for item in direct
@@ -107,8 +123,32 @@ class MemoryLineageService:
         )
         for mapping in mappings:
             run = await session.get(MemorySelfReflectionRunModel, mapping.run_id)
+            initiative_window = await session.get(InitiativeReflectionWindowModel, mapping.run_id)
+            if run is not None and initiative_window is not None:
+                receipts = await session.scalars(
+                    select(MemoryToolReceiptModel)
+                    .where(
+                        MemoryToolReceiptModel.initiative_run_id
+                        == initiative_window.initiative_run_id,
+                        MemoryToolReceiptModel.trigger_event_id.is_(None),
+                        MemoryToolReceiptModel.id >= initiative_window.first_receipt_id,
+                        MemoryToolReceiptModel.id <= initiative_window.last_receipt_id,
+                    )
+                    .order_by(MemoryToolReceiptModel.id)
+                )
+                rows.extend(
+                    MemoryLineageItem(
+                        kind="reflection_initiative_window",
+                        fact_id=fact_id,
+                        initiative_run_id=initiative_window.initiative_run_id,
+                        tool_receipt_id=tool.id,
+                        excerpt=tool.result_excerpt,
+                    )
+                    for tool in receipts
+                )
+                continue
             first_event = None
-            if run is not None:
+            if run is not None and run.first_event_id is not None:
                 first_event = await session.get(ChatEventModel, run.first_event_id)
             if run is not None and first_event is not None:
                 query = select(ChatEventModel).where(

@@ -63,6 +63,7 @@ class EventRecord:
     group_id: str | None = None
     private_peer_user_id: str | None = None
     reply_to_message_id: str | None = None
+    reply_to_event_id: int | None = None
     origin: str = "user_message"
     automation_id: int | None = None
     automation_run_id: int | None = None

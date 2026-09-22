@@ -164,7 +164,7 @@ class MemoryMutationRequest(_MutationModel):
 class MemoryMutationContext:
     """Trusted scene and actor provenance that model arguments cannot override."""
 
-    event: EventRecord
+    event: EventRecord | None
     conversation_key: str
     turn_origin: str
     delegation_mode: str
@@ -175,6 +175,21 @@ class MemoryMutationContext:
     actor_is_superuser: bool = False
     evidence_tool_receipt_id: int | None = None
     config_scope: MemoryConfigScope | None = None
+    initiative_run_id: str | None = None
+    source_occurred_at: datetime | None = None
+    source_group_id: str | None = None
+
+    @property
+    def occurred_at(self) -> datetime:
+        if self.event is not None:
+            return self.event.occurred_at
+        if self.source_occurred_at is None:
+            raise ValueError("actorless mutation requires a trusted source time")
+        return self.source_occurred_at
+
+    @property
+    def group_id(self) -> str | None:
+        return self.event.group_id if self.event else self.source_group_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +217,7 @@ class MemoryMutationReceipt:
     outcome: MemoryMutationOutcome
     reason_code: str
     created_at: datetime
+    initiative_run_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

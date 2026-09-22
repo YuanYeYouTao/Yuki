@@ -21,6 +21,7 @@ class TurnOrigin(StrEnum):
 
     USER_MESSAGE = "user_message"
     AUTONOMOUS_GROUP = "autonomous_group"
+    SELF_INITIATIVE = "self_initiative"
     SCHEDULED_AUTOMATION = "scheduled_automation"
     PLUGIN_SESSION = "plugin_session"
     PLUGIN_BACKGROUND = "plugin_background"

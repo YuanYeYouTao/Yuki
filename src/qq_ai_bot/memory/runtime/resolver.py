@@ -79,6 +79,7 @@ class MemoryAccessReason(StrEnum):
     ORDINARY_NATURAL_LANGUAGE = "ordinary_natural_language"
     IMAGE_WRITE_DISABLED = "image_write_disabled"
     ORIGIN_WRITE_DENIED = "origin_write_denied"
+    SELF_ORIGIN = "self_origin"
 
 
 @dataclass(frozen=True, slots=True)

@@ -5,6 +5,7 @@ no invented event, message ID, mentions, or reply author.
 """
 
 from dataclasses import dataclass
+from typing import Literal
 
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.runtime.origin import TurnOrigin
@@ -24,9 +25,36 @@ class ToolActor:
     conversation_id: str | None = None
     presence_id: str | None = None
     mentioned_user_ids: tuple[str, ...] = ()
+    principal_kind: Literal["person", "self"] = "person"
+    initiative_run_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.principal_kind == "self":
+            if (
+                self.origin is not TurnOrigin.SELF_INITIATIVE
+                or not self.initiative_run_id
+                or not self.conversation_id
+                or not self.presence_id
+                or not self.group_id
+                or not self.bot_user_id
+                or self.user_id
+                or self.person_id
+                or self.event_id is not None
+                or self.platform_message_id
+                or self.mentioned_user_ids
+            ):
+                raise ValueError("invalid_self_tool_actor")
+        elif (
+            self.principal_kind != "person"
+            or self.initiative_run_id is not None
+            or self.origin is TurnOrigin.SELF_INITIATIVE
+        ):
+            raise ValueError("invalid_tool_actor_principal")
 
     @property
     def source_key(self) -> str:
+        if self.principal_kind == "self":
+            return f"initiative:{self.initiative_run_id}"
         if self.event_id is not None:
             return f"event:{self.event_id}"
         if self.execution_id:

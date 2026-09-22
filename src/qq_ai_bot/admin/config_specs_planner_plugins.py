@@ -36,6 +36,17 @@ def planner_plugin_config_specs() -> tuple[ConfigSpec, ...]:
             category="conversation",
         ),
         _spec(
+            "conversation.semantic_participation_enabled",
+            "语义参与控制器",
+            "使用 Jev 语义参与；关闭或持续故障回到原本地接话。总开关关闭仍保持关闭。",
+            value_type="boolean",
+            scopes=_GG,
+            env_alias="CONVERSATION_SEMANTIC_PARTICIPATION_ENABLED",
+            getter=_field("conversation_semantic_participation_enabled"),
+            settings_fields=("conversation_semantic_participation_enabled",),
+            category="conversation",
+        ),
+        _spec(
             "conversation.autonomous_debounce_seconds",
             "群聊自主去抖",
             "聚合连续群消息后再评分的等待秒数。",

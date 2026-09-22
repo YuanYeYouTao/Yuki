@@ -100,6 +100,9 @@ class ReflectionControlRepository:
                 "processing",
             )
         }
+        from qq_ai_bot.memory.self_reflection.initiative import initiative_backlog
+
+        initiative_tools = await initiative_backlog(self.database)
         async with self.database.sessions() as session:
             states = (
                 await session.scalars(
@@ -230,6 +233,7 @@ class ReflectionControlRepository:
             for r in recent_reports
         )
         return {
+            "initiative_tools": initiative_tools,
             "rate_window_seconds": rate_window,
             "ingress_events_per_hour": ingress_rate,
             "drain_events_per_hour": drain_rate,
@@ -368,8 +372,18 @@ class ReflectionControlRepository:
             )
 
     async def cycle_runs(self, cycle_id: str) -> list[dict[str, Any]]:
+        from qq_ai_bot.memory.self_reflection.db_models import InitiativeReflectionWindowModel
+
         async with self.database.sessions() as session:
             rows = (await session.scalars(select(Run).where(Run.cycle_id == cycle_id))).all()
+            windows = {
+                row.reflection_run_id: row
+                for row in await session.scalars(
+                    select(InitiativeReflectionWindowModel).where(
+                        InitiativeReflectionWindowModel.reflection_run_id.in_([r.id for r in rows])
+                    )
+                )
+            }
             return [
                 {
                     "id": r.id,
@@ -380,8 +394,14 @@ class ReflectionControlRepository:
                     "proposals": r.proposal_count,
                     "committed": r.committed_count,
                     "error": r.error_category,
-                    "first_event_id": r.first_event_id,
-                    "last_event_id": r.last_event_id,
+                    "source_kind": "initiative_tools" if r.id in windows else "chat",
+                    "first_event_id": None if r.id in windows else r.first_event_id,
+                    "last_event_id": None if r.id in windows else r.last_event_id,
+                    "initiative_run_id": windows[r.id].initiative_run_id
+                    if r.id in windows
+                    else None,
+                    "first_receipt_id": windows[r.id].first_receipt_id if r.id in windows else None,
+                    "last_receipt_id": windows[r.id].last_receipt_id if r.id in windows else None,
                     "retry_state": r.retry_state,
                     "next_attempt_at": utc(r.next_attempt_at).isoformat()
                     if r.next_attempt_at
