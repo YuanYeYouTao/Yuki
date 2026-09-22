@@ -11,6 +11,8 @@ Responses 通用适配器将 Chat 风格的嵌套 schema 展开为 `text.format`
 
 返回值须完整、零工具调用、单个 JSON object，并通过 Pydantic、引用、范围、所有权与
 原有 mutation 校验。截断或输出达到预算时报 `output_budget_exhausted`，不自动加预算。
+稳定且不含具体人物隐私的 SELF fact、preference、reflection 和 principle 可使用 global；
+私聊产生的 SELF fact 保持 current scope，Episode 永不进入 global。
 配置显式允许时，只接受 Provider `unsupported_json_schema` / `json_schema_not_supported`
 错误码触发一次严格 text JSON 降级；普通 400、格式错误和校验失败不触发降级。
 
@@ -33,6 +35,9 @@ Responses 通用适配器将 Chat 风格的嵌套 schema 展开为 `text.format`
 完成提交后释放输入输出快照，保留源范围和 mutation 回执；失败快照继续保留。
 逐项 mutation 回执避免重放；只有完整执行检查点才允许把新批次恢复为 completed。
 历史版本无检查点的已提交批次沿用其原回执恢复语义，不能伪称能恢复旧版未保存的输出。
+mutation 的正常拒绝、重复、低价值跳过与 `no_change` 都是已处理终态，不把整批标为失败；
+数据库、事务、检查点和未预期代码异常才重试。consolidation 只修改完全相同的持久化目标；
+更宽范围的完全同键、同 kind、同正文 SELF fact 可覆盖窄范围写入，但不得追加局部 evidence。
 
 无自身回复或可信工具证据的到期范围不调用模型，不写记忆；记录 `no_self_evidence`
 并推进自省投影。原始事件账本不变。

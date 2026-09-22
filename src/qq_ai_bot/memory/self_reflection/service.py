@@ -31,6 +31,7 @@ from qq_ai_bot.memory.mutation.models import (
     MemoryDecisionActorType,
     MemoryMutationContext,
     MemoryMutationOperation,
+    MemoryMutationOutcome,
     MemoryMutationRequest,
     MemoryMutationTarget,
     SelfMemoryVisibilityMode,
@@ -123,9 +124,10 @@ proposals 只用于 {bot_name} 自己的动态偏好、反思、原则及既有 
 可以接受、改写后接受、拒绝或暂缓；接受必须伴随实际记忆变更，拒绝或暂缓必须使用 noop。
 不要创建人物记忆。proposals 只能引用输入提供的
 event_N、tool_N、fact_N、candidate_N 别名；create/correct/merge/contest/invalidate 必须引用
-至少一条真实 event/tool evidence。只有去除具体人物隐私后的
-self_preference/self_reflection/self_principle 抽象内容才可 global。不要修改 identity/core/safety/
-system/permission/runtime 键。没有值得长期保留或修改的内容时输出空 proposals。
+至少一条真实 event/tool evidence。稳定、跨会话成立且不含具体人物隐私的
+self_fact/self_preference/self_reflection/self_principle 可以 global；私聊产生的 self_fact
+保持 current_scope。不要修改 identity/core/safety/system/permission/runtime 键。
+没有值得长期保留或修改的内容时输出空 proposals。
 
 episodes 是创建 Episode 的唯一输出位置，用来记录你在当前群聊或私聊中真实参与过的长期经历，
 一次最多一条。context_events
@@ -154,6 +156,16 @@ class ReflectionCheckpoint:
 
 
 _CHECKPOINT = TypeAdapter(ReflectionCheckpoint)
+
+
+class SelfReflectionMutationError(RuntimeError):
+    """A real proposal/episode execution failure with a safe persisted stage."""
+
+    def __init__(self, stage: str, index: int, cause: Exception) -> None:
+        self.stage = stage
+        self.index = index
+        self.cause_category = type(cause).__name__
+        super().__init__(f"{stage}_{index}:{self.cause_category}")
 
 
 class SelfReflectionService:
@@ -306,16 +318,12 @@ class SelfReflectionService:
             )
         already_committed = await self._repository.committed_results(batch.run_id)
         committed = 0
-        requested_mutations = 0
-        successful_mutations = 0
         from qq_ai_bot.memory.enums import MemoryRetention
         from qq_ai_bot.memory.quality_policy import AutomaticValuePolicy
 
         for proposal_index, proposal in enumerate(output.proposals, start=1):
             if ("proposal", proposal_index) in already_committed:
                 committed += 1
-                successful_mutations += 1
-                requested_mutations += 1
                 continue
             if proposal.operation is SelfReflectionOperation.CREATE:
                 value = AutomaticValuePolicy.evaluate(
@@ -329,8 +337,6 @@ class SelfReflectionService:
                     if candidate is not None:
                         await self._candidates.set_status(candidate.id, "rejected")
                     continue
-            is_mutation = proposal.operation is not SelfReflectionOperation.NOOP
-            requested_mutations += int(is_mutation)
             try:
                 changed = await self._apply(
                     batch,
@@ -342,23 +348,13 @@ class SelfReflectionService:
                     result_index=proposal_index,
                 )
                 committed += int(changed)
-                successful_mutations += int(is_mutation and changed)
-            except (ValueError, RuntimeError) as exc:
-                logger.warning(
-                    "memory_self_reflection_proposal_rejected run_id=%d operation=%s "
-                    "error_category=%s",
-                    batch.run_id,
-                    proposal.operation.value,
-                    type(exc).__name__,
-                )
-                self._metrics.increment("self_reflection_rejected")
+            except Exception as exc:
+                raise SelfReflectionMutationError("proposal_commit", proposal_index, exc) from exc
         episode_committed = 0
-        episode_attempted = 0
         for index, episode in enumerate(output.episodes, start=1):
             if ("episode", index) in already_committed:
                 committed += 1
                 episode_committed += 1
-                episode_attempted += 1
                 continue
             value = AutomaticValuePolicy.evaluate(
                 importance=episode.importance,
@@ -368,7 +364,6 @@ class SelfReflectionService:
             if not value.accepted:
                 self._metrics.increment(f"self_reflection_skipped_{value.reason_code}")
                 continue
-            episode_attempted += 1
             try:
                 changed = await self._apply_episode(
                     batch,
@@ -377,22 +372,10 @@ class SelfReflectionService:
                     event_map=event_map,
                     tool_map=tool_map,
                 )
-            except (ValueError, RuntimeError) as exc:
-                logger.warning(
-                    "memory_self_reflection_episode_rejected run_id=%d episode_index=%d "
-                    "error_category=%s",
-                    batch.run_id,
-                    index,
-                    type(exc).__name__,
-                )
-                self._metrics.increment("self_reflection_episode_rejected")
-                continue
+            except Exception as exc:
+                raise SelfReflectionMutationError("episode_commit", index, exc) from exc
             episode_committed += int(changed)
             committed += int(changed)
-        if episode_attempted > episode_committed:
-            raise RuntimeError("all self-reflection episodes failed to commit")
-        if requested_mutations > successful_mutations:
-            raise RuntimeError("all self-reflection mutations failed to commit")
         if not output.proposals and not output.episodes:
             self._metrics.increment("self_reflection_noop")
         self._metrics.increment("self_reflection_episode_committed", episode_committed)
@@ -639,8 +622,6 @@ class SelfReflectionService:
             event = next((item for item in batch.events if item.id == trigger_event_id), None)
         if event is None:
             raise ValueError("unknown evidence alias")
-        if proposal.visibility is SelfReflectionVisibility.GLOBAL:
-            self._validate_global(proposal, batch)
         target = self._target(batch, proposal.visibility)
         operation = MemoryMutationOperation(proposal.operation.value)
         content = proposal.content
@@ -702,7 +683,7 @@ class SelfReflectionService:
             ),
             self_reflection_result=(batch.run_id, "proposal", result_index),
         )
-        if not result.ok:
+        if result.outcome is MemoryMutationOutcome.REJECTED:
             logger.warning(
                 "memory_self_reflection_mutation_rejected run_id=%d result_kind=proposal "
                 "result_index=%d reason_code=%s",
@@ -710,7 +691,15 @@ class SelfReflectionService:
                 result_index,
                 result.reason_code or "unknown",
             )
-        if result.ok and candidate is not None:
+        elif result.outcome is MemoryMutationOutcome.NO_CHANGE:
+            logger.info(
+                "memory_self_reflection_mutation_no_change run_id=%d result_kind=proposal "
+                "result_index=%d reason_code=%s",
+                batch.run_id,
+                result_index,
+                result.reason_code or "unknown",
+            )
+        if result.outcome is not MemoryMutationOutcome.REJECTED and candidate is not None:
             await self._candidates.set_status(candidate.id, "accepted")
         return result.ok
 
@@ -865,20 +854,6 @@ class SelfReflectionService:
             batch.state.external_person_id,
             None,
         )
-
-    @staticmethod
-    def _validate_global(
-        proposal: SelfReflectionProposal,
-        batch: SelfReflectionBatch,
-    ) -> None:
-        if proposal.category not in {
-            "self_preference",
-            "self_reflection",
-            "self_principle",
-        }:
-            raise ValueError("only abstract self memory may be global")
-        if proposal.kind is not None and proposal.kind.value == "episode":
-            raise ValueError("episodes cannot be global")
 
 
 def _batch_scope_type(batch: SelfReflectionBatch) -> ScopeType:

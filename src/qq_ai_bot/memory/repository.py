@@ -28,6 +28,7 @@ from qq_ai_bot.memory.enums import (
     MemoryScopeType,
     MemoryStateAction,
     MemoryStatus,
+    SelfMemoryVisibility,
 )
 from qq_ai_bot.memory.models import (
     MemoryEntityTarget,
@@ -392,6 +393,86 @@ class MemoryFactRepository:
         projected_rows = await project_memory_fact_rows(session, rows)
         projected = {fact.id: fact for fact in projected_rows}
         return tuple(projected[fact_id] for fact_id in unique_ids if fact_id in projected)
+
+    async def get_active_for_exact_target(
+        self,
+        target: MemoryEntityTarget,
+        fact_ids: tuple[int, ...],
+        *,
+        session: AsyncSession | None = None,
+    ) -> tuple[MemoryFact, ...]:
+        """Load one exact mutation target without widening SELF reads to global."""
+
+        unique_ids = tuple(dict.fromkeys(fact_ids))
+        if not unique_ids:
+            return ()
+        if session is None:
+            async with self._database.sessions() as owned:
+                return await self.get_active_for_exact_target(target, unique_ids, session=owned)
+        rows = await self._execute_facts_with_count(
+            session,
+            [
+                MemoryFactModel.id.in_(unique_ids),
+                MemoryFactModel.scope_type == target.scope_type.value,
+                *(await self._query_identity_conditions(session, target)),
+                MemoryFactModel.status == MemoryStatus.ACTIVE.value,
+                MemoryFactModel.review_state != "quarantined",
+                or_(
+                    MemoryFactModel.valid_until.is_(None),
+                    MemoryFactModel.valid_until > datetime.now(UTC),
+                ),
+            ],
+            order_by=(),
+        )
+        projected_rows = await project_memory_fact_rows(session, rows)
+        projected = {fact.id: fact for fact in projected_rows}
+        return tuple(projected[fact_id] for fact_id in unique_ids if fact_id in projected)
+
+    async def find_global_self_cover(
+        self,
+        fact: MemoryFactCreate,
+        *,
+        normalized_content: str,
+        session: AsyncSession | None = None,
+    ) -> MemoryFact | None:
+        """Find an exact active global SELF fact covering a narrower claim."""
+
+        if (
+            fact.scope_type is not MemoryScopeType.SELF
+            or fact.visibility_type is SelfMemoryVisibility.GLOBAL
+        ):
+            return None
+        if session is None:
+            async with self._database.sessions() as owned:
+                return await self.find_global_self_cover(
+                    fact,
+                    normalized_content=normalized_content,
+                    session=owned,
+                )
+        rows = await self._execute_facts_with_count(
+            session,
+            [
+                MemoryFactModel.scope_type == MemoryScopeType.SELF.value,
+                MemoryFactModel.visibility_type == SelfMemoryVisibility.GLOBAL.value,
+                MemoryFactModel.canonical_subject_person_id.is_(None),
+                MemoryFactModel.canonical_subject_space_id.is_(None),
+                MemoryFactModel.canonical_visibility_person_id.is_(None),
+                MemoryFactModel.canonical_visibility_space_id.is_(None),
+                MemoryFactModel.kind == fact.kind.value,
+                MemoryFactModel.memory_key == fact.memory_key,
+                MemoryFactModel.normalized_content == normalized_content,
+                MemoryFactModel.status == MemoryStatus.ACTIVE.value,
+                MemoryFactModel.review_state != "quarantined",
+                or_(
+                    MemoryFactModel.valid_until.is_(None),
+                    MemoryFactModel.valid_until > datetime.now(UTC),
+                ),
+            ],
+            order_by=(MemoryFactModel.updated_at.desc(), MemoryFactModel.id.asc()),
+            limit=1,
+        )
+        projected = await project_memory_fact_rows(session, rows)
+        return projected[0] if projected else None
 
     async def list_conflict_candidates(
         self,

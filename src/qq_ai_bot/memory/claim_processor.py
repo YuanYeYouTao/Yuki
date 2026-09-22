@@ -23,6 +23,7 @@ from qq_ai_bot.memory.enums import (
     MemoryResolutionAction,
     MemoryScopeType,
     MemoryStatus,
+    SelfMemoryVisibility,
 )
 from qq_ai_bot.memory.extraction import MemoryClaim
 from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
@@ -276,6 +277,13 @@ class MemoryClaimProcessor:
             for row in candidates
             if row.exact_key or row.exact_content or row.relevance >= threshold
         )
+        if self._covered_by_global_self_fact(validated, candidates):
+            self.metrics.increment("global_self_coverage_noops")
+            return MemoryClaimProcessResult(
+                None,
+                MemoryResolutionAction.NOOP,
+                "global_already_covers",
+            )
         relations: tuple[CandidateRelation, ...] = ()
         model_requests = 0
         input_tokens: int | None = None
@@ -343,6 +351,25 @@ class MemoryClaimProcessor:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             latency_seconds=latency_seconds,
+        )
+
+    @staticmethod
+    def _covered_by_global_self_fact(
+        claim: ValidatedMemoryClaim,
+        candidates: tuple[MemoryCandidate, ...],
+    ) -> bool:
+        fact = claim.fact
+        if (
+            fact.scope_type is not MemoryScopeType.SELF
+            or fact.visibility_type is SelfMemoryVisibility.GLOBAL
+        ):
+            return False
+        return any(
+            candidate.exact_key
+            and candidate.exact_content
+            and candidate.fact.scope_type is MemoryScopeType.SELF
+            and candidate.fact.visibility_type is SelfMemoryVisibility.GLOBAL
+            for candidate in candidates
         )
 
     async def apply_resolution(

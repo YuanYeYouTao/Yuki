@@ -73,6 +73,7 @@ from qq_ai_bot.memory.quality.audit import MemoryProductionQualityAudit
 from qq_ai_bot.memory.quality.hygiene import MemoryProvenanceHygiene
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.resolution import MemoryResolutionPolicy
+from qq_ai_bot.memory.retrieval import MemoryRetriever
 from qq_ai_bot.memory.self_reflection.models import SelfReflectionOutput
 from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
 from qq_ai_bot.memory.self_reflection.service import SelfReflectionService
@@ -178,6 +179,110 @@ async def test_agent_can_create_current_private_yuki_self_memory(database: Datab
     assert len(evidence) == 1
     assert evidence[0].relation is MemoryEvidenceRelation.AGENT_REFLECTION
     assert evidence[0].event_id == event.id
+
+
+@pytest.mark.asyncio
+async def test_consolidation_excludes_readable_global_self_candidate_from_group_target(
+    database: Database,
+) -> None:
+    _service_instance, facts, ledger, _processor = _service(
+        database,
+        self_memory_enabled=True,
+    )
+    await _event(
+        ledger,
+        message_id="exact-target-candidate-scope",
+        sender_user_id="1001",
+        content="在群里形成一条新的局部偏好。",
+        group_id="3001",
+    )
+    global_fact = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.SELF,
+            visibility_type=SelfMemoryVisibility.GLOBAL,
+            kind=MemoryKind.PREFERENCE,
+            memory_key="preference:global_style",
+            category="self_preference",
+            content="我在所有场景都偏好给出可验证的结论。",
+            source_type=MemorySourceType.AUTOMATIC,
+            authority=MemoryAuthority.AGENT_REFLECTION,
+        )
+    )
+    retriever = SimpleNamespace(
+        retrieve=AsyncMock(
+            return_value=SimpleNamespace(
+                hits=(SimpleNamespace(fact=global_fact, rank=1),),
+            )
+        )
+    )
+    resolver = MemoryConflictCandidateResolver(
+        MemoryFactRepository(database),
+        retriever=cast(MemoryRetriever, retriever),
+    )
+
+    candidates = await resolver.resolve(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.SELF,
+            visibility_type=SelfMemoryVisibility.GROUP,
+            visibility_group_id="3001",
+            kind=MemoryKind.PREFERENCE,
+            memory_key="preference:group_style",
+            category="self_preference",
+            content="我在这个群里偏好先给短结论。",
+            source_type=MemorySourceType.AUTOMATIC,
+            authority=MemoryAuthority.AGENT_REFLECTION,
+        )
+    )
+
+    assert candidates == ()
+
+
+@pytest.mark.asyncio
+async def test_exact_global_self_fact_covers_narrower_write_without_new_evidence(
+    database: Database,
+) -> None:
+    service, facts, ledger, _processor = _service(database, self_memory_enabled=True)
+    global_fact = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.SELF,
+            visibility_type=SelfMemoryVisibility.GLOBAL,
+            kind=MemoryKind.PREFERENCE,
+            memory_key="preference:verified_answers",
+            category="self_preference",
+            content="我偏好给出可验证的结论。",
+            source_type=MemorySourceType.AUTOMATIC,
+            authority=MemoryAuthority.AGENT_REFLECTION,
+        )
+    )
+    event = await _event(
+        ledger,
+        message_id="global-covers-group-write",
+        sender_user_id="1001",
+        content="你一直偏好给出可验证的结论。",
+        group_id="3001",
+    )
+
+    result = await service.mutate(
+        MemoryMutationRequest(
+            operation=MemoryMutationOperation.CREATE,
+            target=MemoryMutationTarget(subject_ref="self", scope_type=MemoryScopeType.SELF),
+            visibility=SelfMemoryVisibilityMode.CURRENT_SCOPE,
+            new_content=global_fact.content,
+            memory_key=global_fact.memory_key,
+            category=global_fact.category,
+            kind=global_fact.kind,
+            reason="局部上下文重复了已有的全局自我事实",
+        ),
+        _context(event),
+    )
+
+    assert not result.ok
+    assert result.outcome is MemoryMutationOutcome.NO_CHANGE
+    assert result.reason_code == "global_already_covers"
+    assert result.new_fact_id is None
+    assert await facts.list_evidence(global_fact.id) == ()
+    async with database.sessions() as session:
+        assert await session.scalar(select(func.count(MemoryFactModel.id))) == 1
 
 
 @pytest.mark.asyncio
@@ -1368,7 +1473,18 @@ async def test_self_reflection_batch_survives_presence_switch(database: Database
                             "content": "账号切换不会改变我对既有约定的重视。",
                             "reason": "新 Presence 下的 Yuki 明确延续了既有约定",
                             "importance": 4,
-                        }
+                        },
+                        {
+                            "operation": "create",
+                            "evidence_refs": ["event_1"],
+                            "visibility": "global",
+                            "category": "self_fact",
+                            "kind": "fact",
+                            "memory_key": "capability:presence_continuity",
+                            "content": "账号切换时，我仍能延续同一会话中的既有约定。",
+                            "reason": "切换前后的事件共同证明了身份连续性",
+                            "importance": 4,
+                        },
                     ],
                     "episodes": [
                         {
@@ -1452,15 +1568,15 @@ async def test_self_reflection_batch_survives_presence_switch(database: Database
     assert "创建任务成功不证明后续任务执行或查询结论正确" in instruction
     assert "没有被选中证据支持的细节不要写" in instruction
 
-    assert (proposed, committed) == (2, 2)
+    assert (proposed, committed) == (3, 3)
     async with database.sessions() as session:
         receipts = tuple(
             await session.scalars(
                 select(MemoryMutationReceiptModel).order_by(MemoryMutationReceiptModel.id.asc())
             )
         )
-    assert len(receipts) == 2
-    assert {receipt.executed_by_bot_user_id for receipt in receipts} == {"8001"}
+    assert len(receipts) == 3
+    assert {receipt.executed_by_bot_user_id for receipt in receipts} == {"8000", "8001"}
     assert len(provider.requests) == 2
     first_request, repaired_request = provider.requests
     assert repaired_request.messages[:2] == first_request.messages[:2]
@@ -1484,7 +1600,7 @@ async def test_self_reflection_batch_survives_presence_switch(database: Database
         new_event.id,
     }
     # Durable validated data and result mappings resume without another model or mutation.
-    assert await reflection.reflect(batch) == (2, 2)
+    assert await reflection.reflect(batch) == (3, 3)
     assert len(provider.requests) == 2
     async with database.sessions() as session:
         assert tuple(await session.scalars(select(MemoryMutationReceiptModel.id))) == tuple(
@@ -1580,7 +1696,19 @@ async def test_self_reflection_skips_reset_prefix_and_recovers_committed_batch(
     provider = FakeLLMProvider(
         lambda _request: json.dumps(
             {
-                "proposals": [],
+                "proposals": [
+                    {
+                        "operation": "create",
+                        "evidence_refs": ["event_1"],
+                        "visibility": "current_scope",
+                        "category": "self_preference",
+                        "kind": "preference",
+                        "memory_key": "core:protected-test",
+                        "content": "模型不应能够改写受保护的核心身份。",
+                        "reason": "用于验证正常策略拒绝不会拖垮整批",
+                        "importance": 4,
+                    }
+                ],
                 "episodes": [
                     {
                         "passages": [
@@ -1608,7 +1736,7 @@ async def test_self_reflection_skips_reset_prefix_and_recovers_committed_batch(
         models=LegacyTaskModelExecutor(provider),
         metrics=MemoryLifecycleMetrics(),
     )
-    assert await reflection.reflect(batch) == (1, 1)
+    assert await reflection.reflect(batch) == (2, 1)
 
     assert await repository.recover_interrupted(batch.run_id, "cancelled") == "completed"
     async with database.sessions() as session:
@@ -1618,7 +1746,7 @@ async def test_self_reflection_skips_reset_prefix_and_recovers_committed_batch(
     assert run.status == "completed"
     assert run.committed_count == 1
     assert run.error_category == "recovered:cancelled"
-    assert await repository.result_counts(batch.run_id) == (1, 1)
+    assert await repository.result_counts(batch.run_id) == (2, 1)
     assert state is not None
     assert state.last_event_id == new_reply.id
     assert state.pending_events == 0
