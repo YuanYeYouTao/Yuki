@@ -10,20 +10,19 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.relationships import (
     RelationshipEvaluation,
     RelationshipSnapshot,
 )
 from qq_ai_bot.identity.canonical_repository import (
     bindings_for_person,
-    external_accounts_for_person,
     representative_external_account_id,
     require_person_binding,
     resolve_person_author_id_for_event,
 )
 from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.job_claims import PreparedJobClaim, commit_job_claims
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
     PersonRelationshipModel,
@@ -34,6 +33,7 @@ from qq_ai_bot.persistence.repository_helpers import (
     _event_record,
     _relationship_event_record,
     _relationship_snapshot,
+    keeper_event_clause,
 )
 from qq_ai_bot.persistence.repository_records import (
     RelationshipEventRecord,
@@ -489,7 +489,8 @@ class RelationshipJobRepository:
     async def claim(self, *, limit: int = 10) -> tuple[RelationshipJobRecord, ...]:
         now = datetime.now(UTC)
         stale_processing = now - timedelta(minutes=5)
-        async with self._database.sessions() as session, session.begin():
+        prepared: list[PreparedJobClaim] = []
+        async with self._database.sessions() as session:
             rows = (
                 await session.scalars(
                     select(RelationshipJobModel)
@@ -509,15 +510,20 @@ class RelationshipJobRepository:
             ).all()
             result: list[RelationshipJobRecord] = []
             for row in rows:
+                prior = (row.id, row.status, row.updated_at)
                 trigger = await session.get(ChatEventModel, row.trigger_event_id)
                 if trigger is None:
-                    await session.delete(row)
+                    prepared.append(PreparedJobClaim(*prior, None))
                     continue
                 recent_query = select(ChatEventModel).where(
                     ChatEventModel.id <= trigger.id,
+                    ChatEventModel.canonical_conversation_id == trigger.canonical_conversation_id,
+                    ChatEventModel.author_person_id == row.canonical_person_id,
+                    ChatEventModel.direction == "inbound",
+                    ChatEventModel.event_kind == "message",
+                    keeper_event_clause(),
                 )
                 person_id = row.canonical_person_id
-                owner_keys = await external_accounts_for_person(session, person_id)
                 bindings = await bindings_for_person(session, person_id)
                 try:
                     projected_user_id = representative_external_account_id(bindings)
@@ -529,26 +535,18 @@ class RelationshipJobRepository:
                     # Do not consume the bounded evaluator retry budget here:
                     # postpone the claim so a later active Binding can project
                     # the Person back to the transport-facing identifier.
-                    row.status = "pending"
-                    row.next_attempt_at = now + self._BINDING_RETRY_DELAY
-                    row.updated_at = now
-                    row.error_category = "binding_unavailable"
-                    continue
-                if trigger.scope_type == ScopeType.PRIVATE.value:
-                    recent_query = recent_query.where(
-                        or_(
-                            ChatEventModel.private_peer_user_id.in_(owner_keys),
-                            ChatEventModel.author_person_id == person_id,
+                    prepared.append(
+                        PreparedJobClaim(
+                            *prior,
+                            {
+                                "status": "pending",
+                                "next_attempt_at": now + self._BINDING_RETRY_DELAY,
+                                "updated_at": now,
+                                "error_category": "binding_unavailable",
+                            },
                         )
                     )
-                else:
-                    recent_query = recent_query.where(
-                        ChatEventModel.group_id == trigger.group_id,
-                        or_(
-                            ChatEventModel.sender_user_id.in_(owner_keys),
-                            ChatEventModel.author_person_id == person_id,
-                        ),
-                    )
+                    continue
                 recent_rows = list(
                     (
                         await session.scalars(
@@ -557,8 +555,9 @@ class RelationshipJobRepository:
                     ).all()
                 )
                 recent_rows.reverse()
-                row.status = "processing"
-                row.updated_at = now
+                prepared.append(
+                    PreparedJobClaim(*prior, {"status": "processing", "updated_at": now})
+                )
                 result.append(
                     RelationshipJobRecord(
                         job_id=row.id,
@@ -569,7 +568,8 @@ class RelationshipJobRepository:
                         recent_events=tuple(_event_record(event) for event in recent_rows),
                     )
                 )
-            return tuple(result)
+        accepted = await commit_job_claims(self._database, RelationshipJobModel, prepared)
+        return tuple(job for job in result if job.job_id in accepted)
 
     async def complete(self, job_ids: tuple[int, ...]) -> None:
         if not job_ids:

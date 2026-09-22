@@ -141,3 +141,12 @@ QQ 消息证明伪造成 Web 请求。分页使用 opaque cursor；mutation 使�
 
 部署与数据升级分别见 [SnowLuma Provider 部署与切换](../deployment/snowluma.md) 和
 [Yuki 3.8.2 升级指南](../upgrade-3.8.2.md)。
+
+## 后台领取的事务边界
+
+关系评估和普通记忆批次先在只读会话中准备事件、身份投影与候选，再用短写事务按
+任务 id/status/updated_at 条件领取。竞争失败的候选不进入执行；live Memory 在提交时
+重新核验事件仍位于当前 generation 水位之后。历史扫描不发生在写事务内。
+关系上下文按 canonical Conversation 与 Person 取最近五条有效入站消息，不按当前
+QQ Binding 丢弃同一人的其他账号证据。0065 添加对应的有序复合索引。
+这不延长旧任务的五分钟 processing 恢复窗口，也不宣称已经定位所有历史长锁事件。
