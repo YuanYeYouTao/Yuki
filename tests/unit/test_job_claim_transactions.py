@@ -18,6 +18,7 @@ from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationMode
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.memory.repository import MemoryJobRepository
 from qq_ai_bot.persistence.models import ChatEventModel, MemoryJobModel, RelationshipJobModel
+from qq_ai_bot.persistence.people_repository import PeopleRepository
 from qq_ai_bot.persistence.relationship_repository import RelationshipJobRepository
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.services.concurrency import ConcurrencyManager
@@ -194,6 +195,47 @@ async def test_relationship_index_matches_canonical_ordered_lookup(database):
         detail = " ".join(str(row) for row in plan)
     assert "ix_chat_events_conversation_author_id" in detail
     assert "TEMP B-TREE" not in detail
+
+
+async def test_relationship_claim_discards_pre_forget_snapshot_and_can_reload_redacted_history(
+    database, monkeypatch
+):
+    ledger = EventLedgerRepository(database)
+    jobs = RelationshipJobRepository(database)
+    for index, (user_id, content) in enumerate(
+        (("1002", "hello"), ("1001", "1002 told me something"), ("1001", "I remember 1002"))
+    ):
+        trigger, _ = await ledger.append(
+            bot_user_id="8000",
+            platform_message_id=f"forget-claim-{index}",
+            scope_type=ScopeType.GROUP,
+            group_id="2001",
+            sender_user_id=user_id,
+            direction="inbound",
+            content=content,
+        )
+        if user_id == "1001":
+            await jobs.enqueue(
+                trigger_event_id=trigger.id, user_id=user_id, conversation_key="group:2001"
+            )
+    module = importlib.import_module("qq_ai_bot.persistence.relationship_repository")
+    original = module.commit_job_claims
+
+    async def forget_then_commit(*args):
+        assert await PeopleRepository(database).delete_person("1002")
+        return await original(*args)
+
+    monkeypatch.setattr(module, "commit_job_claims", forget_then_commit)
+    assert not await jobs.claim()
+    monkeypatch.setattr(module, "commit_job_claims", original)
+    refreshed = await jobs.claim()
+    assert len(refreshed) == 2
+    for job in refreshed:
+        assert "1002" not in job.trigger_event.content
+        assert all("1002" not in event.content for event in job.recent_events)
+        assert job.recent_events
+    # Forget advanced the conversation watermark beyond these events. Unlike
+    # live Memory admission, relationship retries can still read the redacted history.
 
 
 def test_relationship_index_migration_round_trip(monkeypatch):

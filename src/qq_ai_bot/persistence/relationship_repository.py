@@ -10,6 +10,7 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.domain.relationships import (
     RelationshipEvaluation,
     RelationshipSnapshot,
@@ -511,9 +512,35 @@ class RelationshipJobRepository:
             result: list[RelationshipJobRecord] = []
             for row in rows:
                 prior = (row.id, row.status, row.updated_at)
-                trigger = await session.get(ChatEventModel, row.trigger_event_id)
-                if trigger is None:
+                # Read the evidence and its privacy generation in the same SQL
+                # snapshot. A prior job may have cached this event before forget.
+                source = (
+                    await session.execute(
+                        select(ChatEventModel, CanonicalConversationModel.generation)
+                        .outerjoin(
+                            CanonicalConversationModel,
+                            CanonicalConversationModel.id
+                            == ChatEventModel.canonical_conversation_id,
+                        )
+                        .where(ChatEventModel.id == row.trigger_event_id)
+                        .execution_options(populate_existing=True)
+                    )
+                ).one_or_none()
+                if source is None:
                     prepared.append(PreparedJobClaim(*prior, None))
+                    continue
+                trigger, generation = source
+                if generation is None or trigger.canonical_conversation_id is None:
+                    prepared.append(
+                        PreparedJobClaim(
+                            *prior,
+                            {
+                                "status": "failed",
+                                "error_category": "missing_canonical_conversation",
+                                "updated_at": now,
+                            },
+                        )
+                    )
                     continue
                 recent_query = select(ChatEventModel).where(
                     ChatEventModel.id <= trigger.id,
@@ -550,13 +577,19 @@ class RelationshipJobRepository:
                 recent_rows = list(
                     (
                         await session.scalars(
-                            recent_query.order_by(ChatEventModel.id.desc()).limit(5)
+                            recent_query.order_by(ChatEventModel.id.desc())
+                            .limit(5)
+                            .execution_options(populate_existing=True)
                         )
                     ).all()
                 )
                 recent_rows.reverse()
                 prepared.append(
-                    PreparedJobClaim(*prior, {"status": "processing", "updated_at": now})
+                    PreparedJobClaim(
+                        *prior,
+                        {"status": "processing", "updated_at": now},
+                        conversation_snapshot=(trigger.canonical_conversation_id, generation),
+                    )
                 )
                 result.append(
                     RelationshipJobRecord(

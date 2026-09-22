@@ -20,6 +20,7 @@ class PreparedJobClaim:
     updated_at: datetime
     values: dict[str, Any] | None
     live_event_id: int | None = None
+    conversation_snapshot: tuple[str, int] | None = None
 
 
 async def commit_job_claims(
@@ -47,6 +48,16 @@ async def commit_job_claims(
                         ChatEventModel.id > CanonicalConversationModel.starts_after_event_id,
                         ChatEventModel.id
                         > CanonicalConversationModel.last_generation_change_event_id,
+                    )
+                    .exists()
+                )
+            if claim.conversation_snapshot is not None:
+                conversation_id, generation = claim.conversation_snapshot
+                statement = statement.where(
+                    select(CanonicalConversationModel.id)
+                    .where(
+                        CanonicalConversationModel.id == conversation_id,
+                        CanonicalConversationModel.generation == generation,
                     )
                     .exists()
                 )
