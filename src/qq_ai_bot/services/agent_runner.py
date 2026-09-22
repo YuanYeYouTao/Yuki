@@ -88,6 +88,7 @@ class AgentRuntime:
     context_token_limit: int | None = None
     invocation_source: dict[str, Any] | None = None
     invocation_goal: str | None = None
+    compaction_brief: ChatMessage | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,7 +261,9 @@ class AgentRunner:
                 ).encode()
             ).hexdigest()
             runtime.work_control.session = WorkSession(runtime.work_control, contract)
-            transcript = await runtime.work_control.session.restore(transcript)
+            transcript = await runtime.work_control.session.restore(
+                transcript, compaction_brief=runtime.compaction_brief
+            )
             repeated_batch_count = int(runtime.work_control.session.progress.get("repeats", 0))
             if runtime.work_control.handoff_work_id is not None:
                 await runtime.work_control.session.save("paired")
@@ -340,13 +343,6 @@ class AgentRunner:
                 native_definitions = self._merge_native_tools(
                     continuation_native_tools, native_definitions
                 )
-            if (
-                no_progress_recovery
-                and transcript.continuation is None
-                and fixed_definitions is None
-            ):
-                definitions = ()
-                native_definitions = ()
             compacting = False
             if (
                 control is not None
@@ -358,6 +354,8 @@ class AgentRunner:
                     control.session.progress.get("context_tokens", 0)
                     >= (runtime.context_token_limit or 131072) * 0.85
                 )
+                if compacting:
+                    control.session.require_compaction_anchor()
                 if compacting and not control.session.progress.get("compacting"):
                     control.session.progress["compacting"] = True
                     transcript.append(
@@ -383,12 +381,11 @@ class AgentRunner:
                     max_output_tokens=runtime.runtime_config.llm.max_output_tokens,
                     thinking_enabled=runtime.runtime_config.llm.thinking_enabled,
                     tools=definitions,
-                    tool_choice=(
-                        "none"
-                        if (compacting or no_progress_recovery)
-                        and (definitions or native_definitions)
-                        else ("auto" if definitions or native_definitions else None)
-                    ),
+                    # Recovery and compaction keep the submitted declaration/settings.
+                    # Their local response fences, not provider tool_choice support,
+                    # prevent local function execution in those phases. Native
+                    # tools, where supported, execute at the provider boundary.
+                    tool_choice="auto" if definitions or native_definitions else None,
                     native_tools=native_definitions,
                     continuation=sequence.continuation,
                     conversation_prefix_hash=(

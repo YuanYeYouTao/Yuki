@@ -9,8 +9,8 @@ from dataclasses import dataclass
 from uuid import uuid4
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
+from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import AttachmentKind, OutboundMedia, OutboundMessage
-from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.services.plugin_events import LifecycleEventPublisher, publish_notification
 from qq_ai_bot.services.turn_coordinator import TurnSupersededError, TurnToken
@@ -60,7 +60,8 @@ class VoiceDeliveryService:
     async def prepare(
         self,
         *,
-        actor: ToolActor,
+        scope: ConversationScope,
+        canonical_conversation_id: str,
         response_text: str,
         runtime: RuntimeConfigSnapshot,
         token: TurnToken | None,
@@ -74,7 +75,7 @@ class VoiceDeliveryService:
             return None
         scope_enabled = (
             runtime.speech.private_enabled
-            if actor.group_id is None
+            if scope.group_id is None
             else runtime.speech.group_enabled
         )
         if not scope_enabled:
@@ -93,7 +94,7 @@ class VoiceDeliveryService:
                     trigger_event_id=None,
                     turn_token=token,
                     language_hint=language_hint,
-                    canonical_conversation_id=actor.conversation_id,
+                    canonical_conversation_id=canonical_conversation_id,
                 ),
                 runtime=runtime.speech,
                 cancellation=cancellation,

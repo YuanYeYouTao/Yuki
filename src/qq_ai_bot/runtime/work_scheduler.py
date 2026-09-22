@@ -105,7 +105,6 @@ class WorkScheduler:
                                     select(deliveries.c.work_id).where(
                                         deliveries.c.kind == "notice",
                                         deliveries.c.state.in_(("planned", "blocked")),
-                                        deliveries.c.not_before <= time.time(),
                                     )
                                 ),
                             ),
@@ -307,7 +306,6 @@ class WorkScheduler:
                                         deliveries.c.work_id == item["id"],
                                         deliveries.c.kind == "notice",
                                         deliveries.c.state.in_(("planned", "blocked")),
-                                        deliveries.c.not_before <= time.time(),
                                     )
                                     .order_by(deliveries.c.created)
                                     .limit(1)
@@ -319,12 +317,7 @@ class WorkScheduler:
                     control.ending = "suspended"
                     for notice in notices:
                         payload = json.loads(notice["payload_json"])
-                        from qq_ai_bot.runtime.activation_outcome import DeliveryDeferred
-
-                        try:
-                            await reserve(control, notice["id"], "notice", payload)
-                        except DeliveryDeferred:
-                            return
+                        await reserve(control, notice["id"], "notice", payload)
                         if not await self.repository.prepare_effect(
                             control.lease, item["id"], notice["id"], "progress"
                         ):

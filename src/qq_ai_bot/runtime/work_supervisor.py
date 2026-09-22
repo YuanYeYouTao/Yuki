@@ -13,7 +13,6 @@ from sqlalchemy.dialects.sqlite import insert
 
 from qq_ai_bot.runtime.activation_outcome import (
     ActivationOutcome,
-    DeliveryDeferred,
     ExitReason,
     SegmentBudgetReached,
     WorkNoProgress,
@@ -90,9 +89,6 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
                 delay = max(delay, supplied_delay)
             not_before = time.time() + delay
         state = "queued" if reason in {ExitReason.RETRY, ExitReason.SEGMENT} else "suspended"
-        if isinstance(exc, DeliveryDeferred):
-            state, reason = "queued", ExitReason.RETRY
-            not_before = max(time.time() + 1, exc.not_before)
         if verified:
             state, reason, not_before = "completed", ExitReason.COMPLETED, 0
         values = dict(

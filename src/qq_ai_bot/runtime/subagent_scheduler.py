@@ -270,10 +270,11 @@ class SubagentScheduler:
             now = datetime.now(UTC)
             brief = json.loads(child["brief_json"])
             brief.update(child_id=identity, cwd=f"/workspace/tasks/{identity}", work_id=identity)
+            brief_message = ChatMessage(role="user", content=json.dumps(brief, ensure_ascii=False))
             result = await runner.run(
                 (
                     ChatMessage(role="system", content=WORKER_PROMPT),
-                    ChatMessage(role="user", content=json.dumps(brief, ensure_ascii=False)),
+                    brief_message,
                 ),
                 AgentRuntime(
                     origin=TurnOrigin(recovered.origin),
@@ -295,6 +296,7 @@ class SubagentScheduler:
                     work_control=control,
                     execution_id=identity,
                     fixed_tools=self.definitions,
+                    compaction_brief=brief_message,
                     context_token_limit=self.app.settings.subagent_context_token_limit,
                 ),
                 backend,

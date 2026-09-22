@@ -1,4 +1,4 @@
-"""One fenced message reservation shared by progress, tools and final delivery."""
+"""Fenced delivery identities and receipts, without a send-frequency quota."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select, true, update
 from sqlalchemy.dialects.sqlite import insert
 
-from qq_ai_bot.runtime.activation_outcome import DeliveryDeferred
 from qq_ai_bot.runtime.work_recovery_schema import deliveries
 from qq_ai_bot.runtime.work_repository import WorkConflict, bounded_json
 from qq_ai_bot.runtime.work_schema_v1 import work
@@ -25,8 +24,9 @@ async def reserve(
     now = time.time()
     identity = control.current["id"]
     target_value = payload.get("target")
-    if not 1 <= count <= 16:
-        raise WorkConflict("delivery_plan_exceeds_window")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise WorkConflict("delivery_message_count_invalid")
+    encoded_payload = bounded_json(payload)
     async with control.repository.database.immediate_session() as session:
         await control.repository._assert_lease(session, control.lease)
         if isinstance(target_value, dict) and target_value.get("kind") in {"person", "space"}:
@@ -52,36 +52,27 @@ async def reserve(
             .first()
         )
         if prior:
-            if prior["work_id"] != identity or prior["payload_json"] != bounded_json(payload):
+            if (
+                prior["work_id"] != identity
+                or prior["kind"] != kind
+                or prior["message_count"] != count
+                or prior["payload_json"] != encoded_payload
+            ):
                 raise WorkConflict("delivery_intent_conflict")
             if prior["state"] == "reserved":
                 return True
             if prior["state"] in {"accepted", "unknown", "dispatching"}:
                 raise WorkConflict("delivery_replay_forbidden")
-        recent = (
-            await session.execute(
-                select(deliveries.c.message_count, deliveries.c.created)
-                .where(
-                    deliveries.c.target_key == target,
-                    deliveries.c.created > now - 60,
-                    deliveries.c.state.in_(("reserved", "dispatching", "accepted", "unknown")),
-                )
-                .order_by(deliveries.c.created)
-            )
-        ).all()
-        used = sum(row.message_count for row in recent)
-        allowed = used + count <= 16
-        not_before = (recent[0].created + 60) if recent else now + 60
         if prior:
             await session.execute(
                 update(deliveries)
                 .where(deliveries.c.id == key)
                 .values(
-                    state="reserved" if allowed else "blocked",
+                    state="reserved",
                     target_key=target,
                     created=now,
                     updated=now,
-                    not_before=0 if allowed else not_before,
+                    not_before=0,
                 )
             )
         else:
@@ -92,24 +83,21 @@ async def reserve(
                     kind=kind,
                     target_key=target,
                     message_count=count,
-                    not_before=0 if allowed else not_before,
-                    state="reserved" if allowed else "blocked",
-                    payload_json=bounded_json(payload),
+                    not_before=0,
+                    state="reserved",
+                    payload_json=encoded_payload,
                     created=now,
                     updated=now,
                 )
             )
-        if allowed:
-            total = await session.scalar(
-                update(work)
-                .where(work.c.id == identity)
-                .values(sent_messages=work.c.sent_messages + count)
-                .returning(work.c.sent_messages)
-            )
-            control.current["sent_messages"] = total
-    if not allowed:
-        raise DeliveryDeferred("delivery_window_deferred", not_before=not_before)
-    return bool(allowed)
+        total = await session.scalar(
+            update(work)
+            .where(work.c.id == identity)
+            .values(sent_messages=work.c.sent_messages + count)
+            .returning(work.c.sent_messages)
+        )
+        control.current["sent_messages"] = total
+    return True
 
 
 async def record(control: WorkControl, key: str, state: str, receipt: dict[str, Any]) -> None:

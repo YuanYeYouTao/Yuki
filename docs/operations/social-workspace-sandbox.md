@@ -102,6 +102,25 @@ Receipts use source turn/call identity and a payload hash. `uncertain` means the
 gateway may have acted: do not automatically resend. Database persistence cannot be
 atomic with a network operation. The model's final text is internal loop output and is
 not sent automatically; only an accepted `send_message` gateway receipt confirms delivery.
+Ordinary message sends require a nonempty scalar OneBot message ID. Empty, boolean,
+or object-valued IDs after dispatch produce a durable `uncertain` receipt; replay
+reads that result instead of sending again. File uploads retain their separate
+completion contract and need not return a retractable message ID.
+
+The content-free operation receipt remains separate from the immutable event ledger.
+Tool results may project the confirmed ledger's internal event ID and actually delivered
+text, matched to the receipt's Presence, canonical target, platform reference, source,
+and dispatch interval. Missing, conflicting, or unreadable ledger data omits this text
+without downgrading the send receipt. Main Agent memory attribution uses this projection,
+including confirmed split parts, file captions and spoken text; it never re-splits raw
+tool arguments or treats a file/image ledger placeholder as delivered prose.
+
+Voice and emoji preparation receive the validated delivery `ConversationScope`, not an
+invented human actor. Plugin-background sends retain their proven external event and
+frozen current target, and may use the same media parameters when enabled. Explicit
+target overrides remain forbidden for that origin. Private emoji lookup uses the real
+recipient; group lookup uses only the real group. This preparation context grants no
+permissions and does not bypass the Social route or mutation checks.
 
 ## Shared persistent storage
 

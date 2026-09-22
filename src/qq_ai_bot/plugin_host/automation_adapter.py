@@ -213,6 +213,7 @@ def _automation_invocation(
         space_id=identity.space_id,
         conversation_id=identity.conversation_id,
         presence_id=identity.presence_id,
+        delivery_identity=f"automation:{context.automation_run_id}:{context.step_id}",
     )
 
 

@@ -7,8 +7,7 @@ from sqlalchemy import select, update
 from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.domain.messages import ChatMessage, OutboundMessage, OutboundSendReceipt
-from qq_ai_bot.runtime.activation_outcome import DeliveryDeferred
-from qq_ai_bot.runtime.delivery_intents import reserve
+from qq_ai_bot.runtime.delivery_intents import record, reserve
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_delivery import WorkDeliverySender, resume_delivery_plan
 from qq_ai_bot.runtime.work_journal import JournalUnavailable
@@ -48,26 +47,51 @@ class Sender:
 
 
 @pytest.mark.asyncio
-async def test_window_expiry_recovers_whole_plan_without_model(database, tmp_path):
+async def test_unthrottled_plan_recovers_without_model_and_preserves_replay_guards(
+    database, tmp_path
+):
     control = await setup(database, tmp_path)
     await reserve(control, "previous", "final", {}, count=16)
     sender = Sender()
     wrapped = WorkDeliverySender(sender, control)
-    with pytest.raises(DeliveryDeferred) as deferred:
-        await wrapped.plan([OutboundMessage("first"), OutboundMessage("second")])
-    assert deferred.value.not_before > time.time() and not sender.messages
+    messages = [OutboundMessage(f"part-{index}") for index in range(20)]
+    await wrapped.plan(messages)
+    assert control.current["sent_messages"] == 36 and not sender.messages
+    # A reservation is idempotent, including plans larger than the retired window.
+    await wrapped.plan(messages)
+    assert control.current["sent_messages"] == 36
     async with database.sessions() as session, session.begin():
         await session.execute(
-            update(deliveries).where(deliveries.c.id == "previous").values(created=time.time() - 61)
+            update(deliveries)
+            .where(deliveries.c.id == control.session.call_key("final-plan"))
+            .values(state="blocked", not_before=time.time() + 3600)
+        )
+        # Represent an old, never-reserved blocked plan; no send has occurred.
+        from qq_ai_bot.runtime.work_schema_v1 import work
+
+        await session.execute(
+            update(work).where(work.c.id == control.current["id"]).values(sent_messages=16)
         )
     resumed = WorkSession(control, "contract")
     await resumed.restore(TurnTranscript((ChatMessage("user", "do not replace"),)))
     control.session = resumed
     assert await resume_delivery_plan(control, sender)
-    assert sender.messages == ["first", "second"]
+    assert sender.messages == [message.text for message in messages]
+    assert control.current["sent_messages"] == 36
     assert control.requests_started == 0
     assert await resume_delivery_plan(control, sender)
-    assert sender.messages == ["first", "second"]
+    assert sender.messages == [message.text for message in messages]
+    with pytest.raises(WorkConflict, match="intent_conflict"):
+        await reserve(control, "previous", "final", {}, count=17)
+    for state in ("dispatching", "unknown", "accepted"):
+        key = f"guard-{state}"
+        await reserve(control, key, "final", {})
+        await record(control, key, state, {})
+        with pytest.raises(WorkConflict, match="replay_forbidden"):
+            await reserve(control, key, "final", {})
+    for count in (0, -1, True):
+        with pytest.raises(WorkConflict, match="message_count_invalid"):
+            await reserve(control, "invalid", "final", {}, count=count)
     async with database.sessions() as session:
         assert await session.scalar(select(quota.c.bytes)) > 0
 

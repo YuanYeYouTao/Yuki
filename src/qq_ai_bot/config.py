@@ -323,8 +323,8 @@ class Settings(BaseSettings):
     agent_max_model_requests: int = 24
     agent_tool_result_max_characters: int = 8000
 
-    # Generous initial Tool Kernel budgets keep schemas bounded without reducing authority;
-    # request_tools can still load additional actor-authorized capabilities on demand.
+    # Tool Kernel selection budgets do not cap the main Agent's frozen tool contract.
+    # Its request_tools directory lookup never loads schemas or changes authorization.
     tooling_max_parallel_calls: int = 8
     tooling_selected_tool_limit: int | None = 32
     tooling_first_round_hard_cap: int = 16

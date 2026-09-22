@@ -38,7 +38,7 @@ class EmojiRetriever:
             else datetime.now(UTC) - timedelta(seconds=runtime.scope_repeat_cooldown_seconds)
         )
         rows = await self._repository.selectable(
-            actor_user_id=request.actor_user_id,
+            private_peer_user_id=request.private_peer_user_id,
             group_id=request.group_id,
             cooldown_after=cooldown_after,
             scope_cooldown_after=scope_cooldown_after,

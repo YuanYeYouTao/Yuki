@@ -63,6 +63,10 @@ async def invoke_social(
             origin="plugin_background",
             caused_by_event_id=event_id,
             visible_event_ids=frozenset(getattr(runtime, "visible_event_ids", ())),
+            runtime_snapshot=getattr(runtime, "runtime_config", None),
+            turn_token=getattr(runtime, "turn_token", None),
+            conversation_key=getattr(runtime, "conversation_key", ""),
+            voice_delivery_allowed=bool(getattr(runtime, "voice_delivery_allowed", True)),
         )
         try:
             return await service.execute(name, arguments, context)
