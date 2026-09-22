@@ -712,9 +712,9 @@ async def test_empty_model_response_is_user_safe(database: Database) -> None:
         assert mention_provider.requests[0].tools == mention_provider.requests[1].tools
         assert all("[提及" not in str(message.text) for message in mention_sender.messages)
         assert all("@完了" not in str(message.text) for message in mention_sender.messages)
-        assert any("AI 服务暂时不可用" in message.text for message in mention_sender.messages) is (
-            not repair
-        )
+        assert any(
+            "模型未能完成这次回复" in message.text for message in mention_sender.messages
+        ) is (not repair)
 
 
 @pytest.mark.asyncio
@@ -811,7 +811,7 @@ async def test_unused_planner_fallback_no_longer_blocks_the_agent(
     # correctly rejects the provider's unsent final after context assembly.
     assert result.reason == "llm_failure"
     assert len(provider.requests) == 2
-    assert sender.messages[0].text == "AI 服务暂时不可用，请稍后重试。"
+    assert sender.messages[0].text == "模型未能完成这次回复，请稍后重试。"
 
 
 @pytest.mark.asyncio
@@ -833,7 +833,7 @@ async def test_ordinary_chat_always_assembles_agent_context(
 
     assert result.reason == "llm_failure"
     assert len(provider.requests) == 2
-    assert sender.messages[0].text == "AI 服务暂时不可用，请稍后重试。"
+    assert sender.messages[0].text == "模型未能完成这次回复，请稍后重试。"
     request = provider.requests[0]
     assert "event_bound_memory_refs" in request.messages[-1].content
     assert "available_memory_subjects" not in request.messages[-1].content

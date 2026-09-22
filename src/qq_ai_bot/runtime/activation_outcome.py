@@ -80,6 +80,27 @@ class ActivationOutcome:
     tool_calls: int = 0
 
 
+def failure_status_text(failure: RuntimeFailure) -> str:
+    """Operational status when no owned activation can recover; never provider details."""
+    if failure.code == "sqlite_busy":
+        return "数据存储暂时繁忙，本次处理未完成，请稍后重试。"
+    if failure.code == "database_failure":
+        return "数据存储出现异常，本次处理未完成，请联系管理员。"
+    if failure.code == "context_boundary_changed":
+        return "会话上下文已变化，本次处理已停止。"
+    if failure.stage == "provider":
+        if failure.code in {"LLMAuthenticationError", "LLMConfigurationError"}:
+            return "AI 服务配置或认证异常，请联系管理员。"
+        if failure.code in {"LLMInvalidRequestError", "LLMUnsupportedFeatureError"}:
+            return "模型请求或功能配置不兼容，请联系管理员。"
+        if failure.code == "LLMTimeoutError":
+            return "模型响应超时，本次处理未完成，请稍后重试。"
+        if failure.retryable:
+            return "AI 服务暂时不可用，请稍后重试。"
+        return "模型未能完成这次回复，请稍后重试。"
+    return "这次处理遇到内部错误，请稍后重试；持续出现请联系管理员。"
+
+
 def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFailure:
     if isinstance(exc, asyncio.CancelledError):
         return RuntimeFailure("activation_cancelled", "cleanup", True)
