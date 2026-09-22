@@ -621,10 +621,15 @@ class AgentRunner:
                 continue
             if not response.tool_calls:
                 content = response.content
+                assistant_message = ChatMessage(
+                    role="assistant",
+                    content=response.content,
+                    reasoning_content=response.reasoning_content,
+                )
                 control = runtime.work_control
                 if control is not None and await control.pending():
                     if response.continuation is None:
-                        transcript.append(ChatMessage(role="assistant", content=content))
+                        transcript.append(assistant_message)
                     transcript.append(
                         ChatMessage(
                             role="system",
@@ -644,7 +649,7 @@ class AgentRunner:
                     ):
                         mention_recovery_used = True
                         if response.continuation is None:
-                            transcript.append(ChatMessage(role="assistant", content=content))
+                            transcript.append(assistant_message)
                         transcript.append(
                             ChatMessage(
                                 role="system",
@@ -665,7 +670,7 @@ class AgentRunner:
                         raise LLMError("model repeated an unsupported final response")
                     answer_recovery_used = True
                     if response.continuation is None and not response.tool_calls:
-                        transcript.append(ChatMessage(role="assistant", content=content))
+                        transcript.append(assistant_message)
                     transcript.append(ChatMessage(role="system", content=issue))
                     continue
                 if tools is not None:
@@ -688,6 +693,8 @@ class AgentRunner:
                             empty_retries,
                             calls_used,
                         )
+                        if response.continuation is None:
+                            transcript.append(assistant_message)
                         transcript.append(
                             ChatMessage(
                                 role="system",
@@ -726,18 +733,12 @@ class AgentRunner:
                         )
                         if not json.loads(receipt).get("ok"):
                             if response.continuation is None:
-                                transcript.append(ChatMessage(role="assistant", content=content))
+                                transcript.append(assistant_message)
                             transcript.append(ChatMessage(role="system", content=receipt))
                             continue
                 if control is not None and control.session is not None:
                     if response.continuation is None:
-                        transcript.append(
-                            ChatMessage(
-                                role="assistant",
-                                content=response.content,
-                                reasoning_content=response.reasoning_content,
-                            )
-                        )
+                        transcript.append(assistant_message)
                     await control.session.save("paired")
                 return AgentRunResult(
                     text=content,
