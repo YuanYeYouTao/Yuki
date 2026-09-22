@@ -11,6 +11,7 @@ from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.relationships import RelationshipEvaluation
 from qq_ai_bot.llm.base import LLMError
+from qq_ai_bot.model_runtime.executor import BackgroundModelPreempted
 from qq_ai_bot.persistence.repositories import (
     RelationshipJobRepository,
     RelationshipRepository,
@@ -102,6 +103,10 @@ class RelationshipWorker:
             return 0
         try:
             evaluations = await self._evaluator.evaluate(jobs)
+        except BackgroundModelPreempted:
+            await self._jobs.defer(jobs)
+            logger.info("relationship_batch_preempted count=%d", len(jobs))
+            return 0
         except (LLMError, OSError, RuntimeError, TypeError, ValueError) as exc:
             category = type(exc).__name__
             logger.warning("relationship_batch_failed exception_category=%s", category)

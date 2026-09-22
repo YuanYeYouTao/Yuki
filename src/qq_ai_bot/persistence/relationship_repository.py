@@ -562,6 +562,7 @@ class RelationshipJobRepository:
                 result.append(
                     RelationshipJobRecord(
                         job_id=row.id,
+                        claimed_at=now,
                         attempts=row.attempts,
                         user_id=projected_user_id,
                         conversation_key=row.conversation_key,
@@ -584,6 +585,27 @@ class RelationshipJobRepository:
                     error_category=None,
                 )
             )
+
+    async def defer(self, jobs: tuple[RelationshipJobRecord, ...]) -> None:
+        """Yield only this claim; a late preemption cannot release a newer owner."""
+        if not jobs:
+            return
+        now = datetime.now(UTC)
+        async with self._database.sessions() as session, session.begin():
+            for job in jobs:
+                await session.execute(
+                    update(RelationshipJobModel)
+                    .where(
+                        RelationshipJobModel.id == job.job_id,
+                        RelationshipJobModel.status == "processing",
+                        RelationshipJobModel.updated_at == job.claimed_at,
+                    )
+                    .values(
+                        status="pending",
+                        next_attempt_at=now + timedelta(seconds=30),
+                        updated_at=now,
+                    )
+                )
 
     async def fail(self, job_id: int, error_category: str) -> None:
         now = datetime.now(UTC)

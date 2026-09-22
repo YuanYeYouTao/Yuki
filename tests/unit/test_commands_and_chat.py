@@ -27,11 +27,9 @@ from qq_ai_bot.memory.enums import (
 from qq_ai_bot.memory.models import MemoryFactCreate
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.runtime.resolver import MemoryStructuredCommand
-from qq_ai_bot.memory.runtime.turn_session import apply_memory_tool_groups
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.runtime.contracts import MemoryCapabilityView
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.services.processor import (
     MENTION_ONLY_CONTEXT,
@@ -159,43 +157,6 @@ def inbound(
         group_id=group_id,
         mentions_bot=mentions_bot,
         attachments=(MessageAttachment(AttachmentKind.IMAGE, "image"),) if unsupported else (),
-    )
-
-
-def test_capability_view_owns_first_round_memory_scope() -> None:
-    from qq_ai_bot.config import Settings
-
-    defaults = make_settings("sqlite+aiosqlite:///:memory:")
-    assert "get_group_memories" in defaults.tooling_first_round_pin_ids
-    explicit = Settings(_env_file=None, tooling_first_round_pin_ids_csv="get_self_memories")
-    assert explicit.tooling_first_round_pin_ids == ("get_self_memories",)
-    requested = frozenset({"memory", "memory.read", "web"})
-    passive = MemoryCapabilityView(
-        eager_namespaces=(),
-        requestable_namespaces=("memory.state.write",),
-        hidden_namespaces=(),
-        exclusive_namespace=None,
-        transition_revision=1,
-    )
-    eager = MemoryCapabilityView(
-        eager_namespaces=("memory.person.read",),
-        requestable_namespaces=("memory.state.write",),
-        hidden_namespaces=(),
-        exclusive_namespace=None,
-        transition_revision=1,
-    )
-    exclusive = MemoryCapabilityView(
-        eager_namespaces=("memory.state.write",),
-        requestable_namespaces=(),
-        hidden_namespaces=(),
-        exclusive_namespace="memory.state.write",
-        transition_revision=1,
-    )
-
-    assert apply_memory_tool_groups(passive, requested) == frozenset({"web"})
-    assert apply_memory_tool_groups(eager, frozenset({"web"})) == frozenset({"memory", "web"})
-    assert apply_memory_tool_groups(exclusive, frozenset({"admin", "web"})) == frozenset(
-        {"admin", "memory", "web"}
     )
 
 

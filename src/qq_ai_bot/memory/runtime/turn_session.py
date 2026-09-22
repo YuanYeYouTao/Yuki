@@ -95,19 +95,6 @@ def scene_from_inbound(
     )
 
 
-def apply_memory_tool_groups(
-    view: MemoryCapabilityView, planner_groups: frozenset[str]
-) -> frozenset[str]:
-    """Capability view owns first-round Memory namespace; search cannot add write scope."""
-
-    stripped = frozenset(
-        scope for scope in planner_groups if scope != "memory" and not scope.startswith("memory.")
-    )
-    if any(namespace.startswith("memory.") for namespace in view.eager_namespaces):
-        return frozenset((*stripped, "memory"))
-    return stripped
-
-
 class TurnMemorySession:
     """I/O session that Chat may call.  It never holds ChatService."""
 
