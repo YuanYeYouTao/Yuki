@@ -6,6 +6,7 @@ from sqlalchemy import exists, func, not_, or_, select
 
 from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.memory.enums import MemoryJobStatus
+from qq_ai_bot.memory.self_origin import sql_self_receipt_evidence_predicate
 from qq_ai_bot.persistence.models import ChatEventModel, MemoryJobModel
 from qq_ai_bot.persistence.repository_helpers import (
     keeper_event_clause,
@@ -35,8 +36,9 @@ def sql_fact_tool_evidence_predicate() -> str:
     Expiry limits new reflection input, not evidence already committed. Failed
     tool results may document a failure; success is not an evidence requirement.
     """
-    return (
-        "COALESCE((f.scope_type='self' AND e.relation='agent_reflection' "
+    event_source = (
+        "(t.initiative_run_id IS NULL AND t.trigger_event_id IS NOT NULL "
+        "AND e.event_id IS NULL AND f.scope_type='self' AND e.relation='agent_reflection' "
         "AND e.authority='agent_reflection' AND e.source_speaker_user_id=t.bot_user_id "
         "AND trim(e.excerpt)!='' AND instr(t.result_excerpt,e.excerpt)>0 "
         "AND c.canonical_event_id IS NOT NULL "
@@ -50,8 +52,9 @@ def sql_fact_tool_evidence_predicate() -> str:
         "OR (f.visibility_type='private' AND f.canonical_visibility_person_id=v.person_id "
         "AND f.canonical_visibility_space_id IS NULL) "
         "OR (f.visibility_type='group' AND f.canonical_visibility_space_id=v.space_id "
-        "AND f.canonical_visibility_person_id IS NULL))), 0)"
+        "AND f.canonical_visibility_person_id IS NULL)))"
     )
+    return f"COALESCE(({event_source} OR {sql_self_receipt_evidence_predicate()}), 0)"
 
 
 class MemoryEventEligibilityPolicy:

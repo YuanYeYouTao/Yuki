@@ -626,11 +626,25 @@ async def test_canonical_reply_uses_keeper_author_and_ignores_other_conversation
     )
     assert yuki is not None and yuki.message.canonical_reply_to_yuki is True
     assert yuki.message.canonical_reply_author_kind == AuthorKind.YUKI.value
+    assert yuki.message.reply_to_event_id is not None
+    appended = await uow.append_inbound(yuki.message, yuki)
+    assert appended.event.reply_to_event_id == yuki.message.reply_to_event_id
+    async with database.sessions() as session:
+        persisted = await session.get(ChatEventModel, appended.event.id)
+        anchor = await session.get(ChatEventModel, persisted.reply_to_event_id)
+        assert anchor.platform_message_id == "yuki-out"
+        assert anchor.canonical_conversation_id == first.conversation_id
+    # A duplicate ingress replay keeps the committed internal reference unchanged.
+    repeated = await uow.append_inbound(yuki.message, yuki)
+    assert not repeated.created
+    assert repeated.event.reply_to_event_id == appended.event.reply_to_event_id
     assert spoof is not None and spoof.message.canonical_reply_to_yuki is False
     assert spoof.message.canonical_reply_author_kind == AuthorKind.EXTERNAL_BOT.value
     assert spoof.message.reply_sender_user_id == "8000"
     assert cross is not None and cross.message.canonical_reply_to_yuki is None
+    assert cross.message.reply_to_event_id is None
     assert missing is not None and missing.message.canonical_reply_to_yuki is None
+    assert missing.message.reply_to_event_id is None
 
 
 @pytest.mark.asyncio
@@ -692,8 +706,10 @@ async def test_canonical_reply_ambiguous_or_duplicate_only(
     assert ambiguous is not None
     assert ambiguous.message.canonical_reply_to_yuki is False
     assert ambiguous.message.canonical_reply_author_kind == "ambiguous"
+    assert ambiguous.message.reply_to_event_id is None
     assert suppressed is not None
     assert suppressed.message.canonical_reply_to_yuki is None
+    assert suppressed.message.reply_to_event_id is None
 
 
 @pytest.mark.asyncio
@@ -937,3 +953,29 @@ async def test_gateway_probe_releases_writer_and_rechecks_fence(
             assert not list(await session.scalars(select(ChatEventModel)))
     else:
         assert (await pending).created
+
+
+@pytest.mark.asyncio
+async def test_internal_reply_reference_rejects_a_foreign_conversation(database: Database) -> None:
+    from dataclasses import replace
+
+    registry, resolver, uow = await _stack(database)
+    bot = _Bot("8000")
+    async with database.sessions() as session, session.begin():
+        presence = await ensure_v2_presence(session, "8000")
+    registry.connect(bot)
+    registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
+    first = await resolver.pre_admit(bot, _message(message_id="owned-anchor", user_id="1001"))
+    anchor = await uow.append_inbound(first.message, first)
+    other = await resolver.pre_admit(bot, _message(message_id="foreign-ref", user_id="1002"))
+    forged = replace(other.message, reply_to_event_id=anchor.event.id)
+    with pytest.raises(CanonicalIdentityError) as error:
+        await uow.append_inbound(forged, other)
+    assert error.value.category == "receipt_conflict"
+    async with database.sessions() as session:
+        assert (
+            await session.scalar(
+                select(ChatEventModel).where(ChatEventModel.platform_message_id == "foreign-ref")
+            )
+            is None
+        )

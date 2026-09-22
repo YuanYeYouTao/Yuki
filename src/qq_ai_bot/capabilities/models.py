@@ -144,3 +144,4 @@ class AuthorityContext:
     actor_user_id: str
     is_superuser: bool
     permissions: frozenset[str] = frozenset()
+    principal_kind: str = "person"

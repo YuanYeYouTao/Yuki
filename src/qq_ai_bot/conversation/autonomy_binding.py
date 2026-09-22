@@ -1,7 +1,7 @@
 """V6 host-owned mode selection; never an Agent execution or authorization version.
 
-The repository persists these contracts, but production admission is deliberately not
-wired yet. None of these values grants tool, memory, execution or send authority.
+The Host selector persists these contracts before dispatch through the shared Work runtime.
+None of these values grants tool, memory, execution or send authority.
 """
 
 from __future__ import annotations

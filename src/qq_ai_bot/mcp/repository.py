@@ -223,7 +223,36 @@ class MCPRepository:
         result_excerpt: str = "",
         canonical_conversation_id: str | None = None,
         ingress_presence_id: str | None = None,
+        initiative_run_id: str | None = None,
+        tool_call_id: str | None = None,
+        execution_id: str | None = None,
     ) -> None:
+        if initiative_run_id is not None:
+            if (
+                trigger_event_id is not None
+                or tool_call_id is None
+                or not tool_call_id.strip()
+                or execution_id is None
+                or not execution_id.strip()
+            ):
+                raise ValueError(
+                    "initiative receipt requires an exclusive run source and call identity"
+                )
+            await self._record_initiative_invocation(
+                initiative_run_id=initiative_run_id,
+                tool_call_id=tool_call_id,
+                execution_id=execution_id,
+                canonical_conversation_id=canonical_conversation_id,
+                provider_id=provider_id,
+                tool_name=tool_name,
+                success=success,
+                latency_seconds=latency_seconds,
+                result_size=result_size,
+                artifact_created=artifact_created,
+                error_category=error_category,
+                result_excerpt=result_excerpt,
+            )
+            return
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
             invocation = ToolInvocationModel(
@@ -288,6 +317,88 @@ class MCPRepository:
                 )
             # No more queries after staging the two rows: flush once at commit.
             session.add(invocation)
+
+    async def _record_initiative_invocation(
+        self,
+        *,
+        initiative_run_id: str,
+        tool_call_id: str,
+        execution_id: str,
+        canonical_conversation_id: str | None,
+        provider_id: str,
+        tool_name: str,
+        success: bool,
+        latency_seconds: float,
+        result_size: int,
+        artifact_created: bool,
+        error_category: str | None,
+        result_excerpt: str,
+    ) -> None:
+        from sqlalchemy.dialects.sqlite import insert
+
+        from qq_ai_bot.memory.self_origin import resolve_self_origin
+
+        if len(tool_call_id) > 255 or len(execution_id) > 255:
+            raise ValueError("initiative call identity exceeds storage bounds")
+        key = hashlib.sha256(
+            json.dumps(
+                [initiative_run_id, execution_id, provider_id, tool_name, tool_call_id],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        now = datetime.now(UTC)
+        async with self._database.sessions() as session, session.begin():
+            source = await resolve_self_origin(
+                session,
+                initiative_run_id=initiative_run_id,
+                canonical_conversation_id=canonical_conversation_id,
+                require_live=False,
+                require_group_projection=False,
+            )
+            invocation = ToolInvocationModel(
+                runtime_turn_id=claim_runtime_turn_id(),
+                conversation_key_hash=hashlib.sha256(source.partition.encode()).hexdigest(),
+                provider_id=provider_id[:128],
+                tool_name=tool_name[:255],
+                success=success,
+                latency_seconds=max(0.0, latency_seconds),
+                result_size=max(0, result_size),
+                artifact_created=artifact_created,
+                error_category=error_category[:128] if error_category else None,
+                created_at=now,
+            )
+            await stamp_conversation_correlation(
+                session, invocation, source.canonical_conversation_id
+            )
+            redacted = _redact_reflection_result(result_excerpt.strip())
+            # Resolve provenance first; the write lock begins only after all reads.
+            result = await session.scalar(
+                insert(MemoryToolReceiptModel)
+                .values(
+                    conversation_key_hash=hashlib.sha256(source.partition.encode()).hexdigest(),
+                    trigger_event_id=None,
+                    initiative_run_id=initiative_run_id,
+                    tool_call_id=tool_call_id,
+                    execution_id=execution_id,
+                    source_call_key=key,
+                    bot_user_id=source.bot_user_id,
+                    canonical_person_id=None,
+                    canonical_space_id=source.space_id,
+                    provider_id=provider_id[:128],
+                    tool_name=tool_name[:255],
+                    success=success,
+                    result_excerpt=redacted[: self._reflection_excerpt_characters],
+                    result_characters=len(redacted),
+                    error_category=invocation.error_category,
+                    created_at=now,
+                    expires_at=now + timedelta(days=self._reflection_retention_days),
+                )
+                .on_conflict_do_nothing(index_elements=["source_call_key"])
+                .returning(MemoryToolReceiptModel.id)
+            )
+            if result is not None:
+                session.add(invocation)
 
     @staticmethod
     def _metadata(row: MCPToolCacheModel) -> MCPToolMetadata:

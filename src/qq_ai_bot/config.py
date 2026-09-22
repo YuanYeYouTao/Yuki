@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal, Self
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import AliasChoices, Field, PrivateAttr, field_validator, model_validator
+from pydantic import AliasChoices, Field, PrivateAttr, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from qq_ai_bot.domain.messages import ReasoningEffort, minimum_reasoning_effort
@@ -354,6 +354,10 @@ class Settings(BaseSettings):
     mcp_artifact_retention_seconds: int = 86400
 
     conversation_autonomous_enabled: bool = True
+    conversation_semantic_participation_enabled: bool = False
+    semantic_participation_api_key: SecretStr = Field(default=SecretStr(""), repr=False)
+    semantic_participation_model: str = "jev-1.13.0"
+    semantic_participation_state_path: Path = Path("data/participation.sqlite3")
     runtime_work_enabled: bool = False
     subagents_enabled: bool = False
     subagent_context_token_limit: int = Field(default=131072, ge=8192)

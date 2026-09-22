@@ -1,4 +1,4 @@
-"""Durable exclusive selector and proposal admission, intentionally not wired to execution.
+"""Durable exclusive selector and proposal admission.
 
 Only a trusted host calls this repository after resolving source revisions, semantic
 support and scene permissions. It does not interpret text or grant SELF tool authority.
@@ -193,11 +193,13 @@ class AutonomyRepository:
         sources: tuple[InitiativeSource, ...],
         target_person_id: str | None = None,
         support_refs: tuple[str, ...] = (),
+        source_guard: tuple[InitiativeSource, ...] = (),
+        expires_at: float | None = None,
     ) -> AdmissionResult:
         """Persist a host-validated opportunity, not permission to invoke an Agent.
 
-        Source and support validation must be implemented by the SELF host adapter before
-        this protocol is connected. Only *focus* sources belong here: shared context must
+        The SELF host adapter validates source visibility and semantic support before this
+        short transaction. Only *focus* sources are claimed: shared context must
         not become a consumed opportunity. Already accepted proposal replay returns its
         original run even after a mode/generation switch; it never dispatches it again.
         """
@@ -207,6 +209,8 @@ class AutonomyRepository:
             raise ValueError("initiative_support_refs_invalid")
         if owner is AutonomyOwner.SEMANTIC and not support_refs:
             raise ValueError("initiative_semantic_support_required")
+        if len(source_guard) > 256:
+            raise ValueError("initiative_source_guard_too_large")
         now = datetime.now(UTC)
         requested = AcceptedInitiative(
             run_id=str(uuid4()),
@@ -242,6 +246,9 @@ class AutonomyRepository:
                 if prior.payload_hash != payload_hash:
                     raise AutonomyConflict("initiative_proposal_replay_conflict")
                 return AdmissionResult("duplicate", _run(prior))
+            now = datetime.now(UTC)
+            if expires_at is not None and now.timestamp() >= expires_at:
+                return AdmissionResult("expired")
             current = await session.get(
                 AutonomyBindingModel, (binding.conversation_id, binding.generation)
             )
@@ -272,6 +279,66 @@ class AutonomyRepository:
                 or not presence.enabled
             ):
                 return AdmissionResult("scene_unavailable")
+            if source_guard:
+                # Keyed content CAS only; full semantic/lineage hydration already finished
+                # outside this short transaction. Context dependencies are checked but not claimed.
+                from qq_ai_bot.conversation.initiative_sources import (
+                    memory_revision,
+                    source_revision,
+                )
+                from qq_ai_bot.persistence.models import ChatEventModel, MemoryFactModel
+
+                events = {
+                    str(row.id): row
+                    for row in (
+                        await session.scalars(
+                            select(ChatEventModel).where(
+                                ChatEventModel.id.in_(
+                                    [
+                                        int(ref.source_id)
+                                        for ref in source_guard
+                                        if ref.kind is InitiativeSourceKind.EVENT
+                                    ]
+                                )
+                            )
+                        )
+                    ).all()
+                }
+                memories = {
+                    str(row.id): row
+                    for row in (
+                        await session.scalars(
+                            select(MemoryFactModel).where(
+                                MemoryFactModel.id.in_(
+                                    [
+                                        int(ref.source_id)
+                                        for ref in source_guard
+                                        if ref.kind is InitiativeSourceKind.MEMORY
+                                    ]
+                                )
+                            )
+                        )
+                    ).all()
+                }
+                for ref in source_guard:
+                    if ref.kind is InitiativeSourceKind.EVENT:
+                        event_row = events.get(ref.source_id)
+                        if (
+                            event_row is None
+                            or event_row.canonical_conversation_id != binding.conversation_id
+                            or event_row.suppression_status not in {None, "keeper"}
+                            or str(source_revision(event_row)) != ref.revision
+                        ):
+                            return AdmissionResult("source_changed")
+                    else:
+                        memory_row = memories.get(ref.source_id)
+                        if (
+                            memory_row is None
+                            or memory_row.status != "active"
+                            or memory_row.review_state != "verified"
+                            or memory_revision(memory_row) != ref.revision
+                        ):
+                            return AdmissionResult("source_changed")
             claimed = await session.scalar(
                 select(InitiativeSourceClaimModel.run_id)
                 .where(
@@ -302,6 +369,19 @@ class AutonomyRepository:
                 .limit(1)
             )
             if active is not None:
+                return AdmissionResult("busy")
+            from qq_ai_bot.runtime.work_schema_v1 import work
+
+            existing_work = await session.scalar(
+                select(work.c.id)
+                .where(
+                    work.c.conversation_id == binding.conversation_id,
+                    work.c.generation == binding.generation,
+                    work.c.state.in_(("running", "queued", "waiting_external")),
+                )
+                .limit(1)
+            )
+            if existing_work is not None:
                 return AdmissionResult("busy")
             row = InitiativeRunModel(
                 id=requested.run_id,
@@ -341,6 +421,64 @@ class AutonomyRepository:
         async with self._database.sessions() as session:
             row = await session.get(InitiativeRunModel, run_id)
             return _run(row) if row is not None else None
+
+    async def list_active(self) -> tuple[AcceptedInitiative, ...]:
+        """Accepted rows are a durable outbox, reconciled against original Work source IDs."""
+        async with self._database.sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(InitiativeRunModel)
+                    .where(
+                        InitiativeRunModel.state.in_(_ACTIVE),
+                    )
+                    .order_by(InitiativeRunModel.created_at)
+                    .limit(128)
+                )
+            ).all()
+            return tuple(_run(row) for row in rows)
+
+    async def list_recent(self) -> tuple[AcceptedInitiative, ...]:
+        """Keep a bounded terminal tail in reconciliation for late factual receipts."""
+        async with self._database.sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(InitiativeRunModel)
+                    .where(
+                        InitiativeRunModel.state.not_in(_ACTIVE),
+                    )
+                    .order_by(InitiativeRunModel.updated_at.desc())
+                    .limit(128)
+                )
+            ).all()
+            return tuple(_run(row) for row in rows)
+
+    async def latest_feedback(self, run_id: str) -> tuple[str, dict[str, Any], datetime] | None:
+        async with self._database.sessions() as session:
+            row = await session.scalar(
+                select(InitiativeFeedbackModel)
+                .where(
+                    InitiativeFeedbackModel.run_id == run_id,
+                )
+                .order_by(InitiativeFeedbackModel.sequence.desc())
+                .limit(1)
+            )
+            return (row.outcome, json.loads(row.payload_json), row.created_at) if row else None
+
+    async def list_bindings(self) -> tuple[AutonomyBinding, ...]:
+        async with self._database.sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(AutonomyBindingModel)
+                    .join(
+                        CanonicalConversationModel,
+                        CanonicalConversationModel.id == AutonomyBindingModel.conversation_id,
+                    )
+                    .where(CanonicalConversationModel.generation == AutonomyBindingModel.generation)
+                    .order_by(AutonomyBindingModel.updated_at.desc())
+                    .limit(128)
+                )
+            ).all()
+            return tuple(_binding(row) for row in rows)
 
     async def query_proposal(
         self,

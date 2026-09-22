@@ -30,3 +30,16 @@ def test_sanitize_model_output_preserves_model_authored_sources_and_links() -> N
     )
 
     assert sanitize_model_output(text, max_characters=12_000) == text
+
+
+@pytest.mark.parametrize(
+    "tail",
+    (
+        '<yuki-state>{"engage":"quiet","mood":"calm"}</yuki-state>',
+        '<yuki-state>{"engage":"invalid"}</yuki-state>',
+        "<yuki-state>incomplete",
+        '<yuki-state>{"actor":"another-person"}</yuki-state>',
+    ),
+)
+def test_self_report_control_tail_never_reaches_outbound_text(tail: str) -> None:
+    assert sanitize_model_output(f"可见正文\n{tail}", max_characters=12_000) == "可见正文"

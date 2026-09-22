@@ -60,6 +60,7 @@ class SelfReflectionToolReceipt(_Contract):
     tool_name: str = Field(min_length=1, max_length=255)
     success: bool
     result_excerpt: str = Field(max_length=2000)
+    occurred_at: datetime | None = None
 
 
 class SelfReflectionFact(_Contract):
@@ -81,6 +82,7 @@ class SelfReflectionPreviousEpisode(_Contract):
 
 
 class SelfReflectionInput(_Contract):
+    source_kind: Literal["chat", "initiative_tools"] = "chat"
     scope_type: ScopeType
     group_id: str | None = Field(default=None, max_length=64)
     private_peer_user_id: str | None = Field(default=None, max_length=64)
@@ -270,15 +272,22 @@ class SelfReflectionBatch:
     scheduled_slot: str
     run_id: int
     max_input_characters: int
+    initiative_run_id: str | None = None
+    first_receipt_id: int | None = None
+    last_receipt_id: int | None = None
+    occurred_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class StoredToolReceipt:
     id: int
-    trigger_event_id: int
+    trigger_event_id: int | None
     tool_name: str
     success: bool
     result_excerpt: str
+    initiative_run_id: str | None = None
+    bot_user_id: str = ""
+    occurred_at: datetime | None = None
 
 
 class SelfReflectionHealth(_Contract):

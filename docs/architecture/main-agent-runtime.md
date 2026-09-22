@@ -7,6 +7,8 @@
 普通聊天、主动群聊、自动化、插件通知自主轮和 SDK 的 Yuki 生成使用
 `MainAgentTurnService`、`AgentRunner` 和 `MainAgentBackend`。自动化不再拥有第二套
 模型工具后端、名称映射或参数转换。独立 agent_sessions、子 Agent 合同和辅助模型不属于主合同。
+当前开发工作树的 legacy/semantic 自主机会均以正式 SELF 来源进入这条执行链；
+本轮尚未合并 main 或部署，真实 QQ 小范围验收仍未进行。
 
 模型侧每项业务只有一个公开名称和参数合同。冻结清单只来自主工具注册表，不追加 DSL、MCP
 或插件的自动化别名；目录查询不会加载工具、改变声明或提升权限。合同版本 5 为本轮更新建立
@@ -21,6 +23,15 @@
 历史、记忆的主动补查使用同一读取授权；context 配置只控制首次预取。记忆写入仍需真实证据，
 定时任务通过 evidence_event_id 引用创建者在当前会话的原始事件，不把任务指令伪装成人类发言。
 
+SELF 自主来源的 `ToolActor` / `TurnAuthority` 使用 `principal_kind="self"` 和可信
+`initiative_run_id`，不携带真人 user/person；`SelfInitiativeTrigger` 固定原 Conversation、
+generation、Space、Presence 与群传输目标。目标成员和资料来源都不授予其私人权限。
+`ConversationTurnSnapshot` 的事件 ID 与 initiative run 严格二选一；无事件工作不得借
+最近真人消息补锚点。SELF 主入口首次只预取当前群与该群可见的 SELF Memory。
+每次模型请求、工具执行和发送准备仍复核原 run 与场景权限。当前 SELF 社交工具只允许
+当前群发送、通讯录、历史和成员读取；不支持自动结构化 @、私人目标、撤回或戳人。
+完整声明不随主体改动，执行处拒绝不获准的能力；详见 [语义参与接入](semantic-participation.md)。
+
 模型侧只用 `send_message` 发送可见内容：省略 target 时发到当前群或私聊，显式 target 可指定
 其他人或群，后端选择私聊或群聊路由。语音、表情、附件、引用、提及均由同一工具的参数表达；
 真实网关发送和持久回执组成普通工具结果，`uncertain` 不自动重试。一次循环可多次发送，也可
@@ -30,6 +41,9 @@
 Runner 在原循环中给一次未送达反馈；再次遗漏则记为失败，不把它标成已回复。
 空最终正文可表示明确沉默，不强制每轮发信；已有发送尝试、已接纳工作与其他入口不被
 这条聊天纠正逻辑盲目重发或代发。
+主 SELF 另将未发送的非空最终正文作为内部反馈交回同一循环，由 Agent 决定发送或
+`NO_REPLY`；调度器不自动转发。`NO_REPLY` 是合法完成，`return_to_caller` 不制造真人
+收尾通知。SELF 的子 Agent 返回内部任务结果，不继承主 SELF 的发送要求。
 单次 `send_message` 的纯文本复用原回复分条规则（换行、结构与字数上限），
 逐条持久化发送回执；模型主动多次调用仍是独立的发送。部分发送未知时停止后续
 分条，重入只读取已有回执，不盲目重发。媒体和语音仍按单次发送处理。
@@ -39,6 +53,8 @@ Runner 在原循环中给一次未送达反馈；再次遗漏则记为失败，�
 分条只在实际发送该条前准备子回执；确认失败与结果未知分别报告，不把发送前拒绝误报为未知。
 模型提供给 `send_message` 的文本在分条、回执准备、媒体生成、网关发送和账本写入之前统一净化；
 内部历史事件前缀不会进入新的可见消息。既有 QQ 消息、原始账本、Rollup 和记忆不追溯改写。
+可选 `<yuki-state>` 控制尾段同样在发送、语音与最终正文净化时移除，格式错误不额外重试模型。
+主 SELF 自报按实际 run、请求序号和响应 ID 保存；它不是别人行为的证据，也不允许工作者代报。
 
 新建 Agentic 自动化由 Agent 自行决定何时调用 `send_message`；生成式自动化没有工具循环，
 保留明确写入脚本的 DSL 发送步骤。历史脚本仍按原 run/step 游标恢复，不能盲目重建或重发。
@@ -62,7 +78,8 @@ system 前缀、不改变固定工具声明。paused、terminal 和更多任务�
 
 | 来源 | 恢复所有者 | 交付所有者 |
 | --- | --- | --- |
-| 用户消息、主动群聊 | WorkScheduler，原 work/generation | Agent 显式 `send_message` |
+| 用户消息 | WorkScheduler，原 work/generation | Agent 显式 `send_message` |
+| SELF 自主群聊（legacy/semantic） | Host 接纳记录 → WorkScheduler，原 initiative/work/generation | Agent 显式 `send_message`；允许 `NO_REPLY` |
 | 自动化生成、Agent 步骤 | AutomationWorker，原 run/step 游标 | 生成式 DSL 步骤；Agent 显式 `send_message` |
 | 插件通知自主轮 | PluginBackgroundTurnWorker，原 job/event | Agent 显式 `send_message`；插件自己的通知 outbox 独立 |
 | 有真实事件的 SDK 主调用 | Host 持有正在运行的协程，后续由 WorkScheduler 恢复 | 原调用方查询结果 |
@@ -81,6 +98,16 @@ SDK 回调等待约 5 秒可返回 `work_id/state/pending`；等待不是模型�
 普通续跑从 journal 恢复真实请求，只追加新的工具回执和输入。变化后的时间、short_state 和
 上下文不得替换旧前缀。来源或合同变化走显式链边界，保留工作、预算和执行证据。
 结果由调用方取得不代表 QQ 已发送；只有实际网关回执可以确认发送。
+
+SELF 接纳记录构成持久待派发事实，以 `initiative:<run_id>` 唯一关联原 Work；同一标记
+也写入 journal，避免恢复时把新 brief 或记忆重新追加成原触发。沙箱完成先唤醒原 Work/
+子任务，保留执行 ID 和总预算。controller owner/epoch 切换只控制新接纳，不使已接受工作
+失效；generation reset 或原授权失效仍阻止继续执行。发送沿原 Presence，不借当前主动路由。
+Host 对原 run 独立对账真实效果；终态迟到回执保留，但不复活 Work、重复记账或重发。
+`suspended`/`waiting_user` 映射为 interrupted，保留检查点，不由参与控制器自行启动新任务。
+WorkScheduler 始终启动；`RUNTIME_WORK_ENABLED` 仅控制普通聊天的新工作接纳，关闭后
+仍须恢复已有 Work，SELF 接纳也继续使用这套持久恢复机制，不能产生无人调度的执行记录。
+SubagentScheduler 同样启动以恢复原子任务；新子任务接纳关闭不等于停止已有子任务的恢复。
 
 ## 预算、等待与异常
 
@@ -113,5 +140,13 @@ automation_list 的 match_task 按结构化目标、时间、读取范围及交�
 迁移继承既有 run 及未完成步骤的消耗；缺恢复所有者的旧 SDK/自动化 work 明确暂停并保留原因。
 迁移不重跑旧日记、不清除原 work、artifact、预算或交付回执。
 
+本地 V6 迁移链为 `0065`（PR #111 关系历史索引）→ `0066`（autonomy 接纳和反馈）→
+`0067`（SELF 工具证据及自省独立回执水位）→ `0068`（内部引用事件，当前开发迁移头）。
+SELF 工具证据以 event/run 二选一归属，
+不通过假聊天事件进入 Memory；自省迟到回执按原 run 的独立水位续读。这条开发链尚未部署。
+
 验收比较两个 Provider 协议的实际 messages/input、工具和原生工具；统计命中率需要 Provider
 真实指标。离线请求回放可证明协议前缀，不等于真实缓存命中率；指标不可用标记未知。
+本地已对照 SELF 的 Responses / Chat Completions 真实序列化输入，以及 Responses 原生工具
+声明；第 24 次请求后第 25 次继续原 Work，恢复前缀不改写。这不替代 T20 真实 QQ、生产
+缓存和长期参与效果验收。Jev 合成 smoke 只提供协议及样本分歧证据，不是独立人工准确率。

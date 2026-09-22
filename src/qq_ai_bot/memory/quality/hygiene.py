@@ -46,8 +46,8 @@ class MemoryProvenanceHygiene:
                           AND NOT EXISTS (
                             SELECT 1 FROM memory_evidence e
                             JOIN memory_tool_receipts t ON t.id=e.tool_receipt_id
-                            JOIN chat_events c ON c.id=t.trigger_event_id
-                            JOIN canonical_conversations v ON v.id=c.canonical_conversation_id
+                            LEFT JOIN chat_events c ON c.id=t.trigger_event_id
+                            LEFT JOIN canonical_conversations v ON v.id=c.canonical_conversation_id
                             WHERE e.fact_id=f.id AND {sql_fact_tool_evidence_predicate()}
                           )
                             ORDER BY f.id LIMIT :page_size

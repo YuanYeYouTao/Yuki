@@ -543,6 +543,9 @@ class AgentRunner:
                 mark_native_web = getattr(tools, "mark_native_web_used", None)
                 if callable(mark_native_web):
                     mark_native_web()
+            observe_response = getattr(tools, "observe_response", None)
+            if callable(observe_response):
+                await observe_response(response, runtime)
             if response.continuation is not None:
                 transcript.accept(response.continuation)
             if control is not None and control.session is not None:

@@ -27,6 +27,7 @@ class WorkSession:
         self.source_revision = 0
         self.pending: list[dict[str, Any]] = []
         self.event_ids: list[int] = []
+        self.source_keys: list[str] = []
         self.input_ids: list[int] = []
         self.sequence = 0
         self.recovered_delivery: str | None = None
@@ -74,11 +75,12 @@ class WorkSession:
             self.progress = dict(metadata.get("progress", {}))
             self.sequence = int(metadata.get("sequence", 0))
             self.event_ids = list(metadata.get("event_ids", []))
+            self.source_keys = list(metadata.get("source_keys", []))
             self.input_ids = list(metadata.get("input_ids", []))
             control.known_effects = list(metadata.get("effects", []))
             if (
                 row["phase"] in {"delivery", "delivered"}
-                and control.source.get("trigger_event_id") in self.event_ids
+                and self._source_present()
                 and not await control.pending()
             ):
                 self.recovered_delivery = row["phase"]
@@ -95,12 +97,16 @@ class WorkSession:
                 control.observe_result(
                     call["name"], result, True, arguments=call.get("arguments", "{}")
                 )
-            if control.source.get("trigger_event_id") not in self.event_ids:
+            if not self._source_present():
                 if control.current_message is not None:
                     self.transcript.append(control.current_message)
         trigger = control.source.get("trigger_event_id")
         if isinstance(trigger, int) and trigger not in self.event_ids:
             self.event_ids.append(trigger)
+        if control.source.get("principal_kind") == "self":
+            anchor = f"initiative:{control.source['initiative_run_id']}"
+            if anchor not in self.source_keys:
+                self.source_keys.append(anchor)
         if control.current is not None:
             await self.journal.recovered_inputs(
                 control.lease, self.input_ids, control.current["id"]
@@ -118,6 +124,12 @@ class WorkSession:
                 )
             )
         return self.transcript
+
+    def _source_present(self) -> bool:
+        source = self.control.source
+        if source.get("principal_kind") == "self":
+            return f"initiative:{source.get('initiative_run_id')}" in self.source_keys
+        return source.get("trigger_event_id") in self.event_ids
 
     async def needs_compaction(self) -> bool:
         if self.control.current is None:
@@ -205,6 +217,7 @@ class WorkSession:
                 metadata={
                     "sequence": self.sequence,
                     "event_ids": self.event_ids[-256:],
+                    "source_keys": self.source_keys[-256:],
                     "input_ids": self.input_ids[-256:],
                     "effects": self.control.known_effects,
                     "ending": self.control.ending,

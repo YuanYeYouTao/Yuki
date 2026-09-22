@@ -43,7 +43,7 @@ from qq_ai_bot.persistence.repository_records import EventRecord
 @dataclass(frozen=True, slots=True)
 class MemoryProcessingContext:
     source: MemoryProcessingSource
-    event: EventRecord
+    event: EventRecord | None
     config_scope: MemoryConfigScope | None = None
     rebuild_run_id: str | None = None
     proposal_id: int | None = None
@@ -209,11 +209,17 @@ class MemoryClaimProcessor:
     ) -> MemoryClaimResolution:
         """Validate and decide a claim without opening a write transaction."""
 
-        validated = (
-            claim
-            if isinstance(claim, ValidatedMemoryClaim)
-            else self._validator.validate_claim(claim, context.event)
-        )
+        if context.event is None and (
+            not isinstance(claim, ValidatedMemoryClaim) or context.config_scope is None
+        ):
+            raise ValueError(
+                "actorless processing requires validated claim and canonical config scope"
+            )
+        if isinstance(claim, ValidatedMemoryClaim):
+            validated: ValidatedMemoryClaim | None = claim
+        else:
+            assert context.event is not None  # Actorless inputs were rejected above.
+            validated = self._validator.validate_claim(claim, context.event)
         if validated is None:
             return MemoryClaimProcessResult(None, MemoryResolutionAction.NOOP, "claim_rejected")
         if context.force_expired_invalidated:
@@ -249,16 +255,16 @@ class MemoryClaimProcessor:
                 action=MemoryResolutionAction.INVALIDATE,
                 reason_code="historical_expired",
             )
-        runtime = (
-            await self._runtime_config.snapshot(memory_scope=context.config_scope)
-            if self._runtime_config is not None and context.config_scope is not None
-            else await self._runtime_config.snapshot(
-                user_id=context.event.sender_user_id,
-                group_id=context.event.group_id,
-            )
-            if self._runtime_config is not None
-            else None
-        )
+        runtime = None
+        if self._runtime_config is not None:
+            if context.config_scope is not None:
+                runtime = await self._runtime_config.snapshot(memory_scope=context.config_scope)
+            else:
+                assert context.event is not None  # SELF always supplies canonical config scope.
+                runtime = await self._runtime_config.snapshot(
+                    user_id=context.event.sender_user_id,
+                    group_id=context.event.group_id,
+                )
         candidates = await self._candidates.resolve(
             validated.fact,
             limit=(

@@ -33,6 +33,7 @@ from qq_ai_bot.identity.receipt_compat import (
     load_claimed_keeper,
     require_claimed_event,
     require_compatible_v2_live,
+    require_reply_source,
 )
 from qq_ai_bot.identity.routing import PresenceRouter
 from qq_ai_bot.persistence.database import Database
@@ -169,6 +170,11 @@ class CanonicalIngressUnitOfWork:
                     scope=scope,
                     segments=segments,
                 )
+            await require_reply_source(
+                session,
+                conversation_id=admitted.conversation_id,
+                reply_to_event_id=message.reply_to_event_id,
+            )
             trip("after_receipt_claim")
             row = ChatEventModel(
                 bot_user_id=scope.bot_user_id,
@@ -185,6 +191,7 @@ class CanonicalIngressUnitOfWork:
                 visual_summary="",
                 segments_json=json.dumps(segments, ensure_ascii=False, separators=(",", ":")),
                 reply_to_message_id=message.reply_to_message_id,
+                reply_to_event_id=message.reply_to_event_id,
                 origin="user_message",
                 occurred_at=message.received_at,
                 observed_at=now,

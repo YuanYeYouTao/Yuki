@@ -64,6 +64,8 @@ class SocialContext:
     reply_message_id: str | None = None
     reply_presence_id: str | None = None
     sequence_part_index: int | None = None
+    initiative_run_id: str | None = None
+    presence_id: str | None = None
 
 
 class SocialService:
@@ -81,6 +83,39 @@ class SocialService:
         self.transfer: ArtifactTransfer | None = None
         self.speech_delivery: Any = None
         self.emoji_delivery: Any = None
+
+    async def _validate_self_context(self, context: SocialContext) -> None:
+        if context.origin != "self_initiative" and context.initiative_run_id is None:
+            return
+        if (
+            context.origin != "self_initiative"
+            or not context.initiative_run_id
+            or not context.space_id
+            or not context.presence_id
+            or context.trigger_event_id is not None
+            or context.caused_by_event_id is not None
+            or context.person_refs
+            or context.account_refs
+            or context.inbound is not None
+            or context.actor is None
+            or context.actor.principal_kind != "self"
+            or context.actor.initiative_run_id != context.initiative_run_id
+            or context.actor.conversation_id != context.conversation_id
+            or context.actor.presence_id != context.presence_id
+        ):
+            raise SocialError("invalid_self_context")
+        from qq_ai_bot.conversation.self_initiative import validate_self_initiative
+
+        try:
+            await validate_self_initiative(
+                self.database,
+                context.initiative_run_id,
+                conversation_id=context.conversation_id,
+                space_id=context.space_id,
+                presence_id=context.presence_id,
+            )
+        except PermissionError as exc:
+            raise SocialError(str(exc)) from exc
 
     @staticmethod
     def _canonical_send_arguments(args: dict[str, Any]) -> dict[str, Any]:
@@ -279,6 +314,10 @@ class SocialService:
         else:
             raw = str(args["target_id"])
         target = SocialTarget.model_validate({"kind": kind, "id": raw})
+        if context.initiative_run_id and (
+            target.kind != "space" or str(target.id) != context.space_id
+        ):
+            raise SocialError("self_target_outside_current_space")
         await self.check_target(target)
         return target
 
@@ -330,6 +369,43 @@ class SocialService:
         return result
 
     async def send_route(self, target: SocialTarget, context: SocialContext) -> ResolvedSend:
+        if context.initiative_run_id:
+            await self._validate_self_context(context)
+            if target.kind != "space" or str(target.id) != context.space_id:
+                raise SocialError("self_target_outside_current_space")
+            async with self.database.sessions() as session:
+                bindings = list(
+                    await session.scalars(
+                        select(SpaceBindingModel)
+                        .where(
+                            SpaceBindingModel.space_id == context.space_id,
+                            SpaceBindingModel.platform == "qq",
+                            SpaceBindingModel.status == "active",
+                        )
+                        .limit(2)
+                    )
+                )
+                presence = await session.get(PresenceModel, context.presence_id)
+                if (
+                    len(bindings) != 1
+                    or presence is None
+                    or not presence.enabled
+                    or bindings[0].external_space_id != context.actor.group_id
+                    or presence.external_account_id != context.actor.bot_user_id
+                ):
+                    raise SocialError("self_scene_binding_changed")
+                binding_id, group = bindings[0].id, bindings[0].external_space_id
+                account = presence.external_account_id
+            route = await self.router.resolve_send_for_account(account, capability="send_group")
+            if route.presence_id != context.presence_id:
+                raise SocialError("self_presence_changed")
+            return replace(
+                route,
+                binding_id=binding_id,
+                external_target_id=group,
+                kind="group",
+                route_generation=0,
+            )
         if (
             target.kind == "space"
             and context.trigger_event_id is not None
@@ -519,6 +595,7 @@ class SocialService:
         target = prior.target if prior is not None else await self.target(kind, selected, context)
         # A content-free manifest freezes the split plan before any gateway call.
         # It remains PREPARED because it is not itself a transport effect.
+        await self._validate_self_context(context)
         await self.receipts.prepare(
             source_turn_id=context.turn_id,
             tool_call_id=context.call_id,
@@ -583,6 +660,25 @@ class SocialService:
     async def execute(
         self, name: str, args: dict[str, Any], context: SocialContext
     ) -> dict[str, Any]:
+        await self._validate_self_context(context)
+        if context.initiative_run_id:
+            if name not in {
+                "send_message",
+                "find_contacts",
+                "read_conversation_history",
+                "get_group_members",
+            }:
+                raise SocialError("self_social_action_not_allowed")
+            if args.get("mentions"):
+                raise SocialError("self_mentions_not_allowed")
+            if name in {"find_contacts", "read_conversation_history"}:
+                if args.get("kind", "space") != "space" or args.get("operation_id"):
+                    raise SocialError("self_target_outside_current_space")
+                args = {**args, "kind": "space"}
+                if name == "read_conversation_history":
+                    if args.get("presence_id", context.presence_id) != context.presence_id:
+                        raise SocialError("self_presence_changed")
+                    args["presence_id"] = context.presence_id
         if name == "send_message":
             args = self._canonical_send_arguments(args)
         if name == "send_message" and context.sequence_part_index is None:
@@ -597,6 +693,15 @@ class SocialService:
             if args.get("target_id") or args.get("subject_ref"):
                 target = await self.target(kind, args, context)
                 items = [{"target_id": str(target.id), "kind": target.kind}]
+            elif context.initiative_run_id:
+                async with self.database.sessions() as session:
+                    space = await session.get(CanonicalSpaceModel, context.space_id)
+                    query = str(args.get("display_name", ""))
+                    items = (
+                        [{"target_id": space.id, "display_name": space.name, "kind": "space"}]
+                        if space is not None and query in space.name
+                        else []
+                    )
             else:
                 items = [
                     dict(item)
@@ -744,6 +849,7 @@ class SocialService:
                 or (
                     context.origin == "plugin_background" and context.caused_by_event_id is not None
                 )
+                or context.initiative_run_id is not None
             )
         )
         await self.check_target(route_target, sending=not current_group_grant)
@@ -1041,6 +1147,7 @@ class SocialService:
         caption: str = "",
         caption_segments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        await self._validate_self_context(context)
         receipt = await self.receipts.prepare(
             source_turn_id=context.turn_id,
             tool_call_id=context.call_id,
@@ -1057,8 +1164,9 @@ class SocialService:
                 else receipt.model_dump(mode="json")
             )
         async with self._lock:
+            await self._validate_self_context(context)
             current_group_grant = (
-                name == "send_message"
+                name in {"send_message", "send_file_caption"}
                 and target.kind == "space"
                 and str(target.id) == context.space_id
                 and (
@@ -1067,6 +1175,7 @@ class SocialService:
                         context.origin == "plugin_background"
                         and context.caused_by_event_id is not None
                     )
+                    or context.initiative_run_id is not None
                 )
             )
             await self.check_target(
@@ -1107,6 +1216,7 @@ class SocialService:
                     {"target": target.model_dump(mode="json"), "arguments": args},
                     count=2 if caption or caption_segments else 1,
                 )
+            await self._validate_self_context(context)
             if not await self.receipts.claim(receipt.operation_id, presence_id=route.presence_id):
                 current = await self.receipts.get(receipt.operation_id)
                 await self._record_work_delivery(current)

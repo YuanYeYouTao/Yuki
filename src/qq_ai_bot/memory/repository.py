@@ -182,7 +182,30 @@ def readable_evidence_count_expression() -> Any:
         .correlate(MemoryFactModel)
         .scalar_subquery()
     )
-    return event_count + receipt_count
+    from sqlalchemy import text
+
+    from qq_ai_bot.memory.self_origin import sql_self_receipt_evidence_predicate
+
+    initiative_count = (
+        select(func.count())
+        .select_from(MemoryEvidenceModel)
+        .join(
+            MemoryToolReceiptModel, MemoryToolReceiptModel.id == MemoryEvidenceModel.tool_receipt_id
+        )
+        .where(
+            MemoryEvidenceModel.fact_id == MemoryFactModel.id,
+            text(
+                sql_self_receipt_evidence_predicate(
+                    fact="memory_facts",
+                    evidence="memory_evidence",
+                    receipt="memory_tool_receipts",
+                )
+            ),
+        )
+        .correlate(MemoryFactModel)
+        .scalar_subquery()
+    )
+    return event_count + receipt_count + initiative_count
 
 
 def _initial_activation(fact: MemoryFactCreate) -> float:
@@ -975,13 +998,26 @@ class MemoryFactRepository:
                 return False
         else:
             receipt = await session.get(MemoryToolReceiptModel, evidence.tool_receipt_id)
-            if receipt is None or receipt.trigger_event_id is None:
+            if receipt is None:
                 return False
-            trigger = await session.get(ChatEventModel, receipt.trigger_event_id)
-            if trigger is None or not await v2_evidence_event_chain_readable(
-                session, fact_row, trigger
-            ):
-                return False
+            if receipt.initiative_run_id is not None:
+                from qq_ai_bot.memory.self_origin import receipt_evidence_readable
+
+                if not await receipt_evidence_readable(
+                    session,
+                    fact=fact_row,
+                    evidence=evidence,
+                    receipt=receipt,
+                ):
+                    return False
+            else:
+                if receipt.trigger_event_id is None:
+                    return False
+                trigger = await session.get(ChatEventModel, receipt.trigger_event_id)
+                if trigger is None or not await v2_evidence_event_chain_readable(
+                    session, fact_row, trigger
+                ):
+                    return False
         statement = insert(MemoryEvidenceModel).values(
             fact_id=fact_id,
             event_id=evidence.event_id,
@@ -1001,7 +1037,15 @@ class MemoryFactRepository:
         result = await session.execute(
             statement.on_conflict_do_nothing(index_elements=index_elements)
         )
-        return bool(cast(CursorResult[Any], result).rowcount)
+        added = bool(cast(CursorResult[Any], result).rowcount)
+        if added:
+            # Evidence may make an earlier unreadable fact usable. Advance its
+            # change cursor atomically, but do not wake readers for duplicate evidence.
+            previous = fact_row.updated_at
+            if previous.tzinfo is None:
+                previous = previous.replace(tzinfo=UTC)
+            fact_row.updated_at = max(datetime.now(UTC), previous + timedelta(microseconds=1))
+        return added
 
     async def list_evidence(
         self,

@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from qq_ai_bot.conversation.autonomy_db_models import InitiativeRunModel
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
@@ -18,6 +19,8 @@ from qq_ai_bot.identity.db_models import (
 )
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
+from qq_ai_bot.runtime.origin import TurnOrigin
+from qq_ai_bot.runtime.trigger import SelfInitiativeTrigger
 from qq_ai_bot.sandbox.db_models import SandboxTaskRunModel
 
 
@@ -37,6 +40,144 @@ class MessageTaskSource:
     binding_id: str
     external_target_id: str
     content: str
+
+
+@dataclass(frozen=True)
+class SelfTaskSource:
+    """Accepted SELF scene; it deliberately has no person or message anchor."""
+
+    request_id: str
+    conversation_id: str
+    generation: int
+    run_id: str
+    target_space_id: str
+    presence_id: str
+    bot_user_id: str
+    binding_id: str
+    external_target_id: str
+    content: str
+    origin: str = TurnOrigin.SELF_INITIATIVE.value
+    actor_user_id: str = ""
+    actor_person_id: None = None
+    event_id: None = None
+
+    def trigger(self) -> SelfInitiativeTrigger:
+        return SelfInitiativeTrigger(
+            run_id=self.run_id,
+            conversation_id=self.conversation_id,
+            generation=self.generation,
+            space_id=self.target_space_id,
+            presence_id=self.presence_id,
+            group_id=self.external_target_id,
+            bot_user_id=self.bot_user_id,
+            instruction=self.content,
+        )
+
+
+async def recover_self_source(
+    database: Database,
+    conversation_id: str,
+    source: dict[str, Any],
+    *,
+    request_id: str,
+) -> SelfTaskSource:
+    """Recheck the accepted run and original scene, never a controller's latest actor.
+
+    Owner switches stop admission only. They cannot invalidate already accepted work;
+    generation reset, disabled identity, or a terminal run still fence execution.
+    """
+    if (
+        source.get("origin") != TurnOrigin.SELF_INITIATIVE.value
+        or source.get("principal_kind") != "self"
+        or source.get("actor_user_id")
+        or source.get("person_id")
+        or source.get("actor_person_id")
+        or source.get("trigger_event_id") is not None
+        or source.get("conversation_id") != conversation_id
+        or not isinstance(source.get("instruction"), str)
+        or not source["instruction"].strip()
+    ):
+        raise ValueError("invalid_self_task_source")
+    async with database.sessions() as session:
+        run = await session.get(InitiativeRunModel, source.get("initiative_run_id"))
+        conversation = await session.get(CanonicalConversationModel, conversation_id)
+        if (
+            run is None
+            or conversation is None
+            or conversation.kind != "space"
+            or run.conversation_id != conversation.id
+            or type(source.get("generation")) is not int
+            or run.generation != source["generation"]
+            or conversation.generation != run.generation
+            or run.space_id != conversation.space_id
+            or run.space_id != source.get("space_id")
+            or run.presence_id != source.get("presence_id")
+        ):
+            raise ValueError("self_task_source_changed")
+        if run.state not in {"accepted", "running"}:
+            raise ValueError("self_task_terminal")
+        space = await session.get(CanonicalSpaceModel, run.space_id)
+        presence = await session.get(PresenceModel, run.presence_id)
+        if space is None or not space.enabled:
+            raise ValueError("task_space_disabled")
+        if (
+            presence is None
+            or not presence.enabled
+            or presence.platform != "qq"
+            or presence.external_account_id != source.get("bot_user_id")
+        ):
+            raise ValueError("task_presence_disabled")
+        bindings = list(
+            await session.scalars(
+                select(SpaceBindingModel.id)
+                .where(
+                    SpaceBindingModel.space_id == space.id,
+                    SpaceBindingModel.platform == "qq",
+                    SpaceBindingModel.status == "active",
+                    SpaceBindingModel.external_space_id == source.get("group_id"),
+                )
+                .limit(2)
+            )
+        )
+        if len(bindings) != 1 or not source.get("group_id"):
+            raise ValueError("task_space_binding_unavailable")
+        recovered = SelfTaskSource(
+            request_id,
+            conversation.id,
+            run.generation,
+            run.id,
+            space.id,
+            presence.id,
+            presence.external_account_id,
+            bindings[0],
+            source["group_id"],
+            source["instruction"],
+        )
+    from qq_ai_bot.conversation.self_initiative import validate_self_initiative
+
+    try:
+        await validate_self_initiative(
+            database,
+            recovered.run_id,
+            conversation_id=recovered.conversation_id,
+            space_id=recovered.target_space_id,
+            presence_id=recovered.presence_id,
+        )
+    except PermissionError as exc:
+        raise ValueError(str(exc)) from exc
+    return recovered
+
+
+async def recover_execution_source(
+    database: Database,
+    conversation_id: str,
+    source: dict[str, Any],
+    *,
+    request_id: str,
+) -> MessageTaskSource | SelfTaskSource:
+    if source.get("origin") == TurnOrigin.SELF_INITIATIVE.value:
+        return await recover_self_source(database, conversation_id, source, request_id=request_id)
+    return await recover_source(database, conversation_id, source, request_id=request_id)
 
 
 async def recover_message_source(database: Database, request_id: str) -> MessageTaskSource:

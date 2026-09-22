@@ -10,7 +10,7 @@ import uuid
 from datetime import UTC, datetime
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
-from qq_ai_bot.domain.conversations import ConversationScope
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import AttachmentKind, InboundMessage
 from qq_ai_bot.memory.attribution import (
     MemoryAttributionJob,
@@ -18,8 +18,15 @@ from qq_ai_bot.memory.attribution import (
     MemoryExposure,
 )
 from qq_ai_bot.memory.context import MemoryContextService
-from qq_ai_bot.memory.enums import MemoryContextMode, MemoryRecallPurpose, MemoryRetrievalMode
-from qq_ai_bot.memory.models import MemoryQueryIntent, MemoryRetrievalResult
+from qq_ai_bot.memory.enums import (
+    MemoryContextMode,
+    MemoryRecallPurpose,
+    MemoryRetrievalMode,
+    MemoryScopeType,
+    MemoryTargetRole,
+    SelfMemoryVisibility,
+)
+from qq_ai_bot.memory.models import MemoryEntityTarget, MemoryQueryIntent, MemoryRetrievalResult
 from qq_ai_bot.memory.mutation.models import MemoryMutationResult
 from qq_ai_bot.memory.runtime.capability_view import build_capability_view
 from qq_ai_bot.memory.runtime.command_plane import mutation_state_for_result
@@ -30,12 +37,19 @@ from qq_ai_bot.memory.runtime.contract import (
     MemoryTurnContract,
     MemoryWritePolicy,
     MemoryWriteTransition,
+    forbidden_contract,
+    passive_contract,
 )
 from qq_ai_bot.memory.runtime.finalizer import (
     mutation_view_from_tool_result,
 )
 from qq_ai_bot.memory.runtime.partition_lookup import MemoryPartitionLookup
-from qq_ai_bot.memory.runtime.query_plane import MemoryQueryPlane, MemoryReadConsumer
+from qq_ai_bot.memory.runtime.query_plane import (
+    MemoryQueryPlane,
+    MemoryReadConsumer,
+    MemoryReadRequest,
+    ResolvedReadScope,
+)
 from qq_ai_bot.memory.runtime.resolver import (
     MemoryAccessDecision,
     MemoryAccessReason,
@@ -50,6 +64,7 @@ from qq_ai_bot.memory.runtime.state import (
     MutationState,
     RecallHandle,
 )
+from qq_ai_bot.memory.self_origin import SelfMemoryOrigin
 from qq_ai_bot.runtime.authority import TurnAuthority, TurnSceneFacts
 from qq_ai_bot.runtime.contracts import DeliverySummary, MemoryCapabilityView, MemoryReceiptHandle
 from qq_ai_bot.runtime.delivery import DeliveryStatus
@@ -116,7 +131,7 @@ class TurnMemorySession:
         *,
         decision: MemoryAccessDecision,
         scope: ResolvedMemoryScope,
-        inbound: InboundMessage,
+        inbound: InboundMessage | None,
         identity: ConversationScope,
         runtime: RuntimeConfigSnapshot,
         memory_context: MemoryContextService,
@@ -125,10 +140,19 @@ class TurnMemorySession:
         user_question: str,
         runtime_turn_id: str,
         attribution: MemoryAttributionWorker | None = None,
+        self_origin: SelfMemoryOrigin | None = None,
     ) -> None:
         self._decision = decision
         self._state = MemorySessionState(decision.contract, scope)
         self._inbound = inbound
+        self._self_origin = self_origin
+        self._source_key = (
+            inbound.source_key
+            if inbound
+            else f"initiative:{self_origin.initiative_run_id}"
+            if self_origin
+            else ""
+        )
         self._identity = identity
         self._runtime = runtime
         self._memory_context = memory_context
@@ -193,6 +217,54 @@ class TurnMemorySession:
     def contract(self) -> MemoryTurnContract:
         return self._state.contract
 
+    @classmethod
+    async def open_self_origin(
+        cls,
+        *,
+        initiative_run_id: str,
+        canonical_conversation_id: str,
+        identity: ConversationScope,
+        runtime: RuntimeConfigSnapshot,
+        memory_context: MemoryContextService,
+        partition_lookup: MemoryPartitionLookup,
+        user_question: str,
+        runtime_turn_id: str | None = None,
+        memory_available: bool = True,
+    ) -> TurnMemorySession:
+        source = await partition_lookup.resolve_self_origin(
+            initiative_run_id=initiative_run_id,
+            canonical_conversation_id=canonical_conversation_id,
+        )
+        if (
+            identity.scope_type is not ScopeType.GROUP
+            or identity.group_id != source.group_id
+            or identity.bot_user_id != source.bot_user_id
+        ):
+            raise ValueError("SELF Memory scope does not match its initiative")
+        decision = MemoryAccessDecision(
+            contract=passive_contract(
+                MemoryRecallPurpose.BACKGROUND,
+                persistent_write_allowed=False,
+            )
+            if memory_available
+            else forbidden_contract(MemoryRecallPurpose.BACKGROUND),
+            reason=MemoryAccessReason.SELF_ORIGIN,
+            retrieval_degraded=not runtime.memory.retrieval_enabled,
+        )
+        return cls(
+            decision=decision,
+            scope=ResolvedMemoryScope.for_group(source.group_id),
+            inbound=None,
+            identity=identity,
+            runtime=runtime,
+            memory_context=memory_context,
+            partition_lookup=partition_lookup,
+            origin=TurnOrigin.SELF_INITIATIVE,
+            user_question=user_question,
+            runtime_turn_id=runtime_turn_id or str(uuid.uuid4()),
+            self_origin=source,
+        )
+
     @property
     def scope(self) -> ResolvedMemoryScope:
         return self._state.scope
@@ -243,13 +315,44 @@ class TurnMemorySession:
             mode=MemoryContextMode.HYBRID,
             purpose=self._state.contract.default_purpose,
         )
-        result = await self._memory_context.retrieve_for_turn(
-            inbound=self._inbound,
-            content=self._user_question,
-            runtime=self._runtime,
-            memory_mode=MemoryContextMode.HYBRID,
-            memory_intent=intent,
-        )
+        if self._self_origin is not None:
+            group_id = self._self_origin.group_id
+            self_target = MemoryEntityTarget(
+                role=MemoryTargetRole.CURRENT_SELF,
+                scope_type=MemoryScopeType.SELF,
+                visibility_type=SelfMemoryVisibility.GROUP,
+                visibility_group_id=group_id,
+                block_id="current_self",
+            )
+            result = await self._query.read(
+                MemoryReadConsumer.AUTOMATIC_CONTEXT,
+                MemoryReadRequest(
+                    text=self._user_question,
+                    intent=intent,
+                    resolved_scope=ResolvedReadScope(
+                        targets=(
+                            MemoryEntityTarget(
+                                role=MemoryTargetRole.CURRENT_GROUP,
+                                scope_type=MemoryScopeType.GROUP,
+                                group_id=group_id,
+                                block_id="current_group",
+                            ),
+                            self_target,
+                        )
+                    ),
+                    automatic_self_target=self_target,
+                ),
+                runtime=self._runtime,
+            )
+        else:
+            assert self._inbound is not None
+            result = await self._memory_context.retrieve_for_turn(
+                inbound=self._inbound,
+                content=self._user_question,
+                runtime=self._runtime,
+                memory_mode=MemoryContextMode.HYBRID,
+                memory_intent=intent,
+            )
         self._prefetch_token = str(uuid.uuid4())
         self._prefetch_result = result
         self._prefetch_intent = intent
@@ -273,6 +376,9 @@ class TurnMemorySession:
         self._staged_exposures = exposures
 
     async def _memory_partition_key(self) -> str:
+        if self._self_origin is not None:
+            return self._self_origin.partition
+        assert self._inbound is not None
         return await self._partition_lookup.resolve_from_scope(
             group_id=self._inbound.group_id,
             private_peer_user_id=(None if self._inbound.group_id else self._inbound.sender.user_id),
@@ -295,7 +401,7 @@ class TurnMemorySession:
             intent = self._prefetch_intent or MemoryQueryIntent(purpose=MemoryRecallPurpose.RECALL)
             recall = await self._memory_context.record_recall(
                 conversation_key=await self._memory_partition_key(),
-                source_key=self._inbound.source_key,
+                source_key=self._source_key,
                 origin=self._origin.value,
                 intent=intent,
                 result=empty,
@@ -318,7 +424,11 @@ class TurnMemorySession:
     async def record_read_outcome(self, outcome: str) -> None:
         """A completed read is not necessarily injected into a model request."""
         self._state.require_open()
-        if self._origin not in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}:
+        if self._origin not in {
+            TurnOrigin.USER_MESSAGE,
+            TurnOrigin.AUTONOMOUS_GROUP,
+            TurnOrigin.SELF_INITIATIVE,
+        }:
             return
         if self.contract.availability is MemoryAvailability.FORBIDDEN:
             return
@@ -338,7 +448,7 @@ class TurnMemorySession:
             recall = await self._query.publish_exposure(
                 MemoryReadConsumer.AUTOMATIC_CONTEXT,
                 conversation_key=await self._memory_partition_key(),
-                source_key=self._inbound.source_key,
+                source_key=self._source_key,
                 origin=self._origin.value,
                 intent=self._prefetch_intent,
                 result=self._prefetch_result,
@@ -501,7 +611,7 @@ class TurnMemorySession:
         exposures: tuple[MemoryExposure, ...],
         summary: DeliverySummary,
     ) -> None:
-        if self._attribution is None or not turn_id:
+        if self._attribution is None or not turn_id or self._inbound is None:
             return
         await self._attribution.enqueue(
             MemoryAttributionJob(

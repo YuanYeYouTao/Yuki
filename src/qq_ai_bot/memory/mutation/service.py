@@ -7,7 +7,7 @@ import hashlib
 import json
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, func, select
@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.memory_config import MemoryConfigScope
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
 from qq_ai_bot.memory.claim_processor import (
     MemoryClaimProcessor,
@@ -95,6 +96,7 @@ from qq_ai_bot.persistence.models import (
     MemoryEvidenceModel,
     MemoryFactRelationModel,
     MemorySelfReflectionResultModel,
+    MemoryToolReceiptModel,
 )
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.persistence.repository_records import EventRecord
@@ -1006,9 +1008,35 @@ class MemoryMutationService:
 
         if additional_evidence and not self._trusted_self_reflection(context):
             return self._rejected(request.operation, "evidence_bundle_requires_self_reflection")
-        if additional_evidence and not await self._evidence_matches_conversation(
-            additional_evidence,
-            context.event,
+        if additional_evidence and context.initiative_run_id is not None:
+            async with self._facts.repository.database.sessions() as session:
+                for evidence in additional_evidence:
+                    row = (
+                        await session.get(MemoryToolReceiptModel, evidence.tool_receipt_id)
+                        if evidence.tool_receipt_id
+                        else None
+                    )
+                    if (
+                        evidence.event_id is not None
+                        or row is None
+                        or row.initiative_run_id != context.initiative_run_id
+                        or evidence.source_speaker_user_id != row.bot_user_id
+                        or evidence.authority is not MemoryAuthority.AGENT_REFLECTION
+                        or evidence.relation is not MemoryEvidenceRelation.AGENT_REFLECTION
+                        or not evidence.excerpt
+                        or evidence.excerpt not in row.result_excerpt
+                    ):
+                        return self._rejected(request.operation, "cross_initiative_evidence")
+        if (
+            additional_evidence
+            and context.initiative_run_id is None
+            and (
+                context.event is None
+                or not await self._evidence_matches_conversation(
+                    additional_evidence,
+                    context.event,
+                )
+            )
         ):
             return self._rejected(request.operation, "cross_conversation_evidence")
         try:
@@ -1025,6 +1053,132 @@ class MemoryMutationService:
             prepared,
             additional_evidence=additional_evidence,
             self_reflection_result=self_reflection_result,
+        )
+
+    async def _prepare_self_origin(
+        self,
+        request: MemoryMutationRequest,
+        context: MemoryMutationContext,
+        target: ResolvedSubject | None,
+    ) -> _PreparedMutation:
+        from qq_ai_bot.memory.self_origin import resolve_self_origin
+
+        if not self._trusted_self_reflection(context) or not context.initiative_run_id:
+            raise MemoryMutationRejected("untrusted_actorless_memory_source")
+        if context.evidence_tool_receipt_id is None or target is None:
+            raise MemoryMutationRejected("initiative_tool_evidence_required")
+        if request.operation not in {
+            MemoryMutationOperation.CREATE,
+            MemoryMutationOperation.CORRECT,
+            MemoryMutationOperation.INVALIDATE,
+            MemoryMutationOperation.CONTEST,
+            MemoryMutationOperation.MERGE,
+        }:
+            raise MemoryMutationRejected("operation_not_allowed_for_self_memory")
+        async with self._facts.repository.database.sessions() as session:
+            source = await resolve_self_origin(
+                session,
+                initiative_run_id=context.initiative_run_id,
+                require_live=False,
+            )
+            receipt = await session.get(MemoryToolReceiptModel, context.evidence_tool_receipt_id)
+            if (
+                receipt is None
+                or receipt.initiative_run_id != source.initiative_run_id
+                or receipt.trigger_event_id is not None
+                or receipt.canonical_space_id != source.space_id
+                or receipt.canonical_person_id is not None
+                or receipt.bot_user_id != source.bot_user_id
+            ):
+                raise MemoryMutationRejected("initiative_evidence_source_mismatch")
+            quote = (request.evidence_quote or "")[:500].strip()
+            if not quote or quote not in receipt.result_excerpt:
+                raise MemoryMutationRejected("evidence_quote_not_in_tool_receipt")
+            if (
+                target.scope_type is not MemoryScopeType.SELF
+                or target.visibility_type
+                not in {SelfMemoryVisibility.GLOBAL, SelfMemoryVisibility.GROUP}
+                or target.visibility_user_id is not None
+                or (
+                    target.visibility_type is SelfMemoryVisibility.GROUP
+                    and target.visibility_group_id != source.group_id
+                )
+            ):
+                raise MemoryMutationRejected("initiative_memory_scope_forbidden")
+            owners = await self._facts.requested_target_owners(target, session=session)
+        context = replace(
+            context,
+            source_occurred_at=source.occurred_at,
+            source_group_id=source.group_id,
+            trigger_actor_user_id=source.bot_user_id,
+            executed_by_bot_user_id=source.bot_user_id,
+            conversation_key=source.partition,
+            config_scope=MemoryConfigScope(space_id=source.space_id),
+        )
+        fact = await self._load_fact(request.fact_id)
+        merge_fact = await self._load_fact(request.merge_fact_id)
+        self._validate_self_request(request, target, None, fact=fact, merge_fact=merge_fact)
+        self._validate_fact_requirements(
+            request,
+            target,
+            owners,
+            fact,
+            merge_fact,
+            context,
+            actor_person_id=None,
+        )
+        evidence = MemoryEvidenceCreate(
+            tool_receipt_id=context.evidence_tool_receipt_id,
+            source_speaker_user_id=source.bot_user_id,
+            relation=MemoryEvidenceRelation.AGENT_REFLECTION,
+            authority=MemoryAuthority.AGENT_REFLECTION,
+            confidence=request.confidence,
+            excerpt=quote,
+        )
+        claim = self._validated_claim(
+            request,
+            context,
+            subject_ref="self",
+            fact=fact,
+            source_type=MemorySourceType.AUTOMATIC,
+            evidence=evidence,
+            target_override=target,
+            resolved_target=target,
+            actor_owns_target=False,
+        )
+        target_payload = _canonical_target_payload(
+            target.scope_type, target.visibility_type, owners
+        )
+        common = {
+            "initiative_run_id": source.initiative_run_id,
+            "receipt_id": context.evidence_tool_receipt_id,
+            "target": target_payload,
+            "namespace": context.delegation_mode,
+            "memory_key": request.memory_key or (fact.memory_key if fact else ""),
+            "content": normalize_memory_text(request.new_content or "", maximum=4000).casefold(),
+        }
+        return _PreparedMutation(
+            request,
+            context,
+            "self",
+            target,
+            owners,
+            None,
+            False,
+            fact,
+            merge_fact,
+            evidence,
+            claim,
+            _fingerprint(
+                {
+                    **common,
+                    "operation": request.operation.value,
+                    "fact_id": request.fact_id,
+                    "merge_fact_id": request.merge_fact_id,
+                }
+            ),
+            _fingerprint(common),
+            _fingerprint(target_payload),
         )
 
     async def _commit_prepared(
@@ -1080,9 +1234,10 @@ class MemoryMutationService:
                         idempotency_key=prepared.idempotency_key,
                         claim_fingerprint=prepared.claim_fingerprint,
                         target_fingerprint=prepared.target_fingerprint,
-                        trigger_event_id=context.event.id,
+                        trigger_event_id=context.event.id if context.event else None,
+                        initiative_run_id=context.initiative_run_id,
                         conversation_key=context.conversation_key,
-                        current_group_id=context.event.group_id,
+                        current_group_id=context.group_id,
                         turn_origin=context.turn_origin,
                         delegation_mode=context.delegation_mode,
                         trigger_actor_user_id=context.trigger_actor_user_id,
@@ -1102,7 +1257,7 @@ class MemoryMutationService:
                         await self._facts.append_evidence_bundle(
                             applied.new_fact_id,
                             additional_evidence,
-                            confirmed_at=context.event.occurred_at,
+                            confirmed_at=context.occurred_at,
                             session=session,
                         )
                     if applied.new_fact_id is not None and self_reflection_result is not None:
@@ -1197,7 +1352,8 @@ class MemoryMutationService:
         event = processing_context.event
         operation = self._claim_requested_operation(claim.operation)
         if (
-            event.direction != "inbound"
+            event is None
+            or event.direction != "inbound"
             or not event.author_is_human()
             or not self._validated_claim_matches_event(claim, event)
         ):
@@ -1373,6 +1529,10 @@ class MemoryMutationService:
         target_override: ResolvedSubject | None = None,
     ) -> _PreparedMutation:
         event = context.event
+        if event is None:
+            return await self._prepare_self_origin(request, context, target_override)
+        if context.initiative_run_id is not None:
+            raise MemoryMutationRejected("ambiguous_mutation_source")
         trusted_self_reflection = (
             context.turn_origin == "memory_self_reflection"
             and context.decision_actor_type is MemoryDecisionActorType.REFLECTION
@@ -1660,7 +1820,7 @@ class MemoryMutationService:
                 fact.id,
                 actor_user_id=prepared.context.trigger_actor_user_id,
                 evidence=prepared.evidence,
-                confirmed_at=prepared.context.event.occurred_at,
+                confirmed_at=prepared.context.occurred_at,
                 session=session,
             )
             return self._direct_result(
@@ -1680,7 +1840,7 @@ class MemoryMutationService:
                 merge_fact.id,
                 actor_user_id=prepared.context.trigger_actor_user_id,
                 evidence=prepared.evidence,
-                confirmed_at=prepared.context.event.occurred_at,
+                confirmed_at=prepared.context.occurred_at,
                 session=session,
             )
             return self._direct_result(
@@ -1734,7 +1894,7 @@ class MemoryMutationService:
                 ),
                 valid_from=request.valid_from,
                 valid_until=request.valid_until,
-                occurred_at=prepared.context.event.occurred_at,
+                occurred_at=prepared.context.occurred_at,
                 timezone_name=self._settings.default_timezone,
             )
         replacement = MemoryFactCreate(
@@ -1775,7 +1935,7 @@ class MemoryMutationService:
             limit=self._scope_limit(replacement.scope_type),
             copy_existing_evidence=True,
             copied_evidence_authority=authority if reassign else None,
-            confirmed_at=prepared.context.event.occurred_at,
+            confirmed_at=prepared.context.occurred_at,
             session=session,
         )
         operation = (
@@ -1892,7 +2052,7 @@ class MemoryMutationService:
                     mode=claim.temporal_mode,
                     valid_from=claim.valid_from,
                     valid_until=claim.valid_until,
-                    occurred_at=context.event.occurred_at,
+                    occurred_at=context.occurred_at,
                     timezone_name=self._settings.default_timezone,
                 )
             except ValueError as exc:
@@ -1929,8 +2089,10 @@ class MemoryMutationService:
                 ),
                 evidence=evidence,
                 subject_is_speaker=actor_owns_target,
-                occurred_at=context.event.occurred_at,
+                occurred_at=context.occurred_at,
             )
+        if context.event is None:
+            raise MemoryMutationRejected("claim_not_supported_by_current_event")
         validated = self._processor.validate(claim, context.event)
         if validated is None:
             raise MemoryMutationRejected("claim_not_supported_by_current_event")
@@ -2034,7 +2196,7 @@ class MemoryMutationService:
         self,
         request: MemoryMutationRequest,
         target: ResolvedSubject,
-        event: EventRecord,
+        event: EventRecord | None,
         *,
         fact: MemoryFact | None,
     ) -> ResolvedSubject:
@@ -2070,6 +2232,8 @@ class MemoryMutationService:
             )
         if target.visibility_type is not None:
             return target
+        if event is None:
+            raise MemoryMutationRejected("initiative_memory_scope_required")
         if event.scope_type is ScopeType.PRIVATE or event.group_id is None:
             return ResolvedSubject(
                 MemoryScopeType.SELF,
@@ -2104,7 +2268,7 @@ class MemoryMutationService:
     def _validate_self_request(
         request: MemoryMutationRequest,
         target: ResolvedSubject,
-        event: EventRecord,
+        event: EventRecord | None,
         *,
         fact: MemoryFact | None,
         merge_fact: MemoryFact | None,
@@ -2135,11 +2299,16 @@ class MemoryMutationService:
         if target.visibility_type is SelfMemoryVisibility.GLOBAL:
             if kind is MemoryKind.EPISODE or category == "self_episode":
                 raise MemoryMutationRejected("self_episode_cannot_be_global")
-            if event.scope_type is ScopeType.PRIVATE and category not in {
-                "self_preference",
-                "self_reflection",
-                "self_principle",
-            }:
+            if (
+                event is not None
+                and event.scope_type is ScopeType.PRIVATE
+                and category
+                not in {
+                    "self_preference",
+                    "self_reflection",
+                    "self_principle",
+                }
+            ):
                 raise MemoryMutationRejected("private_self_fact_cannot_be_global")
 
     @staticmethod
@@ -2207,7 +2376,7 @@ class MemoryMutationService:
             raise MemoryMutationRejected("fact_target_mismatch")
         if request.operation is MemoryMutationOperation.REASSIGN:
             if (
-                context.event.group_id is None
+                context.group_id is None
                 or fact.scope_type is not MemoryScopeType.PERSON_GROUP
                 or fact.canonical_subject_space_id != target_owners.subject_space_id
                 or target.scope_type is not MemoryScopeType.PERSON_GROUP

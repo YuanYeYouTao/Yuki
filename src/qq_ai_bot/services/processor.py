@@ -790,6 +790,11 @@ class MessageProcessor:
             if repairing_dedup_gap and created:
                 self._scoped_events.metrics.scoped_append_repairs += 1
         message = replace(message, source_event_id=record.id)
+        if self._autonomous is not None and message.scope_type is ScopeType.GROUP:
+            self._autonomous.observe_context(
+                message,
+                direct=bool(decision.should_respond or admin_candidate),
+            )
         turn_snapshot = ConversationTurnSnapshot(
             scope_id=scope_state.id,
             scope_key=coordinator_key,

@@ -212,7 +212,7 @@ class CanonicalIngressResolver:
             space_id=space_id,
             ingress_bot_user_id=connection.snapshot.external_account_id,
         )
-        reply_to_yuki, reply_author_kind = await resolve_canonical_reply(
+        reply_to_yuki, reply_author_kind, reply_event_id = await resolve_canonical_reply(
             session,
             conversation_id=hydrated.conversation_id,
             reply_to_message_id=overlay.reply_to_message_id,
@@ -224,6 +224,7 @@ class CanonicalIngressResolver:
             space_id=space_id,
             conversation_id=hydrated.conversation_id,
             presence_id=presence_id,
+            reply_to_event_id=reply_event_id,
             canonical_reply_to_yuki=reply_to_yuki,
             canonical_reply_author_kind=reply_author_kind,
         )
@@ -253,17 +254,17 @@ async def resolve_canonical_reply(
     *,
     conversation_id: str,
     reply_to_message_id: str | None,
-) -> tuple[bool | None, str | None]:
+) -> tuple[bool | None, str | None, int | None]:
     """Resolve reply-to-Yuki from the unique keeper in this conversation.
 
-    None/None means no usable keeper: policy may fall back to Presence ids.
+    None/None/None means no usable keeper: policy may fall back to Presence ids.
     False plus a kind (including ``ambiguous``) is a found non-Yuki verdict and
     must not be overridden by ``reply_sender_user_id``.
     """
 
     reply_id = (reply_to_message_id or "").strip()
     if not reply_id:
-        return None, None
+        return None, None, None
     keepers = list(
         await session.scalars(
             select(ChatEventModel).where(
@@ -274,19 +275,19 @@ async def resolve_canonical_reply(
         )
     )
     if len(keepers) > 1:
-        return False, _AMBIGUOUS_REPLY_AUTHOR
+        return False, _AMBIGUOUS_REPLY_AUTHOR, None
     if not keepers:
-        return None, None
+        return None, None, None
     kind = keepers[0].author_kind
     if kind == AuthorKind.YUKI.value:
-        return True, kind
+        return True, kind, keepers[0].id
     if kind in {
         AuthorKind.PERSON.value,
         AuthorKind.EXTERNAL_BOT.value,
         AuthorKind.SYSTEM.value,
     }:
-        return False, kind
-    return None, None
+        return False, kind, keepers[0].id
+    return None, None, None
 
 
 async def _same_platform_yuki_accounts(session: AsyncSession, platform: str) -> frozenset[str]:

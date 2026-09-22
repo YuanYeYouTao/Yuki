@@ -137,6 +137,11 @@ async def test_social_receipt_claim_replay_and_interrupted_delivery(database: Da
                         if descriptor.model_name == "send_message"
                         else ()
                     ),
+                    *(
+                        (TurnOrigin.SELF_INITIATIVE,)
+                        if descriptor.model_name in {"send_message", "get_group_members"}
+                        else ()
+                    ),
                 }
             )
         )

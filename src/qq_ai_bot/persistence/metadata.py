@@ -15,6 +15,7 @@ from qq_ai_bot.conversation import projection_models as _projection_models  # no
 from qq_ai_bot.emoji import db_models as _emoji_db_models  # noqa: F401
 from qq_ai_bot.identity import db_models as _identity_db_models  # noqa: F401
 from qq_ai_bot.memory.dream import db_models as _memory_dream_db_models  # noqa: F401
+from qq_ai_bot.memory.self_reflection import db_models as _self_reflection_db_models  # noqa: F401
 from qq_ai_bot.model_runtime import db_models as _model_runtime_db_models  # noqa: F401
 from qq_ai_bot.persistence.models import Base
 from qq_ai_bot.plugin_host import db_models as _plugin_db_models  # noqa: F401
