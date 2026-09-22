@@ -21,9 +21,11 @@ async def load(database: Database, run_id: int, script_hash: str) -> tuple[str, 
         )
     if row is None:
         return "new", {}
+    payload = json.loads(row["payload_json"])
     if row["script_hash"] != script_hash:
-        return "changed", {}
-    return row["phase"], json.loads(row["payload_json"])
+        # The caller may retain prior accounting, but must not execute this cursor.
+        return "changed", payload
+    return row["phase"], payload
 
 
 async def save(

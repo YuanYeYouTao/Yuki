@@ -5,10 +5,11 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.domain.relationships import (
@@ -43,7 +44,18 @@ from qq_ai_bot.persistence.repository_records import (
 
 
 class RelationshipClaimLost(RuntimeError):
-    """A result no longer owns the relationship job it was evaluating."""
+    """A result no longer owns a live claim and its original evidence generation."""
+
+
+def _claim_generation_current(job: RelationshipJobRecord) -> ColumnElement[bool]:
+    return (
+        select(CanonicalConversationModel.id)
+        .where(
+            CanonicalConversationModel.id == job.trigger_event.canonical_conversation_id,
+            CanonicalConversationModel.generation == job.conversation_generation,
+        )
+        .exists()
+    )
 
 
 async def _complete_claim(session: AsyncSession, job: RelationshipJobRecord) -> bool:
@@ -53,6 +65,7 @@ async def _complete_claim(session: AsyncSession, job: RelationshipJobRecord) -> 
             RelationshipJobModel.id == job.job_id,
             RelationshipJobModel.status == "processing",
             RelationshipJobModel.updated_at == job.claimed_at,
+            _claim_generation_current(job),
         )
         .values(status="completed", updated_at=datetime.now(UTC), error_category=None)
         .returning(RelationshipJobModel.id)
@@ -645,6 +658,7 @@ class RelationshipJobRepository:
                     RelationshipJobRecord(
                         job_id=row.id,
                         claimed_at=now,
+                        conversation_generation=generation,
                         attempts=row.attempts,
                         user_id=projected_user_id,
                         conversation_key=row.conversation_key,
@@ -655,6 +669,31 @@ class RelationshipJobRepository:
         accepted = await commit_job_claims(self._database, RelationshipJobModel, prepared)
         return tuple(job for job in result if job.job_id in accepted)
 
+    async def assert_current(self, jobs: tuple[RelationshipJobRecord, ...]) -> None:
+        """Read-only dispatch fence; no lock or session survives the provider call."""
+        if not jobs:
+            return
+        async with self._database.sessions() as session:
+            current = set(
+                await session.scalars(
+                    select(RelationshipJobModel.id).where(
+                        or_(
+                            *(
+                                and_(
+                                    RelationshipJobModel.id == job.job_id,
+                                    RelationshipJobModel.status == "processing",
+                                    RelationshipJobModel.updated_at == job.claimed_at,
+                                    _claim_generation_current(job),
+                                )
+                                for job in jobs
+                            )
+                        )
+                    )
+                )
+            )
+        if current != {job.job_id for job in jobs}:
+            raise RelationshipClaimLost("relationship claim or evidence generation changed")
+
     async def complete(self, jobs: tuple[RelationshipJobRecord, ...]) -> None:
         if not jobs:
             return
@@ -663,7 +702,7 @@ class RelationshipJobRepository:
                 await _complete_claim(session, job)
 
     async def defer(self, jobs: tuple[RelationshipJobRecord, ...]) -> None:
-        """Yield only this claim; a late preemption cannot release a newer owner."""
+        """Yield live claims; terminate stale evidence without charging a failure."""
         if not jobs:
             return
         now = datetime.now(UTC)
@@ -677,9 +716,13 @@ class RelationshipJobRepository:
                         RelationshipJobModel.updated_at == job.claimed_at,
                     )
                     .values(
-                        status="pending",
+                        status=case((_claim_generation_current(job), "pending"), else_="failed"),
                         next_attempt_at=now + timedelta(seconds=30),
                         updated_at=now,
+                        error_category=case(
+                            (_claim_generation_current(job), RelationshipJobModel.error_category),
+                            else_="conversation_generation_changed",
+                        ),
                     )
                 )
 
@@ -695,10 +738,22 @@ class RelationshipJobRepository:
                     RelationshipJobModel.updated_at == job.claimed_at,
                 )
                 .values(
-                    attempts=attempts,
-                    status="failed" if attempts >= self._max_attempts else "pending",
+                    attempts=case(
+                        (_claim_generation_current(job), attempts),
+                        else_=RelationshipJobModel.attempts,
+                    ),
+                    status=case(
+                        (
+                            _claim_generation_current(job),
+                            "failed" if attempts >= self._max_attempts else "pending",
+                        ),
+                        else_="failed",
+                    ),
                     next_attempt_at=now + timedelta(seconds=30 * attempts),
                     updated_at=now,
-                    error_category=error_category[:64],
+                    error_category=case(
+                        (_claim_generation_current(job), error_category[:64]),
+                        else_="conversation_generation_changed",
+                    ),
                 )
             )

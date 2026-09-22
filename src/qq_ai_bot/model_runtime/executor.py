@@ -15,6 +15,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from qq_ai_bot.domain.messages import ChatRequest, ChatResponse, minimum_reasoning_effort
 from qq_ai_bot.llm.base import LLMUnsupportedFeatureError
+from qq_ai_bot.model_runtime.dispatch_guard import check_model_dispatch
 from qq_ai_bot.model_runtime.models import (
     ModelCapability,
     ModelExecutionPriority,
@@ -236,6 +237,7 @@ class LegacyTaskModelExecutor:
                 protocol=ModelProtocol.CHAT_COMPLETIONS.value,
             ),
         )
+        await check_model_dispatch()
         return await self._provider.complete(normalized)
 
     def model_name(self, task: ModelTask) -> str:
@@ -704,8 +706,10 @@ class TaskModelExecutor:
         request: ChatRequest,
     ) -> ChatResponse:
         if self._semaphore is None:
+            await check_model_dispatch()
             return await provider.complete(request)
         async with self._semaphore:
+            await check_model_dispatch()
             return await provider.complete(request)
 
     def profile_id(self, task: ModelTask) -> str:

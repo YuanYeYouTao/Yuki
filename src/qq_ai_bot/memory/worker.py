@@ -22,6 +22,7 @@ from qq_ai_bot.memory.enums import (
 )
 from qq_ai_bot.memory.event_extractor import MemoryEventExtractor
 from qq_ai_bot.memory.extraction import MemoryClaim
+from qq_ai_bot.memory.job_claims import MemoryJobClaimLost
 from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.models import MemoryJob
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
@@ -271,6 +272,9 @@ class MemoryWorker:
                 )
             except asyncio.CancelledError:
                 raise
+            except MemoryJobClaimLost:
+                logger.info("memory_v2_job_claim_lost job_id=%d", job.id)
+                continue
             except Exception as exc:
                 logger.error(
                     "memory_v2_job_failed job_id=%d event_id=%d exception_category=%s",
@@ -311,12 +315,15 @@ class MemoryWorker:
             )
             try:
                 await self._jobs.complete(
-                    job.id,
+                    job,
                     outcome=result.outcome,
                     result_category=result.result_category,
                 )
             except asyncio.CancelledError:
                 raise
+            except MemoryJobClaimLost:
+                logger.info("memory_v2_job_claim_lost job_id=%d", job.id)
+                continue
             except Exception as exc:
                 logger.error(
                     "memory_v2_job_completion_failed job_id=%d event_id=%d exception_category=%s",
@@ -378,6 +385,7 @@ class MemoryWorker:
                         job.event,
                         candidate_type=validation.candidate_type,
                         subject_context=subject_context,
+                        job=job,
                     )
                     candidates += 1
                     staged_candidate_id = staged.id
@@ -412,6 +420,7 @@ class MemoryWorker:
                     event=job.event,
                 ),
                 conversation_key=job.conversation_key,
+                job=job,
             )
             if result.ok and (result.new_fact_id is not None or result.old_fact_id is not None):
                 applied += 1
@@ -419,6 +428,7 @@ class MemoryWorker:
                     await self.claim_candidates.set_status(
                         staged_candidate_id,
                         "accepted",
+                        job=job,
                     )
                 continue
             reason_code = result.reason_code or result.outcome.value
@@ -444,9 +454,11 @@ class MemoryWorker:
 
     async def _fail_job(self, job: MemoryJob, exc: Exception) -> None:
         try:
-            await self._jobs.fail(job.id, type(exc).__name__)
+            await self._jobs.fail(job, type(exc).__name__)
         except asyncio.CancelledError:
             raise
+        except MemoryJobClaimLost:
+            logger.info("memory_v2_job_claim_lost job_id=%d", job.id)
         except Exception as fail_exc:
             logger.error(
                 "memory_v2_job_failure_record_failed job_id=%d exception_category=%s",

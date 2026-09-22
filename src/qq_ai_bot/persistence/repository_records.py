@@ -201,6 +201,7 @@ class RelationshipJobRecord:
 
     job_id: int
     claimed_at: datetime
+    conversation_generation: int
     attempts: int
     user_id: str
     conversation_key: str

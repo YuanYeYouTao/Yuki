@@ -55,12 +55,14 @@ from qq_ai_bot.memory.enums import (
     SelfMemoryVisibility,
 )
 from qq_ai_bot.memory.extraction import MemoryClaim
+from qq_ai_bot.memory.job_claims import fence_memory_job_claim
 from qq_ai_bot.memory.models import (
     MemoryCandidate,
     MemoryEvidenceCreate,
     MemoryFact,
     MemoryFactCreate,
     MemoryFactQuery,
+    MemoryJob,
     MemoryResolutionPlan,
 )
 from qq_ai_bot.memory.mutation.models import (
@@ -1191,10 +1193,13 @@ class MemoryMutationService:
         processing_context: MemoryProcessingContext,
         *,
         conversation_key: str,
+        job: MemoryJob,
     ) -> MemoryMutationResult:
         """Commit one Worker claim through the same receipt and transaction boundary."""
 
         event = processing_context.event
+        if job.event_id != event.id:
+            raise ValueError("memory job claim does not own the source event")
         operation = self._claim_requested_operation(claim.operation)
         if (
             event.direction != "inbound"
@@ -1241,6 +1246,7 @@ class MemoryMutationService:
             claim_resolution = await self._processor.resolve(claim, processing_context)
             try:
                 async with self._facts.repository.transaction() as session:
+                    await fence_memory_job_claim(session, job)
                     duplicate = await self._receipts.find(
                         idempotency_key=idempotency_key,
                         claim_fingerprint=claim_fingerprint,

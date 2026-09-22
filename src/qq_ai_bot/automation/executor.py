@@ -69,6 +69,7 @@ _SEND_CAPABILITIES = frozenset(
 )
 
 logger = logging.getLogger(__name__)
+_RUN_USAGE_FIELDS = ("steps_completed", "llm_calls", "tool_calls", "messages_sent")
 
 
 def _canonical_identity(
@@ -135,9 +136,45 @@ class AutomationExecutor:
         *,
         current_group_id: str | None = None,
     ) -> ExecutionResult:
+        from qq_ai_bot.automation.work_cursor import load as load_cursor
+
+        phase, cursor = await load_cursor(
+            self._repository._database, run.id, automation.script_hash
+        )
+        usage = {
+            field: max(getattr(run, field), int(cursor.get(field, 0)))
+            for field in _RUN_USAGE_FIELDS
+        }
+        result = await self._execute(
+            automation,
+            run,
+            phase=phase,
+            cursor={**cursor, **usage},
+            current_group_id=current_group_id,
+        )
+        # Preflight rejection is still the same run, including when its cursor
+        # belongs to an older script. It must not erase committed usage/evidence.
+        return result.model_copy(
+            update={
+                **{field: max(value, getattr(result, field)) for field, value in usage.items()},
+                "summary": {**run.result_summary, **result.summary},
+            }
+        )
+
+    async def _execute(
+        self,
+        automation: AutomationRecord,
+        run: AutomationRunRecord,
+        *,
+        phase: str,
+        cursor: dict[str, Any],
+        current_group_id: str | None,
+    ) -> ExecutionResult:
         snapshot = await self._begin_execution(automation)
         if isinstance(snapshot, ExecutionResult):
             return snapshot
+        if snapshot.record.script_hash != automation.script_hash:
+            phase = "changed"
         automation = snapshot.record
         if not self._settings.runtime_work_enabled and any(
             step.call in {"yuki.agent", "yuki.generate"} for step in automation.script.steps
@@ -174,11 +211,6 @@ class AutomationExecutor:
                 or fresh.record.authority_snapshot != automation.authority_snapshot
             ):
                 raise AutomationExecutionError("automation_changed")
-            if (
-                automation.claimed_by is not None
-                and fresh.record.claimed_by != automation.claimed_by
-            ):
-                raise AutomationExecutionError("automation_lease_lost")
             if fresh.actor_is_superuser != actor_is_superuser:
                 raise AutomationExecutionError("actor_permission_changed")
             if capability is not None and (
@@ -198,12 +230,15 @@ class AutomationExecutor:
         }
         outputs: dict[str, Any] = {}
         steps_completed = llm_calls = tool_calls = messages_sent = 0
-        from qq_ai_bot.automation.work_cursor import load as load_cursor
         from qq_ai_bot.automation.work_cursor import save as save_cursor
 
-        phase, cursor = await load_cursor(
-            self._repository._database, run.id, automation.script_hash
-        )
+        if phase == "new":
+            # Legacy orphan runs have no proof that dispatch never started. Keep
+            # their identity and usage; an empty replacement cursor would authorize replay.
+            return ExecutionResult(
+                status=RunStatus.UNCERTAIN,
+                error_category="missing_initial_run_cursor",
+            )
         if phase in {"dispatching", "changed"}:
             return ExecutionResult(
                 status=RunStatus.UNCERTAIN, error_category="step_outcome_requires_reconciliation"
@@ -640,6 +675,12 @@ class AutomationExecutor:
                     status=RunStatus.BLOCKED,
                     error_category="automation_inactive",
                     summary={"reason": "automation row is missing"},
+                )
+            if current.claimed_by != claimed.claimed_by:
+                return ExecutionResult(
+                    status=RunStatus.BLOCKED,
+                    error_category="automation_lease_lost",
+                    summary={"reason": "claimed execution owner is stale"},
                 )
             if _canonical_identity(current) != _canonical_identity(claimed):
                 return ExecutionResult(

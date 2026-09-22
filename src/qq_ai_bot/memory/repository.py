@@ -30,6 +30,7 @@ from qq_ai_bot.memory.enums import (
     MemoryStatus,
     SelfMemoryVisibility,
 )
+from qq_ai_bot.memory.job_claims import MemoryJobClaimLost, memory_job_claim_conditions
 from qq_ai_bot.memory.models import (
     MemoryEntityTarget,
     MemoryEvidence,
@@ -1912,16 +1913,16 @@ class MemoryJobRepository:
 
     async def complete(
         self,
-        job_id: int,
+        job: MemoryJob,
         *,
         outcome: MemoryRebuildJobOutcome = MemoryRebuildJobOutcome.CLAIMS_APPLIED,
         result_category: str | None = None,
     ) -> None:
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
-            await session.execute(
+            result = await session.execute(
                 update(MemoryJobModel)
-                .where(MemoryJobModel.id == job_id)
+                .where(*memory_job_claim_conditions(job))
                 .values(
                     status=MemoryJobStatus.DONE.value,
                     updated_at=now,
@@ -1930,17 +1931,27 @@ class MemoryJobRepository:
                     completed_at=now,
                 )
             )
+            if not getattr(result, "rowcount", 0):
+                raise MemoryJobClaimLost(f"memory job {job.id} claim lost")
 
-    async def fail(self, job_id: int, error_category: str) -> None:
+    async def fail(self, job: MemoryJob, error_category: str) -> None:
         now = datetime.now(UTC)
+        attempts = job.attempts + 1
         async with self._database.sessions() as session, session.begin():
-            row = await session.get(MemoryJobModel, job_id)
-            if row is None:
-                return
-            row.attempts += 1
-            row.status = (
-                MemoryJobStatus.FAILED.value if row.attempts >= 3 else MemoryJobStatus.PENDING.value
+            result = await session.execute(
+                update(MemoryJobModel)
+                .where(*memory_job_claim_conditions(job))
+                .values(
+                    attempts=attempts,
+                    status=(
+                        MemoryJobStatus.FAILED.value
+                        if attempts >= 3
+                        else MemoryJobStatus.PENDING.value
+                    ),
+                    next_attempt_at=now + timedelta(seconds=30 * attempts),
+                    updated_at=now,
+                    error_category=error_category[:64],
+                )
             )
-            row.next_attempt_at = now + timedelta(seconds=30 * row.attempts)
-            row.updated_at = now
-            row.error_category = error_category[:64]
+            if not getattr(result, "rowcount", 0):
+                raise MemoryJobClaimLost(f"memory job {job.id} claim lost")

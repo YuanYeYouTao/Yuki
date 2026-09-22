@@ -11,6 +11,7 @@ from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.relationships import RelationshipEvaluation
 from qq_ai_bot.llm.base import LLMError
+from qq_ai_bot.model_runtime.dispatch_guard import model_dispatch_guard
 from qq_ai_bot.model_runtime.executor import BackgroundModelPreempted
 from qq_ai_bot.persistence.relationship_repository import RelationshipClaimLost
 from qq_ai_bot.persistence.repositories import (
@@ -118,7 +119,13 @@ class RelationshipWorker:
 
     async def _process_claimed(self, jobs: tuple[RelationshipJobRecord, ...]) -> int:
         try:
-            evaluations = await self._evaluator.evaluate(jobs)
+            await self._jobs.assert_current(jobs)
+            with model_dispatch_guard(lambda: self._jobs.assert_current(jobs)):
+                evaluations = await self._evaluator.evaluate(jobs)
+        except RelationshipClaimLost:
+            await self._jobs.defer(jobs)
+            logger.info("relationship_batch_invalidated count=%d", len(jobs))
+            return 0
         except BackgroundModelPreempted:
             await self._jobs.defer(jobs)
             logger.info("relationship_batch_preempted count=%d", len(jobs))
@@ -132,22 +139,23 @@ class RelationshipWorker:
 
         completed = 0
         for job in jobs:
-            runtime = await self._runtime_config.snapshot(
-                user_id=job.user_id,
-                group_id=job.trigger_event.group_id,
-            )
-            raw = evaluations.get(
-                job.job_id,
-                RelationshipEvaluation(0, 0, "neutral", 0.0),
-            )
-            evaluation = validate_evaluation(
-                job,
-                raw,
-                confidence_threshold=runtime.relationship.confidence_threshold,
-                affection_max_delta=runtime.relationship.max_auto_delta,
-                trust_max_delta=runtime.relationship.max_auto_delta,
-            )
             try:
+                await self._jobs.assert_current((job,))
+                runtime = await self._runtime_config.snapshot(
+                    user_id=job.user_id,
+                    group_id=job.trigger_event.group_id,
+                )
+                raw = evaluations.get(
+                    job.job_id,
+                    RelationshipEvaluation(0, 0, "neutral", 0.0),
+                )
+                evaluation = validate_evaluation(
+                    job,
+                    raw,
+                    confidence_threshold=runtime.relationship.confidence_threshold,
+                    affection_max_delta=runtime.relationship.max_auto_delta,
+                    trust_max_delta=runtime.relationship.max_auto_delta,
+                )
                 await self._relationships.apply_automatic(
                     user_id=job.user_id,
                     source_event_id=job.trigger_event.id,
@@ -159,6 +167,7 @@ class RelationshipWorker:
                 )
                 completed += 1
             except RelationshipClaimLost:
+                await self._jobs.defer((job,))
                 logger.info("relationship_claim_lost job_id=%d", job.job_id)
             except (SQLAlchemyError, OSError, RuntimeError, TypeError, ValueError) as exc:
                 category = type(exc).__name__
