@@ -30,6 +30,7 @@ from qq_ai_bot.memory.enums import (
     MemoryStatus,
     SelfMemoryVisibility,
 )
+from qq_ai_bot.memory.job_claims import MemoryJobClaimLost, memory_job_claim_conditions
 from qq_ai_bot.memory.models import (
     MemoryEntityTarget,
     MemoryEvidence,
@@ -52,6 +53,7 @@ from qq_ai_bot.memory.partition import (
 from qq_ai_bot.memory.projections import project_memory_fact_rows
 from qq_ai_bot.memory.temporal_filter import strict_time_conditions
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.job_claims import PreparedJobClaim, commit_job_claims
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
     MemoryActivationStateModel,
@@ -181,7 +183,30 @@ def readable_evidence_count_expression() -> Any:
         .correlate(MemoryFactModel)
         .scalar_subquery()
     )
-    return event_count + receipt_count
+    from sqlalchemy import text
+
+    from qq_ai_bot.memory.self_origin import sql_self_receipt_evidence_predicate
+
+    initiative_count = (
+        select(func.count())
+        .select_from(MemoryEvidenceModel)
+        .join(
+            MemoryToolReceiptModel, MemoryToolReceiptModel.id == MemoryEvidenceModel.tool_receipt_id
+        )
+        .where(
+            MemoryEvidenceModel.fact_id == MemoryFactModel.id,
+            text(
+                sql_self_receipt_evidence_predicate(
+                    fact="memory_facts",
+                    evidence="memory_evidence",
+                    receipt="memory_tool_receipts",
+                )
+            ),
+        )
+        .correlate(MemoryFactModel)
+        .scalar_subquery()
+    )
+    return event_count + receipt_count + initiative_count
 
 
 def _initial_activation(fact: MemoryFactCreate) -> float:
@@ -974,13 +999,26 @@ class MemoryFactRepository:
                 return False
         else:
             receipt = await session.get(MemoryToolReceiptModel, evidence.tool_receipt_id)
-            if receipt is None or receipt.trigger_event_id is None:
+            if receipt is None:
                 return False
-            trigger = await session.get(ChatEventModel, receipt.trigger_event_id)
-            if trigger is None or not await v2_evidence_event_chain_readable(
-                session, fact_row, trigger
-            ):
-                return False
+            if receipt.initiative_run_id is not None:
+                from qq_ai_bot.memory.self_origin import receipt_evidence_readable
+
+                if not await receipt_evidence_readable(
+                    session,
+                    fact=fact_row,
+                    evidence=evidence,
+                    receipt=receipt,
+                ):
+                    return False
+            else:
+                if receipt.trigger_event_id is None:
+                    return False
+                trigger = await session.get(ChatEventModel, receipt.trigger_event_id)
+                if trigger is None or not await v2_evidence_event_chain_readable(
+                    session, fact_row, trigger
+                ):
+                    return False
         statement = insert(MemoryEvidenceModel).values(
             fact_id=fact_id,
             event_id=evidence.event_id,
@@ -1000,7 +1038,15 @@ class MemoryFactRepository:
         result = await session.execute(
             statement.on_conflict_do_nothing(index_elements=index_elements)
         )
-        return bool(cast(CursorResult[Any], result).rowcount)
+        added = bool(cast(CursorResult[Any], result).rowcount)
+        if added:
+            # Evidence may make an earlier unreadable fact usable. Advance its
+            # change cursor atomically, but do not wake readers for duplicate evidence.
+            previous = fact_row.updated_at
+            if previous.tzinfo is None:
+                previous = previous.replace(tzinfo=UTC)
+            fact_row.updated_at = max(datetime.now(UTC), previous + timedelta(microseconds=1))
+        return added
 
     async def list_evidence(
         self,
@@ -1639,7 +1685,8 @@ class MemoryJobRepository:
     async def claim(self, *, limit: int = 20) -> tuple[MemoryJob, ...]:
         now = datetime.now(UTC)
         stale = now - timedelta(minutes=5)
-        async with self._database.sessions() as session, session.begin():
+        prepared: list[PreparedJobClaim] = []
+        async with self._database.sessions() as session:
             rows = (
                 await session.scalars(
                     select(MemoryJobModel)
@@ -1661,36 +1708,58 @@ class MemoryJobRepository:
             from qq_ai_bot.identity.memory_guard import refuse_legacy_live_event
 
             for row in rows:
+                prior = (row.id, row.status, row.updated_at)
                 event = await session.get(ChatEventModel, row.event_id)
                 if event is None:
-                    await session.delete(row)
+                    prepared.append(PreparedJobClaim(*prior, None))
                     continue
                 if (
                     row.processing_source == MemoryProcessingSource.LIVE.value
                     and await refuse_legacy_live_event(session, event)
                 ):
-                    row.status = MemoryJobStatus.FAILED.value
-                    row.error_category = "legacy_event_replay"
-                    row.updated_at = now
+                    prepared.append(
+                        PreparedJobClaim(
+                            *prior,
+                            {
+                                "status": MemoryJobStatus.FAILED.value,
+                                "error_category": "legacy_event_replay",
+                                "updated_at": now,
+                            },
+                        )
+                    )
                     continue
                 if row.processing_source == MemoryProcessingSource.LIVE.value:
                     if bool(row.canonical_person_id) == bool(row.canonical_space_id):
-                        row.status = MemoryJobStatus.FAILED.value
-                        row.error_category = "missing_canonical_owner"
-                        row.updated_at = now
+                        prepared.append(
+                            PreparedJobClaim(
+                                *prior,
+                                {
+                                    "status": MemoryJobStatus.FAILED.value,
+                                    "error_category": "missing_canonical_owner",
+                                    "updated_at": now,
+                                },
+                            )
+                        )
                         continue
-                row.status = MemoryJobStatus.PROCESSING.value
-                row.updated_at = now
+                prepared.append(
+                    PreparedJobClaim(
+                        *prior,
+                        {"status": MemoryJobStatus.PROCESSING.value, "updated_at": now},
+                        row.event_id
+                        if row.processing_source == MemoryProcessingSource.LIVE.value
+                        else None,
+                    )
+                )
                 jobs.append(
                     MemoryJob(
                         id=row.id,
                         event_id=row.event_id,
                         conversation_key=row.conversation_key,
-                        status=row.status,
+                        status=MemoryJobStatus.PROCESSING.value,
                         attempts=row.attempts,
                         next_attempt_at=row.next_attempt_at,
                         created_at=row.created_at,
-                        updated_at=row.updated_at,
+                        updated_at=now,
                         error_category=row.error_category,
                         processing_source=row.processing_source,
                         rebuild_run_id=row.rebuild_run_id,
@@ -1699,7 +1768,8 @@ class MemoryJobRepository:
                         event=_event_record(event),
                     )
                 )
-            return tuple(jobs)
+        accepted = await commit_job_claims(self._database, MemoryJobModel, prepared)
+        return tuple(job for job in jobs if job.id in accepted)
 
     async def claim_ready_batch(
         self,
@@ -1756,7 +1826,8 @@ class MemoryJobRepository:
                 MemoryJobModel.canonical_space_id.is_not(None),
             ),
         )
-        async with self._database.sessions() as session, session.begin():
+        prepared: list[PreparedJobClaim] = []
+        async with self._database.sessions() as session:
             owner_ready = (
                 await session.execute(
                     select(
@@ -1816,40 +1887,62 @@ class MemoryJobRepository:
             from qq_ai_bot.identity.memory_guard import refuse_legacy_live_event
 
             for row in rows:
+                prior = (row.id, row.status, row.updated_at)
                 event = await session.get(ChatEventModel, row.event_id)
                 if event is None:
-                    await session.delete(row)
+                    prepared.append(PreparedJobClaim(*prior, None))
                     continue
                 if (
                     row.processing_source == MemoryProcessingSource.LIVE.value
                     and await refuse_legacy_live_event(session, event)
                 ):
-                    row.status = MemoryJobStatus.FAILED.value
-                    row.error_category = "legacy_event_replay"
-                    row.updated_at = claimed_at
+                    prepared.append(
+                        PreparedJobClaim(
+                            *prior,
+                            {
+                                "status": MemoryJobStatus.FAILED.value,
+                                "error_category": "legacy_event_replay",
+                                "updated_at": claimed_at,
+                            },
+                        )
+                    )
                     continue
                 if row.processing_source == MemoryProcessingSource.LIVE.value:
                     if bool(row.canonical_person_id) == bool(row.canonical_space_id):
-                        row.status = MemoryJobStatus.FAILED.value
-                        row.error_category = "missing_canonical_owner"
-                        row.updated_at = claimed_at
+                        prepared.append(
+                            PreparedJobClaim(
+                                *prior,
+                                {
+                                    "status": MemoryJobStatus.FAILED.value,
+                                    "error_category": "missing_canonical_owner",
+                                    "updated_at": claimed_at,
+                                },
+                            )
+                        )
                         continue
                 event_characters = len(event.evidence_content)
                 if jobs and characters + event_characters > max(1, max_characters):
                     break
                 characters += event_characters
-                row.status = MemoryJobStatus.PROCESSING.value
-                row.updated_at = claimed_at
+                prepared.append(
+                    PreparedJobClaim(
+                        *prior,
+                        {"status": MemoryJobStatus.PROCESSING.value, "updated_at": claimed_at},
+                        row.event_id
+                        if row.processing_source == MemoryProcessingSource.LIVE.value
+                        else None,
+                    )
+                )
                 jobs.append(
                     MemoryJob(
                         id=row.id,
                         event_id=row.event_id,
                         conversation_key=row.conversation_key,
-                        status=row.status,
+                        status=MemoryJobStatus.PROCESSING.value,
                         attempts=row.attempts,
                         next_attempt_at=row.next_attempt_at,
                         created_at=row.created_at,
-                        updated_at=row.updated_at,
+                        updated_at=claimed_at,
                         error_category=row.error_category,
                         processing_source=row.processing_source,
                         rebuild_run_id=row.rebuild_run_id,
@@ -1859,20 +1952,21 @@ class MemoryJobRepository:
                         batch_trigger=str(owner_ready[3]),
                     )
                 )
-            return tuple(jobs)
+        accepted = await commit_job_claims(self._database, MemoryJobModel, prepared)
+        return tuple(job for job in jobs if job.id in accepted)
 
     async def complete(
         self,
-        job_id: int,
+        job: MemoryJob,
         *,
         outcome: MemoryRebuildJobOutcome = MemoryRebuildJobOutcome.CLAIMS_APPLIED,
         result_category: str | None = None,
     ) -> None:
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
-            await session.execute(
+            result = await session.execute(
                 update(MemoryJobModel)
-                .where(MemoryJobModel.id == job_id)
+                .where(*memory_job_claim_conditions(job))
                 .values(
                     status=MemoryJobStatus.DONE.value,
                     updated_at=now,
@@ -1881,17 +1975,27 @@ class MemoryJobRepository:
                     completed_at=now,
                 )
             )
+            if not getattr(result, "rowcount", 0):
+                raise MemoryJobClaimLost(f"memory job {job.id} claim lost")
 
-    async def fail(self, job_id: int, error_category: str) -> None:
+    async def fail(self, job: MemoryJob, error_category: str) -> None:
         now = datetime.now(UTC)
+        attempts = job.attempts + 1
         async with self._database.sessions() as session, session.begin():
-            row = await session.get(MemoryJobModel, job_id)
-            if row is None:
-                return
-            row.attempts += 1
-            row.status = (
-                MemoryJobStatus.FAILED.value if row.attempts >= 3 else MemoryJobStatus.PENDING.value
+            result = await session.execute(
+                update(MemoryJobModel)
+                .where(*memory_job_claim_conditions(job))
+                .values(
+                    attempts=attempts,
+                    status=(
+                        MemoryJobStatus.FAILED.value
+                        if attempts >= 3
+                        else MemoryJobStatus.PENDING.value
+                    ),
+                    next_attempt_at=now + timedelta(seconds=30 * attempts),
+                    updated_at=now,
+                    error_category=error_category[:64],
+                )
             )
-            row.next_attempt_at = now + timedelta(seconds=30 * row.attempts)
-            row.updated_at = now
-            row.error_category = error_category[:64]
+            if not getattr(result, "rowcount", 0):
+                raise MemoryJobClaimLost(f"memory job {job.id} claim lost")

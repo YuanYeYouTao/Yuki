@@ -88,6 +88,7 @@ from qq_ai_bot.runtime.origin import TurnOrigin as RuntimeTurnOrigin
 from qq_ai_bot.runtime.trigger import (
     ExternalEventTurnTrigger,
     SandboxTaskTurnTrigger,
+    SelfInitiativeTrigger,
     WorkResumeTrigger,
 )
 from qq_ai_bot.services.agent_runner import (
@@ -287,6 +288,9 @@ class ToolInvocationRecorder(Protocol):
         result_excerpt: str,
         canonical_conversation_id: str | None = None,
         ingress_presence_id: str | None = None,
+        initiative_run_id: str | None = None,
+        tool_call_id: str | None = None,
+        execution_id: str | None = None,
     ) -> None: ...
 
 
@@ -798,7 +802,7 @@ class ChatService:
         changed = None
         original_event = None
         try:
-            if turn_snapshot is not None:
+            if turn_snapshot is not None and turn_snapshot.trigger_event_id is not None:
                 original_event = await self._ledger.get_event(turn_snapshot.trigger_event_id)
             result = await self._respond(inbound, identity, profile, content, sender, **arguments)
         except HistorySourceChangedError as exc:
@@ -1197,6 +1201,7 @@ class ChatService:
         artifact_created: bool,
         error_category: str | None,
         result_excerpt: str,
+        tool_call_id: str | None = None,
     ) -> None:
         if self._tool_invocations is None:
             return
@@ -1215,6 +1220,9 @@ class ChatService:
             result_excerpt=result_excerpt,
             canonical_conversation_id=runtime.effective_conversation_id,
             ingress_presence_id=runtime.effective_presence_id,
+            initiative_run_id=runtime.initiative_run_id,
+            tool_call_id=tool_call_id,
+            execution_id=runtime.effective_execution_id,
         )
 
     async def handle_turn(
@@ -1488,6 +1496,138 @@ class ChatService:
                 return await effect()
         except (EffectGateTimeoutError, EffectPermitRejectedError) as exc:
             raise TurnSupersededError("turn effect permit was rejected") from exc
+
+    async def _open_self_memory_session(
+        self,
+        trigger: SelfInitiativeTrigger,
+        runtime: RuntimeConfigSnapshot,
+        goal: str,
+    ) -> TurnMemorySession | None:
+        if self._memory_context is None:
+            return None
+        from qq_ai_bot.runtime.work_activation import current_work_control
+
+        control = current_work_control.get()
+        return await TurnMemorySession.open_self_origin(
+            initiative_run_id=trigger.run_id,
+            canonical_conversation_id=trigger.conversation_id,
+            identity=ConversationScope.group(trigger.bot_user_id, trigger.group_id),
+            runtime=runtime,
+            memory_context=self._memory_context,
+            partition_lookup=self._memory_partition_lookup,
+            user_question=goal,
+            runtime_turn_id=(
+                str(control.current["id"])
+                if control is not None and control.current is not None
+                else f"initiative:{trigger.run_id}"
+            ),
+        )
+
+    async def generate_self_initiative(
+        self,
+        *,
+        trigger: SelfInitiativeTrigger,
+        runtime: RuntimeConfigSnapshot,
+        turn_token: TurnToken,
+        turn_snapshot: ConversationTurnSnapshot,
+        before_model_request: Callable[[], Awaitable[None]],
+        source_runtime: ToolRuntime,
+    ) -> AgentRunResult:
+        """Run accepted SELF work through the same composition, tools and durable loop."""
+        from qq_ai_bot.conversation.self_initiative import validate_self_initiative
+        from qq_ai_bot.runtime.work_activation import current_work_control
+        from qq_ai_bot.runtime.work_repository import WorkConflict
+
+        control = current_work_control.get()
+        actor = source_runtime.require_actor()
+        if (
+            control is None
+            or control.current is None
+            or control.source.get("initiative_run_id") != trigger.run_id
+            or actor.initiative_run_id != trigger.run_id
+            or actor.conversation_id != trigger.conversation_id
+            or actor.presence_id != trigger.presence_id
+            or actor.bot_user_id != trigger.bot_user_id
+            or actor.group_id != trigger.group_id
+            or turn_snapshot.initiative_run_id != trigger.run_id
+            or turn_snapshot.generation != trigger.generation
+            or source_runtime.execution_id != control.current["id"]
+        ):
+            raise WorkConflict("self_initiative_execution_mismatch")
+
+        async def validate() -> None:
+            await before_model_request()
+            await validate_self_initiative(
+                self._ledger._database,
+                trigger.run_id,
+                conversation_id=trigger.conversation_id,
+                space_id=trigger.space_id,
+                presence_id=trigger.presence_id,
+            )
+
+        await validate()
+        memory = await self._open_self_memory_session(trigger, runtime, trigger.instruction)
+        async with AsyncExitStack() as cleanup:
+            if memory is not None:
+                cleanup.push_async_callback(memory.close)
+            retrieval = await memory.prefetch() if memory is not None else empty_retrieval()
+            context = await self._context_assembler.assemble_self_initiative(
+                trigger=trigger,
+                runtime=runtime,
+                turn=turn_snapshot,
+                memory_retrieval=retrieval or empty_retrieval(),
+            )
+            if memory is not None and not control.current["model_requests"]:
+                # A resumed journal retains its old projected memory verbatim. Do
+                # not count newly fetched facts as exposed by that old request.
+                memory.stage_prompt_selection(context.injected_memory_ids, context.memory_exposures)
+            composition = await self._main_turns.compose(
+                inbound=None,
+                context=context,
+                runtime=runtime,
+                visual_observation=None,
+                visual_failure=False,
+                scope_type=ScopeType.GROUP,
+            )
+            tool_runtime = replace(
+                source_runtime,
+                runtime_config=runtime,
+                turn_token=turn_token,
+                turn_snapshot=turn_snapshot,
+                memory_session=memory,
+                visible_event_ids=context.visible_event_ids,
+                memory_exposures=(
+                    context.memory_exposures if not control.current["model_requests"] else ()
+                ),
+                memory_intent=memory.prefetch_intent if memory is not None else None,
+                selection_query=trigger.instruction,
+                prompt_diagnostics=PromptRequestDiagnostics(
+                    conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
+                    prompt_snapshot_fingerprint=composition.metrics.prompt_snapshot_fingerprint,
+                    static_prompt_revision=composition.metrics.stable_prefix_hash,
+                ),
+                before_model_request=self._context_validator(
+                    composition.read_version,
+                    validate,
+                    composition.commit_projection,
+                ),
+            )
+            completed = await self._run_agent(
+                source_runtime.conversation_key,
+                composition.messages,
+                tool_runtime,
+            )
+            # QQ effects are committed by send_message; final text is an internal decision.
+            await self._finish_memory_turn(
+                memory,
+                run_id=str(control.current["id"]),
+                delivered_text="\n".join(completed.sent_current_texts),
+                delivered=bool(completed.sent_current_texts),
+                cancelled=False,
+            )
+            if control.final_delivery and control.session is not None:
+                await control.session.save("delivered")
+            return completed.result
 
     async def generate_main_agent_wakeup(
         self,

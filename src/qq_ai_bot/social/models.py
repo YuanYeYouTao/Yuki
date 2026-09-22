@@ -87,4 +87,5 @@ class SocialReceipt(BaseModel):
     target: SocialTarget
     presence_id: str | None = None
     platform_reference: str | None = None
+    event_id: int | None = None
     error_category: str | None = None

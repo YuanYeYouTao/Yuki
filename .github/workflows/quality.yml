@@ -123,14 +123,17 @@ jobs:
           printf '%s\n' "$output"
           count="$(printf '%s\n' "$output" | sed -nE 's/^([0-9]+) tests? collected.*$/\1/p' | tail -n 1)"
           test -n "$count"
-          # Includes reflection wire, durable cycles, retry ranges and physical request budgets.
-          if (( count > 1000 )); then
-            echo "test budget exceeded: $count collected (maximum 1000)" >&2
+          # Includes integrated lifecycle, delivery, protocol and V6 SELF regressions.
+          if (( count > 1200 )); then
+            echo "test budget exceeded: $count collected (maximum 1200)" >&2
             exit 1
           fi
           required_tests=(
             "tests/unit/test_event_prompt_mentions.py::test_history_reprojects_ordered_mentions_from_persisted_segments"
             "tests/unit/test_event_prompt_mentions.py::test_history_segment_fallback_log_never_contains_content_or_ids"
+            "tests/unit/test_participation_admission_edges.py::test_commit_deadline_rejects_new_proposal_but_does_not_lose_accepted_run"
+            "tests/unit/test_self_initiative_runtime.py::test_self_work_restart_retains_id_budget_prefix_pending_receipt_and_delivery[responses]"
+            "tests/unit/test_self_initiative_runtime.py::test_self_work_restart_retains_id_budget_prefix_pending_receipt_and_delivery[chat_completions]"
           )
           for required_test in "${required_tests[@]}"; do
             if ! grep -Fqx "$required_test" <<<"$output"; then
@@ -163,6 +166,11 @@ jobs:
         run: |
           uv run pytest -q plugins/github-monitor/tests
           uv run qq-ai-bot-cli plugin test plugins/github-monitor
+      - name: Subscription Monitor plugin contract and behavior
+        run: |
+          uv run pytest -q plugins/subscription-monitor/tests
+          uv run mypy --follow-imports=silent plugins/subscription-monitor/subscription_monitor
+          uv run qq-ai-bot-cli plugin test plugins/subscription-monitor
       - name: Alembic fresh install
         env:
           DATABASE_URL: sqlite+aiosqlite:///./data/ci.db

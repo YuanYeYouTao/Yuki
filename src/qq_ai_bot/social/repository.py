@@ -15,6 +15,7 @@ from qq_ai_bot.identity.db_models import CanonicalPersonModel, CanonicalSpaceMod
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.social.db_models import SocialOperationModel
 from qq_ai_bot.social.models import OperationStatus, SocialError, SocialReceipt, SocialTarget
+from qq_ai_bot.social.source_keys import social_source_key
 
 _ACTIONS = frozenset(
     {
@@ -43,8 +44,9 @@ class SocialOperationRepository:
     ) -> SocialReceipt:
         if action not in _ACTIONS or not source_turn_id or not tool_call_id:
             raise SocialError("invalid_operation")
-        if max(len(source_turn_id), len(tool_call_id)) > 128:
+        if len(tool_call_id) > 128:
             raise SocialError("invalid_operation")
+        source_turn_id = social_source_key(source_turn_id)
         encoded = json.dumps(
             {
                 "action": action,
@@ -118,6 +120,7 @@ class SocialOperationRepository:
         status: OperationStatus,
         session: AsyncSession,
         platform_reference: str | None = None,
+        event_id: int | None = None,
         error_category: str | None = None,
     ) -> None:
         """Caller commits a confirmed outgoing ledger append in this same transaction."""
@@ -135,6 +138,10 @@ class SocialOperationRepository:
             raise SocialError("invalid_error_category")
         if platform_reference is not None and len(platform_reference) > 255:
             raise SocialError("invalid_platform_reference")
+        if event_id is not None and (
+            type(event_id) is not int or event_id <= 0 or status is not OperationStatus.SUCCEEDED
+        ):
+            raise SocialError("invalid_event_reference")
         result = await session.execute(
             update(SocialOperationModel)
             .where(
@@ -144,6 +151,7 @@ class SocialOperationRepository:
             .values(
                 status=status.value,
                 platform_reference=platform_reference,
+                event_id=event_id,
                 error_category=error_category,
                 updated_at=datetime.now(UTC),
             )
@@ -159,6 +167,7 @@ class SocialOperationRepository:
             return self._receipt(row)
 
     async def find(self, source_turn_id: str, tool_call_id: str) -> SocialReceipt | None:
+        source_turn_id = social_source_key(source_turn_id)
         async with self.database.sessions() as session:
             row = await session.scalar(
                 select(SocialOperationModel).where(
@@ -193,5 +202,6 @@ class SocialOperationRepository:
             target=SocialTarget.model_validate({"kind": row.target_kind, "id": row.target_id}),
             presence_id=row.presence_id,
             platform_reference=row.platform_reference,
+            event_id=row.event_id,
             error_category=row.error_category,
         )

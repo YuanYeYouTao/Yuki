@@ -72,6 +72,8 @@ async def activate_work(
                     "plugin_id",
                     "delegation_id",
                     "execution_boundary",
+                    "principal_kind",
+                    "initiative_run_id",
                 )
             ):
                 control.current = candidate

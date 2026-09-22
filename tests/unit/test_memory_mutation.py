@@ -71,7 +71,7 @@ from qq_ai_bot.memory.mutation.models import (
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.quality.audit import MemoryProductionQualityAudit
 from qq_ai_bot.memory.quality.hygiene import MemoryProvenanceHygiene
-from qq_ai_bot.memory.repository import MemoryFactRepository
+from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepository
 from qq_ai_bot.memory.resolution import MemoryResolutionPolicy
 from qq_ai_bot.memory.retrieval import MemoryRetriever
 from qq_ai_bot.memory.self_reflection.models import SelfReflectionOutput
@@ -2303,10 +2303,14 @@ async def test_agent_tool_and_worker_share_one_claim_receipt(
     )
     validated = processor.validate(claim, event)
     assert validated is not None
+    jobs = MemoryJobRepository(database)
+    assert await jobs.enqueue(event.id, "private:1001")
+    (job,) = await jobs.claim()
     worker_result = await service.mutate_validated_claim(
         validated,
         MemoryProcessingContext(source=MemoryProcessingSource.LIVE, event=event),
         conversation_key="private:1001",
+        job=job,
     )
 
     assert worker_result.ok
@@ -2402,11 +2406,15 @@ async def test_classifier_database_write_happens_before_receipt_transaction(
     )
     validated = processor.validate(claim, changed_event)
     assert validated is not None
+    jobs = MemoryJobRepository(database)
+    assert await jobs.enqueue(changed_event.id, "private:1001")
+    (job,) = await jobs.claim()
 
     result = await service.mutate_validated_claim(
         validated,
         MemoryProcessingContext(source=MemoryProcessingSource.LIVE, event=changed_event),
         conversation_key="private:1001",
+        job=job,
     )
 
     assert classifier.calls == 1

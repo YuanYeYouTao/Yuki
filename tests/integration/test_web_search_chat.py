@@ -633,7 +633,9 @@ async def test_web_failure_is_returned_to_llm_for_a_natural_answer(database: Dat
     )
 
     assert result.reason == "llm_failure"
-    assert sender.messages[0].text == "AI 服务暂时不可用，请稍后重试。"
+    # The fake receives the search failure but never calls send_message. Its
+    # unsent final response is not a model-provider availability failure.
+    assert sender.messages[0].text == "模型未能完成这次回复，请稍后重试。"
 
 
 @pytest.mark.asyncio

@@ -27,11 +27,9 @@ from qq_ai_bot.memory.enums import (
 from qq_ai_bot.memory.models import MemoryFactCreate
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.runtime.resolver import MemoryStructuredCommand
-from qq_ai_bot.memory.runtime.turn_session import apply_memory_tool_groups
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.runtime.contracts import MemoryCapabilityView
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.services.processor import (
     MENTION_ONLY_CONTEXT,
@@ -162,43 +160,6 @@ def inbound(
     )
 
 
-def test_capability_view_owns_first_round_memory_scope() -> None:
-    from qq_ai_bot.config import Settings
-
-    defaults = make_settings("sqlite+aiosqlite:///:memory:")
-    assert "get_group_memories" in defaults.tooling_first_round_pin_ids
-    explicit = Settings(_env_file=None, tooling_first_round_pin_ids_csv="get_self_memories")
-    assert explicit.tooling_first_round_pin_ids == ("get_self_memories",)
-    requested = frozenset({"memory", "memory.read", "web"})
-    passive = MemoryCapabilityView(
-        eager_namespaces=(),
-        requestable_namespaces=("memory.state.write",),
-        hidden_namespaces=(),
-        exclusive_namespace=None,
-        transition_revision=1,
-    )
-    eager = MemoryCapabilityView(
-        eager_namespaces=("memory.person.read",),
-        requestable_namespaces=("memory.state.write",),
-        hidden_namespaces=(),
-        exclusive_namespace=None,
-        transition_revision=1,
-    )
-    exclusive = MemoryCapabilityView(
-        eager_namespaces=("memory.state.write",),
-        requestable_namespaces=(),
-        hidden_namespaces=(),
-        exclusive_namespace="memory.state.write",
-        transition_revision=1,
-    )
-
-    assert apply_memory_tool_groups(passive, requested) == frozenset({"web"})
-    assert apply_memory_tool_groups(eager, frozenset({"web"})) == frozenset({"memory", "web"})
-    assert apply_memory_tool_groups(exclusive, frozenset({"admin", "web"})) == frozenset(
-        {"admin", "memory", "web"}
-    )
-
-
 @pytest.mark.asyncio
 async def test_only_mutation_access_appends_the_write_receipt_contract(database) -> None:
     from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
@@ -319,7 +280,7 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     )
     admin_text = admin_sender.messages[0].text
     assert "当前权限：超级管理员" in admin_text
-    assert "可修改运行时配置参数：231 项" in admin_text
+    assert "可修改运行时配置参数：232 项" in admin_text
     assert "管理员业务接口：44 项，其中修改型 33 项" in admin_text
     assert "conversation.autonomous_batch_limit" in admin_text
     assert "relationship.set_affection" in admin_text
@@ -712,9 +673,9 @@ async def test_empty_model_response_is_user_safe(database: Database) -> None:
         assert mention_provider.requests[0].tools == mention_provider.requests[1].tools
         assert all("[提及" not in str(message.text) for message in mention_sender.messages)
         assert all("@完了" not in str(message.text) for message in mention_sender.messages)
-        assert any("AI 服务暂时不可用" in message.text for message in mention_sender.messages) is (
-            not repair
-        )
+        assert any(
+            "模型未能完成这次回复" in message.text for message in mention_sender.messages
+        ) is (not repair)
 
 
 @pytest.mark.asyncio
@@ -811,7 +772,7 @@ async def test_unused_planner_fallback_no_longer_blocks_the_agent(
     # correctly rejects the provider's unsent final after context assembly.
     assert result.reason == "llm_failure"
     assert len(provider.requests) == 2
-    assert sender.messages[0].text == "AI 服务暂时不可用，请稍后重试。"
+    assert sender.messages[0].text == "模型未能完成这次回复，请稍后重试。"
 
 
 @pytest.mark.asyncio
@@ -833,7 +794,7 @@ async def test_ordinary_chat_always_assembles_agent_context(
 
     assert result.reason == "llm_failure"
     assert len(provider.requests) == 2
-    assert sender.messages[0].text == "AI 服务暂时不可用，请稍后重试。"
+    assert sender.messages[0].text == "模型未能完成这次回复，请稍后重试。"
     request = provider.requests[0]
     assert "event_bound_memory_refs" in request.messages[-1].content
     assert "available_memory_subjects" not in request.messages[-1].content

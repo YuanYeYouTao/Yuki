@@ -524,6 +524,9 @@ class ApplicationContainer:
         self.agent_tools.short_state = self.main_agent_contract.state
         self.chat._agent_runner.main_contract = self.main_agent_contract
         self._automation_handlers._agent_runner = self.chat._agent_runner
+        from qq_ai_bot.services.semantic_participation import SemanticParticipationService
+
+        self.semantic_participation = SemanticParticipationService(self)
         self.autonomous_groups = AutonomousGroupService(
             chat=self.chat,
             runtime_config=self.runtime_config,
@@ -531,6 +534,7 @@ class ApplicationContainer:
             turn_coordinator=self.turn_coordinator,
             admission_signals=self.plugin_admission_signals,
             turn_observations=self.turn_observations,
+            participation=self.semantic_participation,
         )
         self.chat.rollup_wakeups.on_consumed = self.autonomous_groups.consume_rollup_history
         self.command_service = CommandService(
@@ -883,6 +887,12 @@ class ApplicationContainer:
         )
         self.plugin_module.register_lifecycle(self.plugins, self.lifecycle)
         self.lifecycle.register("main_agent_manifest", start=self._freeze_main_manifest)
+        self.lifecycle.register(
+            "semantic_participation",
+            start=self.semantic_participation.start,
+            close=self.semantic_participation.close,
+            health=self.semantic_participation.health,
+        )
         self.lifecycle.register(
             "sandbox_completions",
             start=self.sandbox_completions.start,

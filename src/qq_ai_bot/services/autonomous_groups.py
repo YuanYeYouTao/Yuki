@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -18,8 +18,7 @@ from qq_ai_bot.conversation.participation import (
     AdmissionSignalHint,
     LocalAutonomousParticipationPolicy,
 )
-from qq_ai_bot.conversation.scope import ConversationTurnSnapshot, runtime_conversation_key
-from qq_ai_bot.domain.conversations import ConversationScope
+from qq_ai_bot.conversation.scope import runtime_conversation_key
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.llm.base import LLMError
@@ -41,6 +40,9 @@ from qq_ai_bot.services.turn_coordinator import (
     TurnToken,
 )
 from yuki_plugin_sdk.events import EventName
+
+if TYPE_CHECKING:
+    from qq_ai_bot.services.semantic_participation import SemanticParticipationService
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +82,9 @@ class AutonomousGroupService:
         turn_coordinator: ConversationTurnCoordinator | None = None,
         admission_signals: PluginAdmissionSignalAdapter | None = None,
         turn_observations: TurnObservationRecorder | None = None,
+        participation: SemanticParticipationService | None = None,
     ) -> None:
+        self._participation = participation
         self._chat = chat
         self._runtime_config = runtime_config or chat._runtime_config
         self._admission_features = admission_features
@@ -293,18 +297,8 @@ class AutonomousGroupService:
         if state is None:
             return 0
         last = state.message
-        profile = state.profile
-        sender = state.sender
-        token = state.latest_token
-        if token is None:
-            token = await self._coordinator.notify_message(
-                scope_key,
-                TurnOrigin.AUTONOMOUS_GROUP,
-            )
-        else:
-            token = await self._coordinator.begin_autonomous(token)
-            if token is None:
-                return 0
+        if self._participation is None or not await self._participation.legacy_allowed(last):
+            return 0
         plugin_signals = (
             await self._admission_signals.collect(
                 message=last,
@@ -340,80 +334,14 @@ class AutonomousGroupService:
                 ),
             )
             return 0
-        if not self._is_latest(scope_key, revision) or not self._coordinator.is_current(token):
+        if not self._is_latest(scope_key, revision):
             return 0
-        if last.group_id is None:
-            return 0
-        identity = ConversationScope.group(last.bot_user_id, last.group_id)
-        scope_state = await self._chat._conversation_scopes.get(identity)
-        if last.source_event_id is None:
-            return 0
-        trigger_event = await self._chat._ledger.get_event(last.source_event_id)
-        if scope_state is None or trigger_event is None:
-            return 0
-        if (
-            trigger_event.bot_user_id != last.bot_user_id
-            or trigger_event.canonical_conversation_id != last.conversation_id
-            or trigger_event.ingress_presence_id != last.presence_id
-            or trigger_event.sender_user_id != last.sender.user_id
-        ):
-            return 0
-        runtime_key = runtime_conversation_key(
-            identity=identity,
-            inbound=last,
-            primary_alias=scope_state.runtime_scope_key,
-        )
-        turn_snapshot = ConversationTurnSnapshot(
-            scope_id=scope_state.id,
-            scope_key=runtime_key,
-            generation=scope_state.generation,
-            trigger_event_id=trigger_event.id,
-            coordinator_version=token.version,
-            transport_scope_key=(identity.key if identity.key != runtime_key else None),
-        )
-        await publish_notification(
-            publisher,
-            EventName.TURN_ADMITTED,
-            content_free_turn_payload(
-                origin=TurnOrigin.AUTONOMOUS_GROUP.value,
-                scope_type="group",
-                conversation_key=conversation_key,
-                reason="autonomous_group",
-            ),
-        )
-        started = time.perf_counter()
-        outcome = "autonomous_group"
-        sent_messages = 0
-        try:
-            sent_messages = await self._chat.respond(
-                last,
-                identity,
-                profile,
-                last.text,
-                sender,
-                autonomous=True,
-                runtime_snapshot=runtime,
-                turn_token=token,
-                turn_snapshot=turn_snapshot,
-            )
-        except (TurnInterruptedError, TurnSupersededError):
-            outcome = "turn_interrupted"
-            raise
-        finally:
-            await publish_notification(
-                publisher,
-                EventName.TURN_CLOSED,
-                content_free_turn_payload(
-                    origin=TurnOrigin.AUTONOMOUS_GROUP.value,
-                    scope_type="group",
-                    conversation_key=conversation_key,
-                    outcome=outcome,
-                    handled=True,
-                    sent_messages=sent_messages,
-                    latency_ms=int((time.perf_counter() - started) * 1000),
-                ),
-            )
-        return sent_messages
+        await self._participation.accept_legacy(last)
+        return 0
+
+    def observe_context(self, message: InboundMessage, *, direct: bool) -> None:
+        if self._participation is not None:
+            self._participation.observe_context(message, direct=direct)
 
     async def wait_until_idle(self, scope_key: str) -> None:
         while True:

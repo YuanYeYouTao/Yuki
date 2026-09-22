@@ -63,6 +63,7 @@ class EventRecord:
     group_id: str | None = None
     private_peer_user_id: str | None = None
     reply_to_message_id: str | None = None
+    reply_to_event_id: int | None = None
     origin: str = "user_message"
     automation_id: int | None = None
     automation_run_id: int | None = None
@@ -200,6 +201,8 @@ class RelationshipJobRecord:
     """A claimed relationship job with bounded person-specific context."""
 
     job_id: int
+    claimed_at: datetime
+    conversation_generation: int
     attempts: int
     user_id: str
     conversation_key: str

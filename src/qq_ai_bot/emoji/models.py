@@ -104,7 +104,7 @@ class EmojiScopeState(_FrozenModel):
 
 
 class EmojiSelectionRequest(_FrozenModel):
-    actor_user_id: str
+    private_peer_user_id: str | None = None
     group_id: str | None = None
     reply_text: str = Field(default="", max_length=4000)
     goal: str = Field(default="", max_length=300)

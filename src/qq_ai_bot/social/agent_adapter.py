@@ -18,6 +18,39 @@ from qq_ai_bot.social.service import SocialContext, SocialService
 async def invoke_social(
     service: SocialService, name: str, arguments: dict[str, Any], runtime: Any
 ) -> dict[str, Any]:
+    if runtime.origin is TurnOrigin.SELF_INITIATIVE:
+        invocation = current_invocation.get()
+        actor = runtime.require_actor()
+        if (
+            invocation is None
+            or not invocation.call_id
+            or runtime.tools_closed
+            or (runtime.read_only and name == "send_message")
+            or actor.principal_kind != "self"
+            or runtime.inbound is not None
+        ):
+            raise SocialError("permission_denied")
+        context = SocialContext(
+            turn_id=f"{actor.conversation_id}:initiative:{actor.initiative_run_id}",
+            call_id=invocation.call_id,
+            conversation_id=actor.conversation_id or "",
+            space_id=runtime.space_id,
+            origin=TurnOrigin.SELF_INITIATIVE.value,
+            initiative_run_id=actor.initiative_run_id,
+            presence_id=actor.presence_id,
+            visible_event_ids=frozenset(getattr(runtime, "visible_event_ids", ())),
+            actor=actor,
+            runtime_snapshot=getattr(runtime, "runtime_config", None),
+            turn_token=getattr(runtime, "turn_token", None),
+            conversation_key=getattr(runtime, "conversation_key", ""),
+            voice_delivery_allowed=bool(getattr(runtime, "voice_delivery_allowed", True)),
+        )
+        try:
+            return await service.execute(name, arguments, context)
+        except RouteSendError as exc:
+            raise SocialError(exc.category) from exc
+        except ValidationError as exc:
+            raise SocialError("invalid_message_arguments") from exc
     if name == "send_message" and runtime.origin is TurnOrigin.PLUGIN_BACKGROUND:
         from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
         from qq_ai_bot.persistence.models import ChatEventModel
@@ -63,6 +96,10 @@ async def invoke_social(
             origin="plugin_background",
             caused_by_event_id=event_id,
             visible_event_ids=frozenset(getattr(runtime, "visible_event_ids", ())),
+            runtime_snapshot=getattr(runtime, "runtime_config", None),
+            turn_token=getattr(runtime, "turn_token", None),
+            conversation_key=getattr(runtime, "conversation_key", ""),
+            voice_delivery_allowed=bool(getattr(runtime, "voice_delivery_allowed", True)),
         )
         try:
             return await service.execute(name, arguments, context)

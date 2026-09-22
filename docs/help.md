@@ -180,9 +180,9 @@ Gateway。3.8 尚未提供管理 HTTP API、登录或前端。
 在 QQ 中使用 `/ai help` 与 `/ai capabilities` 查看当前可用命令和能力；实际结果以当前
 Principal、会话和运行配置为准。
 
-## Plugin API 2.0
+## Plugin API 3.0
 
-3.8 只接受 Plugin API `2.0`。插件可以使用固定 primary `conversation_key`，也可读取可选的
+当前 Host 只接受精确声明 Plugin API `3.0` 的插件。插件可以使用固定 primary `conversation_key`，也可读取可选的
 person、space、conversation 和 presence ID。插件不能自报超级管理员，也不能绕过
 Control Plane、Capability 或 Gateway Registry。
 
@@ -199,7 +199,7 @@ Web、Memory read 和 history read 仍可使用。
 - [Plugin 开发索引](plugin-development/index.md)
 - [架构](plugin-development/architecture.md)
 - [权限与安全](plugin-development/security.md)
-- [从旧 Plugin API 迁移](plugin-development/api-2.0-migration.md)
+- [从旧 Plugin API 迁移](plugin-development/api-3.0-migration.md)
 
 ## MCP、Emoji、Vision 与 Speech
 

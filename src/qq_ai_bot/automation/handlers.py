@@ -138,7 +138,7 @@ class AutomationCapabilityHandlers:
 
     def mapping(self) -> dict[str, CapabilityHandler]:
         return {
-            "yuki.generate": self.generate,
+            "yuki.generate": self.agent,
             "yuki.agent": self.agent,
             "onebot.send_private_message": self.send_private,
             "onebot.send_group_message": self.send_group,
@@ -155,20 +155,6 @@ class AutomationCapabilityHandlers:
             "memory.get_group": self.group_memory,
             "history.search": self.history_search,
         }
-
-    async def generate(
-        self, arguments: dict[str, Any], context: CapabilityExecutionContext
-    ) -> CapabilityResult:
-        result = await self.agent(arguments, context)
-        if result.pending_work_id:
-            return result
-        return replace(
-            result,
-            data={
-                **result.data,
-                "text": str(result.data["text"])[: int(arguments.get("max_characters", 4000))],
-            },
-        )
 
     async def agent(
         self,
@@ -456,7 +442,7 @@ class AutomationCapabilityHandlers:
         if not emoji_id:
             selected = await selector.select(
                 EmojiSelectionRequest(
-                    actor_user_id=context.creator_user_id,
+                    private_peer_user_id=user_id,
                     group_id=group_id,
                     reply_text="",
                     goal=str(arguments.get("intended_tone") or "自然发送一个合适的表情"),

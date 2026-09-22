@@ -12,6 +12,8 @@ from sqlalchemy.dialects.sqlite import insert
 
 from qq_ai_bot.memory.enums import MemoryScopeType
 from qq_ai_bot.memory.extraction import MemoryClaim
+from qq_ai_bot.memory.job_claims import fence_memory_job_claim
+from qq_ai_bot.memory.models import MemoryJob
 from qq_ai_bot.memory.subjects import SubjectResolutionContext, SubjectResolver
 from qq_ai_bot.memory.validation import normalize_memory_text
 from qq_ai_bot.persistence.database import Database
@@ -61,7 +63,10 @@ class MemoryClaimCandidateRepository:
         *,
         candidate_type: str,
         subject_context: SubjectResolutionContext | None,
+        job: MemoryJob,
     ) -> MemoryClaimCandidate:
+        if job.event_id != event.id:
+            raise ValueError("memory job claim does not own the source event")
         if candidate_type not in {"memory", "self"}:
             raise ValueError("unknown memory candidate type")
         resolved = (
@@ -108,6 +113,7 @@ class MemoryClaimCandidateRepository:
         now = datetime.now(UTC)
         expires_at = now + timedelta(days=self._ttl_days)
         async with self._database.sessions() as session, session.begin():
+            await fence_memory_job_claim(session, job)
             await session.execute(
                 update(MemoryClaimCandidateModel)
                 .where(
@@ -235,10 +241,14 @@ class MemoryClaimCandidateRepository:
             ).all()
         return tuple(_candidate(row) for row in rows)
 
-    async def set_status(self, candidate_id: int, status: str) -> bool:
+    async def set_status(
+        self, candidate_id: int, status: str, *, job: MemoryJob | None = None
+    ) -> bool:
         if status not in {"accepted", "rejected", "expired"}:
             raise ValueError("invalid memory candidate status")
         async with self._database.sessions() as session, session.begin():
+            if job is not None:
+                await fence_memory_job_claim(session, job)
             result = await session.execute(
                 update(MemoryClaimCandidateModel)
                 .where(

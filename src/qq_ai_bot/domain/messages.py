@@ -149,6 +149,7 @@ class InboundMessage:
     reply_segments: tuple[dict[str, object], ...] = ()
     reply_to_message_id: str | None = None
     reply_sender_user_id: str | None = None
+    reply_to_event_id: int | None = None
     canonical_reply_to_yuki: bool | None = None
     canonical_reply_author_kind: str | None = None
     received_at: datetime = field(default_factory=lambda: datetime.now(UTC))

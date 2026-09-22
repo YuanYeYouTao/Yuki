@@ -620,6 +620,11 @@ class WorkControl:
                 # Explicit completion may be silent. The model's final text is
                 # internal state; it never becomes a fallback outbound message.
                 self.final_delivery = True
+            elif kind == "answer" and self.source.get("principal_kind") == "self":
+                # A SELF decision may end with NO_REPLY. Completion acknowledges
+                # the internal decision, not a QQ transport effect. Side effects
+                # remain separately backed by their original tool receipts.
+                self.final_delivery = True
             elif kind == "state_change" and not any(
                 effect.get("ok") and effect.get("side_effecting", True)
                 for effect in self.known_effects
@@ -709,6 +714,8 @@ class WorkControl:
                     "plugin_id",
                     "delegation_id",
                     "execution_boundary",
+                    "principal_kind",
+                    "initiative_run_id",
                 )
             ):
                 result.append({"work_id": row["id"], "goal": row["goal"], "state": row["state"]})

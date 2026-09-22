@@ -20,6 +20,36 @@ _TARGET_TYPES = frozenset({"group", "private"})
 
 
 @dataclass(frozen=True, slots=True)
+class SelfInitiativeTrigger:
+    """Host-accepted SELF intent, with no borrowed person or synthetic event."""
+
+    run_id: str
+    conversation_id: str
+    generation: int
+    space_id: str
+    presence_id: str
+    group_id: str
+    bot_user_id: str
+    instruction: str
+    origin: TurnOrigin = field(default=TurnOrigin.SELF_INITIATIVE, init=False)
+
+    def __post_init__(self) -> None:
+        if self.generation < 1 or any(
+            not value.strip()
+            for value in (
+                self.run_id,
+                self.conversation_id,
+                self.space_id,
+                self.presence_id,
+                self.group_id,
+                self.bot_user_id,
+                self.instruction,
+            )
+        ):
+            raise InvalidTurnTriggerError("invalid self initiative trigger")
+
+
+@dataclass(frozen=True, slots=True)
 class MessageTurnTrigger:
     """A turn caused by one or more real inbound messages.
 
@@ -139,6 +169,7 @@ class PluginSessionTurnTrigger:
 
 TurnTrigger = (
     MessageTurnTrigger
+    | SelfInitiativeTrigger
     | ExternalEventTurnTrigger
     | SandboxTaskTurnTrigger
     | WorkResumeTrigger

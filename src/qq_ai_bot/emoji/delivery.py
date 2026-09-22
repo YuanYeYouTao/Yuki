@@ -8,8 +8,8 @@ import logging
 from sqlalchemy.exc import SQLAlchemyError
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
+from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import AttachmentKind, InboundMessage, OutboundMedia, OutboundMessage
-from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.emoji.models import (
     EmojiDeliveryRequest,
     EmojiLifecycleStatus,
@@ -50,7 +50,7 @@ class EmojiDeliveryService:
         self,
         request: EmojiDeliveryRequest,
         *,
-        actor: ToolActor,
+        scope: ConversationScope,
         response_text: str,
         runtime: RuntimeConfigSnapshot,
     ) -> EmojiPreparationResult:
@@ -67,8 +67,8 @@ class EmojiDeliveryService:
         try:
             selection = await self._selector.select(
                 EmojiSelectionRequest(
-                    actor_user_id=actor.user_id,
-                    group_id=actor.group_id,
+                    private_peer_user_id=scope.private_peer_user_id,
+                    group_id=scope.group_id,
                     reply_text=response_text[:4000],
                     goal=request.goal,
                     emotion=request.emotion,

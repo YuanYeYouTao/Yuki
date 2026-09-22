@@ -206,6 +206,12 @@ class MainAgentTurnService:
         runtime: AgentRuntime,
         backend: AgentToolBackend | None,
     ) -> AgentRunResult:
+        # The compiler places the current task after history. Capture that exact
+        # message before the separate work-status input is appended below.
+        if runtime.compaction_brief is None and messages:
+            if messages[-1].role != "user":
+                raise ValueError("main_agent_current_task_message_required")
+            runtime = replace(runtime, compaction_brief=messages[-1])
         control = runtime.work_control or current_work_control.get()
         if (
             control is None

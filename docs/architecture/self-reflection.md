@@ -2,11 +2,16 @@
 
 Self Reflection 使用 canonical owner、内部事件范围与持久 run ID；不使用平台消息 ID
 登记工作。schema 0061 增加 cycle、实际请求账本、源批次重试和恢复检查点。
+本文的 SELF 自主证据扩展描述 2026-09-22 本地工作树：已有定向验证，尚未合并 main、
+尚未部署，T20 真实 QQ 集成未验收。迁移顺序为 `0065`（PR #111 关系历史索引）→
+`0066`（autonomy 接纳）→ `0067`（SELF 工具来源与自省水位）→ `0068`（内部引用事件，
+当前开发迁移头）；不能把文档版本当作线上版本。
 
 ## 结构化生成
 
-生产为 `memory_self_reflection` 配置独立 DeepSeek Responses profile，`json_schema`、
-low reasoning、180 秒、32768 输出 tokens；其他模型任务与主 Agent 工具声明不变。
+`memory_self_reflection` 使用独立模型任务与结构化输出合同；现有 DeepSeek Responses
+配置方案为 `json_schema`、low reasoning、180 秒、32768 输出 tokens。实际生产 profile
+须核对部署配置，本文不替代该检查；其他模型任务与主 Agent 工具声明不因此变化。
 Responses 通用适配器将 Chat 风格的嵌套 schema 展开为 `text.format`。
 
 返回值须完整、零工具调用、单个 JSON object，并通过 Pydantic、引用、范围、所有权与
@@ -42,6 +47,33 @@ mutation 的正常拒绝、重复、低价值跳过与 `no_change` 都是已处�
 无自身回复或可信工具证据的到期范围不调用模型，不写记忆；记录 `no_self_evidence`
 并推进自省投影。原始事件账本不变。
 
+## SELF 自主执行证据
+
+schema 0067 允许工具回执由内部 `trigger_event_id` 或可信 `initiative_run_id` 单独归属，
+两者严格互斥。自主执行从 run 的 canonical Conversation、Space、Presence 解析来源，
+`target_person_id` 不授予任何私人 Memory 权限。执行回执按 run、execution、Provider、
+tool 和真实 tool call ID 去重；没有聊天发言也保留实际成功或失败结果，不制造聊天事件。
+
+每个已结束 initiative 有独立 receipt 水位；窗口最多 8 条回执，保持原有输入字符边界。
+迟到回执进入该 run 的后续窗口，不受其他 run 进度影响。窗口复用原 SelfReflectionRun、
+cycle、每日请求预算、检查点、退避与隔离机制；管理输出以 receipt 范围显示，不将它们
+统计成聊天事件。已领取未完成窗口保护其源回执，完成后仍被 Memory evidence 引用的
+回执不会过期删除。未讲话的失败也可以参与判断，但仅能支持真实失败或尝试的经历。
+
+主 SELF 入口使用 actorless TurnMemorySession，自动读取当前群与该群可见的 SELF 资料，
+不借最近发言者或目标人的身份准备上下文。纯工具自省经同一 MutationService 验证、
+冲突处理和原子回执写入；只能影响有相应证据的 SELF global/当前群范围，不能写私人事实。
+历史 run 证据可保留，不能因此恢复已失效 generation 的执行权限。
+
+主生成仍复用同一 MainAgentTurnService、Runner 和固定完整工具声明。资料与 SELF run
+位于动态输入中，恢复读取原 journal；不把恢复时新检索到的记忆登记成旧投影已经曝光。
+子 Agent 保留原 SELF principal 与 execution ID，回执由原 run 归属，不冒充新的真人事件。
+聊天事件水位、自主回执水位和参与控制器反馈序列各有用途，不能相互替代。
+
+可选 `<yuki-state>` 是主 SELF 的内部状态自报，在可见发送及语音正文前剥离；不会生成
+聊天记录或充当其他人意图的证据。自省仍依实际事件、工具尝试和回执做判断，不能把
+自报、proposal 或模型说“做过了”当作操作成功证明。
+
 ## 管理与健康
 
 超级管理员 `/ai memory self-reflection run` 以当前内部事件登记后台 manual cycle，
@@ -64,5 +96,7 @@ mutation 的正常拒绝、重复、低价值跳过与 `no_change` 都是已处�
 
 ## 部署
 
-先备份并在副本验证 0061，再只替换 Bot；首次保持 drain=false，完成真实 manual 验证后
+先备份并在副本验证当前迁移链，再只替换 Bot；首次保持 drain=false，完成真实 manual 验证后
 开启。回滚先关闭 drain，保留新表、预算与 mutation/发送回执，不恢复旧数据库覆盖新记忆。
+这是后续部署顺序，不是本轮已执行操作。本地迁移与回执测试不能替代真实 QQ 验收；
+独立参与库的 Jev 合成 smoke 也不能证明自省记忆质量或独立人工语义准确率。

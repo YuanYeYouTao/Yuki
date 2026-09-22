@@ -9,10 +9,13 @@ Yuki 正在逐层解耦：永久主体、内部事件和工作身份由核心持
 | [共同架构约束](development-contract.md) | 不可混用的 ID、依赖方向、固定合同、持久续跑、事务和交付原则 |
 | [Canonical runtime](canonical-runtime.md) | Yuki、Person、Space、Presence、Conversation 和网关边界 |
 | [主 Agent 执行与恢复](main-agent-runtime.md) | 公共执行器、来源授权、恢复所有者与预算 |
+| [Provider 输出边界](provider-output-boundary.md) | 思考与正文通道、显式发送及上游异常的验收范围 |
 | [持久工作者](persistent-subagents.md) | 子 Agent 生命周期、权限、根预算和缓存 |
 | [Conversation Rollup](conversation-rollup.md) | 原始事件、历史投影、压缩与 generation |
 | [Self Reflection](self-reflection.md) | 自省 Responses 合同、后台周期、预算、重试与运维报告 |
+| [语义参与 V6 宿主接入](semantic-participation.md) | 独立观测/selector、正式 SELF 主入口、同 Runner 恢复、发送和自省回执；本地已接通，未部署，T20 真实 QQ 未验收 |
 | [Memory](memory-v2.md) | 记忆范围、证据与权限 |
+| [Tool Kernel](tool-kernel.md) | 固定主声明、目录查询与执行授权 |
 | [MCP 架构](../mcp/architecture.md) | 外部工具、固定清单和执行授权 |
 | [插件架构](../plugin-development/architecture.md) | SDK、Host 与隔离插件会话 |
 | [持久环境](../operations/persistent-environment.zh-CN.md) | 工作区、终端、Manager、文件交付和恢复 |
@@ -31,3 +34,9 @@ Yuki 正在逐层解耦：永久主体、内部事件和工作身份由核心持
 此前的验收不代表上述全入口缺口已经解决。
 
 本文是开发导航，不是上线证明；实际部署状态须核对当前镜像、数据库版本与部署记录。
+
+2026-09-22 的 V6 开发链为 `0065`（PR #111 关系历史索引）→ `0066`（autonomy 接纳）→
+`0067`（SELF 证据与自省水位）→ `0068`（接入时解析的内部引用事件）→
+`0069`（Social 回执的内部事件关联）。当前开发迁移头为 `0069`；
+本工作树的 SELF 接入不代表这条迁移链已用于生产；
+当前没有进行 main 合并或部署，合成 Jev smoke 也不等于独立人工准确率或真实 QQ 验收。

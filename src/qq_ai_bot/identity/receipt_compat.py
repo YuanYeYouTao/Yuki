@@ -152,3 +152,14 @@ def require_compatible_v2_live(
         or existing.platform_message_id != platform_message_id
     ):
         raise CanonicalIdentityError("receipt_conflict")
+
+
+async def require_reply_source(
+    session: AsyncSession, *, conversation_id: str, reply_to_event_id: int | None
+) -> None:
+    """Validate an already-resolved internal reply without a platform lookup."""
+    if reply_to_event_id is None:
+        return
+    source = await session.get(ChatEventModel, reply_to_event_id)
+    if source is None or source.canonical_conversation_id != conversation_id:
+        raise CanonicalIdentityError("receipt_conflict")

@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Literal
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.runtime.errors import InvalidTurnContextError
@@ -128,9 +129,25 @@ class TurnAuthority:
     permission_ceiling: frozenset[str]
     delegated_authority: DelegatedAuthoritySnapshot | None
     authority_revision: int
+    principal_kind: Literal["person", "self"] = "person"
+    initiative_run_id: str | None = None
 
     def __post_init__(self) -> None:
-        if not self.actor_user_id:
+        if self.principal_kind == "self":
+            if (
+                self.actor_user_id
+                or self.origin is not TurnOrigin.SELF_INITIATIVE
+                or not self.initiative_run_id
+                or self.delegated_authority is not None
+            ):
+                raise InvalidTurnContextError("invalid self turn authority")
+        elif (
+            self.principal_kind != "person"
+            or self.initiative_run_id is not None
+            or self.origin is TurnOrigin.SELF_INITIATIVE
+        ):
+            raise InvalidTurnContextError("invalid turn principal")
+        elif not self.actor_user_id:
             raise InvalidTurnContextError("turn authority requires an actor user id")
         if not self.bot_user_id:
             raise InvalidTurnContextError("turn authority requires the bot user id")

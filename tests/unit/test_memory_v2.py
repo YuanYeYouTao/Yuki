@@ -35,7 +35,7 @@ from qq_ai_bot.memory.extraction import (
     ExtractedMemoryClaim,
     MemoryClaim,
 )
-from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
+from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate, MemoryJob
 from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepository
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import SubjectContextBuilder, SubjectResolver
@@ -841,7 +841,7 @@ async def test_ready_batch_triggers_on_characters_or_oldest_wait(database: Datab
     )
     assert len(characters) == 2
     for job in characters:
-        await jobs.complete(job.id, outcome=MemoryRebuildJobOutcome.NO_CLAIMS)
+        await jobs.complete(job, outcome=MemoryRebuildJobOutcome.NO_CLAIMS)
 
     waiting = await _append_event(
         ledger,
@@ -1223,7 +1223,7 @@ async def test_worker_isolates_job_completion_failure(
     calls = 0
 
     async def fail_first_completion(
-        job_id: int,
+        job: MemoryJob,
         *,
         outcome: MemoryRebuildJobOutcome = MemoryRebuildJobOutcome.CLAIMS_APPLIED,
         result_category: str | None = None,
@@ -1233,7 +1233,7 @@ async def test_worker_isolates_job_completion_failure(
         if calls == 1:
             raise KeyError("completion failure")
         await original_complete(
-            job_id,
+            job,
             outcome=outcome,
             result_category=result_category,
         )
@@ -1437,23 +1437,30 @@ async def test_memory_candidate_requires_independent_evidence_and_expires_in_sev
         confidence=0.5,
     )
 
+    jobs = MemoryJobRepository(database)
+    assert await jobs.enqueue(first.id, "private:1001")
+    assert await jobs.enqueue(second.id, "private:1001")
+    first_job, second_job = await jobs.claim()
     once = await candidates.stage(
         claim,
         first,
         candidate_type="memory",
         subject_context=None,
+        job=first_job,
     )
     duplicate = await candidates.stage(
         claim,
         first,
         candidate_type="memory",
         subject_context=None,
+        job=first_job,
     )
     twice = await candidates.stage(
         claim,
         second,
         candidate_type="memory",
         subject_context=None,
+        job=second_job,
     )
 
     assert once.evidence_count == duplicate.evidence_count == 1

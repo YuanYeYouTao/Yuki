@@ -55,9 +55,10 @@ _ORIGIN_OVERRIDES: dict[str, frozenset[TurnOrigin]] = {
     **{name: _ALL_ORIGINS for name in SANDBOX_TOOLS | WORKSPACE_TOOLS},
     "find_contacts": _ALL_ORIGINS,
     "read_conversation_history": _ALL_ORIGINS,
-    "send_message": _SOCIAL_ORIGINS | frozenset({TurnOrigin.PLUGIN_BACKGROUND}),
+    "send_message": _SOCIAL_ORIGINS
+    | frozenset({TurnOrigin.PLUGIN_BACKGROUND, TurnOrigin.SELF_INITIATIVE}),
     "poke_person": _SOCIAL_ORIGINS,
-    "get_group_members": _SOCIAL_ORIGINS,
+    "get_group_members": _SOCIAL_ORIGINS | frozenset({TurnOrigin.SELF_INITIATIVE}),
     "recall_own_message": _SOCIAL_ORIGINS,
     "set_voice_preference": _DIRECT_ORIGINS,
 }

@@ -196,6 +196,9 @@ class OpenAICompatibleProvider(LLMProvider):
             chain_id=request.request_chain_id,
             provider="openai_compatible",
         )
+        from qq_ai_bot.model_runtime.dispatch_guard import check_model_dispatch
+
+        await check_model_dispatch()
         response = await self._client.post(
             "/chat/completions",
             headers={"Authorization": f"Bearer {self._api_key}"},

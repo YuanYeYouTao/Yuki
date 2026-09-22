@@ -351,6 +351,9 @@ class DeepSeekResponsesProvider(LLMProvider):
         return [dict(item) for item in continuation.payload]
 
     async def _post(self, payload: dict[str, Any]) -> httpx.Response:
+        from qq_ai_bot.model_runtime.dispatch_guard import check_model_dispatch
+
+        await check_model_dispatch()
         response = await self._client.post(
             "/responses",
             headers={"Authorization": f"Bearer {self._api_key}"},

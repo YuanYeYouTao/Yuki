@@ -97,6 +97,7 @@ class JournalSnapshot:
     reason: str
     record: dict[str, Any] | None = None
     previous_chain: str | None = None
+    compaction_anchor: dict[str, Any] | None = None
 
 
 class WorkJournal:
@@ -120,8 +121,6 @@ class WorkJournal:
                 if used:
                     raise JournalUnavailable("work_journal_missing")
                 return JournalSnapshot("fresh")
-            if row["contract"] != contract:
-                return JournalSnapshot("contract_changed", previous_chain=row["chain_id"])
             if not lease.work_id and row["source_revision"] != source.prompt_source_revision:
                 return JournalSnapshot("source_changed", previous_chain=row["chain_id"])
             result = dict(row)
@@ -129,7 +128,17 @@ class WorkJournal:
                 payload = json.loads(result["payload_json"])
             except ValueError as exc:
                 raise JournalUnavailable("work_journal_corrupt") from exc
-            refs = references(payload)
+            if not isinstance(payload, dict) or not isinstance(payload.get("metadata", {}), dict):
+                raise JournalUnavailable("work_journal_corrupt")
+            contract_changed = row["contract"] != contract
+            if contract_changed:
+                payload = payload.get("metadata", {}).get("compaction_anchor")
+            try:
+                refs = references(payload)
+                if any(not isinstance(digest, str) for digest in refs):
+                    raise ValueError("invalid media reference")
+            except (TypeError, ValueError) as exc:
+                raise JournalUnavailable("work_journal_corrupt") from exc
             if refs:
                 blobs = {
                     str(item.sha256): bytes(item.content)
@@ -138,9 +147,16 @@ class WorkJournal:
                     ).all()
                 }
                 try:
-                    result["payload_json"] = json.dumps(hydrate(payload, blobs), ensure_ascii=False)
+                    payload = hydrate(payload, blobs)
+                    result["payload_json"] = json.dumps(payload, ensure_ascii=False)
                 except (ValueError, KeyError) as exc:
                     raise JournalUnavailable("work_journal_media_missing") from exc
+            if contract_changed:
+                return JournalSnapshot(
+                    "contract_changed",
+                    previous_chain=row["chain_id"],
+                    compaction_anchor=payload,
+                )
             return JournalSnapshot("resume", result, row["chain_id"])
 
     async def save(
@@ -156,7 +172,9 @@ class WorkJournal:
         metadata: dict[str, Any],
     ) -> None:
         blobs: dict[str, bytes] = {}
-        payload = bounded_json(
+        # Opaque Responses items retain insertion order all the way to the next
+        # HTTP request; generic bounded_json sorts keys and changes that prefix.
+        payload = json.dumps(
             externalize(
                 {
                     "transcript": encode_transcript(transcript),
@@ -165,8 +183,11 @@ class WorkJournal:
                 },
                 blobs,
             ),
-            4 * 1024 * 1024,
+            ensure_ascii=False,
+            allow_nan=False,
         )
+        if len(payload.encode("utf-8")) > 4 * 1024 * 1024:
+            raise ValueError("work_record_too_large")
         async with self.repository.database.sessions() as session, session.begin():
             await self.repository._assert_lease(session, lease)
             source = await session.get(CanonicalConversationModel, lease.conversation_id)

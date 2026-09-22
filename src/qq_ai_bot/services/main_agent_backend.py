@@ -155,7 +155,7 @@ class MainAgentBackend(AgentToolBackend):
         self._web_was_used = True
 
     def consume_provider_chain_restart(self) -> bool:
-        """Drop Responses continuation after a no-side-effect schema rebuild."""
+        """Consume a local schema-change signal; the Runner retains the submitted chain."""
 
         runtime = self._capability_runtime
         if runtime is None:
@@ -257,6 +257,7 @@ class MainAgentBackend(AgentToolBackend):
             authority=AuthorityContext(
                 actor_user_id=self._runtime.actor_user_id,
                 is_superuser=self._runtime.actor_is_superuser,
+                principal_kind=("self" if self._runtime.initiative_run_id else "person"),
             ),
             origin=self._runtime.origin,
             contains_images=self._runtime.image_present,
@@ -277,12 +278,16 @@ class MainAgentBackend(AgentToolBackend):
                 await prepare(server_id, request_runtime)
 
         authority = TurnAuthority(
-            actor_user_id=self._runtime.actor_user_id or "unknown",
+            actor_user_id=(
+                "" if self._runtime.initiative_run_id else self._runtime.actor_user_id or "unknown"
+            ),
             bot_user_id=self._runtime.effective_bot_user_id or "bot",
             origin=RuntimeTurnOrigin(self._runtime.origin.value),
             permission_ceiling=frozenset({"superuser"} if self._runtime.actor_is_superuser else ()),
             delegated_authority=None,
             authority_revision=1,
+            principal_kind=("self" if self._runtime.initiative_run_id else "person"),
+            initiative_run_id=self._runtime.initiative_run_id,
         )
         self._capability_runtime = TurnCapabilityRuntime(
             registry=snapshot,
@@ -422,6 +427,15 @@ class MainAgentBackend(AgentToolBackend):
                 )
             call = self._batch.pop(call_index)
         control = runtime.work_control
+        # Provider IDs are response-local. Durable SELF receipts need the
+        # original journal request identity to distinguish a later call_0.
+        receipt_call_id = (
+            control.session.call_key(call.id)
+            if self._runtime.initiative_run_id
+            and control is not None
+            and control.session is not None
+            else call.id
+        )
         if (
             name != "send_message"
             and control is not None
@@ -604,7 +618,7 @@ class MainAgentBackend(AgentToolBackend):
                             {str(key): value for key, value in parsed.items()},
                             ToolInvocationContext(
                                 runtime=execution_runtime,
-                                call_id=call.id,
+                                call_id=receipt_call_id,
                                 conversation_key=execution_runtime.conversation_key,
                                 actor_user_id=execution_runtime.actor_user_id,
                                 trigger_message_id=execution_runtime.trigger_message_id,
@@ -666,39 +680,25 @@ class MainAgentBackend(AgentToolBackend):
                         }
                     )
                     sent_target = receipt.get("target")
-                    sent_text = parsed.get("text")
-                    text_accepted = (
-                        accepted > 0
+                    deliveries = (
+                        parts
                         if isinstance(parts, list)
-                        else (
-                            isinstance(caption, dict) and caption.get("status") == "succeeded"
-                            if isinstance(file, dict)
-                            else receipt.get("status") == "succeeded"
-                        )
+                        else [caption]
+                        if isinstance(file, dict)
+                        else [receipt]
                     )
-                    if (
-                        text_accepted
-                        and isinstance(sent_text, str)
-                        and sent_text.strip()
-                        and isinstance(sent_target, dict)
-                        and sent_target == expected
-                    ):
-                        if isinstance(parts, list):
-                            from qq_ai_bot.services.message_splitter import (
-                                OutboundMessageSplitter,
-                            )
-
-                            chunks = OutboundMessageSplitter.render(
-                                sent_text,
-                                runtime=config,
-                            )
-                            self.sent_current_texts.extend(
-                                chunk
-                                for chunk, part in zip(chunks, parts, strict=False)
-                                if part.get("status") == "succeeded"
-                            )
-                        else:
-                            self.sent_current_texts.append(sent_text)
+                    if isinstance(sent_target, dict) and sent_target == expected:
+                        # Only the confirmed ledger projection knows what survived
+                        # sanitization/splitting/speech preparation and reached QQ.
+                        # Raw tool arguments cannot reconstruct delivery evidence.
+                        self.sent_current_texts.extend(
+                            part["delivered_text"]
+                            for part in deliveries
+                            if isinstance(part, dict)
+                            and part.get("status") == "succeeded"
+                            and isinstance(part.get("delivered_text"), str)
+                            and part["delivered_text"].strip()
+                        )
                 tooling = config.tooling
                 mcp = config.mcp
                 is_mcp = effective_descriptor.trust_source is CapabilityTrustSource.MCP
@@ -752,6 +752,7 @@ class MainAgentBackend(AgentToolBackend):
                         artifact_created=budgeted.artifact_id is not None,
                         error_category=outcome.error_code,
                         result_excerpt=result,
+                        tool_call_id=receipt_call_id,
                     )
             if contains_internal_capability_payload(result):
                 self._capability_was_used = True
@@ -814,7 +815,59 @@ class MainAgentBackend(AgentToolBackend):
                 self._tools_closed = True
         return result
 
+    async def observe_response(self, response: Any, runtime: AgentRuntime) -> None:
+        """Persist optional own-state evidence with the actual durable request identity."""
+        from yuki_participation.self_report import SelfReport, extract_tail
+
+        control = runtime.work_control
+        if (
+            not self._runtime.initiative_run_id
+            or control is None
+            or control.session is None
+            or control.lease.work_id is not None
+        ):
+            return
+        _, delta = extract_tail(response.content or "")
+        if delta is None:
+            return
+        session = control.session
+        if session.transcript is None:
+            return
+        report = SelfReport(
+            run_ref=self._runtime.initiative_run_id,
+            sequence=max(1, session.sequence),
+            response_id=(
+                response.provider_request_id or f"{session.transcript.chain_id}:{session.sequence}"
+            ),
+            at=time.time(),
+            delta=delta,
+        ).model_dump(mode="json")
+        reports = session.progress.setdefault("self_reports", [])
+        if report not in reports:
+            reports.append(report)
+            session.progress["self_reports"] = reports[-32:]
+
+    @staticmethod
+    def _self_main_run(runtime: AgentRuntime) -> bool:
+        return runtime.origin is RuntimeTurnOrigin.SELF_INITIATIVE and (
+            runtime.work_control is None or runtime.work_control.lease.work_id is None
+        )
+
     def response_feedback(self, content: str, runtime: AgentRuntime) -> str | None:
+        from yuki_participation.self_report import extract_tail
+
+        body, _ = extract_tail(content)
+        if self._self_main_run(runtime):
+            if body.strip() in {"", "NO_REPLY"}:
+                return None
+            if not self._send_message_attempted and not self.messages_sent:
+                if self._unsent_final_feedback_count:
+                    raise UnsentFinalResponseError("self initiative answer was not sent")
+                self._unsent_final_feedback_count += 1
+                return (
+                    "这段最终正文是内部结果，尚未发送。需要参与当前群讨论时调用 send_message；"
+                    "决定沉默则返回 NO_REPLY。已经成功的操作不要重复。"
+                )
         if self._capability_was_used and contains_internal_capability_payload(content):
             return (
                 "上一正文未发送：权限结果是内部执行资料。请根据实际结果继续，勿转发内部权限载荷。"
@@ -839,6 +892,8 @@ class MainAgentBackend(AgentToolBackend):
         return None
 
     def allow_silent_final(self, runtime: AgentRuntime) -> bool:
+        if self._self_main_run(runtime):
+            return True
         return (
             runtime.origin is RuntimeTurnOrigin.USER_MESSAGE
             and self._runtime.inbound is not None
@@ -846,7 +901,12 @@ class MainAgentBackend(AgentToolBackend):
         )
 
     def finalize(self, content: str, runtime: AgentRuntime) -> str:
-        return content
+        from yuki_participation.self_report import extract_tail
+
+        body, _ = extract_tail(content)
+        if self._self_main_run(runtime) and body.strip() == "NO_REPLY":
+            return ""
+        return body
 
     def has_visible_effects(self) -> bool:
         """An accepted send permits a text-free internal final response."""

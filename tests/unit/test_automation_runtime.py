@@ -619,6 +619,7 @@ async def test_worker_executes_once_and_prevents_duplicate_claim(database, resum
         automation_enabled=True,
         automation_poll_seconds=0.01,
         automation_lease_seconds=30,
+        runtime_work_enabled=True,
     )
     registry = build_capability_registry({"onebot.send_private_message": send, "yuki.agent": agent})
     repository = AutomationRepository(database)

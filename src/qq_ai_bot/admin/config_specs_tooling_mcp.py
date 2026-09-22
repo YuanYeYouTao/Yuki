@@ -22,8 +22,8 @@ def tooling_mcp_config_specs() -> tuple[ConfigSpec, ...]:
         ),
         _spec(
             "tooling.first_round_hard_cap",
-            "首轮工具硬顶",
-            "主会话首轮 tools[] 个数硬顶，含 request_tools。改大只留余量。",
+            "内核首轮选择上限",
+            "仅作用于工具内核选择规划；不裁剪主 Agent 固定 tools[]，目录查询也不追加声明。",
             env_alias="TOOLING_FIRST_ROUND_HARD_CAP",
             getter=_field("tooling_first_round_hard_cap"),
             settings_fields=("tooling_first_round_hard_cap",),
@@ -35,7 +35,7 @@ def tooling_mcp_config_specs() -> tuple[ConfigSpec, ...]:
         _spec(
             "tooling.first_round_pin_ids",
             "首轮钉定工具",
-            "部署级首轮 capability id，逗号分隔。不跟当前句子或 origin 变化。",
+            "工具内核初始选择的 capability id，逗号分隔；不改变主 Agent 固定声明。",
             env_alias="TOOLING_FIRST_ROUND_PIN_IDS",
             getter=_field("tooling_first_round_pin_ids_csv"),
             settings_fields=("tooling_first_round_pin_ids_csv",),
@@ -60,12 +60,12 @@ def tooling_mcp_config_specs() -> tuple[ConfigSpec, ...]:
                 (
                     "selected_tool_limit",
                     "工具选择数量预算",
-                    "首批工具的宽松数量预算；为空时不额外限制，遗漏工具仍可按需加载。",
+                    "工具内核初始选择的数量预算；为空时不额外限制，不裁剪主 Agent 固定声明。",
                 ),
                 (
                     "schema_token_budget",
                     "工具 Schema 预算",
-                    "首批完整 JSON Schema 的宽松 Token 预算；为空时不额外限制。",
+                    "工具内核初始选择的 Schema Token 预算；不改变主 Agent 固定声明。",
                 ),
                 ("result_token_budget", "工具结果 Token 预算", "为空时不额外限制统一工具结果。"),
                 ("result_item_limit", "工具结果条目预算", "为空时不额外限制结构化结果条目。"),

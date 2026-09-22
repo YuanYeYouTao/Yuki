@@ -15,6 +15,7 @@ from qq_ai_bot.adapters.onebot.sender import parse_onebot_send_receipt
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
+from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.subagent_schema import children
 from qq_ai_bot.runtime.trigger import WorkResumeTrigger
@@ -22,7 +23,7 @@ from qq_ai_bot.runtime.work_activation import activate_work
 from qq_ai_bot.runtime.work_recovery_schema import deliveries, recovery
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkLease, WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import inputs, scope, work
-from qq_ai_bot.sandbox.source_recovery import recover_source
+from qq_ai_bot.sandbox.source_recovery import recover_self_source, recover_source
 from qq_ai_bot.services.agent_tools import ToolRuntime
 
 if TYPE_CHECKING:
@@ -40,7 +41,9 @@ class WorkScheduler:
         self._last_reclaim = 0.0
 
     async def start(self) -> None:
-        if self.app.settings.runtime_work_enabled and self._worker is None:
+        # Existing accepted Work must recover even when optional chat admission is off.
+        # SELF always uses durable Work, including the legacy participation proposer.
+        if self._worker is None:
             from qq_ai_bot.runtime.execution_receipts import PROCESS_ID
 
             await self.repository.repair_abandoned_inputs(PROCESS_ID)
@@ -66,7 +69,8 @@ class WorkScheduler:
         return {
             "pending_oldest_seconds": max(0, int(time.time() - oldest)) if oldest else 0,
             "active_work_count": active or 0,
-            "enabled": self.app.settings.runtime_work_enabled,
+            "enabled": True,
+            "chat_admission_enabled": self.app.settings.runtime_work_enabled,
             "running": self._worker is not None and not self._worker.done(),
             "last_error_category": self._last_error,
         }
@@ -105,7 +109,6 @@ class WorkScheduler:
                                     select(deliveries.c.work_id).where(
                                         deliveries.c.kind == "notice",
                                         deliveries.c.state.in_(("planned", "blocked")),
-                                        deliveries.c.not_before <= time.time(),
                                     )
                                 ),
                             ),
@@ -113,7 +116,7 @@ class WorkScheduler:
                                 func.json_extract(work.c.source_json, "$.owner")
                                 == "plugin_invocation",
                                 func.json_extract(work.c.source_json, "$.origin").in_(
-                                    ("user_message", "autonomous_group")
+                                    ("user_message", "autonomous_group", "self_initiative")
                                 ),
                             ),
                             work.c.id.not_in(select(children.c.work_id)),
@@ -133,6 +136,7 @@ class WorkScheduler:
             if not plugin_owned and source.get("origin") not in {
                 "user_message",
                 "autonomous_group",
+                "self_initiative",
             }:
                 continue
             try:
@@ -140,6 +144,9 @@ class WorkScheduler:
                     from qq_ai_bot.plugin_host.main_turn import resume_plugin_work
 
                     await resume_plugin_work(self.app, dict(row), source)
+                elif source.get("origin") == "self_initiative":
+                    if row["state"] != "suspended":
+                        await self._resume_self(dict(row), source)
                 else:
                     await self._resume(dict(row), source)
             except WorkConflict:
@@ -173,6 +180,116 @@ class WorkScheduler:
                             await control.recover_failure(exc)
                     finally:
                         await self.repository.release(lease)
+
+    async def _resume_self(self, item: dict[str, Any], source: dict[str, Any]) -> None:
+        """Resume the original SELF Work through the same Main Agent entry point."""
+        recovered = await recover_self_source(
+            self.app.database, item["conversation_id"], source, request_id=item["id"]
+        )
+        identity = ConversationScope.group(recovered.bot_user_id, recovered.external_target_id)
+        state = await self.app.conversation_scopes.get(identity)
+        if state is None or state.generation != recovered.generation:
+            raise ValueError("work_generation_changed")
+        key = state.runtime_scope_key or identity.key
+        async with self.app.turn_coordinator.background_turn(key) as token:
+            if token is None:
+                return
+            snapshot = ConversationTurnSnapshot(
+                state.id,
+                key,
+                recovered.generation,
+                None,
+                token.version,
+                identity.key,
+                initiative_run_id=recovered.run_id,
+            )
+            resolved = await self.app.presence_router.resolve_presence(recovered.presence_id)
+
+            async def validate() -> None:
+                if (
+                    await recover_self_source(
+                        self.app.database, item["conversation_id"], source, request_id=item["id"]
+                    )
+                    != recovered
+                ):
+                    raise ValueError("work_source_changed")
+                if not await self.app.chat._validate_turn_snapshot(snapshot):
+                    raise WorkConflict("work_turn_changed")
+                fresh = await self.app.presence_router.resolve_presence(recovered.presence_id)
+                if fresh.connection.snapshot != resolved.connection.snapshot:
+                    raise ValueError("work_connection_changed")
+
+            async def child(run_id: str) -> dict[str, Any] | None:
+                task = await self.app.sandbox_tasks.by_run(run_id)
+                if task is None or json.loads(task.source_json).get("work_id") != item["id"]:
+                    return None
+                return {"run_id": run_id, "pending": task.status != "completed"}
+
+            async with activate_work(
+                self.repository,
+                recovered.conversation_id,
+                recovered.generation,
+                item["source_key"],
+                source,
+                validate,
+                child,
+                work_id=item["id"],
+            ) as control:
+                if control.current is None or control.current["id"] != item["id"]:
+                    raise WorkConflict("work_schedule_target_changed")
+                self.app.chat._active_work[key] = control
+                try:
+                    runtime = await self.app.runtime_config.snapshot(
+                        group_id=recovered.external_target_id
+                    )
+                    actor = ToolActor(
+                        user_id="",
+                        bot_user_id=recovered.bot_user_id,
+                        group_id=recovered.external_target_id,
+                        origin=TurnOrigin.SELF_INITIATIVE,
+                        instruction=recovered.content,
+                        execution_id=item["id"],
+                        conversation_id=recovered.conversation_id,
+                        presence_id=recovered.presence_id,
+                        principal_kind="self",
+                        initiative_run_id=recovered.run_id,
+                    )
+                    result = await self.app.chat.generate_self_initiative(
+                        trigger=recovered.trigger(),
+                        runtime=runtime,
+                        turn_token=token,
+                        turn_snapshot=snapshot,
+                        before_model_request=validate,
+                        source_runtime=ToolRuntime(
+                            inbound=None,
+                            actor_context=actor,
+                            gateway=None,
+                            allow_generic_onebot=False,
+                            actor_user_id="",
+                            actor_is_superuser=False,
+                            current_group_id=recovered.external_target_id,
+                            conversation_key=key,
+                            execution_id=item["id"],
+                            origin=TurnOrigin.SELF_INITIATIVE,
+                            initiative_run_id=recovered.run_id,
+                            conversation_id=recovered.conversation_id,
+                            scope_type=ScopeType.GROUP,
+                            bot_user_id=recovered.bot_user_id,
+                            external_target_id=recovered.external_target_id,
+                            space_id=recovered.target_space_id,
+                            presence_id=recovered.presence_id,
+                            sandbox_source={**source, "work_id": item["id"]},
+                            allow_work_environment=True,
+                        ),
+                    )
+                    self._last_error = (
+                        result.outcome.failure.code
+                        if result.outcome and result.outcome.failure
+                        else None
+                    )
+                finally:
+                    if self.app.chat._active_work.get(key) is control:
+                        self.app.chat._active_work.pop(key, None)
 
     async def _resume(self, item: dict[str, Any], source: dict[str, Any]) -> None:
         recovered = await recover_source(
@@ -307,7 +424,6 @@ class WorkScheduler:
                                         deliveries.c.work_id == item["id"],
                                         deliveries.c.kind == "notice",
                                         deliveries.c.state.in_(("planned", "blocked")),
-                                        deliveries.c.not_before <= time.time(),
                                     )
                                     .order_by(deliveries.c.created)
                                     .limit(1)
@@ -319,12 +435,7 @@ class WorkScheduler:
                     control.ending = "suspended"
                     for notice in notices:
                         payload = json.loads(notice["payload_json"])
-                        from qq_ai_bot.runtime.activation_outcome import DeliveryDeferred
-
-                        try:
-                            await reserve(control, notice["id"], "notice", payload)
-                        except DeliveryDeferred:
-                            return
+                        await reserve(control, notice["id"], "notice", payload)
                         if not await self.repository.prepare_effect(
                             control.lease, item["id"], notice["id"], "progress"
                         ):

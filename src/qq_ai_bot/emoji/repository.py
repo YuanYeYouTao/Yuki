@@ -399,7 +399,7 @@ class EmojiRepository:
     async def selectable(
         self,
         *,
-        actor_user_id: str,
+        private_peer_user_id: str | None,
         group_id: str | None,
         cooldown_after: datetime,
         scope_cooldown_after: datetime | None,
@@ -414,7 +414,9 @@ class EmojiRepository:
             if group_id is not None:
                 space_id = await resolve_live_space_id(session, group_id)
             else:
-                person_id = await resolve_live_person_id(session, actor_user_id)
+                if not private_peer_user_id:
+                    raise ValueError("private emoji selection requires a real target")
+                person_id = await resolve_live_person_id(session, private_peer_user_id)
             scope_filter: ColumnElement[bool] = (enabled_scope.scope_type == "global") & (
                 enabled_scope.canonical_space_id.is_(None)
             )

@@ -61,7 +61,12 @@ from qq_ai_bot.persistence.repositories import (
 )
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from qq_ai_bot.plugin_host.direct_command_router import DirectCommandMatch
-from qq_ai_bot.runtime.activation_outcome import WorkActivationHandled, WorkRecoveryDeferred
+from qq_ai_bot.runtime.activation_outcome import (
+    WorkActivationHandled,
+    WorkRecoveryDeferred,
+    classify_failure,
+    failure_status_text,
+)
 from qq_ai_bot.runtime.keys import ResolvedMemoryScope
 from qq_ai_bot.runtime.observability import (
     RuntimeTurnCorrelation,
@@ -790,6 +795,11 @@ class MessageProcessor:
             if repairing_dedup_gap and created:
                 self._scoped_events.metrics.scoped_append_repairs += 1
         message = replace(message, source_event_id=record.id)
+        if self._autonomous is not None and message.scope_type is ScopeType.GROUP:
+            self._autonomous.observe_context(
+                message,
+                direct=bool(decision.should_respond or admin_candidate),
+            )
         turn_snapshot = ConversationTurnSnapshot(
             scope_id=scope_state.id,
             scope_key=coordinator_key,
@@ -1091,7 +1101,7 @@ class MessageProcessor:
             sent = await self._send_text(
                 message,
                 sender,
-                "AI 服务暂时不可用，请稍后重试。",
+                failure_status_text(classify_failure(exc)),
                 turn_snapshot=turn_snapshot,
             )
             result = ProcessResult(True, int(sent), "llm_failure")
@@ -1104,7 +1114,7 @@ class MessageProcessor:
             sent = await self._send_text(
                 message,
                 sender,
-                "AI 服务暂时不可用，请稍后重试。",
+                failure_status_text(classify_failure(exc)),
                 turn_snapshot=turn_snapshot,
             )
             result = ProcessResult(True, int(sent), "validation_failure")
@@ -1120,7 +1130,7 @@ class MessageProcessor:
             sent = await self._send_text(
                 message,
                 sender,
-                "AI 服务暂时不可用，请稍后重试。",
+                failure_status_text(classify_failure(exc)),
                 turn_snapshot=turn_snapshot,
             )
             result = ProcessResult(True, int(sent), "internal_failure")

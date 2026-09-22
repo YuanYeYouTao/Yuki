@@ -125,8 +125,15 @@ class ChatEventModel(Base):
             sqlite_where=text("event_kind = 'external_event'"),
         ),
         Index("ix_chat_events_canonical_event_id", "canonical_event_id"),
+        Index(
+            "ix_chat_events_conversation_author_id",
+            "canonical_conversation_id",
+            "author_person_id",
+            "id",
+        ),
         Index("ix_chat_events_canonical_conversation_id", "canonical_conversation_id"),
         Index("ix_chat_events_caused_by_event_id", "caused_by_event_id"),
+        Index("ix_chat_events_reply_to_event_id", "reply_to_event_id"),
         Index(
             "uq_chat_events_canonical_event_keeper",
             "canonical_event_id",
@@ -215,6 +222,9 @@ class ChatEventModel(Base):
 
     segments_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     reply_to_message_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    reply_to_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chat_events.id", onupdate="RESTRICT", ondelete="RESTRICT"), nullable=True
+    )
     origin: Mapped[str] = mapped_column(String(32), nullable=False, default="user_message")
     automation_id: Mapped[int | None] = mapped_column(
         ForeignKey("automations.id", ondelete="SET NULL"), nullable=True
@@ -812,9 +822,11 @@ class MemoryMutationReceiptModel(Base):
         ),
         CheckConstraint(
             "(trigger_source_type = 'chat_event' AND trigger_event_id IS NOT NULL "
-            "AND dream_operation_id IS NULL) OR "
+            "AND dream_operation_id IS NULL AND initiative_run_id IS NULL) OR "
             "(trigger_source_type = 'dream_operation' AND trigger_event_id IS NULL "
-            "AND dream_operation_id IS NOT NULL)",
+            "AND dream_operation_id IS NOT NULL AND initiative_run_id IS NULL) OR "
+            "(trigger_source_type = 'initiative_run' AND trigger_event_id IS NULL "
+            "AND dream_operation_id IS NULL AND initiative_run_id IS NOT NULL)",
             name="ck_memory_mutation_trigger_source",
         ),
         Index(
@@ -844,6 +856,9 @@ class MemoryMutationReceiptModel(Base):
     )
     dream_operation_id: Mapped[int | None] = mapped_column(
         ForeignKey("memory_dream_operations.id", ondelete="CASCADE"), nullable=True
+    )
+    initiative_run_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("autonomy_initiative_runs.id", ondelete="RESTRICT")
     )
     conversation_key: Mapped[str] = mapped_column(String(255), nullable=False)
     current_group_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -935,6 +950,18 @@ class MemoryToolReceiptModel(Base):
 
     __tablename__ = "memory_tool_receipts"
     __table_args__ = (
+        CheckConstraint(
+            "(trigger_event_id IS NOT NULL AND initiative_run_id IS NULL) OR "
+            "(trigger_event_id IS NULL AND initiative_run_id IS NOT NULL)",
+            name="ck_memory_tool_receipts_source",
+        ),
+        CheckConstraint(
+            "initiative_run_id IS NULL OR (tool_call_id IS NOT NULL AND execution_id IS NOT NULL "
+            "AND source_call_key IS NOT NULL AND canonical_person_id IS NULL)",
+            name="ck_memory_tool_receipts_initiative_call",
+        ),
+        Index("uq_memory_tool_receipts_source_call", "source_call_key", unique=True),
+        Index("ix_memory_tool_receipts_initiative", "initiative_run_id", "id"),
         CheckConstraint("result_characters >= 0", name="ck_memory_tool_receipts_size"),
         CheckConstraint(
             "(canonical_person_id IS NOT NULL AND canonical_space_id IS NULL) OR "
@@ -953,9 +980,15 @@ class MemoryToolReceiptModel(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     conversation_key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    trigger_event_id: Mapped[int] = mapped_column(
-        ForeignKey("chat_events.id", ondelete="CASCADE"), nullable=False
+    trigger_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chat_events.id", ondelete="CASCADE"), nullable=True
     )
+    initiative_run_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("autonomy_initiative_runs.id", ondelete="RESTRICT")
+    )
+    tool_call_id: Mapped[str | None] = mapped_column(String(255))
+    execution_id: Mapped[str | None] = mapped_column(String(255))
+    source_call_key: Mapped[str | None] = mapped_column(String(64))
     bot_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     canonical_person_id: Mapped[str | None] = mapped_column(
         String(36),

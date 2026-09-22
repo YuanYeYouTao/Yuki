@@ -216,8 +216,8 @@ class MemoryProductionQualityAudit:
                     "memory_evidence e JOIN memory_facts f ON f.id=e.fact_id",
                     "e.tool_receipt_id IS NOT NULL AND NOT EXISTS ("
                     "SELECT 1 FROM memory_tool_receipts t "
-                    "JOIN chat_events c ON c.id=t.trigger_event_id "
-                    "JOIN canonical_conversations v ON v.id=c.canonical_conversation_id "
+                    "LEFT JOIN chat_events c ON c.id=t.trigger_event_id "
+                    "LEFT JOIN canonical_conversations v ON v.id=c.canonical_conversation_id "
                     "WHERE t.id=e.tool_receipt_id "
                     f"AND {sql_fact_tool_evidence_predicate()})",
                     id_expression="e.id",
@@ -254,7 +254,7 @@ class MemoryProductionQualityAudit:
                 """
                 WITH bad AS (
                   SELECT MIN(id) AS id FROM memory_evidence
-                  GROUP BY fact_id,event_id HAVING COUNT(*)>1
+                  WHERE event_id IS NOT NULL GROUP BY fact_id,event_id HAVING COUNT(*)>1
                 ), tally AS (SELECT COUNT(*) AS n FROM bad)
                 SELECT tally.n,sample.id FROM tally LEFT JOIN
                   (SELECT id FROM bad ORDER BY id LIMIT 20) sample ON 1=1

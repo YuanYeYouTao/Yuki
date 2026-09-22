@@ -88,6 +88,7 @@ class AgentRuntime:
     context_token_limit: int | None = None
     invocation_source: dict[str, Any] | None = None
     invocation_goal: str | None = None
+    compaction_brief: ChatMessage | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,7 +261,9 @@ class AgentRunner:
                 ).encode()
             ).hexdigest()
             runtime.work_control.session = WorkSession(runtime.work_control, contract)
-            transcript = await runtime.work_control.session.restore(transcript)
+            transcript = await runtime.work_control.session.restore(
+                transcript, compaction_brief=runtime.compaction_brief
+            )
             repeated_batch_count = int(runtime.work_control.session.progress.get("repeats", 0))
             if runtime.work_control.handoff_work_id is not None:
                 await runtime.work_control.session.save("paired")
@@ -322,7 +325,7 @@ class AgentRunner:
             )
             if web_mode is WebMode.NATIVE and fixed_definitions is None:
                 # Native-only deliberately excludes external search. Mixed mode
-                # keeps the pinned Tavily function alongside the native tool;
+                # keeps the configured external search function alongside the native tool;
                 # availability must not depend on a preceding native failure.
                 definitions = tuple(
                     item for item in definitions if item.name not in {"web_search", "read_webpage"}
@@ -333,20 +336,13 @@ class AgentRunner:
                 restart_chain()
             if transcript.continuation is not None:
                 # Responses continuations are one cumulative request chain.
-                # Tools may be added after request_tools, but removing a tool
-                # previously declared in the chain makes some providers reject
-                # the next function-output request with HTTP 400.
+                # Keep previously declared tools paired with their function outputs.
+                # The Main Agent manifest is already fixed; request_tools only
+                # searches its directory and does not grow this declaration.
                 definitions = self._merge_function_tools(continuation_tools, definitions)
                 native_definitions = self._merge_native_tools(
                     continuation_native_tools, native_definitions
                 )
-            if (
-                no_progress_recovery
-                and transcript.continuation is None
-                and fixed_definitions is None
-            ):
-                definitions = ()
-                native_definitions = ()
             compacting = False
             if (
                 control is not None
@@ -358,6 +354,8 @@ class AgentRunner:
                     control.session.progress.get("context_tokens", 0)
                     >= (runtime.context_token_limit or 131072) * 0.85
                 )
+                if compacting:
+                    control.session.require_compaction_anchor()
                 if compacting and not control.session.progress.get("compacting"):
                     control.session.progress["compacting"] = True
                     transcript.append(
@@ -383,12 +381,11 @@ class AgentRunner:
                     max_output_tokens=runtime.runtime_config.llm.max_output_tokens,
                     thinking_enabled=runtime.runtime_config.llm.thinking_enabled,
                     tools=definitions,
-                    tool_choice=(
-                        "none"
-                        if (compacting or no_progress_recovery)
-                        and (definitions or native_definitions)
-                        else ("auto" if definitions or native_definitions else None)
-                    ),
+                    # Recovery and compaction keep the submitted declaration/settings.
+                    # Their local response fences, not provider tool_choice support,
+                    # prevent local function execution in those phases. Native
+                    # tools, where supported, execute at the provider boundary.
+                    tool_choice="auto" if definitions or native_definitions else None,
                     native_tools=native_definitions,
                     continuation=sequence.continuation,
                     conversation_prefix_hash=(
@@ -543,6 +540,9 @@ class AgentRunner:
                 mark_native_web = getattr(tools, "mark_native_web_used", None)
                 if callable(mark_native_web):
                     mark_native_web()
+            observe_response = getattr(tools, "observe_response", None)
+            if callable(observe_response):
+                await observe_response(response, runtime)
             if response.continuation is not None:
                 transcript.accept(response.continuation)
             if control is not None and control.session is not None:
@@ -621,10 +621,15 @@ class AgentRunner:
                 continue
             if not response.tool_calls:
                 content = response.content
+                assistant_message = ChatMessage(
+                    role="assistant",
+                    content=response.content,
+                    reasoning_content=response.reasoning_content,
+                )
                 control = runtime.work_control
                 if control is not None and await control.pending():
                     if response.continuation is None:
-                        transcript.append(ChatMessage(role="assistant", content=content))
+                        transcript.append(assistant_message)
                     transcript.append(
                         ChatMessage(
                             role="system",
@@ -644,7 +649,7 @@ class AgentRunner:
                     ):
                         mention_recovery_used = True
                         if response.continuation is None:
-                            transcript.append(ChatMessage(role="assistant", content=content))
+                            transcript.append(assistant_message)
                         transcript.append(
                             ChatMessage(
                                 role="system",
@@ -665,7 +670,7 @@ class AgentRunner:
                         raise LLMError("model repeated an unsupported final response")
                     answer_recovery_used = True
                     if response.continuation is None and not response.tool_calls:
-                        transcript.append(ChatMessage(role="assistant", content=content))
+                        transcript.append(assistant_message)
                     transcript.append(ChatMessage(role="system", content=issue))
                     continue
                 if tools is not None:
@@ -688,6 +693,8 @@ class AgentRunner:
                             empty_retries,
                             calls_used,
                         )
+                        if response.continuation is None:
+                            transcript.append(assistant_message)
                         transcript.append(
                             ChatMessage(
                                 role="system",
@@ -726,18 +733,12 @@ class AgentRunner:
                         )
                         if not json.loads(receipt).get("ok"):
                             if response.continuation is None:
-                                transcript.append(ChatMessage(role="assistant", content=content))
+                                transcript.append(assistant_message)
                             transcript.append(ChatMessage(role="system", content=receipt))
                             continue
                 if control is not None and control.session is not None:
                     if response.continuation is None:
-                        transcript.append(
-                            ChatMessage(
-                                role="assistant",
-                                content=response.content,
-                                reasoning_content=response.reasoning_content,
-                            )
-                        )
+                        transcript.append(assistant_message)
                     await control.session.save("paired")
                 return AgentRunResult(
                     text=content,

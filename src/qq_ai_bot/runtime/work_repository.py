@@ -189,6 +189,28 @@ class WorkRepository:
         source_json, now = bounded_json(source), time.time()
         async with self.database.sessions() as session, session.begin():
             await self._assert_lease(session, lease)
+            if source.get("origin") == "self_initiative" or source.get("principal_kind") == "self":
+                from qq_ai_bot.conversation.autonomy_db_models import InitiativeRunModel
+
+                run = await session.get(InitiativeRunModel, source.get("initiative_run_id"))
+                if (
+                    run is None
+                    or run.state not in {"accepted", "running"}
+                    or source.get("principal_kind") != "self"
+                    or source.get("origin") != "self_initiative"
+                    or source_key != f"initiative:{run.id}"
+                    or run.conversation_id != lease.conversation_id
+                    or run.generation != lease.generation
+                    or source.get("conversation_id") != run.conversation_id
+                    or source.get("generation") != run.generation
+                    or source.get("presence_id") != run.presence_id
+                    or source.get("space_id") != run.space_id
+                    or source.get("actor_user_id")
+                    or source.get("person_id")
+                    or source.get("actor_person_id")
+                    or source.get("trigger_event_id") is not None
+                ):
+                    raise WorkConflict("invalid_self_work_admission")
             existing = await session.scalar(
                 select(work.c.id).where(work.c.source_key == source_key)
             )

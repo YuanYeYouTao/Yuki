@@ -1,4 +1,7 @@
-# Plugin API 2.0 迁移
+# Plugin API 2.0 历史迁移
+
+> 本页记录当时从 1.x 迁移到 2.0 的变更，不代表当前 Host 的兼容策略。当前 Host
+> 只接受精确的 Plugin API 3.0；升级应继续完成 [API 3.0 迁移](api-3.0-migration.md)。
 
 Plugin API `2.0` 是破坏性升级。Host 在导入插件代码前校验 `plugin_api` 主版本；声明 `1.0` 或 `1.1` 的插件会被拒绝，不会半加载。
 

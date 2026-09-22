@@ -4,7 +4,7 @@ Yuki 通过独立的 `yuki_plugin_sdk` 声明扩展，由 Host 负责发现、�
 
 Plugin API `3.0` 删除了隐式修改下一条回复的队列接口。声明 1.x/2.x 的插件在导入代码前会被拒绝；迁移见 [API 3.0 迁移](api-3.0-migration.md)。
 
-插件 Prompt Fragment 会先由现有 `PromptRegistry` 校验，再作为一个 `context.plugins` 不可信贡献进入统一 Runtime Envelope；不会为每个插件重复一层系统包装。插件 Agent 会话通过 `ModelTask.PLUGIN_AGENT_SESSION` 使用显式模型路由。插件工具会被适配为带 namespace 的 `CapabilityDescriptor`；最终可见性由批准权限、调用来源、effect/risk 和本轮能力检索共同决定。改名不是安全策略。
+插件 Prompt Fragment 会先由现有 `PromptRegistry` 校验，再作为一个 `context.plugins` 不可信贡献进入统一 Runtime Envelope；不会为每个插件重复一层系统包装。插件 Agent 会话通过 `ModelTask.PLUGIN_AGENT_SESSION` 使用显式模型路由。插件工具会被适配为带 namespace 的 `CapabilityDescriptor`；主 Agent 声明在部署内冻结；批准权限、调用来源和 effect/risk 在执行时核验，目录检索不改变已声明工具。改名不是安全策略。
 
 > **真实安全边界：**插件是运行在 Yuki 进程内的本地可信 Python 代码。权限系统治理的是官方 API 的访问，不是操作系统沙盒；恶意插件理论上仍能绕过约束。只安装管理员完全信任、审阅过源码的插件。
 
@@ -47,11 +47,15 @@ Plugin API `3.0` 删除了隐式修改下一条回复的队列接口。声明 1.
 
 仓库中的 [`com.example.echo`](../../examples/plugins/com.example.echo/README.md) 是可运行的无网络参考实现，覆盖工具、命令、事件、Prompt、普通用户自动化、配置和 KV。
 
+订阅类插件可参考 [GitHub Monitor](../../plugins/github-monitor/README.md) 和
+[Subscription Monitor](../../plugins/subscription-monitor/README.md)。后者展示如何轮询 feed、
+持久化增量事件，并将订阅条件交给统一主 Agent 判断，通过 `send_message` 通知。
+
 ## 版本标识
 
 | 标识 | 当前值 | 用途 |
 |---|---:|---|
-| Yuki | `3.8.1` | 当前 Host 产品版本 |
+| Yuki | 以 `pyproject.toml` 为准 | 当前源码的 Host 产品版本 |
 | Plugin API | `3.0` | SDK 主兼容边界 |
 | Event/Tool/Automation Schema | `1` | 单类载荷的结构版本 |
 | Feature | 如 `admission.signal.v1` | 运行时能力探测 |

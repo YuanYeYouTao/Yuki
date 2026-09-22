@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol, cast
 from uuid import UUID
 
+from qq_ai_bot.adapters.onebot.sender import parse_onebot_send_receipt
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.control_resolution import ControlAccess
 from qq_ai_bot.admin.models import ControlAuditRef, RuntimeConfigSnapshot
@@ -44,6 +45,7 @@ from qq_ai_bot.emoji.models import (
 )
 from qq_ai_bot.emoji.repository import EmojiRepository
 from qq_ai_bot.emoji.selector import EmojiSelector
+from qq_ai_bot.llm.base import LLMEmptyResponseError
 from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.memory.context import MemoryContextService
 from qq_ai_bot.memory.enums import (
@@ -68,6 +70,11 @@ from qq_ai_bot.plugin_host.canonical_projection import (
     projection_from_inbound,
 )
 from qq_ai_bot.plugin_host.config import BoundConfigFacade
+from qq_ai_bot.plugin_host.direct_delivery import (
+    DirectDeliveryScope,
+    delivery_unknown,
+    prepare_delivery,
+)
 from qq_ai_bot.plugin_host.event_bus import PluginEventBus
 from qq_ai_bot.plugin_host.http_client import BoundHttpFacade
 from qq_ai_bot.plugin_host.main_turn import run_plugin_main_turn
@@ -84,7 +91,9 @@ from qq_ai_bot.services.agent_runner import (
     AgentRuntime,
 )
 from qq_ai_bot.services.media_resolver import OneBotMediaGateway
+from qq_ai_bot.services.renderer import sanitize_model_output
 from qq_ai_bot.services.vision_service import VisionProcessingError, VisionService
+from qq_ai_bot.social.models import OperationStatus, SocialReceipt
 from qq_ai_bot.speech.models import VoiceProfile
 from qq_ai_bot.speech.profiles import VoiceProfileService
 from qq_ai_bot.speech.provider import SpeechSynthesisRequest, SynthesizedSpeech
@@ -232,6 +241,8 @@ class PluginInvocation:
     space_id: str | None = None
     conversation_id: str | None = None
     presence_id: str | None = None
+    # Host-only persisted callback key, never supplied through the public SDK.
+    delivery_identity: str | None = None
 
     def __post_init__(self) -> None:
         if not self.plugin_id or not self.actor_user_id or not self.bot_user_id:
@@ -344,6 +355,9 @@ _CURRENT_INVOCATION: ContextVar[PluginInvocation | None] = ContextVar(
     "yuki_plugin_invocation",
     default=None,
 )
+_CURRENT_DELIVERY: ContextVar[DirectDeliveryScope | None] = ContextVar(
+    "yuki_plugin_delivery", default=None
+)
 
 
 class _InvocationBinding:
@@ -353,12 +367,15 @@ class _InvocationBinding:
         self._context = context
         self._invocation = invocation
         self._token: Token[PluginInvocation | None] | None = None
+        self._delivery_token: Token[DirectDeliveryScope | None] | None = None
 
     def __enter__(self) -> HostPluginContext:
         if self._token is not None:
             raise RuntimeError("plugin invocation binding cannot be entered twice")
         self._context._validate_binding(self._invocation)
+        delivery = DirectDeliveryScope(_delivery_identity(self._context, self._invocation))
         self._token = _CURRENT_INVOCATION.set(self._invocation)
+        self._delivery_token = _CURRENT_DELIVERY.set(delivery)
         return self._context
 
     def __exit__(self, *_exc: object) -> None:
@@ -374,6 +391,9 @@ class _InvocationBinding:
         if self._token is None:
             raise RuntimeError("plugin invocation binding was not entered")
         _CURRENT_INVOCATION.reset(self._token)
+        assert self._delivery_token is not None
+        _CURRENT_DELIVERY.reset(self._delivery_token)
+        self._delivery_token = None
         self._token = None
 
 
@@ -784,13 +804,22 @@ class HostPluginContext:
                 error_category=_facade_error_category(exc),
             )
             raise
-        await self._audit(
-            invocation,
-            operation=operation,
-            permission=permission,
-            success=result.ok,
-            error_category=_result_error_category(result),
-        )
+        try:
+            await self._audit(
+                invocation,
+                operation=operation,
+                permission=permission,
+                success=result.ok,
+                error_category=_result_error_category(result),
+            )
+        except Exception as exc:
+            if not (
+                result.data.get("status") in ("succeeded", "unknown")
+                and isinstance(result.data.get("operation_id"), str)
+                and result.data.get("operation_id")
+            ):
+                raise
+            self._logger.warning("plugin_send_audit_failed category=%s", type(exc).__name__)
         return result
 
 
@@ -2143,7 +2172,7 @@ class _EmojiFacade:
         runtime = await _runtime_snapshot(self._host, invocation)
         result = await selector.select(
             EmojiSelectionRequest(
-                actor_user_id=invocation.actor_user_id,
+                private_peer_user_id=invocation.actor_user_id,
                 group_id=invocation.current_group_id,
                 reply_text=(invocation.inbound.text if invocation.inbound else ""),
                 goal=_bounded_text(goal, maximum=300, field_name="goal"),
@@ -2355,7 +2384,12 @@ class _SpeechFacade:
                 outbound=outbound,
             )
             if result.ok:
-                await speech.mark_sent(generated.generation_id)
+                try:
+                    await speech.mark_sent(generated.generation_id)
+                except Exception as exc:
+                    self._host._logger.warning(
+                        "plugin_speech_mark_sent_failed category=%s", type(exc).__name__
+                    )
                 self._handles.pop(handle.handle_id, None)
             return result
 
@@ -2801,6 +2835,52 @@ class _OneBotFacade:
             normalized = action.strip()
             if not normalized or len(normalized) > 128:
                 raise ValueError("OneBot action is invalid")
+            if normalized in {
+                "send_private_forward_msg",
+                "send_group_forward_msg",
+                "send_forward_msg",
+            }:
+                raise ValueError(
+                    "forward message delivery is unsupported by the SDK receipt contract"
+                )
+            if normalized == "send_msg":
+                message_type = params.get("message_type")
+                has_group = params.get("group_id") not in (None, "", 0)
+                has_user = params.get("user_id") not in (None, "", 0)
+                if message_type == "group" and has_group and not has_user:
+                    normalized = "send_group_msg"
+                elif message_type == "private" and has_user and not has_group:
+                    normalized = "send_private_msg"
+                elif message_type in (None, "") and has_group != has_user:
+                    normalized = "send_group_msg" if has_group else "send_private_msg"
+                else:
+                    raise ValueError("send_msg requires one unambiguous message target")
+            if normalized in {"send_private_msg", "send_group_msg"}:
+                self._host._require(
+                    PluginPermission.ONEBOT_MUTATE, mutation=True, privileged=True, send=True
+                )
+                message, content, segments = _outbound_onebot_message(params.get("message"))
+                if normalized == "send_group_msg":
+                    target = self._host._require_group_scope(
+                        checked, str(params.get("group_id", ""))
+                    )
+                    outbound = _group_outbound(target, content)
+                    target_key = "group_id"
+                else:
+                    target = self._host._require_user_scope(checked, str(params.get("user_id", "")))
+                    outbound = _private_outbound(target, content)
+                    target_key = "user_id"
+                return await _send_onebot(
+                    self._host,
+                    checked,
+                    normalized,
+                    {
+                        **{key: value for key, value in params.items() if key != "message_type"},
+                        target_key: target,
+                        "message": message,
+                    },
+                    outbound=replace(outbound, segments=segments),
+                )
             return await _call_onebot(checked, normalized, params)
 
         return await self._host._run_audited(
@@ -2904,10 +2984,143 @@ async def _send_onebot(
     *,
     outbound: _OutboundLedgerMessage,
 ) -> PluginResult:
-    result = await _call_onebot(invocation, action, params)
-    if result.ok:
-        await _record_outbound(host, invocation, result, outbound)
-    return result
+    ledger = host._services.ledger
+    state = _CURRENT_DELIVERY.get()
+    gateway = invocation.gateway
+    if gateway is None:
+        return _unavailable("OneBot gateway is unavailable for this invocation")
+    if ledger is None or state is None or not invocation.conversation_id:
+        return _unavailable("SDK delivery requires a durable canonical invocation")
+    # Keep per-callback call ordinals ordered even when plugin code uses gather().
+    async with state.lock:
+        if state.unknown is not None:
+            return _delivery_result(state.unknown)
+        repository, receipt, presence_id = await prepare_delivery(
+            ledger,
+            source_conversation_id=invocation.conversation_id,
+            source_event_id=invocation.source_event_id,
+            actor_user_id=invocation.actor_user_id,
+            origin=invocation.origin.value,
+            bot_user_id=invocation.bot_user_id,
+            group_id=outbound.group_id,
+            user_id=outbound.private_peer_user_id,
+            source_turn_id=state.identity,
+            call_id=state.next_call(),
+            action=action,
+            params=dict(params),
+        )
+        claimed = False
+        if receipt.status is OperationStatus.PREPARED:
+            try:
+                claimed = await repository.claim(receipt.operation_id, presence_id=presence_id)
+            except BaseException:
+                # Cancellation may race a committed claim. Keep the local fence
+                # even if persistence is currently unavailable; never send here.
+                state.unknown = receipt.model_copy(update={"status": OperationStatus.UNCERTAIN})
+                raise
+        if not claimed:
+            receipt = await repository.get(receipt.operation_id)
+            if delivery_unknown(receipt):
+                state.unknown = receipt
+            return _delivery_result(receipt)
+        try:
+            raw = await gateway.call_api(action, dict(params))
+            confirmed = parse_onebot_send_receipt(raw)
+            scope = (
+                ConversationScope.group(invocation.bot_user_id, outbound.group_id)
+                if outbound.group_id is not None
+                else ConversationScope.private(
+                    invocation.bot_user_id, outbound.private_peer_user_id or ""
+                )
+            )
+            async with ledger._database.immediate_session() as session:
+                appended = await ledger._writer.append(
+                    scope=scope,
+                    platform_message_id=confirmed.platform_message_id,
+                    sender_user_id=invocation.bot_user_id,
+                    direction="outbound",
+                    content=outbound.content,
+                    segments=outbound.segments,
+                    sender_is_bot=True,
+                    origin=invocation.origin.value,
+                    session=session,
+                )
+                await repository.finish(
+                    receipt.operation_id,
+                    status=OperationStatus.SUCCEEDED,
+                    platform_reference=confirmed.platform_message_id,
+                    event_id=appended.event.id,
+                    session=session,
+                )
+        except BaseException as exc:
+            # Once claimed, a timeout, malformed receipt, cancellation, or failed
+            # persistence cannot establish whether QQ already accepted the send.
+            state.unknown = receipt.model_copy(update={"status": OperationStatus.UNCERTAIN})
+            try:
+                async with ledger._database.sessions() as session, session.begin():
+                    await repository.finish(
+                        receipt.operation_id,
+                        status=OperationStatus.UNCERTAIN,
+                        error_category=type(exc).__name__[:64],
+                        session=session,
+                    )
+                state.unknown = await repository.get(receipt.operation_id)
+            except Exception as secondary:
+                exc.add_note(f"SDK delivery reconciliation deferred: {type(secondary).__name__}")
+                raise exc from secondary
+            if not isinstance(exc, Exception):
+                raise
+            return _delivery_result(state.unknown)
+        # A post-commit wakeup is not part of the network result. Never downgrade
+        # an already confirmed receipt if a best-effort notifier is unavailable.
+        try:
+            ledger._writer.notify_committed(appended)
+        except Exception as exc:
+            host._logger.warning("plugin_send_notify_failed category=%s", type(exc).__name__)
+        receipt = await repository.get(receipt.operation_id)
+        result = _delivery_result(receipt)
+        return result.model_copy(update={"data": {**result.data, "result": _safe_json(raw)}})
+
+
+def _delivery_identity(host: HostPluginContext, invocation: PluginInvocation) -> str:
+    from qq_ai_bot.capabilities.invocation import current_invocation
+    from qq_ai_bot.runtime.work_activation import current_work_control
+
+    identity = invocation.delivery_identity
+    tool = current_invocation.get()
+    if identity is None and tool is not None and tool.call_id:
+        control = current_work_control.get()
+        identity = (
+            control.session.call_key(tool.call_id)
+            if control is not None and control.session is not None
+            else f"{tool.execution_key}:{tool.call_id}"
+        )
+    # A direct callback without a persisted Host identity is a NEW invocation,
+    # not an alleged replay inferred from its source event or message content.
+    identity = identity or f"callback:{uuid.uuid4()}"
+    encoded = json.dumps(
+        [host.plugin_id, identity],
+        separators=(",", ":"),
+    )
+    return "plugin-send:" + hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def _delivery_result(receipt: SocialReceipt) -> PluginResult:
+    unknown = delivery_unknown(receipt)
+    return PluginResult(
+        ok=receipt.status is OperationStatus.SUCCEEDED,
+        data={
+            "operation_id": receipt.operation_id,
+            "status": "unknown" if unknown else receipt.status.value,
+            "uncertain": unknown,
+            "retryable": False,
+            "result": {"message_id": receipt.platform_reference}
+            if receipt.platform_reference is not None
+            else None,
+        },
+        error_code=(None if receipt.status is OperationStatus.SUCCEEDED else "onebot.call_failed"),
+        detail=receipt.error_category or "",
+    )
 
 
 async def _call_onebot(
@@ -2927,36 +3140,6 @@ async def _call_onebot(
             detail=type(exc).__name__,
         )
     return PluginResult(data={"result": _safe_json(raw)})
-
-
-async def _record_outbound(
-    host: HostPluginContext,
-    invocation: PluginInvocation,
-    result: PluginResult,
-    outbound: _OutboundLedgerMessage,
-) -> None:
-    """Persist a confirmed plugin send only when a real event scene is bound."""
-
-    ledger = host._services.ledger
-    if ledger is None or invocation.inbound is None:
-        return
-    message_id = _onebot_message_id(result)
-    if message_id is None:
-        host._logger.warning("plugin_outbound_record_skipped_missing_receipt")
-        return
-    await ledger.append(
-        bot_user_id=invocation.bot_user_id,
-        platform_message_id=message_id,
-        scope_type=outbound.scope_type,
-        sender_user_id=invocation.bot_user_id,
-        direction="outbound",
-        content=outbound.content,
-        segments=outbound.segments,
-        group_id=outbound.group_id,
-        private_peer_user_id=outbound.private_peer_user_id,
-        sender_is_bot=True,
-        origin=invocation.origin.value,
-    )
 
 
 def _private_outbound(
@@ -3068,21 +3251,6 @@ def _outbound_segments(content: str, *, image: bool) -> tuple[dict[str, Any], ..
         # A permanent chat event records the media kind, never its file id or URL.
         return ({"type": "image", "data": {}},)
     return ({"type": "text", "data": {"text": content}},)
-
-
-def _onebot_message_id(result: PluginResult) -> str | None:
-    raw = result.data.get("result")
-    candidate: JsonValue | None = None
-    if isinstance(raw, str | int) and not isinstance(raw, bool):
-        candidate = raw
-    elif isinstance(raw, dict):
-        value = raw.get("message_id") or raw.get("id")
-        if isinstance(value, str | int) and not isinstance(value, bool):
-            candidate = value
-    if candidate is None:
-        return None
-    normalized = str(candidate).strip()
-    return normalized[:128] or None
 
 
 def _result_error_category(result: PluginResult) -> str | None:
@@ -3368,7 +3536,40 @@ def _emoji_view(asset: EmojiAsset) -> dict[str, JsonValue]:
 
 
 def _outbound_text(value: str) -> str:
-    return _bounded_text(value, maximum=12_000, field_name="text")
+    return sanitize_model_output(
+        _bounded_text(value, maximum=12_000, field_name="text"), max_characters=12_000
+    )
+
+
+def _outbound_onebot_message(
+    value: JsonValue,
+) -> tuple[JsonValue, str, tuple[dict[str, Any], ...]]:
+    """Clean only text segments; retain explicit at/reply/media structure."""
+    if isinstance(value, str):
+        text = _outbound_text(value)
+        return text, text, _outbound_segments(text, image=False)
+    if not isinstance(value, list):
+        raise ValueError("OneBot message must be text or a segment list")
+    segments: list[dict[str, Any]] = []
+    texts: list[str] = []
+    for raw in value:
+        if not isinstance(raw, dict) or not isinstance(raw.get("data"), dict):
+            raise ValueError("OneBot message segment is invalid")
+        segment = json.loads(json.dumps(raw, allow_nan=False))
+        if segment.get("type") == "text":
+            text = segment["data"].get("text")
+            if not isinstance(text, str):
+                raise ValueError("OneBot text segment is invalid")
+            try:
+                cleaned = _outbound_text(text)
+            except LLMEmptyResponseError:
+                continue
+            segment["data"]["text"] = cleaned
+            texts.append(cleaned)
+        segments.append(segment)
+    if not any(segment.get("type") != "reply" for segment in segments):
+        raise ValueError("OneBot message is empty after sanitization")
+    return cast(JsonValue, segments), "".join(texts), tuple(segments)
 
 
 def _validated_qq(value: str) -> str:

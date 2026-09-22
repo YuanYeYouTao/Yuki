@@ -7,8 +7,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 from sqlalchemy import and_, delete, func, or_, select, true, update
+from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.automation.authority import DelegatedAuthority
@@ -641,12 +641,20 @@ class AutomationRepository:
         scheduled_for: datetime,
         actual_started_at: datetime,
     ) -> AutomationRunRecord | None:
+        from qq_ai_bot.runtime.work_recovery_schema import invocations
+
         scheduled = _aware_utc(scheduled_for)
         started = _aware_utc(actual_started_at)
         key = f"{automation_id}:{scheduled.isoformat()}"
-        try:
-            async with self._database.sessions() as session, session.begin():
-                row = AutomationRunModel(
+        async with self._database.sessions() as session, session.begin():
+            script_hash = await session.scalar(
+                select(AutomationModel.script_hash).where(AutomationModel.id == automation_id)
+            )
+            if script_hash is None:
+                raise ValueError("automation_not_found")
+            run_id = await session.scalar(
+                insert(AutomationRunModel)
+                .values(
                     automation_id=automation_id,
                     scheduled_for=scheduled,
                     actual_started_at=started,
@@ -661,22 +669,32 @@ class AutomationRepository:
                     result_summary_json="{}",
                     created_at=started,
                 )
-                session.add(row)
-                await session.flush()
-                return _run_record(row)
-        except IntegrityError:
-            return None
+                .on_conflict_do_nothing(index_elements=["automation_id", "scheduled_for"])
+                .returning(AutomationRunModel.id)
+            )
+            if run_id is None:
+                return None
+            # The initial resume boundary is part of admitting the run. A crash
+            # cannot leave a new RUNNING run without its original script identity.
+            await session.execute(
+                insert(invocations).values(
+                    run_id=run_id,
+                    script_hash=script_hash,
+                    phase="ready",
+                    payload_json='{"next_step":0}',
+                    updated=datetime.now(UTC).timestamp(),
+                )
+            )
+            row = await session.get(AutomationRunModel, run_id)
+            assert row is not None
+            return _run_record(row)
 
     async def resumable_run(
         self, automation_id: int, scheduled_for: datetime
     ) -> AutomationRunRecord | None:
-        from qq_ai_bot.runtime.work_recovery_schema import invocations
-
         async with self._database.sessions() as session:
             row = await session.scalar(
-                select(AutomationRunModel)
-                .join(invocations, invocations.c.run_id == AutomationRunModel.id)
-                .where(
+                select(AutomationRunModel).where(
                     AutomationRunModel.automation_id == automation_id,
                     AutomationRunModel.scheduled_for == _aware_utc(scheduled_for),
                     AutomationRunModel.status == RunStatus.RUNNING.value,

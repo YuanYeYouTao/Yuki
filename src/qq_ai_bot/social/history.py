@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
+from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.identity.db_models import IdentityBindingModel, PresenceModel, SpaceBindingModel
 from qq_ai_bot.identity.routing import RouteSendError
 from qq_ai_bot.persistence.models import ChatEventModel
@@ -62,19 +63,30 @@ async def resolve_history_target(
             or not receipt.presence_id
         ):
             raise SocialError("history_receipt_unavailable")
-        events = list(
-            await session.scalars(
-                select(ChatEventModel).where(
-                    ChatEventModel.platform_message_id
-                    == (receipt.platform_reference or f"social-operation:{receipt.id}"),
-                    ChatEventModel.author_presence_id == receipt.presence_id,
-                    ChatEventModel.direction == "outbound",
-                )
-            )
-        )
-        if len(events) != 1:
+        if receipt.event_id is None:
             raise SocialError("history_anchor_unavailable")
-        event = events[0]
+        event = await session.get(ChatEventModel, receipt.event_id)
+        if (
+            event is None
+            or event.canonical_conversation_id is None
+            or event.author_presence_id != receipt.presence_id
+            or event.direction != "outbound"
+            or event.author_kind != "yuki"
+            or event.event_kind != "message"
+            or event.suppression_status != "keeper"
+        ):
+            raise SocialError("history_anchor_unavailable")
+        conversation = await session.get(
+            CanonicalConversationModel, event.canonical_conversation_id
+        )
+        if (
+            conversation is None
+            or (
+                conversation.person_id if receipt.target_kind == "person" else conversation.space_id
+            )
+            != receipt.target_id
+        ):
+            raise SocialError("history_anchor_unavailable")
         if receipt.target_kind == "person":
             bindings = list(
                 await session.scalars(

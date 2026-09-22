@@ -1,4 +1,4 @@
-<!-- release-baseline: version=3.8.3 schema=0064 -->
+<!-- release-baseline: version=3.8.3 schema=0069 -->
 
 中文（默认） · [English](README.en.md)
 
@@ -66,7 +66,7 @@ Yuki 可以在 QQ 私聊和群聊中交流，记住人与共同经历，读取�
 - **图片与视频**：支持图片输入的模型可直接查看当前或引用图片。MP4/MOV 视频通过 FFmpeg 抽帧进入同一个主 Agent，不分析音轨，也不保证覆盖所有瞬间。
 - **接收语音**：私聊、符合回复策略的群聊及引用语音经 Qwen ASR 转写，进入聊天历史、搜索和 Rollup。可复用千问连接，与 Genie-TTS 语音发送独立配置。见[语音识别说明](docs/speech/recognition.md)。
 - **文件阅读**：支持文本、代码、CSV/JSON、PDF 文字、DOCX 和 XLSX 的有界提取。扫描 PDF 不做 OCR，表格公式不重算，宏和附件中的代码不会因阅读而执行。后续重新查看时可引用原附件。
-- **联网**：可配置 Provider 原生搜索或 Tavily。当前项目的 DeepSeek Responses 接入使用 Tavily 提供搜索，需要 `WEB_MODE=tavily` 和 `TAVILY_API_KEY`；`both` 保留两种工具，`disabled` 禁止联网。
+- **联网**：可配置 Provider 原生搜索或外部 `web_search`。外部搜索默认使用 Tavily，也可设置 `WEB_MODE=tavily`、`WEB_SEARCH_BACKEND=deepseek_anthropic` 使用 [DeepSeek 搜索桥](docs/deepseek-search-bridge.md)；此时 Tavily 密钥仅用于可选失败兜底。`both` 允许已配置的外部搜索和 Provider 支持的原生搜索，`disabled` 禁止联网。DeepSeek 主 Agent 的原生搜索能力当前由适配层关闭，搜索桥使用独立协议请求。
 
 聊天、插件唤醒、自动化和任务续跑使用统一主 Agent 与完整工具声明。工具结构在部署内保持固定，执行时再检查权限与预算；这减少请求前缀变化，但不保证 Provider 的缓存命中率。
 
@@ -113,7 +113,7 @@ docker compose up -d
 
 ## 升级与日常维护
 
-3.8.3 使用数据库版本 **0061**、Plugin API **2.0**；3.8.2 发布包的历史目标为 0055。较旧的数据库必须先满足迁移前提，不能通过 `stamp` 跳过迁移。旧插件的 `llm.generate` / `agent.run` 已统一到主入口，依赖旧独立生成语义的插件需要适配。
+当前源码使用 Plugin API **3.0**，数据库目标由随包 Alembic 单一 head 决定；应用版本号不能替代数据库版本检查。3.8.2 发布包的历史目标为 0055。较旧的数据库必须先满足迁移前提，不能通过 `stamp` 跳过迁移。旧插件的 `llm.generate` / `agent.run` 已统一到主入口，依赖旧独立生成语义的插件需要适配。
 
 升级前保存一致的数据库、配置、插件及文件备份；持久环境还需保存家目录与运行回执。暂停写入只涉及 Bot 和相关 Manager，不需要关闭整个 Docker 或 QQ 网关。回退时应先保全升级后的新消息、文件和回执，详见[升级指南](docs/upgrade-3.8.3.md)。
 
@@ -151,7 +151,7 @@ uv run pytest
 | [开发约束](docs/architecture/development-contract.md) | 事件 ID、解耦边界、固定工具、续跑和事务原则 |
 | [Rollup](docs/architecture/conversation-rollup.md) | 长会话的历史压缩 |
 | [Memory](docs/architecture/memory-v2.md) | 记忆提取、检索和权限 |
-| [Plugin API 2.0](docs/plugin-development/index.md) | 插件开发与能力边界 |
+| [Plugin API 3.0](docs/plugin-development/index.md) | 插件开发与能力边界 |
 | [MCP](docs/mcp/architecture.md) | 外部工具接入 |
 | [语音发送](docs/speech/operations.md) | Genie-TTS 部署与运维 |
 | [版本化发布](docs/operations/versioned-docker-release.md) | 镜像、下载包与发布流程 |

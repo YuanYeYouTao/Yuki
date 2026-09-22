@@ -17,8 +17,8 @@
 - `Space`：永久共享空间；QQ 群只是它的一种外部表现。
 - `SpaceBinding`：Space 与外部群号的绑定。
 - `Presence`：Yuki 自己的平台账号。Presence 不是 Person。
-- `CanonicalConversation`：私聊按 Person 唯一，群聊按 Space 唯一。显式 `/ai new` 才改变
-  Conversation generation。
+- `CanonicalConversation`：私聊按 Person 唯一，群聊按 Space 唯一。显式 `/ai new` 或隐私遗忘
+  等上下文边界操作会推进 Conversation generation；更换账号本身不推进它。
 
 第三方机器人使用 `external_bot` 作者类型，不创建 Person、人物关系或人物记忆。事件作者只有
 `person`、`yuki`、`external_bot`、`system` 四类；命令、插件和自动化属于 event origin，
@@ -34,8 +34,8 @@ Presence 与 canonical Conversation。事件账本保留平台 message ID、send
 `chat_events.id` 定位并核验会话。不得用平台 message ID 反查已有内部事件或猜测来源。
 `canonical_event_id` 是另一种关联标识，不能与整数账本主键混用。
 
-历史 alias 只用于稳定兼容键。多个 alias 可以指向一个 canonical Conversation，插件 API 2.0
-始终读取固化的 primary alias。换 QQ、换 Provider、连接重建或路由接管都不得更改 Conversation
+历史 alias 只用于稳定兼容键。多个 alias 可以指向一个 canonical Conversation，当前插件 SDK
+读取固化的 primary alias。换 QQ、换 Provider、连接重建或路由接管都不得更改 Conversation
 generation。
 
 Rollup 是 Conversation 的可重建提示投影：原始 `chat_events` 始终是证据源，摘要不进入
@@ -95,9 +95,9 @@ PERSON_GROUP 表示某 Person 在某 Space 中的共同经历。证据保留真�
 关系、偏好、自动化目标、插件状态、Emoji、Speech、MCP 和配置投影均使用 canonical owner。
 自动化在实际发送时解析当前路由，因此创建任务后更换 Yuki QQ 仍可沿新 Presence 投递。
 
-Plugin API 保持 `2.0`。旧插件可继续使用 primary `conversation_key`；新 SDK 可读取可选的
-person、space、conversation 和 presence ID。插件不能伪造管理员、绕过 Capability 或直接选择
-任意 GatewayConnection。
+Plugin API 当前为 `3.0`，Host 只加载精确匹配的插件。兼容键仍使用 primary
+`conversation_key`，SDK 还可读取可选的 person、space、conversation 和 presence ID。
+插件不能伪造管理员、绕过 Capability 或直接选择任意 GatewayConnection。
 
 ## Control Plane 与未来 WebUI
 
@@ -141,3 +141,15 @@ QQ 消息证明伪造成 Web 请求。分页使用 opaque cursor；mutation 使�
 
 部署与数据升级分别见 [SnowLuma Provider 部署与切换](../deployment/snowluma.md) 和
 [Yuki 3.8.2 升级指南](../upgrade-3.8.2.md)。
+
+## 后台领取的事务边界
+
+关系评估和普通记忆批次先在只读会话中准备事件、身份投影与候选，再用短写事务按
+任务 id/status/updated_at 条件领取。竞争失败的候选不进入执行；live Memory 在提交时
+重新核验事件仍位于当前 generation 水位之后。历史扫描不发生在写事务内。
+关系上下文按 canonical Conversation 与 Person 取最近五条有效入站消息，不按当前
+QQ Binding 丢弃同一人的其他账号证据。0065 添加对应的有序复合索引。
+关系任务在同一查询读取 trigger 与会话 generation，并在领取 UPDATE 中复核；
+准备期间发生遗忘或重置时不返回旧正文，之后可重读当前历史再领取。此处 generation
+只保护准备快照，不把关系历史改成 Memory 的水位语义，也不是整个执行期间的租约。
+这不延长旧任务的五分钟 processing 恢复窗口，也不宣称已经定位所有历史长锁事件。

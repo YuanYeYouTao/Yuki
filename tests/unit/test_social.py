@@ -137,6 +137,11 @@ async def test_social_receipt_claim_replay_and_interrupted_delivery(database: Da
                         if descriptor.model_name == "send_message"
                         else ()
                     ),
+                    *(
+                        (TurnOrigin.SELF_INITIATIVE,)
+                        if descriptor.model_name in {"send_message", "get_group_members"}
+                        else ()
+                    ),
                 }
             )
         )
@@ -783,83 +788,6 @@ async def test_send_message_explicit_person(database: Database, tmp_path: Path) 
 
 
 @pytest.mark.asyncio
-async def test_legacy_agent_delivery_checks_durable_send_receipt(
-    database: Database, tmp_path: Path
-) -> None:
-    from types import SimpleNamespace
-
-    from tests.support.social_identity_cases import social_env
-
-    from qq_ai_bot.automation.executor import AutomationExecutor
-    from qq_ai_bot.automation.models import AutomationStep
-    from qq_ai_bot.social.models import OperationStatus, SocialTarget
-
-    env = await social_env(database, tmp_path)
-    turn = f"{env.context.conversation_id}:execution:automation:17:execute:hash"
-    target = SocialTarget(kind="space", id=UUID(env.space))
-    first = await env.service.receipts.prepare(
-        source_turn_id=turn,
-        tool_call_id="send-1",
-        source_conversation_id=env.context.conversation_id,
-        action="send_message",
-        target=target,
-        payload={"text": "sent explicitly"},
-    )
-    assert await env.service.receipts.claim(first.operation_id, presence_id=env.presence)
-    async with database.sessions() as session, session.begin():
-        await env.service.receipts.finish(
-            first.operation_id,
-            status=OperationStatus.SUCCEEDED,
-            platform_reference="42",
-            session=session,
-        )
-    agent = AutomationStep(
-        id="execute", call="yuki.agent", arguments={"instruction": "go"}, save_as="result"
-    )
-    delivery = AutomationStep(
-        id="deliver",
-        call="onebot.send_group_message",
-        arguments={"group_id": "$current_group_id", "text": "${result.text}"},
-    )
-    automation = SimpleNamespace(
-        script=SimpleNamespace(steps=(agent, delivery)),
-        script_hash="hash",
-        canonical_target_space_id=env.space,
-        canonical_creator_person_id=env.person,
-    )
-    executor = object.__new__(AutomationExecutor)
-    executor._repository = SimpleNamespace(_database=database)
-    run = SimpleNamespace(id=17)
-    assert (
-        await executor._legacy_agent_delivery_status(
-            automation, run, 1, env.context.conversation_id
-        )
-        == "succeeded"
-    )
-    unknown = await env.service.receipts.prepare(
-        source_turn_id=turn,
-        tool_call_id="send-2",
-        source_conversation_id=env.context.conversation_id,
-        action="send_message",
-        target=target,
-        payload={"text": "maybe sent"},
-    )
-    assert await env.service.receipts.claim(unknown.operation_id, presence_id=env.presence)
-    async with database.sessions() as session, session.begin():
-        await env.service.receipts.finish(
-            unknown.operation_id,
-            status=OperationStatus.UNCERTAIN,
-            session=session,
-        )
-    assert (
-        await executor._legacy_agent_delivery_status(
-            automation, run, 1, env.context.conversation_id
-        )
-        == "uncertain"
-    )
-
-
-@pytest.mark.asyncio
 async def test_send_message_media_uses_same_receipt_and_no_replay(
     database: Database, tmp_path: Path
 ) -> None:
@@ -951,8 +879,11 @@ async def test_send_message_media_uses_same_receipt_and_no_replay(
 
 
 @pytest.mark.asyncio
-async def test_chat_agent_sends_only_via_explicit_tool(database: Database, tmp_path: Path) -> None:
+async def test_chat_agent_sends_only_via_explicit_tool(
+    database: Database, tmp_path: Path, monkeypatch
+) -> None:
     import json
+    from unittest.mock import AsyncMock
 
     from tests.conftest import MemorySender, build_harness, make_settings
     from tests.support.social_identity_cases import social_env
@@ -983,7 +914,7 @@ async def test_chat_agent_sends_only_via_explicit_tool(database: Database, tmp_p
                     ToolCall(
                         "send-step",
                         ToolFunction(
-                            "send_message", json.dumps({"text": "第一步完成\n第二步完成"})
+                            "send_message", json.dumps({"text": "#62052>\n第一步完成\n第二步完成"})
                         ),
                     ),
                 ),
@@ -995,6 +926,8 @@ async def test_chat_agent_sends_only_via_explicit_tool(database: Database, tmp_p
         database, make_settings(database.url, enabled_groups_csv="20001"), provider
     )
     chat = harness.processor._chat
+    finish_memory = AsyncMock(wraps=chat._finish_memory_turn)
+    monkeypatch.setattr(chat, "_finish_memory_turn", finish_memory)
     chat._tools.social_service = env.service
     chat._agent_runner.main_contract = MainAgentContract(chat, ShortState(env.store))
     sender = MemorySender()
@@ -1022,6 +955,7 @@ async def test_chat_agent_sends_only_via_explicit_tool(database: Database, tmp_p
         "send_group_msg",
     ]
     assert not sender.messages
+    assert finish_memory.await_args.kwargs["delivered_text"] == "第一步完成\n第二步完成"
     assert await harness.relationship_jobs.pending_count() == 1
 
 

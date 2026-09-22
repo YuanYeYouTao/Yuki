@@ -186,6 +186,7 @@ def _event_record(row: ChatEventModel | Mapping[str, Any]) -> EventRecord:
         group_id=_row_value(row, "group_id"),
         private_peer_user_id=_row_value(row, "private_peer_user_id"),
         reply_to_message_id=_row_value(row, "reply_to_message_id"),
+        reply_to_event_id=_row_value(row, "reply_to_event_id"),
         origin=str(_row_value(row, "origin") or "user_message"),
         automation_id=_row_value(row, "automation_id"),
         automation_run_id=_row_value(row, "automation_run_id"),

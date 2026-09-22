@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from tests.conftest import make_settings
@@ -119,6 +120,51 @@ def invocation(
         inbound=message,
         gateway=gateway,
         web_was_used=web_was_used,
+    )
+
+
+async def durable_invocation(database: Database, **kwargs: Any) -> PluginInvocation:
+    """Bind a real canonical scene without fabricating a platform receipt."""
+    from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
+    from qq_ai_bot.identity.canonical_repository import (
+        find_identity_binding,
+        find_presence,
+        find_space_binding,
+    )
+
+    trusted = invocation(**kwargs)
+    assert trusted.inbound is not None
+    trusted = replace(trusted, inbound=replace(trusted.inbound, message_id=str(uuid4())))
+    event, _ = await EventLedgerRepository(database).append_inbound(
+        trusted.inbound, bot_user_id=trusted.bot_user_id
+    )
+    async with database.immediate_session() as session:
+        person = await find_identity_binding(session, trusted.actor_user_id)
+        presence = await find_presence(session, trusted.bot_user_id)
+        space = (
+            await find_space_binding(session, trusted.current_group_id)
+            if trusted.current_group_id
+            else None
+        )
+        assert person is not None and presence is not None
+        conversation = await ensure_canonical_conversation(
+            session,
+            kind="space" if space else "private",
+            primary_scope_key=trusted.inbound.scope().key,
+            person_id=person.person_id if space is None else None,
+            space_id=space.space_id if space else None,
+        )
+    return replace(
+        trusted,
+        inbound=replace(
+            trusted.inbound,
+            person_id=person.person_id,
+            space_id=space.space_id if space else None,
+            conversation_id=conversation.conversation_id,
+            presence_id=presence.id,
+            legacy_conversation_key=trusted.inbound.scope().key,
+            source_event_id=event.id,
+        ),
     )
 
 
@@ -316,7 +362,9 @@ def test_public_context_does_not_expose_core_objects_or_raw_media() -> None:
 
 
 @pytest.mark.asyncio
-async def test_message_facade_rechecks_permission_scope_and_redacts_gateway_result() -> None:
+async def test_message_facade_rechecks_permission_scope_and_redacts_gateway_result(
+    database: Database,
+) -> None:
     gateway = Gateway()
     context = HostPluginContext(
         plugin_id="example.plugin",
@@ -324,8 +372,9 @@ async def test_message_facade_rechecks_permission_scope_and_redacts_gateway_resu
             PluginPermission.MESSAGE_PRIVATE_SEND,
             PluginPermission.MESSAGE_GROUP_SEND,
         ),
+        services=PluginFacadeServices(ledger=EventLedgerRepository(database)),
     )
-    with context.bind(invocation(group_id="20001", gateway=gateway)):
+    with context.bind(await durable_invocation(database, group_id="20001", gateway=gateway)):
         result = await context.messages.send_group("20001", "hello group")
         assert result.ok
         assert result.data["result"] == {
@@ -341,14 +390,15 @@ async def test_message_facade_rechecks_permission_scope_and_redacts_gateway_resu
 
 
 @pytest.mark.asyncio
-async def test_music_card_facade_targets_only_the_current_real_scene() -> None:
+async def test_music_card_facade_targets_only_the_current_real_scene(database: Database) -> None:
     gateway = Gateway()
     context = HostPluginContext(
         plugin_id="example.plugin",
         approved_permissions=(PluginPermission.ONEBOT_SEND,),
+        services=PluginFacadeServices(ledger=EventLedgerRepository(database)),
     )
 
-    with context.bind(invocation(user_id="10001", gateway=gateway)):
+    with context.bind(await durable_invocation(database, user_id="10001", gateway=gateway)):
         result = await context.onebot.send_music_card(
             provider="netease",
             resource_id="123456",
@@ -428,7 +478,7 @@ async def test_plugin_sends_are_audited_and_persist_confirmed_outbound_events(
             audit=PluginAuditService(audit_repository),
         ),
     )
-    with context.bind(invocation(group_id="20001", gateway=gateway)):
+    with context.bind(await durable_invocation(database, group_id="20001", gateway=gateway)):
         result = await context.messages.send_text("send-text-body-secret")
         assert result.data["result"] == {
             "message_id": 42,
@@ -456,6 +506,7 @@ async def test_plugin_sends_are_audited_and_persist_confirmed_outbound_events(
         ConversationScope.group("99999", "20001"),
         limit=20,
     )
+    group_events = tuple(row for row in group_events if row.direction == "outbound")
     assert [row.content for row in group_events] == [
         "send-text-body-secret",
         "group-body-secret",
@@ -628,7 +679,7 @@ async def test_failed_plugin_send_is_audited_without_fabricating_ledger_event(
             audit=PluginAuditService(audit_repository),
         ),
     )
-    with context.bind(invocation(gateway=gateway)):
+    with context.bind(await durable_invocation(database, gateway=gateway)):
         result = await context.messages.send_private(
             "10001",
             "failed-body-secret",
@@ -636,12 +687,12 @@ async def test_failed_plugin_send_is_audited_without_fabricating_ledger_event(
     assert not result.ok
     assert result.error_code == "onebot.call_failed"
     assert result.detail == "RuntimeError"
-    assert (
-        await ledger.list_scope_recent(
+    assert not any(
+        row.direction == "outbound"
+        for row in await ledger.list_scope_recent(
             ConversationScope.private("99999", "10001"),
             limit=20,
         )
-        == ()
     )
     audit_rows = await audit_repository.history(plugin_id="example.plugin")
     assert len(audit_rows) == 1
@@ -657,7 +708,286 @@ async def test_failed_plugin_send_is_audited_without_fabricating_ledger_event(
 
 
 @pytest.mark.asyncio
-async def test_image_and_web_context_do_not_revoke_authorized_side_effects() -> None:
+async def test_sdk_send_sanitizes_all_text_entrypoints_and_preserves_segments(database: Database):
+    gateway = Gateway()
+    ledger = EventLedgerRepository(database)
+    context = HostPluginContext(
+        plugin_id="example.plugin",
+        approved_permissions=(
+            PluginPermission.MESSAGE_PRIVATE_SEND,
+            PluginPermission.MESSAGE_GROUP_SEND,
+            PluginPermission.ONEBOT_SEND,
+            PluginPermission.ONEBOT_MUTATE,
+        ),
+        superuser_ids=("90000",),
+        services=PluginFacadeServices(ledger=ledger),
+    )
+    trusted = await durable_invocation(database, user_id="90000", group_id="20001", gateway=gateway)
+    raw = "#62052> [Yuki|QQ:99999]\n你好\x00"
+    with context.bind(trusted):
+        results = [
+            await context.messages.send_text(raw),
+            await context.messages.send_private("90000", raw),
+            await context.messages.send_group("20001", raw),
+            await context.onebot.send_private("90000", raw),
+            await context.onebot.send_group("20001", raw),
+            await context.onebot.call_mutating_action(
+                "send_private_msg", {"user_id": "90000", "message": raw}
+            ),
+        ]
+        segments = [
+            {"type": "reply", "data": {"id": "123"}},
+            {"type": "text", "data": {"text": raw}},
+            {"type": "at", "data": {"qq": "90000"}},
+            {"type": "image", "data": {"file": "event-image"}},
+        ]
+        results.append(
+            await context.onebot.call_mutating_action(
+                "send_group_msg", {"group_id": "20001", "message": segments}
+            )
+        )
+        assert all(result.ok for result in results)
+        assert all(call[1]["message"] == "你好" for call in gateway.calls[:6])
+        sent = gateway.calls[-1][1]["message"]
+        assert sent[0] == segments[0] and sent[2:] == segments[2:]
+        assert sent[1]["data"]["text"] == "你好"
+        assert segments[1]["data"]["text"] == raw  # Caller-owned input is unchanged.
+        for target in (
+            {"message_type": "private", "user_id": "90000"},
+            {"message_type": "group", "group_id": "20001"},
+            {"group_id": "20001"},
+        ):
+            result = await context.onebot.call_mutating_action(
+                "send_msg", {**target, "message": raw}
+            )
+            assert result.ok and gateway.calls[-1][1]["message"] == "你好"
+            assert gateway.calls[-1][0] in {"send_private_msg", "send_group_msg"}
+        for action in ("send_private_forward_msg", "send_group_forward_msg", "send_forward_msg"):
+            with pytest.raises(ValueError, match="unsupported"):
+                await context.onebot.call_mutating_action(action, {"messages": []})
+        with pytest.raises(ValueError, match="empty after sanitization"):
+            await context.onebot.call_mutating_action(
+                "send_group_msg",
+                {"group_id": "20001", "message": [{"type": "text", "data": {"text": "#62052>"}}]},
+            )
+    rows = await ledger.list_scope_recent(ConversationScope.group("99999", "20001"), limit=20)
+    assert all(row.content == "你好" for row in rows if row.direction == "outbound")
+    assert len(gateway.calls) == 10
+
+
+@pytest.mark.asyncio
+async def test_sdk_send_stable_replay_is_not_content_deduplication(database: Database):
+    gateway = Gateway()
+    services = PluginFacadeServices(ledger=EventLedgerRepository(database))
+
+    def host():
+        return HostPluginContext(
+            plugin_id="example.plugin",
+            approved_permissions=(PluginPermission.MESSAGE_PRIVATE_SEND,),
+            services=services,
+        )
+
+    trusted = await durable_invocation(database, gateway=gateway)
+    stable = replace(trusted, delivery_identity="persisted-tool:call-1")
+    first = host()
+    with first.bind(stable):
+        a = await first.messages.send_text("same text")
+        b = await first.messages.send_text("same text")
+    assert a.ok and b.ok and a.data["operation_id"] != b.data["operation_id"]
+    restarted = host()
+    services.approval_revision = "new-approval-does-not-authorize-resending"
+    with restarted.bind(stable):
+        assert (await restarted.messages.send_text("same text")).data["operation_id"] == a.data[
+            "operation_id"
+        ]
+        assert (await restarted.messages.send_text("same text")).data["operation_id"] == b.data[
+            "operation_id"
+        ]
+    assert len(gateway.calls) == 2
+    from qq_ai_bot.social.models import SocialError
+
+    with restarted.bind(stable), pytest.raises(SocialError, match="idempotency_conflict"):
+        await restarted.messages.send_text("changed payload")
+    for _ in range(2):
+        with restarted.bind(trusted):
+            assert (await restarted.messages.send_text("same text")).ok
+    assert len(gateway.calls) == 4  # Unkeyed new callbacks are NOT presumed to be replays.
+    from qq_ai_bot.capabilities.invocation import ToolInvocationContext, current_invocation
+
+    token = current_invocation.set(
+        ToolInvocationContext(runtime=None, execution_id="host-execution", call_id="model-call")
+    )
+    try:
+        with first.bind(trusted):
+            tool_sent = await first.messages.send_text("tool send")
+        with restarted.bind(trusted):
+            tool_replay = await restarted.messages.send_text("tool send")
+        assert tool_sent.data["operation_id"] == tool_replay.data["operation_id"]
+        assert len(gateway.calls) == 5
+    finally:
+        current_invocation.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_sdk_unknown_send_blocks_callback_and_durable_replay(database: Database):
+    from qq_ai_bot.social.models import OperationStatus
+    from qq_ai_bot.social.repository import SocialOperationRepository
+
+    class RawGateway:
+        def __init__(self, raw):
+            self.raw = raw
+            self.calls = 0
+
+        async def call_api(self, action, params):
+            self.calls += 1
+            if isinstance(self.raw, BaseException):
+                raise self.raw
+            return self.raw
+
+    ledger = EventLedgerRepository(database)
+    cases = [
+        None,
+        {},
+        {"message_id": True},
+        {"message_id": []},
+        {"message_id": {}},
+        {"message_id": " "},
+        "",
+        False,
+        TimeoutError(),
+        asyncio.CancelledError(),
+    ]
+    for index, raw in enumerate(cases):
+        gateway = RawGateway(raw)
+        trusted = replace(
+            await durable_invocation(database, gateway=gateway),
+            delivery_identity=f"unknown-call:{index}",
+        )
+        context = HostPluginContext(
+            plugin_id="example.plugin",
+            approved_permissions=(PluginPermission.MESSAGE_PRIVATE_SEND,),
+            services=PluginFacadeServices(ledger=ledger),
+        )
+        with context.bind(trusted):
+            if isinstance(raw, asyncio.CancelledError):
+                with pytest.raises(asyncio.CancelledError):
+                    await context.messages.send_text("first")
+            else:
+                result = await context.messages.send_text("first")
+                assert not result.ok and result.data["uncertain"] is True
+            blocked = await context.messages.send_text("second independent send is stopped")
+            assert blocked.data["status"] == "unknown"
+        with context.bind(trusted):
+            replay = await context.messages.send_text("first")
+            assert not replay.ok and replay.data["operation_id"] == blocked.data["operation_id"]
+        assert gateway.calls == 1
+        persisted = await SocialOperationRepository(database).get(blocked.data["operation_id"])
+        assert persisted.status is OperationStatus.UNCERTAIN
+    rows = await ledger.list_scope_recent(ConversationScope.private("99999", "10001"), limit=20)
+    assert not any(row.direction == "outbound" for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_sdk_receipt_commit_source_validation_and_notifier_boundaries(
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from qq_ai_bot.social.models import OperationStatus, SocialError
+    from qq_ai_bot.social.repository import SocialOperationRepository
+
+    gateway = Gateway()
+    ledger = EventLedgerRepository(database)
+    context = HostPluginContext(
+        plugin_id="example.plugin",
+        approved_permissions=(PluginPermission.MESSAGE_PRIVATE_SEND,),
+        services=PluginFacadeServices(ledger=ledger),
+    )
+    trusted = await durable_invocation(database, gateway=gateway)
+    assert trusted.inbound is not None
+    other = await durable_invocation(database, user_id="10002", gateway=gateway)
+    mismatched = replace(
+        trusted,
+        source_event_id=other.source_event_id,
+        inbound=replace(trusted.inbound, source_event_id=other.source_event_id),
+    )
+    with context.bind(mismatched), pytest.raises(SocialError, match="source_mismatch"):
+        await context.messages.send_text("must not send")
+    assert not gateway.calls
+    original = ledger._writer.append
+
+    async def failed_append(**kwargs):
+        raise RuntimeError("database write failed after network")
+
+    monkeypatch.setattr(ledger._writer, "append", failed_append)
+    with context.bind(replace(trusted, delivery_identity="persist-failure")):
+        failed = await context.messages.send_text("unknown delivery")
+        assert not failed.ok and failed.data["uncertain"]
+    monkeypatch.setattr(ledger._writer, "append", original)
+    rows = await ledger.list_scope_recent(ConversationScope.private("99999", "10001"), limit=20)
+    assert not any(row.direction == "outbound" for row in rows)
+
+    def failed_notify(result):
+        raise RuntimeError("worker notifier failed")
+
+    monkeypatch.setattr(ledger._writer, "notify_committed", failed_notify)
+
+    async def failed_audit(*args, **kwargs):
+        raise RuntimeError("audit unavailable")
+
+    monkeypatch.setattr(HostPluginContext, "_audit", failed_audit)
+    with context.bind(replace(trusted, delivery_identity="notify-failure")):
+        sent = await context.messages.send_text("confirmed")
+    assert sent.ok and len(gateway.calls) == 2
+    receipt = await SocialOperationRepository(database).get(sent.data["operation_id"])
+    assert receipt.status is OperationStatus.SUCCEEDED
+    assert receipt.event_id is not None
+    event = await ledger.get_event(receipt.event_id)
+    assert event is not None and event.content == "confirmed" and event.direction == "outbound"
+    with context.bind(replace(trusted, delivery_identity="notify-failure")):
+        replay = await context.messages.send_text("confirmed")
+    assert replay.ok and replay.data["operation_id"] == receipt.operation_id
+    assert (
+        await SocialOperationRepository(database).get(receipt.operation_id)
+    ).event_id == event.id
+    assert len(gateway.calls) == 2
+    with context.bind(replace(trusted, delivery_identity="persist-failure")):
+        unknown = await context.messages.send_text("unknown delivery")
+    assert not unknown.ok and unknown.data["status"] == "unknown"
+    assert unknown.data["uncertain"] is True
+    assert unknown.data["operation_id"] == failed.data["operation_id"]
+    assert len(gateway.calls) == 2  # Audit failure preserves unknown, without a resend.
+    from qq_ai_bot.speech.provider import SynthesizedSpeech
+    from yuki_plugin_sdk.models import GeneratedSpeechHandle
+
+    async def failed_mark_sent(generation_id):
+        raise RuntimeError("speech usage bookkeeping unavailable")
+
+    speech = SimpleNamespace(
+        mark_sent=failed_mark_sent,
+        audio_path=lambda generated: SimpleNamespace(read_bytes=lambda: b"audio"),
+    )
+    voice_context = HostPluginContext(
+        plugin_id="example.plugin",
+        approved_permissions=(PluginPermission.SPEECH_SEND,),
+        services=PluginFacadeServices(ledger=ledger, speech=speech),
+    )
+    generated = SynthesizedSpeech(
+        1, "test", "reference", "zh", "test.wav", "wav", 24000, 1, 100, False
+    )
+    voice_context._speech._handles["handle"] = generated
+    handle = GeneratedSpeechHandle(
+        handle_id="handle", generation_id=1, profile_id="test", duration_milliseconds=100
+    )
+    with voice_context.bind(replace(trusted, delivery_identity="speech-post-send")):
+        voice_sent = await voice_context.speech.send_private("10001", handle)
+    assert voice_sent.ok and len(gateway.calls) == 3
+    assert "handle" not in voice_context._speech._handles
+
+
+@pytest.mark.asyncio
+async def test_image_and_web_context_do_not_revoke_authorized_side_effects(
+    database: Database,
+) -> None:
     gateway = Gateway()
     context = HostPluginContext(
         plugin_id="example.plugin",
@@ -666,9 +996,12 @@ async def test_image_and_web_context_do_not_revoke_authorized_side_effects() -> 
             PluginPermission.ONEBOT_MUTATE,
         ),
         superuser_ids=("90000",),
+        services=PluginFacadeServices(ledger=EventLedgerRepository(database)),
     )
     image = MessageAttachment(kind=AttachmentKind.IMAGE, label="image", file="file-id")
-    with context.bind(invocation(user_id="90000", gateway=gateway, attachments=(image,))):
+    with context.bind(
+        await durable_invocation(database, user_id="90000", gateway=gateway, attachments=(image,))
+    ):
         sent = await context.messages.send_private("90000", "allowed")
         assert sent.ok
 

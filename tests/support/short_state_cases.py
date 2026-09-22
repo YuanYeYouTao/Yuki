@@ -301,7 +301,7 @@ async def run_short_state_cases(database, tmp_path, context):
     handlers._registry = registry
     handlers._gateway_factory = lambda context: None
     provider._responder = lambda request: "scheduled answer"
-    generated = await handlers.generate(
+    generated = await handlers.mapping()["yuki.generate"](
         {
             "instruction": "scheduled work",
             "context_profile": "none",
@@ -357,7 +357,7 @@ async def run_short_state_cases(database, tmp_path, context):
         )
         previous_requests = len(provider.requests)
         with pytest.raises(AutomationExecutionError) as caught:
-            await handlers.generate(
+            await handlers.mapping()["yuki.generate"](
                 {
                     "instruction": "scoped work",
                     "context_profile": "creator_private",
@@ -389,7 +389,7 @@ async def run_short_state_cases(database, tmp_path, context):
     )
     previous_requests = len(provider.requests)
     waiting = asyncio.create_task(
-        handlers.generate(
+        handlers.mapping()["yuki.generate"](
             {
                 "instruction": "queued scoped work",
                 "context_profile": "creator_private",

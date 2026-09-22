@@ -26,6 +26,7 @@ class GenerateArguments(CapabilityArguments):
 class AgentArguments(CapabilityArguments):
     instruction: str = Field(min_length=1, max_length=4000)
     context_profile: Literal["none", "creator_private", "current_group"] = "none"
+    delivery_target: Literal["none", "self_private", "current_group"] | None = None
     max_tool_calls: int = Field(default=32, ge=0, le=160)
     max_model_requests: int = Field(default=24, ge=1, le=120)
 

@@ -60,7 +60,9 @@ async def guarded_agent_calls(handlers, context, provider):
     guarded = replace(context, revalidate_authority=revoked)
     before = len(provider.requests)
     with pytest.raises(AutomationExecutionError) as caught:
-        await handlers.generate({"instruction": "work", "context_profile": "none"}, guarded)
+        await handlers.mapping()["yuki.generate"](
+            {"instruction": "work", "context_profile": "none"}, guarded
+        )
     assert caught.value.category == "automation_inactive"
     assert caught.value.llm_calls == 0
     assert len(provider.requests) == before

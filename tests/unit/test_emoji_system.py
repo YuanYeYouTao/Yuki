@@ -330,11 +330,11 @@ async def test_explicit_emoji_request_bypasses_scope_repeat_cooldown(
     runtime = _runtime(scope_repeat_cooldown_seconds=60)
 
     optional = await retriever.retrieve(
-        EmojiSelectionRequest(actor_user_id="10001", mode=EmojiReplyMode.OPTIONAL),
+        EmojiSelectionRequest(private_peer_user_id="10001", mode=EmojiReplyMode.OPTIONAL),
         runtime=runtime,
     )
     explicit = await retriever.retrieve(
-        EmojiSelectionRequest(actor_user_id="10001", mode=EmojiReplyMode.PREFERRED),
+        EmojiSelectionRequest(private_peer_user_id="10001", mode=EmojiReplyMode.PREFERRED),
         runtime=runtime,
     )
 
@@ -353,7 +353,7 @@ async def test_optional_emoji_uses_local_top_candidate_without_vision(
 
     result = await selector.select(
         EmojiSelectionRequest(
-            actor_user_id="10001",
+            private_peer_user_id="10001",
             goal="自然回应",
             mode=EmojiReplyMode.OPTIONAL,
         ),
@@ -385,7 +385,7 @@ async def test_explicit_emoji_only_uses_vision_when_scores_are_close(
 
     result = await selector.select(
         EmojiSelectionRequest(
-            actor_user_id="10001",
+            private_peer_user_id="10001",
             goal="发个开心的表情",
             explicit_request=True,
             mode=EmojiReplyMode.EMOJI_ONLY,
@@ -410,7 +410,7 @@ async def test_explicit_emoji_skips_vision_for_clear_local_winner(
 
     result = await selector.select(
         EmojiSelectionRequest(
-            actor_user_id="10001",
+            private_peer_user_id="10001",
             goal="发个开心的表情",
             explicit_request=True,
             mode=EmojiReplyMode.PREFERRED,
@@ -435,7 +435,7 @@ async def test_explicit_emoji_vision_timeout_falls_back_to_local_top(
 
     result = await selector.select(
         EmojiSelectionRequest(
-            actor_user_id="10001",
+            private_peer_user_id="10001",
             goal="发个开心的表情",
             explicit_request=True,
             mode=EmojiReplyMode.PREFERRED,
@@ -598,7 +598,7 @@ async def test_plugin_signal_can_only_adjust_existing_candidates(
     adapter = PluginEmojiSelectionSignalAdapter(registry, timeout_seconds=1)
     adjusted = await adapter.adjust(
         (RankedEmoji(assets[0], 2), RankedEmoji(assets[1], 1)),
-        EmojiSelectionRequest(actor_user_id="10001", goal="开心"),
+        EmojiSelectionRequest(private_peer_user_id="10001", goal="开心"),
     )
 
     assert adjusted[0].asset.id == assets[1].id

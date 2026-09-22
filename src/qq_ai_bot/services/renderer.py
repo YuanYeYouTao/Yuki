@@ -42,7 +42,9 @@ def strip_internal_history_markers(text: str) -> str:
 
 def sanitize_model_output(text: str, *, max_characters: int) -> str:
     """Remove only control characters and internal prompt envelopes."""
+    from yuki_participation.self_report import extract_tail
 
+    text, _ = extract_tail(text)
     cleaned = sanitize_input(text)
     if not cleaned:
         raise LLMEmptyResponseError("model returned empty content")
