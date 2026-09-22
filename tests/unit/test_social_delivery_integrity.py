@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.admin.models import ReplyRuntimeConfig
@@ -18,6 +18,7 @@ from qq_ai_bot.identity.canonical_repository import ensure_presence, ensure_spac
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.social.agent_adapter import invoke_social
+from qq_ai_bot.social.db_models import SocialOperationModel
 from qq_ai_bot.social.models import SocialError
 from qq_ai_bot.speech.delivery import VoiceDeliveryService
 
@@ -65,6 +66,12 @@ async def test_strict_social_receipt_is_uncertain_without_resend_and_upload_stay
             context,
         )
         assert result["status"] == "succeeded" and result["delivered_text"] == "真实正文"
+        assert result["delivered_text_available"] is True
+        async with database.sessions() as session:
+            stored = await session.get(SocialOperationModel, result["operation_id"])
+            assert stored.event_id == result["event_id"]
+            event = await session.get(ChatEventModel, stored.event_id)
+            assert event.content == "真实正文"
         count = gateway.await_count
         assert (
             await env.service.execute("send_message", {"text": "#62052>真实正文"}, context)
@@ -84,7 +91,7 @@ async def test_strict_social_receipt_is_uncertain_without_resend_and_upload_stay
 
 
 @pytest.mark.asyncio
-async def test_receipt_content_projection_is_bound_to_presence_target_and_existing_ledger(
+async def test_receipt_content_projection_uses_internal_event_and_checks_ownership(
     database, tmp_path
 ):
     env = await social_env(database, tmp_path)
@@ -96,6 +103,7 @@ async def test_receipt_content_projection_is_bound_to_presence_target_and_existi
     async with database.sessions.begin() as session:
         await ensure_presence(session, "80002")
         await ensure_space(session, "20002")
+    unrelated_ids = []
     for scope in (
         ConversationScope.group("80002", "20001"),
         ConversationScope.group("80001", "20002"),
@@ -116,13 +124,57 @@ async def test_receipt_content_projection_is_bound_to_presence_target_and_existi
         async with database.sessions.begin() as session:
             other = await session.get(ChatEventModel, unrelated.event.id)
             other.platform_message_id = receipt["platform_reference"]
+        unrelated_ids.append(unrelated.event.id)
     assert await env.service.execute("send_message", args, env.context) == receipt
+    async with database.sessions.begin() as session:
+        actual = await session.get(ChatEventModel, receipt["event_id"])
+        actual.platform_message_id = "transport-metadata-changed"
+        actual.occurred_at = datetime(2020, 1, 1, tzinfo=UTC)
+    # Neither transport reference nor timestamps are used to locate the event.
+    assert await env.service.execute("send_message", args, env.context) == receipt
+    for event_id in unrelated_ids:
+        async with database.sessions.begin() as session:
+            stored = await session.get(SocialOperationModel, receipt["operation_id"])
+            stored.event_id = event_id
+        projected = await env.service.execute("send_message", args, env.context)
+        assert projected["status"] == "succeeded" and projected["delivered_text_available"] is False
+        assert "delivered_text" not in projected
     # Missing or incorrectly bound historical data is not reconstructed from raw args.
     async with database.sessions.begin() as session:
+        stored = await session.get(SocialOperationModel, receipt["operation_id"])
+        stored.event_id = receipt["event_id"]
         actual = await session.get(ChatEventModel, receipt["event_id"])
         actual.origin = "unrelated_source"
     projected = await env.service.execute("send_message", args, env.context)
     assert projected["status"] == "succeeded" and "delivered_text" not in projected
+    assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_historical_or_deleted_event_reference_never_reconstructs_content_or_resends(
+    database, tmp_path
+):
+    env = await social_env(database, tmp_path)
+    args = {"text": "#62052>真实正文"}
+    receipt = await env.service.execute("send_message", args, env.context)
+    event_id = receipt["event_id"]
+    async with database.sessions.begin() as session:
+        stored = await session.get(SocialOperationModel, receipt["operation_id"])
+        stored.event_id = None
+    # The matching historical event still exists, but must never be reverse-looked up.
+    old = await env.service.execute("send_message", args, env.context)
+    assert old["status"] == "succeeded" and old["event_id"] is None
+    assert old["delivered_text_available"] is False and "delivered_text" not in old
+    async with database.sessions.begin() as session:
+        stored = await session.get(SocialOperationModel, receipt["operation_id"])
+        stored.event_id = event_id
+    async with database.sessions.begin() as session:
+        await session.execute(delete(ChatEventModel).where(ChatEventModel.id == event_id))
+    deleted = await env.service.execute("send_message", args, env.context)
+    assert deleted == old
+    async with database.sessions() as session:
+        stored = await session.get(SocialOperationModel, receipt["operation_id"])
+        assert stored.status == "succeeded" and stored.event_id is None
     assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
 
 

@@ -3,18 +3,21 @@
 import asyncio
 import json
 from dataclasses import replace
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from qq_ai_bot.conversation.canonical_db_models import PersonActiveRouteModel, SpaceActiveRouteModel
+from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.identity.canonical_repository import ensure_presence
 from qq_ai_bot.identity.db_models import PresenceModel
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.social.automation import SocialAutomationAdapter
+from qq_ai_bot.social.db_models import SocialOperationModel
 from qq_ai_bot.social.models import SocialError
 from tests.support.social_identity_cases import Bot, add_second_account
 
@@ -138,9 +141,58 @@ async def history_receipt(env):
         await env.service.execute(
             "read_conversation_history", args, replace(env.context, conversation_id=str(uuid4()))
         )
+
+    # Colliding transport references on another target or Presence must not
+    # change the persisted internal anchor or re-select an arbitrary event.
+    unrelated_ids = []
+    for index, scope in enumerate(
+        (
+            ConversationScope.group(env.bot.self_id, "20001"),
+            ConversationScope.private(other.self_id, "10001"),
+        )
+    ):
+        unrelated = await env.service.writer.append(
+            scope=scope,
+            platform_message_id=f"history-unrelated-{index}",
+            sender_user_id=scope.bot_user_id,
+            direction="outbound",
+            sender_is_bot=True,
+            content="unrelated",
+            origin="social_tool",
+        )
+        async with env.db.sessions.begin() as session:
+            row = await session.get(ChatEventModel, unrelated.event.id)
+            row.platform_message_id = sent["platform_reference"]
+        unrelated_ids.append(unrelated.event.id)
+    assert (await env.service.execute("read_conversation_history", args, env.context))[
+        "external_target_id"
+    ] == "10001"
+    async with env.db.sessions.begin() as session:
+        event = await session.get(ChatEventModel, sent["event_id"])
+        event.platform_message_id = "history-transport-metadata-changed"
+        event.occurred_at = datetime(2020, 1, 1, tzinfo=UTC)
+    assert (await env.service.execute("read_conversation_history", args, env.context))[
+        "external_target_id"
+    ] == "10001"
+    calls_before_rejections = len(env.bot.calls)
+    for event_id in (*unrelated_ids, None):
+        async with env.db.sessions.begin() as session:
+            receipt = await session.get(SocialOperationModel, sent["operation_id"])
+            receipt.event_id = event_id
+        with pytest.raises(SocialError, match="history_anchor_unavailable"):
+            await env.service.execute("read_conversation_history", args, env.context)
+    async with env.db.sessions.begin() as session:
+        receipt = await session.get(SocialOperationModel, sent["operation_id"])
+        receipt.event_id = sent["event_id"]
+    assert len(env.bot.calls) == calls_before_rejections
     env.registry.disconnect(env.bot)
     with pytest.raises(SocialError, match="history_presence_unavailable"):
         await env.service.execute("read_conversation_history", args, env.context)
+    async with env.db.sessions.begin() as session:
+        await session.execute(delete(ChatEventModel).where(ChatEventModel.id == sent["event_id"]))
+    with pytest.raises(SocialError, match="history_anchor_unavailable"):
+        await env.service.execute("read_conversation_history", args, env.context)
+    assert len(env.bot.calls) == calls_before_rejections
     assert not other.calls
 
 

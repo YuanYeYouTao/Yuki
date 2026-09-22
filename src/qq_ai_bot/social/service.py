@@ -1295,6 +1295,7 @@ class SocialService:
                     receipt.operation_id,
                     status=OperationStatus.SUCCEEDED,
                     platform_reference=reference,
+                    event_id=appended.event.id if appended is not None else None,
                     session=session,
                 )
         except BaseException as exc:
@@ -1384,54 +1385,44 @@ class SocialService:
     async def _receipt_result(
         self, receipt: SocialReceipt, context: SocialContext
     ) -> dict[str, Any]:
-        """Project existing confirmed ledger content; never rebuild events or ownership."""
+        """Read the persisted internal event anchor; never infer it from transport data."""
         result = receipt.model_dump(mode="json")
         if receipt.status is not OperationStatus.SUCCEEDED or receipt.action not in {
             "send_message",
             "send_file_caption",
         }:
             return result
+        result["delivered_text_available"] = False
+        if receipt.event_id is None:
+            # Historical receipts prove transport but have no authoritative ledger
+            # link. Missing content never grants another send or an argument replay.
+            return result
         from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-        from qq_ai_bot.social.db_models import SocialOperationModel
 
         try:
             async with self.database.sessions() as session:
-                operation = await session.get(SocialOperationModel, receipt.operation_id)
-                if operation is None:
+                event = await session.get(ChatEventModel, receipt.event_id)
+                if (
+                    event is None
+                    or event.canonical_conversation_id is None
+                    or event.direction != "outbound"
+                    or event.author_kind != "yuki"
+                    or event.author_presence_id != receipt.presence_id
+                    or event.event_kind != "message"
+                    or event.suppression_status != "keeper"
+                    or event.origin != context.origin
+                    or event.caused_by_event_id != context.caused_by_event_id
+                ):
                     return result
-                events = list(
-                    await session.scalars(
-                        select(ChatEventModel)
-                        .join(
-                            CanonicalConversationModel,
-                            CanonicalConversationModel.id
-                            == ChatEventModel.canonical_conversation_id,
-                        )
-                        .where(
-                            ChatEventModel.platform_message_id
-                            == (
-                                receipt.platform_reference
-                                or f"social-operation:{receipt.operation_id}"
-                            ),
-                            ChatEventModel.author_presence_id == receipt.presence_id,
-                            ChatEventModel.direction == "outbound",
-                            ChatEventModel.author_kind == "yuki",
-                            ChatEventModel.event_kind == "message",
-                            ChatEventModel.suppression_status == "keeper",
-                            ChatEventModel.origin == context.origin,
-                            ChatEventModel.caused_by_event_id == context.caused_by_event_id,
-                            ChatEventModel.occurred_at >= operation.created_at,
-                            ChatEventModel.occurred_at <= operation.updated_at,
-                            (CanonicalConversationModel.space_id == str(receipt.target.id))
-                            if receipt.target.kind == "space"
-                            else (CanonicalConversationModel.person_id == str(receipt.target.id)),
-                        )
-                        .limit(2)
-                    )
+                conversation = await session.get(
+                    CanonicalConversationModel, event.canonical_conversation_id
                 )
-            if len(events) != 1:
-                return result
-            event = events[0]
+                if conversation is None or (
+                    conversation.space_id
+                    if receipt.target.kind == "space"
+                    else conversation.person_id
+                ) != str(receipt.target.id):
+                    return result
             segments = json.loads(event.segments_json)
             # Speech's spoken text is its visible content. File/image placeholders
             # are ledger descriptions, not text the Agent actually sent.
@@ -1444,7 +1435,7 @@ class SocialService:
                     if part.get("type") == "text"
                 )
             )
-            result.update(event_id=event.id, delivered_text=text)
+            result.update(delivered_text_available=True, delivered_text=text)
         except Exception:
             # A projection read must not downgrade a durable send or tempt a retry.
             logging.getLogger(__name__).exception("social_receipt_content_projection_failed")

@@ -9,12 +9,14 @@ from typing import Any
 import pytest
 from sqlalchemy import func, select
 from tests.conftest import make_settings
+from tests.unit.test_memory_mutation import _service
 from tests.unit.test_memory_v2 import _append_event, _claim
 
 from qq_ai_bot.domain.messages import ChatRequest, ChatResponse
 from qq_ai_bot.llm.base import LLMProvider
 from qq_ai_bot.memory.claim_candidates import MemoryClaimCandidateRepository
-from qq_ai_bot.memory.enums import MemoryRebuildJobOutcome
+from qq_ai_bot.memory.claim_processor import MemoryProcessingContext
+from qq_ai_bot.memory.enums import MemoryProcessingSource, MemoryRebuildJobOutcome
 from qq_ai_bot.memory.extraction import BatchMemoryClaim, BatchMemoryExtractionOutput
 from qq_ai_bot.memory.job_claims import MemoryJobClaimLost
 from qq_ai_bot.memory.models import MemoryJob
@@ -59,6 +61,33 @@ async def _snapshot(database: Database, job: MemoryJob) -> tuple[Any, ...]:
             row.error_category,
             row.completed_at,
         )
+
+
+async def test_actorless_context_is_rejected_by_queue_mutation_without_writing(
+    database: Database,
+) -> None:
+    mutations, _facts, ledger, processor = _service(database, self_memory_enabled=True)
+    event = await _append_event(ledger, message_id="actorless-queue-mutation")
+    jobs = MemoryJobRepository(database)
+    assert await jobs.enqueue(event.id, "private:1001")
+    (job,) = await jobs.claim()
+    validated = processor.validate(_claim(), event)
+    assert validated is not None
+    before = await _snapshot(database, job)
+
+    result = await mutations.mutate_validated_claim(
+        validated,
+        MemoryProcessingContext(source=MemoryProcessingSource.LIVE, event=None),
+        conversation_key=job.conversation_key,
+        job=job,
+    )
+
+    assert not result.ok
+    assert result.reason_code == "untrusted_trigger_event"
+    assert await _snapshot(database, job) == before
+    async with database.sessions() as session:
+        for model in (MemoryFactModel, MemoryMutationReceiptModel, MemoryClaimCandidateModel):
+            assert await session.scalar(select(func.count()).select_from(model)) == 0
 
 
 @pytest.mark.parametrize("late_action", ["complete", "fail"])

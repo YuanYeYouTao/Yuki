@@ -120,6 +120,7 @@ class SocialOperationRepository:
         status: OperationStatus,
         session: AsyncSession,
         platform_reference: str | None = None,
+        event_id: int | None = None,
         error_category: str | None = None,
     ) -> None:
         """Caller commits a confirmed outgoing ledger append in this same transaction."""
@@ -137,6 +138,10 @@ class SocialOperationRepository:
             raise SocialError("invalid_error_category")
         if platform_reference is not None and len(platform_reference) > 255:
             raise SocialError("invalid_platform_reference")
+        if event_id is not None and (
+            type(event_id) is not int or event_id <= 0 or status is not OperationStatus.SUCCEEDED
+        ):
+            raise SocialError("invalid_event_reference")
         result = await session.execute(
             update(SocialOperationModel)
             .where(
@@ -146,6 +151,7 @@ class SocialOperationRepository:
             .values(
                 status=status.value,
                 platform_reference=platform_reference,
+                event_id=event_id,
                 error_category=error_category,
                 updated_at=datetime.now(UTC),
             )
@@ -196,5 +202,6 @@ class SocialOperationRepository:
             target=SocialTarget.model_validate({"kind": row.target_kind, "id": row.target_id}),
             presence_id=row.presence_id,
             platform_reference=row.platform_reference,
+            event_id=row.event_id,
             error_category=row.error_category,
         )

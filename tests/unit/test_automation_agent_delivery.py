@@ -231,9 +231,11 @@ async def test_file_and_caption_must_both_be_confirmed(database, tmp_path, capti
         action="send_file_caption",
         status=caption_status,
     )
-    body = await case.env.service._file_result(file["operation_id"])
+    body = await case.env.service._file_result(file["operation_id"], case.env.context)
     assert body["target"] == file["target"]
-    assert body["caption"] == caption
+    assert all(body["caption"][key] == value for key, value in caption.items())
+    if caption_status == "succeeded":
+        assert body["caption"]["delivered_text_available"] is False
     await aggregate(
         case,
         "file",

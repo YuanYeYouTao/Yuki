@@ -112,6 +112,7 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
     "social_operation_receipts": frozenset(
         {
             "id",
+            "event_id",
             "source_turn_id",
             "tool_call_id",
             "payload_hash",

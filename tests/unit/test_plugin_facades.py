@@ -940,6 +940,16 @@ async def test_sdk_receipt_commit_source_validation_and_notifier_boundaries(
     assert sent.ok and len(gateway.calls) == 2
     receipt = await SocialOperationRepository(database).get(sent.data["operation_id"])
     assert receipt.status is OperationStatus.SUCCEEDED
+    assert receipt.event_id is not None
+    event = await ledger.get_event(receipt.event_id)
+    assert event is not None and event.content == "confirmed" and event.direction == "outbound"
+    with context.bind(replace(trusted, delivery_identity="notify-failure")):
+        replay = await context.messages.send_text("confirmed")
+    assert replay.ok and replay.data["operation_id"] == receipt.operation_id
+    assert (
+        await SocialOperationRepository(database).get(receipt.operation_id)
+    ).event_id == event.id
+    assert len(gateway.calls) == 2
     with context.bind(replace(trusted, delivery_identity="persist-failure")):
         unknown = await context.messages.send_text("unknown delivery")
     assert not unknown.ok and unknown.data["status"] == "unknown"

@@ -1353,8 +1353,6 @@ class MemoryMutationService:
         """Commit one Worker claim through the same receipt and transaction boundary."""
 
         event = processing_context.event
-        if job.event_id != event.id:
-            raise ValueError("memory job claim does not own the source event")
         operation = self._claim_requested_operation(claim.operation)
         if (
             event is None
@@ -1363,6 +1361,8 @@ class MemoryMutationService:
             or not self._validated_claim_matches_event(claim, event)
         ):
             return self._rejected(operation, "untrusted_trigger_event")
+        if job.event_id != event.id:
+            raise ValueError("memory job claim does not own the source event")
         try:
             async with self._facts.repository.transaction() as identity_session:
                 target_owners = await self._facts.requested_target_owners(

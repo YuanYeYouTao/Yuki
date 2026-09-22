@@ -18,6 +18,7 @@ class SocialOperationModel(Base):
         ),
         CheckConstraint("target_kind IN ('person','space')", name="ck_social_target_kind"),
         Index("ix_social_operation_target_time", "target_id", "created_at"),
+        Index("ix_social_operation_event_id", "event_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -38,3 +39,6 @@ class SocialOperationModel(Base):
     error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chat_events.id", onupdate="RESTRICT", ondelete="SET NULL"), nullable=True
+    )

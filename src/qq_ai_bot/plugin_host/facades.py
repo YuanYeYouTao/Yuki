@@ -3049,6 +3049,7 @@ async def _send_onebot(
                     receipt.operation_id,
                     status=OperationStatus.SUCCEEDED,
                     platform_reference=confirmed.platform_message_id,
+                    event_id=appended.event.id,
                     session=session,
                 )
         except BaseException as exc:
