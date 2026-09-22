@@ -66,7 +66,7 @@ Memory reads have a specific privacy boundary: a past shared-group relationship 
 - **Images and video:** A model with image input can inspect current or quoted images. MP4/MOV video is sampled into frames by FFmpeg for the same main agent. Audio tracks are not analyzed, and sampling may miss moments.
 - **Incoming voice:** Private messages, group messages that meet the reply policy, and quoted voice can be transcribed with Qwen ASR and included in chat history, search, and Rollup. Qwen connectivity can be reused and is configured separately from Genie-TTS output. See [speech recognition](docs/speech/recognition.md).
 - **Files:** Bounded extraction supports text, code, CSV/JSON, PDF text, DOCX, and XLSX. Scanned PDFs do not receive OCR; spreadsheet formulas are not recalculated; reading does not execute macros or embedded code. An original attachment can be referenced again later.
-- **Web:** Configure provider-native search or Tavily. The project's DeepSeek Responses integration uses Tavily for search, requiring `WEB_MODE=tavily` and `TAVILY_API_KEY`. `both` exposes both available search tools; `disabled` disables web access.
+- **Web:** Configure provider-native search or external `web_search`. External search defaults to Tavily. Set `WEB_MODE=tavily` and `WEB_SEARCH_BACKEND=deepseek_anthropic` to use the [DeepSeek search bridge](docs/deepseek-search-bridge.md), with an optional Tavily key for failure fallback. `both` permits configured external search and supported native search; `disabled` disables web access. The adapter currently disables native search for the DeepSeek Main Agent; the bridge uses a separate protocol request.
 
 Chat, plugin wakeups, automation, and task resumption use the same main agent with its complete tool declarations. The tool schema stays fixed within a deployment; permissions and budgets are checked at execution time. This reduces request-prefix variation but does not guarantee provider cache hits.
 
@@ -108,7 +108,7 @@ The Bot image is `ghcr.io/yuanyeyoutao/yuki-qqbot:3.8.3`; the optional TTS Worke
 
 ## Upgrading and maintenance
 
-3.8.3 uses database schema **0061** and Plugin API **2.0**; the historical target for the 3.8.2 package was 0055. Older databases must follow the migration chain—do not skip migrations with `stamp`. Legacy plugin calls to `llm.generate` / `agent.run` now use the unified main entry point; plugins that relied on separate-generation behavior need adaptation.
+The current source uses Plugin API **3.0**. The bundled Alembic head determines the database target; the application version does not replace a schema check. The historical target for the 3.8.2 package was 0055. Older databases must follow the migration chain—do not skip migrations with `stamp`. Legacy plugin calls to `llm.generate` / `agent.run` now use the unified main entry point; plugins that relied on separate-generation behavior need adaptation.
 
 Before upgrading, make a consistent backup of the database, configuration, plugins, and files. For a persistent workspace, retain its home directory and execution receipts. Pause writes from Bot and related Manager components; you do not need to shut down all of Docker or the QQ gateway. Preserve any new messages, files, and receipts before rollback; see the [upgrade guide](docs/upgrade-3.8.3.md).
 
@@ -145,7 +145,7 @@ Use targeted checks during development; the release pipeline also verifies migra
 | [Development contract](docs/architecture/development-contract.md) | Event IDs, boundaries, fixed tools, resumption, and transactions |
 | [Rollup](docs/architecture/conversation-rollup.md) | Long-conversation condensation |
 | [Memory](docs/architecture/memory-v2.md) | Extraction, retrieval, and permissions |
-| [Plugin API 2.0](docs/plugin-development/index.md) | Plugin development and capability boundaries |
+| [Plugin API 3.0](docs/plugin-development/index.md) | Plugin development and capability boundaries |
 | [MCP](docs/mcp/architecture.md) | External tools |
 | [Speech output](docs/speech/operations.md) | Genie-TTS deployment and operations |
 | [Versioned releases](docs/operations/versioned-docker-release.md) | Images, bundles, and the release process |

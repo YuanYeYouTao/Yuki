@@ -7,7 +7,8 @@
 
 一个数据库是一个永久 Yuki。Person、Space 使用 canonical UUID；QQ 号仅通过 Binding
 解析，Presence/Provider 是传输身份，不划分记忆所有权。更换 NapCat、SnowLuma 或 Yuki 账号
-不重建记忆，也不改变 Conversation、Route 或 Rollup generation。
+不重建记忆或 Conversation/Rollup 所有权，也不因账号切换重置聊天 generation；
+Route 有独立的 `route_generation`，有效发送路由迁移、暂停或恢复可推进它。
 
 | 分类 | 所有者与含义 |
 |---|---|
@@ -19,7 +20,7 @@
 History 是不可变事件账本；Rollup 是短期上下文压缩，不等于长期事实。
 事实的版本、证据、来源、可信度、争议和 canonical 所有权保留在长期 Memory。
 external_event 保持 external_untrusted，不伪装成人类聊天，不自动进入人物记忆或关系。
-Plugin API 2.0 的受控读取也不产生普通用户社会关系授权。
+插件的受控读取也不产生普通用户社会关系授权。
 
 ## 自动提取与价值
 

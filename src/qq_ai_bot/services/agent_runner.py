@@ -325,7 +325,7 @@ class AgentRunner:
             )
             if web_mode is WebMode.NATIVE and fixed_definitions is None:
                 # Native-only deliberately excludes external search. Mixed mode
-                # keeps the pinned Tavily function alongside the native tool;
+                # keeps the configured external search function alongside the native tool;
                 # availability must not depend on a preceding native failure.
                 definitions = tuple(
                     item for item in definitions if item.name not in {"web_search", "read_webpage"}
@@ -336,9 +336,9 @@ class AgentRunner:
                 restart_chain()
             if transcript.continuation is not None:
                 # Responses continuations are one cumulative request chain.
-                # Tools may be added after request_tools, but removing a tool
-                # previously declared in the chain makes some providers reject
-                # the next function-output request with HTTP 400.
+                # Keep previously declared tools paired with their function outputs.
+                # The Main Agent manifest is already fixed; request_tools only
+                # searches its directory and does not grow this declaration.
                 definitions = self._merge_function_tools(continuation_tools, definitions)
                 native_definitions = self._merge_native_tools(
                     continuation_native_tools, native_definitions

@@ -15,6 +15,7 @@ Yuki 正在逐层解耦：永久主体、内部事件和工作身份由核心持
 | [Self Reflection](self-reflection.md) | 自省 Responses 合同、后台周期、预算、重试与运维报告 |
 | [语义参与 V6 开发状态](semantic-participation.md) | 独立控制器、宿主接纳协议与尚未接通的 SELF 路径；未上线 |
 | [Memory](memory-v2.md) | 记忆范围、证据与权限 |
+| [Tool Kernel](tool-kernel.md) | 固定主声明、目录查询与执行授权 |
 | [MCP 架构](../mcp/architecture.md) | 外部工具、固定清单和执行授权 |
 | [插件架构](../plugin-development/architecture.md) | SDK、Host 与隔离插件会话 |
 | [持久环境](../operations/persistent-environment.zh-CN.md) | 工作区、终端、Manager、文件交付和恢复 |

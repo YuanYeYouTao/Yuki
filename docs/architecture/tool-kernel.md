@@ -1,52 +1,57 @@
-# Tool Kernel
+# Tool Kernel 当前合同
 
-当前 Memory 读工具合同见 [Memory 检索](memory-v2-retrieval.md)。默认固定首轮 pin 包含
-get_person_memories、get_group_memories、get_self_memories；用户显式配置不会被覆盖。
-工具 schema 不按当前人物、昵称、群号或查询内容变化。Memory Runtime 的已有读/写能力
-边界继续生效，不因为工具常驻而赋予权限。
+Tool Kernel 分开管理工具目录、固定声明与执行授权。主 Agent 的真实入口见
+[主 Agent 执行与恢复](main-agent-runtime.md)，共同约束见
+[开发架构约束](development-contract.md)。旧 Planner 不参与主 Agent 工具选择。
 
-Yuki 2.1 把工具来源和执行方式分开。`ToolProvider` 只贡献
-`CapabilityDescriptor`，`ToolBinding` 才持有可执行实现；Capability Runtime 和 AgentRunner
-不知道工具来自 Python 服务、插件、MCP Session，还是未来的 RPC 进程。
+## 声明与目录
+
+`ToolProvider` 提供 `CapabilityDescriptor`，其中的 `ToolBinding` 连接实际实现。
+`UnifiedToolCatalog` 负责目录，`MainAgentContract.definitions()` 在部署初始化时收集
+主工具注册表、已安装插件和已启用 MCP 工具，加入工作控制、子任务与 short_state 工具后，
+按名称排序并冻结完整名称、说明和参数 schema。重名声明直接报错。
+
+主 Agent 的普通聊天、主动触发、自动化、插件主调用和持久续跑复用这份声明。
+它不是按每条消息或每个用户生成的白名单。工具合同变更需重启并开启明确的新链。
+Provider 原生工具还有独立的协议和配置合同，不能只检查函数工具就声称整个请求相同。
+
+`request_tools` 经 `MainAgentBackend._request_tools()` 调用
+`TurnCapabilityRuntime.discover_declared()`，只搜索已声明目录、返回用法。
+它不加载 schema、不重排声明、不授予权限，也不重建已有 Provider continuation。
+Capability Runtime 中的局部 exposure、FTS 检索与执行集合不是主 Agent 模型声明的真源。
+不能把旧的 `plan_growth` / 动态 schema 路径写成当前主入口合同。
+
+## 调用与效果
+
+执行时由后端依据真实 actor、来源、当前权限、委托、工具状态与工作预算核验。
+目录可见或 schema 已声明不等于可以执行；插件批准和 MCP 启停仍可阻止调用，
+不需要为了拒绝执行而修改模型已提交的前缀。
 
 ```mermaid
 flowchart LR
-  C[Core Provider] --> R[ToolProviderRegistry]
-  A[Admin Provider] --> R
-  U[Automation Provider] --> R
-  P[Plugin Provider] --> R
-  M[MCP Provider] --> R
-  R --> D[UnifiedToolCatalog]
-  D --> S[Capability Runtime]
-  D --> Q[Local FTS5 BM25]
-  Q --> B[Schema Budgeter]
-  B --> G[AgentRunner]
-  G --> I[ToolInvocationCoordinator]
-  I --> X[Descriptor.binding]
-  X --> O[ToolResultBudgeter]
+  P[Core / Plugin / MCP Provider] --> D[UnifiedToolCatalog]
+  D --> F[MainAgentContract 固定声明]
+  F --> A[AgentRunner]
+  D --> Q[request_tools 目录查询]
+  A --> E[MainAgentBackend 执行授权]
+  E --> I[ToolInvocationCoordinator]
+  I --> B[ToolBinding]
+  B --> R[结果预算与真实回执]
+  R --> A
 ```
 
-目录项包含 descriptor、provider、namespace、简述、tags、可检索文本、Schema Token 估算、可用性和
-revision。模型工具名全局去重；远程 MCP 名称规范为 `mcp__<server>__<tool>`。
+同一模型响应中符合 `parallel_safe` 的读取可并行；修改、发送和不确定效果按现有
+执行围栏处理，工具结果按原 call 顺序追加。每段模型/工具限额与根任务累计预算分别
+执行，分段或重启不重新发放根预算。模型最终正文不自动投递，发送走 `send_message`。
 
-`CapabilityDescriptor` 可同时属于多个 namespace，并通过 `CapabilityExposure` 区分本轮检索命中
-的能力与真实用户轮固定保留的能力。Tool Bundle 是带必需成员的普通 namespace：本地检索不能拆散
-已选 Bundle；完整 Schema 超预算时由 Budgeter 明确拒绝。没有 Flash 精排。
-Schema Token 统一按工具名、描述、参数和 function-calling 外层估算。
+结果预算器保留必要 ID、URL、状态与错误，较大的完整结果可保存为 artifact。
+`mutation_committed` 与投递成功、失败、未知状态按真实回执解释；它们不是自然语言
+“已经完成”的替代品。工作区、MCP 结果等 artifact 的保留期由各自存储合同决定。
 
-当候选选择或 Schema 预算省略了后续真正需要的工具时，Agent 可调用小型
-`request_tools` 网关，以自然语言描述能力。Host 只在当前真实事件经过权限、来源、只读模式、
-图片与联网隔离后仍可用的统一目录中匹配；匹配项会在下一次模型请求中以完整原始 Schema
-加载，再由 Agent 正常调用。网关只改变本轮暴露集合，不代替目标工具执行，也不授予新权限。
+## 代码定位
 
-同一模型响应里的连续 `parallel_safe` 工具可并发执行。修改状态、平台修改、非幂等或语义未知的
-工具默认串行；工具结果始终按模型原始 call 顺序回传。调用总数只取运行时
-`agent.max_tool_calls`、`agent.max_model_requests` 和 `tooling.max_parallel_calls`。
-
-Core、Admin、Automation 和 Plugin 通过 `InProcessToolBinding` 兼容现有服务；MCP 使用
-`MCPToolBinding`。未来只需实现 `RpcToolBinding` 和新的 Provider，无需修改 Capability Runtime
-或 AgentRunner。
-
-Provider 可返回 `mutation_committed=True/False/None`；统一解析器先尊重失败与显式值，再按
-Descriptor effect 推断。结果预算器会在裁剪时优先投影 URL、ID、状态和错误，完整结果仍可写入
-有期限的 Artifact。
+- `services/main_agent_contract.py`：冻结主 Agent 声明与合同 revision。
+- `services/agent_runner.py`：真实请求历史、预算、工具循环与 continuation。
+- `services/main_agent_backend.py`：目录查询、执行授权、工具回执与业务效果围栏。
+- `capabilities/`：descriptor、catalog、policy、binding、协调器和结果预算。
+- `mcp/`、`plugin_host/`：各来源的注册和执行适配；不建立第二套 Yuki 主循环。
