@@ -6,8 +6,8 @@ No controller is enabled or existing autonomous/chat execution altered by this m
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0065"
-down_revision = "0064"
+revision = "0066"
+down_revision = "0065"
 branch_labels = None
 depends_on = None
 

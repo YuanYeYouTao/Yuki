@@ -1,4 +1,4 @@
-"""0065 adds dormant storage and keeps accepted records on code rollback."""
+"""0066 adds dormant storage and keeps accepted records on code rollback."""
 
 import importlib
 
@@ -50,8 +50,8 @@ def _schema(connection, name):
 
 
 def test_autonomy_migration_is_additive_and_preserves_records(monkeypatch):
-    migration = importlib.import_module("migrations.versions.0065_autonomy_admission")
-    assert migration.down_revision == "0064"
+    migration = importlib.import_module("migrations.versions.0066_autonomy_admission")
+    assert migration.down_revision == "0065"
     engine = create_engine("sqlite:///:memory:")
     with engine.begin() as connection:
         for name in ("canonical_conversations", "spaces", "presences", "persons"):
@@ -81,7 +81,7 @@ def test_autonomy_migration_is_additive_and_preserves_records(monkeypatch):
 
 
 def test_frozen_migration_matches_runtime_metadata(monkeypatch):
-    migration = importlib.import_module("migrations.versions.0065_autonomy_admission")
+    migration = importlib.import_module("migrations.versions.0066_autonomy_admission")
     models = (
         AutonomyBindingModel,
         InitiativeRunModel,

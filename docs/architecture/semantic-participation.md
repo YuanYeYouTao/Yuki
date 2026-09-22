@@ -9,7 +9,7 @@ Yuki 继续拥有来源、权限、主 Agent、steer、工具、工作恢复和�
 ## 已实现的宿主边界
 
 `AutonomyBinding` 按 Conversation/generation 保存 master/external 开关、唯一有效 owner、
-controller_epoch 与 revision。0065 增加 selector、initiative run、已考虑来源和反馈记录。
+controller_epoch 与 revision。0066 增加 selector、initiative run、已考虑来源和反馈记录。
 未配置的记录默认 off；迁移不改变现有群设置，不启动外部服务，也不启用新模式。
 
 接纳仓库以短事务核对持久 selector 与 proposal 身份，同 proposal 返回同 run；来源键按
@@ -46,7 +46,7 @@ Work；generation/reset/权限变化仍需在完整 SELF 接入时走宿主既�
 5. SELF 工具证据进入自省；可选状态尾段在可见发送和记忆抽取前剥离。
 6. 影子对照、真实 Jev 与小范围 QQ 验收；上线前验证两模式互斥、明确停止、未知发送和重启。
 
-正式接通前还必须实现原子接纳后的持久派发：0065 的 run 要按唯一身份关联既有 Work 或
+正式接通前还必须实现原子接纳后的持久派发：0066 的 run 要按唯一身份关联既有 Work 或
 待派发记录，进程在 accepted 后退出也能接回，不能永久停在 busy。派发只进入同一主入口。
 SELF Memory 需要 event/run 明确区分的证据来源与独立增量水位，不能只把外键改成 nullable。
 
