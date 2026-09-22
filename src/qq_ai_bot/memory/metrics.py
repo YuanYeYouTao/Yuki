@@ -73,7 +73,6 @@ MEMORY_MUTATION_TURN_OUTCOMES = (
     "not_found",
     "rejected",
     "not_attempted",
-    "planner_fail_closed",
 )
 
 

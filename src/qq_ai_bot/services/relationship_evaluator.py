@@ -11,7 +11,7 @@ from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.relationships import RelationshipEvaluation
 from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
-from qq_ai_bot.model_runtime.models import ModelTask
+from qq_ai_bot.model_runtime.models import ModelExecutionPriority, ModelTask
 from qq_ai_bot.model_runtime.structured import StructuredTaskRunner
 from qq_ai_bot.persistence.repositories import RelationshipJobRecord
 from qq_ai_bot.services.concurrency import ConcurrencyManager
@@ -107,7 +107,7 @@ class FakeRelationshipEvaluator:
 
 
 class LLMRelationshipEvaluator:
-    """Ask the current provider for strict JSON without tools or thinking."""
+    """Evaluate strict structured output in the shared best-effort background lane."""
 
     def __init__(
         self,
@@ -171,6 +171,7 @@ class LLMRelationshipEvaluator:
             "relationship-worker",
             lambda: self._structured.run(
                 task=ModelTask.RELATIONSHIP_EVALUATION,
+                priority=ModelExecutionPriority.BEST_EFFORT_BACKGROUND,
                 instruction=(
                     "只评价给定用户在聊天中的实际行为。通常变化为零，常见有效变化为正负一，"
                     "只有非常明显的长期尊重、关心、诚实、合作、道歉、侮辱、欺骗、骚扰或刷屏"
@@ -183,6 +184,8 @@ class LLMRelationshipEvaluator:
                 max_output_tokens=None,
                 allow_text_json=True,
             ),
+            background=True,
+            translate_cancellation=False,
         )
         known = {job.job_id: job for job in jobs}
         result: dict[int, RelationshipEvaluation] = {}

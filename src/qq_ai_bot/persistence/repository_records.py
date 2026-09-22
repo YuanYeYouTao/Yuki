@@ -200,6 +200,7 @@ class RelationshipJobRecord:
     """A claimed relationship job with bounded person-specific context."""
 
     job_id: int
+    claimed_at: datetime
     attempts: int
     user_id: str
     conversation_key: str

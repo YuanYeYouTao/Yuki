@@ -1,43 +1,26 @@
-# 语音回复效果
+# 语音发送与人物偏好
 
-主聊天只保留一条执行链：
+语音复用主 Agent 的 `send_message`，通过 `text` 和 `voice` 参数表达。没有独立
+`send_voice` 工具、关键词路由或语音会话。`voice.request_basis` 为 `user_requested`
+或 `agent_initiated`；可以提供公开 `style_hint` 和 `auto/zh/jp` 语言，不能指定模型、
+profile、参考音频或路径。详细 schema 以 `social/tools.py` 为准。
 
-```text
-MessageProcessor → Conversation Runtime → Memory Runtime → Capability Runtime
-  → Main Agent → send_message / send_voice
-```
+主 Agent 自行决定是否发送语音，后端核验目标权限、入口传入的语音许可、声线和
+传输能力。语音会立即发送；需要再发文字时由 Agent 明确调用另一条 `send_message`。
+不维护概率门禁或独立回复效果队列，不把内部最终正文自动送出。
 
-没有语音关键词路由，也没有独立语音会话。用户明确索要语音时，Main Agent 调用 `send_voice`；
-是否主动使用语音由 Main Agent 自行决定；后端只执行人物 `text_only` 偏好、目标权限、声线和
-传输能力等硬约束。
+持久偏好由 `set_voice_preference` 写入，归属于 canonical Person，平台账号只用于
+解析身份；来源、当前执行主体及持久修改权限由现行 preference service 核验。
+当前普通聊天在构造 ToolRuntime 时读取发起人的偏好，`text_only` 会关闭该轮的
+语音许可；它不是发送时重新读取目标收件人偏好的保证。自动化等直接构造 ToolRuntime
+的入口仍默认允许语音，尚未统一接入这项持久偏好检查。这是现存入口差异，不能据此
+宣称所有入口已统一尊重 `text_only`。
 
-## 明确请求与 Agent 工具
+`SPEECH_DEFAULT_MODE` 仍有配置声明和管理项，但当前显式发送链没有运行时消费；
+未保存偏好时不会据它自动选择 text_only、auto 或 prefer_voice。模式名称也不代表
+每次语音自动附送文字。
 
-Main Agent 根据自然语言和上下文判断是否调用 `send_voice`，不依赖固定词表。该工具只能选择
-公开风格与 `auto/zh/jp`，不能传入模式、profile、模型、参考音频、文件或路径。未授权时直接
-伪造调用会得到 `voice_not_authorized`。最终是否发送语音以该工具的真实投递回执为准。
+TTS、媒体准备和发送返回真实回执，失败由 Agent 决定后续行动；unknown 不盲目重发。
+语音合成前继续检查正文脚本与语言，避免把中文交给日语 G2P。
 
-## 日常主动语音
-
-用户未明确索要时，Main Agent 仍可按语境调用 `send_voice`。后端不再维护频率预算、近期语音
-比例或独立回复效果账本；真实工具回执就是投递事实。人物 `text_only` 偏好仍会拒绝语音，
-`auto` 与 `prefer_voice` 作为上下文提供给 Main Agent，而不是后端概率门禁。
-
-## 持久人物偏好
-
-`person_speech_preferences` 以 QQ 为主键，只保存一个当前模式、来源消息 ID 和时间。只有用户
-本人在真实消息轮中明确表达“以后、默认、切换模式”等持续语义时，Main Agent 才能调用
-`set_voice_preference` 写入 `persistent` 修改；只约束当前轮的要求不会落库，自主群聊也不能
-修改人物偏好。删除人物时该行通过外键级联删除。
-
-未保存人物偏好时，`SPEECH_DEFAULT_MODE` 作为全局基线：
-
-- `text` → `text_only`；
-- `optional` → `auto`；
-- `voice` / `text_and_voice` → `prefer_voice`。
-
-## 语言、失败与可观测性
-
-默认声线只公开目标语言，Main Agent 可以按语境选择中文或日文。合成前仍按最终正文脚本校验
-语言，避免把中文正文交给日语 G2P。TTS 不可用时返回明确失败回执，由 Main Agent 决定是否
-改发文字；已提交的发送不因新消息到达而被旧轮次取消。
+参见 [主 Agent 合同](../architecture/main-agent-runtime.md)。文件名仅保留现有文档链接。

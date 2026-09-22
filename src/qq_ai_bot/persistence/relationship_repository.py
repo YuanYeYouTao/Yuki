@@ -42,6 +42,24 @@ from qq_ai_bot.persistence.repository_records import (
 )
 
 
+class RelationshipClaimLost(RuntimeError):
+    """A result no longer owns the relationship job it was evaluating."""
+
+
+async def _complete_claim(session: AsyncSession, job: RelationshipJobRecord) -> bool:
+    identity = await session.scalar(
+        update(RelationshipJobModel)
+        .where(
+            RelationshipJobModel.id == job.job_id,
+            RelationshipJobModel.status == "processing",
+            RelationshipJobModel.updated_at == job.claimed_at,
+        )
+        .values(status="completed", updated_at=datetime.now(UTC), error_category=None)
+        .returning(RelationshipJobModel.id)
+    )
+    return identity is not None
+
+
 class RelationshipRepository:
     """Persist bounded per-person affection and trust with a complete audit trail."""
 
@@ -82,6 +100,7 @@ class RelationshipRepository:
         now: datetime,
         initial_affection: int | None = None,
         initial_trust: int | None = None,
+        flush: bool = True,
     ) -> PersonRelationshipModel:
         binding = await require_person_binding(session, user_id)
         row = await session.get(PersonRelationshipModel, binding.person_id)
@@ -97,7 +116,8 @@ class RelationshipRepository:
                 last_automatic_change_at=None,
             )
             session.add(row)
-            await session.flush()
+            if flush:
+                await session.flush()
         return row
 
     async def get_or_create(
@@ -183,6 +203,7 @@ class RelationshipRepository:
         max_auto_delta: int | None = None,
         daily_positive_cap: int = 0,
         daily_negative_cap: int = 0,
+        claim: RelationshipJobRecord | None = None,
     ) -> tuple[RelationshipSnapshot, bool]:
         """Apply one event once, with optional runtime daily caps (zero means unlimited)."""
 
@@ -190,18 +211,20 @@ class RelationshipRepository:
             evaluation,
             maximum=max_auto_delta,
         )
+        if claim is not None and (
+            claim.user_id != user_id or claim.trigger_event.id != source_event_id
+        ):
+            raise ValueError("relationship claim does not match the evaluated event")
         now = datetime.now(UTC)
         try:
-            async with self._database.sessions() as session, session.begin():
+            async with self._database.sessions(autoflush=False) as session, session.begin():
                 existing = await session.scalar(
                     select(RelationshipEventModel.id).where(
                         RelationshipEventModel.change_type == "automatic",
                         RelationshipEventModel.source_event_id == source_event_id,
                     )
                 )
-                row = await self._ensure_row(session, user_id, now=now)
-                if existing is not None:
-                    return (self._projected_snapshot(row, user_id), False)
+                row = await self._ensure_row(session, user_id, now=now, flush=False)
                 source = await session.get(ChatEventModel, source_event_id)
                 if source is None or source.direction != "inbound":
                     raise ValueError("relationship source event does not belong to the user")
@@ -209,6 +232,10 @@ class RelationshipRepository:
                 job_person = row.canonical_person_id
                 if source_person is None or source_person != job_person:
                     raise ValueError("relationship source event does not belong to the user")
+                if existing is not None:
+                    if claim is not None and not await _complete_claim(session, claim):
+                        raise RelationshipClaimLost("relationship job ownership changed")
+                    return (self._projected_snapshot(row, user_id), False)
 
                 effective_evaluation = evaluation
                 if daily_positive_cap or daily_negative_cap:
@@ -244,6 +271,25 @@ class RelationshipRepository:
                         ),
                         confidence=evaluation.confidence,
                     )
+                # This is the first write, after identity/evidence/cap reads.
+                # Finish the claim and score change in one transaction, so a
+                # stale worker cannot publish a score before losing completion.
+                if claim is not None and not await _complete_claim(session, claim):
+                    raise RelationshipClaimLost("relationship job ownership changed")
+                if claim is not None and row not in session.new:
+                    unchanged = await session.scalar(
+                        update(PersonRelationshipModel)
+                        .where(
+                            PersonRelationshipModel.canonical_person_id == job_person,
+                            PersonRelationshipModel.updated_at == row.updated_at,
+                            PersonRelationshipModel.affection_score == row.affection_score,
+                            PersonRelationshipModel.trust_score == row.trust_score,
+                        )
+                        .values(updated_at=row.updated_at)
+                        .returning(PersonRelationshipModel.canonical_person_id)
+                    )
+                    if unchanged is None:
+                        raise RuntimeError("relationship state changed before commit")
                 affection_before = row.affection_score
                 trust_before = row.trust_score
                 row.affection_score = max(
@@ -278,6 +324,10 @@ class RelationshipRepository:
                 await session.flush()
                 return (self._projected_snapshot(row, user_id), True)
         except IntegrityError:
+            if claim is not None:
+                # The whole claim/score transaction rolled back. The worker
+                # must retry or yield by its claim, not report it completed.
+                raise
             snapshot = await self.get_or_create(user_id)
             return snapshot, False
 
@@ -594,6 +644,7 @@ class RelationshipJobRepository:
                 result.append(
                     RelationshipJobRecord(
                         job_id=row.id,
+                        claimed_at=now,
                         attempts=row.attempts,
                         user_id=projected_user_id,
                         conversation_key=row.conversation_key,
@@ -604,28 +655,50 @@ class RelationshipJobRepository:
         accepted = await commit_job_claims(self._database, RelationshipJobModel, prepared)
         return tuple(job for job in result if job.job_id in accepted)
 
-    async def complete(self, job_ids: tuple[int, ...]) -> None:
-        if not job_ids:
+    async def complete(self, jobs: tuple[RelationshipJobRecord, ...]) -> None:
+        if not jobs:
             return
+        async with self._database.sessions() as session, session.begin():
+            for job in jobs:
+                await _complete_claim(session, job)
+
+    async def defer(self, jobs: tuple[RelationshipJobRecord, ...]) -> None:
+        """Yield only this claim; a late preemption cannot release a newer owner."""
+        if not jobs:
+            return
+        now = datetime.now(UTC)
+        async with self._database.sessions() as session, session.begin():
+            for job in jobs:
+                await session.execute(
+                    update(RelationshipJobModel)
+                    .where(
+                        RelationshipJobModel.id == job.job_id,
+                        RelationshipJobModel.status == "processing",
+                        RelationshipJobModel.updated_at == job.claimed_at,
+                    )
+                    .values(
+                        status="pending",
+                        next_attempt_at=now + timedelta(seconds=30),
+                        updated_at=now,
+                    )
+                )
+
+    async def fail(self, job: RelationshipJobRecord, error_category: str) -> None:
+        now = datetime.now(UTC)
+        attempts = job.attempts + 1
         async with self._database.sessions() as session, session.begin():
             await session.execute(
                 update(RelationshipJobModel)
-                .where(RelationshipJobModel.id.in_(job_ids))
+                .where(
+                    RelationshipJobModel.id == job.job_id,
+                    RelationshipJobModel.status == "processing",
+                    RelationshipJobModel.updated_at == job.claimed_at,
+                )
                 .values(
-                    status="completed",
-                    updated_at=datetime.now(UTC),
-                    error_category=None,
+                    attempts=attempts,
+                    status="failed" if attempts >= self._max_attempts else "pending",
+                    next_attempt_at=now + timedelta(seconds=30 * attempts),
+                    updated_at=now,
+                    error_category=error_category[:64],
                 )
             )
-
-    async def fail(self, job_id: int, error_category: str) -> None:
-        now = datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
-            row = await session.get(RelationshipJobModel, job_id)
-            if row is None:
-                return
-            row.attempts += 1
-            row.status = "failed" if row.attempts >= self._max_attempts else "pending"
-            row.next_attempt_at = now + timedelta(seconds=30 * row.attempts)
-            row.updated_at = now
-            row.error_category = error_category[:64]
