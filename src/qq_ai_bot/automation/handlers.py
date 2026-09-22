@@ -442,7 +442,7 @@ class AutomationCapabilityHandlers:
         if not emoji_id:
             selected = await selector.select(
                 EmojiSelectionRequest(
-                    actor_user_id=context.creator_user_id,
+                    private_peer_user_id=user_id,
                     group_id=group_id,
                     reply_text="",
                     goal=str(arguments.get("intended_tone") or "自然发送一个合适的表情"),

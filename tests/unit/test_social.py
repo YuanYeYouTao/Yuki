@@ -874,8 +874,11 @@ async def test_send_message_media_uses_same_receipt_and_no_replay(
 
 
 @pytest.mark.asyncio
-async def test_chat_agent_sends_only_via_explicit_tool(database: Database, tmp_path: Path) -> None:
+async def test_chat_agent_sends_only_via_explicit_tool(
+    database: Database, tmp_path: Path, monkeypatch
+) -> None:
     import json
+    from unittest.mock import AsyncMock
 
     from tests.conftest import MemorySender, build_harness, make_settings
     from tests.support.social_identity_cases import social_env
@@ -906,7 +909,7 @@ async def test_chat_agent_sends_only_via_explicit_tool(database: Database, tmp_p
                     ToolCall(
                         "send-step",
                         ToolFunction(
-                            "send_message", json.dumps({"text": "第一步完成\n第二步完成"})
+                            "send_message", json.dumps({"text": "#62052>\n第一步完成\n第二步完成"})
                         ),
                     ),
                 ),
@@ -918,6 +921,8 @@ async def test_chat_agent_sends_only_via_explicit_tool(database: Database, tmp_p
         database, make_settings(database.url, enabled_groups_csv="20001"), provider
     )
     chat = harness.processor._chat
+    finish_memory = AsyncMock(wraps=chat._finish_memory_turn)
+    monkeypatch.setattr(chat, "_finish_memory_turn", finish_memory)
     chat._tools.social_service = env.service
     chat._agent_runner.main_contract = MainAgentContract(chat, ShortState(env.store))
     sender = MemorySender()
@@ -945,6 +950,7 @@ async def test_chat_agent_sends_only_via_explicit_tool(database: Database, tmp_p
         "send_group_msg",
     ]
     assert not sender.messages
+    assert finish_memory.await_args.kwargs["delivered_text"] == "第一步完成\n第二步完成"
     assert await harness.relationship_jobs.pending_count() == 1
 
 

@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.exc import IntegrityError
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.domain.messages import ChatMessage, ToolCall
-from qq_ai_bot.runtime.work_journal import WorkJournal, decode_transcript
+from qq_ai_bot.runtime.work_journal import (
+    JournalUnavailable,
+    WorkJournal,
+    decode_transcript,
+    encode_transcript,
+)
 from qq_ai_bot.runtime.work_repository import WorkCapacityError, WorkConflict
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 
@@ -31,10 +37,12 @@ class WorkSession:
         self.sequence = 0
         self.recovered_delivery: str | None = None
         self.progress: dict[str, Any] = {}
-        self.initial: TurnTranscript | None = None
+        self.compaction_anchor: TurnTranscript | None = None
         self.handoff_work_id: str | None = None
 
-    async def restore(self, initial: TurnTranscript) -> TurnTranscript:
+    async def restore(
+        self, initial: TurnTranscript, *, compaction_brief: ChatMessage | None = None
+    ) -> TurnTranscript:
         control = self.control
         async with control.repository.database.sessions() as session:
             source = await session.get(CanonicalConversationModel, control.lease.conversation_id)
@@ -52,7 +60,25 @@ class WorkSession:
                 {"from": loaded.previous_chain, "to": initial.chain_id, "reason": loaded.reason}
             ]
         self.transcript = initial
-        self.initial = initial
+        self.compaction_anchor = _compaction_anchor(initial, compaction_brief)
+        if loaded and loaded.reason == "contract_changed":
+            # New static contract, original task. A fresh wakeup is not a replacement
+            # for the task that owned the previous chain.
+            saved_anchor = _decode_compaction_anchor(loaded.compaction_anchor)
+            if saved_anchor is None:
+                raise JournalUnavailable("work_compaction_anchor_unavailable")
+            original_brief = saved_anchor.request().messages[-1]
+            self.compaction_anchor = _compaction_anchor(initial, original_brief)
+            initial.append(
+                replace(
+                    original_brief,
+                    content=(
+                        "[原工作初始资料：仅保留原目标和当时资料，不代表当前权限或状态；"
+                        "当前有效授权以新合同和实时执行核验为准。]\n"
+                        + (original_brief.content or "")
+                    ),
+                )
+            )
         if not row and control.current and control.current["model_requests"]:
             evidence = json.loads(control.current["checkpoint_json"]).get("execution_evidence", [])
             control.known_effects = list(evidence)
@@ -70,6 +96,10 @@ class WorkSession:
             value = json.loads(row["payload_json"])
             self.transcript = decode_transcript(value["transcript"])
             metadata = value.get("metadata", {})
+            saved_anchor = metadata.get("compaction_anchor")
+            # Existing journals without an explicit task anchor remain resumable,
+            # but cannot safely infer a task from historical user messages.
+            self.compaction_anchor = _decode_compaction_anchor(saved_anchor)
             self.handoff_work_id = metadata.get("handoff_work_id")
             self.progress = dict(metadata.get("progress", {}))
             self.sequence = int(metadata.get("sequence", 0))
@@ -143,15 +173,13 @@ class WorkSession:
     async def compact(self, summary: str) -> TurnTranscript:
         if not summary.strip() or len(summary.encode()) > 65536:
             raise ValueError("invalid_worker_compaction_summary")
-        assert self.transcript is not None and self.initial is not None
+        assert self.transcript is not None
+        self.require_compaction_anchor()
+        assert self.compaction_anchor is not None
         previous = self.transcript.chain_id
-        # Stable system contract and original task brief survive verbatim.
-        initial_messages = self.initial.request().messages
-        boundary = next(
-            (index + 1 for index, message in enumerate(initial_messages) if message.role == "user"),
-            len(initial_messages),
-        )
-        self.transcript = TurnTranscript(initial_messages[:boundary])
+        # Explicit task anchor is immutable across resumes and independent of
+        # conversation-history layout or this activation's newly composed state.
+        self.transcript = TurnTranscript(self.compaction_anchor.request().messages)
         self.transcript.append(
             ChatMessage(
                 role="user",
@@ -179,6 +207,10 @@ class WorkSession:
         ][-64:]
         await self.save("paired")
         return self.transcript
+
+    def require_compaction_anchor(self) -> None:
+        if self.compaction_anchor is None:
+            raise JournalUnavailable("work_compaction_anchor_unavailable")
 
     def call_key(self, call_id: str) -> str:
         assert self.transcript is not None
@@ -210,6 +242,9 @@ class WorkSession:
                     "ending": self.control.ending,
                     "progress": self.progress,
                     "handoff_work_id": self.handoff_work_id,
+                    "compaction_anchor": encode_transcript(self.compaction_anchor)
+                    if self.compaction_anchor is not None
+                    else None,
                 },
             )
         except IntegrityError as exc:
@@ -275,20 +310,65 @@ class WorkSession:
         try:
             result = await invoke()
         except BaseException as exc:
-            from qq_ai_bot.runtime.activation_outcome import DeliveryDeferred
-
             try:
                 await control.repository.record_effect(
                     key,
-                    "failed" if isinstance(exc, DeliveryDeferred) else "unknown",
-                    {
-                        "error": "never_dispatched"
-                        if isinstance(exc, DeliveryDeferred)
-                        else "execution_interrupted"
-                    },
+                    "unknown",
+                    {"error": "execution_interrupted"},
                 )
             except Exception as secondary:
                 exc.add_note(f"effect receipt persistence deferred: {type(secondary).__name__}")
             raise
         await control.repository.record_effect(key, "accepted", {"result": result})
         return result
+
+
+def _decode_compaction_anchor(value: object) -> TurnTranscript | None:
+    if value is None:
+        return None
+    try:
+        if not isinstance(value, dict):
+            raise ValueError("invalid anchor object")
+        items = value["items"]
+        if (
+            not isinstance(items, list)
+            or not items
+            or type(value["messages_count"]) is not int
+            or value["messages_count"] != len(items)
+            or not isinstance(value["chain_id"], str)
+            or not value["chain_id"]
+            or value.get("continuation") is not None
+            or any(not isinstance(item, dict) or item.get("kind") != "message" for item in items)
+        ):
+            raise ValueError("invalid anchor transcript")
+        anchor = decode_transcript(value)
+        messages = anchor.request().messages
+        if messages[-1].role != "user" or any(
+            message.role not in {"system", "developer"} for message in messages[:-1]
+        ):
+            raise ValueError("invalid anchor roles")
+        if any(
+            (message.content is not None and not isinstance(message.content, str))
+            or message.tool_calls
+            or message.tool_call_id is not None
+            or message.response_item is not None
+            or message.reasoning_content is not None
+            for message in messages
+        ):
+            raise ValueError("invalid anchor message")
+        return anchor
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
+        raise JournalUnavailable("work_compaction_anchor_corrupt") from exc
+
+
+def _compaction_anchor(initial: TurnTranscript, brief: ChatMessage | None) -> TurnTranscript | None:
+    if brief is None:
+        return None
+    if brief.role != "user" or brief.tool_calls or brief.tool_call_id or brief.response_item:
+        raise ValueError("invalid_work_compaction_brief")
+    fixed: list[ChatMessage] = []
+    for message in initial.request().messages:
+        if message.role not in {"system", "developer"}:
+            break
+        fixed.append(message)
+    return TurnTranscript((*fixed, brief))

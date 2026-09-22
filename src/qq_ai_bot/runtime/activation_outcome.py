@@ -35,14 +35,6 @@ class ExitReason(StrEnum):
     CANCELLED = "cancelled"
 
 
-class DeliveryDeferred(RuntimeError):
-    """The intent is durable but has definitely not entered the gateway."""
-
-    def __init__(self, message: str, *, not_before: float = 0) -> None:
-        super().__init__(message)
-        self.not_before = not_before
-
-
 class WorkActivationHandled(RuntimeError):
     """An owned activation has already committed its recovery decision."""
 
@@ -124,6 +116,4 @@ def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFa
             isinstance(exc, (LLMTimeoutError, LLMUnavailableError)),
             diagnostics=exc.diagnostics,
         )
-    if isinstance(exc, DeliveryDeferred):
-        return RuntimeFailure("delivery_deferred", "delivery", False, "not_dispatched")
     return RuntimeFailure(type(exc).__name__, stage)

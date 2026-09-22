@@ -666,39 +666,25 @@ class MainAgentBackend(AgentToolBackend):
                         }
                     )
                     sent_target = receipt.get("target")
-                    sent_text = parsed.get("text")
-                    text_accepted = (
-                        accepted > 0
+                    deliveries = (
+                        parts
                         if isinstance(parts, list)
-                        else (
-                            isinstance(caption, dict) and caption.get("status") == "succeeded"
-                            if isinstance(file, dict)
-                            else receipt.get("status") == "succeeded"
-                        )
+                        else [caption]
+                        if isinstance(file, dict)
+                        else [receipt]
                     )
-                    if (
-                        text_accepted
-                        and isinstance(sent_text, str)
-                        and sent_text.strip()
-                        and isinstance(sent_target, dict)
-                        and sent_target == expected
-                    ):
-                        if isinstance(parts, list):
-                            from qq_ai_bot.services.message_splitter import (
-                                OutboundMessageSplitter,
-                            )
-
-                            chunks = OutboundMessageSplitter.render(
-                                sent_text,
-                                runtime=config,
-                            )
-                            self.sent_current_texts.extend(
-                                chunk
-                                for chunk, part in zip(chunks, parts, strict=False)
-                                if part.get("status") == "succeeded"
-                            )
-                        else:
-                            self.sent_current_texts.append(sent_text)
+                    if isinstance(sent_target, dict) and sent_target == expected:
+                        # Only the confirmed ledger projection knows what survived
+                        # sanitization/splitting/speech preparation and reached QQ.
+                        # Raw tool arguments cannot reconstruct delivery evidence.
+                        self.sent_current_texts.extend(
+                            part["delivered_text"]
+                            for part in deliveries
+                            if isinstance(part, dict)
+                            and part.get("status") == "succeeded"
+                            and isinstance(part.get("delivered_text"), str)
+                            and part["delivered_text"].strip()
+                        )
                 tooling = config.tooling
                 mcp = config.mcp
                 is_mcp = effective_descriptor.trust_source is CapabilityTrustSource.MCP

@@ -21,6 +21,28 @@
 
 完整签名见 [Facade API Reference](api-reference/facades.md)。每次调用仍会检查当前批准权限；持有一个 Python 属性不等于拥有调用权限。
 
+## 显式消息投递与回执
+
+`messages.send_*`、`onebot.send_*` 与高权限 `call_mutating_action` 的
+`send_private_msg` / `send_group_msg` 使用同一 Host 投递记录。纯文本及消息段中的 `text`
+先移除控制字符和内部历史前缀，净化后的文字同时用于投递和新账本；已有历史不回写，
+显式 `at`、`reply` 和媒体消息段不改成文本。净化后没有可发送内容时拒绝发送。
+`send_msg` 只接受明确且唯一的目标，归一到上述发送路径；合并转发的
+`send_private_forward_msg`、`send_group_forward_msg`、`send_forward_msg` 尚无同等回执合同，
+当前在发送前明确拒绝，不通过原始动作绕过。其他管理动作保留原有权限与行为。
+
+发送前先持久化执行意图。只有严格有效的网关消息 ID 才确认成功，成功回执和账本在同一
+事务提交；超时、无效回执、取消和提交失败记为 `unknown` / `uncertain=true`，不自动重试，
+并停止该回调后续发送。已提交成功的回执不会因后续唤醒通知失败而降级。
+
+每个显式发送调用使用独立序号，相同正文主动调用两次仍发送两次，不按正文去重。
+工具调用使用原执行/调用 ID，自动化插件步骤使用原 run/step ID；同一可信身份按原顺序
+重放只读取回执，参数或来源冲突明确拒绝。身份不因批准版本变化而更新，权限仍每次核验。
+其他没有持久 callback ID 的入口仅有本次 Host 回调的唯一身份，重新调用属于新调用，
+**不承诺任意插件回调的跨重启 exactly-once**；插件不得据 `unknown` 自行重跑整个回调。
+没有真实来源、canonical 会话或持久账本时在网络发送前拒绝，不补造入站消息。
+这不是自动最终回复，也不增加插件发送权限或新的 SDK 参数。
+
 Memory V2 的写入仍统一经过 Host `MemoryFactService`。插件 update 创建修正版本，delete 只做显式
 失效；插件不能直接访问 Repository、指定事实状态/authority、物理删除审计记录或绕过当前真实
 调用作用域。冲突审计与管理员 merge/resolve 不属于 Plugin API 3.0。
@@ -89,6 +111,13 @@ await ctx.messages.send_text(turn.text)
 | `web.read` | `read_webpage` |
 
 实际能力取批准权限、真实来源和显式能力参数的交集；省略 `allowed_capabilities` 使用 Host 批准的默认集合。普通用户仍只能读获准人物和会话；目录、查询和媒体输入不改变固定声明。宿主管理、QQ 发送、记忆写入和自动化仍需各自的委托，获得工作环境权限不自动获得这些能力。
+
+已知原生工具差异：主 Agent 的 function 工具清单固定，但支持原生搜索的非 DeepSeek
+Provider 当前会按真实批准能力决定是否提交 native 声明。原生工具由 Provider 执行，不能
+声称由本地执行围栏逐次拦截；不能为统一声明外观给插件补授搜索权限。因此目前不声称
+所有 Provider 的所有入口都具有相同 native 字节合同。这仍是共同架构约束中“原生工具
+部署级固定”尚待单独治理的差异，不是已经通过的验收。当前 DeepSeek 路由剔除 native
+search，不受此项差异影响；不依赖 `tool_choice` 实现权限控制。
 
 ## MCP Facade
 

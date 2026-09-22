@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import json
 import logging
 import random
 import time
@@ -16,6 +17,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 
+from qq_ai_bot.adapters.onebot.sender import parse_onebot_send_receipt
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.conversation.canonical_db_models import PersonActiveRouteModel, SpaceActiveRouteModel
 from qq_ai_bot.domain.conversations import ConversationScope
@@ -35,7 +37,13 @@ from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from qq_ai_bot.services.message_splitter import OutboundMessageSplitter
 from qq_ai_bot.services.renderer import sanitize_model_output
-from qq_ai_bot.social.models import OperationStatus, SocialError, SocialMessage, SocialTarget
+from qq_ai_bot.social.models import (
+    OperationStatus,
+    SocialError,
+    SocialMessage,
+    SocialReceipt,
+    SocialTarget,
+)
 from qq_ai_bot.social.repository import SocialOperationRepository
 from qq_ai_bot.social.transfer import ArtifactTransfer
 
@@ -657,8 +665,8 @@ class SocialService:
                 if args.get("attachment_kind") == "file" and (
                     args.get("text") or args.get("mentions")
                 ):
-                    return await self._file_result(prior.operation_id)
-                return prior.model_dump(mode="json")
+                    return await self._file_result(prior.operation_id, context)
+                return await self._receipt_result(prior, context)
             selected = args.get("target") or {}
             if not isinstance(selected, dict):
                 raise SocialError("invalid_message_arguments")
@@ -807,9 +815,9 @@ class SocialService:
                     payload=args,
                 )
                 return (
-                    await self._file_result(prior.operation_id)
+                    await self._file_result(prior.operation_id, context)
                     if message.attachment_kind == "file" and (message.text or message.mentions)
-                    else prior.model_dump(mode="json")
+                    else await self._receipt_result(prior, context)
                 )
             if self.transfer is None:
                 raise SocialError("artifact_transport_unavailable")
@@ -873,8 +881,15 @@ class SocialService:
                     content=message.text,
                     route_target=route_target,
                 )
-            if context.actor is None or context.runtime_snapshot is None:
+            if context.runtime_snapshot is None:
                 raise SocialError("media_context_unavailable")
+            # Preparation needs the real resolved destination, not a human actor.
+            # Background turns have no actor and cannot manufacture one to send media.
+            media_scope = (
+                ConversationScope.private(route.sender_account_id, route.external_target_id)
+                if target.kind == "person"
+                else ConversationScope.group(route.sender_account_id, route.external_target_id)
+            )
             if message.voice is not None:
                 if self.speech_delivery is None:
                     raise SocialError("speech_unavailable")
@@ -886,7 +901,8 @@ class SocialService:
                 from qq_ai_bot.speech.models import VoiceMode
 
                 prepared = await self.speech_delivery.prepare(
-                    actor=context.actor,
+                    scope=media_scope,
+                    canonical_conversation_id=context.conversation_id,
                     response_text=message.text,
                     runtime=context.runtime_snapshot,
                     token=context.turn_token,
@@ -948,7 +964,7 @@ class SocialService:
                         emotion=message.emoji.emotion,
                         explicit_request=True,
                     ),
-                    actor=context.actor,
+                    scope=media_scope,
                     response_text=message.text,
                     runtime=context.runtime_snapshot,
                 )
@@ -1052,9 +1068,9 @@ class SocialService:
         if receipt.status is not OperationStatus.PREPARED:
             await self._record_work_delivery(receipt)
             return (
-                await self._file_result(receipt.operation_id)
+                await self._file_result(receipt.operation_id, context)
                 if caption or caption_segments
-                else receipt.model_dump(mode="json")
+                else await self._receipt_result(receipt, context)
             )
         async with self._lock:
             current_group_grant = (
@@ -1111,27 +1127,28 @@ class SocialService:
                 current = await self.receipts.get(receipt.operation_id)
                 await self._record_work_delivery(current)
                 return (
-                    await self._file_result(receipt.operation_id)
+                    await self._file_result(receipt.operation_id, context)
                     if caption or caption_segments
-                    else current.model_dump(mode="json")
+                    else await self._receipt_result(current, context)
                 )
         try:
             result = await self._call(route, action, params)
-            reference = (
-                str(result["message_id"])
-                if isinstance(result, dict) and result.get("message_id") is not None
-                else None
-            )
+            reference = None
+            if action in {"send_private_msg", "send_group_msg"}:
+                reference = parse_onebot_send_receipt(result).platform_message_id
             file_upload = action in {"upload_private_file", "upload_group_file"}
-            if (
-                file_upload
-                and reference is None
-                and isinstance(result, dict)
-                and result.get("file_id")
-            ):
-                reference = "file:" + str(result["file_id"])
-            if content is not None and reference is None and not file_upload:
-                raise SocialError("missing_send_receipt")
+            if file_upload and isinstance(result, dict):
+                # Upload completion is independent of a retractable chat receipt.
+                # Only retain genuine scalar IDs; no fabricated handles from objects.
+                for field_name, prefix in (("message_id", ""), ("file_id", "file:")):
+                    candidate = result.get(field_name)
+                    if (
+                        isinstance(candidate, (str, int))
+                        and not isinstance(candidate, bool)
+                        and str(candidate).strip()
+                    ):
+                        reference = prefix + str(candidate).strip()
+                        break
             appended = None
             async with self.database.immediate_session() as session:
                 if content is not None:
@@ -1170,8 +1187,6 @@ class SocialService:
                     platform_reference=reference,
                     session=session,
                 )
-            if appended is not None:
-                self.writer.notify_committed(appended)
         except BaseException as exc:
             try:
                 async with self.database.sessions() as session, session.begin():
@@ -1186,6 +1201,14 @@ class SocialService:
                 raise exc from secondary
             if not isinstance(exc, Exception):
                 raise
+        else:
+            if appended is not None:
+                try:
+                    self.writer.notify_committed(appended)
+                except Exception:
+                    # The send and ledger already committed. A wakeup failure
+                    # cannot downgrade success or create a retryable delivery.
+                    logging.getLogger(__name__).exception("social_post_commit_notify_failed")
         completed = await self.receipts.get(receipt.operation_id)
         await self._record_work_delivery(completed)
         if caption or caption_segments:
@@ -1231,8 +1254,8 @@ class SocialService:
                                     error_category=type(exc).__name__[:64],
                                     session=session,
                                 )
-            return await self._file_result(receipt.operation_id)
-        return completed.model_dump(mode="json")
+            return await self._file_result(receipt.operation_id, context)
+        return await self._receipt_result(completed, context)
 
     @staticmethod
     async def _record_work_delivery(receipt: Any) -> None:
@@ -1248,12 +1271,83 @@ class SocialService:
         except Exception:
             logging.getLogger(__name__).exception("social_work_delivery_record_failed")
 
-    async def _file_result(self, operation_id: str) -> dict[str, Any]:
+    async def _receipt_result(
+        self, receipt: SocialReceipt, context: SocialContext
+    ) -> dict[str, Any]:
+        """Project existing confirmed ledger content; never rebuild events or ownership."""
+        result = receipt.model_dump(mode="json")
+        if receipt.status is not OperationStatus.SUCCEEDED or receipt.action not in {
+            "send_message",
+            "send_file_caption",
+        }:
+            return result
+        from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+        from qq_ai_bot.social.db_models import SocialOperationModel
+
+        try:
+            async with self.database.sessions() as session:
+                operation = await session.get(SocialOperationModel, receipt.operation_id)
+                if operation is None:
+                    return result
+                events = list(
+                    await session.scalars(
+                        select(ChatEventModel)
+                        .join(
+                            CanonicalConversationModel,
+                            CanonicalConversationModel.id
+                            == ChatEventModel.canonical_conversation_id,
+                        )
+                        .where(
+                            ChatEventModel.platform_message_id
+                            == (
+                                receipt.platform_reference
+                                or f"social-operation:{receipt.operation_id}"
+                            ),
+                            ChatEventModel.author_presence_id == receipt.presence_id,
+                            ChatEventModel.direction == "outbound",
+                            ChatEventModel.author_kind == "yuki",
+                            ChatEventModel.event_kind == "message",
+                            ChatEventModel.suppression_status == "keeper",
+                            ChatEventModel.origin == context.origin,
+                            ChatEventModel.caused_by_event_id == context.caused_by_event_id,
+                            ChatEventModel.occurred_at >= operation.created_at,
+                            ChatEventModel.occurred_at <= operation.updated_at,
+                            (CanonicalConversationModel.space_id == str(receipt.target.id))
+                            if receipt.target.kind == "space"
+                            else (CanonicalConversationModel.person_id == str(receipt.target.id)),
+                        )
+                        .limit(2)
+                    )
+                )
+            if len(events) != 1:
+                return result
+            event = events[0]
+            segments = json.loads(event.segments_json)
+            # Speech's spoken text is its visible content. File/image placeholders
+            # are ledger descriptions, not text the Agent actually sent.
+            text = (
+                event.content
+                if any(part.get("type") == "record" for part in segments)
+                else "".join(
+                    part.get("data", {}).get("text", "")
+                    for part in segments
+                    if part.get("type") == "text"
+                )
+            )
+            result.update(event_id=event.id, delivered_text=text)
+        except Exception:
+            # A projection read must not downgrade a durable send or tempt a retry.
+            logging.getLogger(__name__).exception("social_receipt_content_projection_failed")
+        return result
+
+    async def _file_result(self, operation_id: str, context: SocialContext) -> dict[str, Any]:
         file = await self.receipts.get(operation_id)
         caption = await self.receipts.find(f"social-caption:{operation_id}", "caption")
-        result = file.model_dump(mode="json")
-        result["file"] = file.model_dump(mode="json")
-        result["caption"] = caption.model_dump(mode="json") if caption else {"status": "not_sent"}
+        result = await self._receipt_result(file, context)
+        result["file"] = dict(result)
+        result["caption"] = (
+            await self._receipt_result(caption, context) if caption else {"status": "not_sent"}
+        )
         if file.status is OperationStatus.SUCCEEDED and (
             caption is None or caption.status is not OperationStatus.SUCCEEDED
         ):

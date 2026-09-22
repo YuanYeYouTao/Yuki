@@ -64,7 +64,7 @@ class WorkDeliverySender:
         key = control.session.call_key(f"final-{self.index}")
         if not self.planned:
             await self.plan([message])
-        # The whole plan already owns its slots; these receipts track individual sends.
+        # The durable plan identifies the sequence; these receipts track individual sends.
         await control.session.save("delivery")
         if not await control.repository.prepare_effect(
             control.lease, control.current["id"], key, "final"

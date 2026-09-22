@@ -813,7 +813,8 @@ async def test_new_epoch_retains_execution_evidence_and_budget(database, tmp_pat
     control = WorkControl(repo, lease, "epoch", {"trigger_event_id": 123}, validate)
     control.current = await repo.accept(lease, source_key="epoch", source={}, goal="draw")
     first = WorkSession(control, "old-contract")
-    await first.restore(TurnTranscript((ChatMessage("user", "draw"),)))
+    brief = ChatMessage("user", "draw")
+    await first.restore(TurnTranscript((brief,)), compaction_brief=brief)
     await first.save("paired")
     await repo.checkpoint(lease, control.current["id"], None, models=3, tools=2, active_seconds=61)
     control.known_effects = [{"run_id": "original", "pending": True, "ok": True}]
