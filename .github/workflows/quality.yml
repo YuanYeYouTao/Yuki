@@ -163,6 +163,11 @@ jobs:
         run: |
           uv run pytest -q plugins/github-monitor/tests
           uv run qq-ai-bot-cli plugin test plugins/github-monitor
+      - name: Subscription Monitor plugin contract and behavior
+        run: |
+          uv run pytest -q plugins/subscription-monitor/tests
+          uv run mypy --follow-imports=silent plugins/subscription-monitor/subscription_monitor
+          uv run qq-ai-bot-cli plugin test plugins/subscription-monitor
       - name: Alembic fresh install
         env:
           DATABASE_URL: sqlite+aiosqlite:///./data/ci.db

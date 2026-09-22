@@ -47,6 +47,10 @@ Plugin API `3.0` 删除了隐式修改下一条回复的队列接口。声明 1.
 
 仓库中的 [`com.example.echo`](../../examples/plugins/com.example.echo/README.md) 是可运行的无网络参考实现，覆盖工具、命令、事件、Prompt、普通用户自动化、配置和 KV。
 
+订阅类插件可参考 [GitHub Monitor](../../plugins/github-monitor/README.md) 和
+[Subscription Monitor](../../plugins/subscription-monitor/README.md)。后者展示如何轮询 feed、
+持久化增量事件，并将订阅条件交给统一主 Agent 判断，通过 `send_message` 通知。
+
 ## 版本标识
 
 | 标识 | 当前值 | 用途 |
