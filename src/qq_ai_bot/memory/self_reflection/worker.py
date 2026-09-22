@@ -18,7 +18,10 @@ from qq_ai_bot.memory.self_reflection.control import (
 )
 from qq_ai_bot.memory.self_reflection.models import SelfReflectionHealth
 from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
-from qq_ai_bot.memory.self_reflection.service import SelfReflectionService
+from qq_ai_bot.memory.self_reflection.service import (
+    SelfReflectionMutationError,
+    SelfReflectionService,
+)
 from qq_ai_bot.model_runtime.structured import StructuredTaskError
 
 logger = logging.getLogger(__name__)
@@ -321,6 +324,8 @@ class SelfReflectionWorker:
 
 
 def _error_category(exc: BaseException) -> str:
+    if isinstance(exc, SelfReflectionMutationError):
+        return f"{exc.stage}:{exc.cause_category}"[:64]
     if isinstance(exc, StructuredTaskError):
         return {
             "schema_validation": "json_schema_validation",

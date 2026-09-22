@@ -48,6 +48,13 @@ class MemoryConflictCandidateResolver:
         )
         relevance: dict[int, float] = {}
         rows: dict[int, MemoryFact] = {row.id: row for row in exact_rows}
+        global_cover = await self._repository.find_global_self_cover(
+            fact,
+            normalized_content=normalized,
+        )
+        if global_cover is not None:
+            rows.setdefault(global_cover.id, global_cover)
+            relevance[global_cover.id] = 1.0
         if self._retriever is not None:
             target = self._target(fact)
             query_text = normalize_query_text(
@@ -71,8 +78,18 @@ class MemoryConflictCandidateResolver:
             except MemoryRetrievalError:
                 retrieved = None
             if retrieved is not None:
+                exact_target = {
+                    row.id: row
+                    for row in await self._repository.get_active_for_exact_target(
+                        target,
+                        tuple(hit.fact.id for hit in retrieved.hits),
+                    )
+                }
                 for hit in retrieved.hits:
-                    rows.setdefault(hit.fact.id, hit.fact)
+                    candidate = exact_target.get(hit.fact.id)
+                    if candidate is None:
+                        continue
+                    rows.setdefault(candidate.id, candidate)
                     relevance[hit.fact.id] = max(
                         relevance.get(hit.fact.id, 0.0),
                         max(0.0, 1.0 - ((hit.rank - 1) / max(1, bounded_limit))),
