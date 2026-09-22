@@ -63,8 +63,8 @@ class ModelInvocationRepository:
             created_at=datetime.now(UTC),
         )
         async with self._database.sessions() as session, session.begin():
-            session.add(row)
             await stamp_conversation_correlation(session, row, canonical_conversation_id)
+            session.add(row)
             await session.flush()
             return self._record(row)
 

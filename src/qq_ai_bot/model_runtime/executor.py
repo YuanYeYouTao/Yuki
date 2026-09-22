@@ -9,7 +9,9 @@ import logging
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, replace
-from typing import Protocol
+from typing import Any, Protocol
+
+from sqlalchemy.exc import SQLAlchemyError
 
 from qq_ai_bot.domain.messages import ChatRequest, ChatResponse, minimum_reasoning_effort
 from qq_ai_bot.llm.base import LLMUnsupportedFeatureError
@@ -288,6 +290,7 @@ class TaskModelExecutor:
         self._compaction_timeout_seconds = compaction_timeout_seconds
         self._self_reflection_timeout_seconds = self_reflection_timeout_seconds
         self._invocations = invocations
+        self._invocation_record_failures = 0
         self._semaphore = (
             asyncio.Semaphore(max_concurrency) if max_concurrency is not None else None
         )
@@ -444,11 +447,12 @@ class TaskModelExecutor:
             )
         except Exception as exc:
             if self._invocations is not None:
-                await self._invocations.record(
+                await self._record_invocation(
                     task=task,
                     profile_id=profile.id,
                     provider=profile.provider,
                     model=profile.model,
+                    original_failure=exc,
                     success=False,
                     prompt_tokens=None,
                     completion_tokens=None,
@@ -482,7 +486,7 @@ class TaskModelExecutor:
                 len(response.citations),
             )
         if self._invocations is not None:
-            await self._invocations.record(
+            await self._record_invocation(
                 task=task,
                 profile_id=profile.id,
                 provider=profile.provider,
@@ -497,6 +501,30 @@ class TaskModelExecutor:
                 canonical_conversation_id=canonical_conversation_id,
             )
         return response
+
+    async def _record_invocation(
+        self, *, original_failure: Exception | None = None, **values: Any
+    ) -> None:
+        if self._invocations is None:
+            return
+        try:
+            await self._invocations.record(**values)
+        except Exception as exc:
+            # Telemetry is not the durable execution/HTTP budget. A database
+            # outage must not discard a successful provider response; when the
+            # provider failed, retain that original exception even if auditing
+            # has an independent bug. Never retry an uncertain telemetry commit.
+            if original_failure is None and not isinstance(exc, SQLAlchemyError):
+                raise
+            self._invocation_record_failures += 1
+            logger.error(
+                "model_invocation_record_failed task=%s category=%s provider_success=%s "
+                "coverage_incomplete=true record_failures_in_process=%d",
+                values["task"].value,
+                type(exc).__name__,
+                values["success"],
+                self._invocation_record_failures,
+            )
 
     def prompt_shape_metrics(self) -> dict[str, int]:
         return {

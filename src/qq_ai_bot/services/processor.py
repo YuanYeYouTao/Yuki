@@ -61,7 +61,12 @@ from qq_ai_bot.persistence.repositories import (
 )
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from qq_ai_bot.plugin_host.direct_command_router import DirectCommandMatch
-from qq_ai_bot.runtime.activation_outcome import WorkActivationHandled, WorkRecoveryDeferred
+from qq_ai_bot.runtime.activation_outcome import (
+    WorkActivationHandled,
+    WorkRecoveryDeferred,
+    classify_failure,
+    failure_status_text,
+)
 from qq_ai_bot.runtime.keys import ResolvedMemoryScope
 from qq_ai_bot.runtime.observability import (
     RuntimeTurnCorrelation,
@@ -1091,7 +1096,7 @@ class MessageProcessor:
             sent = await self._send_text(
                 message,
                 sender,
-                "AI 服务暂时不可用，请稍后重试。",
+                failure_status_text(classify_failure(exc)),
                 turn_snapshot=turn_snapshot,
             )
             result = ProcessResult(True, int(sent), "llm_failure")
@@ -1104,7 +1109,7 @@ class MessageProcessor:
             sent = await self._send_text(
                 message,
                 sender,
-                "AI 服务暂时不可用，请稍后重试。",
+                failure_status_text(classify_failure(exc)),
                 turn_snapshot=turn_snapshot,
             )
             result = ProcessResult(True, int(sent), "validation_failure")
@@ -1120,7 +1125,7 @@ class MessageProcessor:
             sent = await self._send_text(
                 message,
                 sender,
-                "AI 服务暂时不可用，请稍后重试。",
+                failure_status_text(classify_failure(exc)),
                 turn_snapshot=turn_snapshot,
             )
             result = ProcessResult(True, int(sent), "internal_failure")
