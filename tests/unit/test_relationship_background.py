@@ -4,6 +4,7 @@ import asyncio
 import json
 from datetime import timedelta
 
+import pytest
 from sqlalchemy import select, update
 from tests.conftest import make_settings
 from tests.unit.test_relationships import append_user_event
@@ -98,6 +99,26 @@ async def test_relationship_waits_for_attribution_instead_of_preempting(database
         release.set()
         await asyncio.wait_for(asyncio.gather(attribution, relationship), 2)
         assert order == ["attribution-start", "attribution-end", "relationship"]
+        # A genuine foreground request still preempts attribution promptly.
+        started.clear()
+        release.clear()
+        attribution = asyncio.create_task(
+            models.execute(
+                ModelTask.MEMORY_ATTRIBUTION,
+                ChatRequest(messages=(ChatMessage(role="user", content="attribution"),)),
+                priority=ModelExecutionPriority.BEST_EFFORT_BACKGROUND,
+            )
+        )
+        await asyncio.wait_for(started.wait(), 2)
+        await asyncio.wait_for(
+            models.execute(
+                ModelTask.CHAT_AGENT,
+                ChatRequest(messages=(ChatMessage(role="user", content="foreground"),)),
+            ),
+            2,
+        )
+        with pytest.raises(BackgroundModelPreempted):
+            await attribution
     finally:
         for task in (attribution, relationship):
             if task is not None:
