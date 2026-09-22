@@ -184,6 +184,7 @@ class LLMRelationshipEvaluator:
                 allow_text_json=True,
             ),
             background=True,
+            translate_cancellation=False,
         )
         known = {job.job_id: job for job in jobs}
         result: dict[int, RelationshipEvaluation] = {}

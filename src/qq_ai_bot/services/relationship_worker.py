@@ -12,7 +12,9 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.relationships import RelationshipEvaluation
 from qq_ai_bot.llm.base import LLMError
 from qq_ai_bot.model_runtime.executor import BackgroundModelPreempted
+from qq_ai_bot.persistence.relationship_repository import RelationshipClaimLost
 from qq_ai_bot.persistence.repositories import (
+    RelationshipJobRecord,
     RelationshipJobRepository,
     RelationshipRepository,
 )
@@ -57,7 +59,9 @@ class RelationshipWorker:
         self._stop.set()
         self._wake.set()
         if self._task is not None:
-            await self._task
+            self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
+            self._task = None
 
     async def enqueue(
         self,
@@ -102,6 +106,18 @@ class RelationshipWorker:
         if not jobs:
             return 0
         try:
+            return await self._process_claimed(jobs)
+        except asyncio.CancelledError:
+            # Cancellation is not an evaluation failure. Release only surviving
+            # claims; already committed scores and newer owners stay untouched.
+            try:
+                await self._jobs.defer(jobs)
+            except (SQLAlchemyError, OSError, RuntimeError) as exc:
+                logger.warning("relationship_cancel_release_failed", exc_info=exc)
+            raise
+
+    async def _process_claimed(self, jobs: tuple[RelationshipJobRecord, ...]) -> int:
+        try:
             evaluations = await self._evaluator.evaluate(jobs)
         except BackgroundModelPreempted:
             await self._jobs.defer(jobs)
@@ -111,7 +127,7 @@ class RelationshipWorker:
             category = type(exc).__name__
             logger.warning("relationship_batch_failed exception_category=%s", category)
             for job in jobs:
-                await self._jobs.fail(job.job_id, category)
+                await self._jobs.fail(job, category)
             return 0
 
         completed = 0
@@ -139,9 +155,11 @@ class RelationshipWorker:
                     max_auto_delta=runtime.relationship.max_auto_delta,
                     daily_positive_cap=runtime.relationship.daily_positive_cap,
                     daily_negative_cap=runtime.relationship.daily_negative_cap,
+                    claim=job,
                 )
-                await self._jobs.complete((job.job_id,))
                 completed += 1
+            except RelationshipClaimLost:
+                logger.info("relationship_claim_lost job_id=%d", job.job_id)
             except (SQLAlchemyError, OSError, RuntimeError, TypeError, ValueError) as exc:
                 category = type(exc).__name__
                 logger.warning(
@@ -149,5 +167,5 @@ class RelationshipWorker:
                     job.job_id,
                     category,
                 )
-                await self._jobs.fail(job.job_id, category)
+                await self._jobs.fail(job, category)
         return completed
