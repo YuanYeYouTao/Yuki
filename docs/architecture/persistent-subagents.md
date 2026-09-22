@@ -1,14 +1,15 @@
 # 持久工作者与共享预算
 
-异常、分段、交付与检查点容量统一遵循 [Runtime 恢复合同](../operations/runtime-recovery-2026-09-13.md)。
+异常、分段、交付与检查点容量遵循 [主 Agent 执行与恢复合同](main-agent-runtime.md)。
 不再维护子 Agent 独有的 SQLite BUSY 重试或旧沙箱进度预算。
 
 主 Yuki 用 `subagent_start` 登记并派出子任务，继续处理聊天；通过
 `subagent_message` 补充要求，通过 `subagent_control` 查询、取消或恢复同一目标。
 派生本身已经登记工作，工作者无需再次 `task_control.accept`。
 
-用户要求继续聊天不表示取消后台工作。有未结束的子任务时，`task_control.answer`
-返回聊天正文并让父任务等待；自动收尾不能将父任务标为失败，暂停的子任务也保留恢复入口。
+用户要求继续聊天不表示取消后台工作。主 Yuki 发言使用 `send_message`；
+`task_control.answer` 已不在公开工具 action 中。有未结束的子任务时，父任务保持等待，
+自动收尾不能将父任务标为失败，暂停的子任务也保留恢复入口。
 确需取消时先显式取消对应子任务，再结束父任务。
 
 SQLite BUSY/LOCKED 触发有界原链重排，保留执行回执、检查点和预算；不能据此重发终端命令。
@@ -17,7 +18,8 @@ SQLite BUSY/LOCKED 触发有界原链重排，保留执行回执、检查点和�
 
 ## 工具与授权
 
-工作者使用代码管理的固定合同和完整的 36 项工作工具，复用主 Agent 的执行器。
+工作者使用代码管理的固定合同和工作工具集合（以 `runtime/subagent_tools.py` 的
+`WORKER_NAMES` 为准），复用主 Agent 的执行器，不在文档中另维护容易过期的工具数量。
 初始资料包包含目标、验收要求、参考文件和建议目录 `/workspace/tasks/<child_id>`。
 目录用于组织文件，不限制共享工作环境。终端修改仍需协商，只有结构化文件编辑有版本检查。
 `workspace_inspect` 通过现有视觉 Provider 检查不可变图片 artifact，输入最多 20 MiB，
@@ -26,7 +28,8 @@ SQLite BUSY/LOCKED 触发有界原链重排，保留执行回执、检查点和�
 工作者能运行代码、安装依赖、发布文件、管理内部服务、使用外部联网工具，
 并沿父任务原有授权读取聊天历史与记忆。不能发送 QQ、撤回、戳人、写长期记忆、
 修改 short_state、创建自动化或递归派生。主 Agent 负责最终交付。
-不修改用户的 `system_prompt.md`。主、子 Agent 保持 Flash，Responses 主链不声明内置联网工具。
+不修改用户的 `system_prompt.md`。工作者默认跟随主 Agent 的模型配置；当前 DeepSeek
+适配层关闭主请求的原生联网声明，这不是所有 Provider 或模型的永久能力结论。
 外部 `web_search` 可通过 [Anthropic 搜索适配器](../deepseek-search-bridge.md) 调用搜索；
 这是工具执行中的独立请求，不切换主链协议或 continuation。
 
@@ -71,11 +74,11 @@ SQLite BUSY/LOCKED 触发有界原链重排，保留执行回执、检查点和�
 定向协议测试直接比较 Chat Completions、DeepSeek Responses 和 OpenAI Responses 的
 真实序列化 `messages/input`、完整工具和原生工具声明，而非只比较哈希。
 覆盖跨段、父子交流、32 次执行、媒体恢复、预算竞争、取消、回执修复和七天归档。
-线上缓存审计使用隔离数据库副本和实际 Flash API，不启动第二个 Bot，不发送 QQ 消息。
+真实缓存审计应使用隔离数据库与选定 Provider 的实际 API，不启动第二个生产 Bot，不发送 QQ 消息。
 生产网关、RSS、Manager 和持久环境必须在更新 Bot 后复核。
 
-部署前停止 Bot 并做一致性数据库及配置备份，再运行 0057 迁移并更新 Bot。
-回退先关闭新派生并收拢任务，保留 0057 数据库、工作文件、执行回执和预算。
-旧 0056 镜像的启动校验不接受 0057；不能直接换回旧镜像，更不能用旧数据库覆盖上线后的写入。
-需要回退代码时使用保留 0057 存储合同的修复镜像。迁移 downgrade 故意不删除新表；
-它本身不是旧代码兼容承诺。
+部署前停止 Bot 并做一致性数据库及配置备份，使用目标镜像执行 `qq-ai-bot-cli init-db`，
+升级至随包 Alembic head 后更新 Bot；0057 是工作者表的历史引入版本，不是当前升级终点。
+回退先关闭新派生并收拢任务，保留当前数据库、工作文件、执行回执和预算。
+恢复镜像必须兼容当前存储合同，不能用旧数据库覆盖上线后的写入；迁移 downgrade
+也不等于旧代码兼容承诺。部署流程见 [当前升级指南](../upgrade-3.8.3.md)。

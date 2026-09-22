@@ -79,8 +79,9 @@ class AutomationCompiler:
             )
             steps = (generate,)
             if delivery is not None:
-                # Generation has no model-facing tools. This is an explicit
-                # persisted DSL step, not a fallback for an Agent final answer.
+                # yuki.generate uses the Main Agent loop too. This remains an
+                # explicit persisted delivery step; it is not deduplicated by
+                # the Agent having already called a send tool.
                 steps += (self._delivery_step(delivery, "${result.text}"),)
             limits = AutomationLimits(
                 agent_budget_managed=True,

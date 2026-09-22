@@ -40,8 +40,14 @@ Runner 在原循环中给一次未送达反馈；再次遗漏则记为失败，�
 模型提供给 `send_message` 的文本在分条、回执准备、媒体生成、网关发送和账本写入之前统一净化；
 内部历史事件前缀不会进入新的可见消息。既有 QQ 消息、原始账本、Rollup 和记忆不追溯改写。
 
-新建 Agentic 自动化由 Agent 自行决定何时调用 `send_message`；生成式自动化没有工具循环，
-保留明确写入脚本的 DSL 发送步骤。历史脚本仍按原 run/step 游标恢复，不能盲目重建或重发。
+Agentic 自动化由 Agent 自行决定何时调用 `send_message`。当前 `yuki.generate` 也转入
+同一个 Agent 循环，并非无工具生成；`generated` 指定投递目标时仍保留显式 DSL 发送步骤，
+该步骤使用生成返回的 text。现有旧脚本发送围栏只匹配 `yuki.agent`，没有覆盖
+`yuki.generate`；因此不能宣称工具发送与 DSL 发送已经统一去重。
+当前自动化 execution ID 叠加 canonical 会话 ID 后，还可能超过 SocialOperation 的
+128 字符来源键限制，使工具发送返回 `invalid_operation`。这与 DSL 重复交付是两个
+独立的存量缺口；修正来源键时也必须核对读取围栏及恢复语义，不能仅截断写入键。
+历史脚本仍按原 run/step 游标恢复，不能盲目重建或重发。
 
 调度器的结构化步骤、执行游标、原有业务集成和发送回执保留；它们不再构成另一套模型工具声明。
 旧存储的 Agent `allowed_capabilities` 元数据由迁移删除；主 Agent 的固定工具合同不读取
