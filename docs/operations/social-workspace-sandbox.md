@@ -3,10 +3,10 @@
 All Yuki Main Agent entrypoints share a sorted function-tool manifest, frozen after
 plugin startup and before background turns for the running deployment. Normal/private/group turns, plugin wakeups,
 plugin generation, scheduled generation and scheduled Agent runs use the same
-schemas, including retry/finalization requests. Core, installed plugin, MCP and
-automation definitions are collected without an event identity. Execution still
-checks the real origin, target, current permission and delegated grant. Identical
-social/workspace/sandbox automation tools reuse their ordinary model-facing name.
+schemas, including retry/finalization requests. Core, installed plugin and MCP definitions are collected without an event identity;
+work control and short-state definitions are added by the same Main Agent contract. Execution still
+checks the real origin, target, current permission and delegated grant. Scheduled Main Agent calls use the ordinary social/workspace/sandbox tool names;
+explicit DSL capability names are not appended to that manifest.
 `request_tools` discovers current availability; it never changes the frozen manifest.
 Restart Bot after changing installed tool definitions to start a new manifest.
 
@@ -53,16 +53,17 @@ Presence; there is no fallback to another account. Other targets and automation
 still require their active route. Target enablement and idempotency apply to both
 paths, with a final connection check before execution. Social sends and pokes have
 no additional per-target or global minute rate limiter.
-Use `subject_ref=current_speaker` for the current sender; `target_id` is a canonical
-UUID, not a QQ number. Attachment IDs require `attachment_kind=image|file`.
+For `send_message`, omit `target` to use the current conversation, or provide a
+structured canonical target. Other social selectors support `subject_ref=current_speaker`;
+`target_id` is a canonical UUID, not a QQ number. Published files use top-level
+`send_message.artifact_id` together with `attachment_kind=image|file`.
 Validation/route failures do not delete already generated workspace artifacts.
-Failed core platform sends remain tool evidence for the normal final answer, rather
-than replacing it with an admin-command error sentence. Remaining tool execution
-is closed for that turn (including uncertain delivery); no automatic resend is added.
-Administrative mutations retain their existing terminal-receipt behavior.
-The same non-terminal failure policy covers social poke and own-message recall;
-it does not weaken administrative mutations. A failed poke cannot replace the
-normal answer with a generic admin failure sentence.
+Social send, poke and recall results return to the Agent as ordinary tool evidence.
+They do not replace its response with a fixed status sentence or automatically close
+the whole loop. Unknown side effects still engage the durable-work execution fence;
+no automatic resend is added. Administrative and memory writes retain their
+applicable mutation/retry restrictions, but their receipts do not automatically
+become user-visible final text.
 
 `poke_person` defaults to the backend's current canonical Space in group turns,
 and to private delivery outside a group. Set `scene=private` to explicitly poke
@@ -118,12 +119,13 @@ change social send permissions or automatically expose files in model prompts.
 
 ## Automation
 
-Capabilities are registered as `social.<tool>`, `workspace.<operation>` and
-`sandbox.<tool>`. Scripts may pass saved result fields to later steps. Existing
-automation delegation and permission revalidation still apply; registration does not
-upgrade old grants. Non-admin delegated social writes remain scoped to the bound
-canonical target, and cannot select another group through poke parameters. A scheduled
-Agent call gets its own invocation identity, not the enclosing DSL step's identity.
+Explicit DSL capabilities use names such as `social.<tool>`, `workspace.<operation>`
+and `sandbox.<tool>`; scripts can pass recorded results to later steps. These names
+are not extra Main Agent declarations. Scheduled Main Agent work instead uses the
+same fixed tools and the creator's current authority as ordinary chat. Restricted
+DSL delegation still checks its bound target and grant; registration cannot expand
+that grant. A scheduled Agent call has its own invocation identity, not the enclosing
+DSL step's identity.
 Sandbox jobs can outlive the five-second synchronous wait: query `get_code_run` and
 use only successful returned artifacts. Polling never reruns code.
 
@@ -149,9 +151,10 @@ may try another accessible connection to that same group without changing any pi
 `find_contacts` includes active QQ binding IDs. Group pokes and mentions resolve an
 explicit `binding_id`, or the account behind an inbound `subject_ref`, or a unique
 active binding. Ambiguous bindings are rejected. Private pokes use the binding of
-the resolved private route and reject conflicting selectors. Ordinary delegated
-group pokes may target known members only inside the automation's bound group;
-private and other-group overrides remain forbidden.
+the resolved private route and reject conflicting selectors. Explicit restricted
+DSL group-poke delegation may target known members only inside
+its bound group; private and other-group overrides remain forbidden for that grant.
+Creator-owned scheduled Main Agent calls use current chat-equivalent authority.
 
 `send_message.mentions` is an array of person selectors with optional
 `binding_id`. Each member is verified against the selected group, then serialized
@@ -162,7 +165,7 @@ between chat and delegated automation within this deployment.
 
 中文：撤回绑定原消息 Presence；成员查询依据真实群连接，不受主动发送路由暂停影响。
 多 QQ Binding 有歧义时拒绝，须明确选择；当前事件引用保留具体 QQ 账号。
-普通群自动化只能在绑定群内戳已认识且确认在群内的人，不能改为私聊或跨群。
+显式受限 DSL 群戳人委托只允许绑定群内目标；定时主 Agent 使用创建者当前聊天权限，不能混同两条授权路径。
 群消息的 `mentions` 生成真实 `at` 段，图片及文件说明均保留结构化 @ 和独立回执。
 
 Social receipts originated in migration 0052; current deployments must apply the

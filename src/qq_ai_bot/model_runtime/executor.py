@@ -713,8 +713,9 @@ class TaskModelExecutor:
 
     def capabilities(self, task: ModelTask) -> frozenset[ModelCapability]:
         _route, profile = self._router.route(task)
-        # DeepSeek V4.1 silently ignores built-in web tools, including old Flash aliases.
-        # Report the effective capability so the normal Tavily fallback activates.
+        # This adapter disables native web declarations for every DeepSeek profile.
+        # External search remains an explicit WebModule backend configuration;
+        # this capability mask does not route a request or select a fallback.
         if profile.provider.casefold() == "deepseek":
             return profile.capabilities - {ModelCapability.NATIVE_WEB_SEARCH}
         return profile.capabilities

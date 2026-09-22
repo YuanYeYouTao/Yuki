@@ -38,7 +38,7 @@ class _MCPArguments(BaseModel):
 
 
 class MCPAutomationBridge:
-    """Expose explicitly selected MCP tools to scheduled DSL and delegated Agents."""
+    """Expose explicitly selected MCP tools to scheduled DSL steps."""
 
     def __init__(
         self,

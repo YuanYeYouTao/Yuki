@@ -53,13 +53,13 @@ relationship.adjust(user_id, *, affection_delta=0, trust_delta=0,
 融合。插件不能选择 Provider/profile、获取原始向量、提交 FTS 语法、通过关键词改变
 `subject_id`，也不会在无匹配时回退加载全部事实。返回记录只包含有界的
 `retrieval_reason`；`list_person()` / `list_group()` 仍用于确定性列表。Embedding 关闭或故障时
-自动保持词法行为，Plugin API 版本仍为 `1.0`。
+自动保持词法行为；当前 Plugin API 版本由 SDK 的 `PLUGIN_API_VERSION` 定义，为 `3.0`。
 
 从 Yuki `3.0.0b2` 开始，`memory.update()` 会创建 explicit correction 新版本并让旧 fact 进入
 superseded，不原地改写旧正文；`memory.delete()` 会以
 `plugin_explicit_invalidation` 将事实标记为 invalidated，不物理删除事实、证据或状态历史。
 插件不能设置 authority、status、conflict_state、supersedes_id，也不能跨人物/群合并或解决
-冲突。Facade 签名与 Plugin API 主版本仍保持 `1.0`。
+冲突。这些写入语义保留在当前 Plugin API 3.0 中，不代表 Host 兼容旧 1.x 插件。
 
 Yuki 3.0.0 对 MemoryFacade 做了正式 contract freeze：稳定方法为 `list_person`、`list_group`、
 `search`、`add`、`update`、`delete`。插件不能访问原始向量、历史 rebuild、质量 fixture、全局
@@ -73,6 +73,7 @@ llm.generate_with_context(instruction, *, context_profile,
                           max_characters=2000) -> str | PluginResult
 
 agent.result(work_id) -> PluginResult
+agent.resume(work_id, text, *, request_id) -> PluginResult
 agent.run(instruction, *, allowed_capabilities=(),
           max_tool_calls=None, max_model_requests=None) -> PluginResult
 

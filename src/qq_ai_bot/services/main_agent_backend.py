@@ -155,7 +155,7 @@ class MainAgentBackend(AgentToolBackend):
         self._web_was_used = True
 
     def consume_provider_chain_restart(self) -> bool:
-        """Drop Responses continuation after a no-side-effect schema rebuild."""
+        """Consume a local schema-change signal; the Runner retains the submitted chain."""
 
         runtime = self._capability_runtime
         if runtime is None:

@@ -17,8 +17,8 @@
 - `Space`：永久共享空间；QQ 群只是它的一种外部表现。
 - `SpaceBinding`：Space 与外部群号的绑定。
 - `Presence`：Yuki 自己的平台账号。Presence 不是 Person。
-- `CanonicalConversation`：私聊按 Person 唯一，群聊按 Space 唯一。显式 `/ai new` 才改变
-  Conversation generation。
+- `CanonicalConversation`：私聊按 Person 唯一，群聊按 Space 唯一。显式 `/ai new` 或隐私遗忘
+  等上下文边界操作会推进 Conversation generation；更换账号本身不推进它。
 
 第三方机器人使用 `external_bot` 作者类型，不创建 Person、人物关系或人物记忆。事件作者只有
 `person`、`yuki`、`external_bot`、`system` 四类；命令、插件和自动化属于 event origin，
@@ -34,8 +34,8 @@ Presence 与 canonical Conversation。事件账本保留平台 message ID、send
 `chat_events.id` 定位并核验会话。不得用平台 message ID 反查已有内部事件或猜测来源。
 `canonical_event_id` 是另一种关联标识，不能与整数账本主键混用。
 
-历史 alias 只用于稳定兼容键。多个 alias 可以指向一个 canonical Conversation，插件 API 2.0
-始终读取固化的 primary alias。换 QQ、换 Provider、连接重建或路由接管都不得更改 Conversation
+历史 alias 只用于稳定兼容键。多个 alias 可以指向一个 canonical Conversation，当前插件 SDK
+读取固化的 primary alias。换 QQ、换 Provider、连接重建或路由接管都不得更改 Conversation
 generation。
 
 Rollup 是 Conversation 的可重建提示投影：原始 `chat_events` 始终是证据源，摘要不进入
@@ -95,9 +95,9 @@ PERSON_GROUP 表示某 Person 在某 Space 中的共同经历。证据保留真�
 关系、偏好、自动化目标、插件状态、Emoji、Speech、MCP 和配置投影均使用 canonical owner。
 自动化在实际发送时解析当前路由，因此创建任务后更换 Yuki QQ 仍可沿新 Presence 投递。
 
-Plugin API 保持 `2.0`。旧插件可继续使用 primary `conversation_key`；新 SDK 可读取可选的
-person、space、conversation 和 presence ID。插件不能伪造管理员、绕过 Capability 或直接选择
-任意 GatewayConnection。
+Plugin API 当前为 `3.0`，Host 只加载精确匹配的插件。兼容键仍使用 primary
+`conversation_key`，SDK 还可读取可选的 person、space、conversation 和 presence ID。
+插件不能伪造管理员、绕过 Capability 或直接选择任意 GatewayConnection。
 
 ## Control Plane 与未来 WebUI
 
