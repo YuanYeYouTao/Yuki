@@ -12,7 +12,8 @@ from typing import Any
 from pydantic import ValidationError
 
 from qq_ai_bot.automation.authority import PermissionLevel
-from qq_ai_bot.automation.models import AutomationScript, IntervalSchedule
+from qq_ai_bot.automation.model_delivery import classify_model_delivery
+from qq_ai_bot.automation.models import AutomationScript, IntervalSchedule, RiskClass
 from qq_ai_bot.automation.registry import AutomationCapability, AutomationCapabilityRegistry
 from qq_ai_bot.automation.templates import TemplateError, referenced_steps, validate_templates
 from qq_ai_bot.config import Settings
@@ -100,7 +101,10 @@ class AutomationValidator:
         llm_calls = 0
         tool_calls = 0
         messages = 0
-        for step in script.steps:
+        send_capabilities = frozenset(
+            item.name for item in self._registry.list() if item.risk_class is RiskClass.SEND
+        )
+        for index, step in enumerate(script.steps):
             definition = self._registry.require(step.call)
             if not definition.permits(provenance.permission):
                 raise PermissionError(f"当前用户无权委托 capability：{step.call}")
@@ -119,6 +123,10 @@ class AutomationValidator:
             ):
                 raise ValueError("Agent 步骤的 context_profile 必须与脚本 context.scene 一致")
             self._validate_targets(step.call, step.arguments, provenance)
+            if classify_model_delivery(script, index, send_capabilities=send_capabilities):
+                raise ValueError(
+                    f"步骤 {step.id} 不能通过 DSL 投递模型输出；请由主 Agent 显式调用 send_message"
+                )
             available_steps.add(step.id)
             if step.save_as:
                 available_steps.add(step.save_as)
@@ -198,7 +206,13 @@ class AutomationValidator:
         arguments: dict[str, Any],
         provenance: CreationProvenance,
     ) -> None:
-        if call == "onebot.send_private_message":
+        if call == "yuki.agent":
+            if (
+                arguments.get("delivery_target") == "current_group"
+                and provenance.current_group_id is None
+            ):
+                raise ValueError("当前消息不是群聊，不能声明 current_group 投递目标")
+        elif call == "onebot.send_private_message":
             cls._validate_user_target(arguments.get("user_id"), provenance)
         elif call == "onebot.send_group_message":
             cls._validate_group_target(arguments.get("group_id"), provenance)

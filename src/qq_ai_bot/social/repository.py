@@ -15,6 +15,7 @@ from qq_ai_bot.identity.db_models import CanonicalPersonModel, CanonicalSpaceMod
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.social.db_models import SocialOperationModel
 from qq_ai_bot.social.models import OperationStatus, SocialError, SocialReceipt, SocialTarget
+from qq_ai_bot.social.source_keys import social_source_key
 
 _ACTIONS = frozenset(
     {
@@ -43,8 +44,9 @@ class SocialOperationRepository:
     ) -> SocialReceipt:
         if action not in _ACTIONS or not source_turn_id or not tool_call_id:
             raise SocialError("invalid_operation")
-        if max(len(source_turn_id), len(tool_call_id)) > 128:
+        if len(tool_call_id) > 128:
             raise SocialError("invalid_operation")
+        source_turn_id = social_source_key(source_turn_id)
         encoded = json.dumps(
             {
                 "action": action,
@@ -159,6 +161,7 @@ class SocialOperationRepository:
             return self._receipt(row)
 
     async def find(self, source_turn_id: str, tool_call_id: str) -> SocialReceipt | None:
+        source_turn_id = social_source_key(source_turn_id)
         async with self.database.sessions() as session:
             row = await session.scalar(
                 select(SocialOperationModel).where(

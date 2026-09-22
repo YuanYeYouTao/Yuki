@@ -403,7 +403,9 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             )
             arguments = {"instruction": "记录这轮结果", "context_profile": "creator_private"}
             if name.endswith("generate"):
-                result = await handlers.generate({**arguments, "max_characters": 200}, context)
+                result = await handlers.mapping()["yuki.generate"](
+                    {**arguments, "max_characters": 200}, context
+                )
             else:
                 result = await handlers.agent(
                     {**arguments, "max_tool_calls": 3, "max_model_requests": 3}, context

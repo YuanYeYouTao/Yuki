@@ -40,8 +40,31 @@ Runner 在原循环中给一次未送达反馈；再次遗漏则记为失败，�
 模型提供给 `send_message` 的文本在分条、回执准备、媒体生成、网关发送和账本写入之前统一净化；
 内部历史事件前缀不会进入新的可见消息。既有 QQ 消息、原始账本、Rollup 和记忆不追溯改写。
 
-新建 Agentic 自动化由 Agent 自行决定何时调用 `send_message`；生成式自动化没有工具循环，
-保留明确写入脚本的 DSL 发送步骤。历史脚本仍按原 run/step 游标恢复，不能盲目重建或重发。
+新建 `generated`、`agentic` 和 `auto` 任务统一编译为一个 `yuki.agent` 步骤，
+由同一主 Agent 显式调用 `send_message`。`generated` 只是保留的任务策略输入，不再走
+生成正文后追加 DSL 发送的路径；固定工具 schema、提示词前缀和 Provider 设置不因此改变。
+静态字面量提醒仍是明确的 DSL 发送，不进入模型循环。
+模型自动化要求开启 `runtime_work_enabled`；关闭时在执行前返回
+`automation_runtime_required`，不会先发送再因缺少持久工作而报未知。明确交付任务缺少
+canonical Conversation 时同样在模型调用前阻断。
+
+内部 DSL 的 `delivery_target` 记录已经解析的交付要求，不改变运行上下文的归属。
+`self_private` 核验创建者 Person，`current_group` 核验当前 Space，`none` 允许安静完成。
+存在交付要求时，只有原持久工作 completed 且该目标的完整工具回执与真实 Social 发送一致，
+才确认交付；分条和文件附言不能仅凭其中一项成功通过。确定失败可由后续完整发送解决，
+未知结果不能被另一次成功覆盖。内部最终正文始终不会被外层补发。
+核验在同一只读快照中读取工作与回执，不持 SQLite 写锁；原工作已归档、完整工具记录
+不可用时返回未知，不凭幸存的单条成功回执推断全部交付完成。
+这证明传输事实，不证明内容在语义上已完成目标；不按措辞猜测进度或最终回答。
+
+历史脚本保留原 run/step、script_hash、工作 ID、预算与游标。旧模型正文尾发不再执行：
+可以定位原工作及目标且已有完整成功证据时，记录跳过该尾步；未知则停在 uncertain，
+无确认或结构变形则 blocked，要求更新任务。尚未派发的旧 `yuki.generate + 发送` 脚本
+直接要求更新，不改写资料包或重建执行链；已开始的主工作仍按原身份恢复。
+新建和更新也拒绝模型输出通过 DSL 文本、语音、插件发送等旁路外发。
+
+Social 回执来源键保留 128 字符以内的旧键；超长完整内部身份统一映射为版本化 SHA256。
+写入、查找和交付核验使用同一映射，不截断原执行 ID，也不改变任务恢复和预算身份。
 
 调度器的结构化步骤、执行游标、原有业务集成和发送回执保留；它们不再构成另一套模型工具声明。
 旧存储的 Agent `allowed_capabilities` 元数据由迁移删除；主 Agent 的固定工具合同不读取
@@ -63,7 +86,7 @@ system 前缀、不改变固定工具声明。paused、terminal 和更多任务�
 | 来源 | 恢复所有者 | 交付所有者 |
 | --- | --- | --- |
 | 用户消息、主动群聊 | WorkScheduler，原 work/generation | Agent 显式 `send_message` |
-| 自动化生成、Agent 步骤 | AutomationWorker，原 run/step 游标 | 生成式 DSL 步骤；Agent 显式 `send_message` |
+| 自动化生成、Agent 步骤 | AutomationWorker，原 run/step 游标 | Agent 显式 `send_message`；旧模型尾发仅核对回执后退休 |
 | 插件通知自主轮 | PluginBackgroundTurnWorker，原 job/event | Agent 显式 `send_message`；插件自己的通知 outbox 独立 |
 | 有真实事件的 SDK 主调用 | Host 持有正在运行的协程，后续由 WorkScheduler 恢复 | 原调用方查询结果 |
 | 子 Agent | SubagentScheduler，原父子关系 | 父 Agent 验收后交付 |

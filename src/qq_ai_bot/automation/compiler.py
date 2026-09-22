@@ -66,30 +66,6 @@ class AutomationCompiler:
                 max_messages=1,
                 timeout_seconds=min(30, self._settings.automation_max_runtime_seconds),
             )
-        elif strategy == "generated":
-            generate = AutomationStep(
-                id="generate",
-                call="yuki.generate",
-                arguments={
-                    "instruction": self._instruction(task, None),
-                    "context_profile": task.context.scene,
-                    "max_characters": 4000,
-                },
-                save_as="result",
-            )
-            steps = (generate,)
-            if delivery is not None:
-                # Generation has no model-facing tools. This is an explicit
-                # persisted DSL step, not a fallback for an Agent final answer.
-                steps += (self._delivery_step(delivery, "${result.text}"),)
-            limits = AutomationLimits(
-                agent_budget_managed=True,
-                max_steps=len(steps),
-                max_llm_calls=1,
-                max_tool_calls=len(steps),
-                max_messages=self._settings.automation_max_messages_per_run,
-                timeout_seconds=min(120, self._settings.automation_max_runtime_seconds),
-            )
         else:
             execute = AutomationStep(
                 id="execute",
@@ -97,6 +73,7 @@ class AutomationCompiler:
                 arguments={
                     "instruction": self._instruction(task, delivery),
                     "context_profile": task.context.scene,
+                    "delivery_target": delivery or "none",
                 },
                 save_as="result",
             )
