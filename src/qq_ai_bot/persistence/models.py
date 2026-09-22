@@ -125,6 +125,12 @@ class ChatEventModel(Base):
             sqlite_where=text("event_kind = 'external_event'"),
         ),
         Index("ix_chat_events_canonical_event_id", "canonical_event_id"),
+        Index(
+            "ix_chat_events_conversation_author_id",
+            "canonical_conversation_id",
+            "author_person_id",
+            "id",
+        ),
         Index("ix_chat_events_canonical_conversation_id", "canonical_conversation_id"),
         Index("ix_chat_events_caused_by_event_id", "caused_by_event_id"),
         Index(

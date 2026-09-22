@@ -160,7 +160,8 @@ class LLMRelationshipEvaluator:
                     for event in tuple(
                         event
                         for event in job.recent_events
-                        if event.direction == "inbound" and event.sender_user_id == job.user_id
+                        if event.direction == "inbound"
+                        and event.author_person_id == job.trigger_event.author_person_id
                     )[-self._settings.relationship_batch_max_turns :]
                 ],
             }

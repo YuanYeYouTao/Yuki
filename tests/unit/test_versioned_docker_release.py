@@ -39,7 +39,7 @@ def test_release_identity_matches_all_version_surfaces(monkeypatch: pytest.Monke
     def stale_readme(path: Path, *args, **kwargs):
         text = original_read(path, *args, **kwargs)
         if path == ROOT / "README.md":
-            return text.replace("schema=0064", "schema=0055")
+            return text.replace("schema=0066", "schema=0055")
         return text
 
     monkeypatch.setattr(Path, "read_text", stale_readme)
