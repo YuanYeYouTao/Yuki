@@ -124,7 +124,7 @@ def test_superuser_can_use_explicit_target_from_real_text() -> None:
     assert result.next_run_at == datetime(2026, 7, 27, 0, 20, tzinfo=UTC)
 
 
-def test_untrusted_step_output_cannot_become_target_but_can_be_text() -> None:
+def test_main_agent_output_cannot_bypass_explicit_tool_delivery() -> None:
     payload = _script(text="${generate.text}").model_dump(mode="json")
     payload["steps"].insert(
         0,
@@ -140,7 +140,8 @@ def test_untrusted_step_output_cannot_become_target_but_can_be_text() -> None:
     )
     payload["limits"].update(max_steps=2, max_llm_calls=1, max_tool_calls=2)
     script = AutomationScript.model_validate(payload)
-    assert _validator().validate(script, _provenance(), now_utc=datetime(2026, 7, 27, tzinfo=UTC))
+    with pytest.raises(ValueError, match="主 Agent"):
+        _validator().validate(script, _provenance(), now_utc=datetime(2026, 7, 27, tzinfo=UTC))
 
     payload["steps"][1]["arguments"]["user_id"] = "${generate.text}"
     with pytest.raises(ValueError, match="不可信"):

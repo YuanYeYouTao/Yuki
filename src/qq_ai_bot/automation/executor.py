@@ -8,10 +8,11 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import select
 
+from qq_ai_bot.automation.agent_delivery import inspect_agent_delivery
 from qq_ai_bot.automation.authority import (
     AuthorityContext,
     DelegatedAuthority,
@@ -20,6 +21,7 @@ from qq_ai_bot.automation.authority import (
 )
 from qq_ai_bot.automation.context import AutomationBindError, bind_automation_conversation
 from qq_ai_bot.automation.gateway import ProactiveGatewayError
+from qq_ai_bot.automation.model_delivery import classify_model_delivery
 from qq_ai_bot.automation.models import (
     AutomationRecord,
     AutomationRunRecord,
@@ -52,7 +54,6 @@ from qq_ai_bot.identity.db_models import (
     IdentityBindingModel,
 )
 from qq_ai_bot.identity.routing import PresenceRouter, RouteSendError
-from qq_ai_bot.social.db_models import SocialOperationModel
 from qq_ai_bot.time.service import TimeContextService
 
 _SEND_CAPABILITIES = frozenset(
@@ -138,6 +139,12 @@ class AutomationExecutor:
         if isinstance(snapshot, ExecutionResult):
             return snapshot
         automation = snapshot.record
+        if not self._settings.runtime_work_enabled and any(
+            step.call in {"yuki.agent", "yuki.generate"} for step in automation.script.steps
+        ):
+            return ExecutionResult(
+                status=RunStatus.BLOCKED, error_category="automation_runtime_required"
+            )
         allowed = snapshot.allowed
         actor_is_superuser = snapshot.actor_is_superuser
         authority = DelegatedAuthority.model_validate(automation.authority_snapshot)
@@ -251,6 +258,27 @@ class AutomationExecutor:
                 error_category=exc.category,
                 summary={"reason": "canonical conversation hydrate failed"},
             )
+        if conversation_id is None and any(
+            step.arguments.get("delivery_target") in {"self_private", "current_group"}
+            for step in automation.script.steps
+            if step.call == "yuki.agent"
+        ):
+            return ExecutionResult(
+                status=RunStatus.BLOCKED, error_category="work_conversation_unavailable"
+            )
+        send_capabilities = {
+            item.name for item in self._registry.list() if item.risk_class is RiskClass.SEND
+        }
+        model_deliveries = {
+            index: classified
+            for index in range(len(automation.script.steps))
+            if (
+                classified := classify_model_delivery(
+                    automation.script, index, send_capabilities=send_capabilities
+                )
+            )
+            is not None
+        }
         try:
             async with asyncio.timeout(
                 None
@@ -260,14 +288,26 @@ class AutomationExecutor:
                 for index, step in enumerate(automation.script.steps):
                     if index < next_step:
                         continue
-                    legacy_status = await self._legacy_agent_delivery_status(
-                        automation, run, index, conversation_id
-                    )
-                    if legacy_status in {"executing", "uncertain"}:
-                        raise AutomationExecutionError(
-                            "legacy_delivery_outcome_uncertain", uncertain=True
-                        )
-                    if legacy_status == "succeeded":
+                    # Stored model-output tails are retired in place. Never turn an
+                    # internal final answer into a second outbound effect.
+                    if index in model_deliveries:
+                        legacy = model_deliveries[index]
+                        state = "none"
+                        if legacy.can_retire_by_receipt:
+                            assert legacy.source_step is not None and legacy.target is not None
+                            state = await self._agent_delivery_state(
+                                automation,
+                                run,
+                                legacy.source_step.id,
+                                conversation_id,
+                                legacy.target,
+                            )
+                        if state == "uncertain":
+                            raise AutomationExecutionError(
+                                "agent_delivery_outcome_uncertain", uncertain=True
+                            )
+                        if state != "succeeded":
+                            raise AutomationExecutionError("legacy_model_delivery_requires_update")
                         now = self._time.clock.now()
                         await self._repository.record_step(
                             run_id=run.id,
@@ -283,6 +323,14 @@ class AutomationExecutor:
                         steps_completed += 1
                         await checkpoint("ready", index + 1)
                         continue
+                    if (
+                        step.call == "yuki.generate"
+                        and model_deliveries
+                        and not (phase == "agent" and index == next_step)
+                    ):
+                        # A never-started old generate instruction says delivery=none.
+                        # Updating that instruction during restore would rewrite history.
+                        raise AutomationExecutionError("legacy_model_delivery_requires_update")
                     definition = self._registry.require(step.call)
                     if step.call not in allowed:
                         raise AutomationExecutionError("capability_not_delegated")
@@ -376,7 +424,41 @@ class AutomationExecutor:
                             )
                         else:
                             result = await self._execute_capability(definition, arguments, context)
+                        delivery_target = arguments.get("delivery_target")
+                        if (
+                            step.call == "yuki.agent"
+                            and delivery_target in {"self_private", "current_group"}
+                            and result.pending_work_id is None
+                        ):
+                            delivery_state = await self._agent_delivery_state(
+                                automation, run, step.id, conversation_id, str(delivery_target)
+                            )
+                            if delivery_state != "succeeded":
+                                raise AutomationExecutionError(
+                                    "agent_delivery_outcome_uncertain"
+                                    if delivery_state == "uncertain"
+                                    else "agent_delivery_unconfirmed",
+                                    uncertain=delivery_state == "uncertain",
+                                    llm_calls=result.llm_calls,
+                                    tool_calls=result.tool_calls,
+                                    messages_sent=result.messages_sent,
+                                )
                     except AutomationExecutionError as exc:
+                        if (
+                            exc.category == "agent_work_blocked"
+                            and arguments.get("delivery_target")
+                            in {"self_private", "current_group"}
+                            and await self._agent_delivery_state(
+                                automation,
+                                run,
+                                step.id,
+                                conversation_id,
+                                str(arguments["delivery_target"]),
+                            )
+                            == "uncertain"
+                        ):
+                            exc.category = "agent_delivery_outcome_uncertain"
+                            exc.uncertain = True
                         llm_calls += exc.llm_calls
                         tool_calls += exc.tool_calls
                         messages_sent += exc.messages_sent
@@ -493,6 +575,8 @@ class AutomationExecutor:
                 "target_missing",
                 "operation_unavailable",
                 "agent_work_blocked",
+                "agent_delivery_unconfirmed",
+                "legacy_model_delivery_requires_update",
             }:
                 return ExecutionResult(
                     status=RunStatus.BLOCKED,
@@ -519,64 +603,32 @@ class AutomationExecutor:
             summary={"output_steps": list(outputs)},
         )
 
-    async def _legacy_agent_delivery_status(
+    async def _agent_delivery_state(
         self,
         automation: AutomationRecord,
         run: AutomationRunRecord,
-        index: int,
+        step_id: str,
         conversation_id: str | None,
-    ) -> str | None:
-        """Fence old Agent+deliver scripts against a new explicit model send.
-
-        A generated script's deliver step and any user-authored DSL remain
-        explicit sends. Only the compiler's former implicit Agent tail is
-        eligible for this compatibility check.
-        """
-
-        if index == 0 or conversation_id is None:
-            return None
-        previous, step = automation.script.steps[index - 1 : index + 1]
-        if (
-            previous.call != "yuki.agent"
-            or previous.save_as != "result"
-            or step.id != "deliver"
-            or step.arguments.get("text") != "${result.text}"
-        ):
-            return None
-        if (
-            step.call == "onebot.send_group_message"
-            and step.arguments.get("group_id") == "$current_group_id"
-        ):
-            kind, target_id = "space", automation.canonical_target_space_id
-        elif (
-            step.call == "onebot.send_private_message"
-            and step.arguments.get("user_id") == "$creator_user_id"
-        ):
-            kind, target_id = "person", automation.canonical_creator_person_id
-        else:
-            return None
-        if target_id is None:
-            return None
-        source_turn = (
-            f"{conversation_id}:execution:automation:{run.id}:{previous.id}:"
-            f"{automation.script_hash}"
+        target: str,
+    ) -> str:
+        kind: Literal["person", "space"]
+        kind, target_id = (
+            ("space", automation.canonical_target_space_id)
+            if target == "current_group"
+            else ("person", automation.canonical_creator_person_id)
         )
-        async with self._repository._database.sessions() as session:
-            states = set(
-                await session.scalars(
-                    select(SocialOperationModel.status).where(
-                        SocialOperationModel.source_turn_id == source_turn,
-                        SocialOperationModel.action == "send_message",
-                        SocialOperationModel.target_kind == kind,
-                        SocialOperationModel.target_id == target_id,
-                    )
-                )
-            )
-        if "uncertain" in states or "executing" in states:
-            return "uncertain"
-        if "succeeded" in states:
-            return "succeeded"
-        return None
+        if conversation_id is None or target_id is None:
+            return "none"
+        outcome = await inspect_agent_delivery(
+            self._repository._database,
+            conversation_id=conversation_id,
+            run_id=run.id,
+            step_id=step_id,
+            script_hash=automation.script_hash,
+            target_kind=kind,
+            target_id=target_id,
+        )
+        return outcome.state
 
     async def _begin_execution(
         self, claimed: AutomationRecord, *, allow_completed: bool = False
