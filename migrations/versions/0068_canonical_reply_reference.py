@@ -6,6 +6,7 @@ Revises: 0067
 
 from collections.abc import Sequence
 
+import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0068"
@@ -15,11 +16,18 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.execute(
-        "ALTER TABLE chat_events ADD COLUMN reply_to_event_id INTEGER "
-        "REFERENCES chat_events(id) ON UPDATE RESTRICT ON DELETE RESTRICT"
-    )
-    op.create_index("ix_chat_events_reply_to_event_id", "chat_events", ["reply_to_event_id"])
+    inspector = sa.inspect(op.get_bind())
+    if "reply_to_event_id" not in {
+        column["name"] for column in inspector.get_columns("chat_events")
+    }:
+        op.execute(
+            "ALTER TABLE chat_events ADD COLUMN reply_to_event_id INTEGER "
+            "REFERENCES chat_events(id) ON UPDATE RESTRICT ON DELETE RESTRICT"
+        )
+    if "ix_chat_events_reply_to_event_id" not in {
+        index["name"] for index in inspector.get_indexes("chat_events")
+    }:
+        op.create_index("ix_chat_events_reply_to_event_id", "chat_events", ["reply_to_event_id"])
 
 
 def downgrade() -> None:
