@@ -956,6 +956,49 @@ async def test_gateway_probe_releases_writer_and_rechecks_fence(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("route_paused", [False, True])
+async def test_admitted_group_new_survives_socket_disconnect_but_not_route_pause(
+    database: Database, route_paused: bool
+) -> None:
+    from qq_ai_bot.conversation.canonical_db_models import SpaceBindingIngestRouteModel
+
+    registry, resolver, uow = await _stack(database)
+    async with database.sessions() as session, session.begin():
+        presence = await ensure_v2_presence(session, "8000")
+        await ensure_v2_space(session, "2001")
+    bot = _Bot("8000")
+    registry.connect(bot)
+    registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
+    admitted = await resolver.pre_admit(
+        bot,
+        _message(
+            message_id="group-new-disconnect",
+            user_id="9000",
+            group_id="2001",
+            text="/ai new",
+        ),
+    )
+    assert admitted is not None and not admitted.dropped
+    assert admitted.space_binding_id is not None
+    registry.disconnect(bot)
+    if route_paused:
+        async with database.immediate_session() as session:
+            route = await session.get(SpaceBindingIngestRouteModel, admitted.space_binding_id)
+            assert route is not None
+            route.paused = True
+    if route_paused:
+        with pytest.raises(CanonicalIdentityError) as failure:
+            await uow.append_new_generation(admitted.message, admitted)
+        assert failure.value.category == "paused"
+        async with database.sessions() as session:
+            assert not list(await session.scalars(select(ChatEventModel)))
+    else:
+        changed = await uow.append_new_generation(admitted.message, admitted)
+        assert changed.generation_changed
+        assert changed.scope.generation == 2
+
+
+@pytest.mark.asyncio
 async def test_internal_reply_reference_rejects_a_foreign_conversation(database: Database) -> None:
     from dataclasses import replace
 

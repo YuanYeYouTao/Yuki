@@ -627,9 +627,14 @@ class PresenceRouter:
             )
 
     async def ingest_status_in_session(
-        self, session: AsyncSession, *, space_binding_id: str, event_presence_id: str
+        self,
+        session: AsyncSession,
+        *,
+        space_binding_id: str,
+        event_presence_id: str,
+        require_connected: bool = True,
     ) -> str:
-        """Recheck the ingress fence using only the caller's transaction and registry."""
+        """Recheck the route; an already admitted command may outlive its socket."""
         binding = await session.get(SpaceBindingModel, space_binding_id)
         if binding is None or binding.status != "active":
             return "not_ingest"
@@ -643,10 +648,11 @@ class PresenceRouter:
         presence = await session.get(PresenceModel, route.ingest_presence_id)
         if presence is None or not presence.enabled or not presence.ingest_eligible:
             return "not_ingest"
-        try:
-            self._registry.resolve_active(presence.id)
-        except RegistryClosed:
-            return "paused"
+        if require_connected:
+            try:
+                self._registry.resolve_active(presence.id)
+            except RegistryClosed:
+                return "paused"
         return "ok"
 
     async def _apply_person_takeover(

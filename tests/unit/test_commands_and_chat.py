@@ -362,6 +362,26 @@ async def test_new_changes_only_the_current_scope_generation(database: Database)
 
 
 @pytest.mark.asyncio
+async def test_group_new_does_not_wait_for_optional_profile_lookups(
+    database: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = build_harness(database, make_settings(database.url))
+
+    async def unavailable(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("optional_profile_lookup_called")
+
+    monkeypatch.setattr(harness.processor, "_observe_group_metadata", unavailable)
+    monkeypatch.setattr(harness.processor._user_profiles, "capture", unavailable)
+    sender = MemorySender()
+    result = await harness.processor.handle(
+        inbound("/ai new", message_id="new-group-fast", user_id="9000", group_id="2001"),
+        sender,
+    )
+    assert result.handled
+    assert sender.messages and "已为当前群开始新的会话" in sender.messages[0].text
+
+
+@pytest.mark.asyncio
 async def test_superuser_on_off_and_permission(database: Database) -> None:
     harness = build_harness(database, make_settings(database.url))
     super_sender = MemorySender()
