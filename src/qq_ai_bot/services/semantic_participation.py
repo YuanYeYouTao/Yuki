@@ -304,8 +304,7 @@ class SemanticParticipationService:
             fallback_reason=desired.fallback_reason,
         )
 
-    @staticmethod
-    def _event(row: EventRecord, item: _Session) -> ScopedEvent | None:
+    def _event(self, row: EventRecord, item: _Session) -> ScopedEvent | None:
         scene, state = item.scene, item.controller.state
         if (
             row.canonical_conversation_id != scene.conversation_id
@@ -419,6 +418,13 @@ class SemanticParticipationService:
             kind="human" if row.author_is_human() else "self",
             unit_ambiguous=row.author_is_human() and len(options) > 1,
             unit_options=tuple(options) if len(options) > 1 else (),
+            # This affects observation order only. Calling a name still needs
+            # Jev's semantic invitation/floor judgment and Host admission.
+            observation_priority=row.author_is_human()
+            and any(
+                alias.casefold() in row.perceived_content.casefold()
+                for alias in self.app.settings.bot_aliases
+            ),
         )
 
     async def _hydrate(self, item: _Session, direct: dict[int, bool] | None = None) -> None:
