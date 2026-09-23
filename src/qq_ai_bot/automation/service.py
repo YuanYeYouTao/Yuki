@@ -31,6 +31,7 @@ from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.validator import AutomationValidator, CreationProvenance
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.tool_actor import ToolActor
+from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.time.schedules import initial_run_at
 from qq_ai_bot.time.service import TimeContextService
 
@@ -80,7 +81,7 @@ class AutomationService:
         plan = self._compiler.compile(
             task,
             provenance,
-            default_timezone=await self._time.timezone_for(actor.user_id),
+            default_timezone=await self._time.timezone_for(actor.user_id or "self"),
         )
         row = await self.create(
             plan.script,
@@ -122,7 +123,7 @@ class AutomationService:
         plan = self._compiler.compile(
             task,
             provenance,
-            default_timezone=await self._time.timezone_for(actor.user_id),
+            default_timezone=await self._time.timezone_for(actor.user_id or "self"),
         )
         expected = plan.script.model_dump(mode="json", exclude={"name"}, exclude_none=True)
         rows = await self._repository.list_directory(
@@ -269,6 +270,8 @@ class AutomationService:
             },
             capability_provenance=self._capability_provenance(validated.required_capabilities),
             current_group_id=actor.group_id,
+            principal_kind=actor.principal_kind,
+            **(await self._self_scene_fields(actor) if actor.principal_kind == "self" else {}),
         )
         row = await self._repository.create(
             validated,
@@ -340,7 +343,7 @@ class AutomationService:
         authority = DelegatedAuthority(
             creator_user_id=owner_account_id,
             bot_user_id=existing.bot_user_id,
-            created_from_message_id=actor.platform_message_id,
+            created_from_message_id="" if owner_person_id == "self" else actor.platform_message_id,
             created_at=now.isoformat(),
             permission_level=owner_permission,
             granted_capabilities=validated.required_capabilities,
@@ -349,7 +352,21 @@ class AutomationService:
                 for name in validated.required_capabilities
             },
             capability_provenance=self._capability_provenance(validated.required_capabilities),
-            current_group_id=actor.group_id,
+            current_group_id=provenance.current_group_id,
+            principal_kind=existing.creator_kind,
+            **(
+                {
+                    key: existing.authority_snapshot.get(key)
+                    for key in (
+                        "canonical_conversation_id",
+                        "conversation_generation",
+                        "canonical_presence_id",
+                        "canonical_space_id",
+                    )
+                }
+                if existing.creator_kind == "self"
+                else {}
+            ),
         )
         row = await self._repository.update_script(
             existing.id,
@@ -427,7 +444,9 @@ class AutomationService:
         """Return terminal tasks in a separate newest-first history queue."""
 
         self._require_enabled()
-        creator_person_id = await self._resolve_creator_person(creator_user_id)
+        creator_person_id = (
+            "self" if not creator_user_id else await self._resolve_creator_person(creator_user_id)
+        )
         return await self._repository.list_terminal_for_creator(creator_person_id)
 
     async def require_owned(self, automation_id: int, creator_user_id: str) -> AutomationRecord:
@@ -447,9 +466,17 @@ class AutomationService:
         row = await self._repository.get(automation_id)
         if row is None:
             raise ValueError("自动化任务不存在")
+        if actor.principal_kind == "self" and row.creator_kind == "self":
+            scene = await self._self_scene_fields(actor)
+            if (
+                scene["canonical_conversation_id"]
+                != row.authority_snapshot.get("canonical_conversation_id")
+                or scene["canonical_space_id"] != row.canonical_target_space_id
+            ):
+                raise PermissionError("self_automation_outside_current_scene")
         if (
             permission is not PermissionLevel.SUPERUSER
-            and row.canonical_creator_person_id != actor_person_id
+            and self._canonical_owner(row) != actor_person_id
         ):
             raise PermissionError("任务存在，但当前主体不是任务所有者，不能修改")
         return row
@@ -751,6 +778,11 @@ class AutomationService:
         self,
         actor: ToolActor,
     ) -> tuple[str, PermissionLevel, CreationProvenance]:
+        if actor.principal_kind == "self":
+            if not actor.group_id or not actor.conversation_id or not actor.presence_id:
+                raise PermissionError("self_automation_scene_required")
+            permission = PermissionLevel.SELF
+            return "self", permission, self._creation_provenance(actor, permission=permission)
         creator_person_id = await self._resolve_creator_person(actor.user_id)
         if actor.person_id is not None and actor.person_id != creator_person_id:
             raise PermissionError("actor_identity_changed")
@@ -763,6 +795,75 @@ class AutomationService:
             permission,
             self._creation_provenance(actor, permission=permission),
         )
+
+    async def _self_scene_fields(self, actor: ToolActor) -> dict[str, object]:
+        from sqlalchemy import select
+
+        from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+        from qq_ai_bot.identity.db_models import PresenceModel, SpaceBindingModel
+        from qq_ai_bot.persistence.models import AutomationModel, AutomationRunModel
+
+        if not actor.conversation_id or not actor.presence_id or not actor.group_id:
+            raise PermissionError("self_automation_scene_required")
+        async with self._repository._database.sessions() as session:
+            if actor.origin is TurnOrigin.SCHEDULED_AUTOMATION:
+                run = await session.get(AutomationRunModel, actor.automation_run_id)
+                owner = await session.get(AutomationModel, run.automation_id) if run else None
+                if (
+                    run is None
+                    or owner is None
+                    or run.status != "running"
+                    or owner.creator_kind != "self"
+                    or owner.status != "active"
+                    or owner.canonical_presence_id != actor.presence_id
+                ):
+                    raise PermissionError("self_automation_source_changed")
+            conversation = await session.get(CanonicalConversationModel, actor.conversation_id)
+            presence = await session.get(PresenceModel, actor.presence_id)
+            if conversation is None or not conversation.space_id:
+                raise PermissionError("self_automation_scene_changed")
+            if actor.origin is TurnOrigin.SCHEDULED_AUTOMATION and (
+                owner is None or owner.canonical_target_space_id != conversation.space_id
+            ):
+                raise PermissionError("self_automation_source_changed")
+            if actor.origin is TurnOrigin.SELF_INITIATIVE:
+                from qq_ai_bot.conversation.self_initiative import validate_self_initiative
+
+                if actor.initiative_run_id is None:
+                    raise PermissionError("self_initiative_source_missing")
+                await validate_self_initiative(
+                    self._repository._database,
+                    actor.initiative_run_id,
+                    conversation_id=actor.conversation_id,
+                    space_id=conversation.space_id,
+                    presence_id=actor.presence_id,
+                )
+            bindings = (
+                await session.scalars(
+                    select(SpaceBindingModel)
+                    .where(
+                        SpaceBindingModel.space_id == conversation.space_id,
+                        SpaceBindingModel.platform == "qq",
+                        SpaceBindingModel.status == "active",
+                    )
+                    .limit(2)
+                )
+            ).all()
+            if (
+                presence is None
+                or not presence.enabled
+                or presence.platform != "qq"
+                or presence.external_account_id != actor.bot_user_id
+                or len(bindings) != 1
+                or bindings[0].external_space_id != actor.group_id
+            ):
+                raise PermissionError("self_automation_scene_changed")
+            return {
+                "canonical_conversation_id": conversation.id,
+                "conversation_generation": conversation.generation,
+                "canonical_presence_id": presence.id,
+                "canonical_space_id": conversation.space_id,
+            }
 
     async def _management_context(
         self,
@@ -779,6 +880,20 @@ class AutomationService:
 
         row = await self.require_manageable(automation_id, actor)
         owner_person_id = self._canonical_owner(row)
+        if owner_person_id == "self":
+            group_id = str(row.authority_snapshot.get("current_group_id") or "")
+            if not group_id:
+                raise PermissionError("self_automation_scene_missing")
+            provenance = CreationProvenance(
+                creator_user_id="",
+                bot_user_id=row.bot_user_id,
+                message_id="",
+                original_text=actor.instruction,
+                current_group_id=group_id,
+                mentioned_user_ids=(),
+                permission=PermissionLevel.SELF,
+            )
+            return row, "self", "", PermissionLevel.SELF, provenance
         owner_accounts = await self._repository.active_creator_accounts(owner_person_id)
         if row.creator_user_id not in owner_accounts:
             raise PermissionError("自动化创建者的原账号绑定已失效")
@@ -802,6 +917,8 @@ class AutomationService:
 
     @staticmethod
     def _canonical_owner(row: AutomationRecord) -> str:
+        if row.creator_kind == "self":
+            return "self"
         if row.canonical_creator_person_id is None:
             raise PermissionError("自动化任务没有永久创建者，不能修改")
         return row.canonical_creator_person_id
@@ -841,6 +958,8 @@ class AutomationService:
     def _audit_ref(self, actor: ToolActor, conversation_key: str) -> ControlAuditRef:
         return ControlAuditRef(
             user_id=actor.user_id,
+            principal_kind=actor.principal_kind,
+            principal_id="self" if actor.principal_kind == "self" else actor.person_id,
             trigger_message_id=actor.platform_message_id,
             trigger_event_id=actor.event_id,
             decision_actor_id=actor.execution_id or None,

@@ -49,6 +49,15 @@ class AutomationRepository:
     def __init__(self, database: Database) -> None:
         self._database = database
 
+    @staticmethod
+    def _owner_clause(owner_id: str) -> Any:
+        if owner_id == "self":
+            return AutomationModel.creator_kind == "self"
+        return and_(
+            AutomationModel.creator_kind == "person",
+            AutomationModel.canonical_creator_person_id == owner_id,
+        )
+
     async def create(
         self,
         validated: ValidatedAutomation,
@@ -75,7 +84,7 @@ class AutomationRepository:
                 previous = await active.scalar(
                     select(AutomationModel)
                     .where(
-                        AutomationModel.canonical_creator_person_id == creator_person_id,
+                        self._owner_clause(creator_person_id),
                         AutomationModel.creation_source_key == creation_source_key,
                     )
                     .order_by(AutomationModel.id)
@@ -88,9 +97,13 @@ class AutomationRepository:
                     ):
                         raise ValueError("automation_creation_key_conflict")
                     return _automation_record(previous)
-            creator = await active_person_id_for(active, authority.creator_user_id)
-            if creator != creator_person_id:
-                raise ValueError("创建者没有对应的永久主体")
+            if creator_person_id == "self":
+                if authority.principal_kind != "self":
+                    raise ValueError("invalid_self_automation_authority")
+            else:
+                creator = await active_person_id_for(active, authority.creator_user_id)
+                if creator != creator_person_id or authority.principal_kind != "person":
+                    raise ValueError("创建者没有对应的永久主体")
             target_person, target_space = await _bind_canonical_send_targets(
                 active,
                 validated,
@@ -99,6 +112,7 @@ class AutomationRepository:
             )
             presence = await presence_id_for(active, authority.bot_user_id)
             row = AutomationModel(
+                creator_kind=authority.principal_kind,
                 creator_user_id=authority.creator_user_id,
                 bot_user_id=authority.bot_user_id,
                 name=validated.script.name,
@@ -123,7 +137,9 @@ class AutomationRepository:
                 claimed_until=None,
                 created_at=timestamp,
                 updated_at=timestamp,
-                canonical_creator_person_id=creator_person_id,
+                canonical_creator_person_id=None
+                if creator_person_id == "self"
+                else creator_person_id,
                 canonical_target_person_id=target_person,
                 canonical_target_space_id=target_space,
                 canonical_presence_id=presence,
@@ -206,7 +222,7 @@ class AutomationRepository:
         """Resolve a delegated create retry without producing another task."""
 
         query = select(AutomationModel).where(
-            AutomationModel.canonical_creator_person_id == creator_person_id,
+            self._owner_clause(creator_person_id),
             AutomationModel.creation_source_key == creation_source_key,
         )
         async with self._database.sessions() as session:
@@ -220,9 +236,7 @@ class AutomationRepository:
         include_terminal: bool = True,
         limit: int = 100,
     ) -> tuple[AutomationRecord, ...]:
-        query = select(AutomationModel).where(
-            AutomationModel.canonical_creator_person_id == creator_person_id
-        )
+        query = select(AutomationModel).where(self._owner_clause(creator_person_id))
         if not include_terminal:
             query = query.where(
                 AutomationModel.status.in_(
@@ -341,7 +355,7 @@ class AutomationRepository:
         query = (
             select(AutomationModel)
             .where(
-                AutomationModel.canonical_creator_person_id == creator_person_id,
+                self._owner_clause(creator_person_id),
                 AutomationModel.status.in_(
                     [AutomationStatus.ACTIVE.value, AutomationStatus.PAUSED.value]
                 ),
@@ -374,7 +388,7 @@ class AutomationRepository:
         query = (
             select(AutomationModel)
             .where(
-                AutomationModel.canonical_creator_person_id == creator_person_id,
+                self._owner_clause(creator_person_id),
                 AutomationModel.status.in_(terminal),
             )
             .order_by(AutomationModel.updated_at.desc(), AutomationModel.id.desc())
@@ -389,7 +403,7 @@ class AutomationRepository:
             AutomationModel.status == AutomationStatus.ACTIVE.value
         )
         if creator_person_id is not None:
-            query = query.where(AutomationModel.canonical_creator_person_id == creator_person_id)
+            query = query.where(self._owner_clause(creator_person_id))
         async with self._database.sessions() as session:
             return int(await session.scalar(query) or 0)
 
@@ -415,7 +429,7 @@ class AutomationRepository:
                 update(AutomationModel)
                 .where(
                     AutomationModel.id == automation_id,
-                    AutomationModel.canonical_creator_person_id == creator_person_id,
+                    self._owner_clause(creator_person_id),
                 )
                 .values(**values)
             )
@@ -435,7 +449,7 @@ class AutomationRepository:
                 update(AutomationModel)
                 .where(
                     AutomationModel.id == automation_id,
-                    AutomationModel.canonical_creator_person_id == creator_person_id,
+                    self._owner_clause(creator_person_id),
                     AutomationModel.status.in_(
                         [AutomationStatus.PAUSED.value, AutomationStatus.FAILED.value]
                     ),
@@ -465,7 +479,7 @@ class AutomationRepository:
                 update(AutomationModel)
                 .where(
                     AutomationModel.id == automation_id,
-                    AutomationModel.canonical_creator_person_id == creator_person_id,
+                    self._owner_clause(creator_person_id),
                     AutomationModel.status.not_in(
                         [AutomationStatus.CANCELLED.value, AutomationStatus.COMPLETED.value]
                     ),
@@ -492,13 +506,17 @@ class AutomationRepository:
     ) -> AutomationRecord | None:
         timestamp = _aware_utc(now)
         async with optional_session(self._database, session, write=True) as active:
-            authority_creator = await active_person_id_for(active, authority.creator_user_id)
-            if authority_creator != creator_person_id:
-                raise ValueError("更新授权与自动化永久创建者不一致")
+            if creator_person_id == "self":
+                if authority.principal_kind != "self":
+                    raise ValueError("invalid_self_automation_authority")
+            else:
+                authority_creator = await active_person_id_for(active, authority.creator_user_id)
+                if authority_creator != creator_person_id or authority.principal_kind != "person":
+                    raise ValueError("更新授权与自动化永久创建者不一致")
             row = await active.scalar(
                 select(AutomationModel).where(
                     AutomationModel.id == automation_id,
-                    AutomationModel.canonical_creator_person_id == creator_person_id,
+                    self._owner_clause(creator_person_id),
                 )
             )
             if row is None or row.status in {
@@ -619,6 +637,19 @@ class AutomationRepository:
                     AutomationModel.claimed_by == worker_id,
                 )
                 .values(**values)
+            )
+
+    async def wake_claim(self, automation_id: int) -> None:
+        """Clear a sleeping claim after a bound Work signal races with release."""
+        async with self._database.sessions() as session, session.begin():
+            await session.execute(
+                update(AutomationModel)
+                .where(
+                    AutomationModel.id == automation_id,
+                    AutomationModel.claimed_by.is_(None),
+                    AutomationModel.status == AutomationStatus.ACTIVE.value,
+                )
+                .values(claimed_until=None)
             )
 
     async def renew_claim(self, automation_id: int, worker_id: str, until: datetime) -> bool:
@@ -915,6 +946,7 @@ def _automation_record(row: AutomationModel) -> AutomationRecord:
     return AutomationRecord(
         id=row.id,
         claimed_by=row.claimed_by,
+        creator_kind=row.creator_kind,
         creator_user_id=row.creator_user_id,
         bot_user_id=row.bot_user_id,
         name=row.name,
@@ -950,7 +982,8 @@ def _automation_directory_entry(
         creator=AutomationCreatorIdentity(
             person_id=record.canonical_creator_person_id,
             external_account_id=record.creator_user_id,
-            display_name=display_name or None,
+            display_name="Yuki / SELF" if record.creator_kind == "self" else display_name or None,
+            kind=record.creator_kind,
         ),
     )
 

@@ -41,6 +41,7 @@ class PublicationManifest:
     summary: str
     text: str
     ask_agent: bool
+    resume_waiting_work: bool
     agent_intent: str
     media: tuple[MediaIdentity, ...]
 
@@ -126,6 +127,7 @@ def manifest_from_request(
         summary=request.summary,
         text=request.text,
         ask_agent=request.ask_agent,
+        resume_waiting_work=request.resume_waiting_work,
         agent_intent=request.agent_intent,
         media=_ordered_media(media),
     )
@@ -144,6 +146,7 @@ def manifest_from_stored(
     external_source: str,
     event_type: str,
     ask_agent: bool,
+    resume_waiting_work: bool,
     agent_intent: str,
     media: tuple[MediaIdentity, ...],
 ) -> PublicationManifest:
@@ -161,6 +164,7 @@ def manifest_from_stored(
         summary=summary,
         text=text,
         ask_agent=ask_agent,
+        resume_waiting_work=resume_waiting_work,
         agent_intent=agent_intent,
         media=_ordered_media(media),
     )

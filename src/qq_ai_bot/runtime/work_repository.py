@@ -16,7 +16,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.runtime.subagent_schema import children, media, media_refs
 from qq_ai_bot.runtime.work_recovery_schema import recovery
-from qq_ai_bot.runtime.work_schema_v1 import WORK_STATES, effects, inputs, journal, scope, work
+from qq_ai_bot.runtime.work_schema_v1 import (
+    WORK_STATES,
+    effects,
+    inputs,
+    journal,
+    scope,
+    work,
+)
+from qq_ai_bot.runtime.work_wait_schema import waits
 
 TERMINAL = frozenset({"completed", "failed", "cancelled"})
 
@@ -199,27 +207,51 @@ class WorkRepository:
         async with self.database.sessions() as session, session.begin():
             await self._assert_lease(session, lease)
             if source.get("origin") == "self_initiative" or source.get("principal_kind") == "self":
-                from qq_ai_bot.conversation.autonomy_db_models import InitiativeRunModel
-
-                run = await session.get(InitiativeRunModel, source.get("initiative_run_id"))
                 if (
-                    run is None
-                    or run.state not in {"accepted", "running"}
-                    or source.get("principal_kind") != "self"
-                    or source.get("origin") != "self_initiative"
-                    or source_key != f"initiative:{run.id}"
-                    or run.conversation_id != lease.conversation_id
-                    or run.generation != lease.generation
-                    or source.get("conversation_id") != run.conversation_id
-                    or source.get("generation") != run.generation
-                    or source.get("presence_id") != run.presence_id
-                    or source.get("space_id") != run.space_id
-                    or source.get("actor_user_id")
-                    or source.get("person_id")
-                    or source.get("actor_person_id")
-                    or source.get("trigger_event_id") is not None
+                    source.get("origin") == "scheduled_automation"
+                    and source.get("principal_kind") == "self"
                 ):
-                    raise WorkConflict("invalid_self_work_admission")
+                    from qq_ai_bot.persistence.models import AutomationModel, AutomationRunModel
+
+                    run = await session.get(AutomationRunModel, source.get("automation_run_id"))
+                    owner = await session.get(AutomationModel, run.automation_id) if run else None
+                    if (
+                        run is None
+                        or owner is None
+                        or owner.creator_kind != "self"
+                        or run.status != "running"
+                        or source.get("automation_id") != owner.id
+                        or source.get("conversation_id") != lease.conversation_id
+                        or source.get("generation") != lease.generation
+                        or source.get("actor_user_id")
+                        or source.get("actor_person_id")
+                        or source.get("trigger_event_id") is not None
+                    ):
+                        raise WorkConflict("invalid_self_automation_work_admission")
+                else:
+                    from qq_ai_bot.conversation.autonomy_db_models import InitiativeRunModel
+
+                    initiative_run = await session.get(
+                        InitiativeRunModel, source.get("initiative_run_id")
+                    )
+                    if (
+                        initiative_run is None
+                        or initiative_run.state not in {"accepted", "running"}
+                        or source.get("principal_kind") != "self"
+                        or source.get("origin") != "self_initiative"
+                        or source_key != f"initiative:{initiative_run.id}"
+                        or initiative_run.conversation_id != lease.conversation_id
+                        or initiative_run.generation != lease.generation
+                        or source.get("conversation_id") != initiative_run.conversation_id
+                        or source.get("generation") != initiative_run.generation
+                        or source.get("presence_id") != initiative_run.presence_id
+                        or source.get("space_id") != initiative_run.space_id
+                        or source.get("actor_user_id")
+                        or source.get("person_id")
+                        or source.get("actor_person_id")
+                        or source.get("trigger_event_id") is not None
+                    ):
+                        raise WorkConflict("invalid_self_work_admission")
             existing = await session.scalar(
                 select(work.c.id).where(work.c.source_key == source_key)
             )
@@ -411,6 +443,12 @@ class WorkRepository:
                     .values(**detail)
                     .on_conflict_do_update(index_elements=[recovery.c.work_id], set_=detail)
                 )
+            if state in TERMINAL:
+                await session.execute(
+                    update(waits)
+                    .where(waits.c.work_id == identity, waits.c.status == "active")
+                    .values(status="cancelled", updated=time.time())
+                )
             return dict(row)
 
     async def checkpoint(
@@ -582,7 +620,7 @@ class WorkRepository:
                             inputs.c.id == identity, inputs.c.ready.is_(True)
                         )
                     ),
-                    work.c.state == "waiting_external",
+                    work.c.state.in_(("waiting_external", "waiting_user")),
                 )
                 .values(
                     state="queued",
@@ -730,6 +768,7 @@ class WorkRepository:
         """
         identities = select(work.c.id).where(work.c.conversation_id == conversation_id)
         await session.execute(delete(journal).where(journal.c.work_id.in_(identities)))
+        await session.execute(delete(waits).where(waits.c.work_id.in_(identities)))
         await session.execute(delete(effects).where(effects.c.work_id.in_(identities)))
         await session.execute(delete(inputs).where(inputs.c.conversation_id == conversation_id))
         await session.execute(delete(children).where(children.c.work_id.in_(identities)))
@@ -885,6 +924,20 @@ class WorkRepository:
                             payload_json=bounded_json({"text": content}, 32768),
                         )
                     )
+                    if row["work_id"]:
+                        await session.execute(
+                            update(work)
+                            .where(
+                                work.c.id == row["work_id"],
+                                work.c.state.in_(("waiting_external", "waiting_user")),
+                            )
+                            .values(
+                                state="queued",
+                                reason="input_repaired",
+                                revision=work.c.revision + 1,
+                                updated=time.time(),
+                            )
+                        )
 
     async def reclaim_terminal(self) -> None:
         """Keep the latest 128 terminal work receipts; never evict an active work."""
@@ -936,6 +989,7 @@ class WorkRepository:
             if not selected:
                 return
             await session.execute(delete(journal).where(journal.c.work_id.in_(selected)))
+            await session.execute(delete(waits).where(waits.c.work_id.in_(selected)))
             await session.execute(delete(inputs).where(inputs.c.work_id.in_(selected)))
             await session.execute(delete(effects).where(effects.c.work_id.in_(selected)))
             await session.execute(delete(media_refs).where(media_refs.c.work_id.in_(selected)))

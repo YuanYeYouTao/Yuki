@@ -203,6 +203,9 @@ class ChatEventModel(Base):
     external_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
     external_event_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     external_event_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    external_resume_wait: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
     external_payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     external_target_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -1787,6 +1790,8 @@ class AdminOperationEventModel(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     actor_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor_principal_kind: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    actor_principal_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     trigger_message_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     conversation_key: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     capability: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -1880,6 +1885,16 @@ class PersonTimeSettingModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class SelfTimeSettingModel(Base):
+    __tablename__ = "self_time_settings"
+    __table_args__ = (CheckConstraint("principal_id = 'self'", name="ck_self_time_identity"),)
+
+    principal_id: Mapped[str] = mapped_column(String(4), primary_key=True)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class AutomationModel(Base):
     """A validated, persistent declaration of one scheduled automation."""
 
@@ -1892,15 +1907,19 @@ class AutomationModel(Base):
         CheckConstraint("run_count >= 0", name="ck_automations_run_count"),
         CheckConstraint("consecutive_failures >= 0", name="ck_automations_consecutive_failures"),
         CheckConstraint(
-            "(status IN ('active', 'paused') "
-            "AND canonical_creator_person_id IS NOT NULL "
+            "((creator_kind = 'person' AND (canonical_creator_person_id IS NOT NULL OR "
+            "status IN ('completed', 'cancelled', 'failed', 'blocked'))) OR "
+            "(creator_kind = 'self' AND canonical_creator_person_id IS NULL "
+            "AND creator_user_id = '' AND created_from_message_id = '' "
+            "AND canonical_target_person_id IS NULL)) AND "
+            "((status IN ('active', 'paused') "
             "AND ((canonical_target_person_id IS NOT NULL "
             "AND canonical_target_space_id IS NULL) OR "
             "(canonical_target_person_id IS NULL "
             "AND canonical_target_space_id IS NOT NULL))) OR "
             "(status IN ('completed', 'cancelled', 'failed', 'blocked') "
             "AND NOT (canonical_target_person_id IS NOT NULL "
-            "AND canonical_target_space_id IS NOT NULL))",
+            "AND canonical_target_space_id IS NOT NULL)))",
             name="ck_automations_canonical_owner",
         ),
         Index("ix_automations_status_next", "status", "next_run_at"),
@@ -1917,9 +1936,18 @@ class AutomationModel(Base):
             unique=True,
             sqlite_where=text("creation_source_key LIKE 'call:%'"),
         ),
+        Index(
+            "uq_automation_self_creation_call",
+            "creation_source_key",
+            unique=True,
+            sqlite_where=text("creator_kind = 'self' AND creation_source_key IS NOT NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    creator_kind: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="person", server_default="person"
+    )
     creator_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     bot_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     name: Mapped[str] = mapped_column(String(128), nullable=False)

@@ -73,7 +73,12 @@ class SocialContext:
     reply_presence_id: str | None = None
     sequence_part_index: int | None = None
     initiative_run_id: str | None = None
+    automation_run_id: int | None = None
     presence_id: str | None = None
+
+
+def _self_scene(context: SocialContext) -> bool:
+    return context.initiative_run_id is not None or context.automation_run_id is not None
 
 
 class SocialService:
@@ -93,6 +98,45 @@ class SocialService:
         self.emoji_delivery: Any = None
 
     async def _validate_self_context(self, context: SocialContext) -> None:
+        if context.origin == "scheduled_automation" or context.automation_run_id is not None:
+            if (
+                context.origin != "scheduled_automation"
+                or context.automation_run_id is None
+                or not context.space_id
+                or not context.presence_id
+                or context.trigger_event_id is not None
+                or context.caused_by_event_id is not None
+                or context.person_refs
+                or context.account_refs
+                or context.inbound is not None
+                or context.actor is None
+                or context.actor.principal_kind != "self"
+                or context.actor.conversation_id != context.conversation_id
+                or context.actor.presence_id != context.presence_id
+            ):
+                raise SocialError("invalid_self_context")
+            from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+            from qq_ai_bot.persistence.models import AutomationModel, AutomationRunModel
+
+            async with self.database.sessions() as session:
+                run = await session.get(AutomationRunModel, context.automation_run_id)
+                owner = await session.get(AutomationModel, run.automation_id) if run else None
+                conversation = await session.get(
+                    CanonicalConversationModel, context.conversation_id
+                )
+                if (
+                    run is None
+                    or owner is None
+                    or conversation is None
+                    or run.status != "running"
+                    or owner.status != "active"
+                    or owner.creator_kind != "self"
+                    or owner.canonical_target_space_id != context.space_id
+                    or owner.canonical_presence_id != context.presence_id
+                    or conversation.space_id != context.space_id
+                ):
+                    raise SocialError("self_automation_scene_changed")
+            return
         if context.origin != "self_initiative" and context.initiative_run_id is None:
             return
         if (
@@ -322,9 +366,7 @@ class SocialService:
         else:
             raw = str(args["target_id"])
         target = SocialTarget.model_validate({"kind": kind, "id": raw})
-        if context.initiative_run_id and (
-            target.kind != "space" or str(target.id) != context.space_id
-        ):
+        if _self_scene(context) and (target.kind != "space" or str(target.id) != context.space_id):
             raise SocialError("self_target_outside_current_space")
         await self.check_target(target)
         return target
@@ -377,7 +419,7 @@ class SocialService:
         return result
 
     async def send_route(self, target: SocialTarget, context: SocialContext) -> ResolvedSend:
-        if context.initiative_run_id:
+        if _self_scene(context):
             await self._validate_self_context(context)
             if target.kind != "space" or str(target.id) != context.space_id:
                 raise SocialError("self_target_outside_current_space")
@@ -669,7 +711,7 @@ class SocialService:
         self, name: str, args: dict[str, Any], context: SocialContext
     ) -> dict[str, Any]:
         await self._validate_self_context(context)
-        if context.initiative_run_id:
+        if _self_scene(context):
             if name not in {
                 "send_message",
                 "find_contacts",
@@ -701,7 +743,7 @@ class SocialService:
             if args.get("target_id") or args.get("subject_ref"):
                 target = await self.target(kind, args, context)
                 items = [{"target_id": str(target.id), "kind": target.kind}]
-            elif context.initiative_run_id:
+            elif _self_scene(context):
                 async with self.database.sessions() as session:
                     space = await session.get(CanonicalSpaceModel, context.space_id)
                     query = str(args.get("display_name", ""))
@@ -857,7 +899,7 @@ class SocialService:
                 or (
                     context.origin == "plugin_background" and context.caused_by_event_id is not None
                 )
-                or context.initiative_run_id is not None
+                or _self_scene(context)
             )
         )
         await self.check_target(route_target, sending=not current_group_grant)
@@ -1191,7 +1233,7 @@ class SocialService:
                         context.origin == "plugin_background"
                         and context.caused_by_event_id is not None
                     )
-                    or context.initiative_run_id is not None
+                    or _self_scene(context)
                 )
             )
             await self.check_target(

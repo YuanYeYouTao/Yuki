@@ -65,6 +65,9 @@ from qq_ai_bot.plugin_host.ownership import (
     resolve_human_person_id,
     stamp_grant_owners,
 )
+from qq_ai_bot.runtime.work_repository import WorkRepository
+from qq_ai_bot.runtime.work_wait import WorkWaitRepository
+from qq_ai_bot.runtime.work_wait_schema import waits
 from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.models import (
     BackgroundTargetGrantView,
@@ -262,6 +265,32 @@ class PluginNotificationRepository:
                 )
                 .values(status="cancelled", lease_until=None, updated_at=now)
             )
+            target_filter = (
+                CanonicalConversationModel.person_id == row.canonical_target_person_id
+                if row.canonical_target_person_id
+                else CanonicalConversationModel.space_id == row.canonical_target_space_id
+            )
+            bindings = (
+                await session.execute(
+                    select(waits.c.id, waits.c.conditions_json)
+                    .join(
+                        CanonicalConversationModel,
+                        CanonicalConversationModel.id == waits.c.conversation_id,
+                    )
+                    .where(waits.c.status == "active", target_filter)
+                )
+            ).all()
+            for binding_id, encoded_conditions in bindings:
+                if any(
+                    condition.get("kind") == "plugin_event"
+                    and condition.get("plugin_id") == plugin_id
+                    for condition in json.loads(encoded_conditions)
+                ):
+                    await session.execute(
+                        update(waits)
+                        .where(waits.c.id == binding_id, waits.c.status == "active")
+                        .values(status="invalidated", updated=now.timestamp())
+                    )
             return True
 
     async def list_grants(self, plugin_id: str) -> tuple[BackgroundTargetGrantView, ...]:
@@ -415,6 +444,8 @@ class PluginNotificationRepository:
                 if created is None:
                     raise RuntimeError("scoped external event could not be reloaded")
                 _require_system_external(created)
+                if appended.created:
+                    created.external_resume_wait = request.resume_waiting_work
                 if not appended.created:
                     receipt = await _existing_event_receipt(
                         session,
@@ -425,6 +456,15 @@ class PluginNotificationRepository:
                     )
                 else:
                     delivery_enqueued = False
+                    resumed_wait = False
+                    if request.resume_waiting_work:
+                        resumed_wait = (
+                            await WorkWaitRepository(WorkRepository(self._database)).match_event(
+                                event_id=created.id,
+                                kind="plugin_event",
+                                session=session,
+                            )
+                        ) is not None
                     for index, handle_id, sha256 in media:
                         delivery_enqueued |= await _ensure_outbox_part(
                             session,
@@ -462,7 +502,7 @@ class PluginNotificationRepository:
                             target_id=target.target_id,
                             bot_user_id=grant.bot_user_id,
                             agent_intent=request.agent_intent,
-                            status="pending",
+                            status="cancelled" if resumed_wait else "pending",
                             attempts=0,
                             max_attempts=3,
                             next_attempt_at=now,
@@ -473,7 +513,7 @@ class PluginNotificationRepository:
                             last_error_category=None,
                             created_at=now,
                             updated_at=now,
-                            completed_at=None,
+                            completed_at=now if resumed_wait else None,
                         )
                         await _stamp_publication_child(
                             session,
@@ -483,7 +523,7 @@ class PluginNotificationRepository:
                         )
                         session.add(job)
                         await session.flush()
-                        job_created = True
+                        job_created = not resumed_wait
                     receipt = NotificationPublishReceipt(
                         notification_id=notification_id,
                         source_event_id=created.id,
@@ -1429,6 +1469,7 @@ async def _load_stored_manifest(
         external_source=event.external_source,
         event_type=event.external_event_type,
         ask_agent=job is not None,
+        resume_waiting_work=event.external_resume_wait,
         agent_intent="" if job is None else job.agent_intent,
         media=await _stored_media_identity(
             session,

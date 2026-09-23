@@ -164,7 +164,7 @@ class AutomationCapabilityHandlers:
         completion_payload: str = "",
     ) -> CapabilityResult:
         snapshot = await self._runtime_config.snapshot(
-            user_id=context.creator_user_id,
+            user_id=context.creator_user_id or None,
             group_id=context.current_group_id,
         )
         current_time = self._time.at(context.actual_started_at, context.timezone)
@@ -172,7 +172,7 @@ class AutomationCapabilityHandlers:
             origin=context.authority.origin,
             actor_user_id=context.creator_user_id,
             actor_is_superuser=context.authority.actor_is_superuser,
-            delegated_authority=None,
+            delegated_authority=context.authority.delegated_authority,
             conversation_key=context.conversation_key,
             current_group_id=context.current_group_id,
             bot_user_id=context.bot_user_id,
@@ -193,8 +193,17 @@ class AutomationCapabilityHandlers:
             invocation_goal=str(arguments["instruction"]),
             invocation_source={
                 "owner": "automation",
+                "principal_kind": context.creator_kind,
+                "actor_person_id": context.canonical_creator_person_id,
+                "bot_user_id": context.bot_user_id,
+                "automation_id": context.automation_id,
                 "automation_run_id": context.automation_run_id,
                 "step_id": context.step_id,
+                "conversation_id": context.canonical_conversation_id,
+                "generation": context.conversation_generation,
+                "presence_id": context.canonical_presence_id,
+                "space_id": context.canonical_target_space_id,
+                "current_group_id": context.current_group_id,
             },
         )
         context = replace(
@@ -266,10 +275,14 @@ class AutomationCapabilityHandlers:
             bot_user_id=context.bot_user_id,
             person_id=context.canonical_creator_person_id,
             space_id=context.canonical_target_space_id,
+            presence_id=context.canonical_presence_id,
             before_model_request=validate_context,
             sandbox_source={
                 "origin": context.authority.origin.value,
+                "principal_kind": context.creator_kind,
                 "actor_user_id": context.creator_user_id,
+                "presence_id": context.canonical_presence_id,
+                "space_id": context.canonical_target_space_id,
                 "bot_user_id": context.bot_user_id,
                 "conversation_id": context.canonical_conversation_id,
                 "generation": context.conversation_generation,
@@ -286,6 +299,11 @@ class AutomationCapabilityHandlers:
                 group_id=context.current_group_id,
                 origin=context.authority.origin,
                 person_id=context.canonical_creator_person_id,
+                presence_id=context.canonical_presence_id,
+                principal_kind=context.creator_kind,
+                automation_run_id=context.automation_run_id
+                if context.creator_kind == "self"
+                else None,
                 instruction=str(arguments["instruction"]),
                 execution_id=runtime.execution_id or "",
                 conversation_id=context.canonical_conversation_id,
@@ -370,7 +388,7 @@ class AutomationCapabilityHandlers:
             if arguments.get("profile_id"):
                 raise AutomationExecutionError("speech_profile_scope_denied")
         snapshot = await self._runtime_config.snapshot(
-            user_id=context.creator_user_id,
+            user_id=context.creator_user_id or None,
             group_id=group_id,
         )
         if not snapshot.speech.automation_enabled:
@@ -711,7 +729,7 @@ class AutomationCapabilityHandlers:
         runtime_config: RuntimeConfigSnapshot | None = None,
     ) -> PromptComposition:
         snapshot = runtime_config or await self._runtime_config.snapshot(
-            user_id=context.creator_user_id,
+            user_id=context.creator_user_id or None,
             group_id=context.current_group_id,
         )
         assembled = await ContextAssembler.assemble_automation(

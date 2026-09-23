@@ -71,6 +71,7 @@ class CapabilityPolicyEngine:
         for descriptor in descriptors:
             same_actor_access = (
                 context.origin is TurnOrigin.SCHEDULED_AUTOMATION
+                and context.authority.principal_kind == "person"
                 and TurnOrigin.USER_MESSAGE in descriptor.allowed_origins
             )
             if context.origin not in descriptor.allowed_origins and not same_actor_access:

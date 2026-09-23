@@ -403,17 +403,19 @@ class AutomationToolService:
                 completed = await self._service.list_completed(actor.user_id)
                 return _result(
                     data={
-                        "timezone": await self._service.timezone(actor.user_id),
+                        "timezone": await self._service.timezone(actor.user_id or "self"),
                         "completed_history": [_record(row) for row in completed[:maximum]],
                     }
                 )
             if name == "time_get_current":
-                return _result(data=await self._service.current_time(actor.user_id))
+                return _result(data=await self._service.current_time(actor.user_id or "self"))
             if name == "time_get_timezone":
-                return _result(data={"timezone": await self._service.timezone(actor.user_id)})
+                return _result(
+                    data={"timezone": await self._service.timezone(actor.user_id or "self")}
+                )
             if name == "time_set_timezone":
                 timezone = await self._service.set_timezone(
-                    actor.user_id, str(arguments.get("timezone") or "")
+                    actor.user_id or "self", str(arguments.get("timezone") or "")
                 )
                 return _result(
                     data={"timezone": timezone},
@@ -545,11 +547,14 @@ def _record(
 
 def _directory_record(entry: AutomationDirectoryEntry) -> dict[str, Any]:
     row = entry.record
+    creator = entry.creator.model_dump(mode="json")
+    if creator["kind"] == "person":
+        creator.pop("kind")
     payload: dict[str, Any] = {
         "automation_id": row.id,
         "task": row.name,
         "next_run_at_local": local_iso(row.next_run_at, row.timezone),
-        "creator": entry.creator.model_dump(mode="json"),
+        "creator": creator,
     }
     if row.status.value != "active":
         payload["status"] = row.status.value
