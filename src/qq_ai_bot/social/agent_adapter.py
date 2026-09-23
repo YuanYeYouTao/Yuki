@@ -20,7 +20,8 @@ async def invoke_social(
 ) -> dict[str, Any]:
     if runtime.origin is TurnOrigin.SELF_INITIATIVE or (
         runtime.origin is TurnOrigin.SCHEDULED_AUTOMATION
-        and runtime.require_actor().principal_kind == "self"
+        and runtime.actor_context is not None
+        and runtime.actor_context.principal_kind == "self"
     ):
         invocation = current_invocation.get()
         actor = runtime.require_actor()
