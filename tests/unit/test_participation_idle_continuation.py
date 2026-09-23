@@ -1,5 +1,6 @@
 """Synthetic host integration; no provider request or QQ send."""
 
+import asyncio
 import time
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
@@ -195,5 +196,48 @@ async def test_source_free_intrinsic_admission_and_confirmed_send_thread(databas
             item.controller.state.observations[reply.ref.event_id].matching_self_anchor
             == anchor.ref
         )
+    finally:
+        await host.close()
+
+
+async def test_pending_intrinsic_is_rejected_after_a_new_human_turn(database, tmp_path):
+    host, _ = await _host(database, tmp_path)
+    try:
+        first = await _event_and_route(database, host.app.ledger)
+        item = await _item(host, first)
+        binding = await host._binding(item)
+        now = time.time()
+        proposal = Proposal(
+            proposal_id=str(uuid4()),
+            scope=item.scene.scope,
+            controller_epoch=binding.controller_epoch,
+            kind=CandidateKind.INTRINSIC,
+            thread="intrinsic:1",
+            target_hint="group",
+            sources=(),
+            support=None,
+            created_at=now,
+            expires_at=now + 60,
+        )
+        item.controller.state.proposals[proposal.proposal_id] = proposal
+        item.controller._set(pending=proposal.proposal_id)
+        assert item.controller.state.last_human_at is not None
+        assert item.controller.state.last_human_at <= proposal.created_at
+        await asyncio.sleep(0.01)
+        await host.app.ledger.append(
+            bot_user_id="8000",
+            platform_message_id=str(uuid4()),
+            scope_type=ScopeType.GROUP,
+            sender_user_id="1001",
+            direction="inbound",
+            content="现在有人在说话。",
+            group_id=first.group_id,
+            occurred_at=datetime.now(UTC),
+        )
+        await host._hydrate(item)
+        assert item.controller.state.last_human_at is not None
+        assert item.controller.state.last_human_at > proposal.created_at
+        await host._admit(item, binding, proposal)
+        assert not await _runs(host)
     finally:
         await host.close()

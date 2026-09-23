@@ -633,6 +633,21 @@ class SemanticParticipationService:
         if intrinsic:
             valid = valid and not refs and proposal.support is None and not proposal.supports
             valid = valid and proposal.target_hint == "group"
+            state = item.controller.state
+            # A saved opportunity can be replayed after a newer turn or stop
+            # has changed the quiet scene. Only a previously accepted run may
+            # continue across that change.
+            valid = valid and (
+                state.last_human_at is None or state.last_human_at <= proposal.created_at
+            )
+            valid = valid and (
+                state.last_self_message_at is None
+                or state.last_self_message_at <= proposal.created_at
+            )
+            valid = valid and not any(
+                boundary.explicit_stop and boundary.group_wide and boundary.released_by is None
+                for boundary in state.boundaries.values()
+            )
         try:
             frozen_sources = {ref: self._source(item, ref) for ref in refs}
         except ValueError:
