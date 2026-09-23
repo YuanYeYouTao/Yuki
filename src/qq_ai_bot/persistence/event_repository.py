@@ -340,6 +340,27 @@ class EventLedgerRepository:
             row = await session.get(ChatEventModel, event_id)
         return _event_record(row) if row is not None else None
 
+    async def get_reply_event(
+        self, event_id: int, *, conversation_id: str, current_generation_only: bool = False
+    ) -> EventRecord | None:
+        """Read a resolved reply only from its canonical conversation's live messages."""
+        async with self._database.sessions() as session:
+            row = await session.scalar(
+                select(ChatEventModel).where(
+                    ChatEventModel.id == event_id,
+                    ChatEventModel.canonical_conversation_id == conversation_id,
+                    ChatEventModel.event_kind == "message",
+                    keeper_event_clause(),
+                )
+            )
+            if row is not None and current_generation_only:
+                from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+
+                conversation = await session.get(CanonicalConversationModel, conversation_id)
+                if conversation is None or row.id <= conversation.starts_after_event_id:
+                    return None
+        return _event_record(row) if row is not None else None
+
     async def read_scope_context(
         self, scope: ConversationScope, *, limit: int, message_only: bool = False
     ) -> tuple[ConversationReadVersion, tuple[EventRecord, ...]]:
@@ -517,22 +538,14 @@ class EventLedgerRepository:
         self,
         scope: ConversationScope,
         *,
-        event_id: int | None,
-        platform_message_id: str | None,
+        event_id: int,
         before: int,
         after: int,
         message_only: bool = False,
     ) -> tuple[EventRecord | None, tuple[EventRecord, ...], tuple[EventRecord, ...]]:
         """Read nearby events strictly inside the current scope generation."""
 
-        center: EventRecord | None = None
-        if event_id is not None:
-            center = await self.get_event(event_id)
-        elif platform_message_id:
-            center = await self.find_by_platform_message(
-                bot_user_id=scope.bot_user_id,
-                platform_message_id=platform_message_id,
-            )
+        center = await self.get_event(event_id)
         if center is None:
             return None, (), ()
         if message_only and center.event_kind != "message":
@@ -584,10 +597,14 @@ class EventLedgerRepository:
                 if raw.isdigit():
                     mentions.append(raw)
         reply_sender = event.reply_sender_user_id
-        if reply_sender is None and event.reply_to_message_id:
-            referenced = await self.find_by_platform_message(
-                bot_user_id=event.bot_user_id,
-                platform_message_id=event.reply_to_message_id,
+        if (
+            reply_sender is None
+            and event.reply_to_event_id is not None
+            and event.canonical_conversation_id is not None
+        ):
+            referenced = await self.get_reply_event(
+                event.reply_to_event_id,
+                conversation_id=event.canonical_conversation_id,
             )
             if (
                 referenced is not None

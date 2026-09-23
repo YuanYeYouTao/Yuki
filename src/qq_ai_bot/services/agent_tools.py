@@ -477,16 +477,16 @@ class AgentToolService:
                 name="get_chat_history_around",
                 description=(
                     "读取当前会话账本中某条消息前后的原文。"
-                    "用 event_id 或 platform_message_id 定位，不调用 QQ 网关。"
+                    "只用内部 event_id 定位，不调用 QQ 网关。"
                     "默认半径很小；需要对齐摘要覆盖区间里的原话时使用。"
                 ),
                 parameters=_object_schema(
                     {
                         "event_id": {"type": "integer", "minimum": 1},
-                        "platform_message_id": {"type": "string"},
                         "before": {"type": "integer", "minimum": 0},
                         "after": {"type": "integer", "minimum": 0},
-                    }
+                    },
+                    required=("event_id",),
                 ),
             ),
             ChatTool(
@@ -1582,14 +1582,10 @@ class AgentToolService:
         runtime: ToolRuntime,
     ) -> str:
         event_id = arguments.get("event_id")
-        platform_message_id = self._optional_string(arguments.get("platform_message_id"))
-        if event_id is not None and (isinstance(event_id, bool) or not isinstance(event_id, int)):
+        if isinstance(event_id, bool) or not isinstance(event_id, int) or event_id <= 0:
             return self._result(error="invalid_event_id", detail="event_id 必须是正整数")
-        if event_id is None and not platform_message_id:
-            return self._result(
-                error="missing_target",
-                detail="必须提供 event_id 或 platform_message_id",
-            )
+        if "platform_message_id" in arguments:
+            return self._result(error="invalid_target", detail="本地账本只接受 event_id")
         scope = runtime.conversation_scope()
         max_before = self._settings.conversation_history_around_before
         max_after = self._settings.conversation_history_around_after
@@ -1612,7 +1608,6 @@ class AgentToolService:
         center, earlier, later = await self._ledger.list_scope_around(
             scope,
             event_id=event_id,
-            platform_message_id=platform_message_id,
             before=before,
             after=after,
             message_only=True,

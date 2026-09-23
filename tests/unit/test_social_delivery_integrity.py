@@ -24,6 +24,48 @@ from qq_ai_bot.speech.delivery import VoiceDeliveryService
 
 
 @pytest.mark.asyncio
+async def test_quoted_social_sequence_persists_internal_reference_only_on_first_part(
+    database, tmp_path, monkeypatch
+):
+    from qq_ai_bot.services.message_splitter import OutboundMessageSplitter
+
+    env = await social_env(database, tmp_path)
+    source = await env.service.writer.append(
+        scope=ConversationScope.group("80001", "20001"),
+        platform_message_id="123",
+        sender_user_id="10001",
+        direction="inbound",
+        content="quote source",
+    )
+    monkeypatch.setattr(
+        OutboundMessageSplitter, "render", lambda *_args, **_kwargs: ("first", "second")
+    )
+    context = replace(
+        env.context,
+        call_id="quoted-sequence",
+        visible_event_ids=frozenset({source.event.id}),
+        runtime_snapshot=SimpleNamespace(
+            reply=SimpleNamespace(delay_min_seconds=0, delay_max_seconds=0)
+        ),
+    )
+    result = await env.service.execute(
+        "send_message", {"text": "first second", "reply_to_event_id": source.event.id}, context
+    )
+    assert result["status"] == "succeeded"
+    async with database.sessions() as session:
+        sent = list(
+            await session.scalars(
+                select(ChatEventModel)
+                .where(ChatEventModel.direction == "outbound")
+                .order_by(ChatEventModel.id)
+            )
+        )
+    assert [row.reply_to_event_id for row in sent] == [source.event.id, None]
+    assert sent[0].reply_to_message_id == source.event.platform_message_id
+    assert sent[1].reply_to_message_id is None
+
+
+@pytest.mark.asyncio
 async def test_strict_social_receipt_is_uncertain_without_resend_and_upload_stays_independent(
     database, tmp_path, monkeypatch
 ):

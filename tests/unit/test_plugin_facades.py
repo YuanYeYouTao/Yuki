@@ -169,6 +169,70 @@ async def durable_invocation(database: Database, **kwargs: Any) -> PluginInvocat
 
 
 @pytest.mark.asyncio
+async def test_plugin_reply_reads_only_resolved_keeper_in_same_conversation(
+    database: Database,
+) -> None:
+    from qq_ai_bot.identity.canonical_repository import (
+        ensure_person,
+        ensure_presence,
+        ensure_space,
+    )
+
+    async with database.immediate_session() as session:
+        await ensure_space(session, "20002")
+        await ensure_person(session, "10003")
+        await ensure_presence(session, "99998")
+    ledger = EventLedgerRepository(database)
+    foreign, _ = await ledger.append(
+        bot_user_id="99998",
+        scope_type=ScopeType.GROUP,
+        group_id="20002",
+        platform_message_id="colliding-reply",
+        sender_user_id="10002",
+        direction="inbound",
+        content="foreign",
+    )
+    trusted = await durable_invocation(database, group_id="20001")
+    source, _ = await ledger.append(
+        bot_user_id="99999",
+        scope_type=ScopeType.GROUP,
+        group_id="20001",
+        platform_message_id="colliding-reply",
+        sender_user_id="10003",
+        direction="inbound",
+        content="correct",
+    )
+    assert trusted.inbound is not None
+    context = HostPluginContext(
+        plugin_id="example.plugin",
+        approved_permissions=(PluginPermission.MESSAGE_REPLY_READ,),
+        services=PluginFacadeServices(ledger=ledger),
+    )
+    quoted = replace(
+        trusted,
+        inbound=replace(
+            trusted.inbound,
+            reply_to_message_id="colliding-reply",
+            reply_to_event_id=source.id,
+        ),
+    )
+    with context.bind(quoted):
+        reply = await context.messages.get_reply()
+    assert reply is not None and reply.text == "correct"
+    for event_id in (foreign.id, None):
+        unresolved = replace(
+            trusted,
+            inbound=replace(
+                trusted.inbound,
+                reply_to_message_id="colliding-reply",
+                reply_to_event_id=event_id,
+            ),
+        )
+        with context.bind(unresolved):
+            assert await context.messages.get_reply() is None
+
+
+@pytest.mark.asyncio
 async def test_contextvar_binding_is_required_scoped_and_task_local() -> None:
     context = HostPluginContext(
         plugin_id="example.plugin",

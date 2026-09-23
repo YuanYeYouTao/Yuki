@@ -1003,6 +1003,18 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
         segments=({"type": "video", "data": {"name": "clip.mp4"}},),
     )
     tools._ledger.list_scope_around = AsyncMock(return_value=(actual_record, (), ()))
+    around_tool = next(
+        tool for tool in tools.definitions(group_runtime) if tool.name == "get_chat_history_around"
+    )
+    assert around_tool.parameters["required"] == ["event_id"]
+    assert "platform_message_id" not in around_tool.parameters["properties"]
+    invalid_history = json.loads(
+        await tools.execute(
+            "get_chat_history_around", '{"platform_message_id":"history-attachment"}', group_runtime
+        )
+    )
+    assert not invalid_history["ok"]
+    assert tools._ledger.list_scope_around.await_count == 0
     actual_history = json.loads(
         await tools.execute(
             "get_chat_history_around", json.dumps({"event_id": actual_record.id}), group_runtime

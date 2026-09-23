@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -68,3 +69,37 @@ def test_history_segment_fallback_log_never_contains_content_or_ids(
     assert "919191" not in caplog.text
     assert "private-message-id" not in caplog.text
     assert "private-segment-content" not in caplog.text
+
+
+def test_reply_projection_uses_internal_id_even_when_platform_ids_collide() -> None:
+    base = EventRecord(
+        id=1,
+        bot_user_id="8000",
+        platform_message_id="same-platform-id",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="1001",
+        direction="inbound",
+        content="first",
+        visual_summary="",
+        segments=(),
+        occurred_at=datetime.now(UTC),
+        group_id="2001",
+        canonical_conversation_id="conversation-1",
+    )
+    collision = replace(base, id=2, sender_user_id="1002", content="second")
+    reply = replace(
+        base,
+        id=3,
+        platform_message_id="reply",
+        sender_user_id="1003",
+        content="reply body",
+        reply_to_message_id="same-platform-id",
+        reply_to_event_id=base.id,
+    )
+    renderer = ChatEventPromptRenderer((base, collision, reply))
+    rendered = renderer.render_reference_event(reply)
+    assert "回复:#1/" in rendered
+    assert "回复:#2/" not in rendered
+    missing = renderer.render_reference_event(replace(reply, reply_to_event_id=None))
+    assert "回复:引用不可用" in missing
+    assert "1002" not in missing

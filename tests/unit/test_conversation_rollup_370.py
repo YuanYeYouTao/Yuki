@@ -94,6 +94,7 @@ def _reply_mention_events() -> tuple[EventRecord, ...]:
         segments=(),
         occurred_at=occurred,
         group_id="1049765710",
+        canonical_conversation_id="conversation-1",
     )
     reply = EventRecord(
         id=2,
@@ -109,6 +110,8 @@ def _reply_mention_events() -> tuple[EventRecord, ...]:
         occurred_at=occurred + timedelta(seconds=1),
         group_id="1049765710",
         reply_to_message_id="msg-parent",
+        reply_to_event_id=parent.id,
+        canonical_conversation_id="conversation-1",
         mentioned_user_ids=("380726517",),
         reply_sender_user_id="10001",
     )
