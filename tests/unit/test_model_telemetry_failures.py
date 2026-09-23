@@ -36,6 +36,7 @@ from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
 from qq_ai_bot.model_runtime.repository import ModelInvocationRepository
 from qq_ai_bot.model_runtime.routes import ModelRouter
 from qq_ai_bot.runtime.activation_outcome import classify_failure, failure_status_text
+from qq_ai_bot.runtime.work_repository import WorkConflict
 
 
 def test_disconnected_presence_can_retry_without_reclassifying_route_denials():
@@ -54,6 +55,22 @@ def test_disconnected_presence_can_retry_without_reclassifying_route_denials():
         raise RouteSendError("original_presence_unavailable") from RegistryClosed("ambiguous")
     except RouteSendError as ambiguous:
         assert not classify_failure(ambiguous).retryable
+
+
+def test_work_conflict_receipt_keeps_safe_reason_without_exposing_arbitrary_text():
+    changed = classify_failure(WorkConflict("work_journal_source_changed"))
+    assert (changed.code, changed.stage, changed.retryable) == (
+        "work_journal_source_changed",
+        "context",
+        True,
+    )
+    assert changed.diagnostics == {"category": "work_conflict"}
+    stale = classify_failure(WorkConflict("work_effect_receipt_conflict"))
+    assert stale.code == "work_effect_receipt_conflict" and not stale.retryable
+    assert "状态" in failure_status_text(stale)
+    unsafe = classify_failure(WorkConflict("private input: secret"))
+    assert unsafe.code == "work_conflict_unspecified"
+    assert "secret" not in repr(unsafe)
 
 
 def busy():
