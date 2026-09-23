@@ -103,14 +103,21 @@ class CanonicalIngressUnitOfWork:
         if message.scope_type is ScopeType.GROUP:
             if admitted.space_binding_id is None:
                 raise CanonicalIdentityError("unclassified")
-            # Membership probes and route provisioning may perform network I/O
-            # or open their own write transaction. Never hold the append lock.
-            fence = await self._router.evaluate_ingest(
-                space_binding_id=admitted.space_binding_id,
-                event_presence_id=admitted.presence_id,
-            )
-            if fence != "ok":
-                raise CanonicalIdentityError(fence)
+            if new_generation:
+                # The resolver already authenticated this exact inbound connection
+                # and proved group membership. A reset must not be lost solely
+                # because that socket closes while prior work is being cancelled.
+                if admitted.connection_id is None or admitted.gateway_instance_id is None:
+                    raise CanonicalIdentityError("unclassified")
+            else:
+                # Membership probes and route provisioning may perform network I/O
+                # or open their own write transaction. Never hold the append lock.
+                fence = await self._router.evaluate_ingest(
+                    space_binding_id=admitted.space_binding_id,
+                    event_presence_id=admitted.presence_id,
+                )
+                if fence != "ok":
+                    raise CanonicalIdentityError(fence)
         async with self._database.immediate_session() as session:
             trip("before_fence_recheck")
             if message.scope_type is ScopeType.GROUP:
@@ -120,6 +127,7 @@ class CanonicalIngressUnitOfWork:
                     session,
                     space_binding_id=admitted.space_binding_id,
                     event_presence_id=admitted.presence_id,
+                    require_connected=not new_generation,
                 )
                 if fence != "ok":
                     raise CanonicalIdentityError(fence)

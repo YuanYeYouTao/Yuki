@@ -747,16 +747,21 @@ class MessageProcessor:
                 started,
             )
 
-        await self._observe_group_metadata(
-            message,
-            group_policy,
-            profile_resolver,
-        )
-        profile = await self._user_profiles.capture(message, profile_resolver)
         is_authorized_new = bool(
             decision.command is CommandName.NEW
             and (message.scope_type is ScopeType.PRIVATE or is_superuser)
         )
+        if is_authorized_new:
+            # Reset has no need for optional gateway profile lookups. Keep its
+            # authenticated ingress fresh while waiting for the effect gate.
+            profile = self._event_profile(message)
+        else:
+            await self._observe_group_metadata(
+                message,
+                group_policy,
+                profile_resolver,
+            )
+            profile = await self._user_profiles.capture(message, profile_resolver)
         if is_authorized_new:
             await self._turn_coordinator.cancel_running_before_boundary(coordinator_key)
             try:

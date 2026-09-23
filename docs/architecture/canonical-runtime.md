@@ -59,6 +59,8 @@ Rollup source projection 会显示有界因果标签，平台正文不被改写�
 
 路由变化只增加 RouteGeneration。路由暂停时失败关闭；群 ingest 不匹配的事件在策略、账本正文、
 Agent 和 Memory 之前丢弃。事件触发的即时回复优先复用本次 ingress 连接，主动发送才读取持久路由。
+已由接入层验证的群 `/ai new` 在写入时复核持久 ingest 路由与 Presence；处理期间原 WebSocket
+断开不撤销这条已收到的命令，路由暂停或改绑仍拒绝写入。
 
 群内超管的精确 `/ai on` 使用独立的确定性控制入口，不是绕过 ingest 的聊天事件：QQ adapter
 验证真实事件连接与管理员 Binding，恢复服务保留健康接入 pin，否则仅接受唯一通过实时成员
