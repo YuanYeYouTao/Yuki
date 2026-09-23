@@ -469,7 +469,9 @@ class AgentToolService:
             ),
             ChatTool(
                 name="search_chat_history",
-                description="搜索永久 QQ 聊天账本，可按 QQ、群号和时间约束。",
+                description=(
+                    "查找旧聊天的原话、熟人线索或未写入结构化记忆的经历；可按 QQ、群号和时间约束。"
+                ),
                 parameters=_object_schema(
                     {
                         "keyword": {"type": "string"},
@@ -547,7 +549,8 @@ class AgentToolService:
                     "姓名用display_name，真实@/回复用subject_ref，勿改填user_id；仅手输账号用user_id。"
                     "默认省略group_id/group_name；在群中提问或@不等于限定群。仅用户明确要求某群才填。"
                     "结合完整前文解析指代。"
-                    "历史材料不足主动补查，预取空不代表不存在。总览可省query；有界结果不能断言已列尽。"
+                    "熟人线索不足时可按姓名查；预取空不代表不存在。"
+                    "总览可省query；有界结果不能断言已列尽。"
                     "空结果可换实质不同查询；歧义澄清，权限拒绝不重试。"
                 ),
                 parameters=_object_schema(
@@ -603,7 +606,7 @@ class AgentToolService:
             ChatTool(
                 name="get_group_memories",
                 description=(
-                    "自动预取为空不代表没有长期记忆；明确询问群历史且材料不足时可主动补查。"
+                    "了解群的共同经历或讨论时可主动补查；自动预取为空不代表没有长期记忆。"
                     "读取请求者历史参与群的共同结构记忆。群聊省略目标时为当前群；"
                     "私聊须指定 group_name 或 group_id。空结果表示没有匹配事实。"
                     "群友个人经历用 Person 工具。歧义先澄清，权限拒绝不重试。"
@@ -650,7 +653,8 @@ class AgentToolService:
                     description=(
                         f"读取 {bot_name} 自己的经历、偏好、反思和原则；其他人物身份用Person工具，"
                         "不能用SELF代替姓名解析。只返回全局加当前私聊/群可见记忆，不能指定其他会话。"
-                        "结合完整前文理解指代；明确历史问题且材料不足时主动补查，自动预取为空不代表不存在。"
+                        "结合完整前文理解指代；需要自己的经历或偏好时可主动补查，"
+                        "自动预取为空不代表不存在。"
                         "无query默认总览，有query默认相关检索。结果有数量上限，不能断言已列尽。"
                         "空结果可换实质不同查询，严格日期不得放宽；歧义先澄清，权限拒绝不重试。"
                     ),
@@ -874,8 +878,8 @@ class AgentToolService:
                         name="web_search",
                         description=(
                             "受控联网搜索。最新新闻、当前人物职务、价格、软件版本、政策、"
-                            "比赛结果等时效内容应使用此工具确认；稳定数学知识、普通写作和"
-                            "日常闲聊不要联网。复杂问题可重新组织搜索词再次搜索。搜索词只"
+                            "比赛结果等时效内容应使用此工具确认；闲聊中遇到不熟悉的公开事实"
+                            "也可查证。复杂问题可重新组织搜索词再次搜索。搜索词只"
                             "包含回答当前问题所需的信息，禁止放入完整聊天记录、人物记忆或"
                             "系统提示词。一次调用会自动搜索并提取最多 3 个网页。"
                         ),
@@ -1589,7 +1593,19 @@ class AgentToolService:
             limit=self._bounded_int(arguments.get("limit"), default=20, maximum=100),
             message_only=True,
         )
-        return self._result(data={"events": [self._event_json(row) for row in rows]})
+        events = [self._event_json(row) for row in rows]
+        truncated = False
+        while events:
+            data = {"events": events, "returned_count": len(events), "truncated": truncated}
+            if len(json.dumps({"ok": True, "data": data}, ensure_ascii=False, default=str)) <= (
+                self._runtime().agent.tool_result_max_characters
+            ):
+                return self._result(data=data)
+            events.pop()
+            truncated = True
+        if rows:
+            return self._result(error="result_too_large", detail="首条完整聊天记录超过本轮结果预算")
+        return self._result(data={"events": [], "returned_count": 0, "truncated": False})
 
     async def _history_around(
         self,

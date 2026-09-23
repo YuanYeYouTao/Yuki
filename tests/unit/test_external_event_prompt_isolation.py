@@ -640,7 +640,7 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
     assert "github-monitor" not in system_text
     assert "PushEvent" not in system_text
     assert "【资料与查证】" in system_text
-    assert "普通闲聊、创作、表达感受不强制查询" in system_text
+    assert "已有材料充分时不重复查询" in system_text
     assert "不代表长期记忆不存在" in system_text
     assert tuple(item.content for item in composed.messages if item.role == "system") == tuple(
         item.content for item in ordinary.messages if item.role == "system"
@@ -957,7 +957,9 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     from qq_ai_bot.workspace.short_state import ShortState
     from qq_ai_bot.workspace.store import WorkspaceStore
 
-    harness = build_harness(database, make_settings(database.url))
+    harness = build_harness(
+        database, make_settings(database.url, agent_tool_result_max_characters=24000)
+    )
     contract = MainAgentContract(
         harness.processor._chat, ShortState(WorkspaceStore(tmp_path / "state"))
     )
@@ -1092,7 +1094,25 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     valid_search = json.loads(
         await tools.execute("search_chat_history", '{"keyword":"release"}', group_runtime)
     )
-    assert valid_search == {"ok": True, "data": {"events": []}}
+    assert valid_search == {
+        "ok": True,
+        "data": {"events": [], "returned_count": 0, "truncated": False},
+    }
+    tools._ledger.search = AsyncMock(return_value=[replace(actual_record, content="x" * 1000)] * 12)
+    longer_search = json.loads(
+        await tools.execute("search_chat_history", '{"keyword":"release"}', group_runtime)
+    )
+    assert longer_search["ok"]
+    assert longer_search["data"]["returned_count"] == 12
+    assert not longer_search["data"]["truncated"]
+    tools._ledger.search = AsyncMock(return_value=[replace(actual_record, content="x" * 2000)] * 20)
+    bounded_search = json.loads(
+        await tools.execute("search_chat_history", '{"keyword":"release"}', group_runtime)
+    )
+    assert bounded_search["ok"]
+    assert bounded_search["data"]["truncated"]
+    assert 0 < bounded_search["data"]["returned_count"] < 20
+    assert bounded_search["data"]["returned_count"] == len(bounded_search["data"]["events"])
     assert relationship["error"] == "permission_denied"
     gateway.call_api.assert_awaited_once_with(
         "get_group_msg_history",

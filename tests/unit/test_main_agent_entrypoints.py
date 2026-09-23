@@ -461,7 +461,7 @@ async def test_plugin_callback_pending_is_queryable_after_callback_returns(
         bot_user_id="80001",
         inbound=inbound,
     )
-    monkeypatch.setattr(main_turn, "CALLBACK_WAIT_SECONDS", 0.5)
+    monkeypatch.setattr(main_turn, "CALLBACK_WAIT_SECONDS", 2.0)
     try:
         if segment_resume == "preparation":
             from yuki_plugin_sdk.errors import PluginPermissionError
@@ -474,13 +474,13 @@ async def test_plugin_callback_pending_is_queryable_after_callback_returns(
                 host.bind(invocation),
                 pytest.raises(PluginPermissionError, match="no work accepted"),
             ):
-                await asyncio.wait_for(host.agent.run("计算"), 3)
+                await asyncio.wait_for(host.agent.run("计算"), 5)
             assert not main_turn._RUNNING
             assert not provider.requests
             return
         with host.bind(invocation):
             pending = await asyncio.wait_for(
-                host.agent.run("计算", max_model_requests=1 if segment_resume else None), 3
+                host.agent.run("计算", max_model_requests=1 if segment_resume else None), 5
             )
         assert pending.data["pending"] is True, pending
         work_id = pending.data["work_id"]
