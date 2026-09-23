@@ -303,6 +303,47 @@ async def test_oldest_first_backlog_advances_without_truncating_newest() -> None
 
 
 @pytest.mark.asyncio
+async def test_accepted_backlog_drains_between_github_fetches(monkeypatch: Any) -> None:
+    from github_monitor import polling as polling_module
+
+    monkeypatch.setattr(polling_module, "BACKLOG_DRAIN_INTERVAL_SECONDS", 0.001)
+    context = FakePluginContext(plugin_id="github-monitor")
+    storage = FaultStorage()
+    context.storage = storage  # type: ignore[assignment]
+    _seed_state(storage, _cursor_state(98))
+    subscription = _subscription()
+    config = _config(subscription, maximum=2)
+    client = ConditionalPageClient({1: [_raw(value) for value in range(105, 97, -1)]})
+    poller = GitHubPoller(context, asyncio.Event())
+    poller._client = client  # type: ignore[assignment]
+
+    await _poll(poller, context, subscription, config)
+    await asyncio.wait_for(
+        poller._drain_accepted_backlog(subscription, config, completed=False),
+        timeout=0.5,
+    )
+
+    state = (await load_queue_state(context, REPOSITORY)).state
+    assert state.accepted_cursor == state.committed_cursor == "105"
+    assert state.pending == ()
+    assert state.inflight is None
+    assert state.backlog_pending is True
+    assert len(client.requests) == 1
+    await poller.poll_repository(subscription, config, drain_only=True)
+    assert len(client.requests) == 1
+    batches = [
+        request.payload["source_event_ids"] for request in context.notifications.published[:-1]
+    ]
+    assert batches == [
+        ["99", "100"],
+        ["101", "102"],
+        ["103", "104"],
+    ]
+    assert context.notifications.published[-1].event_type == "WatchEvent"
+    assert context.notifications.published[-1].event_key.endswith(":event:105")
+
+
+@pytest.mark.asyncio
 async def test_existing_queue_consumes_one_poll_budget_before_fetch() -> None:
     context = FakePluginContext(plugin_id="github-monitor")
     storage = FaultStorage()
