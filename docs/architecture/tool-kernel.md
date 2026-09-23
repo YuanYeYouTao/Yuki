@@ -13,6 +13,8 @@ Tool Kernel 分开管理工具目录、固定声明与执行授权。主 Agent �
 
 主 Agent 的普通聊天、主动触发、自动化、插件主调用和持久续跑复用这份声明。
 它不是按每条消息或每个用户生成的白名单。工具合同变更需重启并开启明确的新链。
+`get_chat_history_around` 只以必填的内部 `event_id` 定位当前会话账本；缺少编号或传入
+平台消息号会收到错误回执。声明变更随部署生成新的合同 revision，不沿用旧请求链。
 Provider 原生工具还有独立的协议和配置合同，不能只检查函数工具就声称整个请求相同。
 
 `request_tools` 经 `MainAgentBackend._request_tools()` 调用

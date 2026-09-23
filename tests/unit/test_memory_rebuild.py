@@ -339,7 +339,7 @@ async def test_snapshot_keyset_is_stable_and_excludes_later_event(database: Data
 
 
 @pytest.mark.asyncio
-async def test_trusted_legacy_subject_metadata_never_crosses_group(database: Database) -> None:
+async def test_internal_reply_subject_metadata_never_crosses_group(database: Database) -> None:
     _settings, ledger, _facts, _provider, service = await _service(database)
     assert service is not None
     referenced, _ = await ledger.append(
@@ -360,6 +360,7 @@ async def test_trusted_legacy_subject_metadata_never_crosses_group(database: Dat
         content="确定性元数据",
         group_id="3001",
         reply_to_message_id=referenced.platform_message_id,
+        reply_to_event_id=referenced.id,
         segments=({"type": "at", "data": {"qq": "3003"}},),
     )
     hydrated = await ledger.hydrate_rebuild_subjects(event)
@@ -377,6 +378,18 @@ async def test_trusted_legacy_subject_metadata_never_crosses_group(database: Dat
         reply_to_message_id=referenced.platform_message_id,
     )
     assert (await ledger.hydrate_rebuild_subjects(cross_group)).reply_sender_user_id is None
+
+    old_event, _ = await ledger.append(
+        bot_user_id="8000",
+        platform_message_id="old-subjects",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="1001",
+        direction="inbound",
+        content="旧引用缺内部编号",
+        group_id="3001",
+        reply_to_message_id=referenced.platform_message_id,
+    )
+    assert (await ledger.hydrate_rebuild_subjects(old_event)).reply_sender_user_id is None
 
 
 @pytest.mark.asyncio
@@ -404,6 +417,7 @@ async def test_hydrate_rebuild_subjects_drops_yuki_and_external_bot_targets(
         content="回另一号",
         group_id="3001",
         reply_to_message_id=yuki.platform_message_id,
+        reply_to_event_id=yuki.id,
         segments=({"type": "at", "data": {"qq": "8001"}},),
     )
     external, _ = await ledger.append(
@@ -425,6 +439,7 @@ async def test_hydrate_rebuild_subjects_drops_yuki_and_external_bot_targets(
         content="回机器人",
         group_id="3001",
         reply_to_message_id=external.platform_message_id,
+        reply_to_event_id=external.id,
         segments=({"type": "at", "data": {"qq": "7007"}},),
     )
 

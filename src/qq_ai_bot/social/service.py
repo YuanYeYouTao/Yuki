@@ -1289,6 +1289,7 @@ class SocialService:
                             ),
                             None,
                         ),
+                        reply_to_event_id=args.get("reply_to_event_id"),
                         session=session,
                     )
                 await self.receipts.finish(

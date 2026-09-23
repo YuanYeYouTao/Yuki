@@ -951,8 +951,22 @@ async def test_plugin_wakeup_can_end_without_creating_a_fake_reply(
 @pytest.mark.asyncio
 async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_actor(
     database: Database,
+    tmp_path,
 ) -> None:
+    from qq_ai_bot.services.main_agent_contract import MainAgentContract
+    from qq_ai_bot.workspace.short_state import ShortState
+    from qq_ai_bot.workspace.store import WorkspaceStore
+
     harness = build_harness(database, make_settings(database.url))
+    contract = MainAgentContract(
+        harness.processor._chat, ShortState(WorkspaceStore(tmp_path / "state"))
+    )
+    frozen = await contract.definitions()
+    frozen_around = next(item for item in frozen if item.name == "get_chat_history_around")
+    assert frozen_around.parameters["required"] == ["event_id"]
+    assert "platform_message_id" not in frozen_around.parameters["properties"]
+    assert contract.health()["frozen"] is True
+    assert contract.revision
     tools = harness.processor._chat._tools
     runtime_config = await harness.processor._chat._runtime_config.snapshot(
         user_id="1001",
@@ -1003,6 +1017,18 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
         segments=({"type": "video", "data": {"name": "clip.mp4"}},),
     )
     tools._ledger.list_scope_around = AsyncMock(return_value=(actual_record, (), ()))
+    around_tool = next(
+        tool for tool in tools.definitions(group_runtime) if tool.name == "get_chat_history_around"
+    )
+    assert around_tool.parameters["required"] == ["event_id"]
+    assert "platform_message_id" not in around_tool.parameters["properties"]
+    invalid_history = json.loads(
+        await tools.execute(
+            "get_chat_history_around", '{"platform_message_id":"history-attachment"}', group_runtime
+        )
+    )
+    assert not invalid_history["ok"]
+    assert tools._ledger.list_scope_around.await_count == 0
     actual_history = json.loads(
         await tools.execute(
             "get_chat_history_around", json.dumps({"event_id": actual_record.id}), group_runtime

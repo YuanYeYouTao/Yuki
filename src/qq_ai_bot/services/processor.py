@@ -1247,11 +1247,13 @@ class MessageProcessor:
         resolved_source_event_id = source_event_id
         if (
             not any(attachment.kind.value == "image" for attachment in message.attachments)
-            and message.reply_to_message_id
+            and message.reply_to_event_id is not None
+            and message.conversation_id is not None
         ):
-            replied_event = await self._ledger.find_by_platform_message(
-                bot_user_id=message.bot_user_id or "unknown-bot",
-                platform_message_id=message.reply_to_message_id,
+            replied_event = await self._ledger.get_reply_event(
+                message.reply_to_event_id,
+                conversation_id=message.conversation_id,
+                current_generation_only=True,
             )
             if replied_event is not None:
                 resolved_source_event_id = replied_event.id

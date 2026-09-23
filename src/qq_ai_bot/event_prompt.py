@@ -213,9 +213,6 @@ class ChatEventPromptRenderer:
             if value
         }
         self._yuki_account_ids = frozenset({*yuki_account_ids, *inferred_yuki_ids})
-        self._events_by_message_id = {
-            row.platform_message_id: row for row in rows if row.platform_message_id
-        }
         self._events_by_id = {row.id: row for row in rows}
         self._display_names_by_user_id: dict[str, str] = {}
         for row in rows:
@@ -358,18 +355,18 @@ class ChatEventPromptRenderer:
             ),
         )
         fields = [f"#{row.id}"]
-        if row.reply_to_message_id:
-            target = self._events_by_message_id.get(row.reply_to_message_id)
-            reply_user_id = row.reply_sender_user_id or (
-                target.sender_user_id if target is not None else ""
+        if row.reply_to_event_id is not None:
+            target = self._reply_target(row)
+            fields.append(
+                f"回复:#{row.reply_to_event_id}/"
+                + (
+                    self._identity_label(target.sender_user_id, bot_user_id=row.bot_user_id)
+                    if target is not None
+                    else "内容不可用"
+                )
             )
-            reply_identity = (
-                self._identity_label(target.sender_user_id, bot_user_id=row.bot_user_id)
-                if target is not None
-                else self._identity_label(reply_user_id, bot_user_id=row.bot_user_id)
-            )
-            reply_reference = f"#{target.id}/" if target is not None else ""
-            fields.append(f"回复:{reply_reference}{reply_identity}")
+        elif row.reply_to_message_id:
+            fields.append("回复:引用不可用")
         mention_field = self._mention_field(
             row.mentioned_user_ids,
             bot_user_id=row.bot_user_id,
@@ -395,15 +392,26 @@ class ChatEventPromptRenderer:
             f"QQ:{inbound.sender.user_id}",
             f"消息:{inbound.message_id}",
         ]
-        if inbound.reply_to_message_id:
+        if inbound.reply_to_event_id is not None:
+            target = self._events_by_id.get(inbound.reply_to_event_id)
+            if (
+                target is None
+                or target.canonical_conversation_id is None
+                or target.canonical_conversation_id != inbound.conversation_id
+                or target.event_kind != "message"
+                or target.suppression_status not in (None, "keeper")
+            ):
+                target = None
             fields.append(
-                "回复:"
-                + self._identity_label(
-                    inbound.reply_sender_user_id or "",
-                    bot_user_id=inbound.bot_user_id,
+                f"回复:#{inbound.reply_to_event_id}/"
+                + (
+                    self._identity_label(target.sender_user_id, bot_user_id=inbound.bot_user_id)
+                    if target is not None
+                    else "内容不可用"
                 )
-                + f"/消息:{inbound.reply_to_message_id}"
             )
+        elif inbound.reply_to_message_id:
+            fields.append("回复:引用不可用")
         mention_field = self._mention_field(
             inbound.mentioned_user_ids,
             bot_user_id=inbound.bot_user_id,
@@ -487,17 +495,14 @@ class ChatEventPromptRenderer:
             f"QQ:{row.sender_user_id}",
             f"消息:{row.platform_message_id}",
         ]
-        if row.reply_to_message_id:
-            target = self._events_by_message_id.get(row.reply_to_message_id)
-            reply_user_id = row.reply_sender_user_id or (
-                target.sender_user_id if target is not None else ""
+        if row.reply_to_event_id is not None:
+            target = self._reply_target(row)
+            fields.append(
+                f"回复:#{row.reply_to_event_id}/"
+                + (self._row_display_name(target) if target is not None else "内容不可用")
             )
-            reply_name = (
-                self._row_display_name(target)
-                if target is not None
-                else self._identity_label(reply_user_id, bot_user_id=row.bot_user_id)
-            )
-            fields.append(f"回复:{reply_name}/消息:{row.reply_to_message_id}")
+        elif row.reply_to_message_id:
+            fields.append("回复:引用不可用")
         mention_field = self._mention_field(
             row.mentioned_user_ids,
             bot_user_id=row.bot_user_id,
@@ -505,6 +510,20 @@ class ChatEventPromptRenderer:
         if mention_field:
             fields.append(mention_field)
         return f"[{'|'.join(fields)}]"
+
+    def _reply_target(self, row: EventRecord) -> EventRecord | None:
+        if row.reply_to_event_id is None:
+            return None
+        target = self._events_by_id.get(row.reply_to_event_id)
+        if (
+            target is None
+            or target.event_kind != "message"
+            or target.suppression_status not in (None, "keeper")
+            or row.canonical_conversation_id is None
+            or target.canonical_conversation_id != row.canonical_conversation_id
+        ):
+            return None
+        return target
 
     def _mention_field(self, user_ids: Iterable[str], *, bot_user_id: str) -> str:
         labels = [

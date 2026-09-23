@@ -837,17 +837,20 @@ class _MessageFacade:
         assert invocation is not None
         inbound = invocation.inbound
         ledger = self._host._services.ledger
-        if inbound is None or not inbound.reply_to_message_id or ledger is None:
+        if (
+            inbound is None
+            or inbound.reply_to_event_id is None
+            or invocation.conversation_id is None
+            or inbound.conversation_id != invocation.conversation_id
+            or ledger is None
+        ):
             return None
-        record = await ledger.find_by_platform_message(
-            bot_user_id=invocation.bot_user_id,
-            platform_message_id=inbound.reply_to_message_id,
+        record = await ledger.get_reply_event(
+            inbound.reply_to_event_id,
+            conversation_id=invocation.conversation_id,
+            current_generation_only=True,
         )
-        return (
-            _record_message(record)
-            if record is not None and record.event_kind == "message"
-            else None
-        )
+        return _record_message(record) if record is not None else None
 
     async def get_recent(self, limit: int = 20) -> tuple[CurrentMessage, ...]:
         invocation = self._host._require(PluginPermission.MESSAGE_HISTORY_READ)

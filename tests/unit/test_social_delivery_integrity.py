@@ -305,11 +305,12 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
 
 @pytest.mark.asyncio
 async def test_work_social_delivery_passes_seventeenth_message_and_split_without_replay(
-    database, tmp_path
+    database, tmp_path, monkeypatch
 ):
     from qq_ai_bot.runtime.work_activation import current_work_control
     from qq_ai_bot.runtime.work_control import WorkControl
     from qq_ai_bot.runtime.work_repository import WorkRepository
+    from qq_ai_bot.services.message_splitter import OutboundMessageSplitter
 
     env = await social_env(database, tmp_path)
     repo = WorkRepository(database)
@@ -343,3 +344,39 @@ async def test_work_social_delivery_passes_seventeenth_message_and_split_without
     finally:
         current_work_control.reset(token)
         await repo.release(lease)
+
+    source_event = await env.service.writer.append(
+        scope=ConversationScope.group("80001", "20001"),
+        platform_message_id="123",
+        sender_user_id="10001",
+        direction="inbound",
+        content="quote source",
+    )
+    monkeypatch.setattr(
+        OutboundMessageSplitter, "render", lambda *_args, **_kwargs: ("first", "second")
+    )
+    quoted_context = replace(
+        env.context,
+        call_id="quoted-sequence",
+        visible_event_ids=frozenset({source_event.event.id}),
+        runtime_snapshot=SimpleNamespace(
+            reply=SimpleNamespace(delay_min_seconds=0, delay_max_seconds=0)
+        ),
+    )
+    quoted = await env.service.execute(
+        "send_message",
+        {"text": "first second", "reply_to_event_id": source_event.event.id},
+        quoted_context,
+    )
+    assert quoted["status"] == "succeeded"
+    async with database.sessions() as session:
+        sent = list(
+            await session.scalars(
+                select(ChatEventModel)
+                .where(ChatEventModel.id > source_event.event.id)
+                .order_by(ChatEventModel.id)
+            )
+        )
+    assert [row.reply_to_event_id for row in sent] == [source_event.event.id, None]
+    assert sent[0].reply_to_message_id == source_event.event.platform_message_id
+    assert sent[1].reply_to_message_id is None
