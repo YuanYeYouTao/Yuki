@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from typing import Literal
 
 
 class AutonomyOwner(StrEnum):
@@ -146,6 +147,8 @@ class AcceptedInitiative:
     support_refs: tuple[str, ...] = ()
     state: str = "accepted"
     feedback_sequence: int = 0
+    trigger_kind: Literal["source", "intrinsic"] = "source"
+    thread_key: str | None = None
 
     def __post_init__(self) -> None:
         if not all(
@@ -154,12 +157,21 @@ class AcceptedInitiative:
             raise ValueError("initiative_requires_host_identity")
         if self.generation < 1 or self.controller_epoch_at_acceptance < 0:
             raise ValueError("initiative_requires_nonnegative_version")
-        if (
-            not self.sources
-            or len(self.sources) > 32
-            or len(set(self.sources)) != len(self.sources)
-        ):
+        if len(self.sources) > 32 or len(set(self.sources)) != len(self.sources):
             raise ValueError("initiative_requires_distinct_bounded_sources")
+        if self.trigger_kind == "source" and not self.sources:
+            raise ValueError("initiative_requires_distinct_bounded_sources")
+        if self.trigger_kind == "intrinsic" and (
+            self.sources
+            or self.support_refs
+            or self.target_person_id is not None
+            or self.owner is not AutonomyOwner.SEMANTIC
+        ):
+            raise ValueError("intrinsic_initiative_requires_self_group")
+        if self.trigger_kind not in {"source", "intrinsic"}:
+            raise ValueError("initiative_trigger_kind_invalid")
+        if self.thread_key is not None and (not self.thread_key or len(self.thread_key) > 256):
+            raise ValueError("initiative_thread_key_invalid")
         if self.owner not in {AutonomyOwner.LEGACY, AutonomyOwner.SEMANTIC}:
             raise ValueError("initiative_requires_controller_owner")
 

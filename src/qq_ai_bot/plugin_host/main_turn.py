@@ -48,7 +48,7 @@ async def run_plugin_main_turn(
 ) -> AgentRunResult:
     """Bound the callback wait while the Host retains an accepted activation."""
     from qq_ai_bot.runtime.work_activation import current_work_control
-    from qq_ai_bot.runtime.work_repository import WorkRepository
+    from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
     from qq_ai_bot.services.main_agent_turns import invocation_boundary
 
     if _ACTIVE.get() or current_work_control.get() is not None:
@@ -59,7 +59,22 @@ async def run_plugin_main_turn(
     )
     runtime = replace(runtime, execution_id=execution_id)
     key = invocation_boundary(runtime)
+    ledger = host._services.ledger
+    if ledger is not None:
+        previous = await WorkRepository(ledger._database).by_source(f"invocation:{key}")
+        if previous is not None:
+            prior_source = json.loads(previous["source_json"])
+            if prior_source.get("owner") == "plugin_invocation" and (
+                prior_source.get("approval_revision") != host._services.approval_revision
+                or prior_source.get("plugin_id") != host.plugin_id
+            ):
+                raise WorkConflict("plugin_work_authority_changed")
     task = _RUNNING.get(key)
+    if task is not None and task.done():
+        # A completed task may still be present before its done callback runs.
+        # Reusing it would skip the durable work and authority checks below.
+        _RUNNING.pop(key, None)
+        task = None
     if task is None:
         if len(_RUNNING) >= 8:
             raise PluginPermissionError("plugin main Agent admission is busy; no work accepted")
@@ -79,7 +94,8 @@ async def run_plugin_main_turn(
         _RUNNING[key] = task
 
         def finished(completed: asyncio.Task[AgentRunResult]) -> None:
-            _RUNNING.pop(key, None)
+            if _RUNNING.get(key) is completed:
+                _RUNNING.pop(key, None)
             if not completed.cancelled():
                 completed.exception()  # Durable work state is the recovery authority.
 

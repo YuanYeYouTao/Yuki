@@ -98,6 +98,10 @@ class InitiativeRunModel(Base):
     feedback_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    trigger_kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="source", server_default=text("'source'")
+    )
+    thread_key: Mapped[str | None] = mapped_column(String(256), nullable=True)
 
 
 class InitiativeSourceClaimModel(Base):

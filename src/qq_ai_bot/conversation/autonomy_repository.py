@@ -12,7 +12,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 from sqlalchemy import select, tuple_, update
@@ -92,6 +92,8 @@ def _run(row: InitiativeRunModel) -> AcceptedInitiative:
         support_refs=tuple(json.loads(row.support_refs_json)),
         state=row.state,
         feedback_sequence=row.feedback_sequence,
+        trigger_kind=cast(Literal["source", "intrinsic"], row.trigger_kind),
+        thread_key=row.thread_key,
     )
 
 
@@ -195,6 +197,8 @@ class AutonomyRepository:
         support_refs: tuple[str, ...] = (),
         source_guard: tuple[InitiativeSource, ...] = (),
         expires_at: float | None = None,
+        trigger_kind: Literal["source", "intrinsic"] = "source",
+        thread_key: str | None = None,
     ) -> AdmissionResult:
         """Persist a host-validated opportunity, not permission to invoke an Agent.
 
@@ -207,8 +211,10 @@ class AutonomyRepository:
             raise ValueError("initiative_proposal_id_invalid")
         if len(support_refs) > 32 or any(not item or len(item) > 128 for item in support_refs):
             raise ValueError("initiative_support_refs_invalid")
-        if owner is AutonomyOwner.SEMANTIC and not support_refs:
+        if owner is AutonomyOwner.SEMANTIC and trigger_kind == "source" and not support_refs:
             raise ValueError("initiative_semantic_support_required")
+        if trigger_kind == "intrinsic" and (source_guard or support_refs):
+            raise ValueError("intrinsic_initiative_requires_empty_evidence")
         if len(source_guard) > 256:
             raise ValueError("initiative_source_guard_too_large")
         now = datetime.now(UTC)
@@ -224,14 +230,15 @@ class AutonomyRepository:
             owner=owner,
             target_person_id=target_person_id,
             support_refs=support_refs,
+            trigger_kind=trigger_kind,
+            thread_key=thread_key,
         )
         source_json = _json(_source_values(sources))
         support_json = _json(sorted(set(support_refs)))
-        payload_hash = hashlib.sha256(
-            _json([space_id, presence_id, target_person_id, source_json, support_json]).encode(
-                "utf-8"
-            )
-        ).hexdigest()
+        payload = [space_id, presence_id, target_person_id, source_json, support_json]
+        if trigger_kind != "source" or thread_key is not None:
+            payload.extend((trigger_kind, thread_key))
+        payload_hash = hashlib.sha256(_json(payload).encode("utf-8")).hexdigest()
         async with self._database.immediate_session() as session:
             prior = await session.scalar(
                 select(InitiativeRunModel).where(
@@ -339,23 +346,27 @@ class AutonomyRepository:
                             or memory_revision(memory_row) != ref.revision
                         ):
                             return AdmissionResult("source_changed")
-            claimed = await session.scalar(
-                select(InitiativeSourceClaimModel.run_id)
-                .where(
-                    InitiativeSourceClaimModel.conversation_id == binding.conversation_id,
-                    InitiativeSourceClaimModel.generation == binding.generation,
-                    tuple_(
-                        InitiativeSourceClaimModel.source_kind,
-                        InitiativeSourceClaimModel.source_id,
-                        InitiativeSourceClaimModel.source_revision,
-                    ).in_(
-                        [
-                            (source.kind.value, source.source_id, source.revision)
-                            for source in sources
-                        ]
-                    ),
+            claimed = (
+                await session.scalar(
+                    select(InitiativeSourceClaimModel.run_id)
+                    .where(
+                        InitiativeSourceClaimModel.conversation_id == binding.conversation_id,
+                        InitiativeSourceClaimModel.generation == binding.generation,
+                        tuple_(
+                            InitiativeSourceClaimModel.source_kind,
+                            InitiativeSourceClaimModel.source_id,
+                            InitiativeSourceClaimModel.source_revision,
+                        ).in_(
+                            [
+                                (source.kind.value, source.source_id, source.revision)
+                                for source in sources
+                            ]
+                        ),
+                    )
+                    .limit(1)
                 )
-                .limit(1)
+                if sources
+                else None
             )
             if claimed is not None:
                 return AdmissionResult("source_considered")
@@ -396,6 +407,8 @@ class AutonomyRepository:
                 payload_hash=payload_hash,
                 sources_json=source_json,
                 support_refs_json=support_json,
+                trigger_kind=trigger_kind,
+                thread_key=thread_key,
                 state="accepted",
                 feedback_sequence=0,
                 created_at=now,
@@ -479,6 +492,25 @@ class AutonomyRepository:
                 )
             ).all()
             return tuple(_binding(row) for row in rows)
+
+    async def list_semantic_scopes(self) -> tuple[tuple[str, int], ...]:
+        """Discover enabled semantic scopes even when no message marks them dirty."""
+        async with self._database.sessions() as session:
+            rows = (
+                await session.execute(
+                    select(AutonomyBindingModel.conversation_id, AutonomyBindingModel.generation)
+                    .join(
+                        CanonicalConversationModel,
+                        CanonicalConversationModel.id == AutonomyBindingModel.conversation_id,
+                    )
+                    .where(
+                        CanonicalConversationModel.generation == AutonomyBindingModel.generation,
+                        AutonomyBindingModel.effective_owner == AutonomyOwner.SEMANTIC.value,
+                    )
+                    .order_by(AutonomyBindingModel.conversation_id)
+                )
+            ).all()
+            return tuple((conversation_id, generation) for conversation_id, generation in rows)
 
     async def query_proposal(
         self,

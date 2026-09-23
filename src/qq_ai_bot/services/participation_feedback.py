@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -109,10 +109,10 @@ async def sync_scope_effects(service: SemanticParticipationService, item: _Sessi
     effects = _logical_social_effects(current)
     initiative_ids = {run for run, _ in effects.values() if not run.startswith("social-run:")}
     async with service.database.sessions() as session:
-        valid_runs = (
-            set(
+        valid_run_rows = (
+            list(
                 await session.scalars(
-                    select(InitiativeRunModel.id).where(
+                    select(InitiativeRunModel).where(
                         InitiativeRunModel.id.in_(initiative_ids),
                         InitiativeRunModel.conversation_id == item.scene.conversation_id,
                         InitiativeRunModel.generation == item.scene.generation,
@@ -120,8 +120,34 @@ async def sync_scope_effects(service: SemanticParticipationService, item: _Sessi
                 )
             )
             if initiative_ids
-            else set()
+            else []
         )
+    valid_runs = {run.id for run in valid_run_rows}
+    run_threads = {run.id: run.thread_key for run in valid_run_rows if run.thread_key}
+    outbound_threads = cast(
+        dict[str, str], item.controller.state.host_checkpoint.setdefault("outbound_threads", {})
+    )
+    by_id = {row.id: row for row in current}
+    for row in current:
+        if row.status != "succeeded" or row.event_id is None or row.action not in _SEND_ACTIONS:
+            continue
+        origin = row
+        if row.source_turn_id.startswith("social-caption:"):
+            parent = by_id.get(row.source_turn_id.partition(":")[2])
+            if parent is None:
+                continue
+            origin = parent
+        _, marker, run_id = origin.source_turn_id.partition(":initiative:")
+        if marker and run_id in run_threads:
+            key = f"event:{row.event_id}"
+            thread = run_threads[run_id]
+            outbound_threads[key] = thread
+            cached = item.controller.state.events.get(key)
+            if cached is not None and cached.kind == "self" and cached.thread != thread:
+                item.controller.state.events[key] = cached.model_copy(update={"thread": thread})
+    if len(outbound_threads) > 1024:
+        for key in tuple(outbound_threads)[:-1024]:
+            outbound_threads.pop(key)
     for run_ref, effect in effects.values():
         if run_ref.startswith("social-run:") or run_ref in valid_runs:
             item.controller.observe_committed_effect(run_ref, effect)
