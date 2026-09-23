@@ -951,8 +951,22 @@ async def test_plugin_wakeup_can_end_without_creating_a_fake_reply(
 @pytest.mark.asyncio
 async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_actor(
     database: Database,
+    tmp_path,
 ) -> None:
+    from qq_ai_bot.services.main_agent_contract import MainAgentContract
+    from qq_ai_bot.workspace.short_state import ShortState
+    from qq_ai_bot.workspace.store import WorkspaceStore
+
     harness = build_harness(database, make_settings(database.url))
+    contract = MainAgentContract(
+        harness.processor._chat, ShortState(WorkspaceStore(tmp_path / "state"))
+    )
+    frozen = await contract.definitions()
+    frozen_around = next(item for item in frozen if item.name == "get_chat_history_around")
+    assert frozen_around.parameters["required"] == ["event_id"]
+    assert "platform_message_id" not in frozen_around.parameters["properties"]
+    assert contract.health()["frozen"] is True
+    assert contract.revision
     tools = harness.processor._chat._tools
     runtime_config = await harness.processor._chat._runtime_config.snapshot(
         user_id="1001",
