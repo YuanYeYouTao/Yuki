@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -26,6 +27,14 @@ class WorkCapacityError(ValueError):
 
 class WorkConflict(RuntimeError):
     """An obsolete activation or revision cannot change durable work."""
+
+    @property
+    def code(self) -> str:
+        """Only stable internal reason slugs may enter recovery records or logs."""
+        reason = str(self)
+        return (
+            reason if re.fullmatch(r"[a-z][a-z0-9_]{1,79}", reason) else "work_conflict_unspecified"
+        )
 
 
 @dataclass(frozen=True, slots=True)

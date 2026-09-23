@@ -80,6 +80,10 @@ def failure_status_text(failure: RuntimeFailure) -> str:
         return "数据存储出现异常，本次处理未完成，请联系管理员。"
     if failure.code == "context_boundary_changed":
         return "会话上下文已变化，本次处理已停止。"
+    if failure.diagnostics.get("category") == "work_conflict":
+        if failure.code == "work_journal_source_changed":
+            return "会话资料在处理期间变化，已保留已有结果；请先核对任务状态。"
+        return "工作状态发生冲突，已保留已有结果；请稍后核对状态。"
     if failure.stage == "provider":
         if failure.code in {"LLMAuthenticationError", "LLMConfigurationError"}:
             return "AI 服务配置或认证异常，请联系管理员。"
@@ -109,6 +113,15 @@ def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFa
         return RuntimeFailure("database_failure", stage)
     if isinstance(exc, ContextBoundaryChanged):
         return RuntimeFailure("context_boundary_changed", "context", True)
+    from qq_ai_bot.runtime.work_repository import WorkConflict
+
+    if isinstance(exc, WorkConflict):
+        return RuntimeFailure(
+            exc.code,
+            "context" if exc.code == "work_journal_source_changed" else stage,
+            exc.code == "work_journal_source_changed",
+            diagnostics={"category": "work_conflict"},
+        )
     # An exact Presence lookup can fail before any gateway call when its live
     # connection drops. Restart the original activation after reconnection;
     # dispatching/unknown effects remain protected by their durable receipts.

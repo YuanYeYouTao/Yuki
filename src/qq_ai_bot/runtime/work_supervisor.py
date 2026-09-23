@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select, update
@@ -21,12 +21,35 @@ from qq_ai_bot.runtime.activation_outcome import (
 from qq_ai_bot.runtime.work_budget import WorkBudgetExceeded
 from qq_ai_bot.runtime.work_recovery_schema import deliveries, recovery
 from qq_ai_bot.runtime.work_repository import WorkCapacityError, WorkConflict, bounded_json
-from qq_ai_bot.runtime.work_schema_v1 import work
+from qq_ai_bot.runtime.work_schema_v1 import effects, work
 
 if TYPE_CHECKING:
     from qq_ai_bot.runtime.work_control import WorkControl
 
 logger = logging.getLogger(__name__)
+
+
+async def _has_recorded_effects(control: WorkControl) -> bool:
+    """A changed source cannot automatically replay work with an effect receipt."""
+    assert control.current is not None
+    if control.current["sent_messages"] or any(
+        item.get("side_effecting") or item.get("pending") or item.get("uncertain")
+        for item in control.known_effects
+    ):
+        return True
+    async with control.repository.database.sessions() as session:
+        return bool(
+            await session.scalar(
+                select(effects.c.effect_key)
+                .where(effects.c.work_id == control.current["id"])
+                .limit(1)
+            )
+            or await session.scalar(
+                select(deliveries.c.id)
+                .where(deliveries.c.work_id == control.current["id"])
+                .limit(1)
+            )
+        )
 
 
 def activation_details(control: WorkControl) -> dict[str, Any]:
@@ -57,6 +80,12 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
         # A stale owner must never commit a new state over its replacement.
         if not await control.repository.valid(control.lease):
             raise exc
+        if failure.code == "work_journal_source_changed" and await _has_recorded_effects(control):
+            failure = replace(
+                failure,
+                retryable=False,
+                diagnostics={**failure.diagnostics, "effect_receipt_recorded": True},
+            )
     assert control.current is not None
     verified = (
         control.ending == "completed"
@@ -138,7 +167,18 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
                 ExitReason.CAPACITY: "工作记录容量不足，已暂停并保留已有结果。",
                 ExitReason.NO_PROGRESS: "连续执行没有取得进展，已暂停并保留已有结果。",
             }
-            text = descriptions.get(reason, "这项工作遇到执行错误，已暂停并保留已有结果。")
+            if failure.diagnostics.get("category") == "work_conflict":
+                if failure.code == "work_journal_source_changed":
+                    text = (
+                        "会话资料在处理期间变化，已执行的操作和回执已保留；"
+                        "后续处理暂停。请先核对任务状态，避免重复执行。"
+                        if failure.diagnostics.get("effect_receipt_recorded")
+                        else "会话资料在处理期间变化，这项工作已暂停并保留已有结果。"
+                    )
+                else:
+                    text = "工作状态发生冲突，已暂停并保留已有结果；请先核对任务状态。"
+            else:
+                text = descriptions.get(reason, "这项工作遇到执行错误，已暂停并保留已有结果。")
             await session.execute(
                 insert(deliveries)
                 .values(
