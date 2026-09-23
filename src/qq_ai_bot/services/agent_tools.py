@@ -262,7 +262,11 @@ class ToolRuntime:
                 raise PermissionError("tool_actor_context_mismatch")
             return replace(incoming, event_id=self.effective_trigger_event_id, origin=self.origin)
         actor: ToolActor | None = self.actor_context
-        if self.origin is TurnOrigin.SELF_INITIATIVE:
+        if self.origin is TurnOrigin.SELF_INITIATIVE or (
+            self.origin is TurnOrigin.SCHEDULED_AUTOMATION
+            and actor is not None
+            and actor.principal_kind == "self"
+        ):
             if (
                 actor is None
                 or actor.principal_kind != "self"
@@ -272,8 +276,19 @@ class ToolRuntime:
                 or self.actor_is_superuser
                 or actor.person_id is not None
                 or self.person_id is not None
-                or not self.initiative_run_id
+                or (self.origin is TurnOrigin.SELF_INITIATIVE and not self.initiative_run_id)
+                or (
+                    self.origin is TurnOrigin.SCHEDULED_AUTOMATION
+                    and self.initiative_run_id is not None
+                )
                 or actor.initiative_run_id != self.initiative_run_id
+                or (
+                    self.origin is TurnOrigin.SCHEDULED_AUTOMATION
+                    and (
+                        self.sandbox_source is None
+                        or actor.automation_run_id != self.sandbox_source.get("automation_run_id")
+                    )
+                )
                 or actor.execution_id != self.execution_id
                 or actor.conversation_id != self.effective_conversation_id
                 or actor.presence_id != self.effective_presence_id

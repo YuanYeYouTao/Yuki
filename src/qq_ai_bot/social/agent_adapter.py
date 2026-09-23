@@ -18,7 +18,11 @@ from qq_ai_bot.social.service import SocialContext, SocialService
 async def invoke_social(
     service: SocialService, name: str, arguments: dict[str, Any], runtime: Any
 ) -> dict[str, Any]:
-    if runtime.origin is TurnOrigin.SELF_INITIATIVE:
+    if runtime.origin is TurnOrigin.SELF_INITIATIVE or (
+        runtime.origin is TurnOrigin.SCHEDULED_AUTOMATION
+        and runtime.actor_context is not None
+        and runtime.actor_context.principal_kind == "self"
+    ):
         invocation = current_invocation.get()
         actor = runtime.require_actor()
         if (
@@ -30,13 +34,15 @@ async def invoke_social(
             or runtime.inbound is not None
         ):
             raise SocialError("permission_denied")
+        scheduled_run = actor.automation_run_id
         context = SocialContext(
-            turn_id=f"{actor.conversation_id}:initiative:{actor.initiative_run_id}",
+            turn_id=f"{actor.conversation_id}:{actor.source_key}",
             call_id=invocation.call_id,
             conversation_id=actor.conversation_id or "",
             space_id=runtime.space_id,
-            origin=TurnOrigin.SELF_INITIATIVE.value,
+            origin=runtime.origin.value,
             initiative_run_id=actor.initiative_run_id,
+            automation_run_id=scheduled_run,
             presence_id=actor.presence_id,
             visible_event_ids=frozenset(getattr(runtime, "visible_event_ids", ())),
             actor=actor,

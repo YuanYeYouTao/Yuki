@@ -726,6 +726,16 @@ class ChatService:
         inbound: InboundMessage,
         event_id: int,
     ) -> int | None:
+        from qq_ai_bot.runtime.work_wait import WorkWaitRepository
+
+        explicit_reply = await WorkWaitRepository(self._work_repository).match_user_reply(event_id)
+        if explicit_reply is not None:
+            return explicit_reply
+        matched = await WorkWaitRepository(self._work_repository).match_event(
+            event_id=event_id, kind="conversation"
+        )
+        if matched is not None:
+            return matched
         control = self._active_work.get(conversation_key)
         if (
             control is None
@@ -928,6 +938,8 @@ class ChatService:
                         f"event:{inbound.conversation_id}:{turn_snapshot.trigger_event_id}",
                         {
                             "actor_user_id": inbound.sender.user_id,
+                            "actor_person_id": inbound.person_id,
+                            "principal_kind": "person",
                             "origin": turn_origin.value,
                             "trigger_event_id": turn_snapshot.trigger_event_id,
                             "bot_user_id": inbound.bot_user_id,

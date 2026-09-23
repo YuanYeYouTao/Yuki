@@ -257,7 +257,12 @@ class MainAgentBackend(AgentToolBackend):
             authority=AuthorityContext(
                 actor_user_id=self._runtime.actor_user_id,
                 is_superuser=self._runtime.actor_is_superuser,
-                principal_kind=("self" if self._runtime.initiative_run_id else "person"),
+                principal_kind=(
+                    "self"
+                    if self._runtime.actor_context is not None
+                    and self._runtime.actor_context.principal_kind == "self"
+                    else "person"
+                ),
             ),
             origin=self._runtime.origin,
             contains_images=self._runtime.image_present,
@@ -279,14 +284,22 @@ class MainAgentBackend(AgentToolBackend):
 
         authority = TurnAuthority(
             actor_user_id=(
-                "" if self._runtime.initiative_run_id else self._runtime.actor_user_id or "unknown"
+                ""
+                if self._runtime.actor_context is not None
+                and self._runtime.actor_context.principal_kind == "self"
+                else self._runtime.actor_user_id or "unknown"
             ),
             bot_user_id=self._runtime.effective_bot_user_id or "bot",
             origin=RuntimeTurnOrigin(self._runtime.origin.value),
             permission_ceiling=frozenset({"superuser"} if self._runtime.actor_is_superuser else ()),
             delegated_authority=None,
             authority_revision=1,
-            principal_kind=("self" if self._runtime.initiative_run_id else "person"),
+            principal_kind=(
+                "self"
+                if self._runtime.actor_context is not None
+                and self._runtime.actor_context.principal_kind == "self"
+                else "person"
+            ),
             initiative_run_id=self._runtime.initiative_run_id,
         )
         self._capability_runtime = TurnCapabilityRuntime(
@@ -849,9 +862,14 @@ class MainAgentBackend(AgentToolBackend):
 
     @staticmethod
     def _self_main_run(runtime: AgentRuntime) -> bool:
-        return runtime.origin is RuntimeTurnOrigin.SELF_INITIATIVE and (
-            runtime.work_control is None or runtime.work_control.lease.work_id is None
-        )
+        return (
+            runtime.origin is RuntimeTurnOrigin.SELF_INITIATIVE
+            or (
+                runtime.origin is RuntimeTurnOrigin.SCHEDULED_AUTOMATION
+                and runtime.delegated_authority is not None
+                and runtime.delegated_authority.principal_kind == "self"
+            )
+        ) and (runtime.work_control is None or runtime.work_control.lease.work_id is None)
 
     def response_feedback(self, content: str, runtime: AgentRuntime) -> str | None:
         from yuki_participation.self_report import extract_tail
@@ -862,7 +880,7 @@ class MainAgentBackend(AgentToolBackend):
                 return None
             if not self._send_message_attempted and not self.messages_sent:
                 if self._unsent_final_feedback_count:
-                    raise UnsentFinalResponseError("self initiative answer was not sent")
+                    raise UnsentFinalResponseError("self answer was not sent")
                 self._unsent_final_feedback_count += 1
                 return (
                     "这段最终正文是内部结果，尚未发送。需要参与当前群讨论时调用 send_message；"

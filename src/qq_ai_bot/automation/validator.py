@@ -95,6 +95,9 @@ class AutomationValidator:
             raise ValueError(f"interval 最短为 {self._settings.automation_min_interval_seconds} 秒")
         if script.context.scene == "current_group" and provenance.current_group_id is None:
             raise ValueError("当前消息不是群聊，不能声明 current_group 上下文")
+        if provenance.permission is PermissionLevel.SELF:
+            if script.context.scene not in {"none", "current_group"}:
+                raise PermissionError("SELF 自动化不能使用私人上下文")
         self._validate_limits(script)
         available_steps: set[str] = set()
         required: list[str] = []
@@ -207,6 +210,11 @@ class AutomationValidator:
         provenance: CreationProvenance,
     ) -> None:
         if call == "yuki.agent":
+            if (
+                provenance.permission is PermissionLevel.SELF
+                and arguments.get("delivery_target") == "self_private"
+            ):
+                raise PermissionError("SELF 自动化没有私人投递目标")
             if (
                 arguments.get("delivery_target") == "current_group"
                 and provenance.current_group_id is None

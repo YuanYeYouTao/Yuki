@@ -11,10 +11,10 @@ legacy/semantic 自主机会均以正式 SELF 来源进入这条执行链；
 真实 QQ 小范围社交效果验收仍需单独记录。
 
 模型侧每项业务只有一个公开名称和参数合同。冻结清单只来自主工具注册表，不追加 DSL、MCP
-或插件的自动化别名；目录查询不会加载工具、改变声明或提升权限。合同版本 5 为本轮更新建立
+或插件的自动化别名；目录查询不会加载工具、改变声明或提升权限。合同版本 6 为信号等待参数建立
 明确的新链边界，续跑仍保留执行记录、预算和已提交回执。
 
-自动化以创建者的当前身份和权限执行，与其在目标会话发起普通聊天一致；不再交集创建时的
+Person 自动化以创建者的当前身份和权限执行，与其在目标会话发起普通聊天一致；不再交集创建时的
 工具白名单，不要求 TaskSpec 选择 capabilities。每次模型请求和工具执行重查任务有效性、
 所有者、租约、权限及会话 generation，权限变化终止旧授权下的执行。插件本身的安装批准边界不变。
 
@@ -23,12 +23,15 @@ legacy/semantic 自主机会均以正式 SELF 来源进入这条执行链；
 历史、记忆的主动补查使用同一读取授权；context 配置只控制首次预取。记忆写入仍需真实证据，
 定时任务通过 evidence_event_id 引用创建者在当前会话的原始事件，不把任务指令伪装成人类发言。
 
-SELF 自主来源的 `ToolActor` / `TurnAuthority` 使用 `principal_kind="self"` 和可信
-`initiative_run_id`，不携带真人 user/person；`SelfInitiativeTrigger` 固定原 Conversation、
+SELF 使用数据库内唯一的 `PrincipalRef(self, self)`，不携带真人 user/person。自主入口的
+`ToolActor` / `TurnAuthority` 使用可信 `initiative_run_id`；SELF 定时入口使用真实
+`automation_run_id` 与 `scheduled_automation`，沿普通自动化的 claim、run/step 游标和
+主 Agent 工具合同执行。`SelfInitiativeTrigger` 固定原 Conversation、
 generation、Space、Presence 与群传输目标。目标成员和资料来源都不授予其私人权限。
 `ConversationTurnSnapshot` 的事件 ID 与 initiative run 严格二选一；无事件工作不得借
 最近真人消息补锚点。SELF 主入口首次只预取当前群与该群可见的 SELF Memory。
-每次模型请求、工具执行和发送准备仍复核原 run 与场景权限。当前 SELF 社交工具只允许
+每次模型请求、工具执行和发送准备仍复核原 run 与场景权限。SELF 自动化还固定创建时
+Conversation/generation、Space、Presence 和群绑定；场景失效即阻止执行。当前 SELF 社交工具只允许
 当前群发送、通讯录、历史和成员读取；不支持自动结构化 @、私人目标、撤回或戳人。
 完整声明不随主体改动，执行处拒绝不获准的能力；详见 [语义参与接入](semantic-participation.md)。
 
@@ -184,9 +187,22 @@ SubagentScheduler 同样启动以恢复原子任务；新子任务接纳关闭�
 不自动把工具 JSON 或固定成功句发到聊天中。
 明确管理命令和模型完全不可用时的运行状态反馈与普通 Agent 正文区分。
 
+`task_control.wait` 保留单一所属 `run_id` 路径，也可登记一次性 `conditions`：
+`time_due`、当前 canonical Conversation 的新消息、获准插件发布的事件或所属 run。
+集合支持 `any` / `all` 和可选 `deadline_at`；没有隐式 90 秒有效期。绑定持久化在
+`runtime_work_waits`，带 Work ID、generation、主体、事件水位和唯一调用键。消息入口、
+插件发布事务与 AutomationWorker 的时钟分别交付信号；命中时同事务登记原 Work 输入并入队，
+不创建第二项 Agent 工作。局部满足的 `all` 条件留在绑定中；超时向原 Work 交付明确结果，
+不视作同意。插件必须显式设置 SDK 的 `resume_waiting_work`，否则维持原通知和新轮行为；
+命中原 Work 的事件不会同时启动独立的插件 Agent 轮。
+`task_control.wait_status` 查看原 Work 的绑定及未满足条件，`cancel_wait` 撤销它；
+`waiting_user` 只由原提问内部发送事件所收到的同一 Person 回复自动恢复，普通群消息仍按新输入处理。
+
 ## 持久化与验证
 
 0060 为新的自动化创建调用键增加部分唯一索引，为跨步骤预算增加 run 级计数。
+0071 为 SELF 自动化增添可判别创建者和唯一调用键，并增添 SELF 时区、Work 等待绑定与
+插件恢复选择字段；原 Person 任务和运行回执不重建身份。
 同一 Host 调用重放和并发提交只登记一次，参数冲突明确拒绝；同事件的两个合法调用不合并。
 automation_list 的 match_task 按结构化目标、时间、读取范围及交付查询等价待执行项，忽略显示名称；
 只返回候选，不自动合并或阻止用户要求的另一个实例，不猜测近义自然语言。

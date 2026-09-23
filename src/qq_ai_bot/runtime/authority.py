@@ -136,8 +136,12 @@ class TurnAuthority:
         if self.principal_kind == "self":
             if (
                 self.actor_user_id
-                or self.origin is not TurnOrigin.SELF_INITIATIVE
-                or not self.initiative_run_id
+                or self.origin not in {TurnOrigin.SELF_INITIATIVE, TurnOrigin.SCHEDULED_AUTOMATION}
+                or (self.origin is TurnOrigin.SELF_INITIATIVE and not self.initiative_run_id)
+                or (
+                    self.origin is TurnOrigin.SCHEDULED_AUTOMATION
+                    and self.initiative_run_id is not None
+                )
                 or self.delegated_authority is not None
             ):
                 raise InvalidTurnContextError("invalid self turn authority")

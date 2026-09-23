@@ -152,6 +152,7 @@ class RetryPolicy(StrEnum):
 class AutomationRecord(StrictModel):
     id: int
     claimed_by: str | None = None
+    creator_kind: Literal["person", "self"] = "person"
     creator_user_id: str
     bot_user_id: str
     name: str
@@ -182,6 +183,7 @@ class AutomationCreatorIdentity(StrictModel):
     person_id: str | None
     external_account_id: str
     display_name: str | None = None
+    kind: Literal["person", "self"] = "person"
 
 
 class AutomationDirectoryEntry(StrictModel):

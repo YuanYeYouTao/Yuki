@@ -2015,7 +2015,7 @@ class _NotificationFacade:
             send=True,
             require_invocation=False,
         )
-        if request.ask_agent:
+        if request.ask_agent or request.resume_waiting_work:
             self._host._require(
                 PluginPermission.NOTIFICATION_AGENT,
                 require_invocation=False,

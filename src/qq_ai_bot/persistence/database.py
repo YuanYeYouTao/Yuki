@@ -68,6 +68,7 @@ class Database:
         """Create all tables for tests; deployments use Alembic migrations."""
         from qq_ai_bot.conversation.rollup import signals as _signals  # noqa: F401
         from qq_ai_bot.runtime import work_recovery_schema as _recovery
+        from qq_ai_bot.runtime import work_schema_v1 as _work_schema  # noqa: F401
 
         async with self.engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)

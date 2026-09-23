@@ -140,11 +140,13 @@ class CapabilityExecutionContext:
     timezone: str
     automation_context: AutomationContext
     conversation_key: str
+    creator_kind: Literal["person", "self"] = "person"
     canonical_creator_person_id: str | None = None
     web_was_used: bool = False
     gateway: object | None = None
     canonical_target_person_id: str | None = None
     canonical_target_space_id: str | None = None
+    canonical_presence_id: str | None = None
     canonical_conversation_id: str | None = None
     conversation_generation: int | None = None
     automation_script_hash: str = ""
@@ -199,6 +201,8 @@ class AutomationCapability:
         return self.argument_model.model_validate(value).model_dump()
 
     def permits(self, permission: PermissionLevel) -> bool:
+        if permission is PermissionLevel.SELF:
+            return self.name == "yuki.agent"
         return not (
             self.required_permission is PermissionLevel.SUPERUSER
             and permission is not PermissionLevel.SUPERUSER

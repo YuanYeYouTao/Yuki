@@ -189,6 +189,7 @@ class PublishNotificationRequest(StrictModel):
     text: str = Field(default="", max_length=12_000)
     media_handles: tuple[str, ...] = Field(default=(), max_length=4)
     ask_agent: bool = False
+    resume_waiting_work: bool = False
     agent_intent: str = Field(default="", max_length=1_000)
 
 

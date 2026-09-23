@@ -52,8 +52,11 @@ from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
     IdentityBindingModel,
+    PresenceModel,
+    SpaceBindingModel,
 )
 from qq_ai_bot.identity.routing import PresenceRouter, RouteSendError
+from qq_ai_bot.runtime.principal import SELF, PrincipalRef
 from qq_ai_bot.time.service import TimeContextService
 
 _SEND_CAPABILITIES = frozenset(
@@ -74,8 +77,9 @@ _RUN_USAGE_FIELDS = ("steps_completed", "llm_calls", "tool_calls", "messages_sen
 
 def _canonical_identity(
     record: AutomationRecord,
-) -> tuple[str | None, str | None, str | None]:
+) -> tuple[str, str | None, str | None, str | None]:
     return (
+        record.creator_kind,
         record.canonical_creator_person_id,
         record.canonical_target_person_id,
         record.canonical_target_space_id,
@@ -196,6 +200,7 @@ class AutomationExecutor:
             actor_user_id=automation.creator_user_id,
             actor_is_superuser=actor_is_superuser,
             bot_user_id=automation.bot_user_id,
+            principal_kind=automation.creator_kind,
             delegated_authority=authority,
             allowed_capabilities=allowed,
         )
@@ -384,6 +389,7 @@ class AutomationExecutor:
                         automation_run_id=run.id,
                         step_id=step.id,
                         creator_user_id=automation.creator_user_id,
+                        creator_kind=automation.creator_kind,
                         bot_user_id=automation.bot_user_id,
                         current_group_id=current_group_id,
                         scheduled_for=run.scheduled_for,
@@ -396,6 +402,7 @@ class AutomationExecutor:
                         canonical_creator_person_id=automation.canonical_creator_person_id,
                         canonical_target_person_id=automation.canonical_target_person_id,
                         canonical_target_space_id=automation.canonical_target_space_id,
+                        canonical_presence_id=automation.canonical_presence_id,
                         canonical_conversation_id=conversation_id,
                         conversation_generation=conversation_generation,
                         automation_script_hash=automation.script_hash,
@@ -703,7 +710,11 @@ class AutomationExecutor:
             if isinstance(loaded, ExecutionResult):
                 return loaded
             principal, current_permission = loaded
-            if not principal.authenticated or not principal.active:
+            if current.creator_kind != "self" and (
+                not isinstance(principal, ControlPrincipal)
+                or not principal.authenticated
+                or not principal.active
+            ):
                 return ExecutionResult(
                     status=RunStatus.BLOCKED,
                     error_category="delegated_authority_revoked",
@@ -769,7 +780,49 @@ class AutomationExecutor:
 
     async def _canonical_creator_principal(
         self, session: Any, automation: AutomationRecord
-    ) -> tuple[ControlPrincipal, PermissionLevel] | ExecutionResult:
+    ) -> tuple[ControlPrincipal | PrincipalRef, PermissionLevel] | ExecutionResult:
+        if automation.creator_kind == "self":
+            scene = automation.authority_snapshot
+            if (
+                automation.canonical_creator_person_id is not None
+                or automation.creator_user_id
+                or not automation.canonical_target_space_id
+                or automation.canonical_target_person_id is not None
+                or automation.authority_snapshot.get("principal_kind") != "self"
+                or scene.get("canonical_space_id") != automation.canonical_target_space_id
+                or scene.get("canonical_presence_id") != automation.canonical_presence_id
+            ):
+                return ExecutionResult(status=RunStatus.BLOCKED, error_category="state_mismatch")
+            conversation = await session.get(
+                CanonicalConversationModel, scene.get("canonical_conversation_id")
+            )
+            presence = await session.get(PresenceModel, automation.canonical_presence_id)
+            bindings = (
+                await session.scalars(
+                    select(SpaceBindingModel)
+                    .where(
+                        SpaceBindingModel.space_id == automation.canonical_target_space_id,
+                        SpaceBindingModel.platform == "qq",
+                        SpaceBindingModel.status == "active",
+                    )
+                    .limit(2)
+                )
+            ).all()
+            if (
+                conversation is None
+                or conversation.space_id != automation.canonical_target_space_id
+                or conversation.generation != scene.get("conversation_generation")
+                or presence is None
+                or not presence.enabled
+                or presence.platform != "qq"
+                or presence.external_account_id != automation.bot_user_id
+                or len(bindings) != 1
+                or bindings[0].external_space_id != scene.get("current_group_id")
+            ):
+                return ExecutionResult(
+                    status=RunStatus.BLOCKED, error_category="self_scene_changed"
+                )
+            return SELF, PermissionLevel.SELF
         creator_id = automation.canonical_creator_person_id
         if not creator_id:
             return ExecutionResult(

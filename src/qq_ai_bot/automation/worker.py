@@ -12,6 +12,8 @@ from qq_ai_bot.automation.executor import AutomationExecutor
 from qq_ai_bot.automation.models import RunStatus
 from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.config import Settings
+from qq_ai_bot.runtime.work_repository import WorkRepository
+from qq_ai_bot.runtime.work_wait import WorkWaitRepository
 from qq_ai_bot.time.schedules import schedule_after_completion
 from qq_ai_bot.time.service import TimeContextService
 
@@ -33,6 +35,7 @@ class AutomationWorker:
         self._repository = repository
         self._executor = executor
         self._time = time_service
+        self._waits = WorkWaitRepository(WorkRepository(repository._database))
         self._worker_id = uuid.uuid4().hex
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -43,7 +46,7 @@ class AutomationWorker:
         return self._task is not None and not self._task.done()
 
     async def start(self) -> None:
-        if not self._settings.automation_enabled or self.running:
+        if self.running:
             return
         self._stop.clear()
         self._task = asyncio.create_task(self._loop(), name="automation-worker")
@@ -67,6 +70,10 @@ class AutomationWorker:
     async def _loop(self) -> None:
         while not self._stop.is_set():
             try:
+                await self._waits.deliver_due(self._time.clock.now().timestamp())
+                if not self._settings.automation_enabled:
+                    await asyncio.sleep(self._settings.automation_poll_seconds)
+                    continue
                 if len(self._running) >= max(1, self._settings.global_llm_concurrency - 1):
                     await asyncio.sleep(self._settings.automation_poll_seconds)
                     continue
@@ -201,12 +208,24 @@ class AutomationWorker:
             return
         result = await self._executor.execute(automation, run)
         if result.status is RunStatus.RUNNING:
+            waiting_work = result.summary.get("pending_work_id")
+            signal_waiting = isinstance(waiting_work, str) and await self._waits.is_active(
+                waiting_work
+            )
             await self._repository.release_claim(
                 automation.id,
                 worker_id=automation.claimed_by or self._worker_id,
                 next_run_at=scheduled_for,
-                not_before=self._time.clock.now() + timedelta(seconds=5),
+                not_before=self._time.clock.now() + timedelta(days=365)
+                if signal_waiting
+                else self._time.clock.now() + timedelta(seconds=5),
             )
+            if (
+                isinstance(waiting_work, str)
+                and signal_waiting
+                and not await self._waits.is_active(waiting_work)
+            ):
+                await self._repository.wake_claim(automation.id)
             return
         finished = self._time.clock.now()
         recorded = await self._repository.finish_run(

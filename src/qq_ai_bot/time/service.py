@@ -7,7 +7,7 @@ from typing import Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import PersonTimeSettingModel
+from qq_ai_bot.persistence.models import PersonTimeSettingModel, SelfTimeSettingModel
 from qq_ai_bot.services.canonical_owners import resolve_live_person_id
 from qq_ai_bot.time.models import TimeContext
 
@@ -59,6 +59,9 @@ class TimeContextService:
 
     async def timezone_for(self, user_id: str) -> str:
         async with self._database.sessions() as session:
+            if user_id == "self":
+                self_row = await session.get(SelfTimeSettingModel, "self")
+                return self_row.timezone if self_row is not None else self._default_timezone
             person_id = await resolve_live_person_id(session, user_id)
             row = await session.get(PersonTimeSettingModel, person_id)
         return row.timezone if row is not None else self._default_timezone
@@ -67,6 +70,21 @@ class TimeContextService:
         normalized = validate_timezone(timezone)
         now = self._utc_now()
         async with self._database.sessions() as session, session.begin():
+            if user_id == "self":
+                self_row = await session.get(SelfTimeSettingModel, "self")
+                if self_row is None:
+                    session.add(
+                        SelfTimeSettingModel(
+                            principal_id="self",
+                            timezone=normalized,
+                            created_at=now,
+                            updated_at=now,
+                        )
+                    )
+                else:
+                    self_row.timezone = normalized
+                    self_row.updated_at = now
+                return normalized
             person_id = await resolve_live_person_id(session, user_id)
             row = await session.get(PersonTimeSettingModel, person_id)
             if row is None:

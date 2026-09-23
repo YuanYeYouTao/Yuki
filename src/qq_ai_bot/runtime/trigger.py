@@ -138,6 +138,8 @@ class ScheduledTurnTrigger:
     automation_id: int
     creator_user_id: str
     scheduled_for: datetime
+    principal_kind: str = "person"
+    automation_run_id: int | None = None
     origin: TurnOrigin = field(default=TurnOrigin.SCHEDULED_AUTOMATION)
 
     def __post_init__(self) -> None:
@@ -145,8 +147,16 @@ class ScheduledTurnTrigger:
             raise InvalidTurnTriggerError("scheduled trigger origin must be scheduled_automation")
         if self.automation_id <= 0:
             raise InvalidTurnTriggerError("scheduled trigger requires a persisted automation id")
-        if not self.creator_user_id:
-            raise InvalidTurnTriggerError("scheduled trigger requires the creator user id")
+        if self.principal_kind == "person":
+            if not self.creator_user_id:
+                raise InvalidTurnTriggerError("scheduled trigger requires the creator user id")
+        elif self.principal_kind == "self":
+            if self.creator_user_id or not self.automation_run_id or self.automation_run_id <= 0:
+                raise InvalidTurnTriggerError(
+                    "self scheduled trigger requires its run, without a user"
+                )
+        else:
+            raise InvalidTurnTriggerError("invalid scheduled trigger principal")
 
 
 @dataclass(frozen=True, slots=True)

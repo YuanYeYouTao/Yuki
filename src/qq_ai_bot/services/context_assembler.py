@@ -480,20 +480,30 @@ class ContextAssembler:
         read_version = None
         if profile != "none":
             if declared.include_memories:
-                data["memories"] = [
-                    {"content": row.content, "source_type": row.source_type}
-                    for row in await memories.list_person(context.creator_user_id, limit=30)
-                ]
-                data["preferences"] = [
-                    {"key": row.key, "value": row.value}
-                    for row in await memories.list_preferences(context.creator_user_id, limit=30)
-                ]
+                data["memories"] = (
+                    []
+                    if context.creator_kind == "self"
+                    else [
+                        {"content": row.content, "source_type": row.source_type}
+                        for row in await memories.list_person(context.creator_user_id, limit=30)
+                    ]
+                )
+                data["preferences"] = (
+                    []
+                    if context.creator_kind == "self"
+                    else [
+                        {"key": row.key, "value": row.value}
+                        for row in await memories.list_preferences(
+                            context.creator_user_id, limit=30
+                        )
+                    ]
+                )
                 if profile == "current_group" and context.current_group_id:
                     data["group_memories"] = [
                         {"content": row.content, "source_type": row.source_type}
                         for row in await memories.list_group(context.current_group_id, limit=30)
                     ]
-            if declared.include_relationship:
+            if declared.include_relationship and context.creator_kind != "self":
                 relationship = await relationships.get_or_create(context.creator_user_id)
             if declared.history_limit:
                 # The send target's canonical id is not a read-scope grant. Resolve

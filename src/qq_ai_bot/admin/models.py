@@ -113,6 +113,8 @@ class AdminOperationEvent:
     error_category: str | None
     duration_seconds: float
     created_at: datetime
+    actor_principal_kind: str | None = None
+    actor_principal_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +149,8 @@ class ControlAuditRef:
     trigger_event_id: int | None = None
     canonical_conversation_id: str | None = None
     ingress_presence_id: str | None = None
+    principal_kind: str | None = None
+    principal_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

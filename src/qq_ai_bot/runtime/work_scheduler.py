@@ -23,6 +23,7 @@ from qq_ai_bot.runtime.work_activation import activate_work
 from qq_ai_bot.runtime.work_recovery_schema import deliveries, recovery
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkLease, WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import inputs, scope, work
+from qq_ai_bot.runtime.work_wait_schema import waits
 from qq_ai_bot.sandbox.source_recovery import recover_self_source, recover_source
 from qq_ai_bot.services.agent_tools import ToolRuntime
 
@@ -66,9 +67,19 @@ class WorkScheduler:
                 .select_from(work)
                 .where(work.c.state.not_in(("completed", "failed", "cancelled")))
             )
+            active_waits = await session.scalar(
+                select(func.count()).select_from(waits).where(waits.c.status == "active")
+            )
+            oldest_wait = await session.scalar(
+                select(func.min(waits.c.created)).where(waits.c.status == "active")
+            )
         return {
             "pending_oldest_seconds": max(0, int(time.time() - oldest)) if oldest else 0,
             "active_work_count": active or 0,
+            "active_wait_count": active_waits or 0,
+            "active_wait_oldest_seconds": max(0, int(time.time() - oldest_wait))
+            if oldest_wait
+            else 0,
             "enabled": True,
             "chat_admission_enabled": self.app.settings.runtime_work_enabled,
             "running": self._worker is not None and not self._worker.done(),
@@ -280,6 +291,7 @@ class WorkScheduler:
                             presence_id=recovered.presence_id,
                             sandbox_source={**source, "work_id": item["id"]},
                             allow_work_environment=True,
+                            allow_automation=True,
                         ),
                     )
                     self._last_error = (

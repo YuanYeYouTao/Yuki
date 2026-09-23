@@ -95,7 +95,8 @@ PERSON_GROUP 表示某 Person 在某 Space 中的共同经历。证据保留真�
 权限和内容能力约束。Presence 或 Provider 变化不会复制或迁移记忆。
 
 关系、偏好、自动化目标、插件状态、Emoji、Speech、MCP 和配置投影均使用 canonical owner。
-自动化在实际发送时解析当前路由，因此创建任务后更换 Yuki QQ 仍可沿新 Presence 投递。
+Person 自动化在实际发送时解析当前路由。SELF 自动化固定创建时的群和 Presence；
+该场景或代际变化后阻止执行，不借新的 Yuki QQ 账号或真人身份投递。
 
 Plugin API 当前为 `3.0`，Host 只加载精确匹配的插件。兼容键仍使用 primary
 `conversation_key`，SDK 还可读取可选的 person、space、conversation 和 presence ID。
