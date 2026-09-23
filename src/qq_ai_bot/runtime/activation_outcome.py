@@ -109,6 +109,18 @@ def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFa
         return RuntimeFailure("database_failure", stage)
     if isinstance(exc, ContextBoundaryChanged):
         return RuntimeFailure("context_boundary_changed", "context", True)
+    # An exact Presence lookup can fail before any gateway call when its live
+    # connection drops. Restart the original activation after reconnection;
+    # dispatching/unknown effects remain protected by their durable receipts.
+    from qq_ai_bot.gateway.registry import RegistryClosed
+    from qq_ai_bot.identity.routing import RouteSendError
+
+    if (
+        isinstance(exc, RouteSendError)
+        and isinstance(exc.__cause__, RegistryClosed)
+        and exc.__cause__.category == "disconnected"
+    ):
+        return RuntimeFailure("gateway_disconnected", "gateway", True, "not_sent")
     if isinstance(exc, LLMError):
         return RuntimeFailure(
             type(exc).__name__,
