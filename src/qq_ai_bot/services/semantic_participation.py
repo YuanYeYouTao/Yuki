@@ -376,7 +376,6 @@ class SemanticParticipationService:
                 and event.kind in {"human", "self"}
                 and event.ref != ref
                 and resolved is not None
-                and (event.kind == "human" or timestamp(row.occurred_at) - event.at <= 180)
             ):
                 option = HostUnitOption(
                     key=f"u{len(options)}",

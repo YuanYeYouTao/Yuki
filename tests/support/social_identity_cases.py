@@ -389,7 +389,7 @@ async def test_group_automation_poke_keeps_delegated_boundary(social_env, overri
 
 
 async def run_identity_scenarios(tmp_path):
-    """Extend the existing social safety gate within the repository's test budget."""
+    """Run the social identity safety scenarios."""
     from tests.support.social_history_cases import (
         history_agent_loop,
         history_receipt,

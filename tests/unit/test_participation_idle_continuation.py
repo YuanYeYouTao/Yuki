@@ -147,6 +147,11 @@ async def test_source_free_intrinsic_admission_and_confirmed_send_thread(databas
         await sync_scope_effects(host, item)
         await host._hydrate(item)
         assert item.controller.state.events[f"event:{own.id}"].thread == proposal.thread
+        anchor_key = f"event:{own.id}"
+        anchor_event = item.controller.state.events[anchor_key]
+        item.controller.state.events[anchor_key] = anchor_event.model_copy(
+            update={"at": anchor_event.at - 400}
+        )
 
         for index in range(6):
             await host.app.ledger.append(
