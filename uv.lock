@@ -830,7 +830,7 @@ requires-dist = [
     { name = "types-defusedxml", marker = "extra == 'dev'", specifier = ">=0.7,<1" },
     { name = "types-jsonschema", marker = "extra == 'dev'", specifier = ">=4.23,<5" },
     { name = "tzdata", specifier = ">=2025.2" },
-    { name = "yuki-semantic-participation", url = "https://github.com/YuanYeYouTao/Yuki-Semantic-Participation/archive/50429511af9877300de89504f43b3b0040e24491.tar.gz" },
+    { name = "yuki-semantic-participation", url = "https://github.com/YuanYeYouTao/Yuki-Semantic-Participation/archive/a55b8e5ce8ad6bd136b27d30ef335c3903807050.tar.gz" },
 ]
 provides-extras = ["dev"]
 
@@ -1133,12 +1133,12 @@ wheels = [
 [[package]]
 name = "yuki-semantic-participation"
 version = "0.1.0"
-source = { url = "https://github.com/YuanYeYouTao/Yuki-Semantic-Participation/archive/50429511af9877300de89504f43b3b0040e24491.tar.gz" }
+source = { url = "https://github.com/YuanYeYouTao/Yuki-Semantic-Participation/archive/a55b8e5ce8ad6bd136b27d30ef335c3903807050.tar.gz" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
 ]
-sdist = { hash = "sha256:4a171bd071f9b849ef0be1901907475c4b9fd8d16eee6a39e904e77e49f968d6" }
+sdist = { hash = "sha256:18a394fbad772b2ce462d423a0fa50255e4b794fc27a38ec5b58520cead1ba13" }
 
 [package.metadata]
 requires-dist = [
