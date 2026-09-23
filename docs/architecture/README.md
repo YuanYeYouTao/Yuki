@@ -13,7 +13,8 @@ Yuki 正在逐层解耦：永久主体、内部事件和工作身份由核心持
 | [持久工作者](persistent-subagents.md) | 子 Agent 生命周期、权限、根预算和缓存 |
 | [Conversation Rollup](conversation-rollup.md) | 原始事件、历史投影、压缩与 generation |
 | [Self Reflection](self-reflection.md) | 自省 Responses 合同、后台周期、预算、重试与运维报告 |
-| [语义参与 V6 宿主接入](semantic-participation.md) | 独立观测/selector、正式 SELF 主入口、同 Runner 恢复、发送和自省回执；本地已接通，未部署，T20 真实 QQ 未验收 |
+| [语义参与 V6 宿主接入](semantic-participation.md) | 独立观测/selector、正式 SELF 主入口、同 Runner 恢复、发送和自省回执；具体版本与部署状态须单独核验，T20 真实 QQ 社交效果未验收 |
+| [自主参与连续决策模型](autonomous-participation-model.md) | 连续状态与回执决定自主 SELF 思考时机；独立库开发实现及参数验收边界 |
 | [Memory](memory-v2.md) | 记忆范围、证据与权限 |
 | [Tool Kernel](tool-kernel.md) | 固定主声明、目录查询与执行授权 |
 | [MCP 架构](../mcp/architecture.md) | 外部工具、固定清单和执行授权 |
