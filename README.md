@@ -6,9 +6,9 @@
 
 <p><img src="img/Yuki_2.png" alt="Yuki" width="280"></p>
 
-<h1>Yuki-QQbot</h1>
+<h1>Yuki</h1>
 
-<p>有长期记忆、能使用工具与持久工作环境的 QQ AI Agent</p>
+<p>有长期记忆、能使用工具与持久工作环境的 AI Agent 目前可运行在 QQ</p>
 
 <p>
   <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.3"><img src="https://img.shields.io/badge/Release-3.8.3-blue" alt="Yuki 3.8.3"></a>
