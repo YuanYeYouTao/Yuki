@@ -180,7 +180,7 @@ def test_bot_identity_is_configurable_and_aliases_are_stably_deduplicated() -> N
     assert settings.bot_identity.display_name == "Mika"
 
 
-def test_example_system_prompt_is_complete_and_preserves_mode_boundaries() -> None:
+def test_example_system_prompt_contains_persona_and_work_mode() -> None:
     prompt_path = Path(__file__).parents[2] / "config" / "system_prompt.example.md"
     prompt = prompt_path.read_text(encoding="utf-8")
     assert "{{YUKI_PERSONA_CORE}}" not in prompt
@@ -190,13 +190,11 @@ def test_example_system_prompt_is_complete_and_preserves_mode_boundaries() -> No
         "银白色长发",
         "蓝色兔耳形发带",
         "雪花发饰",
-        "每句话不得超过 10 个汉字",
-        "一条消息只能发送一句话或一个短语",
+        "亲近来自长期相处、共同经历、信任和彼此选择",
         "只有用户明确进入角色场景、约会场景、成人场景或要求动作描写时",
-        "Yuki 始终都是 Yuki",
-        "正经工作模式不受每句 10 字和每条一句的限制",
+        "查不到时可以坦诚说不确定",
+        "正经工作模式可以使用完整段落",
         "优先保证事实准确、内容完整、步骤可执行和结果可验证",
-        "任务完成或话题回到闲聊后，立即恢复日常对话格式",
     )
     assert all(fragment in prompt for fragment in required_fragments)
 
