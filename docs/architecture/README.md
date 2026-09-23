@@ -14,7 +14,7 @@ Yuki 正在逐层解耦：永久主体、内部事件和工作身份由核心持
 | [Conversation Rollup](conversation-rollup.md) | 原始事件、历史投影、压缩与 generation |
 | [Self Reflection](self-reflection.md) | 自省 Responses 合同、后台周期、预算、重试与运维报告 |
 | [语义参与 V6 宿主接入](semantic-participation.md) | 独立观测/selector、正式 SELF 主入口、同 Runner 恢复、发送和自省回执；具体版本与部署状态须单独核验，T20 真实 QQ 社交效果未验收 |
-| [自主参与连续决策模型](autonomous-participation-model.md) | 连续状态与回执决定自主 SELF 思考时机；独立库开发实现及参数验收边界 |
+| [自主参与连续决策模型](autonomous-participation-model.md) | 连续状态与回执决定自主 SELF 思考时机；参数与合成回放验收边界 |
 | [Memory](memory-v2.md) | 记忆范围、证据与权限 |
 | [Tool Kernel](tool-kernel.md) | 固定主声明、目录查询与执行授权 |
 | [MCP 架构](../mcp/architecture.md) | 外部工具、固定清单和执行授权 |
@@ -36,8 +36,7 @@ Yuki 正在逐层解耦：永久主体、内部事件和工作身份由核心持
 
 本文是开发导航，不是上线证明；实际部署状态须核对当前镜像、数据库版本与部署记录。
 
-2026-09-22 的 V6 开发链为 `0065`（PR #111 关系历史索引）→ `0066`（autonomy 接纳）→
-`0067`（SELF 证据与自省水位）→ `0068`（接入时解析的内部引用事件）→
-`0069`（Social 回执的内部事件关联）。当前开发迁移头为 `0069`；
-本工作树的 SELF 接入不代表这条迁移链已用于生产；
-当前没有进行 main 合并或部署，合成 Jev smoke 也不等于独立人工准确率或真实 QQ 验收。
+V6 迁移链为 `0065`（关系历史索引）→ `0066`（autonomy 接纳）→
+`0067`（SELF 证据与自省水位）→ `0068`（内部引用事件）→
+`0069`（Social 回执内部事件关联）→ `0070`（无来源机会与讨论线程）。
+仓库迁移头不等于生产数据库版本；合成 Jev 与控制器回放也不等于真实 QQ 社交验收。
