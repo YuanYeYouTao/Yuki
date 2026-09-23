@@ -570,6 +570,24 @@ async def test_plugin_callback_pending_is_queryable_after_callback_returns(
         host._services = replace(host._services, approval_revision="changed-approval")
         with pytest.raises(PluginPermissionError):
             await host.agent.result(work_id)
+        if segment_resume is True:
+            # Reproduce a completed callback task whose cleanup callback has
+            # not removed its cache entry before the next invocation.
+            from qq_ai_bot.services.agent_runner import AgentRunResult
+
+            async def stale_result() -> AgentRunResult:
+                return AgentRunResult(
+                    text="stale",
+                    tool_calls_used=0,
+                    model_requests=0,
+                    web_was_used=False,
+                )
+
+            stale_task = asyncio.create_task(stale_result())
+            await stale_task
+            current = await WorkRepository(database).get(work_id)
+            assert current["source_key"].startswith("invocation:")
+            main_turn._RUNNING[current["source_key"].removeprefix("invocation:")] = stale_task
         with host.bind(invocation), pytest.raises(WorkConflict, match="authority_changed"):
             await host.agent.run("计算", max_model_requests=1 if segment_resume else None)
         assert len(provider.requests) == (2 if segment_resume else 1)

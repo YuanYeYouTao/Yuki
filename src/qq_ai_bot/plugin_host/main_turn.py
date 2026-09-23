@@ -60,6 +60,11 @@ async def run_plugin_main_turn(
     runtime = replace(runtime, execution_id=execution_id)
     key = invocation_boundary(runtime)
     task = _RUNNING.get(key)
+    if task is not None and task.done():
+        # A completed task may still be present before its done callback runs.
+        # Reusing it would skip the durable work and authority checks below.
+        _RUNNING.pop(key, None)
+        task = None
     if task is None:
         if len(_RUNNING) >= 8:
             raise PluginPermissionError("plugin main Agent admission is busy; no work accepted")
@@ -79,7 +84,8 @@ async def run_plugin_main_turn(
         _RUNNING[key] = task
 
         def finished(completed: asyncio.Task[AgentRunResult]) -> None:
-            _RUNNING.pop(key, None)
+            if _RUNNING.get(key) is completed:
+                _RUNNING.pop(key, None)
             if not completed.cancelled():
                 completed.exception()  # Durable work state is the recovery authority.
 
