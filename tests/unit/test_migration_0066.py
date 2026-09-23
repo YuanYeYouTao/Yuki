@@ -82,6 +82,9 @@ def test_autonomy_migration_is_additive_and_preserves_records(monkeypatch):
 
 def test_frozen_migration_matches_runtime_metadata(monkeypatch):
     migration = importlib.import_module("migrations.versions.0066_autonomy_admission")
+    intrinsic_migration = importlib.import_module(
+        "migrations.versions.0070_intrinsic_initiative_thread"
+    )
     models = (
         AutonomyBindingModel,
         InitiativeRunModel,
@@ -98,6 +101,12 @@ def test_frozen_migration_matches_runtime_metadata(monkeypatch):
             migration, "op", Operations(MigrationContext.configure(migration_connection))
         )
         migration.upgrade()
+        monkeypatch.setattr(
+            intrinsic_migration,
+            "op",
+            Operations(MigrationContext.configure(migration_connection)),
+        )
+        intrinsic_migration.upgrade()
         for model in models:
             model.__table__.create(model_connection)
             name = model.__tablename__
