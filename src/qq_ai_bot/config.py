@@ -321,7 +321,7 @@ class Settings(BaseSettings):
     memory_rebuild_max_events_per_run: int | None = None
     agent_max_tool_calls: int = 32
     agent_max_model_requests: int = 24
-    agent_tool_result_max_characters: int = 8000
+    agent_tool_result_max_characters: int = 24000
 
     # Tool Kernel selection budgets do not cap the main Agent's frozen tool contract.
     # Its request_tools directory lookup never loads schemas or changes authorization.

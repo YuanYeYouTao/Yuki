@@ -957,7 +957,9 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     from qq_ai_bot.workspace.short_state import ShortState
     from qq_ai_bot.workspace.store import WorkspaceStore
 
-    harness = build_harness(database, make_settings(database.url))
+    harness = build_harness(
+        database, make_settings(database.url, agent_tool_result_max_characters=24000)
+    )
     contract = MainAgentContract(
         harness.processor._chat, ShortState(WorkspaceStore(tmp_path / "state"))
     )
@@ -1096,7 +1098,14 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
         "ok": True,
         "data": {"events": [], "returned_count": 0, "truncated": False},
     }
-    tools._ledger.search = AsyncMock(return_value=[replace(actual_record, content="x" * 1000)] * 20)
+    tools._ledger.search = AsyncMock(return_value=[replace(actual_record, content="x" * 1000)] * 12)
+    longer_search = json.loads(
+        await tools.execute("search_chat_history", '{"keyword":"release"}', group_runtime)
+    )
+    assert longer_search["ok"]
+    assert longer_search["data"]["returned_count"] == 12
+    assert not longer_search["data"]["truncated"]
+    tools._ledger.search = AsyncMock(return_value=[replace(actual_record, content="x" * 2000)] * 20)
     bounded_search = json.loads(
         await tools.execute("search_chat_history", '{"keyword":"release"}', group_runtime)
     )
