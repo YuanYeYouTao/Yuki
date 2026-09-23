@@ -588,9 +588,13 @@ async def test_plugin_callback_pending_is_queryable_after_callback_returns(
             current = await WorkRepository(database).get(work_id)
             assert current["source_key"].startswith("invocation:")
             main_turn._RUNNING[current["source_key"].removeprefix("invocation:")] = stale_task
+            monkeypatch.setattr(main_turn, "CALLBACK_WAIT_SECONDS", 0.0001)
         with host.bind(invocation), pytest.raises(WorkConflict, match="authority_changed"):
             await host.agent.run("计算", max_model_requests=1 if segment_resume else None)
         assert len(provider.requests) == (2 if segment_resume else 1)
+        if segment_resume is True:
+            key = current["source_key"].removeprefix("invocation:")
+            assert main_turn._RUNNING.pop(key, None) is stale_task
     finally:
         released.set()
         await main_turn.close_plugin_main_tasks(host.plugin_id)
