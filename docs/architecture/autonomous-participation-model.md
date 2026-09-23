@@ -1,6 +1,6 @@
 # 自主参与的连续决策模型
 
-Yuki Host 在 `pyproject.toml` 与 `uv.lock` 固定独立库主线提交 `f97fe79`。
+Yuki Host 在 `pyproject.toml` 与 `uv.lock` 固定独立库主线提交 `a55b8e5`。
 本文件描述模型与宿主边界；实际线上版本以运行镜像、锁定依赖和数据库迁移记录核验。
 控制器源码及参数见独立库的 `docs/autonomous-evolution.md`，宿主接纳与执行链见
 [语义参与 V6 宿主接入](semantic-participation.md)。
