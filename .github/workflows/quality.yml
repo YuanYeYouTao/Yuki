@@ -124,8 +124,8 @@ jobs:
           count="$(printf '%s\n' "$output" | sed -nE 's/^([0-9]+) tests? collected.*$/\1/p' | tail -n 1)"
           test -n "$count"
           # Includes integrated lifecycle, delivery, protocol and V6 SELF regressions.
-          if (( count > 1200 )); then
-            echo "test budget exceeded: $count collected (maximum 1200)" >&2
+          if (( count > 1204 )); then
+            echo "test budget exceeded: $count collected (maximum 1204)" >&2
             exit 1
           fi
           required_tests=(

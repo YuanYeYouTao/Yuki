@@ -20,7 +20,7 @@ dependencies = [
     "sqlalchemy>=2.0.36,<3",
     "tenacity>=9,<10",
     "tzdata>=2025.2",
-    "yuki-semantic-participation @ https://github.com/YuanYeYouTao/Yuki-Semantic-Participation/archive/0e53c4df2447e7e3b443d44760c13e39a8cdb9d5.tar.gz",
+    "yuki-semantic-participation @ https://github.com/YuanYeYouTao/Yuki-Semantic-Participation/archive/b289ec94dcfd76161517fe57424e88cef0493199.tar.gz",
 ]
 
 [project.optional-dependencies]
