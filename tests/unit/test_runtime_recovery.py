@@ -7,13 +7,17 @@ from sqlalchemy import select, update
 from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.domain.messages import ChatMessage, OutboundMessage, OutboundSendReceipt
+from qq_ai_bot.gateway.registry import RegistryClosed
+from qq_ai_bot.identity.routing import RouteSendError
+from qq_ai_bot.runtime.activation_outcome import ExitReason
 from qq_ai_bot.runtime.delivery_intents import record, reserve
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_delivery import WorkDeliverySender, resume_delivery_plan
 from qq_ai_bot.runtime.work_journal import JournalUnavailable
-from qq_ai_bot.runtime.work_recovery_schema import deliveries, quota
+from qq_ai_bot.runtime.work_recovery_schema import deliveries, quota, recovery
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
 from qq_ai_bot.runtime.work_session import WorkSession
+from qq_ai_bot.runtime.work_supervisor import recover_failure
 from qq_ai_bot.services.turn_transcript import TurnTranscript
 
 
@@ -44,6 +48,33 @@ class Sender:
         if len(self.messages) == self.fail_at:
             raise TimeoutError("gateway outcome unknown")
         return OutboundSendReceipt(str(len(self.messages)))
+
+
+@pytest.mark.asyncio
+async def test_disconnected_presence_queues_original_work_without_error_notice(database, tmp_path):
+    control = await setup(database, tmp_path)
+    try:
+        raise RouteSendError("original_presence_unavailable") from RegistryClosed("disconnected")
+    except RouteSendError as disconnected:
+        outcome = await recover_failure(control, disconnected)
+    assert outcome.reason is ExitReason.RETRY
+    assert outcome.failure and outcome.failure.code == "gateway_disconnected"
+    assert control.current and control.current["state"] == "queued"
+    async with database.sessions() as session:
+        saved = (
+            await session.execute(
+                select(recovery.c.exit_reason, recovery.c.attempts).where(
+                    recovery.c.work_id == control.current["id"]
+                )
+            )
+        ).one()
+        notices = await session.scalar(
+            select(deliveries.c.id).where(
+                deliveries.c.work_id == control.current["id"], deliveries.c.kind == "notice"
+            )
+        )
+    assert saved == ("retry", 1)
+    assert notices is None
 
 
 @pytest.mark.asyncio

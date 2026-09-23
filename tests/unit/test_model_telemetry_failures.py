@@ -18,7 +18,9 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
+from qq_ai_bot.gateway.registry import RegistryClosed
 from qq_ai_bot.identity.errors import CanonicalIdentityError
+from qq_ai_bot.identity.routing import RouteSendError
 from qq_ai_bot.llm.base import LLMAuthenticationError, LLMInvalidRequestError, LLMTimeoutError
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.model_runtime.executor import TaskModelExecutor
@@ -34,6 +36,24 @@ from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
 from qq_ai_bot.model_runtime.repository import ModelInvocationRepository
 from qq_ai_bot.model_runtime.routes import ModelRouter
 from qq_ai_bot.runtime.activation_outcome import classify_failure, failure_status_text
+
+
+def test_disconnected_presence_can_retry_without_reclassifying_route_denials():
+    try:
+        raise RouteSendError("original_presence_unavailable") from RegistryClosed("disconnected")
+    except RouteSendError as disconnected:
+        failure = classify_failure(disconnected)
+    assert (failure.code, failure.stage, failure.retryable, failure.certainty) == (
+        "gateway_disconnected",
+        "gateway",
+        True,
+        "not_sent",
+    )
+    assert not classify_failure(RouteSendError("paused")).retryable
+    try:
+        raise RouteSendError("original_presence_unavailable") from RegistryClosed("ambiguous")
+    except RouteSendError as ambiguous:
+        assert not classify_failure(ambiguous).retryable
 
 
 def busy():
