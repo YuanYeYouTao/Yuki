@@ -37,6 +37,7 @@ from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.runtime.work_schema_v1 import work
+from qq_ai_bot.services.policies import EffectiveGroupPolicy, evaluate_message
 from qq_ai_bot.services.semantic_participation import SemanticParticipationService
 
 pytestmark = pytest.mark.asyncio
@@ -153,6 +154,7 @@ async def _host(database, tmp_path, *, observer=True):
     app = SimpleNamespace(
         database=database,
         ledger=EventLedgerRepository(database),
+        settings=SimpleNamespace(bot_aliases=("Yuki", "由纪")),
         runtime_config=SimpleNamespace(
             snapshot=AsyncMock(
                 return_value=SimpleNamespace(
@@ -226,6 +228,13 @@ async def test_real_route_admission_dispatch_and_reconcile_create_one_actorless_
         item = await _item(host, event)
         binding = await host._binding(item)
         source = item.controller.state.events[f"event:{event.id}"]
+        assert source.observation_priority
+        direct = evaluate_message(
+            _message(event),
+            SimpleNamespace(ai_prefix="!ai", superusers=frozenset()),
+            group_policy=EffectiveGroupPolicy(enabled=True, require_mention=True),
+        )
+        assert not direct.should_respond
         proposal = _proposal(item, binding, source)
         await host._admit(item, binding, proposal)
         (run,) = await host.repository.list_active()
