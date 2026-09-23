@@ -65,6 +65,7 @@ from .state import (
 AGENT_INTENT = "根据当前主会话关系和仓库事件，自然说一句真实反应；不要复述完整卡片。"
 MAX_EVENT_PAGES = 10
 MEDIA_TTL_SECONDS = 7 * 24 * 60 * 60
+BACKLOG_DRAIN_INTERVAL_SECONDS = 1.0
 
 
 class GitHubQueueGap(RuntimeError):
@@ -120,6 +121,11 @@ class GitHubPoller:
                     continue
                 try:
                     completed = await self.poll_repository(subscription, config)
+                    completed = await self._drain_accepted_backlog(
+                        subscription,
+                        config,
+                        completed=completed,
+                    )
                     if completed:
                         try:
                             await clear_queue_diagnostic(self._context, subscription.repository)
@@ -158,17 +164,50 @@ class GitHubPoller:
             except TimeoutError:
                 pass
 
+    async def _drain_accepted_backlog(
+        self,
+        subscription: RepositorySubscription,
+        config: GitHubMonitorConfig,
+        *,
+        completed: bool,
+    ) -> bool:
+        """Drain persisted work in bounded steps without another GitHub fetch."""
+
+        while not self._stop.is_set():
+            before = (await load_queue_state(self._context, subscription.repository)).state
+            if not before.pending and before.inflight is None:
+                return completed
+            if before.gap_reason or (
+                before.paused_until is not None and before.paused_until > datetime.now(UTC)
+            ):
+                return False
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=BACKLOG_DRAIN_INTERVAL_SECONDS)
+            except TimeoutError:
+                pass
+            if self._stop.is_set():
+                return False
+            completed = await self.poll_repository(subscription, config, drain_only=True)
+            after = (await load_queue_state(self._context, subscription.repository)).state
+            if after == before:
+                return False
+        return completed
+
     async def poll_repository(
         self,
         subscription: RepositorySubscription,
         config: GitHubMonitorConfig,
+        *,
+        drain_only: bool = False,
     ) -> bool:
         async with self.repository_guard(subscription.repository):
             current_config = await load_config(self._context)
             current_subscription = self._find_subscription(current_config, subscription.repository)
             if current_subscription is None:
                 return False
-            return await self._poll_repository_locked(current_subscription, current_config)
+            return await self._poll_repository_locked(
+                current_subscription, current_config, drain_only=drain_only
+            )
 
     async def rebaseline(
         self,
@@ -383,6 +422,8 @@ class GitHubPoller:
         self,
         subscription: RepositorySubscription,
         config: GitHubMonitorConfig,
+        *,
+        drain_only: bool = False,
     ) -> bool:
         if not subscription.enabled:
             return False
@@ -409,7 +450,7 @@ class GitHubPoller:
             max_batch_members=config.max_events_per_poll,
             coalesce=config.coalesce,
         )
-        if had_queued_work:
+        if had_queued_work or drain_only:
             await self._mirror_if_drained(repository, snapshot.state)
             return self._queue_cycle_complete(snapshot.state)
         if snapshot.state.pending or snapshot.state.inflight is not None:

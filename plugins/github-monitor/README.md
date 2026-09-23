@@ -134,7 +134,7 @@ docker compose exec -u 10001:10001 bot qq-ai-bot-cli plugin enable github-monito
 | `initial_sync_mode` | `baseline` | `baseline` 或 `replay_recent` |
 | `replay_recent_limit` | `5` | 回放最近 1–20 条事件 |
 | `events_per_repository` | `100` | GitHub 每页读取 1–100 条 |
-| `max_events_per_poll` | `50` | 单仓库单轮最多发布 1–200 条 |
+| `max_events_per_poll` | `50` | 单仓库每次队列排空最多发布 1–200 条；已有积压每秒继续排空一轮 |
 | `coalesce` | `true` | 是否合并尚未 seal 的安全相邻事件；关闭后按单例排空 |
 | `request_timeout_seconds` | `20` | 单次请求 3–60 秒 |
 
@@ -168,6 +168,9 @@ Release 通知包含仓库、发布者、版本标签、正式版/预发布状�
 合批只发生在 pending FIFO 的相邻前缀：Create/Delete 还要求 actor、`ref_type` 和目标策略快照
 完全兼容；Watch/Fork 要求类型与目标快照一致。批次不生成卡片，payload 保留全部 source event ID
 并在 seal 前验证 Host 32 KiB 上限。`coalesce=false` 不会改写已经 seal 的批次。
+
+已接纳的 pending/inflight 队列按每步上限逐秒排空，无需等下一次 GitHub 轮询；
+`poll_interval_seconds` 仍控制 GitHub API 请求周期。排空停止或无进展时不会空转重试。
 
 ## 可靠性与安全边界
 
