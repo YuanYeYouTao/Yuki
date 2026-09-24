@@ -6,25 +6,25 @@
 
 <p><img src="img/Yuki_2.png" alt="Yuki" width="280"></p>
 
-<h1>Yuki-QQbot</h1>
+<h1>Yuki</h1>
 
-<p>A QQ AI agent with long-term memory, tools, and a persistent workspace</p>
+<p>A persistent social AI agent in real QQ conversations</p>
 
 <p>
-  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.3"><img src="https://img.shields.io/badge/Release-3.8.3-blue" alt="Yuki 3.8.3"></a>
+  <a href="https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.3"><img src="https://img.shields.io/badge/Release-3.8.3-blue" alt="Yuki 3.8.3"></a>
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
-  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/actions/workflows/quality.yml"><img src="https://github.com/YuanYeYouTao/Yuki-QQbot/actions/workflows/quality.yml/badge.svg" alt="Quality"></a>
+  <a href="https://github.com/YuanYeYouTao/Yuki/actions/workflows/quality.yml"><img src="https://github.com/YuanYeYouTao/Yuki/actions/workflows/quality.yml/badge.svg" alt="Quality"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow" alt="MIT License"></a>
 </p>
 
-[Download 3.8.3](https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.3) · [Release notes](docs/releases/v3.8.3.md) · [Upgrade guide](docs/upgrade-3.8.3.md) · [Help](docs/help.md)
+[Download 3.8.3](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.3) · [Release notes](docs/releases/v3.8.3.md) · [Upgrade guide](docs/upgrade-3.8.3.md) · [Help](docs/help.md)
 
 </div>
 
-Yuki chats in QQ private messages and groups, remembers people and shared experiences, reads images, voice messages, and files, and uses tools to search, send messages, run code, and complete background work. Persona, memory, and relationships live in Yuki's own database, so they can survive a change of QQ account or gateway.
+Yuki is an open-source, self-hosted social AI agent exploring what a persistent digital life can be in real conversations. She currently runs in QQ private chats and groups, remembers people and shared experiences, maintains long-term relationships, and uses tools and a persistent workspace to carry work across messages. Her identity, memory, and relationships live in Yuki's own database and can survive a change of model, QQ account, or gateway.
 
-**The current release is 3.8.3.** It includes a persistent workspace, speech recognition, a unified main agent, sub-tasks and durable recovery, and a cleaned-up tool contract. The workspace is deployed separately; there is no WebUI yet.
+**The current release is 3.8.3.** It includes a persistent workspace, speech recognition, a unified main agent, sub-tasks and durable recovery, and a cleaned-up tool contract. The current `main` branch also includes optional semantic observation and autonomous participation for group chats; long-term behavior in real QQ groups is still being evaluated. The workspace is deployed separately; there is no WebUI yet.
 
 ## What Yuki can do
 
@@ -74,12 +74,12 @@ Chat, plugin wakeups, automation, and task resumption use the same main agent wi
 
 Basic deployment requires Linux amd64 or Windows Docker Desktop running Linux containers, Docker Engine with Compose v2, a configured model service using one of the supported Chat Completions or Responses integrations, and a logged-in NapCat or SnowLuma QQ gateway.
 
-Download the deployment bundle from the [3.8.3 Release](https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.3). After extraction, fill in `.env` and model configuration manually or use the guided setup.
+Download the deployment bundle from the [3.8.3 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.3). After extraction, fill in `.env` and model configuration manually or use the guided setup.
 
 Linux:
 
 ```bash
-curl -fLO https://github.com/YuanYeYouTao/Yuki-QQbot/releases/download/v3.8.3/install.sh
+curl -fLO https://github.com/YuanYeYouTao/Yuki/releases/download/v3.8.3/install.sh
 chmod +x install.sh
 ./install.sh
 ```
@@ -87,7 +87,7 @@ chmod +x install.sh
 Windows PowerShell:
 
 ```powershell
-Invoke-WebRequest -Uri https://github.com/YuanYeYouTao/Yuki-QQbot/releases/download/v3.8.3/install.ps1 -OutFile install.ps1
+Invoke-WebRequest -Uri https://github.com/YuanYeYouTao/Yuki/releases/download/v3.8.3/install.ps1 -OutFile install.ps1
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
@@ -119,6 +119,10 @@ docker compose exec bot qq-ai-bot-cli gateway doctor --provider snowluma
 ```
 
 Use `napcat` instead of `snowluma` in the last command when appropriate, and keep the same Compose arguments used for deployment. Only one active connection should use a given QQ account; stop the old connection before switching gateways. See [SnowLuma deployment and switching](docs/deployment/snowluma.md).
+
+## Related projects
+
+[Alice](https://github.com/LlmKira/Alice) explores how an AI can participate continuously in real conversations; [Letta](https://docs.letta.com/) focuses on agents that retain memory and state; and [AstrBot](https://docs.astrbot.app/) provides an agent and plugin framework for QQ and other chat platforms. Yuki explores how these capabilities work together in one persistent group-chat subject: getting to know people, building relationships and memories, and deciding when to participate.
 
 ## Architecture and development
 

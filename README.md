@@ -8,23 +8,23 @@
 
 <h1>Yuki</h1>
 
-<p>有长期记忆、能使用工具与持久工作环境的 AI Agent 目前可运行在 QQ</p>
+<p>一个在真实 QQ 对话中持续存在的社会化 AI Agent</p>
 
 <p>
-  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.3"><img src="https://img.shields.io/badge/Release-3.8.3-blue" alt="Yuki 3.8.3"></a>
+  <a href="https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.3"><img src="https://img.shields.io/badge/Release-3.8.3-blue" alt="Yuki 3.8.3"></a>
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
-  <a href="https://github.com/YuanYeYouTao/Yuki-QQbot/actions/workflows/quality.yml"><img src="https://github.com/YuanYeYouTao/Yuki-QQbot/actions/workflows/quality.yml/badge.svg" alt="Quality"></a>
+  <a href="https://github.com/YuanYeYouTao/Yuki/actions/workflows/quality.yml"><img src="https://github.com/YuanYeYouTao/Yuki/actions/workflows/quality.yml/badge.svg" alt="Quality"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow" alt="MIT License"></a>
 </p>
 
-[下载 3.8.3](https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.3) · [3.8.3 发布说明](docs/releases/v3.8.3.md) · [当前升级指南](docs/upgrade-3.8.3.md) · [使用帮助](docs/help.md)
+[下载 3.8.3](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.3) · [3.8.3 发布说明](docs/releases/v3.8.3.md) · [当前升级指南](docs/upgrade-3.8.3.md) · [使用帮助](docs/help.md)
 
 </div>
 
-Yuki 可以在 QQ 私聊和群聊中交流，记住人与共同经历，读取图片、语音和文件，并通过工具搜索资料、发送消息、执行代码和处理后台任务。人格、记忆和关系保存在自己的数据库中，切换 QQ 账号或网关时可以继续沿用。
+Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何在真实社交场景中持续存在。她当前运行在 QQ 私聊和群聊中，记住人与共同经历，维护长期关系，也能使用工具和持久工作环境完成跨消息的任务。身份、记忆和关系由自己的数据库保存，更换模型、QQ 账号或网关时可以继续沿用。
 
-**当前正式版为 3.8.3。** 当前代码包含持久工作环境、语音识别、统一主 Agent、子任务与持续恢复，以及工具合同清理。工作环境需要单独部署；WebUI 尚未提供。
+**当前正式版为 3.8.3。** 它包含持久工作环境、语音识别、统一主 Agent、子任务与持续恢复，以及工具合同清理。当前 `main` 还包含可选的群聊语义观察与自主参与机制；真实 QQ 群聊中的长期效果仍在验证。工作环境需要单独部署；WebUI 尚未提供。
 
 ## Yuki 能做什么
 
@@ -79,12 +79,12 @@ Yuki 可以在 QQ 私聊和群聊中交流，记住人与共同经历，读取�
 - 可用的模型服务配置，支持项目接入的 Chat Completions 或 Responses 协议；
 - 至少一个 NapCat 或 SnowLuma QQ 网关及登录账号。
 
-从 [3.8.3 Release](https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.3) 下载部署包，解压后可以手动填写 `.env` 和模型配置，也可以使用配置向导。
+从 [3.8.3 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.3) 下载部署包，解压后可以手动填写 `.env` 和模型配置，也可以使用配置向导。
 
 Linux：
 
 ```bash
-curl -fLO https://github.com/YuanYeYouTao/Yuki-QQbot/releases/download/v3.8.3/install.sh
+curl -fLO https://github.com/YuanYeYouTao/Yuki/releases/download/v3.8.3/install.sh
 chmod +x install.sh
 ./install.sh
 ```
@@ -92,7 +92,7 @@ chmod +x install.sh
 Windows PowerShell：
 
 ```powershell
-Invoke-WebRequest -Uri https://github.com/YuanYeYouTao/Yuki-QQbot/releases/download/v3.8.3/install.ps1 -OutFile install.ps1
+Invoke-WebRequest -Uri https://github.com/YuanYeYouTao/Yuki/releases/download/v3.8.3/install.ps1 -OutFile install.ps1
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
@@ -124,6 +124,10 @@ docker compose exec bot qq-ai-bot-cli gateway doctor --provider snowluma
 ```
 
 使用 NapCat 时将最后一个参数改为 `napcat`；所有命令沿用部署时的 Compose 参数。同一 QQ 只允许一条活动连接，切换网关前需先停止旧连接。见 [SnowLuma 部署与切换](docs/deployment/snowluma.md)。
+
+## 相邻项目
+
+[Alice](https://github.com/LlmKira/Alice) 探索 AI 如何持续参与真实聊天；[Letta](https://docs.letta.com/) 关注有记忆、能保持状态的 Agent；[AstrBot](https://docs.astrbot.app/) 提供面向 QQ 等聊天平台的 Agent 与插件框架。Yuki 关注这些能力如何在同一个持续存在的群聊主体中协同工作：认识人、积累关系与记忆，并自主判断何时参与。
 
 ## 架构与开发
 
