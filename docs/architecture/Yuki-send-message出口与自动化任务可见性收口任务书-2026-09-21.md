@@ -1,12 +1,16 @@
 # Yuki `send_message` 出口与自动化任务可见性收口任务书
 
-> 状态：已按本任务书实施；提交与生产部署状态以交付记录为准
+> 状态：历史设计。出站规范化和全局安全目录已实施；C 工作包的每轮快照后来移除。
+> 提交与生产部署状态以交付记录为准。
 >
 > 基线：`codex/explicit-send-message` / `16e839c`（`refactor: make outbound delivery explicit`）
 >
 > 核查时间：2026-09-21，Asia/Shanghai
 >
 > 范围：只处理显式消息出口与自动化任务认知/可见性问题
+
+> 后续变更：当前群 active 任务的每轮提示词快照已移除；本文件关于 C 工作包的内容保留为
+> 2026-09-21 的历史设计。现行合同见 [主 Agent 执行与恢复](main-agent-runtime.md)。
 
 ## 1. 结论
 
