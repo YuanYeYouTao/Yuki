@@ -9,7 +9,7 @@ import time
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from typing import Any, Literal, Protocol, cast
 
 from pydantic import ValidationError
@@ -79,7 +79,7 @@ from qq_ai_bot.web.models import (
     WebSearchTimeRange,
     WebSearchTopic,
 )
-from qq_ai_bot.workspace.tools import WORKSPACE_READ_TOOLS
+from qq_ai_bot.workspace.tools import WORKSPACE_READ_TOOLS, WORKSPACE_TOOLS
 
 _URL_IN_TEXT = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
 _CQ_CODE = re.compile(r"\[CQ:([a-zA-Z0-9_-]+)(?:,[^\]]*)?\]", re.IGNORECASE)
@@ -365,12 +365,6 @@ def _object_schema(
         "required": list(required),
         "additionalProperties": False,
     }
-
-
-def _history_sender_is_yuki(sender_id: str, inbound: InboundMessage) -> bool:
-    """Classify OneBot history against every canonical Yuki Presence."""
-
-    return sender_id in inbound.yuki_account_ids
 
 
 class AgentToolService:
@@ -1064,12 +1058,13 @@ class AgentToolService:
                     )
                     return self._result(data=result, defer_budget=True)
 
-                if name.startswith("workspace_"):
+                if name in WORKSPACE_TOOLS:
                     from qq_ai_bot.workspace.store import WorkspaceError
 
                     if (
                         (
-                            runtime.origin
+                            name != "inspect_conversation_attachment"
+                            and runtime.origin
                             not in {TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP}
                             and not runtime.allow_work_environment
                         )
@@ -1354,109 +1349,14 @@ class AgentToolService:
         return self._permission_catalog.report_for_actor(actor, category=category, query=query)
 
     async def _recent_history(self, runtime: ToolRuntime) -> str:
-        if runtime.read_scope is not None or (runtime.inbound is None and runtime.gateway is None):
-            rows = await self._ledger.list_scope_recent(
-                runtime.conversation_scope(),
-                limit=min(runtime.history_limit or 20, self._settings.recent_history_tool_limit),
-                message_only=True,
-            )
-            return self._result(
-                data={"source": "ledger", "events": [self._event_json(row) for row in rows]}
-            )
-        if runtime.gateway is None:
-            return self._result(error="onebot_unavailable", detail="当前没有 OneBot 连接")
-        scope = runtime.conversation_scope()
-        limit = self._settings.recent_history_tool_limit
-        if scope.scope_type is ScopeType.GROUP:
-            if scope.group_id is None:
-                return self._result(error="missing_group", detail="当前群号缺失")
-            action = "get_group_msg_history"
-            params: dict[str, Any] = {"group_id": scope.group_id, "count": limit}
-        else:
-            action = "get_friend_msg_history"
-            if scope.private_peer_user_id is None:
-                return self._result(error="missing_user", detail="当前私聊目标缺失")
-            params = {"user_id": scope.private_peer_user_id, "count": limit}
-        payload = await runtime.gateway.call_api(action, params)
-        raw_messages = self._history_messages(payload)[-limit:]
-        stored = 0
-        if runtime.inbound is not None:
-            for item in raw_messages:
-                if await self._store_history_item(item, runtime.inbound):
-                    stored += 1
-        messages = [self._history_item_for_model(item) for item in raw_messages]
+        rows = await self._ledger.list_scope_recent(
+            runtime.conversation_scope(),
+            limit=min(runtime.history_limit or 20, self._settings.recent_history_tool_limit),
+            message_only=True,
+        )
         return self._result(
-            data={
-                "source": self._gateway_provider_id(runtime.gateway),
-                "scope": scope.scope_type.value,
-                "count": len(messages),
-                "newly_recorded": stored,
-                "messages": messages,
-            }
+            data={"source": "ledger", "events": [self._event_json(row) for row in rows]}
         )
-
-    @staticmethod
-    def _history_messages(payload: Any) -> list[dict[str, Any]]:
-        if isinstance(payload, list):
-            return [item for item in payload if isinstance(item, dict)]
-        if not isinstance(payload, dict):
-            return []
-        for key in ("messages", "message_list", "data"):
-            value = payload.get(key)
-            if isinstance(value, list):
-                return [item for item in value if isinstance(item, dict)]
-            if isinstance(value, dict):
-                nested = value.get("messages")
-                if isinstance(nested, list):
-                    return [item for item in nested if isinstance(item, dict)]
-        return []
-
-    async def _store_history_item(self, item: dict[str, Any], inbound: InboundMessage) -> bool:
-        message_id = str(item.get("message_id") or item.get("id") or "")
-        sender_id = str(
-            item.get("user_id")
-            or (
-                item.get("sender", {}).get("user_id")
-                if isinstance(item.get("sender"), dict)
-                else ""
-            )
-            or ""
-        )
-        if not message_id or not sender_id:
-            return False
-        sender = item.get("sender")
-        sender = sender if isinstance(sender, dict) else {}
-        sender_nickname = sender.get("nickname")
-        sender_group_card = sender.get("card")
-        raw_segments = item.get("message")
-        segments = self._segments(raw_segments)
-        content = self._segments_text(segments)
-        timestamp_value = item.get("time")
-        try:
-            if not isinstance(timestamp_value, str | int | float):
-                raise TypeError
-            occurred_at = datetime.fromtimestamp(float(timestamp_value), tz=UTC)
-        except (TypeError, ValueError, OSError):
-            occurred_at = datetime.now(UTC)
-        _, created = await self._ledger.append(
-            bot_user_id=inbound.bot_user_id or "unknown-bot",
-            platform_message_id=message_id,
-            scope_type=inbound.scope_type,
-            sender_user_id=sender_id,
-            direction=("outbound" if _history_sender_is_yuki(sender_id, inbound) else "inbound"),
-            content=content,
-            segments=segments,
-            group_id=inbound.group_id,
-            private_peer_user_id=(
-                inbound.sender.user_id if inbound.scope_type is ScopeType.PRIVATE else None
-            ),
-            reply_to_message_id=self._reply_id(segments),
-            occurred_at=occurred_at,
-            sender_nickname=(sender_nickname if isinstance(sender_nickname, str) else ""),
-            sender_group_card=(sender_group_card if isinstance(sender_group_card, str) else ""),
-            sender_is_bot=_history_sender_is_yuki(sender_id, inbound),
-        )
-        return created
 
     @staticmethod
     def _segments(raw: Any) -> tuple[dict[str, Any], ...]:
@@ -1523,13 +1423,6 @@ class AgentToolService:
         }
 
     @staticmethod
-    def _gateway_provider_id(gateway: OneBotToolGateway) -> str:
-        provider_id = getattr(gateway, "provider_id", None)
-        if isinstance(provider_id, str) and provider_id.strip():
-            return provider_id.strip().casefold()[:32]
-        return "onebot"
-
-    @staticmethod
     def _segments_text(segments: tuple[dict[str, Any], ...]) -> str:
         parts: list[str] = []
         for segment in segments:
@@ -1545,16 +1438,6 @@ class AgentToolService:
             else:
                 parts.append(f"[{kind}]")
         return "".join(parts).strip()[:_HISTORY_TEXT_MAX]
-
-    @staticmethod
-    def _reply_id(segments: tuple[dict[str, Any], ...]) -> str | None:
-        for segment in segments:
-            if segment.get("type") != "reply":
-                continue
-            data = segment.get("data")
-            if isinstance(data, dict) and data.get("id") is not None:
-                return str(data["id"])
-        return None
 
     async def _search(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
         keyword = arguments.get("keyword")
@@ -1586,6 +1469,7 @@ class AgentToolService:
                 user_id = runtime.actor_user_id or runtime.external_target_id
         rows = await self._ledger.search(
             keyword=keyword,
+            conversation_id=runtime.effective_conversation_id,
             user_id=user_id,
             group_id=group_id,
             after=after,

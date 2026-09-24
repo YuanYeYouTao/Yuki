@@ -81,6 +81,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_message_content: bool = False
     workspace_directory: Path = Path("workspace")
+    conversation_media_cache_directory: Path = Path("data/conversation-media-cache")
     social_transfer_directory: Path = Path("social-transfer")
     social_gateway_transfer_directory: str = ""
     sandbox_socket: Path = Path("/run/yuki-sandbox/manager.sock")

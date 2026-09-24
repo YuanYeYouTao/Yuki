@@ -101,8 +101,11 @@ def _script() -> AutomationScript:
             "steps": [
                 {
                     "id": "send",
-                    "call": "onebot.send_private_message",
-                    "arguments": {"user_id": "$creator_user_id", "text": "测试"},
+                    "call": "social.send_message",
+                    "arguments": {
+                        "target": {"kind": "person", "subject_ref": "current_speaker"},
+                        "text": "测试",
+                    },
                 }
             ],
             "limits": {
@@ -621,7 +624,7 @@ async def test_worker_executes_once_and_prevents_duplicate_claim(database, resum
         automation_lease_seconds=30,
         runtime_work_enabled=True,
     )
-    registry = build_capability_registry({"onebot.send_private_message": send, "yuki.agent": agent})
+    registry = build_capability_registry({"social.send_message": send, "yuki.agent": agent})
     repository = AutomationRepository(database)
     time_service = TimeContextService(database, clock=clock)
     service = AutomationService(
@@ -909,7 +912,7 @@ async def test_removed_dsl_step_blocks_but_current_actor_sees_new_capabilities(
 
     removed = AutomationCapabilityRegistry()
     for definition in original.list():
-        if definition.name != "onebot.send_private_message":
+        if definition.name != "social.send_message":
             removed.register(definition)
     clock.advance(2)
     run = await repository.create_run(
@@ -987,7 +990,7 @@ async def test_misfired_once_task_is_marked_missed_without_sending(database) -> 
         automation_poll_seconds=0.01,
         automation_default_misfire_grace_seconds=30,
     )
-    registry = build_capability_registry({"onebot.send_private_message": send})
+    registry = build_capability_registry({"social.send_message": send})
     repository = AutomationRepository(database)
     time_service = TimeContextService(database, clock=clock)
     service = AutomationService(
@@ -1033,7 +1036,7 @@ async def test_uncertain_send_is_never_retried(database) -> None:
         raise ProactiveGatewayError("onebot_transport_uncertain", uncertain=True)
 
     settings = make_settings(database.url, automation_enabled=True)
-    registry = build_capability_registry({"onebot.send_private_message": uncertain})
+    registry = build_capability_registry({"social.send_message": uncertain})
     repository = AutomationRepository(database)
     time_service = TimeContextService(database, clock=clock)
     service = AutomationService(
@@ -1209,7 +1212,7 @@ async def test_three_consecutive_failures_stop_periodic_task(database) -> None:
         automation_enabled=True,
         automation_max_consecutive_failures=3,
     )
-    registry = build_capability_registry({"onebot.send_private_message": fail})
+    registry = build_capability_registry({"social.send_message": fail})
     repository = AutomationRepository(database)
     time_service = TimeContextService(database, clock=clock)
     service = AutomationService(
@@ -1289,16 +1292,16 @@ def _script_to(user_id: str, extra: str | None = None) -> AutomationScript:
     steps = [
         {
             "id": "send",
-            "call": "onebot.send_private_message",
-            "arguments": {"user_id": user_id, "text": "测试"},
+            "call": "social.send_message",
+            "arguments": {"target": {"kind": "person", "target_id": user_id}, "text": "测试"},
         }
     ]
     if extra is not None:
         steps.append(
             {
                 "id": "send2",
-                "call": "onebot.send_private_message",
-                "arguments": {"user_id": extra, "text": "另一人"},
+                "call": "social.send_message",
+                "arguments": {"target": {"kind": "person", "target_id": extra}, "text": "另一人"},
             }
         )
     return AutomationScript.model_validate(
@@ -1335,45 +1338,12 @@ def _superuser_inbound(*targets: str) -> InboundMessage:
 
 
 @pytest.mark.asyncio
-async def test_superuser_script_persists_explicit_person_not_creator(database) -> None:
-    from qq_ai_bot.identity.canonical_repository import person_id_for
-
-    clock = FakeClock(datetime(2026, 7, 27, tzinfo=UTC))
-    settings = make_settings(database.url, automation_enabled=True, superusers_csv="9000")
-    service = AutomationService(
-        settings=settings,
-        repository=AutomationRepository(database),
-        registry=build_capability_registry(),
-        time_service=TimeContextService(database, clock=clock),
-    )
-    row = await service.create(
-        _script_to("1808058482"),
-        actor=ToolActor.from_inbound(_superuser_inbound("1808058482")),
-        conversation_key="private:9000",
-    )
-    assert row.canonical_target_person_id is not None
-    assert row.canonical_creator_person_id is not None
-    assert row.canonical_target_person_id != row.canonical_creator_person_id
-    async with database.sessions() as session:
-        assert await person_id_for(session, "1808058482") == row.canonical_target_person_id
-        assert await person_id_for(session, "9000") == row.canonical_creator_person_id
-        assert await person_id_for(session, "1808058482") != await person_id_for(session, "9000")
-
-
-@pytest.mark.asyncio
-async def test_multiple_distinct_send_targets_are_rejected(database) -> None:
-    clock = FakeClock(datetime(2026, 7, 27, tzinfo=UTC))
-    settings = make_settings(database.url, automation_enabled=True, superusers_csv="9000")
-    service = AutomationService(
-        settings=settings,
-        repository=AutomationRepository(database),
-        registry=build_capability_registry(),
-        time_service=TimeContextService(database, clock=clock),
-    )
-    with pytest.raises(ValueError, match="一个永久发送目标"):
+async def test_static_send_rejects_platform_target_even_for_superuser(database) -> None:
+    service = _canonical_service(database)
+    with pytest.raises(ValueError, match="静态消息只能投递"):
         await service.create(
-            _script_to("1808058482", extra="1808058483"),
-            actor=ToolActor.from_inbound(_superuser_inbound("1808058482", "1808058483")),
+            _script_to("1808058482"),
+            actor=ToolActor.from_inbound(_superuser_inbound("1808058482")),
             conversation_key="private:9000",
         )
 
@@ -1390,53 +1360,27 @@ def _canonical_service(database):
 
 
 @pytest.mark.asyncio
-async def test_update_switches_to_same_person_alias(database) -> None:
-    from uuid import uuid4
-
-    from qq_ai_bot.identity.canonical_repository import person_id_for
-    from qq_ai_bot.identity.db_models import IdentityBindingModel
-
-    async with database.sessions() as session:
-        target = await person_id_for(session, "1808058482")
-    assert target is not None
-    now = datetime(2026, 8, 24, tzinfo=UTC)
-    async with database.sessions() as session, session.begin():
-        session.add(
-            IdentityBindingModel(
-                id=str(uuid4()),
-                person_id=target,
-                platform="qq",
-                external_account_id="1808058499",
-                display_name="alias",
-                status="active",
-                revision=1,
-                first_seen_at=now,
-                last_seen_at=now,
-                created_at=now,
-                updated_at=now,
-            )
-        )
+async def test_static_send_update_preserves_creator_target(database) -> None:
     service = _canonical_service(database)
-    inbound = _superuser_inbound("1808058482", "1808058499")
+    inbound = _superuser_inbound("提醒我")
     row = await service.create(
-        _script_to("1808058482"),
-        actor=ToolActor.from_inbound(inbound),
-        conversation_key="private:9000",
+        _script(), actor=ToolActor.from_inbound(inbound), conversation_key="private:9000"
     )
-    assert row.canonical_target_person_id == target
+    payload = _script().model_dump(mode="json")
+    payload["steps"][0]["arguments"]["text"] = "更新的提醒"
     updated = await service.update(
         row.id,
-        _script_to("1808058499"),
+        AutomationScript.model_validate(payload),
         actor=ToolActor.from_inbound(inbound),
         conversation_key="private:9000",
     )
-    assert updated.canonical_target_person_id == target
+    assert updated.canonical_target_person_id == row.canonical_target_person_id
 
 
 @pytest.mark.asyncio
 async def test_unknown_person_and_space_targets_fail_closed(database) -> None:
     service = _canonical_service(database)
-    with pytest.raises(ValueError, match="永久主体"):
+    with pytest.raises(ValueError, match="静态消息只能投递"):
         await service.create(
             _script_to("666666666"),
             actor=ToolActor.from_inbound(_superuser_inbound("666666666")),
@@ -1465,8 +1409,8 @@ async def test_unknown_person_and_space_targets_fail_closed(database) -> None:
                     "steps": [
                         {
                             "id": "send",
-                            "call": "onebot.send_group_message",
-                            "arguments": {"group_id": "$current_group_id", "text": "测"},
+                            "call": "social.send_message",
+                            "arguments": {"text": "测"},
                         }
                     ],
                     "limits": {
@@ -1510,7 +1454,7 @@ async def test_disabled_binding_fails_while_space_target_remains_canonical(datab
         assert binding is not None
         binding.status = "disabled"
     service = _canonical_service(database)
-    with pytest.raises(ValueError, match="永久主体"):
+    with pytest.raises(ValueError, match="静态消息只能投递"):
         await service.create(
             _script_to("1808058482"),
             actor=ToolActor.from_inbound(_superuser_inbound("1808058482")),
@@ -1538,8 +1482,8 @@ async def test_disabled_binding_fails_while_space_target_remains_canonical(datab
                 "steps": [
                     {
                         "id": "send",
-                        "call": "onebot.send_group_message",
-                        "arguments": {"group_id": "$current_group_id", "text": "测"},
+                        "call": "social.send_message",
+                        "arguments": {"text": "测"},
                     }
                 ],
                 "limits": {

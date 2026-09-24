@@ -241,14 +241,15 @@ async def bump_canonical_generation(
     conversation_id: str,
     *,
     event_id: int,
+    force: bool = False,
 ) -> int:
-    """Only /ai new may increment Conversation generation."""
+    """Apply /ai new semantics, including an explicitly audited offline reset."""
 
     row = await session.get(CanonicalConversationModel, conversation_id)
     if row is None:
         raise CanonicalIdentityError("unclassified")
     now = _utcnow()
-    if row.last_generation_change_event_id == event_id:
+    if not force and row.last_generation_change_event_id == event_id:
         return int(row.generation)
     row.generation += 1
     row.starts_after_event_id = event_id

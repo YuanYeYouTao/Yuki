@@ -27,8 +27,15 @@ def _script(*, target: str = "$creator_user_id", text: str = "去跑步") -> Aut
             "steps": [
                 {
                     "id": "send",
-                    "call": "onebot.send_private_message",
-                    "arguments": {"user_id": target, "text": text},
+                    "call": "social.send_message",
+                    "arguments": {
+                        "target": (
+                            {"kind": "person", "subject_ref": "current_speaker"}
+                            if target == "$creator_user_id"
+                            else {"kind": "person", "target_id": target}
+                        ),
+                        "text": text,
+                    },
                 }
             ],
             "limits": {
@@ -65,11 +72,11 @@ def test_ordinary_user_can_create_owner_scoped_automation() -> None:
     result = _validator().validate(
         _script(), _provenance(), now_utc=datetime(2026, 7, 27, tzinfo=UTC)
     )
-    assert result.required_capabilities == ("onebot.send_private_message",)
+    assert result.required_capabilities == ("social.send_message",)
 
 
 def test_ordinary_user_cannot_target_another_qq() -> None:
-    with pytest.raises(PermissionError, match="本人"):
+    with pytest.raises(ValueError, match="静态消息只能投递"):
         _validator().validate(
             _script(target="1808058482"),
             _provenance(text="20分钟后提醒 1808058482"),
@@ -77,51 +84,24 @@ def test_ordinary_user_cannot_target_another_qq() -> None:
         )
 
 
-def test_speech_automation_is_owner_scoped_and_profile_is_fixed_at_creation() -> None:
+def test_static_voice_uses_social_send_message() -> None:
     payload = _script().model_dump(mode="json")
-    payload["steps"][0] = {
-        "id": "speak",
-        "call": "speech.send_private",
-        "arguments": {
-            "user_id": "$creator_user_id",
-            "text": "该喝水了",
-            "style_hint": "gentle",
-            "profile_id": "",
-        },
-    }
-    script = AutomationScript.model_validate(payload)
+    payload["steps"][0]["arguments"]["voice"] = {"request_basis": "agent_initiated"}
     validated = _validator().validate(
-        script,
+        AutomationScript.model_validate(payload),
         _provenance(),
         now_utc=datetime(2026, 7, 27, tzinfo=UTC),
     )
-    assert validated.required_capabilities == ("speech.send_private",)
+    assert validated.required_capabilities == ("social.send_message",)
 
-    payload["steps"][0]["arguments"]["user_id"] = "1808058482"
-    with pytest.raises(PermissionError, match="本人"):
+
+def test_superuser_static_send_still_requires_current_conversation() -> None:
+    with pytest.raises(ValueError, match="静态消息只能投递"):
         _validator().validate(
-            AutomationScript.model_validate(payload),
-            _provenance(text="提醒 1808058482"),
+            _script(target="1808058482"),
+            _provenance(superuser=True, text="20分钟后提醒 1808058482"),
             now_utc=datetime(2026, 7, 27, tzinfo=UTC),
         )
-
-    payload["steps"][0]["arguments"]["user_id"] = "$creator_user_id"
-    payload["steps"][0]["arguments"]["profile_id"] = "yuki"
-    with pytest.raises(PermissionError, match="默认声线"):
-        _validator().validate(
-            AutomationScript.model_validate(payload),
-            _provenance(text="用 yuki 声线提醒我"),
-            now_utc=datetime(2026, 7, 27, tzinfo=UTC),
-        )
-
-
-def test_superuser_can_use_explicit_target_from_real_text() -> None:
-    result = _validator().validate(
-        _script(target="1808058482"),
-        _provenance(superuser=True, text="20分钟后提醒 1808058482"),
-        now_utc=datetime(2026, 7, 27, tzinfo=UTC),
-    )
-    assert result.next_run_at == datetime(2026, 7, 27, 0, 20, tzinfo=UTC)
 
 
 def test_main_agent_output_cannot_bypass_explicit_tool_delivery() -> None:
@@ -143,7 +123,7 @@ def test_main_agent_output_cannot_bypass_explicit_tool_delivery() -> None:
     with pytest.raises(ValueError, match="主 Agent"):
         _validator().validate(script, _provenance(), now_utc=datetime(2026, 7, 27, tzinfo=UTC))
 
-    payload["steps"][1]["arguments"]["user_id"] = "${generate.text}"
+    payload["steps"][1]["arguments"]["target"] = {"kind": "person", "target_id": "${generate.text}"}
     with pytest.raises(ValueError, match="不可信"):
         _validator().validate(
             AutomationScript.model_validate(payload),
@@ -202,7 +182,7 @@ def test_script_hash_is_stable_for_argument_order() -> None:
     arguments = payload["steps"][0]["arguments"]
     payload["steps"][0]["arguments"] = {
         "text": arguments["text"],
-        "user_id": arguments["user_id"],
+        "target": arguments["target"],
     }
     assert canonical_script_hash(first) == canonical_script_hash(
         AutomationScript.model_validate(payload)
@@ -257,26 +237,15 @@ def test_llm_and_message_counts_must_fit_script_limits() -> None:
         )
 
 
-def test_current_group_target_is_allowed_only_from_a_real_group_event() -> None:
+def test_static_send_uses_creation_conversation() -> None:
     payload = _script().model_dump(mode="json")
     payload["steps"][0] = {
         "id": "send",
-        "call": "onebot.send_group_message",
-        "arguments": {"group_id": "$current_group_id", "text": "测试"},
+        "call": "social.send_message",
+        "arguments": {"text": "测试"},
     }
     script = AutomationScript.model_validate(payload)
     assert _validator().validate(script, _provenance(), now_utc=datetime(2026, 7, 27, tzinfo=UTC))
-    private = CreationProvenance(
-        creator_user_id="10001",
-        bot_user_id="7777",
-        message_id="m2",
-        original_text="20分钟后发到本群",
-        current_group_id=None,
-        mentioned_user_ids=(),
-        permission=PermissionLevel.USER,
-    )
-    with pytest.raises(ValueError, match="不是群聊"):
-        _validator().validate(script, private, now_utc=datetime(2026, 7, 27, tzinfo=UTC))
 
 
 def test_untrusted_output_cannot_become_group_or_onebot_action() -> None:
@@ -294,8 +263,11 @@ def test_untrusted_output_cannot_become_group_or_onebot_action() -> None:
         generate,
         {
             "id": "send",
-            "call": "onebot.send_group_message",
-            "arguments": {"group_id": "${generate.group_id}", "text": "测试"},
+            "call": "social.send_message",
+            "arguments": {
+                "target": {"kind": "space", "target_id": "${generate.group_id}"},
+                "text": "测试",
+            },
         },
     ]
     group_payload["limits"].update(max_steps=2, max_tool_calls=2, max_llm_calls=1)
@@ -303,23 +275,6 @@ def test_untrusted_output_cannot_become_group_or_onebot_action() -> None:
         _validator().validate(
             AutomationScript.model_validate(group_payload),
             _provenance(),
-            now_utc=datetime(2026, 7, 27, tzinfo=UTC),
-        )
-
-    action_payload = _script().model_dump(mode="json")
-    action_payload["steps"] = [
-        generate,
-        {
-            "id": "call",
-            "call": "onebot.call_api",
-            "arguments": {"action": "${generate.action}", "params": {}},
-        },
-    ]
-    action_payload["limits"].update(max_steps=2, max_tool_calls=2, max_llm_calls=1)
-    with pytest.raises(ValueError, match="不可信"):
-        _validator().validate(
-            AutomationScript.model_validate(action_payload),
-            _provenance(superuser=True),
             now_utc=datetime(2026, 7, 27, tzinfo=UTC),
         )
 
@@ -400,7 +355,7 @@ def test_explicit_target_must_be_a_complete_numeric_token() -> None:
         mentioned_user_ids=(),
         permission=PermissionLevel.SUPERUSER,
     )
-    with pytest.raises(ValueError, match="明确出现在"):
+    with pytest.raises(ValueError, match="静态消息只能投递"):
         _validator().validate(
             _script(target="1808058482"),
             provenance,
@@ -437,7 +392,7 @@ def test_yuki_agent_rejects_retired_tool_selection() -> None:
         )
 
     payload["steps"][0]["arguments"]["allowed_capabilities"] = [
-        "onebot.call_api",
+        "social.send_message",
         "config.set",
     ]
     with pytest.raises(ValueError, match="Extra inputs are not permitted"):

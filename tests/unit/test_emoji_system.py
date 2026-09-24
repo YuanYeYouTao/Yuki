@@ -655,10 +655,11 @@ def test_planner_emoji_plan_rejects_asset_identifiers() -> None:
         )
 
 
-def test_automation_registry_exposes_scoped_emoji_actions() -> None:
+def test_automation_emoji_uses_social_send_message() -> None:
     registry = build_capability_registry()
-    assert registry.require("emoji.send").required_permission is PermissionLevel.USER
-    assert registry.require("emoji.send_by_id").required_permission is PermissionLevel.USER
+    assert registry.require("social.send_message").required_permission is PermissionLevel.USER
+    assert registry.get("emoji.send") is None
+    assert registry.get("emoji.send_by_id") is None
 
 
 def test_fixed_automation_emoji_id_cannot_come_from_step_output() -> None:

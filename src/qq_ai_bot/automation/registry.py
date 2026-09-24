@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from qq_ai_bot.automation.authority import AuthorityContext, PermissionLevel
 from qq_ai_bot.automation.models import AutomationContext, RetryPolicy, RiskClass, TurnOrigin
@@ -29,49 +29,6 @@ class AgentArguments(CapabilityArguments):
     delivery_target: Literal["none", "self_private", "current_group"] | None = None
     max_tool_calls: int = Field(default=32, ge=0, le=160)
     max_model_requests: int = Field(default=24, ge=1, le=120)
-
-
-class SendPrivateArguments(CapabilityArguments):
-    user_id: str = Field(min_length=1, max_length=64)
-    text: str = Field(min_length=1, max_length=12000)
-
-
-class SendGroupArguments(CapabilityArguments):
-    group_id: str = Field(min_length=1, max_length=64)
-    text: str = Field(min_length=1, max_length=12000)
-
-
-class SpeechSendPrivateArguments(SendPrivateArguments):
-    style_hint: str = Field(default="", max_length=128)
-    profile_id: str = Field(default="", max_length=64)
-
-
-class SpeechSendGroupArguments(SendGroupArguments):
-    style_hint: str = Field(default="", max_length=128)
-    profile_id: str = Field(default="", max_length=64)
-
-
-class EmojiSendArguments(CapabilityArguments):
-    emotion: str = Field(default="", max_length=100)
-    intended_tone: str = Field(default="", max_length=300)
-    group_id: str | None = Field(default=None, min_length=1, max_length=64)
-    user_id: str | None = Field(default=None, min_length=1, max_length=64)
-    placement: Literal["before_text", "after_text", "only"] = "only"
-
-    @model_validator(mode="after")
-    def _one_target(self) -> EmojiSendArguments:
-        if (self.group_id is None) == (self.user_id is None):
-            raise ValueError("group_id 和 user_id 必须且只能提供一个")
-        return self
-
-
-class EmojiSendByIdArguments(EmojiSendArguments):
-    emoji_id: str = Field(min_length=8, max_length=64)
-
-
-class OneBotCallArguments(CapabilityArguments):
-    action: str = Field(min_length=1, max_length=128)
-    params: dict[str, Any]
 
 
 class ConfigGetArguments(CapabilityArguments):
@@ -277,64 +234,6 @@ def build_capability_registry(
             PermissionLevel.USER,
             RiskClass.GENERATE,
             RetryPolicy.TRANSIENT_ONCE,
-        ),
-        (
-            "onebot.send_private_message",
-            "向已授权私聊发送文本。",
-            SendPrivateArguments,
-            PermissionLevel.USER,
-            RiskClass.SEND,
-            RetryPolicy.NONE,
-        ),
-        (
-            "onebot.send_group_message",
-            "向已授权群发送文本。",
-            SendGroupArguments,
-            PermissionLevel.USER,
-            RiskClass.SEND,
-            RetryPolicy.NONE,
-        ),
-        (
-            "speech.send_private",
-            "自动化语音发送：用 user_id 和 text 向任务所有者发送指定文本"
-            "。profile_id 可省略；此项是显式 DSL 步骤，Agent 发送使用 send_message。",
-            SpeechSendPrivateArguments,
-            PermissionLevel.USER,
-            RiskClass.SEND,
-            RetryPolicy.NONE,
-        ),
-        (
-            "speech.send_group",
-            "自动化语音发送：用 group_id 和 text 向创建时授权群发送指定文"
-            "本。profile_id 可省略；此项是显式 DSL 步骤，Agent 发送使用 send_message。",
-            SpeechSendGroupArguments,
-            PermissionLevel.USER,
-            RiskClass.SEND,
-            RetryPolicy.NONE,
-        ),
-        (
-            "emoji.send",
-            "按语气和情绪选择已采用表情，并发送到已授权的本人私聊或当前群。",
-            EmojiSendArguments,
-            PermissionLevel.USER,
-            RiskClass.SEND,
-            RetryPolicy.NONE,
-        ),
-        (
-            "emoji.send_by_id",
-            "发送任务创建时明确指定、且当前作用域可用的已采用表情。",
-            EmojiSendByIdArguments,
-            PermissionLevel.USER,
-            RiskClass.SEND,
-            RetryPolicy.NONE,
-        ),
-        (
-            "onebot.call_api",
-            "调用任意公开 QQ/OneBot Provider action。",
-            OneBotCallArguments,
-            PermissionLevel.SUPERUSER,
-            RiskClass.MUTATE,
-            RetryPolicy.NONE,
         ),
         (
             "config.get",

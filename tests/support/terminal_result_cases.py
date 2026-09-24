@@ -117,12 +117,15 @@ async def check_terminal_result_recovery(database, tmp_path):
 
         chat._tools.workspace_service = SimpleNamespace(execute=import_attachment)
         for index, args in enumerate(
-            ({"attachment_index": 0}, {"event_id": 123, "attachment_index": 0})
+            (
+                {"attachment_index": 0, "destination": "imported.png"},
+                {"event_id": 123, "attachment_index": 0, "destination": "imported.png"},
+            )
         ):
             call = ToolCall(
                 id=f"import-{index}",
                 function=ToolFunction(
-                    name="workspace_import_attachment", arguments=json.dumps(args)
+                    name="save_conversation_attachment_to_workspace", arguments=json.dumps(args)
                 ),
             )
             backend.begin_batch((call,), runtime)
@@ -133,7 +136,7 @@ async def check_terminal_result_recovery(database, tmp_path):
             assert not backend._tools_closed
             assert backend.finalize("can continue", runtime) == "can continue"
             if not index:
-                assert "event_id" in payload["public_message"]
+                assert payload["error"] == "tool_input_validation_failed", payload
 
         assert backend.response_feedback("定时任务已经创建", runtime) is None
         assert backend.finalize("定时任务已经创建", runtime) == "定时任务已经创建"

@@ -9,19 +9,17 @@ from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.automation.authority import DelegatedAuthority
 from qq_ai_bot.automation.executor import AutomationExecutor
-from qq_ai_bot.automation.gateway import OneBotProactiveGateway
+from qq_ai_bot.automation.gateway import OneBotAutomationGateway
 from qq_ai_bot.automation.handlers import AutomationCapabilityHandlers
 from qq_ai_bot.automation.models import AutomationScript, RunStatus
 from qq_ai_bot.automation.registry import build_capability_registry
 from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.automation.validator import ValidatedAutomation, canonical_script_hash
-from qq_ai_bot.automation.work_cursor import load as load_cursor
 from qq_ai_bot.automation.work_cursor import save as save_cursor
 from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
 from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.persistence.repositories import AgentActionRepository
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.services.main_agent_contract import MainAgentContract
 from qq_ai_bot.social.automation import SocialAutomationAdapter
@@ -71,15 +69,11 @@ async def setup_run(
     repository = AutomationRepository(database)
 
     def gateway(context):
-        return OneBotProactiveGateway(
+        return OneBotAutomationGateway(
             bot_user_id=context.bot_user_id,
-            creator_user_id=context.creator_user_id,
             automation_id=context.automation_id,
             automation_run_id=context.automation_run_id,
-            ledger=harness.ledger,
-            actions=AgentActionRepository(database),
             router=env.router,
-            target_space_id=env.space,
         )
 
     handlers = object.__new__(AutomationCapabilityHandlers)
@@ -270,24 +264,10 @@ async def test_stored_generated_tails_never_send_internal_text(database, tmp_pat
     row, run = await legacy_run(database, case)
     first = await case.executor.execute(row, run)
     assert first.status is RunStatus.BLOCKED
-    assert first.error_category == "legacy_model_delivery_requires_update"
+    assert first.error_category == "delegated_authority_revoked"
     assert not case.provider.requests
     assert not sent(case.env)
-    payload = {
-        "next_step": 1,
-        "steps_completed": 1,
-        "llm_calls": 2,
-        "tool_calls": 1,
-        "outputs": {"old": {"text": "INTERNAL_FINAL_TEXT"}},
-    }
-    await save_cursor(database, run.id, row.script_hash, "ready", payload)
-    for phase in ("ready", "dispatching"):
-        await save_cursor(database, run.id, row.script_hash, phase, payload)
-        result = await case.executor.execute(row, run)
-        assert result.status is (RunStatus.BLOCKED if phase == "ready" else RunStatus.UNCERTAIN)
-        assert not case.provider.requests
-        assert not sent(case.env)
-        assert await load_cursor(database, run.id, row.script_hash) == (phase, payload)
+    assert (await case.executor.execute(row, run)).status is RunStatus.BLOCKED
     persisted = await case.repository.get(row.id)
     assert persisted.script_hash == row.script_hash
     assert persisted.script == row.script
@@ -298,21 +278,7 @@ async def test_started_legacy_agent_retires_tail_by_original_receipts(database, 
     case = await setup_run(database, tmp_path)
     row, run = await legacy_run(database, case, call="yuki.agent")
     result = await case.executor.execute(row, run)
-    assert result.status is RunStatus.SUCCEEDED, result
-    assert len(sent(case.env)) == 1
-    assert "INTERNAL_FINAL_TEXT" not in str(sent(case.env))
-    count = len(case.provider.requests)
-    await save_cursor(
-        database,
-        run.id,
-        row.script_hash,
-        "ready",
-        {
-            "next_step": 1,
-            "steps_completed": 1,
-            "outputs": {"old": {"text": "INTERNAL_FINAL_TEXT"}},
-        },
-    )
-    assert (await case.executor.execute(row, run)).status is RunStatus.SUCCEEDED
-    assert len(sent(case.env)) == 1
-    assert len(case.provider.requests) == count
+    assert result.status is RunStatus.BLOCKED, result
+    assert result.error_category == "delegated_authority_revoked"
+    assert not sent(case.env)
+    assert not case.provider.requests

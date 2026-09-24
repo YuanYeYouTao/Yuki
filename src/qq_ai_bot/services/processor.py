@@ -28,6 +28,7 @@ from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.automation.worker import AutomationWorker
 from qq_ai_bot.config import Settings
+from qq_ai_bot.conversation.media_service import ConversationMediaService
 from qq_ai_bot.conversation.rollup.repository import (
     ConversationRollupRepository,
     ConversationScopeRepository,
@@ -324,6 +325,7 @@ class MessageProcessor:
         vision_service: VisionService | None = None,
         asr_service: ASRService | None = None,
         attachment_inputs: AttachmentInputService | None = None,
+        conversation_media: ConversationMediaService | None = None,
         automation_service: AutomationService | None = None,
         automation_repository: AutomationRepository | None = None,
         automation_worker: AutomationWorker | None = None,
@@ -431,6 +433,7 @@ class MessageProcessor:
         )
         self._vision = vision_service
         self._native_images = attachment_inputs
+        self._conversation_media = conversation_media
         self._automation = automation_service
         self._automation_repository = automation_repository
         self._automation_worker = automation_worker
@@ -800,6 +803,13 @@ class MessageProcessor:
             if repairing_dedup_gap and created:
                 self._scoped_events.metrics.scoped_append_repairs += 1
         message = replace(message, source_event_id=record.id)
+        if created and message.attachments and self._conversation_media is not None:
+            media_gateway = (
+                cast(OneBotMediaGateway, sender)
+                if callable(getattr(sender, "call_api", None))
+                else None
+            )
+            self._conversation_media.submit(record.id, media_gateway)
         if self._autonomous is not None and message.scope_type is ScopeType.GROUP:
             self._autonomous.observe_context(
                 message,

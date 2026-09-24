@@ -269,6 +269,56 @@ class ChatEventModel(Base):
     )
 
 
+class CanonicalGenerationResetModel(Base):
+    """Idempotent offline administrator reset of one canonical conversation."""
+
+    __tablename__ = "canonical_generation_reset_batches"
+
+    batch_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("canonical_conversations.id", ondelete="RESTRICT"), primary_key=True
+    )
+    prior_generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    new_generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    floor_event_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ConversationMediaItemModel(Base):
+    """One event-bound attachment; cached bytes never grant access by themselves."""
+
+    __tablename__ = "conversation_media_items"
+    __table_args__ = (
+        Index("ix_conversation_media_scope_event", "conversation_id", "source_event_id"),
+        Index("ix_conversation_media_expiry", "expires_at"),
+        CheckConstraint(
+            "attachment_index >= 0 AND segment_index >= 0", name="ck_conversation_media_indices"
+        ),
+        CheckConstraint(
+            "cache_status IN ('uncached', 'cached', 'expired')", name="ck_conversation_media_status"
+        ),
+    )
+
+    source_event_id: Mapped[int] = mapped_column(
+        ForeignKey("chat_events.id", ondelete="RESTRICT"), primary_key=True
+    )
+    attachment_index: Mapped[int] = mapped_column(Integer, primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("canonical_conversations.id", ondelete="RESTRICT"), nullable=False
+    )
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    segment_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    declared_size: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    cache_status: Mapped[str] = mapped_column(String(16), nullable=False, default="uncached")
+    content_sha256: Mapped[str | None] = mapped_column(String(64))
+    cached_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cache_name: Mapped[str | None] = mapped_column(String(100))
+
+
 class MediaAnalysisModel(Base):
     """A short-lived structured visual observation without source image data."""
 

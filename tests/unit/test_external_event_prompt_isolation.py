@@ -1060,8 +1060,8 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     )
 
     assert recent["ok"] is True
-    assert recent["data"]["source"] == "snowluma"
-    assert recent["data"]["newly_recorded"] == 0
+    assert recent["data"]["source"] == "ledger"
+    assert recent["data"]["events"] == []
     assert group_memory == {
         "ok": True,
         "evidence_state": {
@@ -1114,10 +1114,7 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     assert 0 < bounded_search["data"]["returned_count"] < 20
     assert bounded_search["data"]["returned_count"] == len(bounded_search["data"]["events"])
     assert relationship["error"] == "permission_denied"
-    gateway.call_api.assert_awaited_once_with(
-        "get_group_msg_history",
-        {"group_id": "group-100", "count": tools._settings.recent_history_tool_limit},
-    )
+    gateway.call_api.assert_not_awaited()
     assert tools._ledger.search.await_args.kwargs["group_id"] == "group-100"
     assert tools._ledger.search.await_args.kwargs["user_id"] is None
     assert "memory_change" not in {tool.name for tool in tools.definitions(group_runtime)}

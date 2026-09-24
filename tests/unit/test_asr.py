@@ -10,7 +10,7 @@ from dataclasses import replace
 import httpx
 import pytest
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
-from sqlalchemy import select
+from sqlalchemy import select, text
 from tests.conftest import MemorySender, build_harness, make_settings
 from tests.unit.test_normalizer import group_event, private_event
 
@@ -395,6 +395,11 @@ async def test_derived_audio_updates_revision_and_survives_migration_rollback(
     # Original chat text still works with the previous FTS schema; no speech is erased.
     preserved = await harness.ledger.get_event(saved.id)
     assert preserved and preserved.audio_transcript == transcript
+    # The isolated fixture starts with current ORM metadata, while this test
+    # stamps it as an older revision to exercise the ASR migration path.
+    async with database.engine.begin() as connection:
+        await connection.execute(text("DROP TABLE canonical_generation_reset_batches"))
+        await connection.execute(text("DROP TABLE conversation_media_items"))
     await asyncio.to_thread(command.upgrade, config, "head")
     await require_canonical_schema(database.url)
     assert any(r.id == saved.id for r in await harness.ledger.search(keyword="迁移之后"))

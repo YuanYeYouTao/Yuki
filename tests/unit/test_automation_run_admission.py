@@ -36,7 +36,7 @@ async def setup_case(database, *, agent=False):
         sends.append(context.automation_run_id)
         return CapabilityResult(data={"sent": True}, messages_sent=1)
 
-    registry = build_capability_registry({"onebot.send_private_message": send, "yuki.agent": send})
+    registry = build_capability_registry({"social.send_message": send, "yuki.agent": send})
     service = AutomationService(
         settings=settings,
         repository=repository,

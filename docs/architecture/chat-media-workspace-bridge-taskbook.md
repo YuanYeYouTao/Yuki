@@ -1,6 +1,6 @@
-# 聊天媒体缓存与工作区提升任务书（讨论稿）
+# 聊天媒体缓存与工作区提升任务书（历史设计）
 
-> 状态：按用户 2026-09-24 的决定修订；尚未实施、测试、重置会话或上线。对应 [Issue #142](https://github.com/YuanYeYouTao/Yuki/issues/142)。实施遵守[开发合同](development-contract.md)、[Conversation Rollup](conversation-rollup.md)、[Tool Kernel](tool-kernel.md)与[持久环境](../operations/persistent-environment.zh-CN.md)。Memory、表情库与工具结果 Artifact 均不在本任务范围内。
+> 状态：2026-09-24 的设计基线；现行实现合同见[聊天媒体与发送合同](chat-media-workspace.md)，提交、合并和上线状态另行核验。对应 [Issue #142](https://github.com/YuanYeYouTao/Yuki/issues/142)。Memory、表情库与工具结果 Artifact 均不在本任务范围内。
 
 ## 1. 目标与确定的产品规则
 
@@ -16,7 +16,7 @@
 - `event_prompt.event_content` 可附加旧 `visual_summary`，它是历史观察，不代表本次重新读取。`get_recent_chat_history` 的网关路径只返文字，且回填会去掉媒体定位信息。账本路径的 `_event_json` 已提供内部事件 ID 和附件序号。
 - 现有 `workspace_import_attachment` 可按内部事件 ID 导入同一会话附件，但会直接写长期文件；`workspace_inspect` 只检查已发布图片快照。它们不是普通对话中的临时媒体读取接口。
 - 当前模型协议只允许把原生图片放在 `user` 消息里。历史媒体工具第一版若走视觉 Provider，应向主 Agent 返回有来源的结构化观察，不得把文字观察说成主模型直接获得了像素。
-- 自动化 DSL 仍有可达的旧发送出口：`automation/compiler.py` 生成 `onebot.send_private_message` 和 `onebot.send_group_message`，注册、校验、执行及投递分类仍识别它们。主 Agent 已有 `send_message` 不证明自动化收口完成。
+- 此项是 PR #139 合并前的基线描述：当时静态提醒编译器仍生成 `onebot.send_*`。PR #139 已将新建静态提醒改为 `social.send_message`；本任务继续清理其余旧 DSL 出口。
 - `EventLedgerRepository.list_scope_around` 会检查 generation floor；`list_scope_recent` 当前没有同等过滤。全量 `/ai new` 后，所有供模型挑媒体的近期/搜索入口都必须核验新 generation，不能让旧媒体从另一入口回流。
 
 ## 3. 事件、上下文与具体文件如何索引

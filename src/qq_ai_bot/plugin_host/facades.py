@@ -879,6 +879,11 @@ class _MessageFacade:
         keyword = _bounded_text(query, maximum=400, field_name="query")
         rows = await ledger.search(
             keyword=keyword,
+            scope=(
+                ConversationScope.group(invocation.bot_user_id, invocation.current_group_id)
+                if invocation.current_group_id is not None
+                else ConversationScope.private(invocation.bot_user_id, invocation.actor_user_id)
+            ),
             limit=_bounded_limit(limit),
             user_id=(invocation.actor_user_id if invocation.current_group_id is None else None),
             group_id=invocation.current_group_id,

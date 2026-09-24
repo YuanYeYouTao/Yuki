@@ -308,6 +308,16 @@ class ApplicationContainer:
         self.workspace_service = WorkspaceService(
             WorkspaceStore(settings.workspace_directory), self.media_resolver, self.database
         )
+        from qq_ai_bot.conversation.media_service import ConversationMediaService
+
+        self.conversation_media = ConversationMediaService(
+            self.database,
+            settings.conversation_media_cache_directory,
+            self.media_resolver,
+            self.image_preprocessor,
+            self.vision_provider,
+        )
+        self.workspace_service.conversation_media = self.conversation_media
         self.agent_tools.workspace_service = self.workspace_service
         if self.vision_provider is not None:
             from qq_ai_bot.workspace.inspect import WorkspaceInspector
@@ -575,6 +585,7 @@ class ApplicationContainer:
             config=self.conversation_rollups.config,
         )
         self.processor = MessageProcessor(
+            conversation_media=self.conversation_media,
             asr_service=self.asr,
             attachment_inputs=(
                 AttachmentInputService(
@@ -872,6 +883,11 @@ class ApplicationContainer:
         )
         self.lifecycle.register(
             "workspace", start=self.workspace_service.start, close=self.workspace_service.close
+        )
+        self.lifecycle.register(
+            "conversation_media",
+            start=self.conversation_media.start,
+            close=self.conversation_media.close,
         )
         self.lifecycle.register(
             "memory_embeddings",

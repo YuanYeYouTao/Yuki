@@ -16,7 +16,6 @@ from qq_ai_bot.conversation.canonical_db_models import ConversationLegacyAliasMo
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot, turn_matches_hydrated_scope
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.identity.canonical_repository import (
     ensure_person,
     ensure_space,
@@ -121,7 +120,7 @@ async def test_primary_alias_freezes_and_generation_only_on_new(database: Databa
     assert all(row.id > current.starts_after_event_id for row in rows)
     assert not {row.id for row in rows}.intersection(row.id for row in old_rows)
     assert await ledger.read_version_matches(current)
-    assert len(await ledger.list_scope_recent(scope, limit=10, message_only=True)) > len(rows)
+    assert len(await ledger.list_scope_recent(scope, limit=10, message_only=True)) == len(rows)
     async with database.sessions() as session:
         aliases = list(
             await session.scalars(
@@ -387,87 +386,22 @@ async def test_plugin_host_state_does_not_split_on_subject(database: Database) -
 
 
 @pytest.mark.asyncio
-async def test_automation_send_uses_current_binding_and_presence_provenance(
-    database: Database,
-) -> None:
-    from qq_ai_bot.automation.gateway import OneBotProactiveGateway, ProactiveGatewayError
-    from qq_ai_bot.identity.db_models import IdentityBindingModel
-    from qq_ai_bot.identity.ingress import _ensure_person_id
+async def test_automation_gateway_cannot_bypass_social_send(database: Database) -> None:
+    from qq_ai_bot.automation.gateway import OneBotAutomationGateway, ProactiveGatewayError
 
-    configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     registry = napcat_registry(gateway_instance_id="gw-auto")
     router = PresenceRouter(database, registry, membership_probe=_true)
-
-    class _RecordBot:
-        def __init__(self, self_id: str) -> None:
-            self.self_id = self_id
-            self.calls: list[tuple[str, dict[str, object]]] = []
-
-        async def call_api(self, action: str, **kwargs: object) -> dict[str, object]:
-            self.calls.append((action, dict(kwargs)))
-            return {"message_id": f"{self.self_id}-out"}
-
-    bot_a = _RecordBot("8000")
-    bot_b = _RecordBot("8001")
+    bot = _Bot("8000")
     async with database.sessions() as session, session.begin():
-        presence_a = await ensure_v2_presence(session, "8000")
-        person_id = await _ensure_person_id(session, "1001")
-    registry.connect(bot_a)
-    registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence_a)
-    await router.cas_takeover_person(person_id)
-    ledger: list[dict[str, object]] = []
-
-    class _Ledger:
-        async def append(self, **kwargs: object) -> None:
-            ledger.append(dict(kwargs))
-
-    class _Actions:
-        async def record(self, **_kwargs: object) -> None:
-            return None
-
-    gateway = OneBotProactiveGateway(
-        bot_user_id="8000",
-        creator_user_id="1001",
-        automation_id=1,
-        automation_run_id=1,
-        ledger=_Ledger(),  # type: ignore[arg-type]
-        actions=_Actions(),  # type: ignore[arg-type]
-        router=router,
-        target_person_id=person_id,
+        presence_id = await ensure_v2_presence(session, "8000")
+    registry.connect(bot)
+    registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence_id)
+    gateway = OneBotAutomationGateway(
+        bot_user_id="8000", automation_id=1, automation_run_id=1, router=router
     )
-    await gateway.send_private("1001", "hello")
-    assert bot_a.calls == [("send_private_msg", {"user_id": "1001", "message": "hello"})]
-    assert ledger[-1]["bot_user_id"] == "8000"
-    assert ledger[-1]["private_peer_user_id"] == "1001"
-    with pytest.raises(ProactiveGatewayError) as mismatch:
-        await gateway.send_group("2001", "nope")
-    assert mismatch.value.category == "capability"
-    # Shared raw tools authorize the actor, not the final scheduled reply target.
     await gateway.call_api("get_group_msg_history", {"group_id": "2001", "count": 5})
-    assert bot_a.calls[-1] == ("get_group_msg_history", {"group_id": "2001", "count": 5})
-    registry.disconnect(bot_a)
-    async with database.sessions() as session, session.begin():
-        presence_b = await ensure_v2_presence(session, "8001")
-        binding = await session.scalar(
-            select(IdentityBindingModel).where(IdentityBindingModel.person_id == person_id)
-        )
-        assert binding is not None
-        binding.external_account_id = "1009"
-    registry.connect(bot_b)
-    registry.bind_presence(platform="qq", external_account_id="8001", presence_id=presence_b)
-    taken = await router.cas_takeover_person(person_id)
-    assert taken == "taken"
-    await gateway.send_private("1001", "follow")
-    assert bot_b.calls == [("send_private_msg", {"user_id": "1009", "message": "follow"})]
-    assert ledger[-1]["bot_user_id"] == "8001"
-    assert ledger[-1]["private_peer_user_id"] == "1009"
-    registry.connect(bot_a)
-    registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence_a)
-    kept = await router.cas_takeover_person(person_id)
-    assert kept == "unchanged"
-    await gateway.send_private("1001", "still")
-    assert bot_b.calls[-1] == ("send_private_msg", {"user_id": "1009", "message": "still"})
-    assert ledger[-1]["bot_user_id"] == "8001"
+    with pytest.raises(ProactiveGatewayError, match="use_social_send_message"):
+        await gateway.call_api("send_group_msg", {"group_id": "2001", "message": "nope"})
 
 
 @pytest.mark.asyncio
@@ -657,123 +591,6 @@ async def test_v2_refuse_legacy_live_event_uses_conversation_watermark(
     jobs = MemoryJobRepository(database)
     assert await jobs.enqueue(old_pk, "private:1001") is False
     assert await jobs.enqueue(fresh_pk, "private:1001") is True
-
-
-@pytest.mark.asyncio
-async def test_created_automation_sends_persisted_person_not_creator(
-    database: Database,
-) -> None:
-    from tests.conftest import make_settings
-
-    from qq_ai_bot.automation.gateway import OneBotProactiveGateway, ProactiveGatewayError
-    from qq_ai_bot.automation.models import AutomationScript
-    from qq_ai_bot.automation.registry import build_capability_registry
-    from qq_ai_bot.automation.repository import AutomationRepository
-    from qq_ai_bot.automation.service import AutomationService
-    from qq_ai_bot.identity.db_models import IdentityBindingModel
-    from qq_ai_bot.identity.ingress import _ensure_person_id
-    from qq_ai_bot.time.service import TimeContextService
-
-    settings = make_settings(database.url, automation_enabled=True, superusers_csv="9000")
-    service = AutomationService(
-        settings=settings,
-        repository=AutomationRepository(database),
-        registry=build_capability_registry(),
-        time_service=TimeContextService(database),
-    )
-    script = AutomationScript.model_validate(
-        {
-            "version": 1,
-            "name": "定向",
-            "timezone": "Asia/Shanghai",
-            "schedule": {"type": "after", "seconds": 1},
-            "context": {"scene": "none"},
-            "steps": [
-                {
-                    "id": "send",
-                    "call": "onebot.send_private_message",
-                    "arguments": {"user_id": "1808058482", "text": "给别人"},
-                }
-            ],
-            "limits": {
-                "max_steps": 1,
-                "max_llm_calls": 0,
-                "max_tool_calls": 1,
-                "max_messages": 1,
-                "timeout_seconds": 30,
-            },
-        }
-    )
-    inbound = InboundMessage(
-        message_id="auto-explicit",
-        source_event_id=1,
-        event_type="private",
-        scope_type=ScopeType.PRIVATE,
-        sender=SenderIdentity(user_id="9000", nickname="超管"),
-        text="1秒后提醒 1808058482",
-        raw_text="1秒后提醒 1808058482",
-        bot_user_id="8001",
-    )
-    async with database.sessions() as session, session.begin():
-        await ensure_person(session, "1808058482", now=_NOW)
-    row = await service.create(
-        script, actor=ToolActor.from_inbound(inbound), conversation_key="private:9000"
-    )
-    assert row.canonical_target_person_id is not None
-    assert row.canonical_target_person_id != row.canonical_creator_person_id
-    configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
-    registry = napcat_registry(gateway_instance_id="gw-auto-persist")
-    router = PresenceRouter(database, registry, membership_probe=_true)
-
-    class _RecordBot:
-        def __init__(self, self_id: str) -> None:
-            self.self_id = self_id
-            self.calls: list[tuple[str, dict[str, object]]] = []
-
-        async def call_api(self, action: str, **kwargs: object) -> dict[str, object]:
-            self.calls.append((action, dict(kwargs)))
-            return {"message_id": "auto-persist"}
-
-    bot = _RecordBot("8001")
-    async with database.sessions() as session, session.begin():
-        presence = await ensure_v2_presence(session, "8001")
-        await _ensure_person_id(session, "9000")
-        target_person = row.canonical_target_person_id
-        binding = await session.scalar(
-            select(IdentityBindingModel).where(IdentityBindingModel.person_id == target_person)
-        )
-        assert binding is not None
-        binding.external_account_id = "1009"
-    registry.connect(bot)
-    registry.bind_presence(platform="qq", external_account_id="8001", presence_id=presence)
-    assert await router.cas_takeover_person(row.canonical_target_person_id) == "taken"
-    ledger: list[dict[str, object]] = []
-
-    class _Ledger:
-        async def append(self, **kwargs: object) -> None:
-            ledger.append(dict(kwargs))
-
-    class _Actions:
-        async def record(self, **_kwargs: object) -> None:
-            return None
-
-    gateway = OneBotProactiveGateway(
-        bot_user_id="8001",
-        creator_user_id="9000",
-        automation_id=row.id,
-        automation_run_id=1,
-        ledger=_Ledger(),  # type: ignore[arg-type]
-        actions=_Actions(),  # type: ignore[arg-type]
-        router=router,
-        target_person_id=row.canonical_target_person_id,
-    )
-    await gateway.send_private("1808058482", "给别人")
-    assert bot.calls == [("send_private_msg", {"user_id": "1009", "message": "给别人"})]
-    assert ledger[-1]["private_peer_user_id"] == "1009"
-    with pytest.raises(ProactiveGatewayError) as foreign:
-        await gateway.send_private("9000", "错投")
-    assert foreign.value.category == "target_mismatch"
-    assert bot.calls == [("send_private_msg", {"user_id": "1009", "message": "给别人"})]
 
 
 @pytest.mark.asyncio
