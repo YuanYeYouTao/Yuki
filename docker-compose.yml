@@ -15,6 +15,7 @@ services:
       APP_PORT: 8080
       DATABASE_URL: sqlite+aiosqlite:////app/data/qq_ai_bot.db
       WORKSPACE_DIRECTORY: /app/workspace
+      CONVERSATION_MEDIA_CACHE_DIRECTORY: /app/data/conversation-media-cache
       SOCIAL_TRANSFER_DIRECTORY: /app/social-transfer
       SOCIAL_GATEWAY_TRANSFER_DIRECTORY: /yuki-transfer
       SANDBOX_SOCKET: /run/yuki-sandbox/manager.sock

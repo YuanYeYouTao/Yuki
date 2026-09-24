@@ -23,8 +23,7 @@ async def authority_between_attempts(
         assert context.revalidate_authority is not None
         assert context.automation_script_hash == row.script_hash
         assert context.source_step_id == row.script.steps[0].id
-        # This fixture's target has not had a conversation yet: never invent an epoch.
-        assert context.conversation_generation is None
+        assert context.conversation_generation is not None
         async with database.sessions() as session, session.begin():
             current = await session.get(AutomationModel, row.id)
             current.status = "paused"
@@ -32,7 +31,7 @@ async def authority_between_attempts(
 
     executing = AutomationCapabilityRegistry()
     for definition in registry.list():
-        if definition.name == "onebot.send_private_message":
+        if definition.name == "social.send_message":
             definition = replace(
                 definition, handler=first_attempt, retry_policy=RetryPolicy.TRANSIENT_ONCE
             )

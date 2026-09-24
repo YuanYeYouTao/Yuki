@@ -8,7 +8,7 @@ from qq_ai_bot.admin.audit import AdminAuditService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
 from qq_ai_bot.automation.executor import AutomationExecutor
-from qq_ai_bot.automation.gateway import OneBotProactiveGateway, ProactiveGateway
+from qq_ai_bot.automation.gateway import AutomationGateway, OneBotAutomationGateway
 from qq_ai_bot.automation.handlers import AutomationCapabilityHandlers
 from qq_ai_bot.automation.registry import (
     AutomationCapabilityRegistry,
@@ -100,17 +100,12 @@ class AutomationModule:
     def build(self) -> AutomationBundle:
         repository = AutomationRepository(self._database)
 
-        def gateway_factory(context: CapabilityExecutionContext) -> ProactiveGateway:
-            return OneBotProactiveGateway(
+        def gateway_factory(context: CapabilityExecutionContext) -> AutomationGateway:
+            return OneBotAutomationGateway(
                 bot_user_id=context.bot_user_id,
-                creator_user_id=context.creator_user_id,
                 automation_id=context.automation_id,
                 automation_run_id=context.automation_run_id,
-                ledger=self._ledger,
-                actions=self._agent_actions,
                 router=self._presence_router,
-                target_person_id=context.canonical_target_person_id,
-                target_space_id=context.canonical_target_space_id,
             )
 
         handlers = AutomationCapabilityHandlers(
@@ -125,10 +120,6 @@ class AutomationModule:
             automation_repository=repository,
             web_provider=self._web_provider,
             gateway_factory=gateway_factory,
-            emoji_repository=self._emoji_repository,
-            emoji_selector=self._emoji_selector,
-            emoji_storage=self._emoji_storage,
-            speech=self._speech,
         )
         registry = build_capability_registry(handlers.mapping())
         mcp_bridge = MCPAutomationBridge(

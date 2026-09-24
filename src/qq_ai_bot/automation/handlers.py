@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, date, datetime
-from typing import TYPE_CHECKING, Any, cast
-from uuid import uuid4
+from typing import Any, cast
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.executor import AutomationExecutionError
-from qq_ai_bot.automation.gateway import ProactiveGateway
+from qq_ai_bot.automation.gateway import AutomationGateway
 from qq_ai_bot.automation.registry import (
     CapabilityExecutionContext,
     CapabilityHandler,
@@ -23,14 +21,6 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, PromptRequestDiagnostics
 from qq_ai_bot.domain.tool_actor import ToolActor
-from qq_ai_bot.emoji.models import (
-    EmojiPlacement,
-    EmojiReplyMode,
-    EmojiSelectionRequest,
-)
-from qq_ai_bot.emoji.repository import EmojiRepository
-from qq_ai_bot.emoji.selector import EmojiSelector
-from qq_ai_bot.emoji.storage import EmojiStorage
 from qq_ai_bot.llm.base import (
     LLMAuthenticationError,
     LLMConfigurationError,
@@ -61,21 +51,11 @@ from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.context_assembler import ContextAssembler
 from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
 from qq_ai_bot.services.prompt_composer import PromptComposition
-from qq_ai_bot.speech.genie_client import GenieWorkerFailure, GenieWorkerUnavailable
-from qq_ai_bot.speech.provider import SpeechSynthesisRequest
-from qq_ai_bot.speech.service import (
-    SpeechQueueFullError,
-    SpeechService,
-    SpeechUnavailableError,
-)
 from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.web.base import WebSearchError, WebSearchProvider, normalize_public_url
 from qq_ai_bot.web.models import WebSearchRequest
 
-if TYPE_CHECKING:
-    pass
-
-GatewayFactory = Callable[[CapabilityExecutionContext], ProactiveGateway]
+GatewayFactory = Callable[[CapabilityExecutionContext], AutomationGateway]
 
 
 class _AutomationContextChanged(ContextBoundaryChanged):
@@ -106,10 +86,6 @@ class AutomationCapabilityHandlers:
         automation_repository: AutomationRepository | None = None,
         web_provider: WebSearchProvider | None,
         gateway_factory: GatewayFactory,
-        emoji_repository: EmojiRepository | None = None,
-        emoji_selector: EmojiSelector | None = None,
-        emoji_storage: EmojiStorage | None = None,
-        speech: SpeechService | None = None,
     ) -> None:
         self._settings = settings
         self._models = require_model_executor(
@@ -126,10 +102,6 @@ class AutomationCapabilityHandlers:
         self._automation_repository = automation_repository
         self._web = web_provider
         self._gateway_factory = gateway_factory
-        self._emoji_repository = emoji_repository
-        self._emoji_selector = emoji_selector
-        self._emoji_storage = emoji_storage
-        self._speech = speech
         self._agent_runner = AgentRunner(
             self._models,
             concurrency,
@@ -140,13 +112,6 @@ class AutomationCapabilityHandlers:
         return {
             "yuki.generate": self.agent,
             "yuki.agent": self.agent,
-            "onebot.send_private_message": self.send_private,
-            "onebot.send_group_message": self.send_group,
-            "speech.send_private": self.send_speech,
-            "speech.send_group": self.send_speech,
-            "emoji.send": self.send_emoji,
-            "emoji.send_by_id": self.send_emoji,
-            "onebot.call_api": self.call_onebot,
             "config.get": self.config_get,
             "config.set": self.config_set,
             "web.search": self.web_search,
@@ -346,192 +311,6 @@ class AutomationCapabilityHandlers:
             tool_calls=result.tool_calls_used,
             messages_sent=backend.messages_sent,
         )
-
-    async def send_private(
-        self, arguments: dict[str, Any], context: CapabilityExecutionContext
-    ) -> CapabilityResult:
-        return await self._deliver_reply(arguments, context)
-
-    async def send_group(
-        self, arguments: dict[str, Any], context: CapabilityExecutionContext
-    ) -> CapabilityResult:
-        return await self._deliver_reply(arguments, context)
-
-    async def _deliver_reply(
-        self, arguments: dict[str, Any], context: CapabilityExecutionContext
-    ) -> CapabilityResult:
-        from qq_ai_bot.automation.delivery import deliver_reply
-
-        contract = self._agent_runner.main_contract
-        count = await deliver_reply(
-            arguments,
-            context,
-            self._gateway_factory(context),
-            runtime_config=contract.chat._runtime_config if contract is not None else None,
-        )
-        return CapabilityResult(data={"sent": bool(count)}, messages_sent=count)
-
-    async def send_speech(
-        self, arguments: dict[str, Any], context: CapabilityExecutionContext
-    ) -> CapabilityResult:
-        if self._speech is None:
-            raise AutomationExecutionError("speech_system_unavailable")
-        user_id = str(arguments["user_id"]) if arguments.get("user_id") else None
-        group_id = str(arguments["group_id"]) if arguments.get("group_id") else None
-        if (user_id is None) == (group_id is None):
-            raise AutomationExecutionError("speech_target_invalid")
-        if not context.authority.actor_is_superuser:
-            if user_id is not None and user_id != context.creator_user_id:
-                raise AutomationExecutionError("person_scope_denied")
-            if group_id is not None and group_id != context.current_group_id:
-                raise AutomationExecutionError("group_scope_denied")
-            if arguments.get("profile_id"):
-                raise AutomationExecutionError("speech_profile_scope_denied")
-        snapshot = await self._runtime_config.snapshot(
-            user_id=context.creator_user_id or None,
-            group_id=group_id,
-        )
-        if not snapshot.speech.automation_enabled:
-            raise AutomationExecutionError("speech_automation_disabled")
-        try:
-            generated = await self._speech.synthesize(
-                SpeechSynthesisRequest(
-                    request_id=str(uuid4()),
-                    profile_id=str(arguments.get("profile_id") or ""),
-                    style_hint=str(arguments.get("style_hint") or ""),
-                    text=str(arguments["text"]),
-                    split_sentence=snapshot.speech.split_sentence,
-                    conversation_key=context.conversation_key,
-                    trigger_event_id=None,
-                    turn_token=None,
-                ),
-                runtime=snapshot.speech,
-            )
-        except (
-            ValueError,
-            LookupError,
-            SpeechUnavailableError,
-            SpeechQueueFullError,
-            GenieWorkerUnavailable,
-            GenieWorkerFailure,
-            OSError,
-        ) as exc:
-            raise AutomationExecutionError("speech_generation_failed") from exc
-        await self._gateway_factory(context).send_voice(
-            user_id=user_id,
-            group_id=group_id,
-            local_path=str(self._speech.audio_path(generated)),
-            spoken_text=str(arguments["text"]),
-            generation_id=generated.generation_id,
-            profile_id=generated.profile_id,
-            reference_key=generated.reference_key,
-            duration_milliseconds=generated.duration_milliseconds,
-        )
-        await self._speech.mark_sent(generated.generation_id)
-        return CapabilityResult(
-            data={
-                "sent": True,
-                "generation_id": generated.generation_id,
-                "profile_id": generated.profile_id,
-                "reference_key": generated.reference_key,
-                "duration_milliseconds": generated.duration_milliseconds,
-            },
-            messages_sent=1,
-        )
-
-    async def send_emoji(
-        self, arguments: dict[str, Any], context: CapabilityExecutionContext
-    ) -> CapabilityResult:
-        repository = self._emoji_repository
-        selector = self._emoji_selector
-        storage = self._emoji_storage
-        if repository is None or selector is None or storage is None:
-            raise AutomationExecutionError("emoji_system_unavailable")
-        user_id = str(arguments["user_id"]) if arguments.get("user_id") else None
-        group_id = str(arguments["group_id"]) if arguments.get("group_id") else None
-        self._validate_emoji_target(user_id=user_id, group_id=group_id, context=context)
-        snapshot = await self._runtime_config.snapshot(
-            user_id=context.creator_user_id,
-            group_id=group_id,
-        )
-        if not snapshot.emoji.enabled:
-            raise AutomationExecutionError("emoji_disabled")
-        emoji_id = str(arguments.get("emoji_id") or "")
-        if not emoji_id:
-            selected = await selector.select(
-                EmojiSelectionRequest(
-                    private_peer_user_id=user_id,
-                    group_id=group_id,
-                    reply_text="",
-                    goal=str(arguments.get("intended_tone") or "自然发送一个合适的表情"),
-                    emotion=str(arguments.get("emotion") or ""),
-                    explicit_request=True,
-                    mode=EmojiReplyMode.PREFERRED,
-                    placement=EmojiPlacement(str(arguments.get("placement") or "only")),
-                ),
-                runtime=snapshot.emoji,
-                vision_runtime=snapshot.vision,
-            )
-            emoji_id = selected.emoji_id or ""
-        if not emoji_id or not await repository.enabled_in_scope(emoji_id, group_id=group_id):
-            raise AutomationExecutionError("emoji_not_available")
-        asset = await repository.get(emoji_id)
-        if asset is None:
-            raise AutomationExecutionError("emoji_not_available")
-        try:
-            content = storage.read(asset.relative_path)
-        except RuntimeError as exc:
-            raise AutomationExecutionError("emoji_file_missing") from exc
-        await self._gateway_factory(context).send_emoji(
-            user_id=user_id,
-            group_id=group_id,
-            content=content,
-            mime_type=asset.mime_type,
-            emoji_id=asset.id,
-            summary=asset.description or f"{self._settings.bot_display_name} 发送的表情",
-        )
-        await repository.mark_used(
-            asset.id,
-            actor_user_id=context.creator_user_id,
-            group_id=group_id,
-            trigger_message_id=f"automation:{context.automation_id}:{context.automation_run_id}",
-            source="automation",
-        )
-        return CapabilityResult(
-            data={
-                "sent": True,
-                "emoji_id": asset.id,
-                "scope": "group" if group_id is not None else "private",
-                "placement": str(arguments.get("placement") or "only"),
-            },
-            messages_sent=1,
-        )
-
-    @staticmethod
-    def _validate_emoji_target(
-        *,
-        user_id: str | None,
-        group_id: str | None,
-        context: CapabilityExecutionContext,
-    ) -> None:
-        if (user_id is None) == (group_id is None):
-            raise AutomationExecutionError("emoji_target_invalid")
-        if context.authority.actor_is_superuser:
-            return
-        if user_id is not None and user_id != context.creator_user_id:
-            raise AutomationExecutionError("person_scope_denied")
-        if group_id is not None and group_id != context.current_group_id:
-            raise AutomationExecutionError("group_scope_denied")
-
-    async def call_onebot(
-        self, arguments: dict[str, Any], context: CapabilityExecutionContext
-    ) -> CapabilityResult:
-        if not context.authority.actor_is_superuser:
-            raise AutomationExecutionError("permission_revoked")
-        result = await self._gateway_factory(context).call_api(
-            str(arguments["action"]), cast(dict[str, object], arguments["params"])
-        )
-        return CapabilityResult(data={"ok": True, "result": _bounded_result(result)})
 
     async def config_get(
         self, arguments: dict[str, Any], context: CapabilityExecutionContext
@@ -812,13 +591,3 @@ def _parse_time(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         raise AutomationExecutionError("history_time_requires_timezone")
     return parsed.astimezone(UTC)
-
-
-def _bounded_result(value: object) -> object:
-    try:
-        encoded = json.dumps(value, ensure_ascii=False, default=str)
-    except (TypeError, ValueError):
-        return {"type": type(value).__name__}
-    if len(encoded) > 8000:
-        return {"truncated": True, "characters": len(encoded)}
-    return json.loads(encoded)

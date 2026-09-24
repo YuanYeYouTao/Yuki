@@ -214,11 +214,11 @@ def test_reply_text_uses_the_same_yuki_and_member_projection() -> None:
     assert normalized.reply_text == "[提及Yuki]与[提及成员1]"
 
 
-def test_unsupported_attachment_is_metadata_only() -> None:
+def test_image_attachment_has_stable_history_marker() -> None:
     normalized = normalize_event(
         private_event(Message(MessageSegment.image("https://invalid.test/a")))
     )
-    assert not normalized.text
+    assert normalized.text == "[图片附件0]"
     assert normalized.attachments[0].kind is AttachmentKind.IMAGE
     assert normalized.attachments[0].label == "image"
 

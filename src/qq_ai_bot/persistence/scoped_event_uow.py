@@ -1036,6 +1036,16 @@ class ScopedEventLedgerUnitOfWork:
         conversation = await session.get(type(conversation), hydrated.conversation_id)
         if conversation is None:
             raise CanonicalIdentityError("unclassified")
+        if direction == "inbound" and event_kind == "message":
+            from qq_ai_bot.conversation.media_index import index_event_media
+
+            await index_event_media(
+                session,
+                event_id=row.id,
+                conversation_id=hydrated.conversation_id,
+                generation=int(conversation.generation),
+                segments=segments,
+            )
         from qq_ai_bot.conversation.canonical_rollup import signal_canonical_rollup_if_needed
 
         signalled = await signal_canonical_rollup_if_needed(

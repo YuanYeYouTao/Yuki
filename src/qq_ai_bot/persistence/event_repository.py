@@ -399,10 +399,11 @@ class EventLedgerRepository:
             conversation_id = await _conversation_id_for_scope(session, scope)
             if conversation_id is None:
                 return ()
+            boundary = await _starts_after_event_id_for_scope(session, scope)
             query = select(ChatEventModel).where(
                 ChatEventModel.canonical_conversation_id == conversation_id,
                 keeper_event_clause(),
-                ChatEventModel.id > max(0, after_event_id),
+                ChatEventModel.id > max(0, after_event_id, boundary),
             )
             if message_only:
                 query = query.where(ChatEventModel.event_kind == "message")
@@ -421,13 +422,19 @@ class EventLedgerRepository:
     ) -> tuple[EventRecord, ...]:
         """Newest keeper or legacy-null events. Non-live statuses never participate."""
 
-        query = select(ChatEventModel).where(
-            ChatEventModel.canonical_conversation_id == conversation_id,
-            keeper_event_clause(),
-        )
-        if message_only:
-            query = query.where(ChatEventModel.event_kind == "message")
+        from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+
         async with self._database.sessions() as session:
+            conversation = await session.get(CanonicalConversationModel, conversation_id)
+            if conversation is None:
+                return ()
+            query = select(ChatEventModel).where(
+                ChatEventModel.canonical_conversation_id == conversation_id,
+                keeper_event_clause(),
+                ChatEventModel.id > conversation.starts_after_event_id,
+            )
+            if message_only:
+                query = query.where(ChatEventModel.event_kind == "message")
             rows = list(
                 (await session.scalars(query.order_by(ChatEventModel.id.desc()).limit(limit))).all()
             )
@@ -448,10 +455,12 @@ class EventLedgerRepository:
             conversation_id = await _conversation_id_for_scope(session, scope)
             if conversation_id is None:
                 return ()
+            boundary = await _starts_after_event_id_for_scope(session, scope)
             query = select(ChatEventModel).where(
                 ChatEventModel.canonical_conversation_id == conversation_id,
                 keeper_event_clause(),
                 ChatEventModel.id < before_event_id,
+                ChatEventModel.id > boundary,
             )
             if message_only:
                 query = query.where(ChatEventModel.event_kind == "message")
@@ -478,10 +487,11 @@ class EventLedgerRepository:
             conversation_id = await _conversation_id_for_scope(session, scope)
             if conversation_id is None:
                 return ()
+            boundary = await _starts_after_event_id_for_scope(session, scope)
             query = select(ChatEventModel).where(
                 ChatEventModel.canonical_conversation_id == conversation_id,
                 keeper_event_clause(),
-                ChatEventModel.id > after_event_id,
+                ChatEventModel.id > max(after_event_id, boundary),
             )
             if message_only:
                 query = query.where(ChatEventModel.event_kind == "message")
@@ -657,6 +667,8 @@ class EventLedgerRepository:
         self,
         *,
         keyword: str,
+        conversation_id: str | None = None,
+        scope: ConversationScope | None = None,
         limit: int = 20,
         user_id: str | None = None,
         group_id: str | None = None,
@@ -666,10 +678,24 @@ class EventLedgerRepository:
     ) -> tuple[EventRecord, ...]:
         """Search with trigram FTS, falling back to bounded LIKE for short terms."""
 
+        if scope is not None:
+            async with self._database.sessions() as session:
+                resolved = await _conversation_id_for_scope(session, scope)
+            if resolved is None or (conversation_id is not None and conversation_id != resolved):
+                return ()
+            conversation_id = resolved
         bounded_limit = max(1, min(limit, 100))
         conditions: list[str] = []
         params: dict[str, Any] = {"limit": bounded_limit}
         has_search_bound = bool(user_id or group_id or after or before)
+        if conversation_id is not None:
+            conditions.append("ce.canonical_conversation_id = :conversation_id")
+            conditions.append(
+                "ce.id > (SELECT starts_after_event_id FROM canonical_conversations "
+                "WHERE id = :conversation_id)"
+            )
+            params["conversation_id"] = conversation_id
+            has_search_bound = True
         if message_only:
             conditions.append("ce.event_kind = 'message'")
         if user_id:

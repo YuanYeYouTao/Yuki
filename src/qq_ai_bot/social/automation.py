@@ -26,10 +26,12 @@ from qq_ai_bot.social.models import SocialError
 from qq_ai_bot.social.service import SocialContext, SocialService
 from qq_ai_bot.social.tools import social_tool_definitions
 from qq_ai_bot.workspace.service import WorkspaceService, workspace_tools
-from qq_ai_bot.workspace.tools import WORKSPACE_READ_TOOLS
+from qq_ai_bot.workspace.tools import WORKSPACE_READ_TOOLS, WORKSPACE_TOOLS
 
 
 def automation_name(name: str) -> str:
+    if name in {"inspect_conversation_attachment", "save_conversation_attachment_to_workspace"}:
+        return "workspace." + name
     if name.startswith("workspace_"):
         return "workspace." + name.removeprefix("workspace_")
     if name in SANDBOX_TOOLS:
@@ -113,12 +115,21 @@ class SocialAutomationAdapter:
                     or context.authority.delegated_authority is None
                 ):
                     raise SocialError("capability_denied")
-                if tool_name.startswith("workspace_"):
+                if tool_name in WORKSPACE_TOOLS:
+                    from types import SimpleNamespace
+
                     result = await self.workspace.execute(
                         tool_name,
                         args,
                         conversation_id=context.canonical_conversation_id,
                         request_id=f"workspace:{context.automation_run_id}:{context.step_id}",
+                        runtime=SimpleNamespace(
+                            conversation_id=context.canonical_conversation_id,
+                            gateway=context.gateway,
+                            turn_snapshot=SimpleNamespace(
+                                generation=context.conversation_generation
+                            ),
+                        ),
                     )
                     return CapabilityResult(data=result)
                 if tool_name in SANDBOX_TOOLS:

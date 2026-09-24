@@ -179,15 +179,24 @@ def _extract_segments(
             card = parse_card_segment(segment_type, data)
             if card is not None:
                 text_parts.append(card.text)
-            attachments.append(
-                _attachment_from_segment(
-                    segment,
-                    segment_index=segment_index,
-                    source=source,
-                    summary=card.summary if card is not None else None,
-                    url=card.url if card is not None else None,
-                )
+            attachment = _attachment_from_segment(
+                segment,
+                segment_index=segment_index,
+                source=source,
+                summary=card.summary if card is not None else None,
+                url=card.url if card is not None else None,
             )
+            if attachment.kind in {AttachmentKind.IMAGE, AttachmentKind.VIDEO, AttachmentKind.FILE}:
+                kind = {
+                    AttachmentKind.IMAGE: "图片",
+                    AttachmentKind.VIDEO: "视频",
+                    AttachmentKind.FILE: "文件",
+                }[attachment.kind]
+                name = (attachment.filename or "").replace("\\", "/").split("/")[-1]
+                name = sanitize_input(name)[:80].strip(" []\r\n\t")
+                suffix = f"：{name}" if name else ""
+                text_parts.append(f" [{kind}附件{len(attachments)}{suffix}] ")
+            attachments.append(attachment)
     return MentionProjection(
         text=sanitize_input("".join(text_parts)),
         mentions_yuki=mentions_yuki,

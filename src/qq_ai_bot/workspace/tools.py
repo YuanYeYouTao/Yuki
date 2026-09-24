@@ -6,12 +6,18 @@ from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.sandbox.environment_tools import tool
 
 WORKSPACE_READ_TOOLS = frozenset(
-    {"workspace_list", "workspace_read", "workspace_search", "workspace_inspect"}
+    {
+        "workspace_list",
+        "workspace_read",
+        "workspace_search",
+        "workspace_inspect",
+        "inspect_conversation_attachment",
+    }
 )
 WORKSPACE_TOOLS = WORKSPACE_READ_TOOLS | {
     "workspace_write",
     "workspace_delete",
-    "workspace_import_attachment",
+    "save_conversation_attachment_to_workspace",
     "workspace_mkdir",
     "workspace_move",
     "workspace_patch",
@@ -106,15 +112,25 @@ def workspace_tools() -> tuple[ChatTool, ...]:
             ("path",),
         ),
         tool(
-            "workspace_import_attachment",
-            "导入真实当前/引用消息的附件，返回持久文件路径和兼容 artifact_id。"
-            "attachment_index 从 0 开始；自动化没有即时消息"
-            "时必须提供当前 Conversation 的真实 event_id。",
+            "inspect_conversation_attachment",
+            "按当前会话的内部事件 ID 与附件序号读取真实图片、视频帧或文件。"
+            "可先查聊天历史比较候选；仅文件名和旧摘要不代表已经读取原件。",
             {
-                "attachment_index": {"type": "integer", "minimum": 0},
-                "source": {"type": "string", "enum": ["current", "reply"]},
                 "event_id": {"type": "integer", "minimum": 1},
+                "attachment_index": {"type": "integer", "minimum": 0},
+                "question": {"type": "string", "maxLength": 2000},
             },
-            ("attachment_index",),
+            ("event_id", "attachment_index", "question"),
+        ),
+        tool(
+            "save_conversation_attachment_to_workspace",
+            "把当前会话中已核验的临时附件显式提升为全局共享的持久工作文件。"
+            "提升后其他会话可用工作区能力读取；临时原件仍在固定时限后删除。",
+            {
+                "event_id": {"type": "integer", "minimum": 1},
+                "attachment_index": {"type": "integer", "minimum": 0},
+                "destination": {"type": "string", "maxLength": 128},
+            },
+            ("event_id", "attachment_index", "destination"),
         ),
     )

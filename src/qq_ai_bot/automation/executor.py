@@ -62,13 +62,7 @@ from qq_ai_bot.time.service import TimeContextService
 _SEND_CAPABILITIES = frozenset(
     {
         "social.send_message",
-        "onebot.send_private_message",
-        "onebot.send_group_message",
         "social.poke_person",
-        "speech.send_private",
-        "speech.send_group",
-        "emoji.send",
-        "emoji.send_by_id",
     }
 )
 
@@ -311,14 +305,11 @@ class AutomationExecutor:
             item.name for item in self._registry.list() if item.risk_class is RiskClass.SEND
         }
         model_deliveries = {
-            index: classified
+            index
             for index in range(len(automation.script.steps))
-            if (
-                classified := classify_model_delivery(
-                    automation.script, index, send_capabilities=send_capabilities
-                )
+            if classify_model_delivery(
+                automation.script, index, send_capabilities=send_capabilities
             )
-            is not None
         }
         try:
             async with asyncio.timeout(
@@ -329,49 +320,14 @@ class AutomationExecutor:
                 for index, step in enumerate(automation.script.steps):
                     if index < next_step:
                         continue
-                    # Stored model-output tails are retired in place. Never turn an
-                    # internal final answer into a second outbound effect.
                     if index in model_deliveries:
-                        legacy = model_deliveries[index]
-                        state = "none"
-                        if legacy.can_retire_by_receipt:
-                            assert legacy.source_step is not None and legacy.target is not None
-                            state = await self._agent_delivery_state(
-                                automation,
-                                run,
-                                legacy.source_step.id,
-                                conversation_id,
-                                legacy.target,
-                            )
-                        if state == "uncertain":
-                            raise AutomationExecutionError(
-                                "agent_delivery_outcome_uncertain", uncertain=True
-                            )
-                        if state != "succeeded":
-                            raise AutomationExecutionError("legacy_model_delivery_requires_update")
-                        now = self._time.clock.now()
-                        await self._repository.record_step(
-                            run_id=run.id,
-                            step_id=step.id,
-                            capability=step.call,
-                            status="skipped",
-                            input_summary=_summary(step.arguments),
-                            output_summary={"reason": "already_sent_by_agent"},
-                            started_at=now,
-                            finished_at=now,
-                            error_category=None,
-                        )
-                        steps_completed += 1
-                        await checkpoint("ready", index + 1)
-                        continue
+                        raise AutomationExecutionError("model_delivery_requires_agent_send")
                     if (
                         step.call == "yuki.generate"
                         and model_deliveries
                         and not (phase == "agent" and index == next_step)
                     ):
-                        # A never-started old generate instruction says delivery=none.
-                        # Updating that instruction during restore would rewrite history.
-                        raise AutomationExecutionError("legacy_model_delivery_requires_update")
+                        raise AutomationExecutionError("model_delivery_requires_agent_send")
                     definition = self._registry.require(step.call)
                     if step.call not in allowed:
                         raise AutomationExecutionError("capability_not_delegated")

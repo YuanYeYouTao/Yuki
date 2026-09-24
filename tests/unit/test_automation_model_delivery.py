@@ -43,8 +43,8 @@ def model(call: str = "yuki.generate") -> AutomationStep:
 def send(text: str = "${result.text}") -> AutomationStep:
     return AutomationStep(
         id="notify",
-        call="onebot.send_private_message",
-        arguments={"user_id": "$creator_user_id", "text": text},
+        call="social.send_message",
+        arguments={"target": {"kind": "person", "subject_ref": "current_speaker"}, "text": text},
     )
 
 
@@ -67,27 +67,22 @@ def validator() -> AutomationValidator:
     )
 
 
-def test_direct_model_text_identifies_original_source_and_builtin_target():
+def test_direct_model_text_cannot_be_sent_by_a_second_dsl_step():
     web = AutomationStep(id="lookup", call="web.search", arguments={"query": "independent query"})
     for call in ("yuki.generate", "yuki.agent"):
         source = model(call)
         for reference in ("compose", "result"):
-            for target in ("self_private", "current_group"):
-                destination = (
-                    {"user_id": "$creator_user_id"}
-                    if target == "self_private"
-                    else {"group_id": "$current_group_id"}
-                )
+            for target in (None, {"kind": "person", "subject_ref": "current_speaker"}):
                 delivery = AutomationStep(
                     id="arbitrary_tail_name",
-                    call="onebot.send_private_message"
-                    if target == "self_private"
-                    else "onebot.send_group_message",
-                    arguments={**destination, "text": "${" + reference + ".text}"},
+                    call="social.send_message",
+                    arguments={
+                        **({"target": target} if target else {}),
+                        "text": "${" + reference + ".text}",
+                    },
                 )
                 result = classify_model_delivery(script(source, web, delivery), 2)
-                assert result is not None and result.can_retire_by_receipt
-                assert result.source_step == source and result.target == target
+                assert result
 
 
 def test_transformed_indirect_media_and_plugin_model_sends_require_update():
@@ -103,25 +98,11 @@ def test_transformed_indirect_media_and_plugin_model_sends_require_update():
         send("${compose.text} ${result.text}"),
         send("${result.tool_calls_used}"),
         send("${derived.content}"),
-        send().model_copy(update={"arguments": {"user_id": "10001", "text": "${result.text}"}}),
-        send().model_copy(update={"call": "speech.send_private"}),
-        AutomationStep(
-            id="notify",
-            call="emoji.send",
-            arguments={"user_id": "$creator_user_id", "goal": "${result.text}"},
-        ),
+        send().model_copy(update={"arguments": {"text": "${result.text}"}}),
         AutomationStep(
             id="notify",
             call="social.send_message",
             arguments={"text": "${result.text}"},
-        ),
-        AutomationStep(
-            id="notify",
-            call="onebot.call_api",
-            arguments={
-                "action": "send_private_msg",
-                "params": {"message": [{"type": "text", "data": {"text": "${result.text}"}}]},
-            },
         ),
         AutomationStep(
             id="notify",
@@ -133,8 +114,7 @@ def test_transformed_indirect_media_and_plugin_model_sends_require_update():
         result = classify_model_delivery(
             script(source, derived, delivery), 2, send_capabilities={"plugin.notice"}
         )
-        assert result is not None and not result.can_retire_by_receipt
-        assert result.source_step is None and result.target is None
+        assert result
 
 
 def test_literal_web_output_and_overwritten_alias_remain_ordinary_dsl():
@@ -150,7 +130,7 @@ def test_literal_web_output_and_overwritten_alias_remain_ordinary_dsl():
         script(model(), web.model_copy(update={"id": "result"}), send()),
     ]
     for declaration in cases:
-        assert classify_model_delivery(declaration, len(declaration.steps) - 1) is None
+        assert not classify_model_delivery(declaration, len(declaration.steps) - 1)
     for declaration in cases[:4]:
         validator().validate(declaration, provenance(), now_utc=datetime(2026, 9, 22, tzinfo=UTC))
 
@@ -158,7 +138,7 @@ def test_literal_web_output_and_overwritten_alias_remain_ordinary_dsl():
 def test_validator_rejects_direct_and_derived_model_delivery_including_plugins():
     check = validator()
     check._registry.register(
-        replace(check._registry.require("onebot.send_private_message"), name="plugin.notice")
+        replace(check._registry.require("social.send_message"), name="plugin.notice")
     )
     derived = AutomationStep(
         id="lookup", call="web.search", arguments={"query": "${result.text}"}, save_as="web"
@@ -168,7 +148,6 @@ def test_validator_rejects_direct_and_derived_model_delivery_including_plugins()
             script(model(call), send()),
             script(model(call), send("前缀${result.text}")),
             script(model(call), derived, send("${web.results}")),
-            script(model(call), send().model_copy(update={"call": "speech.send_private"})),
             script(model(call), send().model_copy(update={"call": "plugin.notice"})),
         ):
             with pytest.raises(ValueError, match="不能通过 DSL 投递模型输出"):

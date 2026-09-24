@@ -1,4 +1,4 @@
-<!-- release-baseline: version=3.8.4 schema=0071 -->
+<!-- release-baseline: version=3.8.4 schema=0072 -->
 
 [简体中文](README.md) · English
 
@@ -31,7 +31,7 @@ Yuki is an open-source, self-hosted social AI agent exploring what a persistent 
 | Capability | How it is used |
 | --- | --- |
 | Conversation and long-term memory | Chat in groups or privately, look up past events, and explicitly ask Yuki to remember, correct, or delete facts |
-| Images, voice, and attachments | Send or quote images, voice, video, and documents for viewing, transcription, or summarization |
+| Images, voice, and attachments | Send images, voice, video, or documents and ask follow-up questions in the same conversation without quoting the attachment |
 | QQ social actions | Look up members, use structured mentions, send group/private messages, and recall Yuki's own messages; the backend checks targets and permissions |
 | Search and extensions | Use configured online tools, MCP services, and plugins |
 | Persistent workspace | Save projects and files, run Python, Node.js, or Shell, install dependencies, and deliver results |
@@ -63,7 +63,7 @@ Memory reads have a specific privacy boundary: a past shared-group relationship 
 
 ## Images, voice, files, and web access
 
-- **Images and video:** A model with image input can inspect current or quoted images. MP4/MOV video is sampled into frames by FFmpeg for the same main agent. Audio tracks are not analyzed, and sampling may miss moments.
+- **Images and video:** A model with image input can inspect current or quoted images and revisit cached attachments from the same conversation on a later turn. MP4/MOV video is sampled into frames by FFmpeg for the same main agent. Audio tracks are not analyzed, and sampling may miss moments.
 - **Incoming voice:** Private messages, group messages that meet the reply policy, and quoted voice can be transcribed with Qwen ASR and included in chat history, search, and Rollup. Qwen connectivity can be reused and is configured separately from Genie-TTS output. See [speech recognition](docs/speech/recognition.md).
 - **Files:** Bounded extraction supports text, code, CSV/JSON, PDF text, DOCX, and XLSX. Scanned PDFs do not receive OCR; spreadsheet formulas are not recalculated; reading does not execute macros or embedded code. An original attachment can be referenced again later.
 - **Web:** Configure provider-native search or external `web_search`. External search defaults to Tavily. Set `WEB_MODE=tavily` and `WEB_SEARCH_BACKEND=deepseek_anthropic` to use the [DeepSeek search bridge](docs/deepseek-search-bridge.md), with an optional Tavily key for failure fallback. `both` permits configured external search and supported native search; `disabled` disables web access. The adapter currently disables native search for the DeepSeek Main Agent; the bridge uses a separate protocol request.

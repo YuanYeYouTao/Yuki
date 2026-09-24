@@ -32,20 +32,12 @@ _SENSITIVE_KEYS = frozenset(
         "emoji_id",
         "profile_id",
         "target",
+        "target_id",
+        "subject_ref",
     }
 )
 _LLM_CAPABILITIES = frozenset({"yuki.generate", "yuki.agent"})
-_MESSAGE_CAPABILITIES = frozenset(
-    {
-        "social.send_message",
-        "onebot.send_private_message",
-        "onebot.send_group_message",
-        "emoji.send",
-        "emoji.send_by_id",
-        "speech.send_private",
-        "speech.send_group",
-    }
-)
+_MESSAGE_CAPABILITIES = frozenset({"social.send_message"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,32 +225,6 @@ class AutomationValidator:
                 raise ValueError("静态消息只能投递到当前群或创建者本人")
             elif provenance.permission is PermissionLevel.SELF:
                 raise PermissionError("SELF 自动化没有私人投递目标")
-        elif call == "onebot.send_private_message":
-            cls._validate_user_target(arguments.get("user_id"), provenance)
-        elif call == "onebot.send_group_message":
-            cls._validate_group_target(arguments.get("group_id"), provenance)
-        elif call in {"speech.send_private", "speech.send_group"}:
-            if call == "speech.send_private":
-                cls._validate_user_target(arguments.get("user_id"), provenance)
-            else:
-                cls._validate_group_target(arguments.get("group_id"), provenance)
-            profile_id = arguments.get("profile_id")
-            if profile_id:
-                if provenance.permission is not PermissionLevel.SUPERUSER:
-                    raise PermissionError("普通用户自动化只能使用默认声线")
-                if not isinstance(profile_id, str) or "${" in profile_id:
-                    raise ValueError("profile_id 必须在创建任务时明确提供")
-                if profile_id not in provenance.original_text:
-                    raise ValueError("profile_id 必须明确出现在当前真实消息中")
-        elif call in {"emoji.send", "emoji.send_by_id"}:
-            if arguments.get("user_id"):
-                cls._validate_user_target(arguments["user_id"], provenance)
-            if arguments.get("group_id"):
-                cls._validate_group_target(arguments["group_id"], provenance)
-            if call == "emoji.send_by_id":
-                emoji_id = arguments.get("emoji_id")
-                if not isinstance(emoji_id, str) or "${" in emoji_id:
-                    raise ValueError("emoji_id 必须在创建任务时明确提供")
         elif call == "memory.get_person":
             cls._validate_user_target(arguments.get("user_id"), provenance, read_only=True)
         elif call == "memory.get_group":
@@ -268,13 +234,6 @@ class AutomationValidator:
                 cls._validate_user_target(arguments["user_id"], provenance, read_only=True)
             if arguments.get("group_id"):
                 cls._validate_group_target(arguments["group_id"], provenance, read_only=True)
-        elif call == "onebot.call_api":
-            if provenance.permission is not PermissionLevel.SUPERUSER:
-                raise PermissionError(f"{call} 只允许超级管理员委托")
-            action = arguments.get("action")
-            if not isinstance(action, str) or action not in provenance.original_text:
-                raise ValueError("通用 OneBot action 必须明确出现在当前真实消息中")
-            cls._validate_onebot_params(arguments.get("params"), provenance)
         elif call in {"config.set", "config.get"}:
             if provenance.permission is not PermissionLevel.SUPERUSER:
                 raise PermissionError(f"{call} 只允许超级管理员委托")
@@ -284,18 +243,6 @@ class AutomationValidator:
                 cls._validate_user_target(scope_id, provenance)
             elif scope_type == "group":
                 cls._validate_group_target(scope_id, provenance)
-
-    @classmethod
-    def _validate_onebot_params(cls, value: Any, provenance: CreationProvenance) -> None:
-        if not isinstance(value, dict):
-            return
-        for key, child in value.items():
-            if key == "user_id":
-                cls._validate_user_target(child, provenance)
-            elif key == "group_id":
-                cls._validate_group_target(child, provenance)
-            elif isinstance(child, dict):
-                cls._validate_onebot_params(child, provenance)
 
     @classmethod
     def _validate_user_target(
@@ -339,26 +286,6 @@ class AutomationValidator:
     @staticmethod
     def _id_in_text(target: str, text: str) -> bool:
         return re.search(rf"(?<!\d){re.escape(target)}(?!\d)", text) is not None
-
-
-_SEND_PERSON_CALLS = frozenset(
-    {
-        "onebot.send_private_message",
-        "speech.send_private",
-    }
-)
-_SEND_SPACE_CALLS = frozenset(
-    {
-        "onebot.send_group_message",
-        "speech.send_group",
-    }
-)
-_SEND_EITHER_CALLS = frozenset(
-    {
-        "emoji.send",
-        "emoji.send_by_id",
-    }
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -416,81 +343,6 @@ def _collect_step_send_targets(
         else:
             raise ValueError("静态消息只能投递到当前群或创建者本人")
         return
-    if call in _SEND_PERSON_CALLS:
-        person_ids.append(
-            _resolved_send_user(arguments.get("user_id"), creator_user_id=creator_user_id)
-        )
-        return
-    if call in _SEND_SPACE_CALLS:
-        space_ids.append(
-            _resolved_send_group(arguments.get("group_id"), current_group_id=current_group_id)
-        )
-        return
-    if call in _SEND_EITHER_CALLS:
-        if arguments.get("user_id"):
-            person_ids.append(
-                _resolved_send_user(arguments.get("user_id"), creator_user_id=creator_user_id)
-            )
-        if arguments.get("group_id"):
-            space_ids.append(
-                _resolved_send_group(arguments.get("group_id"), current_group_id=current_group_id)
-            )
-        return
-    if call == "onebot.call_api":
-        _collect_onebot_send_params(
-            arguments.get("params"),
-            person_ids,
-            space_ids,
-            creator_user_id=creator_user_id,
-            current_group_id=current_group_id,
-        )
-
-
-def _collect_onebot_send_params(
-    value: Any,
-    person_ids: list[str],
-    space_ids: list[str],
-    *,
-    creator_user_id: str,
-    current_group_id: str | None,
-) -> None:
-    if not isinstance(value, dict):
-        return
-    if "user_id" in value:
-        person_ids.append(
-            _resolved_send_user(value.get("user_id"), creator_user_id=creator_user_id)
-        )
-    if "group_id" in value:
-        space_ids.append(
-            _resolved_send_group(value.get("group_id"), current_group_id=current_group_id)
-        )
-    for child in value.values():
-        if isinstance(child, dict):
-            _collect_onebot_send_params(
-                child,
-                person_ids,
-                space_ids,
-                creator_user_id=creator_user_id,
-                current_group_id=current_group_id,
-            )
-
-
-def _resolved_send_user(target: Any, *, creator_user_id: str) -> str:
-    if target == "$creator_user_id":
-        return creator_user_id
-    if not isinstance(target, str) or "${" in target or not target.strip():
-        raise ValueError("发送目标不可信")
-    return target
-
-
-def _resolved_send_group(target: Any, *, current_group_id: str | None) -> str:
-    if target == "$current_group_id":
-        if current_group_id is None:
-            raise ValueError("当前消息不是群聊，不能使用 $current_group_id")
-        return current_group_id
-    if not isinstance(target, str) or "${" in target or not target.strip():
-        raise ValueError("发送目标不可信")
-    return target
 
 
 def canonical_script_hash(script: AutomationScript) -> str:
