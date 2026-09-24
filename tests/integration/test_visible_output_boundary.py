@@ -204,7 +204,7 @@ async def test_provider_text_requires_explicit_delivery(
         assert not sender.messages
     else:
         # A bounded operational failure may be sent, never the provider's text.
-        assert result.reason == "llm_failure"
+        assert result.reason == "agent_output_failure"
         assert sender.messages
     async with database.sessions() as session:
         outbound_texts = list(

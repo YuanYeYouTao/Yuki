@@ -1141,7 +1141,7 @@ async def test_chat_agent_rejects_repeated_unsent_final(database: Database, tmp_
         ),
         sender,
     )
-    assert result.reason == "llm_failure"
+    assert result.reason == "agent_output_failure"
     assert len(requests) == 2
     assert sender.messages
     assert not [
