@@ -16,8 +16,11 @@ from qq_ai_bot.identity.canonical_repository import ensure_presence
 from qq_ai_bot.operations.reset_conversations import reset_all
 from qq_ai_bot.persistence.models import ConversationMediaItemModel
 from qq_ai_bot.persistence.people_repository import PeopleRepository
+from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
 from qq_ai_bot.vision.models import DownloadedMedia, VisualObservation
+from qq_ai_bot.workspace.service import WorkspaceService
+from qq_ai_bot.workspace.store import WorkspaceStore
 
 
 def _png() -> bytes:
@@ -97,6 +100,20 @@ async def test_media_index_cache_scope_expiry_and_reset(database, tmp_path):
     observation = await service.inspect(item, path, "这是什么颜色？")
     assert observation["observation"]["overall_description"] == "红色方块"
     assert observation["event_id"] == appended.event.id
+    assert source.calls == 1
+
+    workspace = WorkspaceService(WorkspaceStore(tmp_path / "workspace"))
+    workspace.conversation_media = service
+    runtime = ToolRuntime(inbound=admitted.message, gateway=None, allow_generic_onebot=False)
+    assert runtime.conversation_id is None
+    assert runtime.effective_conversation_id == admitted.conversation_id
+    inspected = await workspace.execute(
+        "inspect_conversation_attachment",
+        {"event_id": appended.event.id, "attachment_index": 0, "question": "这是什么颜色？"},
+        runtime=runtime,
+    )
+    assert inspected["event_id"] == appended.event.id
+    assert inspected["observation"]["overall_description"] == "红色方块"
     assert source.calls == 1
 
     with pytest.raises(ConversationMediaError, match="attachment_scope_denied"):

@@ -428,7 +428,7 @@ async def test_superuser_can_persistently_toggle_private_users(database: Databas
         inbound("hello", message_id="new-private-user", user_id="12345678"),
         target_sender,
     )
-    assert allowed.reason == "llm_failure"
+    assert allowed.reason == "agent_output_failure"
 
     disabled_sender = MemorySender()
     await harness.processor.handle(
@@ -470,7 +470,7 @@ async def test_superuser_can_toggle_any_group_by_id(database: Database) -> None:
         ),
         MemorySender(),
     )
-    assert enabled.reason == "llm_failure"
+    assert enabled.reason == "agent_output_failure"
 
     await harness.processor.handle(
         inbound(
@@ -789,10 +789,10 @@ async def test_unused_planner_fallback_no_longer_blocks_the_agent(
     )
 
     # This fixture has no SocialService transport, so the explicit-send contract
-    # correctly rejects the provider's unsent final after context assembly.
-    assert result.reason == "llm_failure"
+    # correctly rejects the model's unsent final after context assembly.
+    assert result.reason == "agent_output_failure"
     assert len(provider.requests) == 2
-    assert sender.messages[0].text == "模型未能完成这次回复，请稍后重试。"
+    assert sender.messages[0].text == "这次回复没有发出，请稍后重试。"
 
 
 @pytest.mark.asyncio
@@ -812,9 +812,9 @@ async def test_ordinary_chat_always_assembles_agent_context(
         sender,
     )
 
-    assert result.reason == "llm_failure"
+    assert result.reason == "agent_output_failure"
     assert len(provider.requests) == 2
-    assert sender.messages[0].text == "模型未能完成这次回复，请稍后重试。"
+    assert sender.messages[0].text == "这次回复没有发出，请稍后重试。"
     request = provider.requests[0]
     assert "event_bound_memory_refs" in request.messages[-1].content
     assert "available_memory_subjects" not in request.messages[-1].content

@@ -633,6 +633,12 @@ async def test_send_message_sanitizes_internal_event_prefix_before_effect(
             {"text": "#62052>"},
             replace(context, call_id="sanitize-empty"),
         )
+    with pytest.raises(SocialError, match="control_token_not_message"):
+        await env.service.execute(
+            "send_message",
+            {"text": "NO_REPLY"},
+            replace(context, call_id="silence-control-token"),
+        )
     assert len(env.bot.calls) == before
 
 
@@ -1135,7 +1141,7 @@ async def test_chat_agent_rejects_repeated_unsent_final(database: Database, tmp_
         ),
         sender,
     )
-    assert result.reason == "llm_failure"
+    assert result.reason == "agent_output_failure"
     assert len(requests) == 2
     assert sender.messages
     assert not [

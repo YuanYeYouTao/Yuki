@@ -95,6 +95,7 @@ from qq_ai_bot.services.effect_gate import (
     EffectGateTimeoutError,
     EffectPermitRejectedError,
 )
+from qq_ai_bot.services.main_agent_backend import UnsentFinalResponseError
 from qq_ai_bot.services.media_resolver import OneBotMediaGateway
 from qq_ai_bot.services.plugin_events import (
     LifecycleEventPublisher,
@@ -1111,6 +1112,15 @@ class MessageProcessor:
                 turn_snapshot=turn_snapshot,
             )
             result = ProcessResult(True, int(sent), "empty_llm_response")
+        except UnsentFinalResponseError as exc:
+            logger.warning("agent_output_failure exception_category=%s", type(exc).__name__)
+            sent = await self._send_text(
+                message,
+                sender,
+                failure_status_text(classify_failure(exc)),
+                turn_snapshot=turn_snapshot,
+            )
+            result = ProcessResult(True, int(sent), "agent_output_failure")
         except LLMError as exc:
             logger.warning("llm_failure exception_category=%s", type(exc).__name__)
             sent = await self._send_text(

@@ -8,7 +8,7 @@
 
 Bot 在消息入账后异步预取原件，不调用视觉模型。缓存目录为 `data/conversation-media-cache/v1/<conversation-id>/<event-id>/<index>-<sha256>.<verified-ext>`，容器内目录由 Compose 持久挂载。成功缓存后固定保留 24 小时，访问不续期；启动、每分钟及读取时核验到期。忘记用户导致来源事件删除时，索引随事件删除，清理器移除失去来源的缓存文件。单文件上限 200 MiB，单会话接纳预算 512 MiB，全局 4 GiB；空间不足会拒绝新缓存，不提前清除尚未到期的文件。失效的网关 URL 或不支持的类型会返回明确类别，不从网关容器本地路径读文件。
 
-主 Agent 的 `get_recent_chat_history`、`search_chat_history` 和附近查询返回真实内部事件 ID，并受当前 generation floor 约束。插件在当前会话的历史搜索也遵守同一 floor。模型可按语义、发送者和消息顺序选择候选，再调用 `inspect_conversation_attachment`。执行处核验事件为当前 canonical Conversation 的入站 keeper、generation 未变化且文件未过期；模型不能提供路径、平台消息 ID 或别的会话 ID 代替来源。图片、视频帧和受支持文档按需解析，结果标明来源、hash 和处理模式。当前/显式回复附件仍可通过主 Agent 的原生输入立即读取；历史媒体工具的视觉结果是有来源的结构化观察。
+主 Agent 的 `get_recent_chat_history`、`search_chat_history` 和附近查询返回真实内部事件 ID，并受当前 generation floor 约束。插件在当前会话的历史搜索也遵守同一 floor。模型可按语义、发送者和消息顺序选择候选，再调用 `inspect_conversation_attachment`。执行处从本轮运行时取得当前 canonical Conversation；入站消息使用已接纳的会话 ID，不依赖主动轮专用字段。随后核验事件为该会话的入站 keeper、generation 未变化且文件未过期；模型不能提供路径、平台消息 ID 或别的会话 ID 代替来源。图片、视频帧和受支持文档按需解析，结果标明来源、hash 和处理模式。当前/显式回复附件仍可通过主 Agent 的原生输入立即读取；历史媒体工具的视觉结果是有来源的结构化观察。
 
 `save_conversation_attachment_to_workspace` 先执行相同的临时读取授权，再显式复制到全局持久工作区。临时副本仍按原时间过期；已提升的工作文件由工作区规则管理，可在其他会话共享。提升受工作区单文件容量限制，失败不能声称文件已共享。独立插件计算会话没有主聊天临时媒体的读取权。
 

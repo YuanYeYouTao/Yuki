@@ -183,6 +183,8 @@ class SocialService:
                 )
             except LLMEmptyResponseError:
                 canonical["text"] = ""
+        if isinstance(canonical.get("text"), str) and canonical["text"].strip() == "NO_REPLY":
+            raise SocialError("control_token_not_message")
         if not canonical.get("text") and not any(
             canonical.get(key) for key in ("artifact_id", "emoji", "mentions")
         ):

@@ -121,10 +121,9 @@ class SocialAutomationAdapter:
                     result = await self.workspace.execute(
                         tool_name,
                         args,
-                        conversation_id=context.canonical_conversation_id,
                         request_id=f"workspace:{context.automation_run_id}:{context.step_id}",
                         runtime=SimpleNamespace(
-                            conversation_id=context.canonical_conversation_id,
+                            effective_conversation_id=context.canonical_conversation_id,
                             gateway=context.gateway,
                             turn_snapshot=SimpleNamespace(
                                 generation=context.conversation_generation

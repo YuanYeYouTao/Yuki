@@ -632,10 +632,10 @@ async def test_web_failure_is_returned_to_llm_for_a_natural_answer(database: Dat
         sender,
     )
 
-    assert result.reason == "llm_failure"
+    assert result.reason == "agent_output_failure"
     # The fake receives the search failure but never calls send_message. Its
     # unsent final response is not a model-provider availability failure.
-    assert sender.messages[0].text == "模型未能完成这次回复，请稍后重试。"
+    assert sender.messages[0].text == "这次回复没有发出，请稍后重试。"
 
 
 @pytest.mark.asyncio
@@ -706,7 +706,7 @@ async def test_spoken_search_phrase_exposes_web_search_in_native_first_mode(
         event("这个说法你搜下", message_id="spoken-search"),
         MemorySender(),
     )
-    assert result.reason == "llm_failure"
+    assert result.reason == "agent_output_failure"
     assert llm.requests
     first = llm.requests[0]
     assert "web_search" not in {tool.name for tool in first.tools}
@@ -781,7 +781,7 @@ async def test_native_first_public_url_does_not_pin_read_webpage(
         event("https://docs.example.org/required-page", message_id="url-pin"),
         MemorySender(),
     )
-    assert result.reason == "llm_failure"
+    assert result.reason == "agent_output_failure"
     assert llm.requests
     first = llm.requests[0]
     names = {tool.name for tool in first.tools}
