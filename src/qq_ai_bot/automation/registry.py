@@ -202,7 +202,7 @@ class AutomationCapability:
 
     def permits(self, permission: PermissionLevel) -> bool:
         if permission is PermissionLevel.SELF:
-            return self.name == "yuki.agent"
+            return self.name in {"yuki.agent", "social.send_message"}
         return not (
             self.required_permission is PermissionLevel.SUPERUSER
             and permission is not PermissionLevel.SUPERUSER

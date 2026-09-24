@@ -24,6 +24,8 @@ from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.persistence.repositories import AgentActionRepository
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.services.main_agent_contract import MainAgentContract
+from qq_ai_bot.social.automation import SocialAutomationAdapter
+from qq_ai_bot.social.db_models import SocialOperationModel
 from qq_ai_bot.workspace.short_state import ShortState
 
 
@@ -63,6 +65,7 @@ async def setup_run(
     harness = build_harness(database, settings, provider)
     chat = harness.processor._chat
     chat._tools.social_service = env.service
+    env.service.runtime_config = chat._runtime_config
     contract = MainAgentContract(chat, ShortState(env.store))
     chat._agent_runner.main_contract = contract
     repository = AutomationRepository(database)
@@ -88,7 +91,9 @@ async def setup_run(
     handlers._time = chat._time
     handlers._agent_runner = chat._agent_runner
     handlers._gateway_factory = gateway
-    registry = build_capability_registry(handlers.mapping())
+    registry = build_capability_registry(
+        {**handlers.mapping(), **SocialAutomationAdapter(env.service, None, None).mapping()}
+    )
     service = AutomationService(
         settings=settings, repository=repository, registry=registry, time_service=chat._time
     )
@@ -142,6 +147,30 @@ def sent(env):
         for action, params in env.bot.calls
         if action in {"send_group_msg", "send_private_msg"}
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delivery", ["current_group", "self_private"])
+async def test_static_person_reminder_uses_social_receipt(database, tmp_path, delivery):
+    from sqlalchemy import select
+
+    case = await setup_run(database, tmp_path, strategy="static", delivery=delivery)
+    assert case.row.required_capabilities == ("social.send_message",)
+    result = await case.executor.execute(case.row, case.run)
+    assert result.status is RunStatus.SUCCEEDED, result
+    assert result.messages_sent == 1
+    assert len(sent(case.env)) == 1
+    async with database.sessions() as session:
+        receipt = await session.scalar(
+            select(SocialOperationModel).where(
+                SocialOperationModel.source_turn_id == f"automation:{case.run.id}"
+            )
+        )
+    assert receipt is not None
+    assert receipt.status == "succeeded"
+    replay = await case.executor.execute(case.row, case.run)
+    assert replay.status is RunStatus.SUCCEEDED
+    assert len(sent(case.env)) == 1
 
 
 @pytest.mark.asyncio

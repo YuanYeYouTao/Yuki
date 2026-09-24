@@ -133,10 +133,9 @@ class WorkSession:
         trigger = control.source.get("trigger_event_id")
         if isinstance(trigger, int) and trigger not in self.event_ids:
             self.event_ids.append(trigger)
-        if control.source.get("principal_kind") == "self":
-            anchor = f"initiative:{control.source['initiative_run_id']}"
-            if anchor not in self.source_keys:
-                self.source_keys.append(anchor)
+        anchor = self._source_anchor()
+        if anchor is not None and anchor not in self.source_keys:
+            self.source_keys.append(anchor)
         if control.current is not None:
             await self.journal.recovered_inputs(
                 control.lease, self.input_ids, control.current["id"]
@@ -156,10 +155,20 @@ class WorkSession:
         return self.transcript
 
     def _source_present(self) -> bool:
+        anchor = self._source_anchor()
+        if anchor is not None:
+            return anchor in self.source_keys
+        return self.control.source.get("trigger_event_id") in self.event_ids
+
+    def _source_anchor(self) -> str | None:
+        """Use the admitted Work identity for actorless initiative and scheduled turns."""
         source = self.control.source
-        if source.get("principal_kind") == "self":
-            return f"initiative:{source.get('initiative_run_id')}" in self.source_keys
-        return source.get("trigger_event_id") in self.event_ids
+        if source.get("origin") not in {"self_initiative", "scheduled_automation"}:
+            return None
+        current = self.control.current
+        if current is None:
+            return None
+        return str(current["source_key"])
 
     async def needs_compaction(self) -> bool:
         if self.control.current is None:

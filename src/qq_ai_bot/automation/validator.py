@@ -37,6 +37,7 @@ _SENSITIVE_KEYS = frozenset(
 _LLM_CAPABILITIES = frozenset({"yuki.generate", "yuki.agent"})
 _MESSAGE_CAPABILITIES = frozenset(
     {
+        "social.send_message",
         "onebot.send_private_message",
         "onebot.send_group_message",
         "emoji.send",
@@ -220,6 +221,18 @@ class AutomationValidator:
                 and provenance.current_group_id is None
             ):
                 raise ValueError("当前消息不是群聊，不能声明 current_group 投递目标")
+        elif call == "social.send_message":
+            target = arguments.get("target")
+            if target is None:
+                if (
+                    provenance.permission is PermissionLevel.SELF
+                    and not provenance.current_group_id
+                ):
+                    raise PermissionError("SELF 自动化没有私人投递目标")
+            elif target != {"kind": "person", "subject_ref": "current_speaker"}:
+                raise ValueError("静态消息只能投递到当前群或创建者本人")
+            elif provenance.permission is PermissionLevel.SELF:
+                raise PermissionError("SELF 自动化没有私人投递目标")
         elif call == "onebot.send_private_message":
             cls._validate_user_target(arguments.get("user_id"), provenance)
         elif call == "onebot.send_group_message":
@@ -391,6 +404,18 @@ def _collect_step_send_targets(
     creator_user_id: str,
     current_group_id: str | None,
 ) -> None:
+    if call == "social.send_message":
+        target = arguments.get("target")
+        if target is None:
+            if current_group_id:
+                space_ids.append(current_group_id)
+            else:
+                person_ids.append(creator_user_id)
+        elif target == {"kind": "person", "subject_ref": "current_speaker"}:
+            person_ids.append(creator_user_id)
+        else:
+            raise ValueError("静态消息只能投递到当前群或创建者本人")
+        return
     if call in _SEND_PERSON_CALLS:
         person_ids.append(
             _resolved_send_user(arguments.get("user_id"), creator_user_id=creator_user_id)
