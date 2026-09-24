@@ -33,7 +33,6 @@ from qq_ai_bot.identity.canonical_repository import (
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
     IdentityBindingModel,
-    SpaceBindingModel,
 )
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
@@ -313,38 +312,6 @@ class AutomationRepository:
             return None
         automation, display_name = row
         return _automation_directory_entry(automation, display_name)
-
-    async def list_active_for_external_group(
-        self,
-        external_group_id: str,
-        *,
-        limit: int = 9,
-    ) -> tuple[AutomationRecord, ...]:
-        """Return active tasks targeting one canonical group, regardless of owner."""
-
-        query = (
-            select(AutomationModel)
-            .join(
-                SpaceBindingModel,
-                SpaceBindingModel.space_id == AutomationModel.canonical_target_space_id,
-            )
-            .where(
-                AutomationModel.status == AutomationStatus.ACTIVE.value,
-                SpaceBindingModel.platform == IDENTITY_PLATFORM,
-                SpaceBindingModel.external_space_id == external_group_id,
-                SpaceBindingModel.status == "active",
-            )
-            .distinct()
-            .order_by(
-                AutomationModel.next_run_at.is_(None),
-                AutomationModel.next_run_at.asc(),
-                AutomationModel.id.asc(),
-            )
-            .limit(max(1, min(limit, 100)))
-        )
-        async with self._database.sessions() as session:
-            rows = (await session.scalars(query)).all()
-        return tuple(_automation_record(row) for row in rows)
 
     async def list_current_for_creator(
         self,

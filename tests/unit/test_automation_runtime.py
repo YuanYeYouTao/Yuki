@@ -1500,7 +1500,3 @@ async def test_disabled_binding_fails_while_space_target_remains_canonical(datab
     )
     assert row.canonical_target_space_id == space
     assert row.canonical_target_person_id is None
-    assert [
-        item.id
-        for item in await AutomationRepository(database).list_active_for_external_group("2001")
-    ] == [row.id]

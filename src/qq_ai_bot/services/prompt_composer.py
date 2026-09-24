@@ -22,7 +22,6 @@ from qq_ai_bot.prompting import (
     PromptCompiler,
     PromptContribution,
     PromptProgram,
-    PromptStability,
     PromptTrust,
 )
 from qq_ai_bot.prompting.contributors import static_text
@@ -183,18 +182,6 @@ class PromptComposer:
                         "recent_delivery": list(context.recent_delivery),
                         "purpose": "delivery_status_only",
                     },
-                    required=True,
-                )
-            )
-        if context.automation_snapshot:
-            contributions.append(
-                PromptContribution(
-                    id="runtime.current_conversation_automations",
-                    channel=PromptChannel.RUNTIME,
-                    trust=PromptTrust.TRUSTED,
-                    priority=93,
-                    stability=PromptStability.TURN,
-                    content=context.automation_snapshot,
                     required=True,
                 )
             )
