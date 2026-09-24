@@ -123,6 +123,7 @@ async def sync_scope_effects(service: SemanticParticipationService, item: _Sessi
             else []
         )
     valid_runs = {run.id for run in valid_run_rows}
+    semantic_runs = {run.id for run in valid_run_rows if run.owner == "semantic"}
     run_threads = {run.id: run.thread_key for run in valid_run_rows if run.thread_key}
     outbound_threads = cast(
         dict[str, str], item.controller.state.host_checkpoint.setdefault("outbound_threads", {})
@@ -138,8 +139,10 @@ async def sync_scope_effects(service: SemanticParticipationService, item: _Sessi
                 continue
             origin = parent
         _, marker, run_id = origin.source_turn_id.partition(":initiative:")
+        key = f"event:{row.event_id}"
+        if marker and run_id in semantic_runs:
+            item.controller.observe_public_anchor(run_id, key, _timestamp(row.updated_at))
         if marker and run_id in run_threads:
-            key = f"event:{row.event_id}"
             thread = run_threads[run_id]
             outbound_threads[key] = thread
             cached = item.controller.state.events.get(key)

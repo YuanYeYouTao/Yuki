@@ -20,6 +20,7 @@ from qq_ai_bot.conversation.autonomy_repository import AutonomyRepository
 from qq_ai_bot.runtime.subagent_schema import budgets, children
 from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import journal, work
+from qq_ai_bot.services import participation_feedback
 from qq_ai_bot.services.participation_feedback import reconcile_run, sync_scope_effects
 from qq_ai_bot.social.db_models import SocialOperationModel
 
@@ -183,6 +184,22 @@ async def test_sequence_caption_direct_and_semantic_paths_share_one_logical_effe
     await social(database, run, "another-message", turn=f"{run.conversation_id}:event:999")
     await sync_scope_effects(service, item)
     assert len(item.controller.state.effects) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", [AutonomyOwner.SEMANTIC, AutonomyOwner.LEGACY])
+async def test_only_semantic_run_binds_confirmed_internal_outbound_anchor(
+    database, monkeypatch, owner
+):
+    service, item, run, _ = await setup(database, owner=owner)
+    row = await social(database, run, "confirmed-send")
+    row.event_id = 123  # Synthetic internal event ID; no platform message ID is used.
+    monkeypatch.setattr(participation_feedback, "_scope_social_rows", AsyncMock(return_value=[row]))
+    await sync_scope_effects(service, item)
+    if owner is AutonomyOwner.SEMANTIC:
+        assert item.controller.state.outbound_anchors["event:123"].run_ref == run.run_id
+    else:
+        assert not item.controller.state.outbound_anchors
 
 
 @pytest.mark.asyncio

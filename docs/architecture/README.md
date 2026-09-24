@@ -29,6 +29,9 @@ Yuki 正在逐层解耦：永久主体、内部事件和工作身份由核心持
 设计基线：[SELF 主体、自动化与 Work 信号等待任务书](Yuki-SELF主体自动化与Work信号等待任务书-2026-09-24.md)。
 实现已进入当前开发分支；合并与上线状态以实际 PR 和部署记录为准。
 
+当前自主频率设计与联测范围见[自主参与反馈模型任务书](autonomous-participation-social-feedback-taskbook.md)；
+现行算法以[自主参与连续概率模型](autonomous-participation-model.md)和独立库固定修订为准。
+
 历史设计：[主 Agent 全入口执行、恢复与交付统一任务书](main-agent-entrypoint-unification-taskbook.md)。
 基于 2026-09-13 自动化与插件入口审计完成实现，已合并部署；定向验证、CI、迁移及观察边界见
 [交付记录](../operations/main-agent-entrypoints-2026-09-14.md)。
