@@ -15,6 +15,9 @@
 Conversation/generation 保存控制器快照。来源是带版本的内部 event 或 memory ID；
 目标人物只是交流对象，不是执行主体。来源正文和资料包均是不可信上下文，不能授予权限。
 观测和历史读取完成后才进入短接纳事务，事务中不等待 Jev、主模型或 QQ 网关。
+启动和运行期间会主动发现当前获准的群会话代次；即使 `/ai new` 后还没有新的群消息、
+新代次尚无 selector 行，也会建立控制器并按现行配置选择 owner。只读取新代次事件，
+不补采停机期间的机会，也不延续旧代次待接纳 proposal。
 
 `AutonomyBinding` 持久保存 master/external 开关、唯一有效 owner、controller_epoch 和
 revision。有效 owner 只有 off、legacy、semantic：总开关关闭始终 off；外部控制器关闭
