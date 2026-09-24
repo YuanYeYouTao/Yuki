@@ -1,8 +1,8 @@
 # Versioned Docker Release
 
 应用版本以 `pyproject.toml` 为源，数据库目标以随包 Alembic 单一 head 为源。
-当前正式版见 [README](../../README.md)，发布范围见[发布说明](../releases/v3.8.3.md)，
-数据库与部署步骤见[升级指南](../upgrade-3.8.3.md)。历史 Release 保留对应版本的记录，不作为当前部署指令。
+当前已发行版本与下一源码基线见 [README](../../README.md)，3.8.4 的合并范围见[发布说明](../releases/v3.8.4.md)，
+数据库与部署步骤见[升级指南](../upgrade-3.8.4.md)。历史 Release 保留对应版本的记录；3.8.4 发行资产发布前，正式下载仍为 3.8.3。
 
 ## 仓库与 CI
 

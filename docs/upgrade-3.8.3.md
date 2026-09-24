@@ -1,33 +1,31 @@
 # Yuki 3.8.3 配置与升级
 
-<!-- release-baseline: version=3.8.3 schema=0071 -->
+<!-- release-baseline: version=3.8.3 schema=0061 -->
 
-本页随当前源码维护；历史 Release 附件不因文档更新而改变。目标数据库由所选镜像随包的 Alembic 单一 head 决定，不能仅凭应用版本号或旧部署记录认定无需迁移。
-当前开发分支的迁移头为 **0071**，与已发布的 3.8.3 部署包区分。0066–0068 增加语义参与、SELF 工具记忆与内部引用关系；语义参与默认关闭。0069 将新发送回执绑定到内部事件编号；旧回执保留原状态，不按平台消息编号猜测正文。0070 保存无来源 SELF 主动机会及其会话线；0071 增加 SELF 自动化主体和原 Work 信号等待。本轮开发尚未部署。
-当前源码要求 Plugin API 3.0，旧插件须按 [API 3.0 迁移](plugin-development/api-3.0-migration.md) 更新。部署保留独立 Manager 与持久环境；发布 Release 不会自动更新现有服务器。
+本页对应正式 [3.8.3 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.3) 发行包，而非此后继续开发的源码。该包随附 Alembic head `0061`、Plugin API 2.0；使用更晚的源码或镜像时，按其随包迁移和对应升级指南处理。下一发布基线见 [3.8.4 升级指南](upgrade-3.8.4.md)。
 
 ## 版本对应
 
 | 来源 | 数据库 | 升级处理 |
 | --- | --- | --- |
-| 3.8.2 正式发布包 | 0055 | 按目标镜像的迁移链升级至随包 head |
-| 后续部署 | 读取实际 Alembic revision | 与目标镜像 head 一致才可跳过迁移；否则先升级 |
-| 更旧部署 | 先核对实际 Alembic 记录与 canonical 基线 | 当前支持 canonical 0048 起点；更早或过渡态先按对应迁移方案处理，不能承诺直接升级或用 stamp 跳过 |
+| 3.8.2 正式发布包 | `0055` | 使用 3.8.3 目标镜像的迁移链升级至 `0061` |
+| 后续部署 | 读取实际 Alembic revision | 与目标镜像 head 一致才可跳过迁移 |
+| 更旧部署 | 核对实际 Alembic 记录与 canonical 基线 | 不承诺直接升级，不使用 `stamp` 跳过迁移 |
 
-启动校验、发布检查和镜像 smoke 均以随包 Alembic 单一 head 为准。CI 检查本页、发布说明和 README 的基线标记，保持源码基线标记一致；历史发布包以该包内的迁移为准。
+应用版本不能代替数据库版本检查。历史 Release 附件内容固定；当前仓库中的安装器、`.env.example` 和 README 可能属于下一源码基线。
 
 ## 部署流程
 
-正式部署使用 [3.8.3 发行包](https://github.com/YuanYeYouTao/Yuki-QQbot/releases/tag/v3.8.3)；开发部署可从确认的提交本地构建镜像，再传服务器加载。
+正式部署使用 [3.8.3 发行包](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.3)。
 保留原项目名、Compose 覆盖文件、配置和挂载，不用新模板覆盖已有部署目录。
 
 1. 暂停 Bot 写入并保存一致的数据库及配置备份；持久家目录、artifact 和执行回执保留。
-2. 使用目标镜像执行 `qq-ai-bot-cli init-db`，由 Alembic 升级至随包 head。
-3. 仅重建 Bot，检查健康、QQ 连接、任务调度和固定工具合同。QQ 网关、RSS 和独立 Manager 无相关改动时保持运行。
+2. 使用 3.8.3 目标镜像执行 `qq-ai-bot-cli init-db`，由 Alembic 升级至随包 head。
+3. 仅重建 Bot，检查健康、QQ 连接、任务调度和固定工具合同。QQ 网关和独立 Manager 无相关改动时保持运行。
 
 所有 Compose 命令沿用部署原有项目名及全部覆盖文件。Manager 自身更新另行处理。
 
-麦当劳退出需同步移除部署 `mcp.json` 中的 `mcd`、连接凭据及旧工具缓存；不能只更新示例文件。保留历史审计和已结束任务。自动化主 Agent 改用创建者当前权限和主工具合同；原工具白名单不再限制执行。插件安装批准仍生效。
+麦当劳退出需同步移除部署 `mcp.json` 中的 `mcd`、连接凭据及旧工具缓存；不能只更新示例文件。保留历史审计和已结束任务。插件安装批准仍生效。
 
 ## 恢复
 

@@ -1,4 +1,4 @@
-<!-- release-baseline: version=3.8.3 schema=0071 -->
+<!-- release-baseline: version=3.8.4 schema=0071 -->
 
 中文（默认） · [English](README.en.md)
 
@@ -18,13 +18,13 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow" alt="MIT License"></a>
 </p>
 
-[下载 3.8.3](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.3) · [3.8.3 发布说明](docs/releases/v3.8.3.md) · [当前升级指南](docs/upgrade-3.8.3.md) · [使用帮助](docs/help.md)
+[下载正式版 3.8.3](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.3) · [3.8.4 发布说明（待发布）](docs/releases/v3.8.4.md) · [3.8.4 升级指南](docs/upgrade-3.8.4.md) · [使用帮助](docs/help.md)
 
 </div>
 
 Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何在真实社交场景中持续存在。她当前运行在 QQ 私聊和群聊中，记住人与共同经历，维护长期关系，也能使用工具和持久工作环境完成跨消息的任务。身份、记忆和关系由自己的数据库保存，更换模型、QQ 账号或网关时可以继续沿用。
 
-**当前正式版为 3.8.3。** 它包含持久工作环境、语音识别、统一主 Agent、子任务与持续恢复，以及工具合同清理。当前 `main` 还包含可选的群聊语义观察与自主参与机制；真实 QQ 群聊中的长期效果仍在验证。工作环境需要单独部署；WebUI 尚未提供。
+**已发布的正式版为 3.8.3；当前源码的下一发布基线是 3.8.4。** 新基线将可见发言统一为主 Agent 显式 `send_message`，并加入可选的群聊语义观察、SELF 自主参与和自主自动化。Yuki 可决定发言、分条发送或沉默；自主参与默认关闭，真实 QQ 群聊中的长期效果仍在验证。工作环境需要单独部署；WebUI 尚未提供。
 
 ## Yuki 能做什么
 
@@ -107,7 +107,7 @@ docker compose run --rm --no-deps --entrypoint qq-ai-bot-cli bot init-db
 docker compose up -d
 ```
 
-还需完成 QQ 登录，并按所选插件和语音组件的说明进行初始化。完整步骤见[首次启动与升级指南](docs/upgrade-3.8.3.md)。已有部署请直接按该指南升级，保留原项目名、Compose 覆盖文件和挂载配置。
+还需完成 QQ 登录，并按所选插件和语音组件的说明进行初始化。正式 3.8.3 部署见[该版本升级指南](docs/upgrade-3.8.3.md)；计划升级到新基线时见 [3.8.4 升级指南](docs/upgrade-3.8.4.md)。已有部署应保留原项目名、Compose 覆盖文件和挂载配置。
 
 正式镜像为 `ghcr.io/yuanyeyoutao/yuki-qqbot:3.8.3`；可选 TTS Worker 镜像为 `ghcr.io/yuanyeyoutao/yuki-genie-tts-worker:3.8.3`。发布包提供 `SHA256SUMS`。单独下载的环境模板附件名为 `default.env.example`，压缩包内仍为 `.env.example`。
 
@@ -115,7 +115,7 @@ docker compose up -d
 
 当前源码使用 Plugin API **3.0**，数据库目标由随包 Alembic 单一 head 决定；应用版本号不能替代数据库版本检查。3.8.2 发布包的历史目标为 0055。较旧的数据库必须先满足迁移前提，不能通过 `stamp` 跳过迁移。旧插件的 `llm.generate` / `agent.run` 已统一到主入口，依赖旧独立生成语义的插件需要适配。
 
-升级前保存一致的数据库、配置、插件及文件备份；持久环境还需保存家目录与运行回执。暂停写入只涉及 Bot 和相关 Manager，不需要关闭整个 Docker 或 QQ 网关。回退时应先保全升级后的新消息、文件和回执，详见[升级指南](docs/upgrade-3.8.3.md)。
+升级前保存一致的数据库、配置、插件及文件备份；持久环境还需保存家目录与运行回执。暂停写入只涉及 Bot 和相关 Manager，不需要关闭整个 Docker 或 QQ 网关。回退时应先保全升级后的新消息、文件和回执，详见 [3.8.4 升级指南](docs/upgrade-3.8.4.md)。
 
 ```bash
 docker compose ps

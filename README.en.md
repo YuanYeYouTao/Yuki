@@ -1,4 +1,4 @@
-<!-- release-baseline: version=3.8.3 schema=0071 -->
+<!-- release-baseline: version=3.8.4 schema=0071 -->
 
 [简体中文](README.md) · English
 
@@ -18,13 +18,13 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow" alt="MIT License"></a>
 </p>
 
-[Download 3.8.3](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.3) · [Release notes](docs/releases/v3.8.3.md) · [Upgrade guide](docs/upgrade-3.8.3.md) · [Help](docs/help.md)
+[Download published 3.8.3](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.3) · [3.8.4 release notes (pending)](docs/releases/v3.8.4.md) · [3.8.4 upgrade guide](docs/upgrade-3.8.4.md) · [Help](docs/help.md)
 
 </div>
 
 Yuki is an open-source, self-hosted social AI agent exploring what a persistent digital life can be in real conversations. She currently runs in QQ private chats and groups, remembers people and shared experiences, maintains long-term relationships, and uses tools and a persistent workspace to carry work across messages. Her identity, memory, and relationships live in Yuki's own database and can survive a change of model, QQ account, or gateway.
 
-**The current release is 3.8.3.** It includes a persistent workspace, speech recognition, a unified main agent, sub-tasks and durable recovery, and a cleaned-up tool contract. The current `main` branch also includes optional semantic observation and autonomous participation for group chats; long-term behavior in real QQ groups is still being evaluated. The workspace is deployed separately; there is no WebUI yet.
+**The latest published release is 3.8.3; the next source release baseline is 3.8.4.** In the new baseline, the main agent sends visible messages explicitly through `send_message`, and optional group semantic observation, SELF initiative, and SELF automation are available. Yuki can choose to speak, split a reply, or remain silent. Autonomous participation is disabled by default, and long-term behavior in real QQ groups is still being evaluated. The workspace is deployed separately; there is no WebUI yet.
 
 ## What Yuki can do
 
@@ -102,7 +102,7 @@ docker compose run --rm --no-deps --entrypoint qq-ai-bot-cli bot init-db
 docker compose up -d
 ```
 
-Complete QQ login and any plugin or speech-component setup you selected. See the [startup and upgrade guide](docs/upgrade-3.8.3.md). Existing deployments must retain their project name, Compose overrides, and mounted configuration.
+Complete QQ login and any plugin or speech-component setup you selected. For the published 3.8.3 bundle, see its [upgrade guide](docs/upgrade-3.8.3.md); for the next baseline, see the [3.8.4 upgrade guide](docs/upgrade-3.8.4.md). Existing deployments must retain their project name, Compose overrides, and mounted configuration.
 
 The Bot image is `ghcr.io/yuanyeyoutao/yuki-qqbot:3.8.3`; the optional TTS Worker image is `ghcr.io/yuanyeyoutao/yuki-genie-tts-worker:3.8.3`. The release includes `SHA256SUMS`. The standalone environment-template asset is named `default.env.example`, while the archive contains `.env.example`.
 
@@ -110,7 +110,7 @@ The Bot image is `ghcr.io/yuanyeyoutao/yuki-qqbot:3.8.3`; the optional TTS Worke
 
 The current source uses Plugin API **3.0**. The bundled Alembic head determines the database target; the application version does not replace a schema check. The historical target for the 3.8.2 package was 0055. Older databases must follow the migration chain—do not skip migrations with `stamp`. Legacy plugin calls to `llm.generate` / `agent.run` now use the unified main entry point; plugins that relied on separate-generation behavior need adaptation.
 
-Before upgrading, make a consistent backup of the database, configuration, plugins, and files. For a persistent workspace, retain its home directory and execution receipts. Pause writes from Bot and related Manager components; you do not need to shut down all of Docker or the QQ gateway. Preserve any new messages, files, and receipts before rollback; see the [upgrade guide](docs/upgrade-3.8.3.md).
+Before upgrading, make a consistent backup of the database, configuration, plugins, and files. For a persistent workspace, retain its home directory and execution receipts. Pause writes from Bot and related Manager components; you do not need to shut down all of Docker or the QQ gateway. Preserve any new messages, files, and receipts before rollback; see the [3.8.4 upgrade guide](docs/upgrade-3.8.4.md).
 
 ```bash
 docker compose ps
