@@ -276,7 +276,7 @@ class CanonicalGenerationResetModel(Base):
 
     batch_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     conversation_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("canonical_conversations.id", ondelete="RESTRICT"), primary_key=True
+        String(36), ForeignKey("canonical_conversations.id", ondelete="CASCADE"), primary_key=True
     )
     prior_generation: Mapped[int] = mapped_column(Integer, nullable=False)
     new_generation: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -300,11 +300,11 @@ class ConversationMediaItemModel(Base):
     )
 
     source_event_id: Mapped[int] = mapped_column(
-        ForeignKey("chat_events.id", ondelete="RESTRICT"), primary_key=True
+        ForeignKey("chat_events.id", ondelete="CASCADE"), primary_key=True
     )
     attachment_index: Mapped[int] = mapped_column(Integer, primary_key=True)
     conversation_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("canonical_conversations.id", ondelete="RESTRICT"), nullable=False
+        String(36), ForeignKey("canonical_conversations.id", ondelete="CASCADE"), nullable=False
     )
     generation: Mapped[int] = mapped_column(Integer, nullable=False)
     segment_index: Mapped[int] = mapped_column(Integer, nullable=False)

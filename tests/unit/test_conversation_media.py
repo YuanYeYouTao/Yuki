@@ -15,6 +15,7 @@ from qq_ai_bot.conversation.media_service import ConversationMediaError, Convers
 from qq_ai_bot.identity.canonical_repository import ensure_presence
 from qq_ai_bot.operations.reset_conversations import reset_all
 from qq_ai_bot.persistence.models import ConversationMediaItemModel
+from qq_ai_bot.persistence.people_repository import PeopleRepository
 from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
 from qq_ai_bot.vision.models import DownloadedMedia, VisualObservation
 
@@ -131,6 +132,9 @@ async def test_media_index_cache_scope_expiry_and_reset(database, tmp_path):
     async with database.sessions() as session:
         stored = await session.get(ConversationMediaItemModel, (appended.event.id, 0))
         assert stored is not None and stored.cache_status == "expired"
+    assert await PeopleRepository(database).delete_person("1001") is True
+    async with database.sessions() as session:
+        assert await session.get(ConversationMediaItemModel, (appended.event.id, 0)) is None
 
 
 @pytest.mark.asyncio
@@ -163,3 +167,36 @@ async def test_file_with_image_bytes_uses_visual_reader(database, tmp_path):
     result = await service.inspect(item, path, "图里是什么？")
     assert result["mode"] == "image"
     assert result["observation"]["overall_description"] == "红色方块"
+
+
+@pytest.mark.asyncio
+async def test_forgetting_person_removes_index_and_cached_bytes(database, tmp_path):
+    registry, resolver, uow = await _stack(database)
+    bot = _Bot("8000")
+    async with database.sessions() as session, session.begin():
+        presence = await ensure_presence(session, "8000")
+    registry.connect(bot)
+    registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
+    message = replace(
+        _message(message_id="forget-media-1", user_id="1001"),
+        segments=({"type": "image", "data": {"file": "opaque-image-id"}},),
+    )
+    admitted = await resolver.pre_admit(bot, message)
+    assert admitted is not None
+    appended = await uow.append_inbound(admitted.message, admitted)
+    service = ConversationMediaService(
+        database, tmp_path / "media", _Resolver(), ImagePreprocessor(), _Provider()
+    )
+    _, path = await service.authorized_path(
+        event_id=appended.event.id,
+        attachment_index=0,
+        conversation_id=admitted.conversation_id,
+        generation=1,
+        gateway=None,
+    )
+    assert path.is_file()
+    assert await PeopleRepository(database).delete_person("1001") is True
+    await service.cleanup()
+    assert not path.exists()
+    async with database.sessions() as session:
+        assert await session.get(ConversationMediaItemModel, (appended.event.id, 0)) is None

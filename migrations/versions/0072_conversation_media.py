@@ -31,14 +31,14 @@ def upgrade() -> None:
         sa.Column(
             "source_event_id",
             sa.Integer(),
-            sa.ForeignKey("chat_events.id", ondelete="RESTRICT"),
+            sa.ForeignKey("chat_events.id", ondelete="CASCADE"),
             primary_key=True,
         ),
         sa.Column("attachment_index", sa.Integer(), primary_key=True),
         sa.Column(
             "conversation_id",
             sa.String(36),
-            sa.ForeignKey("canonical_conversations.id", ondelete="RESTRICT"),
+            sa.ForeignKey("canonical_conversations.id", ondelete="CASCADE"),
             nullable=False,
         ),
         sa.Column("generation", sa.Integer(), nullable=False),
@@ -71,7 +71,7 @@ def upgrade() -> None:
         sa.Column(
             "conversation_id",
             sa.String(36),
-            sa.ForeignKey("canonical_conversations.id", ondelete="RESTRICT"),
+            sa.ForeignKey("canonical_conversations.id", ondelete="CASCADE"),
             primary_key=True,
         ),
         sa.Column("prior_generation", sa.Integer(), nullable=False),

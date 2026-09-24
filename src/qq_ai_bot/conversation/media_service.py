@@ -400,13 +400,40 @@ class ConversationMediaService:
                         parent.rmdir()
                     except OSError:
                         break
-            # An interrupted download is never a valid cached object.
-            for part in self.root.rglob("*.part"):
+            async with self.database.sessions() as session:
+                cached = (
+                    await session.scalars(
+                        select(ConversationMediaItemModel).where(
+                            ConversationMediaItemModel.cache_status == "cached",
+                            ConversationMediaItemModel.cache_name.is_not(None),
+                        )
+                    )
+                ).all()
+            live_paths = {self._path(item) for item in cached}
+            # Source events may be erased by the person-forget operation. Their
+            # index rows cascade away, so discard the inaccessible bytes too.
+            for file in self.root.rglob("*"):
                 try:
-                    if datetime.fromtimestamp(part.stat().st_mtime, UTC) + timedelta(hours=1) < now:
-                        part.unlink(missing_ok=True)
+                    if not file.is_file() and not file.is_symlink():
+                        continue
+                    if file.suffix == ".part":
+                        if (
+                            datetime.fromtimestamp(file.stat().st_mtime, UTC) + timedelta(hours=1)
+                            < now
+                        ):
+                            file.unlink(missing_ok=True)
+                    elif file not in live_paths:
+                        file.unlink(missing_ok=True)
                 except OSError:
                     continue
+            for directory in sorted(
+                self.root.rglob("*"), key=lambda value: len(value.parts), reverse=True
+            ):
+                if directory.is_dir() and not directory.is_symlink():
+                    try:
+                        directory.rmdir()
+                    except OSError:
+                        pass
 
     async def _cleanup_loop(self) -> None:
         while True:
