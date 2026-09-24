@@ -159,9 +159,10 @@ class SocialAutomationAdapter:
                     return CapabilityResult(data=result)
                 if not context.canonical_conversation_id:
                     raise SocialError("missing_call_context")
-                if context.revalidate_authority is not None:
-                    await context.revalidate_authority(name)
-                is_self = context.creator_kind == "self"
+                revalidate_authority = getattr(context, "revalidate_authority", None)
+                if revalidate_authority is not None:
+                    await revalidate_authority(name)
+                is_self = getattr(context, "creator_kind", "person") == "self"
                 social_context = SocialContext(
                     turn_id=f"automation:{context.automation_run_id}",
                     call_id=context.step_id,
