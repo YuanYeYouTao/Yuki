@@ -6,6 +6,7 @@ import json
 import logging
 import re
 from collections.abc import Iterable
+from datetime import date, datetime, timedelta
 from functools import lru_cache
 
 from qq_ai_bot.adapters.onebot.normalizer import (
@@ -15,10 +16,11 @@ from qq_ai_bot.adapters.onebot.normalizer import (
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage, sanitize_display_name
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.services.renderer import strip_internal_history_markers
-from qq_ai_bot.time.formatting import local_iso
+from qq_ai_bot.time.formatting import local_datetime, local_iso, stored_utc
 
 EXTERNAL_EVENT_DIGEST_SUMMARY_MAX_CHARACTERS = 800
 EXTERNAL_EVENT_CONTENT_TRUST = "external_untrusted"
+_MAIN_HISTORY_GROUP_SPAN = timedelta(minutes=5)
 _EXTERNAL_EVENT_DIGEST_METADATA_ID = "recent_external_events"
 
 _LEGACY_HISTORY_PREFIX = re.compile(
@@ -245,13 +247,19 @@ class ChatEventPromptRenderer:
     ) -> ChatMessage:
         """Return the compact stable-event projection used by conversational models."""
 
+        rendered = self.render_reference_event(
+            row,
+            current_event_id=current_event_id,
+            current_content=current_content,
+        )
+        if row.event_kind == "message" and rendered:
+            header, separator, event_line = rendered.partition("\n")
+            if separator:
+                local_time = local_datetime(row.occurred_at, self._timezone).strftime("%H:%M:%S")
+                rendered = f"[{local_time}｜{header[1:]}\n{event_line}"
         return ChatMessage(
             role="assistant" if row.direction == "outbound" else "user",
-            content=self.render_reference_event(
-                row,
-                current_event_id=current_event_id,
-                current_content=current_content,
-            ),
+            content=rendered,
         )
 
     def main_agent_history(
@@ -263,6 +271,9 @@ class ChatEventPromptRenderer:
         grouped: list[
             tuple[int, tuple[int, ...], ChatMessage, tuple[str, str, str, str, int | None] | None]
         ] = []
+        group_start_utc: datetime | None = None
+        group_last_utc: datetime | None = None
+        group_local_day: date | None = None
         for row in rows:
             if row.event_kind == "external_event":
                 continue
@@ -277,7 +288,21 @@ class ChatEventPromptRenderer:
                 prompt_origin_class(row),
                 row.caused_by_event_id,
             )
-            if grouped and group_key is not None and grouped[-1][3] == group_key:
+            occurred_utc = stored_utc(row.occurred_at)
+            local_day = local_datetime(row.occurred_at, self._timezone).date()
+            within_group_span = (
+                group_start_utc is not None
+                and group_last_utc is not None
+                and group_last_utc <= occurred_utc
+                and group_start_utc <= occurred_utc <= group_start_utc + _MAIN_HISTORY_GROUP_SPAN
+                and group_local_day == local_day
+            )
+            if (
+                grouped
+                and group_key is not None
+                and grouped[-1][3] == group_key
+                and within_group_span
+            ):
                 previous_id, event_ids, previous, _ = grouped[-1]
                 _, separator, event_line = rendered.partition("\n")
                 if separator:
@@ -290,8 +315,12 @@ class ChatEventPromptRenderer:
                         ),
                         group_key,
                     )
+                    group_last_utc = occurred_utc
                     continue
             grouped.append((row.id, (row.id,), message, group_key))
+            group_start_utc = occurred_utc
+            group_last_utc = occurred_utc
+            group_local_day = local_day
         return tuple(
             (anchor_event_id, event_ids, message)
             for anchor_event_id, event_ids, message, _ in grouped

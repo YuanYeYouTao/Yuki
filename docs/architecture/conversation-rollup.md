@@ -52,6 +52,10 @@ checkpoint 与 raw tail 不能重叠或留洞。当前触发事件只在 current
   不得因为前台为零而绕过 `batch_max_characters`。
 
 触发、protected tail 和前台 fit 使用可见 message 投影；候选覆盖仍沿原始 keeper ID 连续推进。
+主 Agent 的消息首行显示内部事件时间的本地 `时:分:秒`；相同发送者等既有分组条件下，
+组内事件距首条最多五分钟，跨本地日期或事件时间倒退时另起组。历史仍按内部事件 ID 排序。
+这个时间包装只用于模型可见消息；持久水位继续使用不带时间的单条事件尺子，
+已冻结的旧模型输入不追溯改写。
 3.8.0 存量计数必须在停写副本和 live 数据库上执行
 `qq-ai-bot-cli conversation recount-uncovered` 后才能由 3.8.1 恢复写入。
 
