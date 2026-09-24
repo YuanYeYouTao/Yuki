@@ -84,6 +84,8 @@ def failure_status_text(failure: RuntimeFailure) -> str:
         if failure.code == "work_journal_source_changed":
             return "会话资料在处理期间变化，已保留已有结果；请先核对任务状态。"
         return "工作状态发生冲突，已保留已有结果；请稍后核对状态。"
+    if failure.code == "unsent_final_response":
+        return "这次回复没有发出，请稍后重试。"
     if failure.stage == "provider":
         if failure.code in {"LLMAuthenticationError", "LLMConfigurationError"}:
             return "AI 服务配置或认证异常，请联系管理员。"
@@ -127,6 +129,7 @@ def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFa
     # dispatching/unknown effects remain protected by their durable receipts.
     from qq_ai_bot.gateway.registry import RegistryClosed
     from qq_ai_bot.identity.routing import RouteSendError
+    from qq_ai_bot.services.main_agent_backend import UnsentFinalResponseError
 
     if (
         isinstance(exc, RouteSendError)
@@ -134,6 +137,8 @@ def classify_failure(exc: BaseException, stage: str = "activation") -> RuntimeFa
         and exc.__cause__.category == "disconnected"
     ):
         return RuntimeFailure("gateway_disconnected", "gateway", True, "not_sent")
+    if isinstance(exc, UnsentFinalResponseError):
+        return RuntimeFailure("unsent_final_response", "agent_output", certainty="not_sent")
     if isinstance(exc, LLMError):
         return RuntimeFailure(
             type(exc).__name__,
