@@ -210,7 +210,7 @@ def test_proactive_history_groups_by_origin_and_cause_without_changing_body() ->
         (7,),
     ]
     first_episode = rendered[1][2].content or ""
-    assert "[Yuki主动消息｜由外部事件 #2 触发｜source=github｜type=PullRequestEvent]" in (
+    assert "[20:00:03｜Yuki主动消息｜由外部事件 #2 触发｜source=github｜type=PullRequestEvent]" in (
         first_episode
     )
     assert "first proactive part" in first_episode
