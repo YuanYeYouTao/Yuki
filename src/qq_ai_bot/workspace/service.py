@@ -56,7 +56,6 @@ class WorkspaceService:
         args: dict[str, Any],
         *,
         runtime: Any = None,
-        conversation_id: str | None = None,
         request_id: str | None = None,
     ) -> dict[str, Any]:
         if name == "workspace_inspect":
@@ -67,7 +66,7 @@ class WorkspaceService:
             )
         if name in {"inspect_conversation_attachment", "save_conversation_attachment_to_workspace"}:
             media = self.conversation_media
-            scope_id = conversation_id or (runtime.conversation_id if runtime else None)
+            scope_id = runtime.effective_conversation_id if runtime is not None else None
             if media is None or scope_id is None or runtime is None:
                 raise WorkspaceError("event_attachment_unavailable")
             try:

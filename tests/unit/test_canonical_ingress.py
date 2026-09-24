@@ -902,15 +902,12 @@ async def test_custom_policy_live_append_matches_recount_without_reading_ingress
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("pause_during_probe", [False, True])
-async def test_gateway_probe_releases_writer_and_rechecks_fence(
-    database: Database, pause_during_probe: bool
+async def test_gateway_probe_during_pre_admission_does_not_hold_sqlite_writer(
+    database: Database,
 ) -> None:
     import asyncio
 
     from sqlalchemy import text
-
-    from qq_ai_bot.conversation.canonical_db_models import SpaceBindingIngestRouteModel
 
     registry, resolver, uow = await _stack(database)
     async with database.sessions() as session, session.begin():
@@ -919,8 +916,6 @@ async def test_gateway_probe_releases_writer_and_rechecks_fence(
     bot = _Bot("8000")
     registry.connect(bot)
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
-    admitted = await resolver.pre_admit(bot, _message(message_id="slow-probe", group_id="2001"))
-    assert admitted is not None and not admitted.dropped
     entered, release = asyncio.Event(), asyncio.Event()
 
     async def slow_probe(*args: object, **kwargs: object) -> bool:
@@ -928,31 +923,59 @@ async def test_gateway_probe_releases_writer_and_rechecks_fence(
         await release.wait()
         return True
 
-    uow._router._probe = slow_probe
-    pending = asyncio.create_task(uow.append_inbound(admitted.message, admitted))
+    resolver._router._probe = slow_probe
+    pending = asyncio.create_task(
+        resolver.pre_admit(bot, _message(message_id="slow-probe", group_id="2001"))
+    )
     try:
         await asyncio.wait_for(entered.wait(), 3)
-        # A real concurrent writer must remain available while the gateway stalls.
         async with database.sessions() as session:
             await session.execute(text("PRAGMA busy_timeout=30"))
             await session.execute(text("BEGIN IMMEDIATE"))
-            route = await session.get(SpaceBindingIngestRouteModel, admitted.space_binding_id)
-            assert route is not None
-            if pause_during_probe:
-                route.paused = True
             await session.commit()
     finally:
         release.set()
-        if not pending.done():
-            await asyncio.wait({pending}, timeout=3)
-    if pause_during_probe:
+    admitted = await pending
+    assert admitted is not None and not admitted.dropped
+    assert (await uow.append_inbound(admitted.message, admitted)).created
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route_state", ["active", "paused", "transferred"])
+async def test_admitted_group_message_survives_disconnect_but_not_route_change(
+    database: Database, route_state: str
+) -> None:
+    from qq_ai_bot.conversation.canonical_db_models import SpaceBindingIngestRouteModel
+
+    registry, resolver, uow = await _stack(database)
+    async with database.sessions() as session, session.begin():
+        presence = await ensure_v2_presence(session, "8000")
+        replacement_presence = await ensure_v2_presence(session, "8001")
+        await ensure_v2_space(session, "2001")
+    bot = _Bot("8000")
+    registry.connect(bot)
+    registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
+    admitted = await resolver.pre_admit(
+        bot, _message(message_id="admitted-before-disconnect", group_id="2001")
+    )
+    assert admitted is not None and not admitted.dropped
+    registry.disconnect(bot)
+    if route_state != "active":
+        async with database.immediate_session() as session:
+            route = await session.get(SpaceBindingIngestRouteModel, admitted.space_binding_id)
+            assert route is not None
+            if route_state == "paused":
+                route.paused = True
+            else:
+                route.ingest_presence_id = replacement_presence
+    if route_state != "active":
         with pytest.raises(CanonicalIdentityError) as failure:
-            await pending
-        assert failure.value.category == "paused"
+            await uow.append_inbound(admitted.message, admitted)
+        assert failure.value.category == ("paused" if route_state == "paused" else "not_ingest")
         async with database.sessions() as session:
             assert not list(await session.scalars(select(ChatEventModel)))
     else:
-        assert (await pending).created
+        assert (await uow.append_inbound(admitted.message, admitted)).created
 
 
 @pytest.mark.asyncio
