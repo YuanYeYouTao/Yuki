@@ -68,15 +68,15 @@ def _assert_model_delivery(group_id, target, resolved):
     assert script.limits.timeout_seconds == settings.automation_max_runtime_seconds
 
 
-def test_static_delivery_remains_an_explicit_text_send():
+def test_static_delivery_uses_the_canonical_social_send():
     for case in (
-        (None, "onebot.send_private_message", "user_id"),
-        ("20001", "onebot.send_group_message", "group_id"),
+        (None, {"kind": "person", "subject_ref": "current_speaker"}),
+        ("20001", None),
     ):
         _assert_static_delivery(*case)
 
 
-def _assert_static_delivery(group_id, call, target_argument):
+def _assert_static_delivery(group_id, target):
     compiler = AutomationCompiler(settings=make_settings("sqlite+aiosqlite:///:memory:"))
     plan = compiler.compile(
         TaskSpec(
@@ -89,9 +89,9 @@ def _assert_static_delivery(group_id, call, target_argument):
         default_timezone="Asia/Shanghai",
     )
     assert len(plan.script.steps) == 1
-    assert plan.script.steps[0].call == call
+    assert plan.script.steps[0].call == "social.send_message"
     assert plan.script.steps[0].arguments["text"] == "喝水"
-    assert target_argument in plan.script.steps[0].arguments
+    assert plan.script.steps[0].arguments.get("target") == target
     assert not plan.script.uses_runtime_budget
 
 

@@ -16,6 +16,8 @@ from qq_ai_bot.time.formatting import local_iso
 _CREATE_DESCRIPTION = (
     "创建持久化定时任务。纯提醒使用 static；需要模型或工具时使用 agentic。"
     "运行时使用主 Agent 的完整工具，按创建者当前权限执行，无需选择工具或预算。"
+    "需要到时发消息时明确设置 delivery.target：群聊用 current_group，私聊用 self_private；"
+    "none 表示只执行内部工作，不会发送，不能用它创建提醒。SELF 任务与用户任务使用同一发送合同。"
     "创建时不要提前执行任务；收到 confirmation='persisted' 和 automation_id 才表示成功。"
 )
 
@@ -142,6 +144,10 @@ def _task_intent_schema() -> dict[str, object]:
                     "target": {
                         "type": "string",
                         "enum": ["auto", "self_private", "current_group", "none"],
+                        "description": (
+                            "到时发消息用 current_group 或 self_private；none 只做内部工作，"
+                            "不会投递；auto 由创建时会话选择目标。SELF 没有私人目标。"
+                        ),
                     },
                     "text": {"type": "string", "minLength": 1, "maxLength": 12000},
                 },

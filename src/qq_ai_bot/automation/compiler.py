@@ -129,22 +129,14 @@ class AutomationCompiler:
         *,
         step_id: str = "deliver",
     ) -> AutomationStep:
-        if target == "current_group":
-            return AutomationStep(
-                id=step_id,
-                call="onebot.send_group_message",
-                arguments={
-                    "group_id": "$current_group_id",
-                    "text": text,
-                },
-            )
         return AutomationStep(
             id=step_id,
-            call="onebot.send_private_message",
-            arguments={
-                "user_id": "$creator_user_id",
-                "text": text,
-            },
+            call="social.send_message",
+            arguments=(
+                {"text": text}
+                if target == "current_group"
+                else {"text": text, "target": {"kind": "person", "subject_ref": "current_speaker"}}
+            ),
         )
 
     @staticmethod

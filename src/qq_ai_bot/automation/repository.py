@@ -22,6 +22,8 @@ from qq_ai_bot.automation.models import (
     RunStatus,
 )
 from qq_ai_bot.automation.validator import ValidatedAutomation, collect_send_targets
+from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
+from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.identity.canonical_repository import (
     IDENTITY_PLATFORM,
     active_person_id_for,
@@ -913,7 +915,20 @@ async def _bind_canonical_send_targets(
             owners.add(found)
         if len(owners) != 1:
             raise ValueError("一条自动化只能绑定一个永久发送目标")
-        return owners.pop(), None
+        owner = owners.pop()
+        if any(step.call == "social.send_message" for step in validated.script.steps):
+            # A new reminder created in a group may deliver to its creator's
+            # private chat before a private event exists. Create the canonical
+            # conversation, without inventing an inbound message.
+            await ensure_canonical_conversation(
+                session,
+                kind="private",
+                primary_scope_key=ConversationScope.private(
+                    authority.bot_user_id, collected.raw_ids[0]
+                ).key,
+                person_id=owner,
+            )
+        return owner, None
     owners = set()
     for raw in collected.raw_ids:
         found = await active_space_id_for(session, raw)

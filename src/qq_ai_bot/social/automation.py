@@ -19,6 +19,7 @@ from qq_ai_bot.automation.registry import (
     CapabilityResult,
 )
 from qq_ai_bot.domain.messages import ChatTool
+from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.sandbox.client import SandboxClient, sandbox_tools
 from qq_ai_bot.sandbox.environment_tools import EXECUTION_TOOLS, READ_TOOLS, SANDBOX_TOOLS
 from qq_ai_bot.social.models import SocialError
@@ -158,6 +159,10 @@ class SocialAutomationAdapter:
                     return CapabilityResult(data=result)
                 if not context.canonical_conversation_id:
                     raise SocialError("missing_call_context")
+                revalidate_authority = getattr(context, "revalidate_authority", None)
+                if revalidate_authority is not None:
+                    await revalidate_authority(name)
+                is_self = getattr(context, "creator_kind", "person") == "self"
                 social_context = SocialContext(
                     turn_id=f"automation:{context.automation_run_id}",
                     call_id=context.step_id,
@@ -167,6 +172,27 @@ class SocialAutomationAdapter:
                         {"current_speaker": context.canonical_target_person_id}
                         if context.canonical_target_person_id
                         else {}
+                    ),
+                    origin="scheduled_automation" if is_self else "social_tool",
+                    automation_run_id=context.automation_run_id if is_self else None,
+                    presence_id=context.canonical_presence_id if is_self else None,
+                    actor=(
+                        ToolActor(
+                            user_id="",
+                            bot_user_id=context.bot_user_id,
+                            group_id=context.current_group_id,
+                            origin=TurnOrigin.SCHEDULED_AUTOMATION,
+                            presence_id=context.canonical_presence_id,
+                            principal_kind="self",
+                            automation_run_id=context.automation_run_id,
+                            conversation_id=context.canonical_conversation_id,
+                            instruction=context.agent_instruction or "scheduled social delivery",
+                            execution_id=(
+                                f"automation:{context.automation_run_id}:{context.step_id}"
+                            ),
+                        )
+                        if is_self
+                        else None
                     ),
                 )
                 if (
@@ -229,8 +255,10 @@ class SocialAutomationAdapter:
                     )
                 return CapabilityResult(
                     data=result,
-                    messages_sent=int(
-                        result.get("status") == "succeeded" and tool_name.startswith("send_")
+                    messages_sent=(
+                        int(result.get("sent_messages", 1))
+                        if result.get("status") == "succeeded" and tool_name == "send_message"
+                        else 0
                     ),
                 )
 

@@ -61,6 +61,7 @@ from qq_ai_bot.time.service import TimeContextService
 
 _SEND_CAPABILITIES = frozenset(
     {
+        "social.send_message",
         "onebot.send_private_message",
         "onebot.send_group_message",
         "social.poke_person",

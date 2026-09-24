@@ -67,7 +67,9 @@ dispatching 和 unknown 不因此获得重发资格。平台实际拒绝仍按�
 新建 `generated`、`agentic` 和 `auto` 任务统一编译为一个 `yuki.agent` 步骤，
 由同一主 Agent 显式调用 `send_message`。`generated` 只是保留的任务策略输入，不再走
 生成正文后追加 DSL 发送的路径；固定工具 schema、提示词前缀和 Provider 设置不因此改变。
-静态字面量提醒仍是明确的 DSL 发送，不进入模型循环。
+静态字面量提醒由 DSL 调用 `social.send_message`，与主 Agent 使用相同的 Social
+路由、净化和持久发送回执，不进入模型循环。SELF 与用户创建的提醒走同一合同；
+SELF 只可投递到原群。`delivery=none` 只执行内部工作，不会产生可见提醒。
 模型自动化要求开启 `runtime_work_enabled`；关闭时在执行前返回
 `automation_runtime_required`，不会先发送再因缺少持久工作而报未知。明确交付任务缺少
 canonical Conversation 时同样在模型调用前阻断。
