@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal, cast
 from uuid import uuid4
 
-from sqlalchemy import select, tuple_, update
+from sqlalchemy import and_, or_, select, tuple_, update
 
 from qq_ai_bot.conversation.autonomy_binding import (
     AcceptedInitiative,
@@ -493,21 +493,35 @@ class AutonomyRepository:
             ).all()
             return tuple(_binding(row) for row in rows)
 
-    async def list_semantic_scopes(self) -> tuple[tuple[str, int], ...]:
-        """Discover enabled semantic scopes even when no message marks them dirty."""
+    async def list_current_autonomous_scopes(self) -> tuple[tuple[str, int], ...]:
+        """Find current group generations, including those missing a selector row."""
         async with self._database.sessions() as session:
             rows = (
                 await session.execute(
-                    select(AutonomyBindingModel.conversation_id, AutonomyBindingModel.generation)
+                    select(CanonicalConversationModel.id, CanonicalConversationModel.generation)
                     .join(
-                        CanonicalConversationModel,
-                        CanonicalConversationModel.id == AutonomyBindingModel.conversation_id,
+                        CanonicalSpaceModel,
+                        CanonicalSpaceModel.id == CanonicalConversationModel.space_id,
+                    )
+                    .outerjoin(
+                        AutonomyBindingModel,
+                        and_(
+                            AutonomyBindingModel.conversation_id == CanonicalConversationModel.id,
+                            AutonomyBindingModel.generation
+                            == CanonicalConversationModel.generation,
+                        ),
                     )
                     .where(
-                        CanonicalConversationModel.generation == AutonomyBindingModel.generation,
-                        AutonomyBindingModel.effective_owner == AutonomyOwner.SEMANTIC.value,
+                        CanonicalConversationModel.kind == "space",
+                        or_(
+                            and_(
+                                CanonicalSpaceModel.enabled.is_(True),
+                                CanonicalSpaceModel.autonomous_enabled.is_(True),
+                            ),
+                            AutonomyBindingModel.effective_owner.in_(("legacy", "semantic")),
+                        ),
                     )
-                    .order_by(AutonomyBindingModel.conversation_id)
+                    .order_by(CanonicalConversationModel.id)
                 )
             ).all()
             return tuple((conversation_id, generation) for conversation_id, generation in rows)

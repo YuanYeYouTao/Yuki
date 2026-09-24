@@ -28,6 +28,7 @@ from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
     SpaceActiveRouteModel,
 )
+from qq_ai_bot.conversation.hydrate import bump_canonical_generation
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.identity.canonical_repository import ensure_presence
@@ -467,6 +468,45 @@ async def test_generation_reset_before_dispatch_interrupts_accepted_run(database
         await host._dispatch(run)
         assert await host.work.by_source(f"initiative:{run.run_id}") is None
         assert (await host.repository.get_run(run.run_id)).state == "interrupted"
+    finally:
+        await host.close()
+
+
+async def test_generation_reset_without_new_message_restores_semantic_sampling(database, tmp_path):
+    host, _ = await _host(database, tmp_path)
+    try:
+        event = await _event_and_route(database, host.app.ledger)
+        item = await _item(host, event)
+        prior = await host._binding(item)
+        assert prior.effective_owner is AutonomyOwner.SEMANTIC
+        async with database.immediate_session() as db:
+            assert (
+                await bump_canonical_generation(
+                    db, event.canonical_conversation_id, event_id=event.id, force=True
+                )
+                == 2
+            )
+        assert await host.repository.get_binding(event.canonical_conversation_id, 2) is None
+        assert (event.canonical_conversation_id, 2) in (
+            await host.repository.list_current_autonomous_scopes()
+        )
+
+        await host.tick()  # No inbound message after the reset.
+        current = await host.repository.get_binding(event.canonical_conversation_id, 2)
+        assert current is not None and current.effective_owner is AutonomyOwner.SEMANTIC
+        assert (event.canonical_conversation_id, 2) in host._sessions
+        assert (event.canonical_conversation_id, 1) not in host._sessions
+        assert (
+            host._sessions[(event.canonical_conversation_id, 2)].controller.state.last_human_at
+            is None
+        )
+
+        await host.tick()
+        assert (
+            host._sessions[(event.canonical_conversation_id, 2)].controller.state.sample_sequence
+            > 0
+        )
+        assert not await _runs(host)
     finally:
         await host.close()
 

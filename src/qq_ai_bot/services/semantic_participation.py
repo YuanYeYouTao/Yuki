@@ -116,7 +116,7 @@ class SemanticParticipationService:
         key = self.app.settings.semantic_participation_api_key.get_secret_value()
         if key:
             self._observer = JevObserver(key, model=self.app.settings.semantic_participation_model)
-        for conversation_id, generation in await self.repository.list_semantic_scopes():
+        for conversation_id, generation in await self.repository.list_current_autonomous_scopes():
             if len(self._sessions) >= 32:
                 break
             scene = await self._scene(conversation_id)
@@ -960,7 +960,7 @@ class SemanticParticipationService:
         await self._retire_stale_sessions()
         if time.time() - self._last_discovery_at >= 10:
             self._last_discovery_at = time.time()
-            scopes = await self.repository.list_semantic_scopes()
+            scopes = await self.repository.list_current_autonomous_scopes()
             unseen = None
             for offset in range(len(scopes)):
                 index = (self._discovery_cursor + offset) % len(scopes)
