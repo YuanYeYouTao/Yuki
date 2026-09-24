@@ -1,6 +1,6 @@
 [project]
 name = "qq-ai-bot"
-version = "3.8.3"
+version = "3.8.4"
 description = "运行在 QQ 对话中的开源社会化 AI Agent，具有持续身份、长期记忆、关系与自主参与能力"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
