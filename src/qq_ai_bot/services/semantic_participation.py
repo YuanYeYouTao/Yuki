@@ -7,14 +7,20 @@ Observer HTTP and source hydration finish before the short admission transaction
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, cast
 
 from sqlalchemy import select
+from yuki_participation.autonomy_parameters import (
+    DEFAULT_AUTONOMY_PARAMETERS,
+    AutonomyParameters,
+)
 from yuki_participation.controller import Controller
 from yuki_participation.models import (
     CandidateKind,
@@ -95,7 +101,7 @@ class _ScopeCapacityBusy(RuntimeError):
 
 
 class SemanticParticipationService:
-    def __init__(self, app: Any) -> None:
+    def __init__(self, app: Any, *, model_config_path: Path | None = None) -> None:
         self.app = app
         self.database = app.database
         self.repository = AutonomyRepository(self.database)
@@ -110,8 +116,45 @@ class SemanticParticipationService:
         self._dirty_overflows = 0
         self._last_discovery_at = 0.0
         self._discovery_cursor = 0
+        self._model_config_path = model_config_path or Path("config/autonomous-model.json")
+        self._model_parameters = DEFAULT_AUTONOMY_PARAMETERS
+        self._model_seen_digest = ""
+        self._model_active_digest = "default"
+        self._model_config_error: str | None = None
+
+    def _refresh_model_parameters(self) -> None:
+        """Read one atomic profile per tick; invalid edits keep the last good profile."""
+        try:
+            payload = self._model_config_path.read_bytes()
+        except FileNotFoundError:
+            payload = None
+        except OSError as exc:
+            self._model_config_error = type(exc).__name__
+            return
+        digest = hashlib.sha256(payload).hexdigest() if payload is not None else "default"
+        if digest == self._model_seen_digest:
+            if digest == self._model_active_digest:
+                self._model_config_error = None
+            return
+        self._model_seen_digest = digest
+        try:
+            parameters = (
+                AutonomyParameters.model_validate_json(payload)
+                if payload is not None
+                else DEFAULT_AUTONOMY_PARAMETERS
+            )
+        except ValueError as exc:
+            self._model_config_error = type(exc).__name__
+            logger.warning("participation_model_config_invalid category=%s", type(exc).__name__)
+            return
+        self._model_parameters = parameters
+        self._model_active_digest = digest
+        self._model_config_error = None
+        for item in self._sessions.values():
+            item.controller.set_parameters(parameters)
 
     async def start(self) -> None:
+        self._refresh_model_parameters()
         self._store = SnapshotStore(self.app.settings.semantic_participation_state_path)
         key = self.app.settings.semantic_participation_api_key.get_secret_value()
         if key:
@@ -147,6 +190,8 @@ class SemanticParticipationService:
             "failures": self._failures,
             "dirty_overflows": self._dirty_overflows,
             "configured": self._observer is not None,
+            "model_profile": self._model_active_digest[:12],
+            "model_config_error": self._model_config_error,
             "diagnostics": await participation_diagnostics(
                 self.database,
                 tuple(item.controller.state for item in self._sessions.values()),
@@ -250,9 +295,9 @@ class SemanticParticipationService:
             self._sessions.pop(oldest)
         loaded = self._store.load(scene.scope)
         controller = (
-            Controller.restore(loaded[1], time.time())
+            Controller.restore(loaded[1], time.time(), self._model_parameters)
             if loaded
-            else Controller(scene.scope, time.time())
+            else Controller(scene.scope, time.time(), self._model_parameters)
         )
         observation = ObservationSession(controller, self._observer) if self._observer else None
         item = _Session(
@@ -955,6 +1000,7 @@ class SemanticParticipationService:
         await reconcile_run(self, run)
 
     async def tick(self) -> None:
+        self._refresh_model_parameters()
         # One tick owns all references it will advance, including semaphore waiters.
         # Legacy admission may run concurrently, but cannot evict those controllers.
         await self._retire_stale_sessions()

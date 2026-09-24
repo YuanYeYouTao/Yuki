@@ -170,6 +170,40 @@ async def _host(database, tmp_path, *, observer=True):
     return host, policy
 
 
+async def test_model_profile_hot_reload_preserves_state_and_last_good_value(database, tmp_path):
+    event = await _event_and_route(database, EventLedgerRepository(database))
+    host, _ = await _host(database, tmp_path)
+    try:
+        item = await _item(host, event)
+        profile = tmp_path / "autonomous-model.json"
+        host._model_config_path = profile
+        before_state = item.controller.state.model_dump_json()
+        before_rate = item.controller.intrinsic_opportunity(item.controller.state.now)
+
+        profile.write_text('{"intrinsic_interval_seconds":120}', encoding="utf-8")
+        host._refresh_model_parameters()
+        assert item.controller.intrinsic_opportunity(item.controller.state.now) == pytest.approx(
+            before_rate * 2
+        )
+        assert item.controller.state.model_dump_json() == before_state
+
+        profile.write_text('{"intrinsic_interval_seconds":0}', encoding="utf-8")
+        host._refresh_model_parameters()
+        assert host._model_config_error is not None
+        assert item.controller.intrinsic_opportunity(item.controller.state.now) == pytest.approx(
+            before_rate * 2
+        )
+
+        profile.unlink()
+        host._refresh_model_parameters()
+        assert host._model_config_error is None
+        assert item.controller.intrinsic_opportunity(item.controller.state.now) == pytest.approx(
+            before_rate
+        )
+    finally:
+        host._store.close()
+
+
 async def _item(host, event):
     scene = await host._scene(event.canonical_conversation_id)
     assert scene is not None, "fixture must use the real route resolver"

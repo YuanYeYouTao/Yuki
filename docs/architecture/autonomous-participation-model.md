@@ -1,5 +1,20 @@
 # 自主参与的连续概率模型
 
+## 在线调参
+
+自主机会模型的可调系数、采样基率和时间尺度集中在
+[`config/autonomous-model.example.json`](../../config/autonomous-model.example.json)。
+将其复制为宿主机挂载的 `config/autonomous-model.json` 后，可原子替换该文件；
+SemanticParticipationService 每次约两秒的采样轮读取内容散列，校验成功才把完整配置
+应用到所有当前 scope。无需重新构建或重启 Bot。无文件时使用镜像内默认值；删除文件
+会恢复默认值。无效 JSON、未知字段或越界数值会记录错误类别并在健康状态中显示
+`model_config_error`，已生效的上一版参数继续使用；健康状态的 `model_profile`
+是生效内容散列前缀。
+
+热更新只改变之后的机会率，不重放旧消息、不重新计算已接纳 Work 或回执，也不累积
+停机时的抽样。已裁剪的历史迹线不会因为调大衰减时标而恢复。配置涵盖非请求自主机会
+的全部可调数学参数；权限、显式邀请、来源有效性和持久执行合同仍由各自模块负责。
+
 Yuki Host 固定独立库修订并持有接纳、权限、Work、主 Agent 和发送。
 本文件说明模型与宿主边界；具体参数与回放见独立库的
 `docs/autonomous-evolution.md`。部署版本须以实际镜像、依赖锁和快照核验。
