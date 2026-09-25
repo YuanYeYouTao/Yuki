@@ -11,20 +11,20 @@
 <p>A persistent social AI agent in real QQ conversations</p>
 
 <p>
-  <a href="https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.3"><img src="https://img.shields.io/badge/Release-3.8.3-blue" alt="Yuki 3.8.3"></a>
+  <a href="https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.4"><img src="https://img.shields.io/badge/Release-3.8.4-blue" alt="Yuki 3.8.4"></a>
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
   <a href="https://github.com/YuanYeYouTao/Yuki/actions/workflows/quality.yml"><img src="https://github.com/YuanYeYouTao/Yuki/actions/workflows/quality.yml/badge.svg" alt="Quality"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow" alt="MIT License"></a>
 </p>
 
-[Download published 3.8.3](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.3) · [3.8.4 release notes (pending)](docs/releases/v3.8.4.md) · [3.8.4 upgrade guide](docs/upgrade-3.8.4.md) · [Help](docs/help.md)
+[Download 3.8.4](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.4) · [3.8.4 release notes](docs/releases/v3.8.4.md) · [3.8.4 upgrade guide](docs/upgrade-3.8.4.md) · [Help](docs/help.md)
 
 </div>
 
 Yuki is an open-source, self-hosted social AI agent exploring what a persistent digital life can be in real conversations. She currently runs in QQ private chats and groups, remembers people and shared experiences, maintains long-term relationships, and uses tools and a persistent workspace to carry work across messages. Her identity, memory, and relationships live in Yuki's own database and can survive a change of model, QQ account, or gateway.
 
-**The latest published release is 3.8.3; the next source release baseline is 3.8.4.** In the new baseline, the main agent sends visible messages explicitly through `send_message`, and optional group semantic observation, SELF initiative, and SELF automation are available. Yuki can choose to speak, split a reply, or remain silent. Autonomous participation is disabled by default, and long-term behavior in real QQ groups is still being evaluated. The workspace is deployed separately; there is no WebUI yet.
+**The current release is 3.8.4.** In this release, the main agent sends visible messages explicitly through `send_message`, and optional group semantic observation, SELF initiative, and SELF automation are available. Yuki can choose to speak, split a reply, or remain silent. Autonomous participation is disabled by default, and long-term behavior in real QQ groups is still being evaluated. The workspace is deployed separately; there is no WebUI yet.
 
 ## What Yuki can do
 
@@ -74,12 +74,12 @@ Chat, plugin wakeups, automation, and task resumption use the same main agent wi
 
 Basic deployment requires Linux amd64 or Windows Docker Desktop running Linux containers, Docker Engine with Compose v2, a configured model service using one of the supported Chat Completions or Responses integrations, and a logged-in NapCat or SnowLuma QQ gateway.
 
-Download the deployment bundle from the [3.8.3 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.3). After extraction, fill in `.env` and model configuration manually or use the guided setup.
+Download the deployment bundle from the [3.8.4 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.4). After extraction, fill in `.env` and model configuration manually or use the guided setup.
 
 Linux:
 
 ```bash
-curl -fLO https://github.com/YuanYeYouTao/Yuki/releases/download/v3.8.3/install.sh
+curl -fLO https://github.com/YuanYeYouTao/Yuki/releases/download/v3.8.4/install.sh
 chmod +x install.sh
 ./install.sh
 ```
@@ -87,7 +87,7 @@ chmod +x install.sh
 Windows PowerShell:
 
 ```powershell
-Invoke-WebRequest -Uri https://github.com/YuanYeYouTao/Yuki/releases/download/v3.8.3/install.ps1 -OutFile install.ps1
+Invoke-WebRequest -Uri https://github.com/YuanYeYouTao/Yuki/releases/download/v3.8.4/install.ps1 -OutFile install.ps1
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
@@ -102,9 +102,9 @@ docker compose run --rm --no-deps --entrypoint qq-ai-bot-cli bot init-db
 docker compose up -d
 ```
 
-Complete QQ login and any plugin or speech-component setup you selected. For the published 3.8.3 bundle, see its [upgrade guide](docs/upgrade-3.8.3.md); for the next baseline, see the [3.8.4 upgrade guide](docs/upgrade-3.8.4.md). Existing deployments must retain their project name, Compose overrides, and mounted configuration.
+Complete QQ login and any plugin or speech-component setup you selected. For a fresh deployment or an upgrade from an older release, see the [3.8.4 upgrade guide](docs/upgrade-3.8.4.md). Existing deployments must retain their project name, Compose overrides, and mounted configuration.
 
-The Bot image is `ghcr.io/yuanyeyoutao/yuki-qqbot:3.8.3`; the optional TTS Worker image is `ghcr.io/yuanyeyoutao/yuki-genie-tts-worker:3.8.3`. The release includes `SHA256SUMS`. The standalone environment-template asset is named `default.env.example`, while the archive contains `.env.example`.
+The Bot image is `ghcr.io/yuanyeyoutao/yuki-qqbot:3.8.4`; the optional TTS Worker image is `ghcr.io/yuanyeyoutao/yuki-genie-tts-worker:3.8.4`. The release includes `SHA256SUMS`. The standalone environment-template asset is named `default.env.example`, while the archive contains `.env.example`.
 
 ## Upgrading and maintenance
 
