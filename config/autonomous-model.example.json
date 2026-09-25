@@ -1,6 +1,9 @@
 {
-  "intrinsic_interval_seconds": 240.0,
-  "quiet_group_floor": 0.03,
+  "intrinsic_interval_seconds": 14400.0,
+  "human_activity_decay_seconds": 172800.0,
+  "human_activity_half_saturation": 20.0,
+  "silence_rise_seconds": 1800.0,
+  "silence_decay_seconds": 64800.0,
   "pressure_bias": -0.6,
   "tendency_weight": 0.8,
   "activity_weight": 0.5,

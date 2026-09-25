@@ -180,7 +180,7 @@ async def test_model_profile_hot_reload_preserves_state_and_last_good_value(data
         before_state = item.controller.state.model_dump_json()
         before_rate = item.controller.intrinsic_opportunity(item.controller.state.now)
 
-        profile.write_text('{"intrinsic_interval_seconds":120}', encoding="utf-8")
+        profile.write_text('{"intrinsic_interval_seconds":7200}', encoding="utf-8")
         host._refresh_model_parameters()
         assert item.controller.intrinsic_opportunity(item.controller.state.now) == pytest.approx(
             before_rate * 2
@@ -200,6 +200,49 @@ async def test_model_profile_hot_reload_preserves_state_and_last_good_value(data
         assert item.controller.intrinsic_opportunity(item.controller.state.now) == pytest.approx(
             before_rate
         )
+    finally:
+        host._store.close()
+
+
+async def test_human_activity_bootstraps_from_current_generation_without_replaying_work(
+    database, tmp_path
+):
+    event = await _event_and_route(database, EventLedgerRepository(database))
+    old_at = datetime.now(UTC) - timedelta(hours=2)
+    async with database.immediate_session() as session:
+        await session.execute(
+            update(ChatEventModel).where(ChatEventModel.id == event.id).values(occurred_at=old_at)
+        )
+    await EventLedgerRepository(database).append(
+        bot_user_id="8000",
+        platform_message_id=str(uuid4()),
+        scope_type=ScopeType.GROUP,
+        sender_user_id="1001",
+        direction="inbound",
+        content="之前的群聊",
+        group_id="2001",
+        occurred_at=old_at + timedelta(seconds=5),
+    )
+    await EventLedgerRepository(database).append(
+        bot_user_id="8000",
+        platform_message_id=str(uuid4()),
+        scope_type=ScopeType.GROUP,
+        sender_user_id="1001",
+        direction="inbound",
+        content="继续聊",
+        group_id="2001",
+        occurred_at=datetime.now(UTC) - timedelta(seconds=40),
+    )
+    host, _ = await _host(database, tmp_path)
+    try:
+        item = await _item(host, event)
+        trace = item.controller._human_activity(time.time())
+        assert item.controller.state.human_activity_initialized
+        assert 2.8 < trace < 3.1  # two seeded old events plus one recent event
+        assert item.controller.intrinsic_opportunity(time.time()) > 0
+        assert not item.controller.state.proposals
+        await host._hydrate(item)
+        assert item.controller._human_activity(time.time()) == pytest.approx(trace, rel=0.001)
     finally:
         host._store.close()
 
@@ -533,6 +576,12 @@ async def test_generation_reset_without_new_message_restores_semantic_sampling(d
         assert (
             host._sessions[(event.canonical_conversation_id, 2)].controller.state.last_human_at
             is None
+        )
+        assert (
+            host._sessions[(event.canonical_conversation_id, 2)].controller.intrinsic_opportunity(
+                time.time()
+            )
+            == 0
         )
 
         await host.tick()

@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from yuki_participation.autonomy_parameters import (
     DEFAULT_AUTONOMY_PARAMETERS,
     AutonomyParameters,
@@ -54,6 +54,7 @@ from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.identity.db_models import CanonicalSpaceModel, PresenceModel, SpaceBindingModel
 from qq_ai_bot.memory.self_origin import read_self_seed_candidates, read_self_seed_page
 from qq_ai_bot.persistence.models import ChatEventModel, MemoryEvidenceModel
+from qq_ai_bot.persistence.repository_helpers import keeper_event_clause
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.runtime.work_repository import WorkRepository
 
@@ -481,6 +482,50 @@ class SemanticParticipationService:
             or version.conversation_id != item.scene.conversation_id
         ):
             return
+        if not item.controller.state.human_activity_initialized:
+            # Old snapshots only retain detailed events for about ten minutes.
+            # Read hourly aggregates from this generation once, outside any write transaction;
+            # no message content or old opportunity is replayed.
+            boundary = max(time.time() - 600, item.controller.state.replay_after, 0.0)
+            end = datetime.fromtimestamp(boundary, UTC)
+            start = datetime.fromtimestamp(
+                max(
+                    0.0,
+                    boundary - 5 * item.controller.parameters.human_activity_decay_seconds,
+                ),
+                UTC,
+            )
+            async with self.database.sessions() as session:
+                bucket = func.strftime("%Y-%m-%d %H", ChatEventModel.occurred_at)
+                aggregates = (
+                    await session.execute(
+                        select(
+                            func.count(),
+                            func.min(ChatEventModel.occurred_at),
+                            func.max(ChatEventModel.occurred_at),
+                        )
+                        .where(
+                            ChatEventModel.canonical_conversation_id == version.conversation_id,
+                            ChatEventModel.group_id == item.scene.group_id,
+                            ChatEventModel.id > version.starts_after_event_id,
+                            ChatEventModel.event_kind == "message",
+                            ChatEventModel.author_kind == "person",
+                            keeper_event_clause(),
+                            ChatEventModel.occurred_at >= start,
+                            ChatEventModel.occurred_at <= end,
+                        )
+                        .group_by(bucket)
+                    )
+                ).all()
+            history = tuple(
+                ((timestamp(first) + timestamp(last)) / 2, count)
+                for count, first, last in aggregates
+            )
+            item.controller.initialize_human_activity(
+                boundary,
+                history,
+                max((timestamp(last) for _, _, last in aggregates), default=None),
+            )
         # Recover committed direct admissions after a crash before our snapshot saved.
         # Merely queued inputs/history are not accepted Work and cannot consume a source.
         from qq_ai_bot.runtime.work_schema_v1 import work
