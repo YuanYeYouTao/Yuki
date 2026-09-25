@@ -14,10 +14,10 @@ from nonebot.drivers.fastapi import Driver as FastAPIDriver
 from qq_ai_bot.adapters.onebot.provider_adapter import (
     NapCatOneBotAdapter,
     SnowLumaOneBotAdapter,
-    provider_id_for_bot,
 )
 from qq_ai_bot.config import Settings
 from qq_ai_bot.container import ApplicationContainer, get_container, set_container
+from qq_ai_bot.gateway.registry import RegistryClosed
 from qq_ai_bot.health import HealthPayload, build_health_payload
 from qq_ai_bot.logging import configure_logging
 from qq_ai_bot.persistence.instance_lock import SQLiteApplicationLock
@@ -80,17 +80,23 @@ def bootstrap(settings: Settings | None = None) -> None:
             )
             if presence is not None:
                 presence_id = presence.id
-        container.gateway_registry.connect(
-            bot,
-            provider_id=provider_id_for_bot(bot),
-            presence_id=presence_id,
-        )
+        # Database resolution is asynchronous; the socket may already have
+        # closed while it was pending. Bind only this still-live exact handle.
+        try:
+            container.gateway_registry.resolve_by_handle(bot)
+        except RegistryClosed:
+            return
+        if presence_id is not None:
+            container.gateway_registry.bind_presence(
+                platform="qq",
+                external_account_id=str(bot.self_id),
+                presence_id=presence_id,
+            )
         await container.route_monitor.on_connection_change()
 
     @driver.on_bot_disconnect
     async def _on_bot_disconnect(bot: Bot) -> None:
         container = get_container()
-        container.gateway_registry.disconnect(bot)
         await container.route_monitor.on_connection_change()
 
     @driver.on_startup
