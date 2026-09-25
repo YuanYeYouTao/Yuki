@@ -2,7 +2,7 @@
 
 <!-- release-baseline: version=3.8.4 schema=0072 -->
 
-本页对应 3.8.4 源码发布基线。`v3.8.4` 发行资产尚未发布时，现有正式下载和镜像仍以 [3.8.3 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.3) 为准。合并代码不会自动更新现有服务器；不要在新镜像实际可用前将生产 `.env` 改为 `YUKI_VERSION=3.8.4`。
+本页对应 [3.8.4 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.4)。发布不会自动更新现有服务器；实际部署版本以镜像、数据库和运行状态为准。
 
 ## 版本与迁移
 
@@ -24,7 +24,7 @@
 3. 用目标 Bot 镜像运行 `qq-ai-bot-cli init-db`，由 Alembic 升级到随包 head。不要手工 `stamp`、删除旧任务或重放不确定的发送。
 4. 仅重建改动涉及的服务，检查 `/healthz`、实际数据库 revision、QQ/OneBot 连接、定时任务、插件状态和固定工具合同。Manager 与持久环境如未更新，继续按其独立部署说明运行。
 
-聊天媒体版本首次上线需要一次停写切换：先在数据库副本演练 `python -m qq_ai_bot.operations.reset_conversations --batch-id <唯一批次>` 的预览和 `--apply-offline`，核对每个 canonical Conversation 只提升一次 generation。生产备份并停掉 Bot 后，确认没有执行中的 Work 或仍启用任务的运行中自动化，再升级到 `0072`，在 Bot 未接纳消息时执行同一批次的 `--apply-offline`，核对批次完整和 SELF 定时任务的新 generation 后再启动 Bot。旧 generation 的暂停 Work 按 `/ai new` 语义取消；已终止自动化留下的运行中回执保持原样，不视为新的发送许可。切换不向 QQ 发 `/ai new`，不调用模型，也不批量重写旧历史。重复执行同批次只续未完成项；不要在 Bot 在线时运行。迁移若报 `enabled_legacy_send_requires_review`，先核验启用或暂停的旧发送脚本和实际回执，不能盲目补发。
+聊天媒体版本首次上线需要一次停写切换：先在数据库副本演练 `python -m qq_ai_bot.operations.reset_conversations --batch-id <唯一批次>` 的预览和 `--apply-offline`，核对每个 canonical Conversation 只提升一次 generation。生产备份并停掉 Bot 后，确认没有执行中的 Work 或仍启用任务的运行中自动化，再升级到 `0072`，在 Bot 未接纳消息时执行同一批次的 `--apply-offline`，核对批次完整和 SELF 定时任务的新 generation 后再启动 Bot。已完成 `0072` 升级与同批次离线切换的开发部署应核对持久记录，不再为安装正式镜像重复重置。旧 generation 的暂停 Work 按 `/ai new` 语义取消；已终止自动化留下的运行中回执保持原样，不视为新的发送许可。切换不向 QQ 发 `/ai new`，不调用模型，也不批量重写旧历史。重复执行同批次只续未完成项；不要在 Bot 在线时运行。迁移若报 `enabled_legacy_send_requires_review`，先核验启用或暂停的旧发送脚本和实际回执，不能盲目补发。
 
 所有 Compose 命令应沿用部署时的项目名和覆盖文件。配置向导只填写配置，不负责停服、迁移或切换网关。首次部署可按 [README](../README.md) 的正式发布包入口安装；开发部署须自行构建并核对镜像来源。
 
@@ -34,6 +34,8 @@
 - 语义参与默认关闭，需同时核对全局/群开关、独立库与 Jev 配置、群授权和控制器健康。直呼 Yuki 属于语义观察，不等同于 `@`。合成回放不代表真实群聊效果已经验收。
 - SELF 自动化以 SELF 身份在原群执行，不继承任务创建者之外的管理员权限，也不自动获得私聊能力。核对旧任务实际 owner、`next_run`、运行记录和投递回执；不因看到旧 `blocked` 任务就盲目重建或补发。
 - GitHub Monitor 的已接收积压事件可更快出队，外部 API 轮询周期未改变。订阅监控插件需单独配置数据源与通知目标。
+- 自主采样在会话重置后可自行恢复；挂载的 `config/autonomous-model.json` 可热加载参数，错误配置保留上一个有效版本。合成回放中的机会数不等于真实 QQ 发言量。
+- 普通聊天不再常驻列出当前群自动化任务。需要核实任务时使用 `automation_list`；这不会改变任务的创建者和执行权限。
 - 旧部署若仍有 `mcd` 麦当劳 MCP 配置，应移除过时连接与工具缓存；不要改写历史审计记录。
 
 回退镜像之前保全升级后产生的消息、文件、预算与执行回执，并确认回退代码与当前数据库兼容。持久环境的安装和恢复见 [操作说明](operations/persistent-environment.zh-CN.md)。
