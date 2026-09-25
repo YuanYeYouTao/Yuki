@@ -7,6 +7,7 @@ import threading
 from collections.abc import Collection
 from typing import ClassVar, Final, override
 
+from nonebot.adapters import Bot as BaseBot
 from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
 from nonebot.adapters.onebot.v11 import Bot
 from nonebot.drivers import ASGIMixin, WebSocket, WebSocketServerSetup
@@ -14,6 +15,7 @@ from yarl import URL
 
 from qq_ai_bot.gateway.providers.napcat import NAPCAT_PROVIDER_ID
 from qq_ai_bot.gateway.providers.snowluma import SNOWLUMA_PROVIDER_ID
+from qq_ai_bot.gateway.registry import process_registry
 
 PROVIDER_CONFLICT_CATEGORY: Final[str] = "provider_conflict"
 SNOWLUMA_REVERSE_WS_PATH: Final[str] = "/onebot/v11/snowluma/ws"
@@ -62,6 +64,29 @@ class ProviderOneBotAdapter(OneBotV11Adapter):
     """OneBot adapter that rejects duplicate QQ connections before socket acceptance."""
 
     provider_id: ClassVar[str]
+
+    @override
+    def bot_connect(self, bot: BaseBot) -> None:
+        # NoneBot dispatches connection hooks asynchronously. Register the exact
+        # handle before it can dispatch an event or accept a replacement socket.
+        registry = process_registry()
+        if registry is None:
+            raise RuntimeError("gateway_registry_unavailable")
+        registry.connect(bot, provider_id=self.provider_id)
+        try:
+            super().bot_connect(bot)
+        except BaseException:
+            registry.disconnect(bot)
+            raise
+
+    @override
+    def bot_disconnect(self, bot: BaseBot) -> None:
+        # The disconnect hook may run after the next connection hook. Retire the
+        # old handle here, in the socket lifecycle, before releasing its claim.
+        registry = process_registry()
+        if registry is not None:
+            registry.disconnect(bot)
+        super().bot_disconnect(bot)
 
     @override
     async def _handle_ws(self, websocket: WebSocket) -> None:

@@ -7,8 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
 
 from qq_ai_bot import cli as administrative_cli
+from qq_ai_bot.adapters.onebot.provider_adapter import SnowLumaOneBotAdapter
 from qq_ai_bot.gateway.compatibility import CORE_ONEBOT_ACTIONS, provider_doctor_payload
 from qq_ai_bot.gateway.provider import GatewayConnectionProfile, GatewayProviderCatalog
 from qq_ai_bot.gateway.providers import builtin_provider_catalog
@@ -23,7 +25,12 @@ from qq_ai_bot.gateway.providers.snowluma import (
     SNOWLUMA_PROVIDER_ID,
     SnowLumaProvider,
 )
-from qq_ai_bot.gateway.registry import GatewayConnectionConflict, GatewayConnectionRegistry
+from qq_ai_bot.gateway.registry import (
+    GatewayConnectionConflict,
+    GatewayConnectionRegistry,
+    RegistryClosed,
+    configure_process_registry,
+)
 
 
 @dataclass
@@ -160,6 +167,60 @@ def test_same_account_cannot_connect_twice_across_providers() -> None:
     )
     assert replacement.provider == "snowluma"
     assert replacement.generation == first.generation + 1
+
+
+def test_adapter_registry_follows_socket_lifecycle_before_async_hooks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = GatewayConnectionRegistry(providers=builtin_provider_catalog())
+    adapter = object.__new__(SnowLumaOneBotAdapter)
+    first = _Bot("8000")
+    replacement = _Bot("8000")
+    calls: list[str] = []
+
+    def connected(_adapter: object, bot: object) -> None:
+        assert registry.resolve_by_handle(bot).bot is bot
+        calls.append("connected")
+
+    def disconnected(_adapter: object, bot: object) -> None:
+        with pytest.raises(RegistryClosed, match="no_connection"):
+            registry.resolve_by_handle(bot)
+        calls.append("disconnected")
+
+    monkeypatch.setattr(OneBotV11Adapter, "bot_connect", connected)
+    monkeypatch.setattr(OneBotV11Adapter, "bot_disconnect", disconnected)
+    configure_process_registry(registry)
+    try:
+        adapter.bot_connect(first)  # type: ignore[arg-type]
+        registry.bind_presence(platform="qq", external_account_id="8000", presence_id="p")
+        assert registry.resolve_active("p").bot is first
+        adapter.bot_disconnect(first)  # type: ignore[arg-type]
+        assert not registry.has_any_active()
+        adapter.bot_connect(replacement)  # type: ignore[arg-type]
+        assert registry.resolve_active("p").bot is replacement
+        assert calls == ["connected", "disconnected", "connected"]
+    finally:
+        configure_process_registry(None)
+
+
+def test_adapter_rolls_back_registry_when_nonebot_rejects_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = GatewayConnectionRegistry(providers=builtin_provider_catalog())
+    adapter = object.__new__(SnowLumaOneBotAdapter)
+    bot = _Bot("8000")
+
+    def rejected(_adapter: object, _bot: object) -> None:
+        raise RuntimeError("nonebot_rejected")
+
+    monkeypatch.setattr(OneBotV11Adapter, "bot_connect", rejected)
+    configure_process_registry(registry)
+    try:
+        with pytest.raises(RuntimeError, match="nonebot_rejected"):
+            adapter.bot_connect(bot)  # type: ignore[arg-type]
+        assert not registry.has_any_active()
+    finally:
+        configure_process_registry(None)
 
 
 def test_different_accounts_can_use_different_providers_together() -> None:

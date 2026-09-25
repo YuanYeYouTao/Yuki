@@ -46,9 +46,11 @@ Work 有确认的公开发送时，才产生一份“尚未被接住”的暴露
 ```text
 z = -0.6 + 0.8d - 0.5q - 0.3f - 0.8n - 1.8W_f - 0.25W_s - 0.55E + 0.5R
 C_group = 0.03 + 0.97ℓ
-λ_intrinsic = C_group · sigmoid(z) / 1800
+λ_intrinsic = C_group · sigmoid(z) / intrinsic_interval_seconds
 P(本轮无请求式机会 | Δt) = 1-exp(-λ_total Δt)
 ```
+
+采样间隔由在线配置决定；当前示例配置为 `240` 秒，线上实际值以挂载文件为准。
 
 极久沉寂时 `ℓ→0`，机会率很低但非零；不会出现“沉默累计越过门槛”或固定时间
 禁言。近期已有自主 Work／无人回应会连续降低新 Work 的频率，不对**当前 Work**
