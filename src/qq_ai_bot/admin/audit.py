@@ -88,6 +88,7 @@ def event_from_model(row: AdminOperationEventModel) -> AdminOperationEvent:
         created_at=row.created_at,
         actor_principal_kind=row.actor_principal_kind,
         actor_principal_id=row.actor_principal_id,
+        control_request_id=row.control_request_id,
     )
 
 
@@ -124,6 +125,7 @@ async def add_audit_event(
         actor_user_id=actor.user_id,
         actor_principal_kind=getattr(actor, "principal_kind", None),
         actor_principal_id=getattr(actor, "principal_id", None),
+        control_request_id=getattr(actor, "control_request_id", None),
         trigger_message_id=actor.trigger_message_id[:128],
         conversation_key=actor.conversation_key[:255],
         capability=capability[:64],

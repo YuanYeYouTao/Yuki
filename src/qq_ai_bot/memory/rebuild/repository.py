@@ -38,7 +38,7 @@ from qq_ai_bot.persistence.models import (
     MemoryRebuildProposalModel,
     MemoryRebuildRunModel,
 )
-from qq_ai_bot.persistence.repository_helpers import _ensure_person, _event_record
+from qq_ai_bot.persistence.repository_helpers import _event_record
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.persistence.unit_of_work import optional_session
 
@@ -71,7 +71,6 @@ class MemoryRebuildRepository:
     ) -> MemoryRebuildRun:
         now = datetime.now(UTC)
         async with optional_session(self.database, session, write=True) as active:
-            await _ensure_person(active, actor_user_id, now=now)
             row = MemoryRebuildRunModel(
                 public_id=str(uuid.uuid4()),
                 status=MemoryRebuildRunStatus.PLANNED.value,
@@ -631,7 +630,6 @@ class MemoryRebuildRepository:
             )
             if run_id is None:
                 raise ValueError("memory rebuild run not found")
-            await _ensure_person(session, actor_user_id, now=now)
             statement = update(MemoryRebuildProposalModel).where(
                 MemoryRebuildProposalModel.run_id == run_id,
                 MemoryRebuildProposalModel.review_status == MemoryRebuildReviewStatus.PENDING.value,

@@ -8,6 +8,7 @@ from qq_ai_bot.control_plane.commands import ControlCommand, ControlResult
 from qq_ai_bot.control_plane.decision import decide
 from qq_ai_bot.control_plane.principal import ControlPrincipal
 from qq_ai_bot.control_plane.problems import Problem, ProblemCode
+from qq_ai_bot.control_plane.surface import method_capability
 from qq_ai_bot.domain.control import DecisionContext
 
 
@@ -53,189 +54,189 @@ class ControlCommandService:
 
     async def enable_person(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
-        _require_capability(authorized, "identity.person.enable")
+        _require_capability(authorized, method_capability("enable_person"))
         return await self._port.enable_person(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
     async def disable_person(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
-        _require_capability(authorized, "identity.person.disable")
+        _require_capability(authorized, method_capability("disable_person"))
         return await self._port.disable_person(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
     async def attach_identity_binding(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
-        _require_capability(authorized, "identity.binding.attach")
+        _require_capability(authorized, method_capability("attach_identity_binding"))
         return await self._port.attach_identity_binding(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
     async def enable_space(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
-        _require_capability(authorized, "identity.space.enable")
+        _require_capability(authorized, method_capability("enable_space"))
         return await self._port.enable_space(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
     async def disable_space(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
-        _require_capability(authorized, "identity.space.disable")
+        _require_capability(authorized, method_capability("disable_space"))
         return await self._port.disable_space(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
     async def attach_space_binding(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
-        _require_capability(authorized, "identity.space.binding.attach")
+        _require_capability(authorized, method_capability("attach_space_binding"))
         return await self._port.attach_space_binding(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
     async def register_presence(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
-        _require_capability(authorized, "identity.presence.register")
+        _require_capability(authorized, method_capability("register_presence"))
         return await self._port.register_presence(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
     async def start_presence(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
-        _require_capability(authorized, "identity.presence.start")
+        _require_capability(authorized, method_capability("start_presence"))
         return await self._port.start_presence(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
     async def stop_presence(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
-        _require_capability(authorized, "identity.presence.stop")
+        _require_capability(authorized, method_capability("stop_presence"))
         return await self._port.stop_presence(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
     async def set_presence_ingest(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
-        _require_capability(authorized, "identity.presence.set_ingest")
+        _require_capability(authorized, method_capability("set_presence_ingest"))
         return await self._port.set_presence_ingest(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
     async def set_route(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
-        _require_capability(authorized, "route.set")
+        _require_capability(authorized, method_capability("set_route"))
         return await self._port.set_route(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
     async def pause_route(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
-        _require_capability(authorized, "route.pause")
+        _require_capability(authorized, method_capability("pause_route"))
         return await self._port.pause_route(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
     async def resume_route(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
-        _require_capability(authorized, "route.resume")
+        _require_capability(authorized, method_capability("resume_route"))
         return await self._port.resume_route(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
     async def set_config(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
-        _require_capability(authorized, "control.config.mutate")
+        _require_capability(authorized, method_capability("set_config"))
         return await self._port.set_config(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
     async def unset_config(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
-        _require_capability(authorized, "control.config.mutate")
+        _require_capability(authorized, method_capability("unset_config"))
         return await self._port.unset_config(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
     async def rollback_config(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
-        _require_capability(authorized, "control.config.mutate")
+        _require_capability(authorized, method_capability("rollback_config"))
         return await self._port.rollback_config(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
     async def mutate_memory(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
-        _require_capability(authorized, "control.memory.mutate")
+        _require_capability(authorized, method_capability("mutate_memory"))
         return await self._port.mutate_memory(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
     async def rebuild_memory(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
-        _require_capability(authorized, "control.memory.rebuild")
+        _require_capability(authorized, method_capability("rebuild_memory"))
         return await self._port.rebuild_memory(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
     async def dream_memory(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
-        _require_capability(authorized, "control.memory.dream")
+        _require_capability(authorized, method_capability("dream_memory"))
         return await self._port.dream_memory(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
     async def maintain_memory(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
-        _require_capability(authorized, "control.memory.maintenance")
+        _require_capability(authorized, method_capability("maintain_memory"))
         return await self._port.maintain_memory(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
     async def mutate_automation(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
-        _require_capability(authorized, "control.automation.mutate")
+        _require_capability(authorized, method_capability("mutate_automation"))
         return await self._port.mutate_automation(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
     async def mutate_plugin(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
-        _require_capability(authorized, "control.plugin.mutate")
+        _require_capability(authorized, method_capability("mutate_plugin"))
         return await self._port.mutate_plugin(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
     async def mutate_mcp(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
-        _require_capability(authorized, "control.mcp.mutate")
+        _require_capability(authorized, method_capability("mutate_mcp"))
         return await self._port.mutate_mcp(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
     async def mutate_emoji(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
-        _require_capability(authorized, "control.emoji.mutate")
+        _require_capability(authorized, method_capability("mutate_emoji"))
         return await self._port.mutate_emoji(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
     async def mutate_speech(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
-        _require_capability(authorized, "control.speech.mutate")
+        _require_capability(authorized, method_capability("mutate_speech"))
         return await self._port.mutate_speech(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
     async def cancel_operation(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
-        _require_capability(authorized, "control.operation.cancel")
+        _require_capability(authorized, method_capability("cancel_operation"))
         return await self._port.cancel_operation(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
     async def retry_operation(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
-        _require_capability(authorized, "control.operation.retry")
+        _require_capability(authorized, method_capability("retry_operation"))
         return await self._port.retry_operation(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )

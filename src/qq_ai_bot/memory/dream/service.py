@@ -6,6 +6,7 @@ import hashlib
 import logging
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -122,16 +123,19 @@ SELF 合成正文
 """
 
 
-async def plan_full_core(
+@dataclass(frozen=True, slots=True)
+class PreparedDreamPlan:
+    statistics: DreamPlanStatistics
+    clusters: tuple[tuple[str, str, str, str, tuple[int, ...], str], ...]
+    snapshot_max_fact_id: int
+
+
+async def prepare_full_core(
     *,
     settings: Settings,
     repository: DreamRepository,
     embeddings: MemoryEmbeddingRuntime,
-    actor_user_id: str,
-    session: AsyncSession | None = None,
-) -> DreamRun:
-    """Session-aware full Dream plan. Does not invent empty statistics."""
-
+) -> PreparedDreamPlan:
     if not settings.memory_embedding_enabled:
         raise RuntimeError("Memory Dream 需要启用 memory embedding")
     profile_id = embeddings.profile_id
@@ -143,18 +147,39 @@ async def plan_full_core(
         profile_id=profile_id,
         dimensions=embeddings.dimensions,
         documents=embeddings.documents,
-        session=session,
     )
     planner = object.__new__(DreamService)
     planner._settings = settings
     planner._codec = Float32VectorCodec()
     clusters, isolated = await planner._clusters(loaded, incremental=False)
     statistics = DreamService._statistics(loaded, clusters=clusters, isolated=isolated)
+    return PreparedDreamPlan(
+        statistics,
+        planner._stored_clusters(clusters),
+        max((item.fact.id for item in loaded.candidates), default=0),
+    )
+
+
+async def plan_full_core(
+    *,
+    settings: Settings,
+    repository: DreamRepository,
+    embeddings: MemoryEmbeddingRuntime,
+    actor_user_id: str,
+    session: AsyncSession | None = None,
+    prepared: PreparedDreamPlan | None = None,
+) -> DreamRun:
+    if prepared is None:
+        if session is not None:
+            raise ValueError("Dream plan must be prepared before opening a writer")
+        prepared = await prepare_full_core(
+            settings=settings, repository=repository, embeddings=embeddings
+        )
     return await repository.create_run(
         mode=DreamRunMode.FULL,
-        statistics=statistics,
-        clusters=planner._stored_clusters(clusters),
-        snapshot_max_fact_id=max((item.fact.id for item in loaded.candidates), default=0),
+        statistics=prepared.statistics,
+        clusters=prepared.clusters,
+        snapshot_max_fact_id=prepared.snapshot_max_fact_id,
         actor_user_id=actor_user_id,
         scheduled_slot=None,
         session=session,

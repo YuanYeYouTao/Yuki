@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from qq_ai_bot.control_plane.operations import OperationKind, OperationRef
 from qq_ai_bot.control_plane.paging import Page, PageRequest
 from qq_ai_bot.control_plane.query_types import (
     AuditEventView,
@@ -23,6 +24,7 @@ from qq_ai_bot.control_plane.query_types import (
     MemoryJobView,
     PersonActiveRouteView,
     PersonView,
+    PluginRuntimeView,
     PluginView,
     PresenceView,
     SpaceActiveRouteView,
@@ -90,6 +92,12 @@ class ControlQueryPort(Protocol):
 
     async def list_audit_events(self, request: PageRequest) -> Page[AuditEventView]: ...
 
+    async def list_operations(
+        self, request: PageRequest, *, kind: OperationKind = OperationKind.CONTROL
+    ) -> Page[OperationRef]: ...
+
+    async def read_operation(self, operation_id: str) -> OperationRef: ...
+
     async def list_config_specs(self, request: PageRequest) -> Page[ConfigSpecView]: ...
 
     async def list_effective_configs(
@@ -124,6 +132,8 @@ class ControlQueryPort(Protocol):
     async def list_automations(self, request: PageRequest) -> Page[AutomationView]: ...
 
     async def list_plugins(self, request: PageRequest) -> Page[PluginView]: ...
+
+    async def read_plugin_runtime(self, plugin_id: str) -> PluginRuntimeView: ...
 
     async def list_mcp_servers(self, request: PageRequest) -> Page[McpServerView]: ...
 

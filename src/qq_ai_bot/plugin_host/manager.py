@@ -11,6 +11,7 @@ from functools import partial
 from pathlib import Path
 from typing import Protocol
 
+from qq_ai_bot.persistence.unit_of_work import state_revision
 from qq_ai_bot.plugin_host.discovery import DiscoveredPlugin
 from qq_ai_bot.plugin_host.event_bus import PluginEventBus
 from qq_ai_bot.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
@@ -30,6 +31,15 @@ from yuki_plugin_sdk.registrar import (
     BackgroundServiceRegistration,
     EventHookRegistration,
 )
+
+
+class PluginRevisionConflict(PluginApprovalError):
+    """No lifecycle effect has started; the submitted revision is stale."""
+
+
+class PluginManagementRejected(PluginApprovalError):
+    """Approval/discovery preconditions failed before lifecycle effects."""
+
 
 logger = logging.getLogger(__name__)
 
@@ -238,10 +248,15 @@ class PluginManager:
         *,
         actor_user_id: str,
         permissions: Iterable[PluginPermission | str] | None = None,
+        expected_revision: int | None = None,
     ) -> PluginInstallationRecord:
         async with self._lock:
             available = self._available.get(plugin_id)
             record = await self._installations.get(plugin_id)
+            if expected_revision is not None and (
+                record is None or state_revision(record.updated_at) != expected_revision
+            ):
+                raise PluginRevisionConflict("plugin revision changed")
             if available is None or record is None:
                 await self._record_audit(
                     plugin_id,
@@ -250,9 +265,9 @@ class PluginManager:
                     success=False,
                     error_category="plugin_not_discovered",
                 )
-                raise PluginApprovalError("plugin is not currently discovered")
+                raise PluginManagementRejected("plugin is not currently discovered")
             if record.manifest_hash != available.manifest.manifest_hash:
-                raise PluginApprovalError("plugin manifest changed; discover it again")
+                raise PluginManagementRejected("plugin manifest changed; discover it again")
             selected = self._normalize_permissions(permissions)
             if selected is None:
                 selected = tuple(permission.value for permission in available.manifest.permissions)
@@ -265,7 +280,9 @@ class PluginManager:
                     success=False,
                     error_category="permission_not_requested",
                 )
-                raise PluginApprovalError("approved permissions must be requested by the plugin")
+                raise PluginManagementRejected(
+                    "approved permissions must be requested by the plugin"
+                )
             if plugin_id in self._running and set(selected) != set(record.approved_permissions):
                 await self._stop_one_unlocked(plugin_id, final_status=None)
                 await self._installations.set_enabled(plugin_id, enabled=False)
@@ -281,14 +298,20 @@ class PluginManager:
             )
             return approved
 
-    async def enable(self, plugin_id: str, *, actor_user_id: str) -> PluginInstallationRecord:
+    async def enable(
+        self, plugin_id: str, *, actor_user_id: str, expected_revision: int | None = None
+    ) -> PluginInstallationRecord:
         async with self._lock:
             available = self._available.get(plugin_id)
             record = await self._installations.get(plugin_id)
+            if expected_revision is not None and (
+                record is None or state_revision(record.updated_at) != expected_revision
+            ):
+                raise PluginRevisionConflict("plugin revision changed")
             if available is None or record is None:
-                raise PluginApprovalError("plugin is not currently discovered")
+                raise PluginManagementRejected("plugin is not currently discovered")
             if record.manifest_hash != available.manifest.manifest_hash:
-                raise PluginApprovalError("plugin approval is stale")
+                raise PluginManagementRejected("plugin approval is stale")
             enabled = await self._installations.set_enabled(plugin_id, enabled=True)
             if enabled is None:
                 raise PluginApprovalError("plugin is not installed")
@@ -306,9 +329,15 @@ class PluginManager:
             )
             return current
 
-    async def disable(self, plugin_id: str, *, actor_user_id: str) -> PluginInstallationRecord:
+    async def disable(
+        self, plugin_id: str, *, actor_user_id: str, expected_revision: int | None = None
+    ) -> PluginInstallationRecord:
         async with self._lock:
             record = await self._installations.get(plugin_id)
+            if expected_revision is not None and (
+                record is None or state_revision(record.updated_at) != expected_revision
+            ):
+                raise PluginRevisionConflict("plugin revision changed")
             if record is None:
                 raise PluginApprovalError("plugin is not installed")
             await self._stop_one_unlocked(plugin_id, final_status=None)

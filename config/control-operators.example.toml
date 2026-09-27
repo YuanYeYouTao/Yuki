@@ -1,0 +1,11 @@
+# Optional server-owned management policy. Never copy actual tokens into this file.
+# Set CONTROL_OPERATORS_FILE to the provisioned file; unset means no Web/CLI operator access.
+# Supply a separately generated credential (at least 32 characters) in the named environment variable.
+[[operators]]
+principal_id = "ab4c2676-9434-40f2-8f67-8a90c0de7fc6"
+token_env = "YUKI_CONTROL_OPERATOR_TOKEN"
+enabled = true
+roles = ["operator"]
+# A role is descriptive. Grant each reviewed capability explicitly; no wildcard grants.
+capabilities = ["control.system.read", "control.health.read", "control.operation.read"]
+# Optional person_id must identify an existing canonical Person, never a QQ number.

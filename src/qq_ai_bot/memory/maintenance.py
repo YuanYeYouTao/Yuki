@@ -59,6 +59,7 @@ class MemoryMaintenanceWorker:
         self._stop = asyncio.Event()
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
+        self._process_lock = asyncio.Lock()
 
     @property
     def running(self) -> bool:
@@ -102,23 +103,22 @@ class MemoryMaintenanceWorker:
                         "memory_maintenance_failed error_category=%s", type(exc).__name__
                     )
 
-    async def process_once(self, *, session: AsyncSession | None = None) -> int:
+    async def process_once(self) -> int:
+        async with self._process_lock:
+            return await self._process_once_unlocked()
+
+    async def _process_once_unlocked(self) -> int:
         runtime = await self._snapshot()
         if not runtime.enabled:
             return 0
         now = datetime.now(UTC)
-        if session is not None:
-            await self._facts.repository.repair_missing_activation(
-                limit=runtime.batch_limit, session=session
+        async with self._facts.repository.transaction() as repair_session:
+            repaired = await self._facts.repository.repair_missing_activation(
+                limit=runtime.batch_limit, session=repair_session
             )
-        else:
-            async with self._facts.repository.transaction() as repair_session:
-                repaired = await self._facts.repository.repair_missing_activation(
-                    limit=runtime.batch_limit, session=repair_session
-                )
-            if repaired:
-                logger.info("memory_activation_states_repaired count=%d", repaired)
-        if self._receipts is not None and session is None:
+        if repaired:
+            logger.info("memory_activation_states_repaired count=%d", repaired)
+        if self._receipts is not None:
             cleaned = await self._receipts.cleanup_expired(
                 now=now,
                 limit=runtime.batch_limit,
@@ -140,12 +140,9 @@ class MemoryMaintenanceWorker:
             max_importance=config.stale_max_importance,
             max_confidence=config.stale_max_confidence,
             limit=runtime.batch_limit,
-            session=session,
         )
         changed = 0
         if self._mutations is not None:
-            if session is not None:
-                raise RuntimeError("maintenance mutations cannot share an external session")
             for candidate in rows:
                 fact = await self._facts.repository.get_fact(candidate.id)
                 if fact is None:
@@ -167,12 +164,6 @@ class MemoryMaintenanceWorker:
                         if reason.value == "expired"
                         else "maintenance_stale_invalidated"
                     )
-            self.metrics.record_maintenance_success(now)
-            return changed
-        if session is not None:
-            changed = await self._invalidate_candidates(
-                rows, now=now, config=config, session=session
-            )
             self.metrics.record_maintenance_success(now)
             return changed
         async with self._facts.repository.transaction() as owned:

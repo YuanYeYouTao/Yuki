@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -11,11 +12,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.admin.models import ConfigApplyMode, ConfigChangeResult
+from qq_ai_bot.admin.models import ConfigApplyMode, ConfigChangeResult, ControlAuditRef
 from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.config import Settings
 from qq_ai_bot.control_plane.command_types import (
+    CommandOperation,
     ConfigRollbackPayload,
     ConfigWritePayload,
     ManagementActionPayload,
@@ -32,14 +34,16 @@ from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.mcp.repository import MCPRepository
 from qq_ai_bot.memory.dream.db_models import MemoryDreamRunModel
 from qq_ai_bot.memory.dream.repository import DreamRepository
-from qq_ai_bot.memory.dream.service import plan_full_core
+from qq_ai_bot.memory.dream.service import PreparedDreamPlan, plan_full_core, prepare_full_core
 from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
 from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
 from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
 from qq_ai_bot.memory.rebuild.service import (
+    PreparedRebuildPlan,
     cancel_rebuild_core,
     plan_rebuild_core,
+    prepare_rebuild_core,
     start_rebuild_core,
 )
 from qq_ai_bot.memory.service import MemoryFactService
@@ -53,11 +57,11 @@ from qq_ai_bot.persistence.models import (
 from qq_ai_bot.persistence.unit_of_work import next_updated_at
 from qq_ai_bot.persistence.unit_of_work import state_revision as _state_revision
 from qq_ai_bot.plugin_host.db_models import PluginInstallationModel, PluginNotificationOutboxModel
-from qq_ai_bot.plugin_host.manager import diagnose_plugin
+from qq_ai_bot.plugin_host.manager import PluginManager
 from qq_ai_bot.plugin_host.notification_repository import PluginNotificationRepository
-from qq_ai_bot.plugin_host.repository import PluginApprovalError, PluginInstallationRepository
 from qq_ai_bot.speech.db_models import SpeechVoiceProfileModel
 from qq_ai_bot.speech.repository import VoiceProfileRepository
+from yuki_plugin_sdk.permissions import PluginPermission
 
 
 class ManagementUnavailable(Exception):
@@ -127,7 +131,7 @@ def _op_ref(
     *,
     created_at: datetime,
     updated_at: datetime,
-    progress: float,
+    progress: float | None,
     error_category: str | None = None,
 ) -> OperationRef:
     return OperationRef(
@@ -145,15 +149,15 @@ def _rebuild_status(value: str) -> OperationStatus:
     mapping = {
         "planned": OperationStatus.QUEUED,
         "extracting": OperationStatus.RUNNING,
-        "extraction_paused": OperationStatus.RUNNING,
-        "review": OperationStatus.RUNNING,
+        "extraction_paused": OperationStatus.BLOCKED,
+        "review": OperationStatus.WAITING,
         "committing": OperationStatus.RUNNING,
-        "commit_paused": OperationStatus.RUNNING,
+        "commit_paused": OperationStatus.BLOCKED,
         "completed": OperationStatus.SUCCEEDED,
         "cancelled": OperationStatus.CANCELLED,
         "failed": OperationStatus.FAILED,
     }
-    return mapping.get(value, OperationStatus.RUNNING)
+    return mapping[value]
 
 
 def _dream_status(value: str) -> OperationStatus:
@@ -166,7 +170,7 @@ def _dream_status(value: str) -> OperationStatus:
         "rolling_back": OperationStatus.RUNNING,
         "rolled_back": OperationStatus.CANCELLED,
     }
-    return mapping.get(value, OperationStatus.RUNNING)
+    return mapping[value]
 
 
 class ControlManagementGateway:
@@ -183,6 +187,7 @@ class ControlManagementGateway:
         embeddings: MemoryEmbeddingRuntime | None = None,
         automation: AutomationService | None = None,
         memories: MemoryFactService | None = None,
+        plugins: PluginManager | None = None,
     ) -> None:
         self._database = database
         self._settings = settings
@@ -192,6 +197,151 @@ class ControlManagementGateway:
         self._embeddings = embeddings
         self._automation = automation
         self._memories = memories
+        self._plugins = plugins
+
+    async def validate_external(
+        self,
+        session: AsyncSession,
+        command: ControlCommand,
+        operation: str,
+        parsed: ManagementActionPayload,
+    ) -> None:
+        if operation == CommandOperation.PLUGIN_MUTATE.value:
+            if self._plugins is None:
+                raise ManagementUnavailable
+            if parsed.action not in {"approve", "enable", "disable", "doctor"}:
+                raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
+            row = await session.get(PluginInstallationModel, parsed.resource_id)
+            if row is None:
+                raise ManagementFailure(ProblemCode.NOT_FOUND)
+            _require_revision(state_revision(row.updated_at), command.expected_revision)
+            if parsed.action == "approve":
+                permissions = (parsed.spec or {}).get("permissions")
+                if not isinstance(permissions, tuple) or not all(
+                    isinstance(item, str) for item in permissions
+                ):
+                    raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
+                try:
+                    requested = json.loads(row.requested_permissions_json)
+                    selected = {PluginPermission(str(item)).value for item in permissions}
+                    if not selected <= set(requested):
+                        raise ValueError("permission not requested")
+                except (TypeError, ValueError) as exc:
+                    raise ManagementFailure(ProblemCode.VALIDATION_ERROR) from exc
+        elif operation == CommandOperation.MCP_MUTATE.value:
+            if self._mcp is None:
+                raise ManagementUnavailable
+            if parsed.action not in {"enable", "disable", "refresh", "reconnect"}:
+                raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
+            if parsed.resource_id not in self._mcp.configured_server_ids:
+                raise ManagementFailure(ProblemCode.NOT_FOUND)
+            mcp_row = await MCPRepository(self._database).state(parsed.resource_id, session=session)
+            _require_revision(
+                0 if mcp_row is None else state_revision(mcp_row.updated_at),
+                command.expected_revision,
+            )
+        elif operation == CommandOperation.MEMORY_MAINTENANCE.value:
+            if self._maintenance is None:
+                raise ManagementUnavailable
+            if parsed.action not in {"start", "run"} or parsed.resource_id != "yuki":
+                raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
+            _require_revision(0, command.expected_revision)
+        else:
+            raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
+
+    async def execute_external(
+        self,
+        principal: ControlPrincipal,
+        command: ControlCommand,
+        operation: str,
+        parsed: ManagementActionPayload,
+    ) -> ManagementMutation:
+        if operation == CommandOperation.PLUGIN_MUTATE.value:
+            manager = self._plugins
+            if manager is None:
+                raise ManagementUnavailable
+            if parsed.action == "approve":
+                raw = parsed.spec.get("permissions") if parsed.spec else None
+                if raw is not None and (
+                    not isinstance(raw, list | tuple) or any(type(item) is not str for item in raw)
+                ):
+                    raise ValueError("invalid plugin permission list")
+                record = await manager.approve(
+                    parsed.resource_id,
+                    permissions=None if raw is None else tuple(str(item) for item in raw),
+                    actor_user_id=principal.principal_id.text,
+                    expected_revision=command.expected_revision,
+                )
+            elif parsed.action == "enable":
+                record = await manager.enable(
+                    parsed.resource_id,
+                    actor_user_id=principal.principal_id.text,
+                    expected_revision=command.expected_revision,
+                )
+            elif parsed.action == "disable":
+                record = await manager.disable(
+                    parsed.resource_id,
+                    actor_user_id=principal.principal_id.text,
+                    expected_revision=command.expected_revision,
+                )
+            else:
+                report = await manager.doctor(parsed.resource_id)
+                shown = await manager.show(parsed.resource_id)
+                if shown is None:
+                    raise RuntimeError("plugin disappeared")
+                return ManagementMutation(
+                    parsed.resource_id,
+                    state_revision(shown.updated_at),
+                    "healthy" if not report.problems else "unhealthy",
+                )
+            if parsed.action == "enable" and record.status == "failed":
+                raise ManagementFailure(ProblemCode.PRECONDITION_FAILED)
+            return ManagementMutation(
+                parsed.resource_id, state_revision(record.updated_at), record.status
+            )
+        if operation == CommandOperation.MCP_MUTATE.value:
+            if self._mcp is None:
+                raise ManagementUnavailable
+            await self._mcp.manage(
+                parsed.resource_id,
+                action=parsed.action,
+                expected_revision=command.expected_revision,
+            )
+            row = await MCPRepository(self._database).state(parsed.resource_id)
+            if row is None:
+                raise RuntimeError("MCP state missing after management")
+            return ManagementMutation(
+                parsed.resource_id, state_revision(row.updated_at), str(row.status)
+            )
+        if self._maintenance is None:
+            raise ManagementUnavailable
+        await self._maintenance.process_once()
+        return ManagementMutation(parsed.resource_id, 1, "completed")
+
+    async def prepare(
+        self, operation: str, parsed: ManagementActionPayload
+    ) -> PreparedRebuildPlan | PreparedDreamPlan | None:
+        try:
+            if operation == CommandOperation.MEMORY_REBUILD.value and parsed.action == "plan":
+                selection = _rebuild_selection(parsed.spec)
+                return await prepare_rebuild_core(
+                    settings=self._require_settings(),
+                    ledger=EventLedgerRepository(self._database),
+                    selection=selection,
+                )
+            if operation == CommandOperation.MEMORY_DREAM.value and parsed.action == "plan":
+                if self._embeddings is None:
+                    raise ManagementUnavailable
+                return await prepare_full_core(
+                    settings=self._require_settings(),
+                    repository=DreamRepository(self._database),
+                    embeddings=self._embeddings,
+                )
+        except RuntimeError as exc:
+            raise ManagementFailure(ProblemCode.PRECONDITION_FAILED) from exc
+        except ValueError as exc:
+            raise ManagementFailure(ProblemCode.VALIDATION_ERROR) from exc
+        return None
 
     def _require_settings(self) -> Settings:
         if self._settings is None:
@@ -213,6 +363,15 @@ class ControlManagementGateway:
             return self._automation
         raise ManagementUnavailable
 
+    @staticmethod
+    def _config_actor(principal: ControlPrincipal, command: ControlCommand) -> ControlAuditRef:
+        return ControlAuditRef(
+            user_id=principal.principal_id.text,
+            principal_kind="control",
+            principal_id=principal.principal_id.text,
+            control_request_id=command.request_id.text,
+        )
+
     async def set_config(
         self,
         session: AsyncSession,
@@ -227,7 +386,8 @@ class ControlManagementGateway:
             scope_type=parsed.scope_type,
             scope_id=parsed.scope_id,
             actor_user_id=principal.principal_id.text,
-            trigger_message_id=command.request_id.text,
+            trigger_message_id="",
+            audit_ref=self._config_actor(principal, command),
             expected_version=command.expected_revision,
             session=session,
         )
@@ -249,7 +409,8 @@ class ControlManagementGateway:
             scope_type=parsed.scope_type,
             scope_id=parsed.scope_id,
             actor_user_id=principal.principal_id.text,
-            trigger_message_id=command.request_id.text,
+            trigger_message_id="",
+            audit_ref=self._config_actor(principal, command),
             expected_version=command.expected_revision,
             session=session,
         )
@@ -269,7 +430,8 @@ class ControlManagementGateway:
         result = await runtime.rollback(
             parsed.change_id,
             actor_user_id=principal.principal_id.text,
-            trigger_message_id=command.request_id.text,
+            trigger_message_id="",
+            audit_ref=self._config_actor(principal, command),
             expected_version=command.expected_revision,
             session=session,
         )
@@ -321,6 +483,8 @@ class ControlManagementGateway:
         principal: ControlPrincipal,
         command: ControlCommand,
         parsed: ManagementActionPayload,
+        *,
+        prepared: PreparedRebuildPlan | PreparedDreamPlan | None = None,
     ) -> ManagementMutation:
         settings = self._require_settings()
         repository = MemoryRebuildRepository(self._database)
@@ -335,6 +499,7 @@ class ControlManagementGateway:
                 repository=repository,
                 ledger=ledger,
                 actor=actor,
+                prepared=prepared,
             )
         except RuntimeError as exc:
             raise ManagementFailure(ProblemCode.PRECONDITION_FAILED) from exc
@@ -354,6 +519,7 @@ class ControlManagementGateway:
         repository: MemoryRebuildRepository,
         ledger: EventLedgerRepository,
         actor: str,
+        prepared: PreparedRebuildPlan | PreparedDreamPlan | None = None,
     ) -> ManagementMutation:
         existing = None
         if parsed.action == "plan":
@@ -365,29 +531,16 @@ class ControlManagementGateway:
                 selection=_rebuild_selection(parsed.spec),
                 actor_user_id=actor,
                 session=session,
+                prepared=prepared if isinstance(prepared, PreparedRebuildPlan) else None,
             )
         elif parsed.action == "start":
-            if _looks_like_public_id(parsed.resource_id):
-                existing = await repository.get_run(parsed.resource_id, session=session)
-                if existing is None:
-                    raise ManagementFailure(ProblemCode.NOT_FOUND)
-                _require_revision(state_revision(existing.updated_at), command.expected_revision)
-                run = await start_rebuild_core(
-                    repository, parsed.resource_id, settings=settings, session=session
-                )
-            else:
-                _require_revision(0, command.expected_revision)
-                planned = await plan_rebuild_core(
-                    settings=settings,
-                    repository=repository,
-                    ledger=ledger,
-                    selection=_rebuild_selection(parsed.spec),
-                    actor_user_id=actor,
-                    session=session,
-                )
-                run = await start_rebuild_core(
-                    repository, planned.public_id, settings=settings, session=session
-                )
+            existing = await repository.get_run(parsed.resource_id, session=session)
+            if existing is None:
+                raise ManagementFailure(ProblemCode.NOT_FOUND)
+            _require_revision(state_revision(existing.updated_at), command.expected_revision)
+            run = await start_rebuild_core(
+                repository, parsed.resource_id, settings=settings, session=session
+            )
         elif parsed.action == "cancel":
             existing = await repository.get_run(parsed.resource_id, session=session)
             if existing is None:
@@ -415,7 +568,7 @@ class ControlManagementGateway:
                 _rebuild_status(loaded.status.value),
                 created_at=loaded.created_at,
                 updated_at=loaded.updated_at,
-                progress=1.0 if loaded.status.value == "completed" else 0.1,
+                progress=1.0 if loaded.status.value == "completed" else None,
             ),
         )
 
@@ -425,14 +578,14 @@ class ControlManagementGateway:
         principal: ControlPrincipal,
         command: ControlCommand,
         parsed: ManagementActionPayload,
+        *,
+        prepared: PreparedRebuildPlan | PreparedDreamPlan | None = None,
     ) -> ManagementMutation:
         repository = DreamRepository(self._database)
         actor = principal.principal_id.text
         settings = self._require_settings()
         existing = None
-        if parsed.action == "plan" or (
-            parsed.action == "start" and not _looks_like_public_id(parsed.resource_id)
-        ):
+        if parsed.action == "plan":
             _require_revision(0, command.expected_revision)
             if self._embeddings is None:
                 raise ManagementUnavailable
@@ -443,16 +596,10 @@ class ControlManagementGateway:
                     embeddings=self._embeddings,
                     actor_user_id=actor,
                     session=session,
+                    prepared=prepared if isinstance(prepared, PreparedDreamPlan) else None,
                 )
             except RuntimeError as exc:
                 raise ManagementFailure(ProblemCode.PRECONDITION_FAILED) from exc
-            if parsed.action == "start":
-                if not await repository.start_run(run.public_id, session=session):
-                    raise ManagementFailure(ProblemCode.PRECONDITION_FAILED)
-                loaded = await repository.get_run(run.public_id, session=session)
-                if loaded is None:
-                    raise ManagementFailure(ProblemCode.STATE_MISMATCH)
-                run = loaded
         elif parsed.action == "start":
             existing = await repository.get_run(parsed.resource_id, session=session)
             if existing is None:
@@ -496,31 +643,8 @@ class ControlManagementGateway:
                 _dream_status(current.status.value),
                 created_at=current.created_at,
                 updated_at=current.updated_at,
-                progress=1.0 if current.status.value == "completed" else 0.1,
+                progress=1.0 if current.status.value == "completed" else None,
             ),
-        )
-
-    async def maintain_memory(
-        self,
-        session: AsyncSession,
-        principal: ControlPrincipal,
-        command: ControlCommand,
-        parsed: ManagementActionPayload,
-    ) -> ManagementMutation:
-        if parsed.action not in {"plan", "start", "run"}:
-            raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
-        _require_revision(0, command.expected_revision)
-        worker = self._maintenance
-        if worker is None:
-            worker = MemoryMaintenanceWorker(
-                settings=self._require_settings(),
-                facts=self._facts(),
-            )
-        changed = await worker.process_once(session=session)
-        return ManagementMutation(
-            parsed.resource_id,
-            max(1, changed + 1),
-            "completed",
         )
 
     async def mutate_automation(
@@ -531,18 +655,37 @@ class ControlManagementGateway:
         parsed: ManagementActionPayload,
     ) -> ManagementMutation:
         service = self._automation_service()
-        if principal.person_id is None:
-            raise ManagementFailure(ProblemCode.PRECONDITION_FAILED)
-        actor = principal.person_id.text
         if parsed.action == "create":
             _require_revision(0, command.expected_revision)
             if parsed.spec is None:
                 raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
+            spec = dict(parsed.spec)
+            owner_id: object = principal.person_id.text if principal.person_id is not None else None
+            conversation_id: object = None
+            max_runs: object = None
+            script_payload: object = spec
+            if "script" in spec:
+                if set(spec) - {"script", "owner_id", "conversation_id", "max_runs"}:
+                    raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
+                owner_id = spec.get("owner_id", owner_id)
+                conversation_id = spec.get("conversation_id")
+                max_runs = spec.get("max_runs")
+                script_payload = spec["script"]
+            if owner_id is None:
+                raise ManagementFailure(ProblemCode.PRECONDITION_FAILED)
+            if (
+                not isinstance(owner_id, str)
+                or (conversation_id is not None and not isinstance(conversation_id, str))
+                or (max_runs is not None and (type(max_runs) is not int or max_runs < 1))
+            ):
+                raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
             try:
                 row = await service.administer_create(
-                    dict(parsed.spec),
-                    actor_user_id=actor,
-                    trigger_message_id=command.request_id.text,
+                    script_payload,
+                    owner_id=owner_id,
+                    conversation_id=conversation_id,
+                    creation_source_key=f"control:{principal.principal_id.text}:{command.request_id.text}",
+                    max_runs=max_runs,
                     session=session,
                 )
             except RuntimeError as exc:
@@ -572,8 +715,6 @@ class ControlManagementGateway:
                 row = await service.administer_update(
                     automation_id,
                     dict(parsed.spec),
-                    actor_user_id=actor,
-                    trigger_message_id=command.request_id.text,
                     session=session,
                 )
             elif parsed.action in {"pause", "resume", "cancel", "run_now"}:
@@ -597,14 +738,13 @@ class ControlManagementGateway:
             row.status.value,
         )
 
-    async def mutate_plugin(
+    async def retry_plugin_notification(
         self,
         session: AsyncSession,
+        principal: ControlPrincipal,
         command: ControlCommand,
         parsed: ManagementActionPayload,
     ) -> ManagementMutation:
-        self._require_settings()
-        installations = PluginInstallationRepository(self._database)
         if parsed.action == "retry":
             try:
                 item_id = int(parsed.resource_id)
@@ -614,6 +754,14 @@ class ControlManagementGateway:
             if current_outbox is None:
                 raise ManagementFailure(ProblemCode.NOT_FOUND)
             _require_revision(state_revision(current_outbox.updated_at), command.expected_revision)
+            if (
+                current_outbox.status != "failed"
+                or current_outbox.platform_message_id is not None
+                or current_outbox.last_error_category
+                not in {"bot_unavailable", "gateway_disconnected", "effect_gate_timeout"}
+                or current_outbox.attempts >= current_outbox.max_attempts
+            ):
+                raise ManagementFailure(ProblemCode.PRECONDITION_FAILED)
             await PluginNotificationRepository(self._database).retry_outbox(
                 item_id, error_category="manual_retry", session=session
             )
@@ -625,96 +773,7 @@ class ControlManagementGateway:
                 await _persist_revision(session, updated_outbox, current_outbox.updated_at),
                 str(updated_outbox.status),
             )
-        current = await installations.get(parsed.resource_id, session=session)
-        if current is None:
-            raise ManagementFailure(ProblemCode.NOT_FOUND)
-        _require_revision(state_revision(current.updated_at), command.expected_revision)
-        try:
-            if parsed.action == "approve":
-                permissions = None
-                if parsed.spec is not None and "permissions" in parsed.spec:
-                    raw = parsed.spec["permissions"]
-                    if not isinstance(raw, list | tuple):
-                        raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
-                    permissions = tuple(str(item) for item in raw)
-                updated = await installations.approve(
-                    parsed.resource_id, permissions=permissions, session=session
-                )
-            elif parsed.action == "enable":
-                updated = await installations.set_enabled(
-                    parsed.resource_id, enabled=True, session=session
-                )
-            elif parsed.action == "disable":
-                updated = await installations.set_enabled(
-                    parsed.resource_id, enabled=False, session=session
-                )
-            elif parsed.action == "doctor":
-                report = diagnose_plugin(
-                    parsed.resource_id,
-                    system_enabled=self._require_settings().plugin_system_enabled,
-                    record=current,
-                )
-                return ManagementMutation(
-                    parsed.resource_id,
-                    state_revision(current.updated_at),
-                    "healthy" if not report.problems else "unhealthy",
-                )
-            else:
-                raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
-        except PluginApprovalError as exc:
-            raise ManagementFailure(ProblemCode.PRECONDITION_FAILED) from exc
-        if updated is None:
-            raise ManagementFailure(ProblemCode.NOT_FOUND)
-        stored = await session.get(PluginInstallationModel, parsed.resource_id)
-        if stored is None:
-            raise ManagementFailure(ProblemCode.STATE_MISMATCH)
-        return ManagementMutation(
-            parsed.resource_id,
-            await _persist_revision(session, stored, current.updated_at),
-            parsed.action if parsed.action == "doctor" else updated.status,
-        )
-
-    async def mutate_mcp(
-        self,
-        session: AsyncSession,
-        command: ControlCommand,
-        parsed: ManagementActionPayload,
-    ) -> ManagementMutation:
-        if parsed.action in {"call", "run", "invoke", "execute"}:
-            raise ManagementFailure(ProblemCode.PRECONDITION_FAILED)
-        if parsed.action not in {"enable", "disable", "refresh", "reconnect"}:
-            raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
-        if self._mcp is None:
-            raise ManagementUnavailable
-        repo = MCPRepository(self._database)
-        state = await repo.state(parsed.resource_id, session=session)
-        actual = 0 if state is None else state_revision(state.updated_at)
-        _require_revision(actual, command.expected_revision)
-        try:
-            if parsed.action == "enable":
-                await self._mcp.set_enabled(parsed.resource_id, True, session=session)
-            elif parsed.action == "disable":
-                await self._mcp.set_enabled(parsed.resource_id, False, session=session)
-            elif parsed.action == "refresh":
-                await self._mcp.refresh(parsed.resource_id, session=session)
-            else:
-                await self._mcp.reconnect(parsed.resource_id, session=session)
-            status = await self._mcp.status(parsed.resource_id, session=session)
-        except KeyError as exc:
-            raise ManagementFailure(ProblemCode.NOT_FOUND) from exc
-        except (RuntimeError, ValueError) as exc:
-            raise ManagementFailure(ProblemCode.PRECONDITION_FAILED) from exc
-        refreshed = await repo.state(parsed.resource_id, session=session)
-        if refreshed is None:
-            revision = 1
-        else:
-            previous = state.updated_at if state is not None else refreshed.updated_at
-            revision = await _persist_revision(session, refreshed, previous)
-        return ManagementMutation(
-            parsed.resource_id,
-            revision,
-            "enabled" if status.enabled else "disabled",
-        )
+        raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
 
     async def mutate_emoji(
         self,
@@ -845,26 +904,16 @@ class ControlManagementGateway:
                 ManagementActionPayload(action="start", resource_id=rest),
             )
         if kind == "plugin-outbox":
-            return await self.mutate_plugin(
-                session,
-                command,
-                ManagementActionPayload(action="retry", resource_id=rest),
-            )
-        if kind == "automation":
-            return await self.mutate_automation(
+            return await self.retry_plugin_notification(
                 session,
                 principal,
                 command,
-                ManagementActionPayload(action="run_now", resource_id=rest),
+                ManagementActionPayload(action="retry", resource_id=rest),
             )
         raise ManagementFailure(ProblemCode.OPERATION_UNAVAILABLE)
 
 
-def _looks_like_public_id(value: str) -> bool:
-    return len(value) >= 32 and "-" in value
-
-
 def _rebuild_selection(spec: Mapping[str, object] | None) -> MemoryRebuildSelection:
-    raw = spec.get("maximum_events") if spec is not None else None
-    maximum = raw if type(raw) is int else 100
-    return MemoryRebuildSelection(all_events=True, maximum_events=maximum)
+    return MemoryRebuildSelection.model_validate(
+        {"all_events": True, "maximum_events": 100, **(spec or {})}
+    )

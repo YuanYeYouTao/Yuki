@@ -652,11 +652,12 @@ class RuntimeConfigService:
         actor_user_id: str,
         trigger_message_id: str,
         conversation_key: str = "",
+        audit_ref: ControlAuditRef | None = None,
         expected_version: int | None = None,
         session: AsyncSession | None = None,
     ) -> ConfigChangeResult:
         started = time.perf_counter()
-        actor = self._audit_ref(
+        actor = audit_ref or self._audit_ref(
             actor_user_id,
             trigger_message_id=trigger_message_id,
             conversation_key=conversation_key,
@@ -810,11 +811,12 @@ class RuntimeConfigService:
         actor_user_id: str,
         trigger_message_id: str,
         conversation_key: str = "",
+        audit_ref: ControlAuditRef | None = None,
         expected_version: int | None = None,
         session: AsyncSession | None = None,
     ) -> ConfigChangeResult:
         started = time.perf_counter()
-        actor = self._audit_ref(
+        actor = audit_ref or self._audit_ref(
             actor_user_id,
             trigger_message_id=trigger_message_id,
             conversation_key=conversation_key,
@@ -1007,11 +1009,12 @@ class RuntimeConfigService:
         actor_user_id: str,
         trigger_message_id: str = "",
         conversation_key: str = "",
+        audit_ref: ControlAuditRef | None = None,
         expected_version: int | None = None,
         session: AsyncSession | None = None,
     ) -> ConfigChangeResult:
         started = time.perf_counter()
-        actor = self._audit_ref(
+        actor = audit_ref or self._audit_ref(
             actor_user_id,
             trigger_message_id=trigger_message_id,
             conversation_key=conversation_key,

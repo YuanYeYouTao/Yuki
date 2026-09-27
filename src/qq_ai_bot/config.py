@@ -137,6 +137,7 @@ class Settings(BaseSettings):
     _bot_persona: str = PrivateAttr(default="")
 
     database_url: str = "sqlite+aiosqlite:///./data/qq_ai_bot.db"
+    control_operators_file: Path | None = None
     processed_event_ttl_seconds: int = 86400
     processed_event_cleanup_seconds: int = 3600
     # PromptCompiler uses the repository-wide characters / 4 token estimate.

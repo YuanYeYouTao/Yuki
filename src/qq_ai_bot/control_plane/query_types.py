@@ -18,6 +18,8 @@ from qq_ai_bot.domain.identity import (
     IdentityBindingId,
     PersonId,
     PresenceId,
+    PrincipalId,
+    RequestId,
     RouteGeneration,
     SpaceBindingId,
     SpaceId,
@@ -409,24 +411,53 @@ class YukiSummaryView:
 
 @final
 @dataclass(frozen=True, slots=True)
+class ComponentHealthView:
+    name: str
+    enabled: bool | None
+    running: bool | None
+    healthy: bool | None
+    checked_at: datetime
+    error_category: str | None = None
+
+    def __post_init__(self) -> None:
+        require_opaque_token(self.name, name="component", max_length=64)
+        for name in ("enabled", "running", "healthy"):
+            value = getattr(self, name)
+            if value is not None:
+                _require_bool(value, name)
+        require_aware_datetime(self.checked_at, name="checked_at")
+        if self.error_category is not None:
+            require_opaque_token(self.error_category, name="error_category", max_length=64)
+
+
+@final
+@dataclass(frozen=True, slots=True)
 class ManagementHealthView:
     identity_state: StateEpoch
-    identity_revision: int
+    identity_revision: int | None
     database: Literal["ok", "unavailable"]
-    queue: QueueSummary
+    queue: QueueSummary | None
+    components: tuple[ComponentHealthView, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.identity_state) is not StateEpoch:
             raise TypeError("identity_state must be StateEpoch")
-        object.__setattr__(
-            self,
-            "identity_revision",
-            _require_int(self.identity_revision, "identity_revision", minimum=1),
-        )
+        if self.identity_revision is not None:
+            object.__setattr__(
+                self,
+                "identity_revision",
+                _require_int(self.identity_revision, "identity_revision", minimum=1),
+            )
         if self.database not in {"ok", "unavailable"}:
             raise ValueError("database health must be a safe token")
-        if type(self.queue) is not QueueSummary:
+        if self.queue is not None and type(self.queue) is not QueueSummary:
             raise TypeError("queue must be QueueSummary")
+        if type(self.components) is not tuple or any(
+            type(item) is not ComponentHealthView for item in self.components
+        ):
+            raise TypeError("components must be ComponentHealthView tuple")
+        if len({item.name for item in self.components}) != len(self.components):
+            raise ValueError("component names must be unique")
 
 
 @final
@@ -764,9 +795,18 @@ class AuditEventView:
     error_category: str | None
     duration_seconds: float
     created_at: datetime
+    principal_id: PrincipalId | None = None
+    request_id: RequestId | None = None
+    target_id: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "audit_id", _require_int(self.audit_id, "audit_id", minimum=1))
+        if self.principal_id is not None and type(self.principal_id) is not PrincipalId:
+            raise TypeError("principal_id must be PrincipalId or None")
+        if self.request_id is not None and type(self.request_id) is not RequestId:
+            raise TypeError("request_id must be RequestId or None")
+        if self.target_id is not None:
+            require_opaque_token(self.target_id, name="target_id", max_length=255)
         require_opaque_token(self.capability, name="capability", max_length=64)
         require_opaque_token(self.operation, name="operation", max_length=128)
         require_opaque_token(self.target_type, name="target_type", max_length=64)
@@ -998,6 +1038,44 @@ class AutomationView:
         require_opaque_token(self.target_kind, name="target_kind", max_length=16)
         require_opaque_token(self.target_id, name="target_id", max_length=64)
         require_opaque_token(self.route_state, name="route_state", max_length=16)
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class PluginRuntimeView:
+    plugin_id: str
+    system_enabled: bool
+    installed: bool
+    manifest_available: bool
+    manifest_hash_matches: bool
+    approval_valid: bool
+    enabled: bool
+    running: bool
+    status: str | None
+    requested_permissions: tuple[str, ...]
+    approved_permissions: tuple[str, ...]
+    extension_count: int
+    background_task_count: int
+    problems: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        require_opaque_token(self.plugin_id, name="plugin_id", max_length=128)
+        for name in (
+            "system_enabled",
+            "installed",
+            "manifest_available",
+            "manifest_hash_matches",
+            "approval_valid",
+            "enabled",
+            "running",
+        ):
+            _require_bool(getattr(self, name), name)
+        for name in ("extension_count", "background_task_count"):
+            _require_int(getattr(self, name), name)
+        for token in (*self.requested_permissions, *self.approved_permissions, *self.problems):
+            require_opaque_token(token, name="plugin_metadata", max_length=128)
+        if self.status is not None:
+            require_opaque_token(self.status, name="status", max_length=32)
 
 
 @final

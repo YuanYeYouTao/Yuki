@@ -28,7 +28,12 @@ from qq_ai_bot.control_plane.command_types import (
 from qq_ai_bot.control_plane.commands import ControlCommand, ControlResult
 from qq_ai_bot.control_plane.decision import PolicyDecision, PolicyEffect, decide
 from qq_ai_bot.control_plane.json_types import JsonObject, JsonScalar, JsonValue
-from qq_ai_bot.control_plane.operations import OperationRef, OperationStatus, StateEpoch
+from qq_ai_bot.control_plane.operations import (
+    OperationKind,
+    OperationRef,
+    OperationStatus,
+    StateEpoch,
+)
 from qq_ai_bot.control_plane.paging import (
     DEFAULT_PAGE_LIMIT,
     MAX_PAGE_LIMIT,
@@ -44,6 +49,7 @@ from qq_ai_bot.control_plane.query_service import ControlQueryService
 from qq_ai_bot.control_plane.query_types import (
     AuditEventView,
     AutomationView,
+    ComponentHealthView,
     ConfigQueryScope,
     ConfigSpecView,
     ControlQueryError,
@@ -64,6 +70,7 @@ from qq_ai_bot.control_plane.query_types import (
     PendingRestartView,
     PersonActiveRouteView,
     PersonView,
+    PluginRuntimeView,
     PluginView,
     PresenceConnectionState,
     PresenceView,
@@ -99,6 +106,7 @@ __all__ = [
     "CatalogCapabilityView",
     "CatalogSourceKind",
     "CommandOperation",
+    "ComponentHealthView",
     "ConfigQueryScope",
     "ConfigSpecView",
     "ControlCapabilityDescriptor",
@@ -131,6 +139,7 @@ __all__ = [
     "MemoryFactView",
     "MemoryHealthView",
     "MemoryJobView",
+    "OperationKind",
     "OperationRef",
     "OperationStatus",
     "Page",
@@ -139,6 +148,7 @@ __all__ = [
     "PersonActiveRouteView",
     "PersonControlTarget",
     "PersonView",
+    "PluginRuntimeView",
     "PluginView",
     "PolicyDecision",
     "PolicyEffect",

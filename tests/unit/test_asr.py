@@ -400,6 +400,10 @@ async def test_derived_audio_updates_revision_and_survives_migration_rollback(
     async with database.engine.begin() as connection:
         await connection.execute(text("DROP TABLE canonical_generation_reset_batches"))
         await connection.execute(text("DROP TABLE conversation_media_items"))
+        await connection.execute(text("DROP INDEX ix_admin_operation_events_control_request_id"))
+        await connection.execute(
+            text("ALTER TABLE admin_operation_events DROP COLUMN control_request_id")
+        )
     await asyncio.to_thread(command.upgrade, config, "head")
     await require_canonical_schema(database.url)
     assert any(r.id == saved.id for r in await harness.ledger.search(keyword="迁移之后"))

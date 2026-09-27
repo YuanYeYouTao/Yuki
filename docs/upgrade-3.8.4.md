@@ -1,19 +1,29 @@
 # Yuki 3.8.4 配置与升级
 
-<!-- release-baseline: version=3.8.4 schema=0072 -->
+<!-- release-baseline: version=3.8.4 schema=0073 -->
 
-本页对应 [3.8.4 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.4)。发布不会自动更新现有服务器；实际部署版本以镜像、数据库和运行状态为准。
+本页保留 [3.8.4 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.4)。发布不会自动更新现有服务器；实际部署版本以镜像、数据库和运行状态为准。
+
+当前源码的迁移 head 为 `0073`；已发布 3.8.4 镜像仍以其随包 head `0072` 为准。
+以下源码准备不表示新 release 已发布，也不触发线上替换。
 
 ## 版本与迁移
 
-| 来源 | 随包数据库 head | 升级到 3.8.4 |
+| 来源 | 随包数据库 head | 升级到当前源码 |
 | --- | --- | --- |
-| 正式 3.8.3 发布包 | `0061` | 用目标镜像的完整迁移链升级至 `0072` |
-| 3.8.3 后的开发部署 | 读取实际 Alembic revision | 已是 `0072` 才可跳过迁移；否则按随包迁移升级 |
+| 正式 3.8.3 发布包 | `0061` | 用目标镜像的完整迁移链升级至 `0073` |
+| 已发布 3.8.4 | `0072` | 通过 `0073` 保留控制请求执行证据，无需再次重置会话 |
+| 3.8.3 后的开发部署 | 读取实际 Alembic revision | 已是目标 head `0073` 才无新增迁移；否则按随包迁移升级 |
 | 正式 3.8.2 发布包 | `0055` | 先确认迁移前提，再按完整迁移链升级 |
 | 更早或过渡态 | 核对实际 revision 与 canonical 基线 | 不承诺直接升级，也不能用 `stamp` 跳过 |
 
 目标数据库由**实际选用的镜像**中的 Alembic 单一 head 决定，应用版本或旧部署记录不能代替检查。3.8.4 新增的迁移涵盖显式发送与自动化、canonical 历史和语义参与、SELF 证据、内部引用及发送回执、无来源主动机会、SELF 自动化和 Work 信号等待，以及 `0072` 的聊天媒体索引。旧发送回执不会按平台消息 ID 猜测正文或重发。
+
+`0073` 扩展既有控制命令回执的 running/unknown 状态，添加独立 control_request_id；
+仅由既有回执证明关联的控制审计会转换，QQ 审计和聊天历史保留。升级不会重发管理效果。
+此迁移不支持丢弃执行证据的 downgrade；回退前按一致性备份与目标代码兼容性处理。
+可选 CONTROL_OPERATORS_FILE 默认未配置，不会开放管理端口；配置方法见
+[Control Plane 地基](architecture/control-plane-foundation.md)。
 
 当前源码使用 **Plugin API 3.0**；正式 3.8.3 发布包使用 2.0。升级自定义插件前按 [API 3.0 迁移说明](plugin-development/api-3.0-migration.md) 检查 SDK 调用、固定工具合同和显式发送。插件配置与安装批准独立保留。
 

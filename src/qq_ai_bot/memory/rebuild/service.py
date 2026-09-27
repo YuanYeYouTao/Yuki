@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,6 +32,7 @@ from qq_ai_bot.memory.extraction import (
 )
 from qq_ai_bot.memory.rebuild.metrics import MemoryRebuildMetrics
 from qq_ai_bot.memory.rebuild.models import (
+    MemoryRebuildPlanStatistics,
     MemoryRebuildReviewEntry,
     MemoryRebuildRun,
     MemoryRebuildSelection,
@@ -50,6 +51,34 @@ def canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedRebuildPlan:
+    snapshot: int
+    statistics: MemoryRebuildPlanStatistics
+
+
+async def prepare_rebuild_core(
+    *,
+    settings: Settings,
+    ledger: EventLedgerRepository,
+    selection: MemoryRebuildSelection,
+    model_name: str | None = None,
+) -> PreparedRebuildPlan:
+    if not settings.memory_rebuild_enabled:
+        raise RuntimeError("MEMORY_REBUILD_ENABLED is false")
+    configured_max = settings.memory_rebuild_max_events_per_run
+    if configured_max is not None and (
+        selection.maximum_events is None or selection.maximum_events > configured_max
+    ):
+        raise ValueError(f"selection.maximum_events must be set and <= {configured_max}")
+    snapshot = await ledger.maximum_event_id()
+    statistics = await ledger.count_rebuild_candidates(
+        selection,
+        snapshot_max_event_id=snapshot,
+    )
+    return PreparedRebuildPlan(snapshot, statistics)
+
+
 async def plan_rebuild_core(
     *,
     settings: Settings,
@@ -59,30 +88,22 @@ async def plan_rebuild_core(
     actor_user_id: str,
     model_name: str | None = None,
     session: AsyncSession | None = None,
+    prepared: PreparedRebuildPlan | None = None,
 ) -> MemoryRebuildRun:
-    """Plan a rebuild after capability authorization already happened."""
-
-    if not settings.memory_rebuild_enabled:
-        raise RuntimeError("MEMORY_REBUILD_ENABLED is false")
-    configured_max = settings.memory_rebuild_max_events_per_run
-    if configured_max is not None and (
-        selection.maximum_events is None or selection.maximum_events > configured_max
-    ):
-        raise ValueError(f"selection.maximum_events must be set and <= {configured_max}")
-    snapshot = await ledger.maximum_event_id(session=session)
-    statistics = await ledger.count_rebuild_candidates(
-        selection,
-        snapshot_max_event_id=snapshot,
-        session=session,
-    )
+    if prepared is None:
+        if session is not None:
+            raise ValueError("rebuild plan must be prepared before opening a writer")
+        prepared = await prepare_rebuild_core(
+            settings=settings, ledger=ledger, selection=selection, model_name=model_name
+        )
     selection_json = canonical_json(selection)
     return await repository.create_run(
         selection=selection,
         selection_json=selection_json,
         selection_hash=hashlib.sha256(selection_json.encode()).hexdigest(),
-        snapshot_max_event_id=snapshot,
+        snapshot_max_event_id=prepared.snapshot,
         fingerprint=extraction_fingerprint(settings, model_name=model_name),
-        statistics=statistics,
+        statistics=prepared.statistics,
         actor_user_id=actor_user_id,
         session=session,
     )

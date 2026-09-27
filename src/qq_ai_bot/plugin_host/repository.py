@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.unit_of_work import optional_session
+from qq_ai_bot.persistence.unit_of_work import next_updated_at, optional_session
 from qq_ai_bot.plugin_host.db_models import (
     PluginAuditEventModel,
     PluginConfigValueModel,
@@ -171,7 +171,7 @@ class PluginInstallationRepository:
                 row.manifest_hash = manifest_hash[:64]
                 row.entrypoint = entrypoint[:255]
                 row.requested_permissions_json = requested_json
-                row.updated_at = timestamp
+                row.updated_at = next_updated_at(row.updated_at, timestamp)
                 if approval_changed:
                     row.status = "pending_approval"
                     row.enabled = False
@@ -217,7 +217,7 @@ class PluginInstallationRepository:
             row.approved_permissions_json = _json(sorted(approved))
             row.approved_at = timestamp
             row.status = "approved"
-            row.updated_at = timestamp
+            row.updated_at = next_updated_at(row.updated_at, timestamp)
             await active.flush()
             return _installation_record(row)
 
@@ -238,7 +238,7 @@ class PluginInstallationRepository:
                 raise PluginApprovalError("plugin permissions have not been approved")
             row.enabled = enabled
             row.status = "approved" if enabled else "disabled"
-            row.updated_at = timestamp
+            row.updated_at = next_updated_at(row.updated_at, timestamp)
             await active.flush()
             return _installation_record(row)
 
@@ -257,7 +257,7 @@ class PluginInstallationRepository:
                 return None
             row.status = status[:32]
             row.last_error_category = _optional(error_category, 64)
-            row.updated_at = timestamp
+            row.updated_at = next_updated_at(row.updated_at, timestamp)
             if status == "running":
                 row.started_at = timestamp
                 row.failure_count = 0
@@ -282,7 +282,7 @@ class PluginInstallationRepository:
             row.status = "failed"
             if row.failure_count >= max(1, disable_threshold):
                 row.enabled = False
-            row.updated_at = timestamp
+            row.updated_at = next_updated_at(row.updated_at, timestamp)
             await session.flush()
             return _installation_record(row)
 
@@ -435,7 +435,7 @@ class PluginConfigRepository:
         await require_config_readable(session, row)
         row.value_json = value_json
         row.version = expected_version + 1
-        row.updated_at = timestamp
+        row.updated_at = next_updated_at(row.updated_at, timestamp)
         return _config_record(row, scope_id=scope_id)
 
     async def delete(

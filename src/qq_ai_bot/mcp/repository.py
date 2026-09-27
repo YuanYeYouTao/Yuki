@@ -27,6 +27,7 @@ from qq_ai_bot.persistence.models import (
     ToolArtifactModel,
     ToolInvocationModel,
 )
+from qq_ai_bot.persistence.unit_of_work import next_updated_at
 from qq_ai_bot.runtime.observability import claim_runtime_turn_id
 
 _MAX_STRUCTURED_ARTIFACT_BYTES = 4 * 1024 * 1024
@@ -111,7 +112,7 @@ class MCPRepository:
             row.lifecycle = config.lifecycle.value
             row.status = status
             row.last_error_category = error_category
-            row.updated_at = now
+            row.updated_at = next_updated_at(row.updated_at, now)
             if connected:
                 row.last_connected_at = now
             if refreshed:

@@ -226,6 +226,13 @@ async def test_config_query_version_can_write_and_replay(database: Database) -> 
     result = await commands.set_config(ctx, command)
     assert result.success
     assert await commands.set_config(ctx, command) == result
+    async with database.sessions() as session:
+        audits = (await session.scalars(select(AdminOperationEventModel))).all()
+        assert len(audits) == 2
+        assert all(row.trigger_message_id == "" for row in audits)
+        assert all(row.control_request_id == ctx.request_id.text for row in audits)
+        assert all(row.actor_principal_kind == "control" for row in audits)
+        assert all(row.actor_principal_id == ctx.principal.principal_id.text for row in audits)
     page = await queries.list_effective_configs(ctx, PageRequest(limit=100))
     value = next(item for item in page.items if item.key == payload["key"])
     assert value.value == 20 and value.version == result.revision
@@ -262,6 +269,13 @@ async def test_container_assembles_live_control_services(database: Database) -> 
         assert management._memories is container.memories
         snapshot = await container.control_plane.queries.read_system(context("control.system.read"))
         assert snapshot.pending_restart.count == 0
+        health = await container.control_plane.queries.read_health(context("control.health.read"))
+        assert health.database == "ok" and health.queue is not None
+        components = {item.name: item for item in health.components}
+        assert components["work"].enabled is True
+        assert components["work"].running is False
+        assert components["gateway"].running is False
+        assert all(item.healthy is None for item in health.components)
         # Default deny still applies at the assembled application boundary.
         async with database.sessions() as session:
             before = await session.scalar(
@@ -276,6 +290,17 @@ async def test_container_assembles_live_control_services(database: Database) -> 
             )
     finally:
         await container.close()
+
+
+@pytest.mark.asyncio
+async def test_health_database_failure_does_not_invent_queue_or_revision(database, monkeypatch):
+    async def unavailable():
+        return False
+
+    monkeypatch.setattr(database, "ping", unavailable)
+    health = await ControlQueryAdapter(database).read_health()
+    assert health.database == "unavailable"
+    assert health.queue is None and health.identity_revision is None
 
 
 @pytest.mark.asyncio
@@ -339,9 +364,9 @@ async def test_automation_operator_id_is_not_used_as_person(database: Database) 
             self.actors: list[str] = []
 
         async def administer_create(
-            self, _spec: object, *, actor_user_id: str, **_kwargs: object
+            self, _spec: object, *, owner_id: str, **_kwargs: object
         ) -> None:
-            self.actors.append(actor_user_id)
+            self.actors.append(owner_id)
             raise RuntimeError("synthetic domain precondition")
 
     automation = RecordingAutomation()
