@@ -29,6 +29,10 @@ class ControlSurfaceView:
 # Each entry points at an actual public Query/Command method. Business catalogs
 # and CONTROL_CAPABILITY_DESCRIPTORS remain authoritative; no plugin call dispatch.
 _METHODS: tuple[tuple[Literal["query", "command"], str, str], ...] = (
+    ("query", "list_execution_trace", "control.execution.metadata.read"),
+    ("query", "read_execution_trace", "control.execution.content.read"),
+    ("query", "list_chat_events", "control.chat.metadata.read"),
+    ("query", "list_social_receipts", "control.execution.metadata.read"),
     ("query", "read_system", "control.system.read"),
     ("query", "read_yuki", "control.system.read"),
     ("query", "read_health", "control.health.read"),

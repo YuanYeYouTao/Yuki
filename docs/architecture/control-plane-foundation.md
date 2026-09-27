@@ -149,3 +149,13 @@ HTTP 与文件入口在相应授权及失效测试通过前不开放。Cookie �
 模型 hash 使用多个独立进程验收。测试不发送真实 QQ 消息、不调用付费模型。
 
 源代码通过验证、PR、合并、部署和真人/浏览器验收分别记录；新后端合同不能代替生产或完整 WebUI 验收。
+
+## 执行过程与聊天查询
+
+执行诊断见 [执行过程查看合同](execution-trace.md)。应用查询提供
+`list_execution_trace`、`read_execution_trace`、`list_chat_events` 和
+`list_social_receipts`。`control.execution.metadata.read` /
+`control.execution.content.read` 与 `control.chat.metadata.read` /
+`control.chat.content.read` 分别授权元数据和正文。列表默认不返回正文，
+请求正文时显式要求对应权限。接收与已发送消息来自原 `chat_events`，
+投递确定性来自原 Social 回执；没有引入诊断驱动的恢复或重新发送。

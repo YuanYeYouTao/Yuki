@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
+from qq_ai_bot.execution_trace.recorder import TraceRecorder
 from qq_ai_bot.llm.base import LLMProvider
 from qq_ai_bot.model_runtime import (
     ModelClientPool,
@@ -80,6 +81,11 @@ class ModelRuntimeModule:
             router=router,
             pool=clients,
             invocations=invocations,
+            traces=TraceRecorder(
+                self._database,
+                retention_days=settings.execution_trace_retention_days,
+                max_payload_bytes=settings.execution_trace_max_payload_bytes,
+            ),
             max_concurrency=settings.global_llm_concurrency,
             compaction_timeout_seconds=settings.conversation_rollup_model_timeout_seconds,
             self_reflection_timeout_seconds=settings.memory_self_reflection_timeout_seconds,

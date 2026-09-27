@@ -9,6 +9,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Final, Literal, final
 
+from qq_ai_bot.control_plane.json_types import JsonObject, freeze_json_object
 from qq_ai_bot.control_plane.operations import OperationRef, StateEpoch
 from qq_ai_bot.control_plane.problems import Problem
 from qq_ai_bot.control_plane.tokens import require_aware_datetime, require_opaque_token
@@ -100,6 +101,122 @@ class QueryResourceKind(StrEnum):
     MCP = "mcp"
     EMOJI = "emoji"
     SPEECH = "speech"
+    CHAT_EVENT = "chat_event"
+    EXECUTION_TRACE = "execution_trace"
+    SOCIAL_RECEIPT = "social_receipt"
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class ExecutionTraceFilter:
+    conversation_id: ConversationId | None = None
+    turn_id: str | None = None
+    work_id: str | None = None
+    execution_id: str | None = None
+    source_event_id: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.conversation_id is not None and type(self.conversation_id) is not ConversationId:
+            raise TypeError("conversation_id must be ConversationId")
+        for name in ("turn_id", "work_id", "execution_id"):
+            value = getattr(self, name)
+            if value is not None:
+                require_opaque_token(value, name=name, max_length=128)
+        if self.source_event_id is not None:
+            _require_int(self.source_event_id, "source_event_id", minimum=1)
+            if self.source_event_id > 2**63 - 1:
+                raise ValueError("source_event_id exceeds ledger range")
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class ExecutionTraceView:
+    id: int
+    conversation_id: ConversationId | None
+    turn_id: str
+    operation_id: str
+    parent_operation_id: str | None
+    work_id: str | None
+    activation_id: str | None
+    execution_id: str | None
+    source_event_id: int | None
+    generation: int | None
+    origin: str | None
+    kind: str
+    payload_status: str
+    payload_bytes: int
+    created_at: datetime
+    expires_at: datetime
+    payload: JsonObject | None = None
+
+    def __post_init__(self) -> None:
+        _require_int(self.id, "id", minimum=1)
+        _require_int(self.payload_bytes, "payload_bytes")
+        if self.payload_status not in {"recorded", "redacted", "omitted_size"}:
+            raise ValueError("unknown trace payload status")
+        for name in ("turn_id", "operation_id", "kind"):
+            require_opaque_token(getattr(self, name), name=name, max_length=64)
+        if self.source_event_id is not None:
+            _require_int(self.source_event_id, "source_event_id", minimum=1)
+        if self.conversation_id is not None and type(self.conversation_id) is not ConversationId:
+            raise TypeError("conversation_id must be ConversationId")
+        require_aware_datetime(self.created_at, name="created_at")
+        require_aware_datetime(self.expires_at, name="expires_at")
+        if self.payload is not None:
+            object.__setattr__(self, "payload", freeze_json_object(self.payload))
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class ChatEventView:
+    event_id: int
+    conversation_id: ConversationId
+    direction: str
+    event_kind: str
+    origin: str
+    author_kind: str
+    author_person_id: PersonId | None
+    author_presence_id: PresenceId | None
+    occurred_at: datetime
+    observed_at: datetime
+    reply_to_event_id: int | None
+    caused_by_event_id: int | None
+    content: str | None
+    audio_transcript: str | None
+    visual_summary: str | None
+    sender_display_name: str | None
+    attachment_indexes: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        _require_int(self.event_id, "event_id", minimum=1)
+        if type(self.conversation_id) is not ConversationId:
+            raise TypeError("conversation_id must be ConversationId")
+        require_aware_datetime(self.occurred_at, name="occurred_at")
+        require_aware_datetime(self.observed_at, name="observed_at")
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class SocialReceiptView:
+    operation_id: str
+    source_conversation_id: ConversationId
+    source_execution_key: str
+    tool_call_id: str
+    target_kind: str
+    target_id: str
+    presence_id: PresenceId | None
+    action: str
+    status: str
+    event_id: int | None
+    error_category: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    def __post_init__(self) -> None:
+        if type(self.source_conversation_id) is not ConversationId:
+            raise TypeError("source_conversation_id must be ConversationId")
+        require_aware_datetime(self.created_at, name="created_at")
+        require_aware_datetime(self.updated_at, name="updated_at")
 
 
 @final

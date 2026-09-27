@@ -252,6 +252,30 @@ def _descriptor(
 
 CONTROL_CAPABILITY_DESCRIPTORS: Final[tuple[ControlCapabilityDescriptor, ...]] = (
     _descriptor(
+        "control.execution.metadata.read",
+        CapabilityFamily.CONTROL,
+        CapabilitySensitivity.METADATA_READ,
+        mutating=False,
+    ),
+    _descriptor(
+        "control.execution.content.read",
+        CapabilityFamily.CONTROL,
+        CapabilitySensitivity.CONTENT_READ,
+        mutating=False,
+    ),
+    _descriptor(
+        "control.chat.metadata.read",
+        CapabilityFamily.CONTROL,
+        CapabilitySensitivity.METADATA_READ,
+        mutating=False,
+    ),
+    _descriptor(
+        "control.chat.content.read",
+        CapabilityFamily.CONTROL,
+        CapabilitySensitivity.CONTENT_READ,
+        mutating=False,
+    ),
+    _descriptor(
         "identity.person.read",
         CapabilityFamily.IDENTITY,
         CapabilitySensitivity.METADATA_READ,

@@ -15,6 +15,7 @@ from tenacity import (
 )
 
 from qq_ai_bot.domain.messages import ChatRequest, ChatResponse
+from qq_ai_bot.execution_trace.recorder import record_http_response, trace_span
 from qq_ai_bot.llm.base import (
     LLMConfigurationError,
     LLMProvider,
@@ -70,14 +71,19 @@ class JSONHTTPProvider(LLMProvider):
             chain_id=request.request_chain_id,
             provider=self.provider_name,
         )
-        await check_model_dispatch()
-        response = await self._client.post(
-            self._path(request),
-            headers=self._request_headers(),
-            json=payload,
-            timeout=self._timeout,
-        )
-        check_provider_response(response)
+        async with trace_span(
+            "provider", {"protocol": self.protocol, "body": payload, "dispatch": "prepared"}
+        ):
+            # Keep the real permission/budget fence immediately before HTTP dispatch.
+            await check_model_dispatch()
+            response = await self._client.post(
+                self._path(request),
+                headers=self._request_headers(),
+                json=payload,
+                timeout=self._timeout,
+            )
+            await record_http_response(response)
+            check_provider_response(response)
         return response
 
     async def complete(self, request: ChatRequest) -> ChatResponse:

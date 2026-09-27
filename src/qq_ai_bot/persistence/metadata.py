@@ -13,6 +13,7 @@ from qq_ai_bot.conversation import (  # noqa: F401
 )
 from qq_ai_bot.conversation import projection_models as _projection_models  # noqa: F401
 from qq_ai_bot.emoji import db_models as _emoji_db_models  # noqa: F401
+from qq_ai_bot.execution_trace import db_models as _execution_trace_db_models  # noqa: F401
 from qq_ai_bot.identity import db_models as _identity_db_models  # noqa: F401
 from qq_ai_bot.memory.dream import db_models as _memory_dream_db_models  # noqa: F401
 from qq_ai_bot.memory.self_reflection import db_models as _self_reflection_db_models  # noqa: F401

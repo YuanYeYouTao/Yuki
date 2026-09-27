@@ -40,6 +40,9 @@ CANONICAL_RESOURCE_KINDS: Final[frozenset[QueryResourceKind]] = frozenset(
         QueryResourceKind.MCP,
         QueryResourceKind.EMOJI,
         QueryResourceKind.SPEECH,
+        QueryResourceKind.CHAT_EVENT,
+        QueryResourceKind.EXECUTION_TRACE,
+        QueryResourceKind.SOCIAL_RECEIPT,
     }
 )
 TIME_ID_RESOURCE_KINDS: Final[frozenset[QueryResourceKind]] = frozenset({QueryResourceKind.AUDIT})

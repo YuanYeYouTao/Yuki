@@ -499,6 +499,8 @@ class RuntimeConfigService:
         """Map activated global restart overrides back to long-lived Settings fields."""
 
         mapping = {
+            "execution_trace.retention_days": "execution_trace_retention_days",
+            "execution_trace.max_payload_bytes": "execution_trace_max_payload_bytes",
             "llm.model": "llm_model",
             "llm.timeout_seconds": "llm_timeout_seconds",
             "llm.max_retries": "llm_max_retries",

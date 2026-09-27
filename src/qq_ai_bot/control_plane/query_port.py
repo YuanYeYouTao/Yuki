@@ -9,12 +9,15 @@ from qq_ai_bot.control_plane.paging import Page, PageRequest
 from qq_ai_bot.control_plane.query_types import (
     AuditEventView,
     AutomationView,
+    ChatEventView,
     ConfigOverrideView,
     ConfigQueryScope,
     ConfigSpecView,
     ConversationView,
     EffectiveConfigView,
     EmojiAssetView,
+    ExecutionTraceFilter,
+    ExecutionTraceView,
     IdentityBindingView,
     ManagementHealthView,
     McpServerView,
@@ -27,6 +30,7 @@ from qq_ai_bot.control_plane.query_types import (
     PluginRuntimeView,
     PluginView,
     PresenceView,
+    SocialReceiptView,
     SpaceActiveRouteView,
     SpaceBindingIngestRouteView,
     SpaceBindingView,
@@ -35,10 +39,31 @@ from qq_ai_bot.control_plane.query_types import (
     SystemSnapshot,
     YukiSummaryView,
 )
+from qq_ai_bot.domain.identity import ConversationId
 
 
 class ControlQueryPort(Protocol):
     """Read-only projections. Must not return catalog rows or session objects."""
+
+    async def list_execution_trace(
+        self, request: PageRequest, *, scope: ExecutionTraceFilter, include_content: bool = False
+    ) -> Page[ExecutionTraceView]: ...
+
+    async def read_execution_trace(
+        self, entry_id: int, *, conversation_id: ConversationId | None = None
+    ) -> ExecutionTraceView: ...
+
+    async def list_chat_events(
+        self,
+        request: PageRequest,
+        *,
+        conversation_id: ConversationId,
+        include_content: bool = False,
+    ) -> Page[ChatEventView]: ...
+
+    async def list_social_receipts(
+        self, request: PageRequest, *, conversation_id: ConversationId
+    ) -> Page[SocialReceiptView]: ...
 
     async def read_system(self) -> SystemSnapshot: ...
 
