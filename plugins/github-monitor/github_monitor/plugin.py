@@ -6,6 +6,11 @@ import asyncio
 
 from yuki_plugin_sdk.context import PluginContext
 from yuki_plugin_sdk.models import PermissionLevel, RestartPolicy
+from yuki_plugin_sdk.observation import (
+    JsonObject,
+    PluginObservationContext,
+    PluginObservationRequest,
+)
 from yuki_plugin_sdk.registrar import (
     BackgroundServiceMetadata,
     BackgroundServiceRegistration,
@@ -16,6 +21,7 @@ from yuki_plugin_sdk.registrar import (
 
 from .commands import GitHubCommandArguments, GitHubCommands
 from .config import GitHubMonitorConfig
+from .observation import observe_queue
 from .polling import GitHubPoller
 
 
@@ -25,6 +31,11 @@ class _ContextHolder:
 
 
 class GitHubMonitorPlugin:
+    async def observe(
+        self, context: PluginObservationContext, request: PluginObservationRequest
+    ) -> JsonObject:
+        return await observe_queue(context, request)
+
     def __init__(self) -> None:
         self._holder = _ContextHolder()
         self._stop = asyncio.Event()

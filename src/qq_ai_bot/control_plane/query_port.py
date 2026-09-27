@@ -48,6 +48,18 @@ from qq_ai_bot.domain.identity import ConversationId
 class ControlQueryPort(Protocol):
     """Read-only projections. Must not return catalog rows or session objects."""
 
+    async def list_plugin_outbox(
+        self, request: PageRequest, *, plugin_id: str
+    ) -> Page[ActivityView]: ...
+
+    async def read_plugin_observation(
+        self, plugin_id: str, *, cursor: str | None = None, limit: int = 10
+    ) -> ActivityView: ...
+
+    async def read_plugin_configuration(
+        self, plugin_id: str, *, scope_type: str = "global", owner_id: str | None = None
+    ) -> ActivityView: ...
+
     async def download_workspace(self, artifact_id: str) -> DownloadView: ...
     async def download_chat_media(
         self, conversation_id: ConversationId, event_id: int, attachment_index: int

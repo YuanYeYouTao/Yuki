@@ -142,10 +142,15 @@ from qq_ai_bot.persistence.models import (
     RuntimeConfigOverrideModel,
 )
 from qq_ai_bot.persistence.unit_of_work import state_revision
+from qq_ai_bot.plugin_host.configuration_service import (
+    PluginConfigurationError,
+    PluginConfigurationService,
+)
 from qq_ai_bot.plugin_host.db_models import PluginInstallationModel
-from qq_ai_bot.plugin_host.manager import PluginManager
+from qq_ai_bot.plugin_host.manager import PluginManagementRejected, PluginManager
 from qq_ai_bot.speech.db_models import SpeechVoiceProfileModel
 from qq_ai_bot.workspace.store import WorkspaceStore
+from yuki_plugin_sdk.observation import PluginObservationRequest
 
 
 class _HasId(Protocol):
@@ -612,6 +617,11 @@ class ControlQueryAdapter:
 
     async def download_workspace(self, artifact_id: str) -> DownloadView:
         return await self._activity.download_workspace(artifact_id)
+
+    async def list_plugin_outbox(
+        self, request: PageRequest, *, plugin_id: str
+    ) -> Page[ActivityView]:
+        return await self._activity.list_plugin_outbox(request, plugin_id=plugin_id)
 
     async def download_chat_media(
         self, conversation_id: ConversationId, event_id: int, attachment_index: int
@@ -1915,6 +1925,42 @@ class ControlQueryAdapter:
             raise ControlQueryError(Problem(ProblemCode.OPERATION_UNAVAILABLE))
         report = await self._plugins.doctor(plugin_id)
         return PluginRuntimeView(**report.model_dump())
+
+    async def read_plugin_configuration(
+        self, plugin_id: str, *, scope_type: str = "global", owner_id: str | None = None
+    ) -> ActivityView:
+        if self._plugins is None:
+            raise ControlQueryError(Problem(ProblemCode.OPERATION_UNAVAILABLE))
+        try:
+            fields = await PluginConfigurationService(
+                self._database, self._plugins.configuration_schema
+            ).read(plugin_id, scope_type=scope_type, owner_id=owner_id)
+            return ActivityView(plugin_id, fields)
+        except PluginConfigurationError as exc:
+            raise ControlQueryError(Problem(ProblemCode(exc.category))) from None
+
+    async def read_plugin_observation(
+        self, plugin_id: str, *, cursor: str | None = None, limit: int = 10
+    ) -> ActivityView:
+        if self._plugins is None:
+            raise ControlQueryError(Problem(ProblemCode.OPERATION_UNAVAILABLE))
+        if (
+            type(plugin_id) is not str
+            or not plugin_id
+            or len(plugin_id) > 128
+            or type(limit) is not int
+        ):
+            raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
+        try:
+            request = PluginObservationRequest(cursor=cursor, limit=limit)
+        except ValueError:
+            raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR)) from None
+        try:
+            return ActivityView(plugin_id, await self._plugins.observe(plugin_id, request))
+        except PluginManagementRejected:
+            raise ControlQueryError(Problem(ProblemCode.OPERATION_UNAVAILABLE)) from None
+        except Exception:
+            raise ControlQueryError(Problem(ProblemCode.STATE_MISMATCH)) from None
 
     async def list_mcp_servers(self, request: PageRequest) -> Page[McpServerView]:
         snapshot_at = _now()

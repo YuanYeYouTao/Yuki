@@ -78,6 +78,34 @@ def _reveal_external(context: DecisionContext[ControlPrincipal, object, object])
 class ControlQueryService:
     """Authorize then project. Does not invent principals or actors."""
 
+    async def list_plugin_outbox(
+        self, context: object, request: PageRequest, *, plugin_id: str
+    ) -> Page[ActivityView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("list_plugin_outbox"))
+        return await self._port.list_plugin_outbox(request, plugin_id=plugin_id)
+
+    async def read_plugin_observation(
+        self, context: object, plugin_id: str, *, cursor: str | None = None, limit: int = 10
+    ) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_plugin_observation"))
+        return await self._port.read_plugin_observation(plugin_id, cursor=cursor, limit=limit)
+
+    async def read_plugin_configuration(
+        self,
+        context: object,
+        plugin_id: str,
+        *,
+        scope_type: str = "global",
+        owner_id: str | None = None,
+    ) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_plugin_configuration"))
+        return await self._port.read_plugin_configuration(
+            plugin_id, scope_type=scope_type, owner_id=owner_id
+        )
+
     def __init__(self, port: ControlQueryPort) -> None:
         if port is None:
             raise TypeError("port is required")

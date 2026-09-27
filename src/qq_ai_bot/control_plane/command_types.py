@@ -84,6 +84,7 @@ _MANAGEMENT_STATE_KEYS: Final[frozenset[str]] = frozenset({"resource", "revision
 _MANAGEMENT_OPERATIONS: Final[frozenset[str]] = frozenset(
     {
         "control.config.file.save",
+        "control.plugin.configure",
         "control.config.set",
         "control.config.unset",
         "control.config.rollback",
@@ -181,6 +182,7 @@ class CommandOperation(StrEnum):
     MEMORY_MAINTENANCE = "control.memory.maintenance"
     AUTOMATION_MUTATE = "control.automation.mutate"
     PLUGIN_MUTATE = "control.plugin.mutate"
+    PLUGIN_CONFIGURE = "control.plugin.configure"
     MCP_MUTATE = "control.mcp.mutate"
     EMOJI_MUTATE = "control.emoji.mutate"
     SPEECH_MUTATE = "control.speech.mutate"
@@ -1108,6 +1110,10 @@ def _require_management_semantics(
             raise _mismatch()
         return
     action = _material_action(material)
+    if operation == CommandOperation.PLUGIN_CONFIGURE.value:
+        if action != "save" or status != "saved" or resource_id != _material_resource(material):
+            raise _mismatch()
+        return
     if operation == CommandOperation.CONFIG_FILE_SAVE.value:
         if (
             action != "save"

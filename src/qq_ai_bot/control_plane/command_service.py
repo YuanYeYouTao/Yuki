@@ -47,6 +47,13 @@ def _require_command(
 class ControlCommandService:
     """Authorize then mutate. Does not invent principals, actors, or capabilities."""
 
+    async def configure_plugin(self, context: object, command: object) -> ControlResult:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("configure_plugin"))
+        return await self._port.configure_plugin(
+            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
+        )
+
     def __init__(self, port: ControlCommandPort) -> None:
         if port is None:
             raise TypeError("port is required")

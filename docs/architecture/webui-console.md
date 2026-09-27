@@ -65,7 +65,7 @@ UTF-8；完整下载最多 32 MiB，校验原摘要。大文件与不存在/过�
 | Work/自动化 | 原 Work 预算、等待、子工作、输入、效果/投递意图、检查点与恢复元数据、轨迹；自动化脚本、最近 20 run/200 step；创建、编辑、暂停/恢复、取消、run_now |
 | 自主参与 | 当前只读控制器状态与已接纳轮次/最新反馈；不 tick、不重算、不调用 Jev |
 | Memory | fact、证据、维护工作、确认/隔离、既有 rebuild/dream/maintain 入口 |
-| 插件/MCP | 现有目录与 Manager 状态、批准/启停/doctor、refresh/reconnect |
+| 插件/MCP | 原 schema 配置、GitHub queue/cursor/诊断、通知 outbox；Manager 批准/启停/doctor、MCP refresh/reconnect |
 | 身份/配置 | canonical Person/Space/Presence 与原动作；Registry schema、作用域有效配置、保存/删除覆盖 |
 | 工作区/素材 | 共享 artifact 列表、文本预览、授权下载；表情与语音目录及原管理动作 |
 | 审计 | 执行诊断、Control/rebuild/dream 原状态与回执、管理审计、Social 投递确定性 |
@@ -126,13 +126,48 @@ transport target 或子任务 brief/result。等待条件只返回审核字段�
 不会反射任意 matched payload。内容详情沿已授权的原执行诊断查看；诊断过期/缺失
 不从私有恢复包补造。页面查询不 tick、不启动模型、不改变等待、预算、输入消费或回执。
 
+## 插件配置与只读状态
+
+`read_plugin_configuration` / `configure_plugin` 使用 Manager 已批准并注册的原 Pydantic
+schema；查询不发现、导入或启用插件。没有已加载 schema 时明确不可用。表单与 Profile
+共用递归 schema 字段组件，支持仓库、分支、事件类型和嵌套通知目标的增删。未支持的
+自由结构字段明确要求服务器编辑，不把对象转换成普通字符串。
+
+配置沿用 `plugin_config_values`，global、user、group 各范围独立核对原行摘要版本；
+user/group 必须提供 live canonical Person/Space UUID，不能拿平台 ID 重建归属。
+完整 schema 的字段边界和跨字段 validator 在写事务前执行；短 immediate 事务重新
+核对版本及所有权后整体保存，原行版本递增。配置最多 256 KiB/256 个键，不再声明的
+旧键不投影，保存时删除；Secret 始终属于原 Secrets 服务。保存回执为 `saved`，
+是否立即生效由插件自身的读取逻辑决定；schema 默认值预览不证明当前运行值。
+配置正文/观察需 `control.plugin.config.content.read`，保存需独立
+`control.plugin.config.mutate`；审计不记录配置值，原 UUID/unknown 围栏继续生效。
+
+SDK 可选 `ObservablePlugin.observe(context, request)` 返回插件自己维护的 JSON 投影。
+Host 只传插件自身的全局 config.get 与 storage.get，保留其批准权限；不提供写入、
+HTTP、Secret、通知或 Agent 方法。工厂和 callback 合计最多 5 秒，结果最多 64 KiB，
+不持有 Manager lock 或 SQLite writer；返回前核验原运行实例。不支持的插件明确不可用。
+这是可信进程内插件的只读调用合同，不能声称隔离任意 Python 代码；已有生命周期不变。
+
+GitHub Monitor 按原配置仓库分页，读取原 authoritative queue 和诊断类别，显示
+accepted/committed cursor、轮询/成功时间、暂停、失败、限流、pending/inflight 数量及
+有界投递元数据。不存在的队列保留未知，损坏状态明确报错；不迁移旧状态、不请求 GitHub、
+不触发轮询/封口/重发。各读取是即时观测，不保证跨仓库或跨 config/state 的事务快照。
+不返回 prepared 通知原文、原 payload、媒体句柄或请求私有材料；GitHub 来源 ID 明确
+标为 `github_event_id`，Host 因果仍使用原 `source_event_id`（`chat_events.id`）。
+
+`list_plugin_outbox` 有界分页绑定插件，SQL 只加载元数据，不加载通知正文/媒体/平台目标；
+平台回执只显示是否存在。重试复用原 `mutate_plugin(action=retry)`：仅 failed、
+无平台回执、确认未发送的三种失败类别且剩余预算/原内部归属成立；执行时重新核验。
+结果 unknown/uncertain、已发送、预算耗尽或缺少原 canonical owner 不进入 live 队列。
+历史缺少归属返回持久 `state_mismatch`，不按平台目标重新寻找主人。
+
 ## 仍在建设的完整功能
 
 本层不是完整 WebUI 的最终验收。后续沿原领域服务继续建设：
 
 - Work 领域允许的取消/续跑及更多历史关系分页，不以新 run 替代旧执行恢复。
 - Jev 完整决策历史、参与参数编辑与关系/自省统计；当前未持久化的数据不能伪造为历史。
-- 插件 schema 配置、监控游标/queue/outbox 详情与有证据的处理。
+- 插件 background turn 的完整历史分页，以及插件领域明确定义的队列维护动作；不提供任意 KV 编辑或无证据重发。
 - Memory 主体/证据筛选与关系详情、完整 schema 表单。
 - 工作区上传/编辑/删除/终端，与对应文件审批、版本与持久环境合同。
 
@@ -154,7 +189,8 @@ npm run build
 cd ..
 uv sync --frozen --extra dev
 uv run pytest tests/unit/test_webui_http.py tests/unit/test_webui_activity.py \
-  tests/unit/test_control_config_files.py tests/unit/test_control_work_details.py
+  tests/unit/test_control_config_files.py tests/unit/test_control_work_details.py \
+  tests/unit/test_control_plugin_configuration.py plugins/github-monitor/tests
 ```
 
 wheel 构建会包含已生成资源；源码安装启用 WebUI 前必须运行上述构建。

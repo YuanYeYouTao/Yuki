@@ -11,6 +11,10 @@ from qq_ai_bot.control_plane.principal import ControlPrincipal
 class ControlCommandPort(Protocol):
     """Authorized mutations. Must not invent principals or capability strings."""
 
+    async def configure_plugin(
+        self, principal: ControlPrincipal, target: object, command: ControlCommand
+    ) -> ControlResult: ...
+
     async def enable_person(
         self,
         principal: ControlPrincipal,

@@ -370,6 +370,18 @@ select:focus-visible {
   padding: 12px;
   min-width: 0;
 }
+.config-array {
+  grid-column: 1 / -1;
+  min-width: 0;
+  border: 1px solid var(--border);
+  padding: 12px;
+}
+.config-array-item {
+  min-width: 0;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px dashed var(--border);
+}
 .config-checkboxes label {
   display: inline-flex;
   align-items: center;

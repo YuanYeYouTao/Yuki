@@ -98,6 +98,7 @@ class QueryResourceKind(StrEnum):
     MEMORY_JOB = "memory_job"
     AUTOMATION = "automation"
     PLUGIN = "plugin"
+    PLUGIN_OUTBOX = "plugin_outbox"
     MCP = "mcp"
     EMOJI = "emoji"
     SPEECH = "speech"

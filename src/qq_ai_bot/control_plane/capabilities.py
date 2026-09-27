@@ -569,6 +569,18 @@ CONTROL_CAPABILITY_DESCRIPTORS: Final[tuple[ControlCapabilityDescriptor, ...]] =
         mutating=True,
     ),
     _descriptor(
+        "control.plugin.config.content.read",
+        CapabilityFamily.CONTROL,
+        CapabilitySensitivity.CONTENT_READ,
+        mutating=False,
+    ),
+    _descriptor(
+        "control.plugin.config.mutate",
+        CapabilityFamily.CONTROL,
+        CapabilitySensitivity.MUTATE,
+        mutating=True,
+    ),
+    _descriptor(
         "control.plugin.read",
         CapabilityFamily.CONTROL,
         CapabilitySensitivity.METADATA_READ,

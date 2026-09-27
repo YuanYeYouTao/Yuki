@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import Protocol
+
+from pydantic import BaseModel
 
 from qq_ai_bot.persistence.unit_of_work import state_revision
 from qq_ai_bot.plugin_host.discovery import DiscoveredPlugin
@@ -25,7 +28,13 @@ from qq_ai_bot.plugin_host.repository import (
 )
 from yuki_plugin_sdk.context import PluginContext
 from yuki_plugin_sdk.errors import PluginLifecycleError
-from yuki_plugin_sdk.models import RestartPolicy, StrictModel
+from yuki_plugin_sdk.models import JsonValue, RestartPolicy, StrictModel
+from yuki_plugin_sdk.observation import (
+    JsonObject,
+    ObservablePlugin,
+    PluginObservationContext,
+    PluginObservationRequest,
+)
 from yuki_plugin_sdk.permissions import PluginPermission
 from yuki_plugin_sdk.registrar import (
     BackgroundServiceRegistration,
@@ -358,6 +367,51 @@ class PluginManager:
 
     async def show(self, plugin_id: str) -> PluginInstallationRecord | None:
         return await self._installations.get(plugin_id)
+
+    def configuration_schema(self, plugin_id: str) -> type[BaseModel] | None:
+        """Use the already-approved registration; never import/start code on a query."""
+        items = self._extensions.list(plugin_id=plugin_id, kind=ExtensionKind.CONFIG_SCHEMA)
+        if len(items) != 1:
+            return None
+        schema = items[0].registration
+        return schema if isinstance(schema, type) and issubclass(schema, BaseModel) else None
+
+    async def observe(self, plugin_id: str, request: PluginObservationRequest) -> JsonObject:
+        async with self._lock:
+            managed = self._running.get(plugin_id)
+            if managed is None or not isinstance(managed.loaded.instance, ObservablePlugin):
+                raise PluginManagementRejected("observation_unavailable")
+            instance = managed.loaded.instance
+            if not inspect.iscoroutinefunction(instance.observe):
+                raise PluginManagementRejected("observation_unavailable")
+            permissions = managed.approved_permissions & frozenset(
+                {
+                    PluginPermission.PLUGIN_CONFIG_READ,
+                    PluginPermission.STORAGE_PRIVATE,
+                }
+            )
+            manifest = managed.manifest
+        # No manager lock or SQLite writer is held while plugin code observes.
+        async with asyncio.timeout(5):
+            context = self._context_factory(manifest, permissions)
+            if inspect.isawaitable(context):
+                context = await context
+
+            async def config(key: str) -> JsonValue:
+                return await context.config.get(key)
+
+            async def state(namespace: str, key: str) -> JsonValue:
+                return await context.storage.get(namespace, key)
+
+            result = await instance.observe(PluginObservationContext(config, state), request)
+        # Observations are public plugin projections, never the private context.
+        encoded = json.dumps(result, ensure_ascii=False, allow_nan=False)
+        if type(result) is not dict or len(encoded.encode()) > 64 * 1024:
+            raise PluginManagementRejected("observation_invalid")
+        async with self._lock:
+            if self._running.get(plugin_id) is not managed:
+                raise PluginManagementRejected("observation_changed")
+        return result
 
     async def doctor(self, plugin_id: str) -> PluginDoctorReport:
         async with self._lock:

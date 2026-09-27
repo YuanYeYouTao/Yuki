@@ -37,6 +37,7 @@ CANONICAL_RESOURCE_KINDS: Final[frozenset[QueryResourceKind]] = frozenset(
         QueryResourceKind.MEMORY_JOB,
         QueryResourceKind.AUTOMATION,
         QueryResourceKind.PLUGIN,
+        QueryResourceKind.PLUGIN_OUTBOX,
         QueryResourceKind.MCP,
         QueryResourceKind.EMOJI,
         QueryResourceKind.SPEECH,

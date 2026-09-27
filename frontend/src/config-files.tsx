@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { SchemaFields } from "./schema-fields";
 import type { Row } from "./api";
 import type { PageProps } from "./pages";
 import { useQuery } from "./hooks";
@@ -27,188 +28,6 @@ const names: Record<string, string> = {
   wire_options: "协议参数覆盖",
   thinking_mode: "旧版思考选项",
 };
-
-function resolve(field: Row, root: Row): Row {
-  if (field.$ref)
-    return resolve(
-      ((root.$defs as Row)?.[String(field.$ref).split("/").pop()!] ||
-        {}) as Row,
-      root,
-    );
-  if (field.anyOf)
-    return resolve(
-      (field.anyOf as Row[]).find((item) => item.type !== "null") || {},
-      root,
-    );
-  return field;
-}
-
-function SchemaFields({
-  values,
-  schema,
-  root,
-  change,
-  prefix,
-}: {
-  values: Row;
-  schema: Row;
-  root: Row;
-  change: (values: Row) => void;
-  prefix: string;
-}) {
-  const properties = (schema.properties || {}) as Record<string, Row>;
-  const required = (schema.required || []) as string[];
-  function set(name: string, value: unknown) {
-    const next = { ...values };
-    if (value === undefined) delete next[name];
-    else next[name] = value;
-    change(next);
-  }
-  return (
-    <div className="config-fields">
-      {Object.entries(properties).map(([name, raw]) => {
-        if (["id", "headers", "thinking_enabled"].includes(name)) return null;
-        const field = resolve(raw, root);
-        const value = values[name];
-        const options = (field.enum as string[] | undefined)?.filter(
-          (option) =>
-            name !== "reasoning_effort" ||
-            !["none", "minimal"].includes(option),
-        );
-        const id = `${prefix}-${name}`;
-        if (field.type === "object")
-          return (
-            <details key={name} className="json-note">
-              <summary>{names[name] || name}</summary>
-              {value == null ? (
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  onClick={() => set(name, {})}
-                >
-                  添加覆盖
-                </button>
-              ) : (
-                <>
-                  <SchemaFields
-                    values={value as Row}
-                    schema={field}
-                    root={root}
-                    prefix={id}
-                    change={(next) => set(name, next)}
-                  />
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    onClick={() => set(name, undefined)}
-                  >
-                    使用供应商默认参数
-                  </button>
-                </>
-              )}
-            </details>
-          );
-        if (field.type === "array") {
-          const items = resolve((field.items || {}) as Row, root);
-          const choices = (items.enum as string[] | undefined)?.filter(
-            (option) =>
-              name !== "effort_levels" || !["none", "minimal"].includes(option),
-          );
-          if (choices)
-            return (
-              <fieldset key={name} className="config-checkboxes">
-                <legend>{names[name] || name}</legend>
-                {choices.map((option) => (
-                  <label key={option}>
-                    <input
-                      type="checkbox"
-                      checked={((value || []) as string[]).includes(option)}
-                      onChange={(e) =>
-                        set(
-                          name,
-                          choices.filter((item) =>
-                            item === option
-                              ? e.target.checked
-                              : ((value || []) as string[]).includes(item),
-                          ),
-                        )
-                      }
-                    />
-                    {option}
-                  </label>
-                ))}
-                {!required.includes(name) && (
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    onClick={() => set(name, undefined)}
-                  >
-                    使用默认值
-                  </button>
-                )}
-              </fieldset>
-            );
-        }
-        return (
-          <label key={name} htmlFor={id} className="form-group">
-            {names[name] || name}
-            {required.includes(name) ? " *" : ""}
-            {options || field.type === "boolean" ? (
-              <select
-                id={id}
-                className="form-control"
-                value={value == null ? "" : String(value)}
-                onChange={(e) =>
-                  set(
-                    name,
-                    e.target.value === ""
-                      ? undefined
-                      : field.type === "boolean"
-                        ? e.target.value === "true"
-                        : e.target.value,
-                  )
-                }
-              >
-                <option value="">使用配置默认值</option>
-                {(options || ["true", "false"]).map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                id={id}
-                className="form-control"
-                autoComplete="off"
-                type={
-                  field.type === "integer" || field.type === "number"
-                    ? "number"
-                    : "text"
-                }
-                step={field.type === "integer" ? "1" : "any"}
-                min={field.minimum as number | undefined}
-                max={field.maximum as number | undefined}
-                value={value == null ? "" : String(value)}
-                placeholder={field.default == null ? "" : String(field.default)}
-                onChange={(e) =>
-                  set(
-                    name,
-                    e.target.value === ""
-                      ? undefined
-                      : field.type === "integer" || field.type === "number"
-                        ? Number(e.target.value)
-                        : e.target.value,
-                  )
-                }
-              />
-            )}
-          </label>
-        );
-      })}
-    </div>
-  );
-}
 
 function ModelDocument({
   fields,
@@ -292,6 +111,13 @@ function ModelDocument({
           <h3>{selected}</h3>
           <SchemaFields
             values={profile}
+            labels={names}
+            omit={["id", "headers", "thinking_enabled"]}
+            choices={(name, values) =>
+              ["reasoning_effort", "effort_levels"].includes(name)
+                ? values.filter((value) => !["none", "minimal"].includes(value))
+                : values
+            }
             schema={schema}
             root={schema}
             prefix={`profile-${selected}`}

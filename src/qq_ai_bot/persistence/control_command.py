@@ -724,6 +724,19 @@ class ControlCommandAdapter:
             invoke=self._management.retry_plugin_notification,
         )
 
+    async def configure_plugin(
+        self, principal: ControlPrincipal, target: object, command: ControlCommand
+    ) -> ControlResult:
+        if target is not YukiControlTarget.PERMANENT_YUKI:
+            raise ControlCommandError(Problem(ProblemCode.VALIDATION_ERROR))
+        return await self._management_action(
+            principal,
+            target,
+            command,
+            operation=CommandOperation.PLUGIN_CONFIGURE.value,
+            capability="control.plugin.config.mutate",
+        )
+
     async def mutate_mcp(
         self,
         principal: ControlPrincipal,
@@ -819,6 +832,7 @@ class ControlCommandAdapter:
                 CommandOperation.MCP_MUTATE.value,
                 CommandOperation.MEMORY_MAINTENANCE.value,
                 CommandOperation.CONFIG_FILE_SAVE.value,
+                CommandOperation.PLUGIN_CONFIGURE.value,
             }
             or (operation == CommandOperation.PLUGIN_MUTATE.value and parsed.action != "retry")
         ):

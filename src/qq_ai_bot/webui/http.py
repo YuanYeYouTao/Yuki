@@ -50,6 +50,9 @@ _SIMPLE_QUERIES = frozenset(name for kind, name, _ in _METHODS if kind == "query
     "list_operations",
     "read_operation",
     "read_plugin_runtime",
+    "read_plugin_configuration",
+    "read_plugin_observation",
+    "list_plugin_outbox",
     "read_automation",
     "read_workspace",
     "list_work",
@@ -316,6 +319,25 @@ def attach_webui(
             if set(data) != {key}:
                 raise ValueError("invalid activity lookup")
             result = await getattr(queries, method)(ctx, data[key])
+        elif method == "list_plugin_outbox":
+            if set(data) - {"plugin_id", "page"} or "plugin_id" not in data:
+                raise ValueError("invalid plugin outbox scope")
+            result = await queries.list_plugin_outbox(ctx, page, plugin_id=data["plugin_id"])
+        elif method == "read_plugin_observation":
+            if set(data) - {"plugin_id", "cursor", "limit"} or "plugin_id" not in data:
+                raise ValueError("invalid plugin observation lookup")
+            result = await queries.read_plugin_observation(
+                ctx, data["plugin_id"], cursor=data.get("cursor"), limit=data.get("limit", 10)
+            )
+        elif method == "read_plugin_configuration":
+            if set(data) - {"plugin_id", "scope_type", "owner_id"} or "plugin_id" not in data:
+                raise ValueError("invalid plugin configuration lookup")
+            result = await queries.read_plugin_configuration(
+                ctx,
+                data["plugin_id"],
+                scope_type=data.get("scope_type", "global"),
+                owner_id=data.get("owner_id"),
+            )
         elif method in {"read_operation", "read_plugin_runtime"}:
             if method == "read_operation" and set(data) == {"request_id"}:
                 original = RequestId.parse(data["request_id"])

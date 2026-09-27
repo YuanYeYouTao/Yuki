@@ -33,6 +33,7 @@ from qq_ai_bot.model_runtime.db_models import ModelInvocationModel
 from qq_ai_bot.persistence.control_execution_query import _key, _page
 from qq_ai_bot.persistence.models import AutomationModel, AutomationRunModel, AutomationStepRunModel
 from qq_ai_bot.persistence.unit_of_work import state_revision
+from qq_ai_bot.plugin_host.db_models import PluginNotificationOutboxModel
 from qq_ai_bot.runtime.work_schema_v1 import work
 from qq_ai_bot.services.media_resolver import MediaResolutionError
 from qq_ai_bot.workspace.store import WorkspaceError, WorkspaceStore
@@ -69,6 +70,94 @@ class ControlActivityQueryAdapter:
         self._reader = reader
         self._workspace = workspace
         self._media = conversation_media
+
+    async def list_plugin_outbox(
+        self, request: PageRequest, *, plugin_id: str
+    ) -> Page[ActivityView]:
+        if type(plugin_id) is not str or not 1 <= len(plugin_id) <= 128:
+            raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
+        key = _key(request, QueryResourceKind.PLUGIN_OUTBOX, plugin_id)
+        model = PluginNotificationOutboxModel
+        # Metadata only: never load message content, media handles or platform IDs.
+        stmt = select(
+            model.id,
+            model.notification_id,
+            model.source_event_id,
+            model.part_type,
+            model.status,
+            model.attempts,
+            model.max_attempts,
+            model.next_attempt_at,
+            model.last_error_category,
+            model.platform_message_id.is_not(None).label("has_receipt"),
+            and_(
+                model.canonical_conversation_id.is_not(None),
+                model.canonical_presence_id.is_not(None),
+                or_(
+                    and_(
+                        model.canonical_target_person_id.is_not(None),
+                        model.canonical_target_space_id.is_(None),
+                    ),
+                    and_(
+                        model.canonical_target_space_id.is_not(None),
+                        model.canonical_target_person_id.is_(None),
+                    ),
+                ),
+            ).label("has_owner"),
+            model.canonical_conversation_id,
+            model.created_at,
+            model.updated_at,
+        ).where(model.plugin_id == plugin_id)
+        if key:
+            if (
+                not key.isascii()
+                or not key.isdecimal()
+                or not 1 <= len(key) <= 19
+                or not 1 <= int(key) <= 2**63 - 1
+            ):
+                raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
+            stmt = stmt.where(model.id < int(key))
+        async with self._reader() as session:
+            rows = (
+                await session.execute(stmt.order_by(model.id.desc()).limit(request.limit + 1))
+            ).all()
+        items = [
+            ActivityView(
+                str(row.id),
+                fields={
+                    "outbox_id": row.id,
+                    "plugin_id": plugin_id,
+                    "notification_id": row.notification_id,
+                    "source_event_id": row.source_event_id,
+                    "part_type": row.part_type,
+                    "status": row.status,
+                    "attempts": row.attempts,
+                    "max_attempts": row.max_attempts,
+                    "next_attempt_at": _stamp(row.next_attempt_at),
+                    "last_error_category": row.last_error_category,
+                    "has_platform_receipt": row.has_receipt,
+                    "conversation_id": row.canonical_conversation_id,
+                    "created_at": _stamp(row.created_at),
+                    "updated_at": _stamp(row.updated_at),
+                    "revision": state_revision(row.updated_at),
+                    "can_retry": row.status == "failed"
+                    and row.has_owner
+                    and not row.has_receipt
+                    and row.last_error_category
+                    in {"bot_unavailable", "gateway_disconnected", "effect_gate_timeout"}
+                    and row.attempts < row.max_attempts,
+                },
+            )
+            for row in rows[: request.limit]
+        ]
+        return _page(
+            items,
+            rows,
+            request,
+            QueryResourceKind.PLUGIN_OUTBOX,
+            plugin_id,
+            str(rows[request.limit - 1].id) if len(rows) >= request.limit else None,
+        )
 
     async def list_participation_runs(
         self, request: PageRequest, *, conversation_id: ConversationId | None = None

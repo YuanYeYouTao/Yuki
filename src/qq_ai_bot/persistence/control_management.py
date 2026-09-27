@@ -58,9 +58,14 @@ from qq_ai_bot.persistence.models import (
 )
 from qq_ai_bot.persistence.unit_of_work import next_updated_at
 from qq_ai_bot.persistence.unit_of_work import state_revision as _state_revision
+from qq_ai_bot.plugin_host.configuration_service import (
+    PluginConfigurationError,
+    PluginConfigurationService,
+)
 from qq_ai_bot.plugin_host.db_models import PluginInstallationModel, PluginNotificationOutboxModel
 from qq_ai_bot.plugin_host.manager import PluginManager
 from qq_ai_bot.plugin_host.notification_repository import PluginNotificationRepository
+from qq_ai_bot.plugin_host.ownership import PluginOwnershipError
 from qq_ai_bot.speech.db_models import SpeechVoiceProfileModel
 from qq_ai_bot.speech.repository import VoiceProfileRepository
 from yuki_plugin_sdk.permissions import PluginPermission
@@ -162,7 +167,12 @@ class ControlManagementGateway:
         operation: str,
         parsed: ManagementActionPayload,
     ) -> None:
-        if operation == CommandOperation.CONFIG_FILE_SAVE.value:
+        if operation == CommandOperation.PLUGIN_CONFIGURE.value:
+            if self._plugins is None:
+                raise ManagementUnavailable
+            if parsed.action != "save" or parsed.spec is None:
+                raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
+        elif operation == CommandOperation.CONFIG_FILE_SAVE.value:
             if self._config_files is None:
                 raise ManagementUnavailable
             if (
@@ -221,6 +231,16 @@ class ControlManagementGateway:
         operation: str,
         parsed: ManagementActionPayload,
     ) -> ManagementMutation:
+        if operation == CommandOperation.PLUGIN_CONFIGURE.value:
+            if self._plugins is None:
+                raise ManagementUnavailable
+            try:
+                revision = await PluginConfigurationService(
+                    self._database, self._plugins.configuration_schema
+                ).save(parsed.resource_id, command.expected_revision, parsed.spec or {})
+            except PluginConfigurationError as exc:
+                raise ManagementFailure(ProblemCode(exc.category)) from None
+            return ManagementMutation(parsed.resource_id, revision, "saved")
         if operation == CommandOperation.CONFIG_FILE_SAVE.value:
             if self._config_files is None:
                 raise ManagementUnavailable
@@ -725,9 +745,12 @@ class ControlManagementGateway:
                 or current_outbox.attempts >= current_outbox.max_attempts
             ):
                 raise ManagementFailure(ProblemCode.PRECONDITION_FAILED)
-            await PluginNotificationRepository(self._database).retry_outbox(
-                item_id, error_category="manual_retry", session=session
-            )
+            try:
+                await PluginNotificationRepository(self._database).retry_outbox(
+                    item_id, error_category="manual_retry", session=session
+                )
+            except PluginOwnershipError:
+                raise ManagementFailure(ProblemCode.STATE_MISMATCH) from None
             updated_outbox = await session.get(PluginNotificationOutboxModel, item_id)
             if updated_outbox is None:
                 raise ManagementFailure(ProblemCode.NOT_FOUND)
