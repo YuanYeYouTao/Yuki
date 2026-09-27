@@ -17,6 +17,7 @@ from tests.unit.test_control_plane_foundation import context
 
 from qq_ai_bot.control_plane import ControlQueryError, ControlQueryService, PageRequest, ProblemCode
 from qq_ai_bot.control_plane.query_types import ExecutionTraceFilter
+from qq_ai_bot.control_plane.wire import control_response
 from qq_ai_bot.domain.identity import ConversationId
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ChatResponse, ToolCall, ToolFunction
 from qq_ai_bot.execution_trace.db_models import ExecutionTraceEntryModel
@@ -281,7 +282,18 @@ async def test_query_authorization_paging_retention_and_corruption(database):
     with pytest.raises(ControlQueryError) as denied:
         await service.list_execution_trace(context(), PageRequest(), scope=scope)
     assert denied.value.problem.code is ProblemCode.CAPABILITY_DENIED
-    first = await service.list_execution_trace(metadata, PageRequest(limit=1), scope=scope)
+    selected_sql = []
+
+    def capture_sql(conn, cursor, statement, parameters, execution_context, executemany):
+        if statement.startswith("SELECT") and "FROM execution_trace_entries" in statement:
+            selected_sql.append(statement)
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", capture_sql)
+    try:
+        first = await service.list_execution_trace(metadata, PageRequest(limit=1), scope=scope)
+    finally:
+        event.remove(database.engine.sync_engine, "before_cursor_execute", capture_sql)
+    assert selected_sql and all("payload_gzip" not in statement for statement in selected_sql)
     assert first.items[0].payload is None and first.next_cursor
     with pytest.raises(ControlQueryError):
         await service.list_execution_trace(
@@ -304,16 +316,20 @@ async def test_query_authorization_paging_retention_and_corruption(database):
     )
     full = await service.read_execution_trace(content, first.items[0].id)
     assert full.payload["data"]["prompt"] == "private"
+    wire = json.loads(json.dumps(control_response(content.request_id, full)))
+    assert wire["data"]["id"] == full.id
+    assert wire["data"]["payload"]["data"]["prompt"] == "private"
     with pytest.raises(TypeError):
         full.payload["new"] = "mutable"
     with pytest.raises(ControlQueryError):
         await service.read_execution_trace(content, full.id, conversation_id=ConversationId.new())
-    async with database.sessions() as session, session.begin():
-        row = await session.get(ExecutionTraceEntryModel, full.id)
-        row.payload_gzip = b"corrupt gzip"
-    with pytest.raises(ControlQueryError) as corrupt:
-        await service.read_execution_trace(content, full.id)
-    assert corrupt.value.problem.code is ProblemCode.STATE_MISMATCH
+    for invalid_blob in (None, b"corrupt gzip"):
+        async with database.sessions() as session, session.begin():
+            row = await session.get(ExecutionTraceEntryModel, full.id)
+            row.payload_gzip = invalid_blob
+        with pytest.raises(ControlQueryError) as corrupt:
+            await service.read_execution_trace(content, full.id)
+        assert corrupt.value.problem.code is ProblemCode.STATE_MISMATCH
     assert await recorder.cleanup_expired(now=datetime.now(UTC) + timedelta(days=31)) == 3
     assert not (await service.list_execution_trace(metadata, PageRequest(), scope=scope)).items
     async with trace_span("turn", {}, recorder=recorder):

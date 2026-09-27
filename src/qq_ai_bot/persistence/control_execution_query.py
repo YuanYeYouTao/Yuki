@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 
 from qq_ai_bot.control_plane.paging import Page, PageRequest
 from qq_ai_bot.control_plane.problems import Problem, ProblemCode
@@ -76,6 +77,10 @@ def _trace_view(row: ExecutionTraceEntryModel, include_content: bool) -> Executi
 
 def _build_trace_view(row: ExecutionTraceEntryModel, include_content: bool) -> ExecutionTraceView:
     payload = None
+    if include_content and (
+        (row.payload_status in {"recorded", "redacted"}) != (row.payload_gzip is not None)
+    ):
+        raise ValueError("inconsistent trace payload status")
     if include_content and row.payload_gzip is not None:
         try:
             payload = decode_payload(
@@ -142,6 +147,8 @@ class ControlExecutionQueryAdapter:
         stmt = select(ExecutionTraceEntryModel).where(
             ExecutionTraceEntryModel.expires_at > datetime.now(UTC)
         )
+        if not include_content:
+            stmt = stmt.options(defer(ExecutionTraceEntryModel.payload_gzip, raiseload=True))
         if scope.conversation_id:
             stmt = stmt.where(
                 ExecutionTraceEntryModel.conversation_id == scope.conversation_id.text
