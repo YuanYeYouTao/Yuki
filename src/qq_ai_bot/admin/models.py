@@ -115,6 +115,7 @@ class AdminOperationEvent:
     created_at: datetime
     actor_principal_kind: str | None = None
     actor_principal_id: str | None = None
+    control_request_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +152,7 @@ class ControlAuditRef:
     ingress_presence_id: str | None = None
     principal_kind: str | None = None
     principal_id: str | None = None
+    control_request_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

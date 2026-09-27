@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -29,10 +28,6 @@ class Database:
         self.url = url
         self.subagents_enabled = False
         self._ensure_sqlite_parent(url)
-        # Runtime configuration mutations share one process-wide database owner.
-        # Keeping the lock here prevents separately constructed service facades from
-        # racing their read/validate/write/audit sequence.
-        self.runtime_config_mutation_lock = asyncio.Lock()
         self.engine: AsyncEngine = create_async_engine(url, pool_pre_ping=True)
         if url.startswith("sqlite+aiosqlite:///"):
             event.listen(self.engine.sync_engine, "connect", self._configure_sqlite_connection)

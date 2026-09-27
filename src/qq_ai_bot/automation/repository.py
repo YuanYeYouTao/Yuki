@@ -367,14 +367,16 @@ class AutomationRepository:
             rows = (await session.scalars(query)).all()
         return tuple(_automation_record(row) for row in rows)
 
-    async def active_count(self, creator_person_id: str | None = None) -> int:
+    async def active_count(
+        self, creator_person_id: str | None = None, *, session: AsyncSession | None = None
+    ) -> int:
         query = select(func.count(AutomationModel.id)).where(
             AutomationModel.status == AutomationStatus.ACTIVE.value
         )
         if creator_person_id is not None:
             query = query.where(self._owner_clause(creator_person_id))
-        async with self._database.sessions() as session:
-            return int(await session.scalar(query) or 0)
+        async with optional_session(self._database, session, write=False) as active:
+            return int(await active.scalar(query) or 0)
 
     async def set_status(
         self,
@@ -399,6 +401,9 @@ class AutomationRepository:
                 .where(
                     AutomationModel.id == automation_id,
                     self._owner_clause(creator_person_id),
+                    AutomationModel.status.not_in(
+                        [AutomationStatus.CANCELLED.value, AutomationStatus.COMPLETED.value]
+                    ),
                 )
                 .values(**values)
             )

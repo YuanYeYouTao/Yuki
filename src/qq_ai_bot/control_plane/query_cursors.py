@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Final
 
-from qq_ai_bot.control_plane.operations import StateEpoch
+from qq_ai_bot.control_plane.operations import OperationKind, StateEpoch
 from qq_ai_bot.control_plane.paging import Cursor
 from qq_ai_bot.control_plane.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_types import (
@@ -30,6 +30,9 @@ CANONICAL_RESOURCE_KINDS: Final[frozenset[QueryResourceKind]] = frozenset(
         QueryResourceKind.SPACE_ROUTE,
         QueryResourceKind.OPERATION,
         QueryResourceKind.CONFIG,
+        QueryResourceKind.CONFIG_SPEC,
+        QueryResourceKind.CONFIG_EFFECTIVE,
+        QueryResourceKind.MEMORY_EVIDENCE,
         QueryResourceKind.MEMORY_FACT,
         QueryResourceKind.MEMORY_JOB,
         QueryResourceKind.AUTOMATION,
@@ -129,23 +132,15 @@ def encode_operation_cursor_key(created_at: datetime, kind: int, local_id: int) 
     return f"{stamp}#{kind}#{local_id}"
 
 
-def decode_operation_cursor_key(key: str) -> tuple[datetime, int, int]:
-    try:
-        token = require_opaque_token(key, name="cursor_key", max_length=200)
-    except (TypeError, ValueError) as exc:
-        raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR)) from exc
-    stamp, first, rest = token.partition("#")
-    kind_token, second, raw_id = rest.partition("#")
-    if first != "#" or second != "#" or not stamp or not kind_token or not raw_id:
+def decode_operation_cursor_key(key: str) -> tuple[OperationKind, int]:
+    kind_token, separator, raw_id = key.partition(":")
+    if separator != ":":
         raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
-    kind = decode_integer_cursor_key(kind_token, minimum=1)
-    local_id = decode_integer_cursor_key(raw_id, minimum=1)
     try:
-        created_at = datetime.fromisoformat(stamp)
-        require_aware_datetime(created_at, name="created_at")
+        kind = OperationKind(kind_token)
     except (TypeError, ValueError) as exc:
         raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR)) from exc
-    return created_at, kind, local_id
+    return kind, decode_integer_cursor_key(raw_id, minimum=1)
 
 
 def encode_time_id_key(created_at: datetime, row_id: int) -> str:

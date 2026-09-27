@@ -41,6 +41,10 @@ class WorkScheduler:
         self._last_error: str | None = None
         self._last_reclaim = 0.0
 
+    @property
+    def running(self) -> bool:
+        return self._worker is not None and not self._worker.done()
+
     async def start(self) -> None:
         # Existing accepted Work must recover even when optional chat admission is off.
         # SELF always uses durable Work, including the legacy participation proposer.
@@ -82,7 +86,7 @@ class WorkScheduler:
             else 0,
             "enabled": True,
             "chat_admission_enabled": self.app.settings.runtime_work_enabled,
-            "running": self._worker is not None and not self._worker.done(),
+            "running": self.running,
             "last_error_category": self._last_error,
         }
 

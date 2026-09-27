@@ -572,7 +572,7 @@ async def test_deepseek_chat_dsml_uses_only_declared_tools():
             adapter._parse(response, replace(request(), tools=()))
 
 
-def test_existing_responses_revision_ignores_empty_new_defaults():
+def test_responses_revision_ignores_empty_new_defaults_and_canonicalizes_sets():
     profile = ModelProfile(
         id="main",
         provider="deepseek",
@@ -597,6 +597,8 @@ def test_existing_responses_revision_ignores_empty_new_defaults():
             mode="json", exclude={"wire_options", "headers", "max_output_tokens_limit"}
         ),
     }
+    legacy["profile"]["capabilities"] = sorted(legacy["profile"]["capabilities"])
+    legacy["route"]["required_capabilities"] = sorted(legacy["route"]["required_capabilities"])
     expected = hashlib.sha256(
         json.dumps(
             legacy, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str

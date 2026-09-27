@@ -1175,17 +1175,17 @@ def _require_management_semantics(
             return
         if resource_id != _material_resource(material):
             raise _mismatch()
-        expected = {
-            "approve": "approved",
-            "enable": "approved",
-            "disable": "disabled",
-            "doctor": None,
+        expected_statuses = {
+            "approve": {"approved"},
+            "enable": {"approved", "running"},
+            "disable": {"disabled"},
+            "doctor": set(),
         }.get(action)
         if action == "doctor":
             if status not in {"healthy", "unhealthy"}:
                 raise _mismatch()
             return
-        if expected is None or status != expected:
+        if expected_statuses is None or status not in expected_statuses:
             raise _mismatch()
         return
     if operation == CommandOperation.MCP_MUTATE.value:
@@ -1193,11 +1193,15 @@ def _require_management_semantics(
             raise _mismatch()
         if resource_id != _material_resource(material):
             raise _mismatch()
-        if action == "enable" and status != "enabled":
+        if action == "enable" and status not in {"enabled", "disconnected", "connected"}:
             raise _mismatch()
         if action == "disable" and status != "disabled":
             raise _mismatch()
-        if action in {"refresh", "reconnect"} and status not in {"enabled", "disabled"}:
+        if action in {"refresh", "reconnect"} and status not in {
+            "enabled",
+            "disabled",
+            "connected",
+        }:
             raise _mismatch()
         return
     if operation == CommandOperation.EMOJI_MUTATE.value:
@@ -1221,7 +1225,7 @@ def _require_management_semantics(
             raise _mismatch()
         if resource_id != _material_resource(material):
             raise _mismatch()
-        if action == "enable" and status != "enabled":
+        if action == "enable" and status not in {"enabled", "disconnected", "connected"}:
             raise _mismatch()
         if action == "disable" and status != "disabled":
             raise _mismatch()

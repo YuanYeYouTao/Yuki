@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
+from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.config import Settings
 from qq_ai_bot.control_plane.command_types import (
     CACHEABLE_COMMAND_FAILURES,
@@ -84,6 +85,8 @@ from qq_ai_bot.identity.db_models import (
 from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
+from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.persistence.control_external import ExternalControlExecutor
 from qq_ai_bot.persistence.control_management import (
     ControlManagementGateway,
     ManagementFailure,
@@ -92,6 +95,8 @@ from qq_ai_bot.persistence.control_management import (
 )
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import AdminOperationEventModel
+from qq_ai_bot.persistence.unit_of_work import next_updated_at
+from qq_ai_bot.plugin_host.manager import PluginManager
 
 _INVALID_TARGET = "invalid"
 
@@ -244,6 +249,9 @@ class ControlCommandAdapter:
         runtime_config: RuntimeConfigService | None = None,
         maintenance: MemoryMaintenanceWorker | None = None,
         embeddings: MemoryEmbeddingRuntime | None = None,
+        automation: AutomationService | None = None,
+        memories: MemoryFactService | None = None,
+        plugins: PluginManager | None = None,
     ) -> None:
         if type(database) is not Database:
             raise TypeError("database must be Database")
@@ -256,7 +264,14 @@ class ControlCommandAdapter:
             mcp=mcp_manager,
             maintenance=maintenance,
             embeddings=embeddings,
+            automation=automation,
+            memories=memories,
+            plugins=plugins,
         )
+        self._external = ExternalControlExecutor(self)
+
+    async def recover_interrupted_controls(self) -> int:
+        return await self._external.recover_interrupted()
 
     async def enable_person(
         self,
@@ -547,8 +562,6 @@ class ControlCommandAdapter:
             parse_problem=parse_problem,
             target_problem=None,
             mutate=lambda session: self._run_management(
-                session,
-                command,
                 CommandOperation.CONFIG_SET.value,
                 lambda: self._management.set_config(
                     session, principal, command, _require_parsed(parsed)
@@ -575,8 +588,6 @@ class ControlCommandAdapter:
             parse_problem=parse_problem,
             target_problem=None,
             mutate=lambda session: self._run_management(
-                session,
-                command,
                 CommandOperation.CONFIG_UNSET.value,
                 lambda: self._management.unset_config(
                     session, principal, command, _require_parsed(parsed)
@@ -601,8 +612,6 @@ class ControlCommandAdapter:
             parse_problem=parse_problem,
             target_problem=None,
             mutate=lambda session: self._run_management(
-                session,
-                command,
                 CommandOperation.CONFIG_ROLLBACK.value,
                 lambda: self._management.rollback_config(
                     session, principal, command, _require_parsed(parsed)
@@ -667,7 +676,6 @@ class ControlCommandAdapter:
             command,
             operation=CommandOperation.MEMORY_MAINTENANCE.value,
             capability="control.memory.maintenance",
-            invoke=self._management.maintain_memory,
         )
 
     async def mutate_automation(
@@ -697,9 +705,7 @@ class ControlCommandAdapter:
             command,
             operation=CommandOperation.PLUGIN_MUTATE.value,
             capability="control.plugin.mutate",
-            invoke=lambda session, principal, command, parsed: self._management.mutate_plugin(
-                session, command, parsed
-            ),
+            invoke=self._management.retry_plugin_notification,
         )
 
     async def mutate_mcp(
@@ -714,9 +720,6 @@ class ControlCommandAdapter:
             command,
             operation=CommandOperation.MCP_MUTATE.value,
             capability="control.mcp.mutate",
-            invoke=lambda session, principal, command, parsed: self._management.mutate_mcp(
-                session, command, parsed
-            ),
         )
 
     async def mutate_emoji(
@@ -791,9 +794,36 @@ class ControlCommandAdapter:
         *,
         operation: str,
         capability: str,
-        invoke: Callable[..., Awaitable[ManagementMutation]],
+        invoke: Callable[..., Awaitable[ManagementMutation]] | None = None,
     ) -> ControlResult:
         parsed, material, parse_problem = _try_parse(command, parse_management_action)
+        if parsed is not None and (
+            operation
+            in {CommandOperation.MCP_MUTATE.value, CommandOperation.MEMORY_MAINTENANCE.value}
+            or (operation == CommandOperation.PLUGIN_MUTATE.value and parsed.action != "retry")
+        ):
+            return await self._external.execute(
+                principal,
+                command,
+                operation=operation,
+                capability=capability,
+                parsed=parsed,
+                material=material,
+            )
+        prepared = None
+        if parsed is not None and operation in {
+            CommandOperation.MEMORY_REBUILD.value,
+            CommandOperation.MEMORY_DREAM.value,
+        }:
+            async with self._database.sessions() as reader:
+                existing = await self._load_receipt(reader, principal, command)
+            if existing is None:
+                try:
+                    prepared = await self._management.prepare(operation, parsed)
+                except ManagementUnavailable as exc:
+                    raise ControlCommandError(Problem(ProblemCode.OPERATION_UNAVAILABLE)) from exc
+                except ManagementFailure as exc:
+                    parse_problem = Problem(exc.code)
         return await self._execute(
             principal,
             command,
@@ -804,22 +834,22 @@ class ControlCommandAdapter:
             parse_problem=parse_problem,
             target_problem=None,
             mutate=lambda session: self._run_management(
-                session,
-                command,
                 operation,
-                lambda: invoke(session, principal, command, _require_parsed(parsed)),
+                lambda: _require_parsed(invoke)(
+                    session,
+                    principal,
+                    command,
+                    _require_parsed(parsed),
+                    **({"prepared": prepared} if prepared is not None else {}),
+                ),
             ),
         )
 
     async def _run_management(
         self,
-        session: AsyncSession,
-        command: ControlCommand,
         operation: str,
         invoke: Callable[[], Awaitable[ManagementMutation]],
     ) -> _Success:
-        if command is None:
-            raise _fail(ProblemCode.VALIDATION_ERROR)
         try:
             mutation = await invoke()
         except ManagementUnavailable as exc:
@@ -921,7 +951,10 @@ class ControlCommandAdapter:
                     )
                 else:
                     try:
-                        success = await mutate(session)
+                        # A domain rejection may follow a partial database write.
+                        # Roll it back before committing the original failure receipt.
+                        async with session.begin_nested():
+                            success = await mutate(session)
                     except _CachedFailure as failure:
                         if failure.problem.code not in CACHEABLE_COMMAND_FAILURES:
                             raise ControlCommandError(failure.problem) from None
@@ -1160,9 +1193,12 @@ class ControlCommandAdapter:
         operation: str,
         capability: str,
     ) -> None:
-        if audit.actor_user_id != principal.principal_id.text:
+        if (
+            audit.actor_principal_kind != "control"
+            or audit.actor_principal_id != principal.principal_id.text
+        ):
             raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        if audit.trigger_message_id != command.request_id.text:
+        if audit.control_request_id != command.request_id.text:
             raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
         if audit.conversation_key != "":
             raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
@@ -1314,7 +1350,7 @@ class ControlCommandAdapter:
             return None
         from qq_ai_bot.memory.dream.repository import DreamRepository
         from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
-        from qq_ai_bot.persistence.control_management import _dream_status, _op_ref, _rebuild_status
+        from qq_ai_bot.persistence.control_operations import dream_operation, rebuild_operation
 
         if kind == "rebuild":
             rebuild = await MemoryRebuildRepository(self._database).get_run(
@@ -1322,30 +1358,12 @@ class ControlCommandAdapter:
             )
             if rebuild is None or ref != f"rebuild:{rebuild.public_id}":
                 raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-            return _op_ref(
-                f"rebuild:{rebuild.public_id}",
-                _rebuild_status(rebuild.status.value),
-                created_at=rebuild.created_at,
-                updated_at=rebuild.updated_at,
-                progress=(
-                    1.0 if rebuild.status.value in {"completed", "cancelled", "failed"} else 0.1
-                ),
-                error_category=rebuild.error_category,
-            )
+            return rebuild_operation(rebuild)
         if kind == "dream":
             dream = await DreamRepository(self._database).get_run(resource_id, session=session)
             if dream is None or ref != f"dream:{dream.public_id}":
                 raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-            return _op_ref(
-                f"dream:{dream.public_id}",
-                _dream_status(dream.status.value),
-                created_at=dream.created_at,
-                updated_at=dream.updated_at,
-                progress=(
-                    1.0 if dream.status.value in {"completed", "cancelled", "rolled_back"} else 0.1
-                ),
-                error_category=dream.error_category,
-            )
+            return dream_operation(dream)
         raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
 
     async def _record_success(
@@ -1361,6 +1379,7 @@ class ControlCommandAdapter:
         semantic_target_id: str,
         material: Mapping[str, JsonValue],
         started: float,
+        existing_receipt: ControlCommandReceiptModel | None = None,
     ) -> ControlResult:
         validate_success_audit_before(success.before, operation=operation)
         after_state = validate_success_audit_after(
@@ -1384,7 +1403,10 @@ class ControlCommandAdapter:
             raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
         audit = AdminOperationEventModel(
             actor_user_id=principal.principal_id.text,
-            trigger_message_id=command.request_id.text,
+            actor_principal_kind="control",
+            actor_principal_id=principal.principal_id.text,
+            control_request_id=command.request_id.text,
+            trigger_message_id="",
             conversation_key="",
             capability=capability,
             operation=operation,
@@ -1426,23 +1448,24 @@ class ControlCommandAdapter:
             operation=success.operation,
         )
         stamp = _now()
-        session.add(
-            ControlCommandReceiptModel(
-                principal_id=principal.principal_id.text,
-                request_id=command.request_id.text,
-                payload_hash=payload_hash,
-                status="succeeded",
-                result_resource_id=projected.resource_id,
-                effective_state_json=_dump_json(dict(projected.effective_state)),
-                result_revision=projected.revision,
-                problem_code=None,
-                audit_id=audit.id,
-                operation_kind=kind,
-                operation_ref=ref,
-                created_at=stamp,
-                updated_at=stamp,
-            )
+        receipt = existing_receipt or ControlCommandReceiptModel(
+            principal_id=principal.principal_id.text,
+            request_id=command.request_id.text,
+            payload_hash=payload_hash,
+            created_at=stamp,
         )
+        receipt.status = "succeeded"
+        receipt.result_resource_id = projected.resource_id
+        receipt.effective_state_json = _dump_json(dict(projected.effective_state))
+        receipt.result_revision = projected.revision
+        receipt.problem_code = None
+        receipt.audit_id = audit.id
+        receipt.operation_kind = kind
+        receipt.operation_ref = ref
+        receipt.updated_at = (
+            next_updated_at(existing_receipt.updated_at, stamp) if existing_receipt else stamp
+        )
+        session.add(receipt)
         return projected
 
     async def _record_failure(
@@ -1459,6 +1482,7 @@ class ControlCommandAdapter:
         problem: Problem,
         before: Mapping[str, JsonValue],
         started: float,
+        existing_receipt: ControlCommandReceiptModel | None = None,
     ) -> Problem:
         if problem.code not in CACHEABLE_COMMAND_FAILURES:
             raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
@@ -1468,7 +1492,10 @@ class ControlCommandAdapter:
         )
         audit = AdminOperationEventModel(
             actor_user_id=principal.principal_id.text,
-            trigger_message_id=command.request_id.text,
+            actor_principal_kind="control",
+            actor_principal_id=principal.principal_id.text,
+            control_request_id=command.request_id.text,
+            trigger_message_id="",
             conversation_key="",
             capability=capability,
             operation=operation,
@@ -1486,23 +1513,24 @@ class ControlCommandAdapter:
         if self._after_audit_flush is not None:
             self._after_audit_flush()
         stamp = _now()
-        session.add(
-            ControlCommandReceiptModel(
-                principal_id=principal.principal_id.text,
-                request_id=command.request_id.text,
-                payload_hash=payload_hash,
-                status="failed",
-                result_resource_id=None,
-                effective_state_json=None,
-                result_revision=None,
-                problem_code=problem.code.value,
-                audit_id=audit.id,
-                operation_kind=None,
-                operation_ref=None,
-                created_at=stamp,
-                updated_at=stamp,
-            )
+        receipt = existing_receipt or ControlCommandReceiptModel(
+            principal_id=principal.principal_id.text,
+            request_id=command.request_id.text,
+            payload_hash=payload_hash,
+            created_at=stamp,
         )
+        receipt.status = "failed"
+        receipt.result_resource_id = None
+        receipt.effective_state_json = None
+        receipt.result_revision = None
+        receipt.problem_code = problem.code.value
+        receipt.audit_id = audit.id
+        receipt.operation_kind = None
+        receipt.operation_ref = None
+        receipt.updated_at = (
+            next_updated_at(existing_receipt.updated_at, stamp) if existing_receipt else stamp
+        )
+        session.add(receipt)
         return problem
 
     async def _toggle_person(

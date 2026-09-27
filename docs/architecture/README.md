@@ -8,6 +8,7 @@ Yuki 正在逐层解耦：永久主体、内部事件和工作身份由核心持
 | --- | --- |
 | [共同架构约束](development-contract.md) | 不可混用的 ID、依赖方向、固定合同、持久续跑、事务和交付原则 |
 | [Canonical runtime](canonical-runtime.md) | Yuki、Person、Space、Presence、Conversation 和网关边界 |
+| [Control Plane 地基](control-plane-foundation.md) | 可信管理主体、共享装配、读写版本、外部执行回执、公开协议与完整 WebUI 后续边界 |
 | [主 Agent 执行与恢复](main-agent-runtime.md) | 公共执行器、来源授权、恢复所有者与预算 |
 | [Provider 输出边界](provider-output-boundary.md) | 思考与正文通道、显式发送及上游异常的验收范围 |
 | [模型供应商与协议](model-providers.md) | Chat/Responses/Claude/Gemini、供应商方言、能力边界与私有状态恢复 |

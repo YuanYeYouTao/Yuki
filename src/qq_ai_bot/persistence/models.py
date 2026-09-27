@@ -1842,6 +1842,7 @@ class AdminOperationEventModel(Base):
     actor_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     actor_principal_kind: Mapped[str | None] = mapped_column(String(8), nullable=True)
     actor_principal_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    control_request_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     trigger_message_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     conversation_key: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     capability: Mapped[str] = mapped_column(String(64), nullable=False)

@@ -23,6 +23,16 @@ class OperationStatus(StrEnum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    UNKNOWN = "unknown"
+    WAITING = "waiting"
+    BLOCKED = "blocked"
+
+
+@final
+class OperationKind(StrEnum):
+    CONTROL = "control"
+    REBUILD = "rebuild"
+    DREAM = "dream"
 
 
 @final
@@ -48,7 +58,7 @@ class OperationRef:
 
     operation_id: str
     status: OperationStatus
-    progress: float
+    progress: float | None
     state_epoch: StateEpoch
     error_category: str | None
     created_at: datetime
@@ -59,7 +69,7 @@ class OperationRef:
         *,
         operation_id: str,
         status: OperationStatus,
-        progress: float,
+        progress: float | None,
         state_epoch: StateEpoch,
         error_category: str | ProblemCode | None = None,
         created_at: datetime,
@@ -73,13 +83,13 @@ class OperationRef:
             raise TypeError("status must be OperationStatus")
         if type(state_epoch) is not StateEpoch:
             raise TypeError("state_epoch must be StateEpoch")
-        if type(progress) is bool or type(progress) not in (int, float):
-            raise TypeError("progress must be a real number")
-        numeric = float(progress)
-        if not math.isfinite(numeric):
-            raise ValueError("progress must be finite")
-        if numeric < 0.0 or numeric > 1.0:
-            raise ValueError("progress must be between 0 and 1")
+        numeric = None
+        if progress is not None:
+            if type(progress) is bool or type(progress) not in (int, float):
+                raise TypeError("progress must be a real number or None")
+            numeric = float(progress)
+            if not math.isfinite(numeric) or not 0 <= numeric <= 1:
+                raise ValueError("progress must be finite and between 0 and 1")
         created = require_aware_datetime(created_at, name="created_at")
         updated = require_aware_datetime(updated_at, name="updated_at")
         try:
@@ -94,7 +104,7 @@ class OperationRef:
             sanitized = _sanitize_error_category(error_category)
         if status is OperationStatus.SUCCEEDED and sanitized is not None:
             raise ValueError("succeeded cannot carry an error_category")
-        if status is OperationStatus.FAILED and sanitized is None:
+        if status in {OperationStatus.FAILED, OperationStatus.UNKNOWN} and sanitized is None:
             raise ValueError("failed requires a sanitized error_category")
         if status in {OperationStatus.QUEUED, OperationStatus.RUNNING, OperationStatus.CANCELLED}:
             if sanitized is not None:

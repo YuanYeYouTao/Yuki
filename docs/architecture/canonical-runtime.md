@@ -127,6 +127,13 @@ QQ 消息证明伪造成 Web 请求。分页使用 opaque cursor；mutation 使�
 3.8 不提供管理 HTTP API、登录或前端，也不开放新管理端口。新增 WebUI 时应实现 transport、
 认证、CSRF 和内容脱敏，而不是复制业务服务。
 
+`ApplicationContainer.control_plane` 已装配共享 Query/Command 服务及运行中的配置、连接、
+自动化、插件、MCP 和 Memory 依赖；access 从服务器配置认证 CLI/Web operator，
+公开 wire 合同仅转换已核验的 DTO，不直接开放 HTTP。现有 QQ/CLI 仍有直接调用共享领域服务的入口，图中边界是
+统一接入方向，不表示所有入口已经迁入 ControlPlaneBundle。
+配置、revision、分页、事务外执行、原操作查询和管理 HTTP 后续边界见
+[Control Plane 地基](control-plane-foundation.md)。
+
 ## 数据库与安全边界
 
 - 新数据库从无父 revision 的 `0048` canonical baseline 创建表，再依次执行后续迁移至当前 head。

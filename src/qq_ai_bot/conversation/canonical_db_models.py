@@ -643,7 +643,7 @@ class ControlCommandReceiptModel(Base):
             name="ck_control_command_receipts_payload_hash",
         ),
         CheckConstraint(
-            "status IN ('succeeded', 'failed')",
+            "status IN ('succeeded', 'failed', 'running', 'unknown')",
             name="ck_control_command_receipts_status",
         ),
         ForeignKeyConstraint(
@@ -663,6 +663,13 @@ class ControlCommandReceiptModel(Base):
             "AND problem_code = trim(problem_code) "
             "AND effective_state_json IS NULL "
             "AND result_resource_id IS NULL AND result_revision IS NULL"
+            ") OR ("
+            "status IN ('running', 'unknown') AND audit_id IS NOT NULL AND audit_id >= 1 "
+            "AND result_resource_id IS NULL AND result_revision IS NULL "
+            "AND effective_state_json IS NULL AND operation_kind = 'control' "
+            "AND operation_ref IS NOT NULL "
+            "AND ((status = 'running' AND problem_code IS NULL) OR "
+            "(status = 'unknown' AND problem_code IS NOT NULL))"
             ")",
             name="ck_control_command_receipts_lifecycle",
         ),

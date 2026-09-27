@@ -27,6 +27,16 @@ from qq_ai_bot.mcp.models import (
 )
 from qq_ai_bot.mcp.repository import MCPRepository
 from qq_ai_bot.mcp.result_normalizer import normalize_mcp_result
+from qq_ai_bot.persistence.unit_of_work import state_revision
+
+
+class MCPRevisionConflict(RuntimeError):
+    """No connection effect has started; the submitted revision is stale."""
+
+
+class MCPManagementRejected(RuntimeError):
+    """Management preconditions failed before any connection effect."""
+
 
 logger = logging.getLogger(__name__)
 MCPToolsChangedListener = Callable[[str, tuple[MCPToolMetadata, ...]], Awaitable[None]]
@@ -208,35 +218,41 @@ class MCPManager:
         ):
             return cached
         async with self._lock(server_id):
-            connection = await self._connect_unlocked(server_id, config, session=session)
-            try:
-                raw_tools = await connection.list_tools()
-                tools = tuple(
-                    item
-                    for raw in raw_tools
-                    if (item := metadata_from_sdk_tool(server_id, raw, config)) is not None
-                )
-                self._tools[server_id] = tools
-                if self._cache_enabled:
-                    await self._repository.replace_cached_tools(server_id, tools, session=session)
-                await self._repository.save_state(
-                    server_id,
-                    config,
-                    self._config.hashes[server_id],
-                    enabled=True,
-                    status="connected",
-                    server_info=connection.server_info,
-                    connected=True,
-                    refreshed=True,
-                    session=session,
-                )
-                await self._notify_tools_changed(server_id, tools)
-                return tools
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                await self._save_error(server_id, config, exc, session=session)
-                raise
+            config = self._require_enabled(server_id)
+            return await self._refresh_unlocked(server_id, config, session=session)
+
+    async def _refresh_unlocked(
+        self, server_id: str, config: MCPServerConfig, *, session: AsyncSession | None = None
+    ) -> tuple[MCPToolMetadata, ...]:
+        connection = await self._connect_unlocked(server_id, config, session=session)
+        try:
+            raw_tools = await connection.list_tools()
+            tools = tuple(
+                item
+                for raw in raw_tools
+                if (item := metadata_from_sdk_tool(server_id, raw, config)) is not None
+            )
+            self._tools[server_id] = tools
+            if self._cache_enabled:
+                await self._repository.replace_cached_tools(server_id, tools, session=session)
+            await self._repository.save_state(
+                server_id,
+                config,
+                self._config.hashes[server_id],
+                enabled=True,
+                status="connected",
+                server_info=connection.server_info,
+                connected=True,
+                refreshed=True,
+                session=session,
+            )
+            await self._notify_tools_changed(server_id, tools)
+            return tools
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            await self._save_error(server_id, config, exc, session=session)
+            raise
 
     async def ensure_metadata(self, server_id: str) -> tuple[MCPToolMetadata, ...]:
         """Populate a lazy server catalog when Capability Runtime needs that server."""
@@ -425,6 +441,33 @@ class MCPManager:
     async def set_enabled(
         self, server_id: str, enabled: bool, *, session: AsyncSession | None = None
     ) -> None:
+        async with self._lock(server_id):
+            await self._set_enabled_unlocked(server_id, enabled, session=session)
+
+    async def manage(self, server_id: str, *, action: str, expected_revision: int) -> None:
+        """Authorize at the application boundary; serialize all connection management here."""
+        if action not in {"enable", "disable", "refresh", "reconnect"}:
+            raise ValueError("invalid MCP management action")
+        async with self._lock(server_id):
+            state = await self._repository.state(server_id)
+            revision = 0 if state is None else state_revision(state.updated_at)
+            if revision != expected_revision:
+                raise MCPRevisionConflict("MCP revision changed")
+            if action in {"enable", "disable"}:
+                await self._set_enabled_unlocked(server_id, action == "enable")
+            else:
+                try:
+                    config = self._require_enabled(server_id)
+                except RuntimeError as exc:
+                    raise MCPManagementRejected("MCP server is not enabled") from exc
+                if action == "reconnect":
+                    self._cancel_reconnect(server_id)
+                    await self.disconnect(server_id)
+                await self._refresh_unlocked(server_id, config)
+
+    async def _set_enabled_unlocked(
+        self, server_id: str, enabled: bool, *, session: AsyncSession | None = None
+    ) -> None:
         config = self._require_server(server_id)
         self._enabled_servers[server_id] = enabled
         await self._repository.save_state(
@@ -432,7 +475,15 @@ class MCPManager:
             config,
             self._config.hashes[server_id],
             enabled=enabled,
-            status="disconnected" if enabled else "disabled",
+            status=(
+                "connected"
+                if enabled
+                and server_id in self._connections
+                and self._connections[server_id].connected
+                else "disconnected"
+                if enabled
+                else "disabled"
+            ),
             session=session,
         )
         if not enabled:
@@ -443,9 +494,11 @@ class MCPManager:
     async def reconnect(
         self, server_id: str, *, session: AsyncSession | None = None
     ) -> tuple[MCPToolMetadata, ...]:
-        self._cancel_reconnect(server_id)
-        await self.disconnect(server_id)
-        return await self.refresh(server_id, session=session)
+        async with self._lock(server_id):
+            config = self._require_enabled(server_id)
+            self._cancel_reconnect(server_id)
+            await self.disconnect(server_id)
+            return await self._refresh_unlocked(server_id, config, session=session)
 
     async def disconnect(self, server_id: str) -> None:
         connection = self._connections.pop(server_id, None)
@@ -517,7 +570,7 @@ class MCPManager:
         if connection is not None and connection.connected:
             return connection
         async with self._lock(server_id):
-            return await self._connect_unlocked(server_id, config)
+            return await self._connect_unlocked(server_id, self._require_enabled(server_id))
 
     async def _connect_unlocked(
         self,

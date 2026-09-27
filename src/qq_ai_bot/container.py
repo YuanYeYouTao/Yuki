@@ -19,10 +19,12 @@ from qq_ai_bot.admin.action_service import ActionRegistry
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.admin.permission_catalog import PermissionCatalogService
+from qq_ai_bot.application.control_health import control_runtime_health
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
 from qq_ai_bot.application.modules import (
     AdminModule,
     AutomationModule,
+    ControlPlaneModule,
     ConversationModule,
     EmojiModule,
     MCPModule,
@@ -514,6 +516,19 @@ class ApplicationContainer:
         self.plugin_direct_commands = plugins.direct_commands
         self.plugin_commands = plugins.commands
         self.plugin_admission_signals = plugins.admission_signals
+        self.control_plane = ControlPlaneModule.build(
+            settings=settings,
+            database=self.database,
+            runtime_config=self.runtime_config,
+            connections=self.gateway_registry,
+            mcp=self.mcp_manager,
+            automation=self.automation,
+            memories=self.memories,
+            maintenance=self.memory_maintenance_worker,
+            embeddings=self.memory_embeddings,
+            plugins=self.plugin_manager,
+            runtime_health=lambda: control_runtime_health(self),
+        )
         self.emoji_collector.set_event_publisher(self.plugin_events)
         self.emoji_lifecycle.set_event_publisher(self.plugin_events)
         self.emoji_selector.set_event_publisher(self.plugin_events)
@@ -877,6 +892,7 @@ class ApplicationContainer:
         return self.gateway_registry.has_any_active()
 
     def _register_lifecycle(self) -> None:
+        self.lifecycle.register("control_recovery", start=self.control_plane.recover_interrupted)
         self.lifecycle.register(
             "social_recovery", start=self.social_service.receipts.recover_interrupted
         )

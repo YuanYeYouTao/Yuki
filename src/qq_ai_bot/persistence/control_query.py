@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from hashlib import sha256
 from typing import Protocol, TypedDict, TypeVar
 
 from sqlalchemy import Select, event, func, select, tuple_
@@ -15,11 +16,19 @@ from sqlalchemy.orm import InstrumentedAttribute
 
 from qq_ai_bot import __version__
 from qq_ai_bot.admin.config_registry import ConfigRegistry
-from qq_ai_bot.control_plane.operations import OperationRef, OperationStatus, StateEpoch
+from qq_ai_bot.admin.config_service import RuntimeConfigService
+from qq_ai_bot.config import Settings
+from qq_ai_bot.control_plane.operations import (
+    OperationKind,
+    OperationRef,
+    OperationStatus,
+    StateEpoch,
+)
 from qq_ai_bot.control_plane.paging import Page, PageRequest
 from qq_ai_bot.control_plane.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_cursors import (
     decode_integer_cursor_key,
+    decode_operation_cursor_key,
     decode_resource_cursor,
     decode_time_id_key,
     encode_query_cursor,
@@ -28,8 +37,10 @@ from qq_ai_bot.control_plane.query_cursors import (
 from qq_ai_bot.control_plane.query_types import (
     AuditEventView,
     AutomationView,
+    ComponentHealthView,
     ConfigOverrideView,
     ConfigOwnerKind,
+    ConfigQueryScope,
     ConfigSpecView,
     ControlQueryError,
     ConversationView,
@@ -48,6 +59,7 @@ from qq_ai_bot.control_plane.query_types import (
     PendingRestartView,
     PersonActiveRouteView,
     PersonView,
+    PluginRuntimeView,
     PluginView,
     PresenceConnectionState,
     PresenceView,
@@ -69,6 +81,7 @@ from qq_ai_bot.control_plane.query_types import (
 from qq_ai_bot.control_plane.tokens import require_opaque_token
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
+    ControlCommandReceiptModel,
     PersonActiveRouteModel,
     SpaceActiveRouteModel,
     SpaceBindingIngestRouteModel,
@@ -79,10 +92,13 @@ from qq_ai_bot.domain.identity import (
     IdentityBindingId,
     PersonId,
     PresenceId,
+    PrincipalId,
+    RequestId,
     RouteGeneration,
     SpaceBindingId,
     SpaceId,
 )
+from qq_ai_bot.domain.memory_config import MemoryConfigScope
 from qq_ai_bot.emoji.db_models import EmojiAssetModel, EmojiScopeStateModel
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
@@ -91,14 +107,18 @@ from qq_ai_bot.identity.db_models import (
     PresenceModel,
     SpaceBindingModel,
 )
+from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.memory.audit import MemoryAuditService
+from qq_ai_bot.memory.dream.db_models import MemoryDreamRunModel
 from qq_ai_bot.memory.embedding.health import MemoryEmbeddingHealthService
 from qq_ai_bot.memory.embedding.repository import MemoryEmbeddingRepository
 from qq_ai_bot.memory.embedding.text import EmbeddingDocumentBuilder
 from qq_ai_bot.memory.errors import MemoryRetrievalError
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
 from qq_ai_bot.memory.repository import MemoryFactRepository
+from qq_ai_bot.persistence.control_external import control_operation
+from qq_ai_bot.persistence.control_operations import read_operation
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     AdminOperationEventModel,
@@ -108,9 +128,12 @@ from qq_ai_bot.persistence.models import (
     MemoryEvidenceModel,
     MemoryFactModel,
     MemoryJobModel,
+    MemoryRebuildRunModel,
     RuntimeConfigOverrideModel,
 )
+from qq_ai_bot.persistence.unit_of_work import state_revision
 from qq_ai_bot.plugin_host.db_models import PluginInstallationModel
+from qq_ai_bot.plugin_host.manager import PluginManager
 from qq_ai_bot.speech.db_models import SpeechVoiceProfileModel
 
 
@@ -120,6 +143,8 @@ class _HasId(Protocol):
 
 class _AuditRow(Protocol):
     id: int
+    actor_principal_id: str | None
+    control_request_id: str | None
     capability: object
     operation: object
     target_type: object
@@ -372,6 +397,7 @@ def _project_emoji_asset(
         _try_space_id(row.canonical_first_seen_space_id) if reveal_first_seen_space else None
     )
     return EmojiAssetView(
+        revision=state_revision(row.updated_at),
         asset_id=str(row.id),
         status=str(row.status),
         enabled=bool(row.pinned) or str(row.status) == "adopted",
@@ -432,7 +458,19 @@ def project_audit_event(row: _AuditRow, *, snapshot_at: datetime) -> AuditEventV
     if type(snapshot_at) is not datetime:
         raise TypeError("snapshot_at must be datetime")
     try:
+        actor = None
+        request = None
+        if getattr(row, "actor_principal_kind", None) == "control":
+            if row.actor_principal_id is None:
+                raise ValueError("control audit has no principal")
+            actor = PrincipalId.parse(row.actor_principal_id)
+            if row.control_request_id is None:
+                raise ValueError("control audit has no request")
+            request = RequestId.parse(row.control_request_id)
         return AuditEventView(
+            principal_id=actor,
+            request_id=request,
+            target_id=getattr(row, "target_id", None) if actor is not None else None,
             audit_id=int(row.id),
             capability=_safe_token(row.capability, fallback="unspecified", max_length=64),
             operation=_safe_token(row.operation, fallback="unspecified", max_length=128),
@@ -522,16 +560,23 @@ class ControlQueryAdapter:
         self,
         database: Database,
         *,
-        settings: object | None = None,
+        settings: Settings | None = None,
+        runtime_config: RuntimeConfigService | None = None,
         mcp_manager: MCPManager | None = None,
         connection_registry: object | None = None,
+        plugins: PluginManager | None = None,
+        runtime_health: Callable[[], Awaitable[tuple[ComponentHealthView, ...]]] | None = None,
     ) -> None:
         if type(database) is not Database:
             raise TypeError("database must be Database")
         self._database = database
         self._settings = settings
+        self._config = runtime_config
+        self._registry = runtime_config.registry if runtime_config is not None else ConfigRegistry()
         self._mcp = mcp_manager
         self._connections = connection_registry
+        self._plugins = plugins
+        self._runtime_health = runtime_health
 
     @asynccontextmanager
     async def _reader(self) -> AsyncIterator[AsyncSession]:
@@ -620,21 +665,10 @@ class ControlQueryAdapter:
         )
 
     async def _pending_restart(self, session: AsyncSession) -> PendingRestartView:
-        rows = list(
-            await session.scalars(
-                select(RuntimeConfigOverrideModel.config_key)
-                .where(RuntimeConfigOverrideModel.apply_mode == "restart_required")
-                .distinct()
-                .order_by(RuntimeConfigOverrideModel.config_key.asc())
-            )
-        )
-        keys: list[str] = []
-        for raw in rows:
-            token = _safe_token(raw, fallback="", max_length=128)
-            if token:
-                keys.append(token)
-        unique = tuple(dict.fromkeys(keys))
-        return PendingRestartView(unique, len(unique))
+        if self._config is None:
+            raise ControlQueryError(Problem(ProblemCode.OPERATION_UNAVAILABLE))
+        pending = tuple(sorted(set(await self._config.pending_restart_entries(session=session))))
+        return PendingRestartView(pending, len(pending))
 
     async def _counts(self, session: AsyncSession) -> dict[str, CountSnapshot]:
         return {
@@ -698,13 +732,23 @@ class ControlQueryAdapter:
 
     async def read_health(self) -> ManagementHealthView:
         reachable = await self._database.ping()
+        components = await self._runtime_health() if self._runtime_health is not None else ()
+        if not reachable:
+            return ManagementHealthView(
+                identity_state=StateEpoch.V2,
+                identity_revision=None,
+                database="unavailable",
+                queue=None,
+                components=components,
+            )
         async with self._reader() as session:
             epoch, revision = await self._runtime(session)
             return ManagementHealthView(
                 identity_state=epoch,
                 identity_revision=revision,
-                database="ok" if reachable else "unavailable",
+                database="ok",
                 queue=await self._queue(session),
+                components=components,
             )
 
     async def _binding_counts(
@@ -1203,6 +1247,10 @@ class ControlQueryAdapter:
             _phase, key = self._cursor_state(request, QueryResourceKind.AUDIT, epoch=epoch)
             stmt = select(
                 AdminOperationEventModel.id,
+                AdminOperationEventModel.actor_principal_kind,
+                AdminOperationEventModel.actor_principal_id,
+                AdminOperationEventModel.control_request_id,
+                AdminOperationEventModel.target_id,
                 AdminOperationEventModel.capability,
                 AdminOperationEventModel.operation,
                 AdminOperationEventModel.target_type,
@@ -1243,11 +1291,72 @@ class ControlQueryAdapter:
                 snapshot_at=snapshot_at,
             )
 
+    async def read_operation(self, operation_id: str) -> OperationRef:
+        async with self._reader() as session:
+            return await read_operation(self._database, session, operation_id)
+
+    async def list_operations(
+        self,
+        request: PageRequest,
+        *,
+        kind: OperationKind = OperationKind.CONTROL,
+    ) -> Page[OperationRef]:
+        if type(kind) is not OperationKind:
+            raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
+        snapshot_at = _now()
+        async with self._reader() as session:
+            epoch, _ = await self._runtime(session)
+            _, key = self._cursor_state(request, QueryResourceKind.OPERATION, epoch=epoch)
+            after = 0
+            if key is not None:
+                cursor_kind, after = decode_operation_cursor_key(key)
+                if cursor_kind is not kind:
+                    raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
+            if kind is OperationKind.CONTROL:
+                rows = list(
+                    await session.scalars(
+                        select(ControlCommandReceiptModel)
+                        .where(ControlCommandReceiptModel.id > after)
+                        .order_by(ControlCommandReceiptModel.id)
+                        .limit(request.limit + 1)
+                    )
+                )
+                more = len(rows) > request.limit
+                window = rows[: request.limit]
+                items = [control_operation(row) for row in window]
+                last_id = window[-1].id if window else 0
+            else:
+                model = (
+                    MemoryRebuildRunModel if kind is OperationKind.REBUILD else MemoryDreamRunModel
+                )
+                keys = (
+                    await session.execute(
+                        select(model.id, model.public_id)
+                        .where(model.id > after)
+                        .order_by(model.id)
+                        .limit(request.limit + 1)
+                    )
+                ).all()
+                more = len(keys) > request.limit
+                selected = keys[: request.limit]
+                items = [
+                    await read_operation(self._database, session, f"{kind.value}:{public_id}")
+                    for _, public_id in selected
+                ]
+                last_id = selected[-1][0] if selected else 0
+            return self._page(
+                items,
+                kind=QueryResourceKind.OPERATION,
+                phase=QueryCursorPhase.CANONICAL,
+                next_key=f"{kind.value}:{last_id}" if more else None,
+                snapshot_at=snapshot_at,
+            )
+
     async def list_config_specs(self, request: PageRequest) -> Page[ConfigSpecView]:
         snapshot_at = _now()
         async with self._reader() as session:
             epoch, _revision = await self._runtime(session)
-            _phase, key = self._cursor_state(request, QueryResourceKind.CONFIG, epoch=epoch)
+            _phase, key = self._cursor_state(request, QueryResourceKind.CONFIG_SPEC, epoch=epoch)
             overrides = {
                 (
                     row.config_key,
@@ -1256,7 +1365,7 @@ class ControlQueryAdapter:
                 )
                 for row in (await session.scalars(select(RuntimeConfigOverrideModel))).all()
             }
-        specs = sorted(ConfigRegistry().list(), key=lambda item: item.key)
+        specs = sorted(self._registry.list(), key=lambda item: item.key)
         if key is not None:
             specs = [item for item in specs if item.key > key]
         window = specs[: request.limit + 1]
@@ -1272,61 +1381,101 @@ class ControlQueryAdapter:
                 mutable=item.mutable,
                 sensitive=item.sensitive or item.apply_mode.value == "secret",
                 configured=_spec_is_configured(item, overrides, self._settings),
+                display_name=item.display_name,
+                description=item.description,
+                minimum=item.minimum,
+                maximum=item.maximum,
+                choices=item.choices,
+                allowed_scopes=tuple(scope.value for scope in item.allowed_scopes),
             )
             for item in window
         ]
         return self._page(
             items,
-            kind=QueryResourceKind.CONFIG,
+            kind=QueryResourceKind.CONFIG_SPEC,
             phase=QueryCursorPhase.CANONICAL,
             next_key=window[-1].key if more else None,
             snapshot_at=snapshot_at,
         )
 
-    async def list_effective_configs(self, request: PageRequest) -> Page[EffectiveConfigView]:
+    async def list_effective_configs(
+        self, request: PageRequest, *, scope: ConfigQueryScope | None = None
+    ) -> Page[EffectiveConfigView]:
+        if scope is None:
+            scope = ConfigQueryScope()
+        if type(scope) is not ConfigQueryScope:
+            raise TypeError("scope must be ConfigQueryScope")
+        if self._config is None:
+            raise ControlQueryError(Problem(ProblemCode.PRECONDITION_FAILED))
         snapshot_at = _now()
+        scope_key = (
+            sha256(
+                (
+                    f"{scope.person_id.text if scope.person_id else ''}/"
+                    f"{scope.space_id.text if scope.space_id else ''}"
+                ).encode()
+            ).hexdigest()
+            + ":"
+        )
         async with self._reader() as session:
             epoch, _revision = await self._runtime(session)
-            _phase, key = self._cursor_state(request, QueryResourceKind.CONFIG, epoch=epoch)
-            snapshots = {
-                row.config_key: (row.scope_type, int(row.version), row.value_json)
-                for row in (await session.scalars(select(RuntimeConfigOverrideModel))).all()
-                if row.scope_type == "global"
-            }
-        specs = sorted(ConfigRegistry().list(), key=lambda item: item.key)
-        if key is not None:
-            specs = [item for item in specs if item.key > key]
-        window = specs[: request.limit + 1]
-        more = len(window) == request.limit + 1
-        if more:
-            window = window[:-1]
-        items: list[EffectiveConfigView] = []
-        for spec in window:
-            secret = spec.apply_mode.value == "secret" or spec.sensitive
-            override = snapshots.get(spec.key)
-            items.append(
-                EffectiveConfigView(
-                    key=spec.key,
-                    source="override" if override is not None else "default",
-                    scope_type="global" if override is None else override[0],
-                    apply_mode=spec.apply_mode.value,
-                    configured=override is not None
-                    or _spec_is_configured(spec, {}, self._settings),
-                    pending_restart=spec.apply_mode.value == "restart_required"
-                    and override is not None,
-                    version=None if override is None else override[1],
-                    value=None if secret or override is None else _safe_config_value(override[2]),
-                    owner_kind=ConfigOwnerKind.GLOBAL,
-                    person_id=None,
-                    space_id=None,
-                    owner_resolution=None if override is None else IdentityResolution.CANONICAL,
-                )
+            _phase, key = self._cursor_state(
+                request, QueryResourceKind.CONFIG_EFFECTIVE, epoch=epoch
             )
+            if key is not None:
+                if not key.startswith(scope_key):
+                    raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
+                key = key[len(scope_key) :]
+            specs = sorted(self._config.registry.list(), key=lambda item: item.key)
+            if key is not None:
+                specs = [item for item in specs if item.key > key]
+            window = specs[: request.limit + 1]
+            more = len(window) == request.limit + 1
+            if more:
+                window = window[:-1]
+            try:
+                inspected = await self._config.inspect_configs(
+                    tuple(item.key for item in window),
+                    scope=MemoryConfigScope(
+                        person_id=scope.person_id.text if scope.person_id else None,
+                        space_id=scope.space_id.text if scope.space_id else None,
+                    ),
+                    session=session,
+                )
+            except CanonicalIdentityError as exc:
+                raise ControlQueryError(Problem(ProblemCode.STATE_MISMATCH)) from exc
+            items = []
+            for spec, result in zip(window, inspected, strict=True):
+                effective, saved = result.effective, result.saved
+                scope_type = saved.scope_type.value if saved.scope_type else "global"
+                owner_kind = {"user": ConfigOwnerKind.PERSON, "group": ConfigOwnerKind.SPACE}.get(
+                    scope_type, ConfigOwnerKind.GLOBAL
+                )
+                items.append(
+                    EffectiveConfigView(
+                        key=spec.key,
+                        source=effective.source,
+                        scope_type=scope_type,
+                        apply_mode=spec.apply_mode.value,
+                        configured=effective.configured
+                        if effective.configured is not None
+                        else effective.value is not None,
+                        pending_restart=result.pending_restart,
+                        version=result.version,
+                        value=effective.value,
+                        saved_value=saved.value,
+                        saved_source=saved.source,
+                        owner_kind=owner_kind,
+                        person_id=scope.person_id if owner_kind is ConfigOwnerKind.PERSON else None,
+                        space_id=scope.space_id if owner_kind is ConfigOwnerKind.SPACE else None,
+                        owner_resolution=IdentityResolution.CANONICAL,
+                    )
+                )
         return self._page(
             items,
-            kind=QueryResourceKind.CONFIG,
+            kind=QueryResourceKind.CONFIG_EFFECTIVE,
             phase=QueryCursorPhase.CANONICAL,
-            next_key=window[-1].key if more else None,
+            next_key=scope_key + window[-1].key if more else None,
             snapshot_at=snapshot_at,
         )
 
@@ -1338,7 +1487,7 @@ class ControlQueryAdapter:
     ) -> Page[ConfigOverrideView]:
         del reveal_external
         snapshot_at = _now()
-        specs = {item.key: item for item in ConfigRegistry().list()}
+        specs = {item.key: item for item in self._registry.list()}
         async with self._reader() as session:
             epoch, _revision = await self._runtime(session)
             _phase, key = self._cursor_state(request, QueryResourceKind.CONFIG, epoch=epoch)
@@ -1391,6 +1540,7 @@ class ControlQueryAdapter:
             items = [
                 MemoryFactView(
                     fact_id=int(row.id),
+                    revision=state_revision(row.updated_at),
                     scope_type=str(row.scope_type),
                     kind=str(row.kind),
                     category=str(row.category or "uncategorized"),
@@ -1417,7 +1567,9 @@ class ControlQueryAdapter:
         snapshot_at = _now()
         async with self._reader() as session:
             epoch, _revision = await self._runtime(session)
-            _phase, key = self._cursor_state(request, QueryResourceKind.MEMORY_FACT, epoch=epoch)
+            _phase, key = self._cursor_state(
+                request, QueryResourceKind.MEMORY_EVIDENCE, epoch=epoch
+            )
             after = decode_integer_cursor_key(key, minimum=1) if key is not None else 0
             stmt = select(MemoryEvidenceModel)
             if after:
@@ -1438,7 +1590,7 @@ class ControlQueryAdapter:
             ]
             return self._page(
                 items,
-                kind=QueryResourceKind.MEMORY_FACT,
+                kind=QueryResourceKind.MEMORY_EVIDENCE,
                 phase=QueryCursorPhase.CANONICAL,
                 next_key=str(rows[-1].id) if more else None,
                 snapshot_at=snapshot_at,
@@ -1555,6 +1707,7 @@ class ControlQueryAdapter:
             items = [
                 AutomationView(
                     automation_id=int(row.id),
+                    revision=state_revision(row.updated_at),
                     name=str(row.name),
                     status=str(row.status),
                     run_count=int(row.run_count),
@@ -1593,6 +1746,7 @@ class ControlQueryAdapter:
             items = [
                 PluginView(
                     plugin_id=str(row.plugin_id),
+                    revision=state_revision(row.updated_at),
                     name=str(row.name),
                     version=str(row.version),
                     status=str(row.status),
@@ -1608,6 +1762,12 @@ class ControlQueryAdapter:
                 snapshot_at=snapshot_at,
             )
 
+    async def read_plugin_runtime(self, plugin_id: str) -> PluginRuntimeView:
+        if self._plugins is None:
+            raise ControlQueryError(Problem(ProblemCode.OPERATION_UNAVAILABLE))
+        report = await self._plugins.doctor(plugin_id)
+        return PluginRuntimeView(**report.model_dump())
+
     async def list_mcp_servers(self, request: PageRequest) -> Page[McpServerView]:
         snapshot_at = _now()
         async with self._reader() as session:
@@ -1621,11 +1781,16 @@ class ControlQueryAdapter:
                     )
                 )
             }
+            revisions = {
+                str(row.server_id): state_revision(row.updated_at)
+                for row in await session.scalars(select(MCPServerStateModel))
+            }
             if self._mcp is not None:
                 statuses = await self._mcp.statuses(session=session)
                 items = [
                     McpServerView(
                         server_id=item.server_id,
+                        revision=revisions.get(item.server_id, 0),
                         enabled=bool(item.enabled),
                         healthy=bool(item.connected),
                         tool_count=int(item.configured_tools or tool_counts.get(item.server_id, 0)),
@@ -1641,6 +1806,7 @@ class ControlQueryAdapter:
                 items = [
                     McpServerView(
                         server_id=str(row.server_id),
+                        revision=revisions[str(row.server_id)],
                         enabled=bool(row.enabled),
                         healthy=str(row.status) == "connected",
                         tool_count=tool_counts.get(str(row.server_id), 0),
@@ -1728,6 +1894,7 @@ class ControlQueryAdapter:
             items = [
                 SpeechProfileView(
                     profile_id=str(row.profile_id),
+                    revision=state_revision(row.updated_at),
                     status="enabled" if row.enabled else "disabled",
                     enabled=bool(row.enabled),
                 )

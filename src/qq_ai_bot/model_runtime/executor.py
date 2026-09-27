@@ -727,6 +727,11 @@ class TaskModelExecutor:
         if not profile.headers:
             excluded.add("headers")
         serialized = profile.model_dump(mode="json", exclude=excluded)
+        serialized["capabilities"] = sorted(item.value for item in profile.capabilities)
+        serialized_route = route.model_dump(mode="json")
+        serialized_route["required_capabilities"] = sorted(
+            item.value for item in route.required_capabilities
+        )
         if profile.protocol is not ModelProtocol.RESPONSES:
             from qq_ai_bot.llm.vendor_policy import wire_options
 
@@ -737,7 +742,7 @@ class TaskModelExecutor:
             ).model_dump(mode="json")
         return _json_hash(
             {
-                "route": route.model_dump(mode="json"),
+                "route": serialized_route,
                 "profile": serialized,
             }
         )
