@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 
 from qq_ai_bot import __version__
+from qq_ai_bot.admin.config_files import ConfigFileError, ConfigFileService
 from qq_ai_bot.admin.config_registry import ConfigRegistry
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.config import Settings
@@ -578,6 +579,7 @@ class ControlQueryAdapter:
         workspace: WorkspaceStore | None = None,
         conversation_media: ConversationMediaService | None = None,
         model_catalog: ModelProfileCatalog | None = None,
+        config_files: ConfigFileService | None = None,
         participation_snapshot: Callable[[], Awaitable[dict[str, object]]] | None = None,
         runtime_health: Callable[[], Awaitable[tuple[ComponentHealthView, ...]]] | None = None,
     ) -> None:
@@ -592,6 +594,12 @@ class ControlQueryAdapter:
         self._activity = ControlActivityQueryAdapter(
             self._reader, workspace=workspace, conversation_media=conversation_media
         )
+        self._config_files = config_files or (
+            ConfigFileService(settings, model_catalog) if settings else None
+        )
+        from qq_ai_bot.persistence.control_work_query import ControlWorkQueryAdapter
+
+        self._work_details = ControlWorkQueryAdapter(self._reader)
         self._settings = settings
         self._model_catalog = model_catalog
         self._config = runtime_config
@@ -639,6 +647,14 @@ class ControlQueryAdapter:
             },
         )
 
+    async def read_config_file(self, file_id: str) -> ActivityView:
+        if self._config_files is None:
+            raise ControlQueryError(Problem(ProblemCode.OPERATION_UNAVAILABLE))
+        try:
+            return ActivityView(file_id, await self._config_files.read(file_id))
+        except ConfigFileError as exc:
+            raise ControlQueryError(Problem(ProblemCode(exc.category))) from None
+
     async def read_persona(self) -> ActivityView:
         if self._settings is None:
             raise ControlQueryError(Problem(ProblemCode.OPERATION_UNAVAILABLE))
@@ -657,6 +673,9 @@ class ControlQueryAdapter:
         if self._participation_snapshot is None:
             raise ControlQueryError(Problem(ProblemCode.OPERATION_UNAVAILABLE))
         return ActivityView("participation", await self._participation_snapshot())
+
+    async def read_work(self, work_id: str, *, include_content: bool = False) -> ActivityView:
+        return await self._work_details.read_work(work_id, include_content=include_content)
 
     async def list_work(
         self, request: PageRequest, *, include_content: bool = False

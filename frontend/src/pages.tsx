@@ -13,6 +13,10 @@ import {
   Section,
   Table,
 } from "./components";
+import { ConfigFile } from "./config-files";
+export { Models } from "./models";
+import { Work } from "./work";
+export { Work };
 import { Traces } from "./traces";
 
 export interface PageProps {
@@ -70,283 +74,6 @@ export function Health({ refresh }: { refresh: number }) {
           </>
         )}
       </Section>
-    </>
-  );
-}
-
-export function Models({ allowed, refresh }: PageProps) {
-  const catalog = useQuery<Row>(
-    "read_model_catalog",
-    {},
-    refresh,
-    allowed("read_model_catalog"),
-  );
-  const fields = catalog.data?.fields as Row | undefined;
-  return (
-    <>
-      <Section title="已加载的模型与路由">
-        {catalog.error != null && <ErrorNote error={catalog.error} />}
-        {fields ? (
-          <>
-            <Table
-              rows={fields.profiles as Row[]}
-              columns={[
-                ["id", "Profile"],
-                ["provider", "Provider"],
-                ["protocol", "协议"],
-                ["model", "模型"],
-                ["max_output_tokens", "输出预算"],
-                ["timeout_seconds", "超时（秒）"],
-              ]}
-            />
-            <h3>任务路由</h3>
-            <Table
-              rows={fields.routes as Row[]}
-              columns={[
-                ["task", "任务"],
-                ["profile_id", "使用 Profile"],
-              ]}
-            />
-            <p className="small">
-              Profile 文件变更于重启生效。凭据与请求头不显示。
-            </p>
-          </>
-        ) : (
-          <Empty>
-            {allowed("read_model_catalog")
-              ? "正在读取…"
-              : "未授予配置读取权限。"}
-          </Empty>
-        )}
-      </Section>
-      <Section title="实际调用与用量">
-        <QueryList
-          method="list_model_usage"
-          refresh={refresh}
-          onRow={flatten}
-          columns={[
-            ["created_at", "时间", stamp],
-            ["task", "任务"],
-            ["profile_id", "Profile"],
-            ["model", "模型"],
-            ["success", "成功", status],
-            ["prompt_tokens", "输入"],
-            ["cached_prompt_tokens", "缓存命中"],
-            ["completion_tokens", "输出"],
-            ["latency_seconds", "耗时（秒）"],
-            ["error_category", "问题"],
-          ]}
-          actions={(row) =>
-            row.turn_id ? (
-              <a
-                href={`#audit?turn=${encodeURIComponent(String(row.turn_id))}`}
-                className="file-open"
-              >
-                查看轮次
-              </a>
-            ) : (
-              <span className="small">未绑定轮次</span>
-            )
-          }
-        />
-      </Section>
-    </>
-  );
-}
-
-export function Work({ allowed, act, refresh, conversation }: PageProps) {
-  const [id, setId] = useState<number | null>(null);
-  const detail = useQuery<Row>(
-    "read_automation",
-    { automation_id: id },
-    refresh,
-    id != null && allowed("read_automation"),
-  );
-  const fields = detail.data?.fields as Row | undefined;
-  function automationAction(row: Row, action: string, label: string) {
-    act({
-      method: "mutate_automation",
-      label,
-      revision: Number(row.revision),
-      payload: { resource_id: String(row.automation_id), action },
-    });
-  }
-  return (
-    <>
-      <Section title="持久工作">
-        <QueryList
-          method="list_work"
-          args={{ include_content: allowed("read_execution_trace") }}
-          refresh={refresh}
-          onRow={flatten}
-          columns={[
-            ["resource_id", "Work"],
-            ["conversation_id", "会话"],
-            ["goal", "目标"],
-            ["state", "状态", status],
-            ["model_requests", "模型请求"],
-            ["tool_calls", "工具调用"],
-            ["active_seconds", "活跃秒数"],
-            ["sent_messages", "已发消息"],
-            ["reason", "原因"],
-          ]}
-          actions={(row) => (
-            <a
-              className="file-open"
-              href={`#audit?work=${encodeURIComponent(String(row.resource_id))}`}
-            >
-              执行轨迹
-            </a>
-          )}
-        />
-      </Section>
-      <Section title="定时与自动化">
-        <div className="settings-actions">
-          <button
-            className="btn-primary"
-            disabled={!allowed("mutate_automation")}
-            onClick={() =>
-              act({
-                method: "mutate_automation",
-                label: "创建自动化",
-                revision: 0,
-                payload: {
-                  action: "create",
-                  resource_id: "yuki",
-                  spec: {
-                    owner_id: "",
-                    conversation_id: conversation || null,
-                    script: {},
-                  },
-                },
-                edit: "spec",
-                hint: "指定委托人的内部 Person ID，并填写完整脚本。投递目标必须明确声明。",
-              })
-            }
-          >
-            新建
-          </button>
-        </div>
-        <QueryList
-          method="list_automations"
-          refresh={refresh}
-          columns={[
-            ["automation_id", "编号"],
-            ["name", "名称"],
-            ["status", "状态", status],
-            ["run_count", "已执行"],
-            ["target_kind", "投递类型"],
-            ["target_id", "投递目标"],
-            ["route_state", "路由状态"],
-            ["revision", "版本"],
-          ]}
-          actions={(row) => (
-            <>
-              <button
-                className="btn-secondary"
-                disabled={!allowed("read_automation")}
-                onClick={() => setId(Number(row.automation_id))}
-              >
-                详情
-              </button>
-              <button
-                className="btn-secondary"
-                disabled={!allowed("mutate_automation")}
-                onClick={() =>
-                  automationAction(
-                    row,
-                    row.status === "paused" ? "resume" : "pause",
-                    row.status === "paused" ? "恢复任务" : "暂停任务",
-                  )
-                }
-              >
-                {row.status === "paused" ? "恢复" : "暂停"}
-              </button>
-              <button
-                className="btn-secondary"
-                disabled={!allowed("mutate_automation")}
-                onClick={() => automationAction(row, "run_now", "立即执行")}
-              >
-                执行
-              </button>
-              <button
-                className="btn-secondary"
-                disabled={!allowed("mutate_automation")}
-                onClick={() => automationAction(row, "cancel", "取消自动化")}
-              >
-                取消
-              </button>
-            </>
-          )}
-        />
-      </Section>
-      {id != null && (
-        <Section title={`自动化 #${id}`}>
-          {detail.error != null && <ErrorNote error={detail.error} />}
-          {fields && (
-            <>
-              <div className="vital-pair">
-                <div className="vital-card">
-                  下次执行
-                  <br />
-                  {stamp(fields.next_run_at)}
-                </div>
-                <div className="vital-card">
-                  连续失败
-                  <br />
-                  {text(fields.consecutive_failures)}
-                </div>
-              </div>
-              <JsonNote title="时间安排" value={fields.schedule} />
-              <JsonNote title="脚本" value={fields.script} />
-              <button
-                className="btn-secondary"
-                disabled={!allowed("mutate_automation")}
-                onClick={() =>
-                  act({
-                    method: "mutate_automation",
-                    label: "更新自动化脚本",
-                    revision: Number(fields.revision),
-                    payload: {
-                      action: "update",
-                      resource_id: String(id),
-                      spec: fields.script,
-                    },
-                    edit: "spec",
-                    hint: "保留原任务的创建者与投递场景，按刚读取的版本验证脚本。",
-                  })
-                }
-              >
-                编辑脚本
-              </button>
-              <h3>最近执行（最多 20 次）</h3>
-              <Table
-                rows={fields.runs as Row[]}
-                columns={[
-                  ["id", "执行 ID"],
-                  ["status", "状态", status],
-                  ["scheduled_for", "计划时间", stamp],
-                  ["model_calls", "模型调用"],
-                  ["tool_calls", "工具调用"],
-                  ["sent_messages", "消息"],
-                  ["error_category", "原因"],
-                ]}
-              />
-              <h3>执行步骤（最多 200 项）</h3>
-              <Table
-                rows={fields.steps as Row[]}
-                columns={[
-                  ["run_id", "执行 ID"],
-                  ["step_id", "步骤"],
-                  ["capability", "能力"],
-                  ["status", "状态", status],
-                  ["error_category", "原因"],
-                ]}
-              />
-            </>
-          )}
-        </Section>
-      )}
     </>
   );
 }
@@ -1161,7 +888,8 @@ export function Audit({ allowed, act, refresh, conversation }: PageProps) {
   );
 }
 
-export function Persona({ refresh }: { refresh: number }) {
+export function Persona(props: PageProps) {
+  const { refresh } = props;
   const { data, error, loading } = useQuery<Row>("read_persona", {}, refresh);
   return (
     <>
@@ -1176,6 +904,8 @@ export function Persona({ refresh }: { refresh: number }) {
           <p className="small">单次轮次实际注入的上下文请在执行轨迹中查看。</p>
         </div>
       )}
+      <ConfigFile fileId="system_prompt" props={props} />
+      <ConfigFile fileId="bot_persona" props={props} />
     </>
   );
 }
@@ -1190,7 +920,7 @@ export function Notebook({ props }: { props: PageProps }) {
   ];
   const contents: Record<string, () => ReactNode> = {
     status: () => <Health refresh={props.refresh} />,
-    persona: () => <Persona refresh={props.refresh} />,
+    persona: () => <Persona {...props} />,
     memory: () => <Memory {...props} />,
     work: () => <Work {...props} />,
     files: () => <Files {...props} />,

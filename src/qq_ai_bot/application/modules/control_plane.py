@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from qq_ai_bot.admin.config_files import ConfigFileService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.application.control_access import ControlOperatorAccess
 from qq_ai_bot.automation.service import AutomationService
@@ -54,9 +55,11 @@ class ControlPlaneModule:
         participation_snapshot: Callable[[], Awaitable[dict[str, object]]] | None = None,
         runtime_health: Callable[[], Awaitable[tuple[ComponentHealthView, ...]]] | None = None,
     ) -> ControlPlaneBundle:
+        config_files = ConfigFileService(settings, model_catalog)
         writer = ControlCommandAdapter(
             database,
             settings=settings,
+            config_files=config_files,
             runtime_config=runtime_config,
             mcp_manager=mcp,
             automation=automation,
@@ -71,6 +74,7 @@ class ControlPlaneModule:
                 ControlQueryAdapter(
                     database,
                     settings=settings,
+                    config_files=config_files,
                     runtime_config=runtime_config,
                     mcp_manager=mcp,
                     connection_registry=connections,

@@ -25,6 +25,7 @@ logs/
 /workspace/
 /social-transfer/
 /sandbox-runtime/
+/webui-config/
 .cache/
 .workbuddy/
 config/system_prompt.md

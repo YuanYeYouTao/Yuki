@@ -1,0 +1,11 @@
+# Optional mutable startup files. Base config and operator grants stay read-only.
+# Copy current files into ./webui-config before enabling this overlay.
+services:
+  bot:
+    environment:
+      WEBUI_ENABLED: "true"
+      MODEL_PROFILES_FILE: /app/webui-config/model_profiles.toml
+      SYSTEM_PROMPT_FILE: /app/webui-config/system_prompt.md
+      BOT_PERSONA_FILE: /app/webui-config/persona.md
+    volumes:
+      - ./webui-config:/app/webui-config

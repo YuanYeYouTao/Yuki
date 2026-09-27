@@ -21,6 +21,7 @@ dependencies = [
     "tenacity>=9,<10",
     "tzdata>=2025.2",
     "yuki-semantic-participation @ https://github.com/YuanYeYouTao/Yuki-Semantic-Participation/archive/b9c7cc71f8dbaf9bc4b45419e0270a08bf48fe9a.tar.gz",
+    "tomlkit>=0.13,<1",
 ]
 
 [project.optional-dependencies]

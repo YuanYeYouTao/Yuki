@@ -158,6 +158,10 @@ class ControlCommandPort(Protocol):
         command: ControlCommand,
     ) -> ControlResult: ...
 
+    async def save_config_file(
+        self, principal: ControlPrincipal, target: object, command: ControlCommand
+    ) -> ControlResult: ...
+
     async def mutate_plugin(
         self,
         principal: ControlPrincipal,

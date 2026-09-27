@@ -199,6 +199,13 @@ class ControlCommandService:
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
+    async def save_config_file(self, context: object, command: object) -> ControlResult:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("save_config_file"))
+        return await self._port.save_config_file(
+            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
+        )
+
     async def mutate_plugin(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
         _require_capability(authorized, method_capability("mutate_plugin"))

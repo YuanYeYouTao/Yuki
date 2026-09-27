@@ -40,6 +40,8 @@ from qq_ai_bot.domain.identity import (
 from qq_ai_bot.webui.sessions import BrowserSessions
 
 _SIMPLE_QUERIES = frozenset(name for kind, name, _ in _METHODS if kind == "query") - {
+    "read_work",
+    "read_config_file",
     "read_execution_trace",
     "list_execution_trace",
     "list_chat_events",
@@ -293,12 +295,22 @@ def attach_webui(
                 if data.get("conversation_id")
                 else None,
             )
+        elif method == "read_work":
+            if set(data) - {"work_id", "include_content"} or "work_id" not in data:
+                raise ValueError("invalid work lookup")
+            result = await queries.read_work(
+                ctx, data["work_id"], include_content=data.get("include_content", False)
+            )
         elif method == "list_work":
             if set(data) - {"page", "include_content"}:
                 raise ValueError("invalid work query")
             result = await queries.list_work(
                 ctx, page, include_content=data.get("include_content", False)
             )
+        elif method == "read_config_file":
+            if set(data) != {"file_id"}:
+                raise ValueError("invalid configuration file lookup")
+            result = await queries.read_config_file(ctx, data["file_id"])
         elif method in {"read_automation", "read_workspace"}:
             key = "automation_id" if method == "read_automation" else "artifact_id"
             if set(data) != {key}:

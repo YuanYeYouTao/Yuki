@@ -1,0 +1,276 @@
+"""Finite startup files: safe snapshots, shared validation, optimistic atomic saves."""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import os
+import stat
+import tempfile
+import tomllib
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
+
+import tomlkit
+from pydantic import TypeAdapter, ValidationError
+
+from qq_ai_bot.config import Settings
+from qq_ai_bot.model_runtime.models import ModelProfile, ModelTask
+from qq_ai_bot.model_runtime.profiles import (
+    ModelProfileCatalog,
+    ModelRuntimeConfigurationError,
+    model_profile_environment,
+    parse_model_profile_catalog,
+)
+
+MAX_CONFIG_BYTES = 256 * 1024
+CONFIG_FILE_IDS = frozenset({"model_profiles", "system_prompt", "bot_persona"})
+_PUBLIC_PROFILE_FIELDS: dict[str, TypeAdapter[Any]] = {
+    name: TypeAdapter(field.annotation)
+    for name, field in ModelProfile.model_fields.items()
+    if name not in {"id", "headers"}
+}
+
+
+class ConfigFileError(Exception):
+    def __init__(self, category: str) -> None:
+        self.category = category
+        super().__init__(category)
+
+
+def _revision(content: bytes | None) -> int:
+    # Transport revisions are integers, bounded by JavaScript's safe range.
+    return 0 if content is None else int(hashlib.sha256(content).hexdigest()[:13], 16) + 1
+
+
+def _read(path: Path) -> bytes | None:
+    try:
+        before = path.lstat()
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise ConfigFileError("precondition_failed")
+        if before.st_size > MAX_CONFIG_BYTES:
+            raise ConfigFileError("validation_error")
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+        with os.fdopen(os.open(path, flags), "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+                raise ConfigFileError("version_conflict")
+            data = stream.read(MAX_CONFIG_BYTES + 1)
+        if len(data) > MAX_CONFIG_BYTES:
+            raise ConfigFileError("validation_error")
+        return data
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ConfigFileError("operation_unavailable") from exc
+
+
+def _plain(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_plain(item) for item in value]
+    return value
+
+
+class ConfigFileService:
+    """Paths come only from server Settings. Saving never reloads running providers."""
+
+    def __init__(self, settings: Settings, catalog: ModelProfileCatalog | None = None) -> None:
+        self._settings = settings
+        self._catalog = catalog
+        self._lock = asyncio.Lock()
+
+    def _path(self, file_id: str) -> Path:
+        paths = {
+            "model_profiles": self._settings.model_profiles_file,
+            "system_prompt": self._settings.system_prompt_file,
+            "bot_persona": self._settings.resolved_bot_persona_file,
+        }
+        if type(file_id) is not str or file_id not in paths:
+            raise ConfigFileError("validation_error")
+        path = paths[file_id]
+        if path is None:
+            raise ConfigFileError("operation_unavailable")
+        return path.absolute()
+
+    def _catalog_from(self, content: str) -> ModelProfileCatalog:
+        settings = self._settings
+        return parse_model_profile_catalog(
+            content,
+            environment=model_profile_environment(settings),
+        )
+
+    async def read(self, file_id: str) -> dict[str, Any]:
+        path = self._path(file_id)
+        content = await asyncio.to_thread(_read, path)
+        result: dict[str, Any] = {
+            "file_id": file_id,
+            "exists": content is not None,
+            "revision": _revision(content),
+            "apply_mode": "restart",
+            "valid": True,
+            "matches_loaded": None,
+            "writable_directory": await asyncio.to_thread(os.access, path.parent, os.W_OK),
+        }
+        try:
+            text = "" if content is None else content.decode("utf-8")
+            if file_id == "model_profiles":
+                # Headers are kept server-side even for content-authorized readers.
+                raw: dict[str, Any] = (
+                    tomllib.loads(text)
+                    if text
+                    else {"schema_version": 3, "profiles": {}, "routes": {}}
+                )
+                if not isinstance(raw.get("profiles"), dict):
+                    raise ValueError("invalid profiles")
+                raw_profiles = raw["profiles"]
+                routes = raw.get("routes", {})
+                if not isinstance(routes, dict):
+                    raise ValueError("invalid routes")
+                profiles: dict[str, Any] = {}
+                permitted = set(ModelProfile.model_fields) - {"id", "headers"}
+                permitted.update(
+                    {"base_url_env", "model_env", "reasoning_effort_env", "thinking_mode"}
+                )
+                for name, profile in raw_profiles.items():
+                    if not isinstance(profile, dict):
+                        raise ValueError("invalid profile")
+                    selected = {}
+                    for key, value in profile.items():
+                        if key not in permitted:
+                            continue
+                        adapter = _PUBLIC_PROFILE_FIELDS.get(key)
+                        if adapter is None:
+                            if type(value) is str:
+                                selected[key] = value
+                        else:
+                            try:
+                                typed = adapter.validate_python(value)
+                                selected[key] = adapter.dump_python(
+                                    typed, mode="json", exclude_unset=True
+                                )
+                            except ValidationError:
+                                # Malformed typed fields cannot smuggle unreviewed objects.
+                                continue
+                    profiles[name] = selected
+                result["document"] = {
+                    "schema_version": raw.get("schema_version", 3)
+                    if type(raw.get("schema_version", 3)) is int
+                    else 3,
+                    "profiles": profiles,
+                    "routes": {
+                        task.value: routes.get(task.value)
+                        for task in ModelTask
+                        if isinstance(routes.get(task.value), str)
+                    },
+                }
+                result["profile_schema"] = ModelProfile.model_json_schema()
+                result["tasks"] = [task.value for task in ModelTask]
+                if content is not None:
+                    saved = self._catalog_from(text)
+                    result["matches_loaded"] = saved == self._catalog if self._catalog else None
+            else:
+                result["content"] = text
+                if not text.strip():
+                    raise ValueError("empty persona")
+                actual = (
+                    self._settings.bot_persona
+                    if file_id == "bot_persona"
+                    else self._settings.system_prompt
+                )
+                # Settings uses Path.read_text's universal newline decoding.
+                # Preserve the editor's original text, compare the loaded semantics.
+                candidate = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+                if file_id == "system_prompt":
+                    candidate = candidate.replace(
+                        "{{YUKI_PERSONA_CORE}}", self._settings.bot_persona
+                    )
+                result["matches_loaded"] = candidate == actual
+        except (UnicodeError, ValueError, ModelRuntimeConfigurationError):
+            # Do not reflect parser errors containing input, headers, URLs or host paths.
+            result["valid"] = False
+            result["error_category"] = "validation_error"
+        return result
+
+    async def save(self, file_id: str, expected_revision: int, spec: Mapping[str, Any]) -> int:
+        async with self._lock:
+            path = self._path(file_id)
+            original = await asyncio.to_thread(_read, path)
+            if _revision(original) != expected_revision:
+                raise ConfigFileError("version_conflict")
+            try:
+                if file_id == "model_profiles":
+                    if set(spec) != {"document"} or not isinstance(spec["document"], Mapping):
+                        raise ValueError("invalid document")
+                    document = _plain(spec["document"])
+                    profiles = document.get("profiles")
+                    if not isinstance(profiles, dict):
+                        raise ValueError("invalid profiles")
+                    existing = tomllib.loads(original.decode("utf-8")) if original else {}
+                    old_profiles = existing.get("profiles", {})
+                    if not isinstance(old_profiles, dict):
+                        raise ValueError("invalid previous profiles")
+                    for name, profile in profiles.items():
+                        if not isinstance(profile, dict) or "headers" in profile:
+                            raise ValueError("headers must stay server-side")
+                        previous = old_profiles.get(name, {})
+                        if not isinstance(previous, dict):
+                            raise ValueError("invalid previous profile")
+                        if "headers" in previous:
+                            profile["headers"] = previous["headers"]
+                    text = tomlkit.dumps(document)
+                    self._catalog_from(text)
+                else:
+                    if set(spec) != {"content"} or type(spec["content"]) is not str:
+                        raise ValueError("invalid content")
+                    text = spec["content"]
+                    if not text.strip() or "\x00" in text:
+                        raise ValueError("empty or invalid text")
+                content = text.encode("utf-8")
+                if len(content) > MAX_CONFIG_BYTES:
+                    raise ValueError("file too large")
+            except (TypeError, ValueError, UnicodeError, tomlkit.exceptions.TOMLKitError) as exc:
+                raise ConfigFileError("validation_error") from exc
+            writing = asyncio.create_task(asyncio.to_thread(self._replace, path, original, content))
+            try:
+                return await asyncio.shield(writing)
+            except asyncio.CancelledError:
+                # The OS write cannot be interrupted. Keep ownership until it ends;
+                # cancellation still becomes an unknown persistent control receipt.
+                try:
+                    await writing
+                finally:
+                    raise
+
+    @staticmethod
+    def _replace(path: Path, original: bytes | None, content: bytes) -> int:
+        if _read(path) != original:
+            raise ConfigFileError("version_conflict")
+        # Parent directories are deployment-owned; do not create arbitrary trees.
+        try:
+            descriptor, temporary = tempfile.mkstemp(prefix=".yuki-config-", dir=path.parent)
+        except OSError as exc:
+            raise ConfigFileError("operation_unavailable") from exc
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                if original is not None:
+                    os.chmod(temporary, stat.S_IMODE(path.stat().st_mode))
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+            if _read(path) != original:
+                raise ConfigFileError("version_conflict")
+            os.replace(temporary, path)
+            # Exceptions after replacement propagate: the control receipt becomes unknown.
+            if os.name == "posix":
+                folder = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(folder)
+                finally:
+                    os.close(folder)
+            return _revision(content)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)

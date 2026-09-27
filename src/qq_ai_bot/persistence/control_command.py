@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.admin.config_files import ConfigFileService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.config import Settings
@@ -245,6 +246,7 @@ class ControlCommandAdapter:
         database: Database,
         *,
         settings: Settings | None = None,
+        config_files: ConfigFileService | None = None,
         mcp_manager: MCPManager | None = None,
         runtime_config: RuntimeConfigService | None = None,
         maintenance: MemoryMaintenanceWorker | None = None,
@@ -260,6 +262,7 @@ class ControlCommandAdapter:
         self._management = ControlManagementGateway(
             database,
             settings=settings,
+            config_files=config_files,
             runtime_config=runtime_config,
             mcp=mcp_manager,
             maintenance=maintenance,
@@ -693,6 +696,19 @@ class ControlCommandAdapter:
             invoke=self._management.mutate_automation,
         )
 
+    async def save_config_file(
+        self, principal: ControlPrincipal, target: object, command: ControlCommand
+    ) -> ControlResult:
+        if target is not YukiControlTarget.PERMANENT_YUKI:
+            raise ControlCommandError(Problem(ProblemCode.VALIDATION_ERROR))
+        return await self._management_action(
+            principal,
+            target,
+            command,
+            operation=CommandOperation.CONFIG_FILE_SAVE.value,
+            capability="control.config.file.mutate",
+        )
+
     async def mutate_plugin(
         self,
         principal: ControlPrincipal,
@@ -799,7 +815,11 @@ class ControlCommandAdapter:
         parsed, material, parse_problem = _try_parse(command, parse_management_action)
         if parsed is not None and (
             operation
-            in {CommandOperation.MCP_MUTATE.value, CommandOperation.MEMORY_MAINTENANCE.value}
+            in {
+                CommandOperation.MCP_MUTATE.value,
+                CommandOperation.MEMORY_MAINTENANCE.value,
+                CommandOperation.CONFIG_FILE_SAVE.value,
+            }
             or (operation == CommandOperation.PLUGIN_MUTATE.value and parsed.action != "retry")
         ):
             return await self._external.execute(

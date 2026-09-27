@@ -61,8 +61,8 @@ UTF-8；完整下载最多 32 MiB，校验原摘要。大文件与不存在/过�
 | --- | --- |
 | 手帐/聊天 | 会话、接收/发送账本、附件、事件到执行轨迹、当前人格 |
 | 运行状态 | 现有 System/Health；未知健康状态保留 null，不调用模型探测 |
-| 模型/用量 | 已加载 Profile/Route 与实际调用、tokens/缓存/耗时/错误；不显示密钥、地址或请求头 |
-| Work/自动化 | 现有 Work 预算使用、轨迹；自动化脚本、最近 20 run/200 step；创建、编辑、暂停/恢复、取消、run_now |
+| 模型/用量 | 已加载 Profile/Route、磁盘配置表单与原子保存；实际调用、tokens/缓存/耗时/错误。元数据不显示地址/环境变量引用，文件正文单独授权；密钥与请求头始终不显示 |
+| Work/自动化 | 原 Work 预算、等待、子工作、输入、效果/投递意图、检查点与恢复元数据、轨迹；自动化脚本、最近 20 run/200 step；创建、编辑、暂停/恢复、取消、run_now |
 | 自主参与 | 当前只读控制器状态与已接纳轮次/最新反馈；不 tick、不重算、不调用 Jev |
 | Memory | fact、证据、维护工作、确认/隔离、既有 rebuild/dream/maintain 入口 |
 | 插件/MCP | 现有目录与 Manager 状态、批准/启停/doctor、refresh/reconnect |
@@ -74,12 +74,63 @@ UTF-8；完整下载最多 32 MiB，校验原摘要。大文件与不存在/过�
 页面刷新不触发 Agent 唤醒、自动化执行或模型健康调用。run_now 为显式新调度。
 复杂的自动化与维护输入当前使用结构化 JSON 编辑，后端仍执行原完整 schema 校验。
 
+## 启动文件的编辑与生效
+
+`read_config_file` / `save_config_file` 只接受 `model_profiles`、`system_prompt`、
+`bot_persona` 三个逻辑文件 ID，路径来自原 Settings；不接受浏览器提供的宿主路径。
+`control.config.file.content.read` 与 `control.config.file.mutate` 为独立 operator 能力，
+普通配置元数据读取不获得文件正文或写入权限。保存原文不进入审计正文，审计只保留
+文件 ID、版本、状态；请求摘要仍绑定原内容，按原 UUID 防重放。
+
+Profile 使用原 ModelProfile schema 显示字段，按原任务表编辑路由。启动、CLI 和保存共用
+TOML 文档校验及 Settings 环境变量引用解析；不按型号猜供应商、不热换原 Work 的 Provider。
+新增/删除 Profile、修改协议/参数/路由作为一个完整文件校验后保存；引用未解除时不能删除。
+密钥只接受环境变量名，不读取变量值。已有自定义 Headers 留在服务器，保存时保留；
+浏览器不能读、添加或替换 Headers。需要修改 Headers 时使用服务器配置文件。
+
+人格与模板分别编辑，保留原 `{{YUKI_PERSONA_CORE}}` 组装语义。未配置文件的内联模板
+明确不可文件编辑，不擅自创建路径或改写环境配置。Windows CRLF 按与启动加载一致的
+换行语义比较；文件正文读取仍保留原文。页面显示磁盘版本、校验结果、与当前加载是否一致；
+成功回执 `saved_pending_restart` 表示已保存，需重启加载，不表示已经热生效。
+
+文件最大 256 KiB，安全打开普通单链接文件；不读符号链接，不创建父目录。保存核对
+读取到的摘要版本，短 SQLite intent 提交后才在事务外执行文件校验和同目录原子替换，
+沿原 Control 持久回执收口；线程写入取消时保留所有权直到 OS 写入结束。
+同一应用内按原资源围栏串行处理。手工编辑器不参与该围栏，应避免同时写同一文件；
+替换前再次核对原字节，不能声称跨所有外部编辑器实现原子 compare-and-swap。
+文件替换或最终回执提交后结果未知，保留原 request/unknown，不自动保存第二次。
+不会重写聊天历史、清空会话或重跑已有 Work。
+
+### 容器中的可写启动文件
+
+基础 Compose 的 `/app/config` 为只读。可选 `docker-compose.webui.yml` 把三个启动文件
+放到 `/app/webui-config` 可写目录；启用前将当前实际使用的 Profile、System Prompt、
+人格原文分别复制到宿主 `./webui-config/model_profiles.toml`、`system_prompt.md`、
+`persona.md`，逐一核对存在且内容正确。不要用示例文件覆盖现有配置。
+沿现有 Compose 文件列表追加此 overlay；它不发布端口，不设置域名或 operator。
+
+原子替换需要挂载整个目录并允许目录写入，不能只挂载单个文件。页面显示目录不可写时
+禁用保存；实际保存仍以服务端文件操作结果和持久回执为准。operator 声明与认证材料
+继续通过原只读配置目录设置，不复制到可写目录；配置写权限不授予 operator 修改能力。
+`webui-config` 不进入 Git 或镜像构建上下文。保存后按原运维流程重启 Bot 才生效。
+
+## Work 详情的观测边界
+
+`read_work` 只按原 Work UUID 查询，区分元数据与目标/等待条件正文授权。
+读取原父子关系与累计预算、journal 的 chain/contract/phase、恢复原因/次数/时间、
+已接纳输入的内部事件 ID、效果和投递意图状态。每类最近 20 项，并明确标注还有更多；
+`0076` 的索引支持按原 Work 关联查找，不增加业务状态或新调度器。
+
+不读取恢复 journal 的 payload、私有签名、原 authority/source、投递正文、工具私有回执、
+transport target 或子任务 brief/result。等待条件只返回审核字段和是否满足，
+不会反射任意 matched payload。内容详情沿已授权的原执行诊断查看；诊断过期/缺失
+不从私有恢复包补造。页面查询不 tick、不启动模型、不改变等待、预算、输入消费或回执。
+
 ## 仍在建设的完整功能
 
 本层不是完整 WebUI 的最终验收。后续沿原领域服务继续建设：
 
-- 文件型 Model Profile/Route/人格的 schema 编辑、原子保存、校验与加载结果。
-- Work 等待/子工作详情和领域允许的取消/续跑，不以新 run 替代旧执行恢复。
+- Work 领域允许的取消/续跑及更多历史关系分页，不以新 run 替代旧执行恢复。
 - Jev 完整决策历史、参与参数编辑与关系/自省统计；当前未持久化的数据不能伪造为历史。
 - 插件 schema 配置、监控游标/queue/outbox 详情与有证据的处理。
 - Memory 主体/证据筛选与关系详情、完整 schema 表单。
@@ -102,7 +153,8 @@ npm run test
 npm run build
 cd ..
 uv sync --frozen --extra dev
-uv run pytest tests/unit/test_webui_http.py tests/unit/test_webui_activity.py
+uv run pytest tests/unit/test_webui_http.py tests/unit/test_webui_activity.py \
+  tests/unit/test_control_config_files.py tests/unit/test_control_work_details.py
 ```
 
 wheel 构建会包含已生成资源；源码安装启用 WebUI 前必须运行上述构建。

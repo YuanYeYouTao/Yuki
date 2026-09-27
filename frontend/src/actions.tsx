@@ -12,6 +12,7 @@ export interface Intent {
   edit?: "spec" | "value" | "payload";
   hint?: string;
   valueKind?: "boolean" | "number" | "string" | "secret";
+  review?: Row | string;
 }
 export function ActionSheet({
   intent,
@@ -124,6 +125,12 @@ export function ActionSheet({
         当前版本 {intent.revision} · 提交前请检查目标和内容。
       </p>
       {intent.hint && <p>{intent.hint}</p>}
+      {intent.review != null &&
+        (typeof intent.review === "string" ? (
+          <pre className="persona-text">{intent.review}</pre>
+        ) : (
+          <JsonNote title="即将保存的配置" value={intent.review} />
+        ))}
       {intent.edit === "payload" && (
         <label className="form-group">
           刚读取的资源版本

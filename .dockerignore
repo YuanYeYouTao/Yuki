@@ -18,6 +18,7 @@ __pycache__
 workspace
 social-transfer
 sandbox-runtime
+webui-config
 tests
 tmp
 docs/operations/static-review-*.md

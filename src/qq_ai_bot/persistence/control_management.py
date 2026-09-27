@@ -11,6 +11,7 @@ from typing import Protocol
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.admin.config_files import CONFIG_FILE_IDS, ConfigFileError, ConfigFileService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import ConfigApplyMode, ConfigChangeResult, ControlAuditRef
 from qq_ai_bot.automation.repository import AutomationRepository
@@ -134,6 +135,7 @@ class ControlManagementGateway:
         database: Database,
         *,
         settings: Settings | None = None,
+        config_files: ConfigFileService | None = None,
         runtime_config: RuntimeConfigService | None = None,
         mcp: MCPManager | None = None,
         maintenance: MemoryMaintenanceWorker | None = None,
@@ -143,6 +145,7 @@ class ControlManagementGateway:
         plugins: PluginManager | None = None,
     ) -> None:
         self._database = database
+        self._config_files = config_files or (ConfigFileService(settings) if settings else None)
         self._settings = settings
         self._runtime_config = runtime_config
         self._mcp = mcp
@@ -159,7 +162,16 @@ class ControlManagementGateway:
         operation: str,
         parsed: ManagementActionPayload,
     ) -> None:
-        if operation == CommandOperation.PLUGIN_MUTATE.value:
+        if operation == CommandOperation.CONFIG_FILE_SAVE.value:
+            if self._config_files is None:
+                raise ManagementUnavailable
+            if (
+                parsed.action != "save"
+                or parsed.resource_id not in CONFIG_FILE_IDS
+                or parsed.spec is None
+            ):
+                raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
+        elif operation == CommandOperation.PLUGIN_MUTATE.value:
             if self._plugins is None:
                 raise ManagementUnavailable
             if parsed.action not in {"approve", "enable", "disable", "doctor"}:
@@ -209,6 +221,16 @@ class ControlManagementGateway:
         operation: str,
         parsed: ManagementActionPayload,
     ) -> ManagementMutation:
+        if operation == CommandOperation.CONFIG_FILE_SAVE.value:
+            if self._config_files is None:
+                raise ManagementUnavailable
+            try:
+                revision = await self._config_files.save(
+                    parsed.resource_id, command.expected_revision, parsed.spec or {}
+                )
+            except ConfigFileError as exc:
+                raise ManagementFailure(ProblemCode(exc.category)) from None
+            return ManagementMutation(parsed.resource_id, revision, "saved_pending_restart")
         if operation == CommandOperation.PLUGIN_MUTATE.value:
             manager = self._plugins
             if manager is None:

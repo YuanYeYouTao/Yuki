@@ -175,6 +175,7 @@ class Settings(BaseSettings):
     # Compatibility for deployments created before BOT_PERSONA_FILE existed.
     yuki_persona_file: Path | None = None
     _bot_persona: str = PrivateAttr(default="")
+    _loaded_bot_persona_file: Path | None = PrivateAttr(default=None)
 
     database_url: str = "sqlite+aiosqlite:///./data/qq_ai_bot.db"
     control_operators_file: Path | None = None
@@ -836,13 +837,7 @@ class Settings(BaseSettings):
     def _load_system_prompt_file(self) -> Self:
         """Load the shared UTF-8 persona without changing prompt assembly semantics."""
 
-        persona_file = self.bot_persona_file or self.yuki_persona_file or Path("config/persona.md")
-        if (
-            self.bot_persona_file is None
-            and persona_file == Path("config/yuki_persona_core.md")
-            and not persona_file.exists()
-        ):
-            persona_file = Path("config/persona.md")
+        persona_file = self.resolved_bot_persona_file
         persona_setting = (
             "BOT_PERSONA_FILE"
             if self.bot_persona_file is not None or self.yuki_persona_file is None
@@ -855,6 +850,7 @@ class Settings(BaseSettings):
         if not persona:
             raise ValueError(f"{persona_setting} must not be empty")
         self._bot_persona = persona
+        self._loaded_bot_persona_file = persona_file
 
         if self.system_prompt_file is not None:
             try:
@@ -871,6 +867,20 @@ class Settings(BaseSettings):
             self._bot_persona,
         )
         return self
+
+    @property
+    def resolved_bot_persona_file(self) -> Path:
+        """Use exactly the startup selection, including the old default-path alias."""
+        if self._loaded_bot_persona_file is not None:
+            return self._loaded_bot_persona_file
+        persona_file = self.bot_persona_file or self.yuki_persona_file or Path("config/persona.md")
+        if (
+            self.bot_persona_file is None
+            and persona_file == Path("config/yuki_persona_core.md")
+            and not persona_file.exists()
+        ):
+            persona_file = Path("config/persona.md")
+        return persona_file
 
     @property
     def bot_persona(self) -> str:

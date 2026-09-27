@@ -83,6 +83,7 @@ _FAILURE_AFTER_KEYS: Final[frozenset[str]] = frozenset({"problem"})
 _MANAGEMENT_STATE_KEYS: Final[frozenset[str]] = frozenset({"resource", "revision", "status"})
 _MANAGEMENT_OPERATIONS: Final[frozenset[str]] = frozenset(
     {
+        "control.config.file.save",
         "control.config.set",
         "control.config.unset",
         "control.config.rollback",
@@ -170,6 +171,7 @@ class CommandOperation(StrEnum):
     ROUTE_SET = "route.set"
     ROUTE_PAUSE = "route.pause"
     ROUTE_RESUME = "route.resume"
+    CONFIG_FILE_SAVE = "control.config.file.save"
     CONFIG_SET = "control.config.set"
     CONFIG_UNSET = "control.config.unset"
     CONFIG_ROLLBACK = "control.config.rollback"
@@ -1106,6 +1108,15 @@ def _require_management_semantics(
             raise _mismatch()
         return
     action = _material_action(material)
+    if operation == CommandOperation.CONFIG_FILE_SAVE.value:
+        if (
+            action != "save"
+            or status != "saved_pending_restart"
+            or resource_id != semantic_target_id
+            or resource_id != _material_resource(material)
+        ):
+            raise _mismatch()
+        return
     if operation == CommandOperation.MEMORY_MUTATE.value:
         if action not in {"confirm", "quarantine"} or status != action:
             raise _mismatch()

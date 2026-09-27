@@ -359,3 +359,28 @@ select:focus-visible {
     padding: 6px 9px;
   }
 }
+
+.config-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 12px;
+}
+.config-checkboxes {
+  border: 1px solid var(--border);
+  padding: 12px;
+  min-width: 0;
+}
+.config-checkboxes label {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  gap: 8px;
+  margin-right: 16px;
+}
+.config-checkboxes input {
+  width: 18px;
+  height: 18px;
+}
+.persona-editor {
+  min-height: 340px;
+}

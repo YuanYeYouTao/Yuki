@@ -100,6 +100,11 @@ class ControlQueryService:
         _require_capability(authorized, method_capability("read_model_catalog"))
         return await self._port.read_model_catalog()
 
+    async def read_config_file(self, context: object, file_id: str) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_config_file"))
+        return await self._port.read_config_file(file_id)
+
     async def read_persona(self, context: object) -> ActivityView:
         authorized = _require_context(context)
         _require_capability(authorized, method_capability("read_persona"))
@@ -120,6 +125,17 @@ class ControlQueryService:
         authorized = _require_context(context)
         _require_capability(authorized, method_capability("read_participation"))
         return await self._port.read_participation()
+
+    async def read_work(
+        self, context: object, work_id: str, *, include_content: bool = False
+    ) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_work"))
+        if type(include_content) is not bool:
+            raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
+        if include_content:
+            _require_capability(authorized, "control.execution.content.read")
+        return await self._port.read_work(work_id, include_content=include_content)
 
     async def list_work(
         self, context: object, request: PageRequest, *, include_content: bool = False

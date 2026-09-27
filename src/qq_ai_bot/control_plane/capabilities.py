@@ -497,6 +497,18 @@ CONTROL_CAPABILITY_DESCRIPTORS: Final[tuple[ControlCapabilityDescriptor, ...]] =
         mutating=True,
     ),
     _descriptor(
+        "control.config.file.content.read",
+        CapabilityFamily.CONTROL,
+        CapabilitySensitivity.CONTENT_READ,
+        mutating=False,
+    ),
+    _descriptor(
+        "control.config.file.mutate",
+        CapabilityFamily.CONTROL,
+        CapabilitySensitivity.MUTATE,
+        mutating=True,
+    ),
+    _descriptor(
         "control.config.read",
         CapabilityFamily.CONTROL,
         CapabilitySensitivity.METADATA_READ,
