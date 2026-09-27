@@ -103,6 +103,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build and verify WebUI
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run format:check
+          npm run lint
+          npm run test
+          npm run build
       - uses: astral-sh/setup-uv@v6
         with:
           version: "0.11.31"
@@ -124,6 +137,9 @@ jobs:
           required_tests=(
             "tests/unit/test_event_prompt_mentions.py::test_history_reprojects_ordered_mentions_from_persisted_segments"
             "tests/unit/test_event_prompt_mentions.py::test_history_segment_fallback_log_never_contains_content_or_ids"
+            "tests/unit/test_webui_http.py::test_auth_csrf_origin_and_existing_health_are_separate"
+            "tests/unit/test_webui_http.py::test_https_session_cookie_has_secure_host_prefix_and_logout_revokes_it"
+            "tests/unit/test_webui_activity.py::test_media_download_uses_existing_scope_expiry_and_reset_fences"
             "tests/unit/test_participation_admission_edges.py::test_commit_deadline_rejects_new_proposal_but_does_not_lose_accepted_run"
             "tests/unit/test_self_initiative_runtime.py::test_self_work_restart_retains_id_budget_prefix_pending_receipt_and_delivery[responses]"
             "tests/unit/test_self_initiative_runtime.py::test_self_work_restart_retains_id_budget_prefix_pending_receipt_and_delivery[chat_completions]"

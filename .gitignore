@@ -44,3 +44,5 @@ artifacts/memory-quality/*.log
 
 # Local AI review notes; reference material, not published documentation.
 /docs/operations/static-review-*.md
+/frontend/node_modules/
+/src/qq_ai_bot/webui/assets/

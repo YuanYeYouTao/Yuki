@@ -9,14 +9,17 @@ from qq_ai_bot.control_plane.principal import ControlPrincipal
 from qq_ai_bot.control_plane.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_port import ControlQueryPort
 from qq_ai_bot.control_plane.query_types import (
+    ActivityView,
     AuditEventView,
     AutomationView,
     ChatEventView,
+    ChatHistoryFilter,
     ConfigOverrideView,
     ConfigQueryScope,
     ConfigSpecView,
     ControlQueryError,
     ConversationView,
+    DownloadView,
     EffectiveConfigView,
     EmojiAssetView,
     ExecutionTraceFilter,
@@ -80,6 +83,75 @@ class ControlQueryService:
             raise TypeError("port is required")
         self._port = port
 
+    async def download_workspace(self, context: object, artifact_id: str) -> DownloadView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("download_workspace"))
+        return await self._port.download_workspace(artifact_id)
+
+    async def download_chat_media(
+        self, context: object, conversation_id: ConversationId, event_id: int, attachment_index: int
+    ) -> DownloadView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("download_chat_media"))
+        return await self._port.download_chat_media(conversation_id, event_id, attachment_index)
+
+    async def read_model_catalog(self, context: object) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_model_catalog"))
+        return await self._port.read_model_catalog()
+
+    async def read_persona(self, context: object) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_persona"))
+        return await self._port.read_persona()
+
+    async def list_participation_runs(
+        self,
+        context: object,
+        request: PageRequest,
+        *,
+        conversation_id: ConversationId | None = None,
+    ) -> Page[ActivityView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("list_participation_runs"))
+        return await self._port.list_participation_runs(request, conversation_id=conversation_id)
+
+    async def read_participation(self, context: object) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_participation"))
+        return await self._port.read_participation()
+
+    async def list_work(
+        self, context: object, request: PageRequest, *, include_content: bool = False
+    ) -> Page[ActivityView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("list_work"))
+        if type(include_content) is not bool:
+            raise TypeError("include_content must be bool")
+        if include_content:
+            _require_capability(authorized, "control.execution.content.read")
+        return await self._port.list_work(request, include_content=include_content)
+
+    async def read_automation(self, context: object, automation_id: int) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_automation"))
+        return await self._port.read_automation(automation_id)
+
+    async def list_model_usage(self, context: object, request: PageRequest) -> Page[ActivityView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("list_model_usage"))
+        return await self._port.list_model_usage(request)
+
+    async def list_workspace(self, context: object, request: PageRequest) -> Page[ActivityView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("list_workspace"))
+        return await self._port.list_workspace(request)
+
+    async def read_workspace(self, context: object, artifact_id: str) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_workspace"))
+        return await self._port.read_workspace(artifact_id)
+
     async def list_execution_trace(
         self,
         context: object,
@@ -112,6 +184,7 @@ class ControlQueryService:
         *,
         conversation_id: ConversationId,
         include_content: bool = False,
+        history: ChatHistoryFilter | None = None,
     ) -> Page[ChatEventView]:
         authorized = _require_context(context)
         _require_capability(authorized, method_capability("list_chat_events"))
@@ -119,8 +192,9 @@ class ControlQueryService:
             raise TypeError("include_content must be bool")
         if include_content:
             _require_capability(authorized, "control.chat.content.read")
+        options = {} if history is None else {"history": history}
         return await self._port.list_chat_events(
-            request, conversation_id=conversation_id, include_content=include_content
+            request, conversation_id=conversation_id, include_content=include_content, **options
         )
 
     async def list_social_receipts(

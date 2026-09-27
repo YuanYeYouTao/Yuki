@@ -19,6 +19,7 @@ from qq_ai_bot.control_plane.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_cursors import decode_query_cursor, encode_query_cursor
 from qq_ai_bot.control_plane.query_types import (
     ChatEventView,
+    ChatHistoryFilter,
     ControlQueryError,
     ExecutionTraceFilter,
     ExecutionTraceView,
@@ -133,6 +134,7 @@ class ControlExecutionQueryAdapter:
                 scope.work_id,
                 scope.execution_id,
                 scope.source_event_id,
+                scope.descending,
             ]
         )
         key = _key(request, QueryResourceKind.EXECUTION_TRACE, partition)
@@ -166,12 +168,20 @@ class ControlExecutionQueryAdapter:
         if scope.source_event_id:
             stmt = stmt.where(ExecutionTraceEntryModel.source_event_id == scope.source_event_id)
         if key:
-            stmt = stmt.where(ExecutionTraceEntryModel.id > int(key))
+            stmt = stmt.where(
+                ExecutionTraceEntryModel.id < int(key)
+                if scope.descending
+                else ExecutionTraceEntryModel.id > int(key)
+            )
         try:
             async with self._reader() as session:
                 rows = list(
                     await session.scalars(
-                        stmt.order_by(ExecutionTraceEntryModel.id).limit(request.limit + 1)
+                        stmt.order_by(
+                            ExecutionTraceEntryModel.id.desc()
+                            if scope.descending
+                            else ExecutionTraceEntryModel.id.asc()
+                        ).limit(request.limit + 1)
                     )
                 )
                 selected = rows[: request.limit]
@@ -211,10 +221,20 @@ class ControlExecutionQueryAdapter:
         *,
         conversation_id: ConversationId,
         include_content: bool = False,
+        history: ChatHistoryFilter | None = None,
     ) -> Page[ChatEventView]:
         if type(conversation_id) is not ConversationId:
             raise TypeError("conversation_id must be ConversationId")
-        partition = conversation_id.text
+        history = history or ChatHistoryFilter()
+        partition = json.dumps(
+            [
+                conversation_id.text,
+                history.descending,
+                history.event_id,
+                history.since.isoformat() if history.since else None,
+                history.until.isoformat() if history.until else None,
+            ]
+        )
         key = _key(request, QueryResourceKind.CHAT_EVENT, partition)
         if key is not None and (
             not key.isascii()
@@ -224,13 +244,39 @@ class ControlExecutionQueryAdapter:
             or int(key) > 2**63 - 1
         ):
             raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
-        stmt = select(ChatEventModel).where(ChatEventModel.canonical_conversation_id == partition)
-        if key:
-            stmt = stmt.where(ChatEventModel.id > int(key))
-        async with self._reader() as session:
-            rows = list(
-                await session.scalars(stmt.order_by(ChatEventModel.id).limit(request.limit + 1))
+        stmt = select(ChatEventModel).where(
+            ChatEventModel.canonical_conversation_id == conversation_id.text
+        )
+        stmt = stmt.options(
+            defer(ChatEventModel.segments_json, raiseload=True),
+            defer(ChatEventModel.external_payload_json, raiseload=True),
+        )
+        if not include_content:
+            stmt = stmt.options(
+                *(
+                    defer(column, raiseload=True)
+                    for column in (
+                        ChatEventModel.content,
+                        ChatEventModel.audio_transcript,
+                        ChatEventModel.visual_summary,
+                        ChatEventModel.sender_group_card,
+                        ChatEventModel.sender_nickname,
+                    )
+                )
             )
+        if history.event_id is not None:
+            stmt = stmt.where(ChatEventModel.id == history.event_id)
+        if history.since is not None:
+            stmt = stmt.where(ChatEventModel.occurred_at >= history.since)
+        if history.until is not None:
+            stmt = stmt.where(ChatEventModel.occurred_at <= history.until)
+        if key:
+            stmt = stmt.where(
+                ChatEventModel.id < int(key) if history.descending else ChatEventModel.id > int(key)
+            )
+        order = ChatEventModel.id.desc() if history.descending else ChatEventModel.id.asc()
+        async with self._reader() as session:
+            rows = list(await session.scalars(stmt.order_by(order).limit(request.limit + 1)))
             selected = rows[: request.limit]
             attachments: dict[int, list[int]] = {}
             if selected:
@@ -240,7 +286,7 @@ class ControlExecutionQueryAdapter:
                         ConversationMediaItemModel.attachment_index,
                     )
                     .where(
-                        ConversationMediaItemModel.conversation_id == partition,
+                        ConversationMediaItemModel.conversation_id == conversation_id.text,
                         ConversationMediaItemModel.source_event_id.in_(
                             [row.id for row in selected]
                         ),
@@ -274,6 +320,7 @@ class ControlExecutionQueryAdapter:
                     if include_content
                     else None,
                     attachment_indexes=tuple(attachments.get(row.id, ())),
+                    suppression_status=row.suppression_status,
                 )
                 for row in selected
             ]

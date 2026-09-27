@@ -12,15 +12,18 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.control_plane.command_service import ControlCommandService
 from qq_ai_bot.control_plane.query_service import ControlQueryService
 from qq_ai_bot.control_plane.query_types import ComponentHealthView
+from qq_ai_bot.conversation.media_service import ConversationMediaService
 from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
 from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
 from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
 from qq_ai_bot.persistence.control_command import ControlCommandAdapter
 from qq_ai_bot.persistence.control_query import ControlQueryAdapter
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.plugin_host.manager import PluginManager
+from qq_ai_bot.workspace.store import WorkspaceStore
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +48,10 @@ class ControlPlaneModule:
         maintenance: MemoryMaintenanceWorker,
         embeddings: MemoryEmbeddingRuntime,
         plugins: PluginManager,
+        workspace: WorkspaceStore | None = None,
+        conversation_media: ConversationMediaService | None = None,
+        model_catalog: ModelProfileCatalog | None = None,
+        participation_snapshot: Callable[[], Awaitable[dict[str, object]]] | None = None,
         runtime_health: Callable[[], Awaitable[tuple[ComponentHealthView, ...]]] | None = None,
     ) -> ControlPlaneBundle:
         writer = ControlCommandAdapter(
@@ -68,6 +75,10 @@ class ControlPlaneModule:
                     mcp_manager=mcp,
                     connection_registry=connections,
                     plugins=plugins,
+                    workspace=workspace,
+                    conversation_media=conversation_media,
+                    model_catalog=model_catalog,
+                    participation_snapshot=participation_snapshot,
                     runtime_health=runtime_health,
                 )
             ),

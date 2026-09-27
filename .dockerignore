@@ -21,3 +21,5 @@ sandbox-runtime
 tests
 tmp
 docs/operations/static-review-*.md
+frontend/node_modules
+src/qq_ai_bot/webui/assets

@@ -43,6 +43,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/qq_ai_bot", "src/yuki_plugin_sdk"]
+artifacts = ["src/qq_ai_bot/webui/assets/**"]
 
 [tool.hatch.metadata]
 allow-direct-references = true

@@ -43,6 +43,10 @@ CANONICAL_RESOURCE_KINDS: Final[frozenset[QueryResourceKind]] = frozenset(
         QueryResourceKind.CHAT_EVENT,
         QueryResourceKind.EXECUTION_TRACE,
         QueryResourceKind.SOCIAL_RECEIPT,
+        QueryResourceKind.WORK,
+        QueryResourceKind.MODEL_USAGE,
+        QueryResourceKind.WORKSPACE,
+        QueryResourceKind.PARTICIPATION,
     }
 )
 TIME_ID_RESOURCE_KINDS: Final[frozenset[QueryResourceKind]] = frozenset({QueryResourceKind.AUDIT})

@@ -76,6 +76,42 @@ class Settings(BaseSettings):
         populate_by_name=True,
     )
 
+    webui_enabled: bool = False
+    webui_origin: str = "http://127.0.0.1:18765"
+    webui_session_seconds: int = Field(default=21600, ge=300, le=86400)
+    webui_max_body_bytes: int = Field(default=1048576, ge=1024, le=16777216)
+
+    @field_validator("webui_origin")
+    @classmethod
+    def valid_webui_origin(cls, value: str) -> str:
+        from urllib.parse import urlsplit
+
+        if any(char.isspace() or ord(char) < 32 for char in value) or "\\" in value:
+            raise ValueError("WEBUI_ORIGIN must be an HTTP(S) origin")
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in {"", "/"}
+        ):
+            raise ValueError("WEBUI_ORIGIN must be an HTTP(S) origin")
+        if parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+            raise ValueError("non-local WebUI origins require HTTPS")
+        port = parsed.port
+        if port is not None and not 1 <= port <= 65535:
+            raise ValueError("WEBUI_ORIGIN has an invalid port")
+        host = parsed.hostname.encode("idna").decode("ascii").lower()
+        if "%" in host:
+            raise ValueError("WEBUI_ORIGIN has an invalid host")
+        authority = f"[{host}]" if ":" in host else host
+        if port is not None and port != (443 if parsed.scheme == "https" else 80):
+            authority += f":{port}"
+        return f"{parsed.scheme}://{authority}"
+
     app_host: str = "0.0.0.0"
     app_port: int = 8080
     log_level: str = "INFO"

@@ -35,9 +35,11 @@ from qq_ai_bot.control_plane.query_cursors import (
     encode_time_id_key,
 )
 from qq_ai_bot.control_plane.query_types import (
+    ActivityView,
     AuditEventView,
     AutomationView,
     ChatEventView,
+    ChatHistoryFilter,
     ComponentHealthView,
     ConfigOverrideView,
     ConfigOwnerKind,
@@ -46,6 +48,7 @@ from qq_ai_bot.control_plane.query_types import (
     ControlQueryError,
     ConversationView,
     CountSnapshot,
+    DownloadView,
     EffectiveConfigView,
     EmojiAssetView,
     EmojiSpaceEnablementView,
@@ -90,6 +93,7 @@ from qq_ai_bot.conversation.canonical_db_models import (
     SpaceActiveRouteModel,
     SpaceBindingIngestRouteModel,
 )
+from qq_ai_bot.conversation.media_service import ConversationMediaService
 from qq_ai_bot.domain.identity import (
     ConversationGeneration,
     ConversationId,
@@ -121,6 +125,7 @@ from qq_ai_bot.memory.embedding.text import EmbeddingDocumentBuilder
 from qq_ai_bot.memory.errors import MemoryRetrievalError
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
 from qq_ai_bot.memory.repository import MemoryFactRepository
+from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
 from qq_ai_bot.persistence.control_external import control_operation
 from qq_ai_bot.persistence.control_operations import read_operation
 from qq_ai_bot.persistence.database import Database
@@ -139,6 +144,7 @@ from qq_ai_bot.persistence.unit_of_work import state_revision
 from qq_ai_bot.plugin_host.db_models import PluginInstallationModel
 from qq_ai_bot.plugin_host.manager import PluginManager
 from qq_ai_bot.speech.db_models import SpeechVoiceProfileModel
+from qq_ai_bot.workspace.store import WorkspaceStore
 
 
 class _HasId(Protocol):
@@ -569,6 +575,10 @@ class ControlQueryAdapter:
         mcp_manager: MCPManager | None = None,
         connection_registry: object | None = None,
         plugins: PluginManager | None = None,
+        workspace: WorkspaceStore | None = None,
+        conversation_media: ConversationMediaService | None = None,
+        model_catalog: ModelProfileCatalog | None = None,
+        participation_snapshot: Callable[[], Awaitable[dict[str, object]]] | None = None,
         runtime_health: Callable[[], Awaitable[tuple[ComponentHealthView, ...]]] | None = None,
     ) -> None:
         if type(database) is not Database:
@@ -577,13 +587,93 @@ class ControlQueryAdapter:
         from qq_ai_bot.persistence.control_execution_query import ControlExecutionQueryAdapter
 
         self._execution = ControlExecutionQueryAdapter(self._reader)
+        from qq_ai_bot.persistence.control_activity_query import ControlActivityQueryAdapter
+
+        self._activity = ControlActivityQueryAdapter(
+            self._reader, workspace=workspace, conversation_media=conversation_media
+        )
         self._settings = settings
+        self._model_catalog = model_catalog
         self._config = runtime_config
         self._registry = runtime_config.registry if runtime_config is not None else ConfigRegistry()
         self._mcp = mcp_manager
         self._connections = connection_registry
         self._plugins = plugins
         self._runtime_health = runtime_health
+        self._participation_snapshot = participation_snapshot
+
+    async def download_workspace(self, artifact_id: str) -> DownloadView:
+        return await self._activity.download_workspace(artifact_id)
+
+    async def download_chat_media(
+        self, conversation_id: ConversationId, event_id: int, attachment_index: int
+    ) -> DownloadView:
+        return await self._activity.download_chat_media(conversation_id, event_id, attachment_index)
+
+    async def read_model_catalog(self) -> ActivityView:
+        if self._model_catalog is None:
+            raise ControlQueryError(Problem(ProblemCode.OPERATION_UNAVAILABLE))
+        return ActivityView(
+            "models",
+            {
+                "compatibility_mode": self._model_catalog.compatibility_mode,
+                "profiles": [
+                    {
+                        "id": item.id,
+                        "provider": item.provider,
+                        "protocol": item.protocol.value,
+                        "model": item.model,
+                        "timeout_seconds": item.timeout_seconds,
+                        "max_retries": item.max_retries,
+                        "temperature": item.default_temperature,
+                        "max_output_tokens": item.default_max_output_tokens,
+                        "capabilities": sorted(cap.value for cap in item.capabilities),
+                    }
+                    for item in self._model_catalog.profiles.values()
+                ],
+                "routes": [
+                    {"task": task.value, "profile_id": route.profile_id}
+                    for task, route in self._model_catalog.routes.items()
+                ],
+                "apply_mode": "restart",
+            },
+        )
+
+    async def read_persona(self) -> ActivityView:
+        if self._settings is None:
+            raise ControlQueryError(Problem(ProblemCode.OPERATION_UNAVAILABLE))
+        return ActivityView(
+            "persona", {"system_prompt": self._settings.system_prompt, "apply_mode": "restart"}
+        )
+
+    async def list_participation_runs(
+        self, request: PageRequest, *, conversation_id: ConversationId | None = None
+    ) -> Page[ActivityView]:
+        return await self._activity.list_participation_runs(
+            request, conversation_id=conversation_id
+        )
+
+    async def read_participation(self) -> ActivityView:
+        if self._participation_snapshot is None:
+            raise ControlQueryError(Problem(ProblemCode.OPERATION_UNAVAILABLE))
+        return ActivityView("participation", await self._participation_snapshot())
+
+    async def list_work(
+        self, request: PageRequest, *, include_content: bool = False
+    ) -> Page[ActivityView]:
+        return await self._activity.list_work(request, include_content=include_content)
+
+    async def read_automation(self, automation_id: int) -> ActivityView:
+        return await self._activity.read_automation(automation_id)
+
+    async def list_model_usage(self, request: PageRequest) -> Page[ActivityView]:
+        return await self._activity.list_model_usage(request)
+
+    async def list_workspace(self, request: PageRequest) -> Page[ActivityView]:
+        return await self._activity.list_workspace(request)
+
+    async def read_workspace(self, artifact_id: str) -> ActivityView:
+        return await self._activity.read_workspace(artifact_id)
 
     async def list_execution_trace(
         self, request: PageRequest, *, scope: ExecutionTraceFilter, include_content: bool = False
@@ -603,9 +693,13 @@ class ControlQueryAdapter:
         *,
         conversation_id: ConversationId,
         include_content: bool = False,
+        history: ChatHistoryFilter | None = None,
     ) -> Page[ChatEventView]:
         return await self._execution.list_chat_events(
-            request, conversation_id=conversation_id, include_content=include_content
+            request,
+            conversation_id=conversation_id,
+            include_content=include_content,
+            history=history,
         )
 
     async def list_social_receipts(

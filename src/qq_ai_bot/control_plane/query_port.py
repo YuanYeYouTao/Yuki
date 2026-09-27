@@ -7,13 +7,16 @@ from typing import Protocol
 from qq_ai_bot.control_plane.operations import OperationKind, OperationRef
 from qq_ai_bot.control_plane.paging import Page, PageRequest
 from qq_ai_bot.control_plane.query_types import (
+    ActivityView,
     AuditEventView,
     AutomationView,
     ChatEventView,
+    ChatHistoryFilter,
     ConfigOverrideView,
     ConfigQueryScope,
     ConfigSpecView,
     ConversationView,
+    DownloadView,
     EffectiveConfigView,
     EmojiAssetView,
     ExecutionTraceFilter,
@@ -45,6 +48,28 @@ from qq_ai_bot.domain.identity import ConversationId
 class ControlQueryPort(Protocol):
     """Read-only projections. Must not return catalog rows or session objects."""
 
+    async def download_workspace(self, artifact_id: str) -> DownloadView: ...
+    async def download_chat_media(
+        self, conversation_id: ConversationId, event_id: int, attachment_index: int
+    ) -> DownloadView: ...
+
+    async def read_model_catalog(self) -> ActivityView: ...
+    async def read_persona(self) -> ActivityView: ...
+
+    async def list_participation_runs(
+        self, request: PageRequest, *, conversation_id: ConversationId | None = None
+    ) -> Page[ActivityView]: ...
+
+    async def read_participation(self) -> ActivityView: ...
+
+    async def list_work(
+        self, request: PageRequest, *, include_content: bool = False
+    ) -> Page[ActivityView]: ...
+    async def read_automation(self, automation_id: int) -> ActivityView: ...
+    async def list_model_usage(self, request: PageRequest) -> Page[ActivityView]: ...
+    async def list_workspace(self, request: PageRequest) -> Page[ActivityView]: ...
+    async def read_workspace(self, artifact_id: str) -> ActivityView: ...
+
     async def list_execution_trace(
         self, request: PageRequest, *, scope: ExecutionTraceFilter, include_content: bool = False
     ) -> Page[ExecutionTraceView]: ...
@@ -59,6 +84,7 @@ class ControlQueryPort(Protocol):
         *,
         conversation_id: ConversationId,
         include_content: bool = False,
+        history: ChatHistoryFilter | None = None,
     ) -> Page[ChatEventView]: ...
 
     async def list_social_receipts(

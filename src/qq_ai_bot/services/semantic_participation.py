@@ -182,6 +182,31 @@ class SemanticParticipationService:
         self._sessions.clear()
         self._dirty.clear()
 
+    async def control_snapshot(self) -> dict[str, object]:
+        """Read current bounded host state without ticking, saving or re-evaluating Jev."""
+        return {
+            "model_profile": self._model_active_digest[:12],
+            "model_config_error": self._model_config_error,
+            "observer_configured": self._observer is not None,
+            "running": self._task is not None and not self._task.done(),
+            "scopes": [
+                {
+                    "conversation_id": item.scene.conversation_id,
+                    "generation": item.scene.generation,
+                    "updated_at": item.controller.state.now,
+                    "last_human_at": item.controller.state.last_human_at,
+                    "last_self_message_at": item.controller.state.last_self_message_at,
+                    "observations": len(item.controller.state.observations),
+                    "candidates": len(item.controller.state.candidates),
+                    "pending": item.controller.state.pending is not None,
+                    "capacity_blocked": item.controller.state.capacity_blocked,
+                    "feedback": len(item.controller.state.feedback),
+                }
+                for item in self._sessions.values()
+            ],
+            "retention": "current_bounded_snapshot",
+        }
+
     async def health(self) -> dict[str, object]:
         from qq_ai_bot.services.participation_diagnostics import participation_diagnostics
 

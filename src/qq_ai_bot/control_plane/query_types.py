@@ -104,11 +104,16 @@ class QueryResourceKind(StrEnum):
     CHAT_EVENT = "chat_event"
     EXECUTION_TRACE = "execution_trace"
     SOCIAL_RECEIPT = "social_receipt"
+    WORK = "work"
+    MODEL_USAGE = "model_usage"
+    WORKSPACE = "workspace"
+    PARTICIPATION = "participation"
 
 
 @final
 @dataclass(frozen=True, slots=True)
 class ExecutionTraceFilter:
+    descending: bool = False
     conversation_id: ConversationId | None = None
     turn_id: str | None = None
     work_id: str | None = None
@@ -116,6 +121,7 @@ class ExecutionTraceFilter:
     source_event_id: int | None = None
 
     def __post_init__(self) -> None:
+        _require_bool(self.descending, "descending")
         if self.conversation_id is not None and type(self.conversation_id) is not ConversationId:
             raise TypeError("conversation_id must be ConversationId")
         for name in ("turn_id", "work_id", "execution_id"):
@@ -168,6 +174,27 @@ class ExecutionTraceView:
 
 @final
 @dataclass(frozen=True, slots=True)
+class ChatHistoryFilter:
+    descending: bool = False
+    event_id: int | None = None
+    since: datetime | None = None
+    until: datetime | None = None
+
+    def __post_init__(self) -> None:
+        _require_bool(self.descending, "descending")
+        if self.event_id is not None:
+            _require_int(self.event_id, "event_id", minimum=1)
+            if self.event_id > 2**63 - 1:
+                raise ValueError("event_id exceeds ledger range")
+        for name in ("since", "until"):
+            if getattr(self, name) is not None:
+                require_aware_datetime(getattr(self, name), name=name)
+        if self.since and self.until and self.since > self.until:
+            raise ValueError("invalid time range")
+
+
+@final
+@dataclass(frozen=True, slots=True)
 class ChatEventView:
     event_id: int
     conversation_id: ConversationId
@@ -186,6 +213,7 @@ class ChatEventView:
     visual_summary: str | None
     sender_display_name: str | None
     attachment_indexes: tuple[int, ...]
+    suppression_status: str = "keeper"
 
     def __post_init__(self) -> None:
         _require_int(self.event_id, "event_id", minimum=1)
@@ -1298,3 +1326,37 @@ class SpeechProfileView:
         require_opaque_token(self.profile_id, name="profile_id", max_length=128)
         require_opaque_token(self.status, name="status", max_length=32)
         _require_bool(self.enabled, "enabled")
+
+
+@dataclass(frozen=True, slots=True)
+class ActivityView:
+    """Reviewed activity projection. Contents are constructed field by field by adapters."""
+
+    resource_id: str
+    fields: JsonObject
+
+    def __init__(self, resource_id: str, fields: object) -> None:
+        require_opaque_token(resource_id, name="resource_id", max_length=128)
+        object.__setattr__(self, "resource_id", resource_id)
+        object.__setattr__(self, "fields", freeze_json_object(fields))
+
+
+@dataclass(frozen=True, slots=True)
+class DownloadView:
+    name: str
+    content: bytes
+    media_type: str = "application/octet-stream"
+
+    def __post_init__(self) -> None:
+        if type(self.name) is not str or not self.name or len(self.name) > 128:
+            raise ValueError("invalid download name")
+        if type(self.content) is not bytes or len(self.content) > 32 * 1024 * 1024:
+            raise ValueError("download exceeds limit")
+        if self.media_type not in {
+            "application/octet-stream",
+            "image/png",
+            "image/jpeg",
+            "image/webp",
+            "image/gif",
+        }:
+            raise ValueError("invalid download media type")

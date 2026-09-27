@@ -525,6 +525,10 @@ class ApplicationContainer:
             maintenance=self.memory_maintenance_worker,
             embeddings=self.memory_embeddings,
             plugins=self.plugin_manager,
+            workspace=self.workspace_service.store,
+            conversation_media=self.conversation_media,
+            model_catalog=self.model_profiles,
+            participation_snapshot=lambda: self.semantic_participation.control_snapshot(),
             runtime_health=lambda: control_runtime_health(self),
         )
         self.emoji_collector.set_event_publisher(self.plugin_events)
