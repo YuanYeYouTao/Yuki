@@ -2,7 +2,7 @@
 
 遵守 [development-contract](development-contract.md) 与
 [Control Plane 合同](control-plane-foundation.md)。这是当前源码的实现边界，
-不表示已经发布、部署或完成全部管理功能。
+描述当前完整管理界面的源码边界；发布、部署和线上验收分别记录。
 
 ## 装配与前端
 
@@ -63,16 +63,19 @@ UTF-8；完整下载最多 32 MiB，校验原摘要。大文件与不存在/过�
 | 运行状态 | 现有 System/Health；未知健康状态保留 null，不调用模型探测 |
 | 模型/用量 | 已加载 Profile/Route、磁盘配置表单与原子保存；实际调用、tokens/缓存/耗时/错误。元数据不显示地址/环境变量引用，文件正文单独授权；密钥与请求头始终不显示 |
 | Work/自动化 | 原 Work 预算、等待、子工作、输入、效果/投递意图、检查点与恢复元数据、轨迹；自动化脚本、执行与步骤历史分页；创建、编辑、暂停/恢复、取消、run_now |
-| 自主参与 | 当前控制器状态、已接纳轮次/最新反馈、Jev/Host 决策诊断时间线、完整数学参数表单与原热更新文件；查询不 tick、不重算、不调用 Jev |
-| Memory | fact、证据、维护工作、确认/隔离、既有 rebuild/dream/maintain 入口 |
-| 插件/MCP | 原 schema 配置、GitHub queue/cursor/诊断、通知 outbox；Manager 批准/启停/doctor、MCP refresh/reconnect |
-| 身份/配置 | canonical Person/Space/Presence 与原动作；Registry schema、作用域有效配置、保存/删除覆盖 |
-| 工作区/素材 | 共享 artifact 列表、文本预览、授权下载；表情与语音目录及原管理动作 |
+| 自主参与 | 当前控制器状态、已接纳轮次/全部反馈分页、Jev/Host 决策诊断时间线、完整数学参数表单与原热更新文件；查询不 tick、不重算、不调用 Jev |
+| Memory | 按原主体/内部证据筛选 fact 与证据、原版本确认/隔离、关系与自省、rebuild 原候选审核/暂停/续跑/提交/重试及 dream/maintain |
+| 插件/MCP | 原 schema 配置、GitHub queue/cursor/诊断、通知 outbox；原 manifest/权限复选授权、Manager 启停/doctor、background turn 分页、MCP refresh/reconnect |
+| 身份/配置 | canonical Person/Space/Presence、Binding 与三种原路由的详情/注册/编辑/暂停/恢复；Registry schema、作用域有效配置、保存/删除覆盖 |
+| 工作区/素材 | 共享 artifact 上传/版本编辑/删除、文本预览、授权下载、原 Linux 文件与终端；表情与语音目录及原管理动作 |
 | 审计 | 执行诊断、Control/rebuild/dream 原状态与回执、管理审计、Social 投递确定性 |
 
 列表有界分页；“筛选本页”只过滤已读取的一页，不冒充全库搜索。
 页面刷新不触发 Agent 唤醒、自动化执行或模型健康调用。run_now 为显式新调度。
-复杂的自动化与维护输入当前使用结构化 JSON 编辑，后端仍执行原完整 schema 校验。
+自动化安排/步骤/原能力参数、Memory 维护范围和插件批准使用原 schema 表单；
+步骤支持原内置变量与前一步结果模板。能力的 permitted_levels 来自原 Registry.permits，
+SELF 不可委托的选项禁用，原执行层仍核验全部权限、场景及额度。
+自由键值支持结构化增删与原 JSON 值；不增加通用工具执行入口。
 
 ## 启动文件的编辑与生效
 
@@ -168,8 +171,7 @@ SQL 只读取状态、时间、能力、计数和错误类别，不加载 author
 
 `read_plugin_configuration` / `configure_plugin` 使用 Manager 已批准并注册的原 Pydantic
 schema；查询不发现、导入或启用插件。没有已加载 schema 时明确不可用。表单与 Profile
-共用递归 schema 字段组件，支持仓库、分支、事件类型和嵌套通知目标的增删。未支持的
-自由结构字段明确要求服务器编辑，不把对象转换成普通字符串。
+共用递归 schema 字段组件，支持仓库、分支、事件类型和嵌套通知目标的增删。自由结构键值保留原 JSON 类型，不把对象转换成普通字符串。
 
 配置沿用 `plugin_config_values`，global、user、group 各范围独立核对原行摘要版本；
 user/group 必须提供 live canonical Person/Space UUID，不能拿平台 ID 重建归属。
@@ -199,18 +201,40 @@ accepted/committed cursor、轮询/成功时间、暂停、失败、限流、pen
 结果 unknown/uncertain、已发送、预算耗尽或缺少原 canonical owner 不进入 live 队列。
 历史缺少归属返回持久 `state_mismatch`，不按平台目标重新寻找主人。
 
-## 仍在建设的完整功能
+## Memory、关系、自省与维护
 
-本层不是完整 WebUI 的最终验收。后续沿原领域服务继续建设：
+事实/证据按 canonical Person/Space、scope、kind、status、原 event/tool receipt/fact ID
+筛选并进行 keyset 分页。游标绑定全部筛选及正文授权范围；无正文能力的 SQL 不读取
+内容、证据原文或旧平台身份。关系编辑沿原 Person 行/revision，共用原关系写算法及审计。
+自省统计取原 run/cycle/request/result，不补造未记录的 usage，不触发处理或模型调用。
 
-- 关系/自省统计与自主轮的完整反馈详情；原诊断未记录的历史不能伪造。
-- 插件 background turn 的完整历史分页，以及插件领域明确定义的队列维护动作；不提供任意 KV 编辑或无证据重发。
-- Memory 主体/证据筛选与关系详情、完整 schema 表单。
-- 自动化脚本及维护动作的完整 schema 表单；当前 JSON 编辑保留原完整校验。
-- 工作区上传/编辑/删除/终端，与对应文件审批、版本与持久环境合同。
+维护详情仅投影原水位、计数、版本和经过原类型校验的计划统计；不暴露私有 selection。
+重建候选可按原 run 分页、读取已授权内容/证据、批准或拒绝后提交。批量审核严格核验
+原 run 与全部 pending proposal ID。CLI 与 Control 共用 pause/resume/commit/retry 状态机，
+重试只重置原失败项到暂停，不重置成功项、水位或已消耗请求计数，随后显式续跑。
+Dream 重试复用原失败/过期簇恢复，并保留原成功簇与 attempt budget。
 
-新增这些能力时补齐公共 Query/Command 合同，禁止页面绕过服务直接写 ORM、
-读取任意宿主路径、调用任意工具或凭空制造回执。
+## 共享工作区与终端
+
+`control.workspace.mutate` 提供原 artifact 上传、版本编辑和删除，上传最多 640 KiB，
+正文预览截断时不允许拿片段覆盖文件。共享 artifact 仍为不可变版本快照；发布及 checkout
+使用原 WorkspaceService/WorkspaceStore，成功快照但导入失败的状态单独显示。
+
+`control.environment.file.mutate` 按原 FileWorkspace 路径/schema 和 SHA 版本执行有限文件动作，
+不读取宿主路径；`control.terminal.mutate` 复用原 SandboxClient 的同一 Manager/socket/Linux
+环境。页面命令来自固定 exec/write/control 方法，不提供任意工具 RPC。文件/终端内容有
+独立读取权限，查询不执行命令；输出按原 run UUID/byte cursor 读取并标明截断或已丢失内容。
+
+终端 request token 为 `control:<authenticated principal UUID>:<original request UUID>`，
+Manager 的原持久启动标记和 run UUID 保留。操作先提交短 Control intent，再在 SQLite
+事务外发送；完成事件核验原 intent/actor/request/run 并追加去重的管理审计，不生成聊天
+事件、不创建 Agent continuation、不唤醒 Yuki、不新建 worker 或数据库表。
+按原 request 查询 Manager 时主体来自认证上下文，浏览器不能替换主体。响应丢失保留
+Control unknown 围栏，不自动重跑、重发或把晚到完成记录伪造成原成功回执。
+
+插件队列维护使用原 Manager 启停与有证据的 outbox retry；队列观测不迁移/封口/补发。
+background turn 只分页实际元数据，不读取 agent_intent、生成正文或平台目标。
+原模型/诊断未保存的历史、过期媒体、真实环境未部署的功能明确显示缺失或不可用。
 
 ## 本地开发与构建
 

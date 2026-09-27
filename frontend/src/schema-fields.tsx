@@ -1,51 +1,270 @@
 import type { Row } from "./api";
+import { initialSchemaValue, resolve } from "./schema-values";
+import { useState } from "react";
 
 type Options = {
+  templates?: boolean;
   labels?: Record<string, string>;
   omit?: string[];
   choices?: (name: string, values: string[]) => string[];
 };
 
-function resolve(field: Row, root: Row, depth = 0): Row {
-  if (depth > 16) return {};
-  if (field.$ref)
-    return resolve(
-      ((root.$defs as Row)?.[String(field.$ref).split("/").pop()!] ||
-        {}) as Row,
-      root,
-      depth + 1,
-    );
-  if (field.anyOf)
-    return resolve(
-      (field.anyOf as Row[]).find((item) => item.type !== "null") || {},
-      root,
-      depth + 1,
-    );
-  return field;
+function TemplateField({
+  id,
+  label,
+  value,
+  change,
+  initial,
+  children,
+}: {
+  id: string;
+  label: string;
+  value: unknown;
+  change: (value: unknown) => void;
+  initial: () => unknown;
+  children: React.ReactNode;
+}) {
+  const [template, setTemplate] = useState(
+    typeof value === "string" && value.startsWith("$"),
+  );
+  return (
+    <fieldset className="config-array">
+      <legend>{label}</legend>
+      <label htmlFor={`${id}-mode`}>
+        参数来源
+        <select
+          id={`${id}-mode`}
+          className="form-control"
+          value={template ? "template" : "literal"}
+          onChange={(e) => {
+            const enabled = e.target.value === "template";
+            setTemplate(enabled);
+            change(enabled ? "" : initial());
+          }}
+        >
+          <option value="literal">直接填写</option>
+          <option value="template">内置变量或前一步结果</option>
+        </select>
+      </label>
+      {template ? (
+        <label className="form-group" htmlFor={id}>
+          原模板表达式
+          <input
+            id={id}
+            className="form-control"
+            required
+            value={String(value ?? "")}
+            onChange={(e) => change(e.target.value)}
+            placeholder="${alias.field} 或 $automation_id"
+          />
+        </label>
+      ) : (
+        children
+      )}
+    </fieldset>
+  );
 }
 
-function initial(raw: Row, root: Row, depth = 0): unknown {
-  const field = resolve(raw, root);
-  if (field.default !== undefined) return structuredClone(field.default);
-  if (field.const !== undefined) return field.const;
-  if (depth > 16) return null;
-  if (field.type === "object") {
-    return Object.fromEntries(
-      Object.entries((field.properties || {}) as Row)
-        .filter(
-          ([name, prop]) =>
-            ((field.required || []) as string[]).includes(name) ||
-            (prop as Row).default !== undefined,
+function ValueField({
+  id,
+  label,
+  value,
+  change,
+}: {
+  id: string;
+  label: string;
+  value: unknown;
+  change: (value: unknown) => void;
+}) {
+  const kindOf = (v: unknown) =>
+    v == null ? "null" : typeof v === "object" ? "json" : typeof v;
+  const [kind, setKind] = useState(kindOf(value));
+  const [draft, setDraft] = useState(
+    typeof value === "object"
+      ? JSON.stringify(value ?? null, null, 2)
+      : String(value ?? ""),
+  );
+  return (
+    <div className="form-group">
+      <label htmlFor={`${id}-kind`}>{label} · 值类型</label>
+      <select
+        id={`${id}-kind`}
+        className="form-control"
+        value={kind}
+        onChange={(e) => {
+          const next = e.target.value;
+          setKind(next);
+          const initial =
+            next === "string"
+              ? ""
+              : next === "number"
+                ? 0
+                : next === "boolean"
+                  ? false
+                  : next === "json"
+                    ? {}
+                    : null;
+          setDraft(
+            typeof initial === "object"
+              ? JSON.stringify(initial, null, 2)
+              : String(initial),
+          );
+          change(initial);
+        }}
+      >
+        {[
+          ["string", "文本"],
+          ["number", "数值"],
+          ["boolean", "开关"],
+          ["null", "空值"],
+          ["json", "对象或数组"],
+        ].map(([v, l]) => (
+          <option key={v} value={v}>
+            {l}
+          </option>
+        ))}
+      </select>
+      {kind === "boolean" ? (
+        <label htmlFor={id}>
+          {label}
+          <select
+            id={id}
+            className="form-control"
+            value={String(value)}
+            onChange={(e) => change(e.target.value === "true")}
+          >
+            <option value="false">false</option>
+            <option value="true">true</option>
+          </select>
+        </label>
+      ) : (
+        kind !== "null" && (
+          <label htmlFor={id}>
+            {label}
+            <textarea
+              key={kind}
+              id={id}
+              className="form-control"
+              value={draft}
+              onChange={(e) => {
+                setDraft(e.target.value);
+                try {
+                  const next =
+                    kind === "string"
+                      ? e.target.value
+                      : JSON.parse(e.target.value);
+                  if (
+                    kind === "number" &&
+                    (typeof next !== "number" || !Number.isFinite(next))
+                  )
+                    throw new Error();
+                  if (
+                    kind === "json" &&
+                    (next == null || typeof next !== "object")
+                  )
+                    throw new Error();
+                  e.target.setCustomValidity("");
+                  change(next);
+                } catch {
+                  e.target.setCustomValidity("请填写所选类型的有效值。");
+                }
+              }}
+            />
+          </label>
         )
-        .map(([name, prop]) => [name, initial(prop as Row, root, depth + 1)]),
-    );
-  }
-  if (field.type === "array") return [];
-  if (field.enum) return (field.enum as unknown[])[0];
-  if (field.type === "boolean") return false;
-  if (field.type === "number" || field.type === "integer")
-    return field.minimum ?? 0;
-  return "";
+      )}
+    </div>
+  );
+}
+
+function MappingField({
+  name,
+  field,
+  root,
+  value,
+  change,
+  id,
+  label,
+  options,
+  depth,
+}: {
+  name: string;
+  field: Row;
+  root: Row;
+  value: unknown;
+  change: (v: unknown) => void;
+  id: string;
+  label: string;
+  options: Options;
+  depth: number;
+}) {
+  const [key, setKey] = useState("");
+  const values = (
+    value && typeof value === "object" && !Array.isArray(value) ? value : {}
+  ) as Row;
+  return (
+    <fieldset className="config-array">
+      <legend>{label}</legend>
+      {Object.entries(values).map(([key, item]) => (
+        <div className="config-array-item" key={key}>
+          <Field
+            name={key}
+            raw={(field.additionalProperties || {}) as Row}
+            root={root}
+            value={item}
+            change={(next) => change({ ...values, [key]: next })}
+            prefix={id}
+            required
+            options={options}
+            depth={depth + 1}
+          />
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => {
+              const next = { ...values };
+              delete next[key];
+              change(next);
+            }}
+          >
+            移除 {key}
+          </button>
+        </div>
+      ))}
+      <label className="form-group" htmlFor={`${id}-key`}>
+        {name} · 新字段
+        <input
+          id={`${id}-key`}
+          className="form-control"
+          maxLength={128}
+          value={key}
+          onChange={(e) => setKey(e.target.value)}
+        />
+      </label>
+      <button
+        type="button"
+        className="btn-secondary"
+        disabled={
+          !key.trim() ||
+          key in values ||
+          Object.keys(values).length >= 256 ||
+          ["__proto__", "constructor", "prototype"].includes(key)
+        }
+        onClick={() => {
+          change({
+            ...values,
+            [key]: initialSchemaValue(
+              (field.additionalProperties || {}) as Row,
+              root,
+            ),
+          });
+          setKey("");
+        }}
+      >
+        添加字段
+      </button>
+    </fieldset>
+  );
 }
 
 function Field({
@@ -58,6 +277,7 @@ function Field({
   required,
   options,
   depth,
+  literal = false,
 }: {
   name: string;
   raw: Row;
@@ -68,6 +288,7 @@ function Field({
   required: boolean;
   options: Options;
   depth: number;
+  literal?: boolean;
 }) {
   const field = resolve(raw, root),
     id = `${prefix}-${name}`;
@@ -87,6 +308,108 @@ function Field({
     return (
       <p className="error-note">{label}：嵌套层级过深，请在服务器配置。</p>
     );
+  if (
+    options.templates &&
+    !literal &&
+    field.type &&
+    field.type !== "string" &&
+    field.const === undefined
+  ) {
+    return (
+      <TemplateField
+        id={id}
+        label={label}
+        value={value}
+        change={change}
+        initial={() => initialSchemaValue(field, root)}
+      >
+        <Field
+          name={name}
+          raw={raw}
+          root={root}
+          value={value}
+          change={change}
+          prefix={prefix}
+          required={required}
+          options={options}
+          depth={depth}
+          literal
+        />
+      </TemplateField>
+    );
+  }
+  if (field.oneOf && field.discriminator) {
+    const discriminator = String((field.discriminator as Row).propertyName);
+    const variants = (field.oneOf as Row[]).map((item) => resolve(item, root));
+    const tag = (item: Row) =>
+      String(((item.properties as Row)[discriminator] as Row).const);
+    const selected =
+      variants.find(
+        (item) => tag(item) === String((value as Row)?.[discriminator]),
+      ) || variants[0];
+    return (
+      <fieldset className="config-array">
+        <legend>{label}</legend>
+        <label className="form-group" htmlFor={id}>
+          {options.labels?.[discriminator] || discriminator}
+          <select
+            id={id}
+            className="form-control"
+            value={tag(selected)}
+            onChange={(e) => {
+              const next = variants.find(
+                (item) => tag(item) === e.target.value,
+              )!;
+              change(initialSchemaValue(next, root));
+            }}
+          >
+            {variants.map((item) => (
+              <option key={tag(item)} value={tag(item)}>
+                {tag(item)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <SchemaFields
+          schema={selected}
+          root={root}
+          values={(value || {}) as Row}
+          prefix={id}
+          change={change}
+          {...options}
+          omit={[...(options.omit || []), discriminator]}
+          depth={depth + 1}
+        />
+        {reset}
+      </fieldset>
+    );
+  }
+  if (field.const !== undefined)
+    return (
+      <p className="small">
+        {label}：{String(field.const)}
+      </p>
+    );
+  if (
+    field.type === "object" &&
+    !field.properties &&
+    field.additionalProperties !== false
+  )
+    return (
+      <MappingField
+        name={name}
+        field={field}
+        root={root}
+        value={value}
+        change={change}
+        id={id}
+        label={label}
+        options={options}
+        depth={depth}
+      />
+    );
+  if (!field.type && !field.enum)
+    return <ValueField id={id} label={label} value={value} change={change} />;
   if (field.type === "object" && field.properties)
     return (
       <details className="json-note" open>
@@ -95,7 +418,7 @@ function Field({
           <button
             type="button"
             className="btn-secondary"
-            onClick={() => change(initial(field, root))}
+            onClick={() => change(initialSchemaValue(field, root))}
           >
             添加覆盖
           </button>
@@ -177,7 +500,9 @@ function Field({
               field.maxItems !== undefined &&
               entries.length >= Number(field.maxItems)
             }
-            onClick={() => change([...entries, initial(items, root)])}
+            onClick={() =>
+              change([...entries, initialSchemaValue(items, root)])
+            }
           >
             添加项
           </button>
@@ -224,6 +549,25 @@ function Field({
             </option>
           ))}
         </select>
+      ) : field.type === "string" &&
+        (Number(field.maxLength || 0) > 512 ||
+          [
+            "command",
+            "text",
+            "code",
+            "instruction",
+            "content",
+            "description",
+          ].includes(name)) ? (
+        <textarea
+          id={id}
+          className="form-control"
+          required={required}
+          rows={5}
+          maxLength={field.maxLength as number | undefined}
+          value={value == null ? "" : String(value)}
+          onChange={(e) => change(e.target.value)}
+        />
       ) : (
         <input
           id={id}

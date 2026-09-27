@@ -296,6 +296,42 @@ export function PluginDetails({
         )}
       </Section>
       <Observation pluginId={pluginId} props={props} />
+      {props.allowed("list_plugin_background_turns") && (
+        <Section title={`${pluginId} · Yuki 后台轮次`}>
+          <QueryList
+            method="list_plugin_background_turns"
+            args={{ plugin_id: pluginId }}
+            refresh={props.refresh}
+            onRow={flatten}
+            columns={[
+              ["id", "原 Job ID"],
+              ["source_event_id", "内部来源事件"],
+              ["status", "状态", badge],
+              ["model_requests", "模型请求"],
+              ["tool_calls_used", "工具调用"],
+              ["attempts", "已尝试"],
+              ["max_attempts", "预算"],
+              ["next_attempt_at", "下次尝试", stamp],
+              ["lease_until", "租约截止", stamp],
+              ["last_error_category", "原因"],
+              ["completed_at", "完成时间", stamp],
+              ["canonical_conversation_id", "会话"],
+            ]}
+            actions={(row) => (
+              <a
+                className="file-open"
+                href={`#audit?event=${encodeURIComponent(String(row.source_event_id))}`}
+              >
+                来源执行轨迹
+              </a>
+            )}
+          />
+          <p className="small">
+            这是原后台 Job
+            的完整分页。完成生成与通知投递分别记录；停用插件阻止新的工作，不重跑已有轮次。
+          </p>
+        </Section>
+      )}
       {props.allowed("list_plugin_outbox") && (
         <Section title={`${pluginId} · 通知投递`}>
           <QueryList

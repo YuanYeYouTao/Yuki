@@ -140,9 +140,9 @@ docker compose exec bot qq-ai-bot-cli gateway doctor --provider snowluma
 
 一个数据库对应一个长期存在的 Yuki。人物、群空间、QQ 账号和网关连接分别建模，聊天历史与关系不绑定在某一次登录连接上。工具由后端执行权限、预算、幂等和审计检查。
 
-目前提供 QQ 交互、CLI 和共享 Control Plane。开发分支新增了默认关闭的手帐风格 WebUI 与同源管理 HTTP，
+目前提供 QQ 交互、CLI 和共享 Control Plane。当前源码提供默认关闭的手帐风格完整管理 WebUI 与同源管理 HTTP，
 接入聊天、执行轨迹、配置、自动化等现有服务；完整功能仍在按域建设，3.8.4 正式发布不包含此管理界面。
-构建、权限及剩余范围见 [WebUI 文档](docs/architecture/webui-console.md)。
+构建、权限及功能边界见 [WebUI 文档](docs/architecture/webui-console.md)。
 
 ```bash
 uv sync --extra dev

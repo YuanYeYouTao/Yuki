@@ -18,7 +18,9 @@ from qq_ai_bot import __version__
 from qq_ai_bot.admin.config_files import ConfigFileError, ConfigFileService
 from qq_ai_bot.admin.config_registry import ConfigRegistry
 from qq_ai_bot.admin.config_service import RuntimeConfigService
+from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.config import Settings
+from qq_ai_bot.control_plane.json_types import JsonObject
 from qq_ai_bot.control_plane.operations import (
     OperationKind,
     OperationRef,
@@ -63,6 +65,7 @@ from qq_ai_bot.control_plane.query_types import (
     MemoryFactView,
     MemoryHealthView,
     MemoryJobView,
+    MemoryQueryFilter,
     PendingRestartView,
     PersonActiveRouteView,
     PersonView,
@@ -73,6 +76,7 @@ from qq_ai_bot.control_plane.query_types import (
     QueryCursorPhase,
     QueryResourceKind,
     QueueSummary,
+    ReflectionQueryFilter,
     RouteKind,
     SocialReceiptView,
     SpaceActiveRouteView,
@@ -135,8 +139,6 @@ from qq_ai_bot.persistence.models import (
     AutomationModel,
     MCPServerStateModel,
     MCPToolCacheModel,
-    MemoryEvidenceModel,
-    MemoryFactModel,
     MemoryJobModel,
     MemoryRebuildRunModel,
     RuntimeConfigOverrideModel,
@@ -149,6 +151,7 @@ from qq_ai_bot.plugin_host.configuration_service import (
 from qq_ai_bot.plugin_host.db_models import PluginInstallationModel
 from qq_ai_bot.plugin_host.manager import PluginManagementRejected, PluginManager
 from qq_ai_bot.speech.db_models import SpeechVoiceProfileModel
+from qq_ai_bot.workspace.service import WorkspaceService
 from qq_ai_bot.workspace.store import WorkspaceStore
 from yuki_plugin_sdk.observation import PluginObservationRequest
 
@@ -577,11 +580,13 @@ class ControlQueryAdapter:
         database: Database,
         *,
         settings: Settings | None = None,
+        workspace_service: WorkspaceService | None = None,
         runtime_config: RuntimeConfigService | None = None,
         mcp_manager: MCPManager | None = None,
         connection_registry: object | None = None,
         plugins: PluginManager | None = None,
         workspace: WorkspaceStore | None = None,
+        automation: AutomationService | None = None,
         conversation_media: ConversationMediaService | None = None,
         model_catalog: ModelProfileCatalog | None = None,
         config_files: ConfigFileService | None = None,
@@ -591,6 +596,10 @@ class ControlQueryAdapter:
         if type(database) is not Database:
             raise TypeError("database must be Database")
         self._database = database
+        from qq_ai_bot.persistence.control_workspace import ControlWorkspace
+
+        self._workspace_control = ControlWorkspace(workspace_service)
+        self._automation = automation
         from qq_ai_bot.persistence.control_execution_query import ControlExecutionQueryAdapter
 
         self._execution = ControlExecutionQueryAdapter(self._reader)
@@ -608,6 +617,12 @@ class ControlQueryAdapter:
         from qq_ai_bot.persistence.control_automation_query import ControlAutomationQueryAdapter
 
         self._automation_details = ControlAutomationQueryAdapter(self._reader)
+        from qq_ai_bot.persistence.control_memory_query import ControlMemoryQueryAdapter
+
+        self._memory_details = ControlMemoryQueryAdapter(self._reader)
+        from qq_ai_bot.persistence.control_reflection_query import ControlReflectionQueryAdapter
+
+        self._reflection_details = ControlReflectionQueryAdapter(database, self._reader, settings)
         self._settings = settings
         self._model_catalog = model_catalog
         self._config = runtime_config
@@ -682,6 +697,18 @@ class ControlQueryAdapter:
             request, conversation_id=conversation_id
         )
 
+    async def list_participation_feedback(
+        self, request: PageRequest, *, run_id: str, include_content: bool = False
+    ) -> Page[ActivityView]:
+        return await self._activity.list_participation_feedback(
+            request, run_id=run_id, include_content=include_content
+        )
+
+    async def list_plugin_background_turns(
+        self, request: PageRequest, *, plugin_id: str
+    ) -> Page[ActivityView]:
+        return await self._activity.list_plugin_background_turns(request, plugin_id=plugin_id)
+
     async def read_participation(self) -> ActivityView:
         if self._participation_snapshot is None:
             raise ControlQueryError(Problem(ProblemCode.OPERATION_UNAVAILABLE))
@@ -701,6 +728,31 @@ class ControlQueryAdapter:
         self, request: PageRequest, *, include_content: bool = False
     ) -> Page[ActivityView]:
         return await self._activity.list_work(request, include_content=include_content)
+
+    async def read_automation_schema(self) -> ActivityView:
+        if self._automation is None:
+            raise ControlQueryError(Problem(ProblemCode.OPERATION_UNAVAILABLE))
+        fields = self._automation.management_schema()
+        if len(json.dumps(fields).encode()) > 256 * 1024:
+            raise ControlQueryError(Problem(ProblemCode.STATE_MISMATCH))
+        return ActivityView("automation_schema", fields)
+
+    async def read_memory_maintenance_schema(self) -> ActivityView:
+        from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
+
+        return ActivityView(
+            "memory_maintenance_schema", {"rebuild": MemoryRebuildSelection.model_json_schema()}
+        )
+
+    async def list_memory_rebuild_proposals(
+        self, request: PageRequest, *, run_id: str, include_content: bool = False
+    ) -> Page[ActivityView]:
+        return await self._memory_details.list_rebuild_proposals(
+            request, run_id=run_id, include_content=include_content
+        )
+
+    async def read_memory_maintenance_run(self, operation_id: str) -> ActivityView:
+        return await self._memory_details.read_memory_maintenance_run(operation_id)
 
     async def read_automation(self, automation_id: int) -> ActivityView:
         return await self._automation_details.read_automation(automation_id)
@@ -724,6 +776,14 @@ class ControlQueryAdapter:
 
     async def list_workspace(self, request: PageRequest) -> Page[ActivityView]:
         return await self._activity.list_workspace(request)
+
+    async def read_terminal_submission(
+        self, request_id: RequestId, principal_id: PrincipalId
+    ) -> ActivityView:
+        return await self._workspace_control.read_submission(request_id, principal_id)
+
+    async def read_environment(self, section: str, arguments: JsonObject) -> ActivityView:
+        return await self._workspace_control.read(section, arguments)
 
     async def read_workspace(self, artifact_id: str) -> ActivityView:
         return await self._activity.read_workspace(artifact_id)
@@ -1700,83 +1760,53 @@ class ControlQueryAdapter:
                 snapshot_at=snapshot_at,
             )
 
+    async def read_self_reflection_health(self) -> ActivityView:
+        return await self._reflection_details.read_self_reflection_health()
+
+    async def list_self_reflection_history(
+        self, request: PageRequest, *, section: str, scope: ReflectionQueryFilter | None = None
+    ) -> Page[ActivityView]:
+        return await self._reflection_details.list_self_reflection_history(
+            request, section=section, scope=scope
+        )
+
+    async def list_relationships(self, request: PageRequest) -> Page[ActivityView]:
+        return await self._memory_details.list_relationships(request)
+
+    async def read_relationship(self, person_id: PersonId) -> ActivityView:
+        return await self._memory_details.read_relationship(person_id)
+
+    async def list_relationship_history(
+        self, request: PageRequest, *, person_id: PersonId, section: str
+    ) -> Page[ActivityView]:
+        return await self._memory_details.list_relationship_history(
+            request, person_id=person_id, section=section
+        )
+
     async def list_memory_facts(
         self,
         request: PageRequest,
         *,
         include_content: bool,
+        scope: MemoryQueryFilter | None = None,
     ) -> Page[MemoryFactView]:
-        snapshot_at = _now()
-        async with self._reader() as session:
-            epoch, _revision = await self._runtime(session)
-            _phase, key = self._cursor_state(request, QueryResourceKind.MEMORY_FACT, epoch=epoch)
-            after = decode_integer_cursor_key(key, minimum=1) if key is not None else 0
-            stmt = select(MemoryFactModel)
-            if after:
-                stmt = stmt.where(MemoryFactModel.id > after)
-            stmt = stmt.order_by(MemoryFactModel.id.asc()).limit(request.limit + 1)
-            rows = list(await session.scalars(stmt))
-            more = len(rows) == request.limit + 1
-            if more:
-                rows = rows[:-1]
-            items = [
-                MemoryFactView(
-                    fact_id=int(row.id),
-                    revision=state_revision(row.updated_at),
-                    scope_type=str(row.scope_type),
-                    kind=str(row.kind),
-                    category=str(row.category or "uncategorized"),
-                    status=str(row.status),
-                    content=None if not include_content else str(row.content),
-                    excerpt=None if not include_content else str(row.content)[:120],
-                )
-                for row in rows
-            ]
-            return self._page(
-                items,
-                kind=QueryResourceKind.MEMORY_FACT,
-                phase=QueryCursorPhase.CANONICAL,
-                next_key=str(rows[-1].id) if more else None,
-                snapshot_at=snapshot_at,
-            )
+        return await self._memory_details.list_memory_facts(
+            request, include_content=include_content, scope=scope
+        )
 
     async def list_memory_evidence(
         self,
         request: PageRequest,
         *,
         include_content: bool,
+        scope: MemoryQueryFilter | None = None,
     ) -> Page[MemoryEvidenceView]:
-        snapshot_at = _now()
-        async with self._reader() as session:
-            epoch, _revision = await self._runtime(session)
-            _phase, key = self._cursor_state(
-                request, QueryResourceKind.MEMORY_EVIDENCE, epoch=epoch
-            )
-            after = decode_integer_cursor_key(key, minimum=1) if key is not None else 0
-            stmt = select(MemoryEvidenceModel)
-            if after:
-                stmt = stmt.where(MemoryEvidenceModel.id > after)
-            stmt = stmt.order_by(MemoryEvidenceModel.id.asc()).limit(request.limit + 1)
-            rows = list(await session.scalars(stmt))
-            more = len(rows) == request.limit + 1
-            if more:
-                rows = rows[:-1]
-            items = [
-                MemoryEvidenceView(
-                    evidence_id=int(row.id),
-                    fact_id=int(row.fact_id),
-                    relation=str(row.relation),
-                    excerpt=None if not include_content else str(row.excerpt),
-                )
-                for row in rows
-            ]
-            return self._page(
-                items,
-                kind=QueryResourceKind.MEMORY_EVIDENCE,
-                phase=QueryCursorPhase.CANONICAL,
-                next_key=str(rows[-1].id) if more else None,
-                snapshot_at=snapshot_at,
-            )
+        return await self._memory_details.list_memory_evidence(
+            request, include_content=include_content, scope=scope
+        )
+
+    async def read_memory_fact(self, fact_id: int, *, include_content: bool) -> ActivityView:
+        return await self._memory_details.read_memory_fact(fact_id, include_content=include_content)
 
     async def list_memory_jobs(self, request: PageRequest) -> Page[MemoryJobView]:
         snapshot_at = _now()
@@ -1943,6 +1973,29 @@ class ControlQueryAdapter:
                 next_key=rows[-1].plugin_id if more else None,
                 snapshot_at=snapshot_at,
             )
+
+    async def read_plugin_approval(self, plugin_id: str) -> ActivityView:
+        if self._plugins is None:
+            raise ControlQueryError(Problem(ProblemCode.OPERATION_UNAVAILABLE))
+        before = await self._plugins.show(plugin_id)
+        report = await self._plugins.doctor(plugin_id)
+        record = await self._plugins.show(plugin_id)
+        if record is None or before is None:
+            raise ControlQueryError(Problem(ProblemCode.NOT_FOUND))
+        if (before.updated_at, before.manifest_hash) != (record.updated_at, record.manifest_hash):
+            raise ControlQueryError(Problem(ProblemCode.VERSION_CONFLICT))
+        return ActivityView(
+            plugin_id,
+            {
+                "revision": state_revision(record.updated_at),
+                "manifest_hash": record.manifest_hash,
+                "requested_permissions": list(report.requested_permissions),
+                "approved_permissions": list(report.approved_permissions),
+                "manifest_hash_matches": report.manifest_hash_matches,
+                "manifest_available": report.manifest_available,
+                "status": record.status,
+            },
+        )
 
     async def read_plugin_runtime(self, plugin_id: str) -> PluginRuntimeView:
         if self._plugins is None:

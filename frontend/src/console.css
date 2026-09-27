@@ -410,3 +410,19 @@ select:focus-visible {
   width: 100%;
   accent-color: var(--accent);
 }
+.schema-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 1rem;
+}
+.schema-grid > .settings-actions {
+  grid-column: 1 / -1;
+}
+.schema-grid > .form-group {
+  min-width: 0;
+}
+.memory-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+}

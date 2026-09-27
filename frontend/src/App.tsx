@@ -152,6 +152,7 @@ function Console({
       conversationRows.find((row) => row.conversation_id)?.conversation_id ||
         "",
     );
+  if (!chosenConversation && conversation) setConversation(conversation);
   const dashboard = ["overview", "chat"].includes(route);
   useEffect(() => {
     document.body.className = dashboard ? "" : "has-settings-sidebar";

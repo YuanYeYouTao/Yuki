@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+from qq_ai_bot.domain.identity import PersonId
 from qq_ai_bot.domain.relationships import (
     RelationshipEvaluation,
     RelationshipSnapshot,
@@ -462,6 +463,60 @@ class RelationshipRepository:
                 )
         now = datetime.now(UTC)
         row = await self._ensure_row(session, user_id, now=now)
+        await self._apply_manual_row(
+            session,
+            row,
+            actor_user_id=actor_user_id,
+            reason_code=reason_code,
+            affection_score=affection_score,
+            affection_delta=affection_delta,
+            trust_score=trust_score,
+        )
+        return self._projected_snapshot(row, user_id)
+
+    async def set_for_person(
+        self,
+        session: AsyncSession,
+        person_id: PersonId,
+        *,
+        actor_id: str,
+        action: str,
+        value: int,
+    ) -> PersonRelationshipModel:
+        """Change an existing canonical relationship without resolving a platform Binding."""
+        if type(person_id) is not PersonId or type(value) is not int:
+            raise ValueError("invalid relationship change")
+        if action not in {"set_affection", "set_trust", "adjust_affection"}:
+            raise ValueError("invalid relationship action")
+        lower, upper = (-20, 20) if action == "adjust_affection" else (0, 100)
+        if not lower <= value <= upper:
+            raise ValueError("relationship value outside domain bounds")
+        row = await session.get(PersonRelationshipModel, person_id.text)
+        if row is None:
+            raise ValueError("relationship not found")
+        await self._apply_manual_row(
+            session,
+            row,
+            actor_user_id=actor_id,
+            reason_code=f"manual_{action}",
+            affection_score=value if action == "set_affection" else None,
+            affection_delta=value if action == "adjust_affection" else 0,
+            trust_score=value if action == "set_trust" else None,
+        )
+        return row
+
+    @staticmethod
+    async def _apply_manual_row(
+        session: AsyncSession,
+        row: PersonRelationshipModel,
+        *,
+        actor_user_id: str,
+        reason_code: str,
+        affection_score: int | None = None,
+        affection_delta: int = 0,
+        trust_score: int | None = None,
+    ) -> None:
+        now = datetime.now(UTC)
         affection_before = row.affection_score
         trust_before = row.trust_score
         row.affection_score = (
@@ -490,7 +545,6 @@ class RelationshipRepository:
         )
         session.add(event)
         await session.flush()
-        return self._projected_snapshot(row, user_id)
 
 
 class RelationshipJobRepository:

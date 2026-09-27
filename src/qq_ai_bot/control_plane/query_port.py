@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from qq_ai_bot.control_plane.json_types import JsonObject
 from qq_ai_bot.control_plane.operations import OperationKind, OperationRef
 from qq_ai_bot.control_plane.paging import Page, PageRequest
 from qq_ai_bot.control_plane.query_types import (
@@ -28,11 +29,13 @@ from qq_ai_bot.control_plane.query_types import (
     MemoryFactView,
     MemoryHealthView,
     MemoryJobView,
+    MemoryQueryFilter,
     PersonActiveRouteView,
     PersonView,
     PluginRuntimeView,
     PluginView,
     PresenceView,
+    ReflectionQueryFilter,
     SocialReceiptView,
     SpaceActiveRouteView,
     SpaceBindingIngestRouteView,
@@ -42,7 +45,7 @@ from qq_ai_bot.control_plane.query_types import (
     SystemSnapshot,
     YukiSummaryView,
 )
-from qq_ai_bot.domain.identity import ConversationId
+from qq_ai_bot.domain.identity import ConversationId, PersonId, PrincipalId, RequestId
 
 
 class ControlQueryPort(Protocol):
@@ -50,6 +53,12 @@ class ControlQueryPort(Protocol):
 
     async def list_plugin_outbox(
         self, request: PageRequest, *, plugin_id: str
+    ) -> Page[ActivityView]: ...
+    async def list_plugin_background_turns(
+        self, request: PageRequest, *, plugin_id: str
+    ) -> Page[ActivityView]: ...
+    async def list_participation_feedback(
+        self, request: PageRequest, *, run_id: str, include_content: bool = False
     ) -> Page[ActivityView]: ...
 
     async def read_plugin_observation(
@@ -86,8 +95,21 @@ class ControlQueryPort(Protocol):
         self, request: PageRequest, *, include_content: bool = False
     ) -> Page[ActivityView]: ...
     async def read_automation(self, automation_id: int) -> ActivityView: ...
+    async def read_automation_schema(self) -> ActivityView: ...
+    async def read_memory_maintenance_schema(self) -> ActivityView: ...
+    async def list_memory_rebuild_proposals(
+        self, request: PageRequest, *, run_id: str, include_content: bool = False
+    ) -> Page[ActivityView]: ...
+
+    async def read_memory_maintenance_run(self, operation_id: str) -> ActivityView: ...
     async def list_model_usage(self, request: PageRequest) -> Page[ActivityView]: ...
     async def list_workspace(self, request: PageRequest) -> Page[ActivityView]: ...
+    async def read_terminal_submission(
+        self, request_id: RequestId, principal_id: PrincipalId
+    ) -> ActivityView: ...
+
+    async def read_environment(self, section: str, arguments: JsonObject) -> ActivityView: ...
+
     async def read_workspace(self, artifact_id: str) -> ActivityView: ...
 
     async def list_automation_runs(
@@ -189,11 +211,23 @@ class ControlQueryPort(Protocol):
         reveal_external: bool,
     ) -> Page[ConfigOverrideView]: ...
 
+    async def read_self_reflection_health(self) -> ActivityView: ...
+    async def list_self_reflection_history(
+        self, request: PageRequest, *, section: str, scope: ReflectionQueryFilter | None = None
+    ) -> Page[ActivityView]: ...
+
+    async def list_relationships(self, request: PageRequest) -> Page[ActivityView]: ...
+    async def read_relationship(self, person_id: PersonId) -> ActivityView: ...
+    async def list_relationship_history(
+        self, request: PageRequest, *, person_id: PersonId, section: str
+    ) -> Page[ActivityView]: ...
+
     async def list_memory_facts(
         self,
         request: PageRequest,
         *,
         include_content: bool,
+        scope: MemoryQueryFilter | None = None,
     ) -> Page[MemoryFactView]: ...
 
     async def list_memory_evidence(
@@ -201,7 +235,10 @@ class ControlQueryPort(Protocol):
         request: PageRequest,
         *,
         include_content: bool,
+        scope: MemoryQueryFilter | None = None,
     ) -> Page[MemoryEvidenceView]: ...
+
+    async def read_memory_fact(self, fact_id: int, *, include_content: bool) -> ActivityView: ...
 
     async def list_memory_jobs(self, request: PageRequest) -> Page[MemoryJobView]: ...
 
@@ -210,6 +247,8 @@ class ControlQueryPort(Protocol):
     async def list_automations(self, request: PageRequest) -> Page[AutomationView]: ...
 
     async def list_plugins(self, request: PageRequest) -> Page[PluginView]: ...
+
+    async def read_plugin_approval(self, plugin_id: str) -> ActivityView: ...
 
     async def read_plugin_runtime(self, plugin_id: str) -> PluginRuntimeView: ...
 

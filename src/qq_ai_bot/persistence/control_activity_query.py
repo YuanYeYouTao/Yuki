@@ -16,10 +16,11 @@ from typing import Any
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased
+from sqlalchemy.orm import aliased, load_only
 
 from qq_ai_bot.control_plane.paging import Cursor, Page, PageRequest
 from qq_ai_bot.control_plane.problems import Problem, ProblemCode
+from qq_ai_bot.control_plane.query_cursors import decode_integer_cursor_key
 from qq_ai_bot.control_plane.query_types import (
     ActivityView,
     ControlQueryError,
@@ -28,11 +29,14 @@ from qq_ai_bot.control_plane.query_types import (
 )
 from qq_ai_bot.conversation.autonomy_db_models import InitiativeFeedbackModel, InitiativeRunModel
 from qq_ai_bot.conversation.media_service import ConversationMediaError, ConversationMediaService
-from qq_ai_bot.domain.identity import ConversationId
+from qq_ai_bot.domain.identity import ConversationId, RequestId
 from qq_ai_bot.model_runtime.db_models import ModelInvocationModel
 from qq_ai_bot.persistence.control_execution_query import _key, _page
 from qq_ai_bot.persistence.unit_of_work import state_revision
-from qq_ai_bot.plugin_host.db_models import PluginNotificationOutboxModel
+from qq_ai_bot.plugin_host.db_models import (
+    PluginBackgroundTurnJobModel,
+    PluginNotificationOutboxModel,
+)
 from qq_ai_bot.runtime.work_schema_v1 import work
 from qq_ai_bot.services.media_resolver import MediaResolutionError
 from qq_ai_bot.workspace.store import WorkspaceError, WorkspaceStore
@@ -44,6 +48,13 @@ def _stamp(value: datetime | None) -> str | None:
     return (
         value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
     ).isoformat()
+
+
+def _integer_key(key: str) -> int:
+    value = decode_integer_cursor_key(key, minimum=1)
+    if value > 2**63 - 1:
+        raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
+    return value
 
 
 def _read_media(path: Path, digest: str | None) -> bytes:
@@ -69,6 +80,143 @@ class ControlActivityQueryAdapter:
         self._reader = reader
         self._workspace = workspace
         self._media = conversation_media
+
+    async def list_plugin_background_turns(
+        self, request: PageRequest, *, plugin_id: str
+    ) -> Page[ActivityView]:
+        if type(plugin_id) is not str or not 1 <= len(plugin_id) <= 128:
+            raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
+        key = _key(request, QueryResourceKind.PLUGIN_BACKGROUND, plugin_id)
+        model = PluginBackgroundTurnJobModel
+        names = (
+            "id",
+            "source_event_id",
+            "plugin_id",
+            "status",
+            "attempts",
+            "max_attempts",
+            "next_attempt_at",
+            "lease_until",
+            "tool_calls_used",
+            "model_requests",
+            "last_error_category",
+            "created_at",
+            "updated_at",
+            "completed_at",
+            "canonical_target_person_id",
+            "canonical_target_space_id",
+            "canonical_conversation_id",
+            "canonical_presence_id",
+        )
+        stmt = select(*(getattr(model, name) for name in names)).where(model.plugin_id == plugin_id)
+        if key:
+            stmt = stmt.where(model.id < _integer_key(key))
+        async with self._reader() as session:
+            rows = (
+                (await session.execute(stmt.order_by(model.id.desc()).limit(request.limit + 1)))
+                .mappings()
+                .all()
+            )
+        return _page(
+            [
+                ActivityView(
+                    str(row["id"]),
+                    {
+                        name: _stamp(value) if isinstance(value, datetime) else value
+                        for name, value in row.items()
+                    },
+                )
+                for row in rows[: request.limit]
+            ],
+            rows,
+            request,
+            QueryResourceKind.PLUGIN_BACKGROUND,
+            plugin_id,
+            str(rows[request.limit - 1]["id"]) if len(rows) >= request.limit else None,
+        )
+
+    async def list_participation_feedback(
+        self, request: PageRequest, *, run_id: str, include_content: bool = False
+    ) -> Page[ActivityView]:
+        try:
+            run_id = RequestId.parse(run_id).text
+        except (TypeError, ValueError) as exc:
+            raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR)) from exc
+        partition = f"{run_id}:{int(include_content)}"
+        key = _key(request, QueryResourceKind.PARTICIPATION_FEEDBACK, partition)
+        model = InitiativeFeedbackModel
+        names = ["sequence", "outcome", "created_at"]
+        if include_content:
+            names.append("payload_json")
+        stmt = select(*(getattr(model, name) for name in names)).where(model.run_id == run_id)
+        if key:
+            stmt = stmt.where(model.sequence > _integer_key(key))
+        async with self._reader() as session:
+            if (
+                await session.get(
+                    InitiativeRunModel, run_id, options=[load_only(InitiativeRunModel.id)]
+                )
+                is None
+            ):
+                raise ControlQueryError(Problem(ProblemCode.NOT_FOUND))
+            rows = (
+                (await session.execute(stmt.order_by(model.sequence).limit(request.limit + 1)))
+                .mappings()
+                .all()
+            )
+        items = []
+        for row in rows[: request.limit]:
+            fields: dict[str, Any] = {
+                "run_id": run_id,
+                "sequence": row["sequence"],
+                "outcome": row["outcome"],
+                "created_at": _stamp(row["created_at"]),
+            }
+            if include_content:
+                raw = row["payload_json"]
+                try:
+                    if len(raw.encode()) > 16384:
+                        raise ValueError("oversized feedback")
+                    payload = json.loads(raw)
+                    if type(payload) is not dict:
+                        raise ValueError("invalid feedback")
+                    for name in ("actual_targets", "effects"):
+                        refs = payload.get(name, [])
+                        if (
+                            type(refs) is not list
+                            or len(refs) > 64
+                            or any(type(ref) is not str or not 1 <= len(ref) <= 128 for ref in refs)
+                        ):
+                            raise ValueError("invalid receipt references")
+                        fields[name] = refs
+                    sources = payload.get("considered_sources", [])
+                    if (
+                        type(sources) is not list
+                        or len(sources) > 32
+                        or any(
+                            type(source) is not dict
+                            or set(source) != {"kind", "source_id", "revision"}
+                            or source["kind"] not in {"event", "memory"}
+                            or any(
+                                type(source[name]) is not str or len(source[name]) > 128
+                                for name in ("source_id", "revision")
+                            )
+                            for source in sources
+                        )
+                    ):
+                        raise ValueError("invalid source references")
+                    fields["considered_sources"] = sources
+                except (TypeError, ValueError) as exc:
+                    raise ControlQueryError(Problem(ProblemCode.STATE_MISMATCH)) from exc
+            items.append(ActivityView(f"{run_id}:{row['sequence']}", fields))
+        return _page(
+            items,
+            rows,
+            request,
+            QueryResourceKind.PARTICIPATION_FEEDBACK,
+            partition,
+            str(rows[request.limit - 1]["sequence"]) if len(rows) >= request.limit else None,
+        )
 
     async def list_plugin_outbox(
         self, request: PageRequest, *, plugin_id: str
@@ -165,7 +313,19 @@ class ControlActivityQueryAdapter:
             raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
         partition = conversation_id.text if conversation_id else "all"
         key = _key(request, QueryResourceKind.PARTICIPATION, partition)
-        stmt = select(InitiativeRunModel)
+        stmt = select(InitiativeRunModel).options(
+            load_only(
+                InitiativeRunModel.id,
+                InitiativeRunModel.conversation_id,
+                InitiativeRunModel.generation,
+                InitiativeRunModel.owner,
+                InitiativeRunModel.state,
+                InitiativeRunModel.trigger_kind,
+                InitiativeRunModel.proposal_id,
+                InitiativeRunModel.created_at,
+                InitiativeRunModel.updated_at,
+            )
+        )
         if conversation_id:
             stmt = stmt.where(InitiativeRunModel.conversation_id == conversation_id.text)
         if key:

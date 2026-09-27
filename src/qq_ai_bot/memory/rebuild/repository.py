@@ -622,10 +622,11 @@ class MemoryRebuildRepository:
         proposal_ids: tuple[int, ...] | None,
         status: MemoryRebuildReviewStatus,
         actor_user_id: str,
+        session: AsyncSession | None = None,
     ) -> int:
         now = datetime.now(UTC)
-        async with self.database.sessions() as session, session.begin():
-            run_id = await session.scalar(
+        async with optional_session(self.database, session, write=True) as active:
+            run_id = await active.scalar(
                 select(MemoryRebuildRunModel.id).where(MemoryRebuildRunModel.public_id == public_id)
             )
             if run_id is None:
@@ -636,13 +637,18 @@ class MemoryRebuildRepository:
             )
             if proposal_ids is not None:
                 statement = statement.where(MemoryRebuildProposalModel.id.in_(proposal_ids))
-            result = await session.execute(
+            result = await active.execute(
                 statement.values(
                     review_status=status.value,
                     reviewed_at=now,
                     reviewed_by_user_id=actor_user_id,
                     updated_at=now,
                 )
+            )
+            await active.execute(
+                update(MemoryRebuildRunModel)
+                .where(MemoryRebuildRunModel.id == run_id)
+                .values(updated_at=now)
             )
         return int(cast(CursorResult[Any], result).rowcount or 0)
 
@@ -684,10 +690,12 @@ class MemoryRebuildRepository:
             )
             return tuple(int(item) for item in rows.all())
 
-    async def pending_review_count(self, public_id: str) -> int:
-        async with self.database.sessions() as session:
+    async def pending_review_count(
+        self, public_id: str, *, session: AsyncSession | None = None
+    ) -> int:
+        async with optional_session(self.database, session, write=False) as active:
             return int(
-                await session.scalar(
+                await active.scalar(
                     select(func.count())
                     .select_from(MemoryRebuildProposalModel)
                     .join(
@@ -959,9 +967,11 @@ class MemoryRebuildRepository:
                 or 0
             )
 
-    async def reset_failed(self, public_id: str) -> MemoryRebuildRunStatus:
+    async def reset_failed(
+        self, public_id: str, *, session: AsyncSession | None = None
+    ) -> MemoryRebuildRunStatus:
         now = datetime.now(UTC)
-        async with self.database.sessions() as session, session.begin():
+        async with optional_session(self.database, session, write=True) as session:
             run = await session.scalar(
                 select(MemoryRebuildRunModel).where(MemoryRebuildRunModel.public_id == public_id)
             )

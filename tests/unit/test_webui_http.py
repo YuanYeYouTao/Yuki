@@ -8,6 +8,9 @@ import pytest
 from fastapi import FastAPI
 from tests.conftest import make_settings
 from tests.unit import test_control_automation_history as automation_fixtures
+from tests.unit import test_control_memory_query as memory_fixtures
+from tests.unit import test_control_reflection_query as reflection_fixtures
+from tests.unit import test_control_relationships as relationship_fixtures
 from tests.unit import test_control_work_details as work_fixtures
 from tests.unit.test_control_operator_access import operator_file
 
@@ -29,6 +32,9 @@ ORIGIN = "http://127.0.0.1:18765"
 SECRET = "webui-fixture-" + "a" * 48
 detailed_work = work_fixtures.detailed_work
 histories = automation_fixtures.histories
+memory_scene = memory_fixtures.memory_scene
+reflection_scene = reflection_fixtures.reflection_scene
+relationship_scene = relationship_fixtures.relationship_scene
 
 
 @pytest.fixture
@@ -47,6 +53,8 @@ async def web(database, tmp_path, monkeypatch):
             "control.execution.metadata.read",
             "control.work.mutate",
             "control.automation.read",
+            "control.memory.metadata.read",
+            "control.relationship.read",
         ),
     )
     settings = make_settings(
@@ -58,13 +66,22 @@ async def web(database, tmp_path, monkeypatch):
     )
     runtime = RuntimeConfigService(settings=settings, database=database)
     await runtime.initialize()
-    writer = ControlCommandAdapter(database, settings=settings, runtime_config=runtime)
+    from qq_ai_bot.workspace.service import WorkspaceService
+
     workspace = WorkspaceStore(tmp_path / "workspace")
+    workspace_service = WorkspaceService(workspace)
+    writer = ControlCommandAdapter(
+        database, settings=settings, runtime_config=runtime, workspace_service=workspace_service
+    )
     bundle = ControlPlaneBundle(
         ControlOperatorAccess(database, path),
         ControlQueryService(
             ControlQueryAdapter(
-                database, settings=settings, workspace=workspace, runtime_config=runtime
+                database,
+                settings=settings,
+                workspace=workspace,
+                runtime_config=runtime,
+                workspace_service=workspace_service,
             )
         ),
         ControlCommandService(writer),
@@ -92,6 +109,110 @@ async def signed_in(client):
     assert session.status_code == 200
     assert session.json()["content_access"]["chat"] is False
     return {"Origin": ORIGIN, "X-Yuki-CSRF": session.json()["csrf"]}
+
+
+async def test_reflection_and_relationship_http_are_metadata_queries(
+    web, reflection_scene, relationship_scene
+):
+    client, _, _ = web
+    env, runs, _ = reflection_scene
+    headers = await signed_in(client)
+    response = await client.post(
+        "/api/control/queries/read_self_reflection_health", headers=headers, json={}
+    )
+    assert response.status_code == 200 and "last_24h" in response.json()["data"]["fields"]
+    response = await client.post(
+        "/api/control/queries/list_self_reflection_history",
+        headers=headers,
+        json={"section": "runs", "scope": {"space_id": env.space}},
+    )
+    assert response.status_code == 200 and len(response.json()["data"]["items"]) == 2
+    assert "checkpoint_json" not in response.text
+    response = await client.post(
+        "/api/control/queries/list_self_reflection_history",
+        headers=headers,
+        json={"section": "requests", "scope": {"run_id": runs[0]}},
+    )
+    assert (
+        response.status_code == 200
+        and response.json()["data"]["items"][0]["fields"]["output_tokens"] is None
+    )
+    for payload in (
+        {"section": "checkpoint"},
+        {"section": "states", "scope": {"run_id": runs[0]}},
+        {"section": "runs", "scope": {"run_id": True}},
+        {"section": "runs", "scope": {"person_id": "10001"}},
+        {"section": "runs", "scope": []},
+    ):
+        response = await client.post(
+            "/api/control/queries/list_self_reflection_history", headers=headers, json=payload
+        )
+        assert response.status_code == 400
+    response = await client.post(
+        "/api/control/queries/read_relationship",
+        headers=headers,
+        json={"person_id": relationship_scene[0].text},
+    )
+    assert (
+        response.status_code == 200 and response.json()["data"]["fields"]["affection_score"] == 50
+    )
+    response = await client.post(
+        "/api/control/queries/list_relationship_history",
+        headers=headers,
+        json={"person_id": relationship_scene[0].text, "section": "events", "page": {"limit": 30}},
+    )
+    assert response.status_code == 200 and len(response.json()["data"]["items"]) == 30
+    assert "actor_user_id" not in response.text
+
+
+async def test_memory_scope_http_metadata_and_detail(web, memory_scene):
+    client, _, _ = web
+    env, ids, source, _ = memory_scene
+    headers = await signed_in(client)
+    response = await client.post(
+        "/api/control/queries/list_memory_facts",
+        headers=headers,
+        json={"scope": {"person_id": env.person}, "page": {"limit": 30}},
+    )
+    assert response.status_code == 200
+    page = response.json()["data"]
+    assert len(page["items"]) == 30 and page["items"][0]["content"] is None
+    response = await client.post(
+        "/api/control/queries/list_memory_facts",
+        headers=headers,
+        json={
+            "scope": {"person_id": env.person},
+            "page": {"limit": 30, "cursor": page["next_cursor"]},
+        },
+    )
+    assert len(response.json()["data"]["items"]) == 3
+    response = await client.post(
+        "/api/control/queries/read_memory_fact", headers=headers, json={"fact_id": ids[0]}
+    )
+    assert response.status_code == 200
+    assert "content" not in response.json()["data"]["fields"]
+    response = await client.post(
+        "/api/control/queries/list_memory_evidence",
+        headers=headers,
+        json={"scope": {"fact_id": ids[0], "event_id": source}},
+    )
+    assert response.status_code == 200
+    assert len(response.json()["data"]["items"]) == 1
+    assert response.json()["data"]["items"][0]["excerpt"] is None
+    for payload in (
+        {"scope": {"person_id": "10001"}},
+        {"scope": {"platform_message_id": "inbound"}},
+        {"scope": {"event_id": True}},
+        {"scope": {"event_id": 1, "tool_receipt_id": 1}},
+    ):
+        response = await client.post(
+            "/api/control/queries/list_memory_facts", headers=headers, json=payload
+        )
+        assert response.status_code == 400
+    response = await client.post(
+        "/api/control/queries/read_memory_fact", headers=headers, json={"fact_id": 2**63 - 1}
+    )
+    assert response.status_code == 404
 
 
 async def test_work_history_and_mutation_use_original_command_receipt(web, detailed_work):

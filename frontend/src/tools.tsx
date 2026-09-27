@@ -4,10 +4,12 @@ import type { PageProps } from "./pages";
 import { useQuery } from "./hooks";
 import { Badge, ErrorNote, JsonNote, QueryList, Section } from "./components";
 import { PluginDetails } from "./plugin-details";
+import { PluginApproval } from "./plugin-approval";
 const status = (value: unknown) => <Badge value={value} />;
 export function Tools(props: PageProps) {
   const { allowed, act, refresh } = props;
-  const [plugin, setPlugin] = useState("");
+  const [plugin, setPlugin] = useState(""),
+    [approval, setApproval] = useState("");
   const runtime = useQuery<Row>(
     "read_plugin_runtime",
     { plugin_id: plugin },
@@ -66,21 +68,8 @@ export function Tools(props: PageProps) {
               ))}
               <button
                 className="btn-secondary"
-                disabled={!allowed("mutate_plugin")}
-                onClick={() =>
-                  act({
-                    method: "mutate_plugin",
-                    label: "审核插件授权",
-                    revision: Number(row.revision),
-                    payload: {
-                      resource_id: row.plugin_id,
-                      action: "approve",
-                      spec: {},
-                    },
-                    edit: "spec",
-                    hint: "逐项检查 manifest hash 和所需权限后提交。",
-                  })
-                }
+                disabled={!allowed("read_plugin_approval")}
+                onClick={() => setApproval(String(row.plugin_id))}
               >
                 授权
               </button>
@@ -92,6 +81,9 @@ export function Tools(props: PageProps) {
           <JsonNote title={`${plugin} · 实际运行状态`} value={runtime.data} />
         )}
       </Section>
+      {approval && (
+        <PluginApproval key={approval} pluginId={approval} props={props} />
+      )}
       {plugin && <PluginDetails key={plugin} pluginId={plugin} props={props} />}
       <Section title="MCP">
         <QueryList

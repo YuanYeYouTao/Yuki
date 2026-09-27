@@ -40,6 +40,11 @@ class WorkspaceService:
             await asyncio.gather(self._task, return_exceptions=True)
             self._task = None
 
+    async def upload_file(self, name: str, data: bytes, *, request_id: str) -> dict[str, Any]:
+        """Publish operator bytes through the same store and environment checkout."""
+        metadata = await asyncio.to_thread(self.store.write, name, data)
+        return await self._checkout(metadata, request_id)
+
     async def _cleanup(self) -> None:
         while True:
             await asyncio.sleep(60)

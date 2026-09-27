@@ -86,6 +86,7 @@ from qq_ai_bot.identity.db_models import (
 from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
+from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.control_external import ExternalControlExecutor
 from qq_ai_bot.persistence.control_management import (
@@ -98,6 +99,7 @@ from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import AdminOperationEventModel
 from qq_ai_bot.persistence.unit_of_work import next_updated_at
 from qq_ai_bot.plugin_host.manager import PluginManager
+from qq_ai_bot.workspace.service import WorkspaceService
 
 _INVALID_TARGET = "invalid"
 
@@ -246,6 +248,8 @@ class ControlCommandAdapter:
         database: Database,
         *,
         settings: Settings | None = None,
+        workspace_service: WorkspaceService | None = None,
+        rebuild_service: MemoryRebuildService | None = None,
         config_files: ConfigFileService | None = None,
         mcp_manager: MCPManager | None = None,
         runtime_config: RuntimeConfigService | None = None,
@@ -270,6 +274,8 @@ class ControlCommandAdapter:
             automation=automation,
             memories=memories,
             plugins=plugins,
+            workspace_service=workspace_service,
+            rebuild_service=rebuild_service,
         )
         self._external = ExternalControlExecutor(self)
 
@@ -622,6 +628,21 @@ class ControlCommandAdapter:
             ),
         )
 
+    async def mutate_relationship(
+        self,
+        principal: ControlPrincipal,
+        target: object,
+        command: ControlCommand,
+    ) -> ControlResult:
+        return await self._management_action(
+            principal,
+            target,
+            command,
+            operation=CommandOperation.RELATIONSHIP_MUTATE.value,
+            capability="control.relationship.mutate",
+            invoke=self._management.mutate_relationship,
+        )
+
     async def mutate_memory(
         self,
         principal: ControlPrincipal,
@@ -737,6 +758,39 @@ class ControlCommandAdapter:
             capability="control.plugin.config.mutate",
         )
 
+    async def mutate_workspace(
+        self, principal: ControlPrincipal, target: object, command: ControlCommand
+    ) -> ControlResult:
+        return await self._management_action(
+            principal,
+            target,
+            command,
+            operation=CommandOperation.WORKSPACE_MUTATE.value,
+            capability="control.workspace.mutate",
+        )
+
+    async def mutate_environment_file(
+        self, principal: ControlPrincipal, target: object, command: ControlCommand
+    ) -> ControlResult:
+        return await self._management_action(
+            principal,
+            target,
+            command,
+            operation=CommandOperation.ENVIRONMENT_FILE_MUTATE.value,
+            capability="control.environment.file.mutate",
+        )
+
+    async def mutate_environment_terminal(
+        self, principal: ControlPrincipal, target: object, command: ControlCommand
+    ) -> ControlResult:
+        return await self._management_action(
+            principal,
+            target,
+            command,
+            operation=CommandOperation.TERMINAL_MUTATE.value,
+            capability="control.terminal.mutate",
+        )
+
     async def mutate_work(
         self, principal: ControlPrincipal, target: object, command: ControlCommand
     ) -> ControlResult:
@@ -841,6 +895,9 @@ class ControlCommandAdapter:
         if parsed is not None and (
             operation
             in {
+                CommandOperation.WORKSPACE_MUTATE.value,
+                CommandOperation.ENVIRONMENT_FILE_MUTATE.value,
+                CommandOperation.TERMINAL_MUTATE.value,
                 CommandOperation.MCP_MUTATE.value,
                 CommandOperation.MEMORY_MAINTENANCE.value,
                 CommandOperation.CONFIG_FILE_SAVE.value,

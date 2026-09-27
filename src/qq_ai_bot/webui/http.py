@@ -17,6 +17,7 @@ from starlette.staticfiles import StaticFiles
 from qq_ai_bot.application.modules.control_plane import ControlPlaneBundle
 from qq_ai_bot.config import Settings
 from qq_ai_bot.control_plane.command_types import ControlCommandError
+from qq_ai_bot.control_plane.json_types import freeze_json_object
 from qq_ai_bot.control_plane.operations import OperationKind
 from qq_ai_bot.control_plane.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_types import (
@@ -25,6 +26,8 @@ from qq_ai_bot.control_plane.query_types import (
     ControlQueryError,
     DownloadView,
     ExecutionTraceFilter,
+    MemoryQueryFilter,
+    ReflectionQueryFilter,
 )
 from qq_ai_bot.control_plane.surface import _METHODS
 from qq_ai_bot.control_plane.wire import control_response, decode_command, decode_page
@@ -40,6 +43,14 @@ from qq_ai_bot.domain.identity import (
 from qq_ai_bot.webui.sessions import BrowserSessions
 
 _SIMPLE_QUERIES = frozenset(name for kind, name, _ in _METHODS if kind == "query") - {
+    "list_memory_facts",
+    "list_memory_evidence",
+    "read_memory_fact",
+    "list_memory_rebuild_proposals",
+    "read_memory_maintenance_run",
+    "read_relationship",
+    "list_relationship_history",
+    "list_self_reflection_history",
     "read_work",
     "list_work_history",
     "read_config_file",
@@ -50,13 +61,18 @@ _SIMPLE_QUERIES = frozenset(name for kind, name, _ in _METHODS if kind == "query
     "list_effective_configs",
     "list_operations",
     "read_operation",
+    "read_plugin_approval",
     "read_plugin_runtime",
     "read_plugin_configuration",
     "read_plugin_observation",
     "list_plugin_outbox",
+    "list_plugin_background_turns",
+    "list_participation_feedback",
     "read_automation",
     "list_automation_runs",
     "list_automation_steps",
+    "read_terminal_submission",
+    "read_environment",
     "read_workspace",
     "list_work",
     "download_workspace",
@@ -269,10 +285,71 @@ def attach_webui(
                 scope=ExecutionTraceFilter(**scope),
                 include_content=data.get("include_content", False),
             )
+        elif method == "list_memory_rebuild_proposals":
+            if set(data) - {"page", "run_id", "include_content"} or "run_id" not in data:
+                raise ValueError("invalid rebuild history")
+            result = await queries.list_memory_rebuild_proposals(
+                ctx, page, run_id=data["run_id"], include_content=data.get("include_content", False)
+            )
+        elif method == "read_terminal_submission":
+            if set(data) != {"request_id"}:
+                raise ValueError("invalid terminal request")
+            result = await queries.read_terminal_submission(
+                ctx, RequestId.parse(data["request_id"])
+            )
+        elif method == "read_environment":
+            if set(data) != {"section", "arguments"}:
+                raise ValueError("invalid environment query")
+            result = await queries.read_environment(
+                ctx, data["section"], freeze_json_object(data["arguments"])
+            )
         elif method == "read_execution_trace":
             if set(data) != {"entry_id"}:
                 raise ValueError("invalid trace lookup")
             result = await queries.read_execution_trace(ctx, data["entry_id"])
+        elif method == "list_self_reflection_history":
+            if set(data) - {"page", "section", "scope"} or "section" not in data:
+                raise ValueError("invalid reflection history")
+            if type(data.get("scope", {})) is not dict:
+                raise ValueError("scope must be an object")
+            scope = dict(data.get("scope", {}))
+            for key, cls in (("person_id", PersonId), ("space_id", SpaceId)):
+                if scope.get(key) is not None:
+                    scope[key] = cls.parse(scope[key])
+            result = await queries.list_self_reflection_history(
+                ctx, page, section=data["section"], scope=ReflectionQueryFilter(**scope)
+            )
+        elif method == "read_relationship":
+            if set(data) != {"person_id"}:
+                raise ValueError("invalid relationship lookup")
+            result = await queries.read_relationship(ctx, PersonId.parse(data["person_id"]))
+        elif method == "list_relationship_history":
+            if set(data) - {"page", "person_id", "section"} or not {"person_id", "section"} <= set(
+                data
+            ):
+                raise ValueError("invalid relationship history")
+            result = await queries.list_relationship_history(
+                ctx, page, person_id=PersonId.parse(data["person_id"]), section=data["section"]
+            )
+        elif method in {"list_memory_facts", "list_memory_evidence"}:
+            if set(data) - {"page", "scope"}:
+                raise ValueError("invalid memory scope")
+            if type(data.get("scope", {})) is not dict:
+                raise ValueError("scope must be an object")
+            scope = dict(data.get("scope", {}))
+            for key, cls in (
+                ("person_id", PersonId),
+                ("space_id", SpaceId),
+                ("visibility_person_id", PersonId),
+                ("visibility_space_id", SpaceId),
+            ):
+                if scope.get(key) is not None:
+                    scope[key] = cls.parse(scope[key])
+            result = await getattr(queries, method)(ctx, page, scope=MemoryQueryFilter(**scope))
+        elif method == "read_memory_fact":
+            if set(data) != {"fact_id"}:
+                raise ValueError("invalid memory lookup")
+            result = await queries.read_memory_fact(ctx, data["fact_id"])
         elif method == "list_effective_configs":
             raw = data.get("scope", {})
             if set(data) - {"page", "scope"} or set(raw) - {"person_id", "space_id"}:
@@ -345,10 +422,16 @@ def attach_webui(
             if method == "list_automation_steps":
                 args["run_id"] = data.get("run_id")
             result = await getattr(queries, method)(ctx, page, **args)
-        elif method == "list_plugin_outbox":
+        elif method == "list_participation_feedback":
+            if set(data) - {"run_id", "page", "include_content"} or "run_id" not in data:
+                raise ValueError("invalid participation feedback scope")
+            result = await queries.list_participation_feedback(
+                ctx, page, run_id=data["run_id"], include_content=data.get("include_content", False)
+            )
+        elif method in {"list_plugin_outbox", "list_plugin_background_turns"}:
             if set(data) - {"plugin_id", "page"} or "plugin_id" not in data:
                 raise ValueError("invalid plugin outbox scope")
-            result = await queries.list_plugin_outbox(ctx, page, plugin_id=data["plugin_id"])
+            result = await getattr(queries, method)(ctx, page, plugin_id=data["plugin_id"])
         elif method == "read_plugin_observation":
             if set(data) - {"plugin_id", "cursor", "limit"} or "plugin_id" not in data:
                 raise ValueError("invalid plugin observation lookup")
@@ -364,7 +447,11 @@ def attach_webui(
                 scope_type=data.get("scope_type", "global"),
                 owner_id=data.get("owner_id"),
             )
-        elif method in {"read_operation", "read_plugin_runtime"}:
+        elif method == "read_memory_maintenance_run":
+            if set(data) != {"operation_id"}:
+                raise ValueError("invalid maintenance lookup")
+            result = await queries.read_memory_maintenance_run(ctx, data["operation_id"])
+        elif method in {"read_operation", "read_plugin_runtime", "read_plugin_approval"}:
             if method == "read_operation" and set(data) == {"request_id"}:
                 original = RequestId.parse(data["request_id"])
                 principal_id = request.state.principal.principal_id.text

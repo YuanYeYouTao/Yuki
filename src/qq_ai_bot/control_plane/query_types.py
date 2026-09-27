@@ -95,12 +95,19 @@ class QueryResourceKind(StrEnum):
     CONFIG_EFFECTIVE = "config_effective"
     MEMORY_EVIDENCE = "memory_evidence"
     MEMORY_FACT = "memory_fact"
+    MEMORY_REBUILD_PROPOSAL = "memory_rebuild_proposal"
     MEMORY_JOB = "memory_job"
+    RELATIONSHIP = "relationship"
+    RELATIONSHIP_EVENT = "relationship_event"
+    RELATIONSHIP_JOB = "relationship_job"
+    REFLECTION = "reflection"
     AUTOMATION = "automation"
     AUTOMATION_RUN = "automation_run"
     AUTOMATION_STEP = "automation_step"
     PLUGIN = "plugin"
     PLUGIN_OUTBOX = "plugin_outbox"
+    PLUGIN_BACKGROUND = "plugin_background"
+    PARTICIPATION_FEEDBACK = "participation_feedback"
     MCP = "mcp"
     EMOJI = "emoji"
     SPEECH = "speech"
@@ -1100,6 +1107,76 @@ class ConfigOverrideView:
 
 @final
 @dataclass(frozen=True, slots=True)
+class MemoryQueryFilter:
+    """Selectors over original canonical ownership and internal evidence IDs."""
+
+    scope_type: str | None = None
+    person_id: PersonId | None = None
+    space_id: SpaceId | None = None
+    visibility_type: str | None = None
+    visibility_person_id: PersonId | None = None
+    visibility_space_id: SpaceId | None = None
+    kind: str | None = None
+    status: str | None = None
+    review_state: str | None = None
+    fact_id: int | None = None
+    event_id: int | None = None
+    tool_receipt_id: int | None = None
+
+    def __post_init__(self) -> None:
+        choices = {
+            "scope_type": {"person", "person_group", "group", "self"},
+            "visibility_type": {"global", "private", "group"},
+            "kind": {"fact", "preference", "episode"},
+            "status": {"active", "contested", "superseded", "invalidated"},
+            "review_state": {"verified", "quarantined", "legacy_unreviewed"},
+        }
+        for name, allowed in choices.items():
+            value = getattr(self, name)
+            if value is not None and (type(value) is not str or value not in allowed):
+                raise ValueError(f"invalid {name}")
+        for name, cls in (
+            ("person_id", PersonId),
+            ("space_id", SpaceId),
+            ("visibility_person_id", PersonId),
+            ("visibility_space_id", SpaceId),
+        ):
+            value = getattr(self, name)
+            if value is not None and type(value) is not cls:
+                raise TypeError(f"invalid {name}")
+        for name in ("fact_id", "event_id", "tool_receipt_id"):
+            value = getattr(self, name)
+            if value is not None and (type(value) is not int or not 1 <= value <= 2**63 - 1):
+                raise ValueError(f"invalid {name}")
+        if self.event_id is not None and self.tool_receipt_id is not None:
+            raise ValueError("evidence source selectors are mutually exclusive")
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class ReflectionQueryFilter:
+    person_id: PersonId | None = None
+    space_id: SpaceId | None = None
+    cycle_id: str | None = None
+    run_id: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.person_id is not None and type(self.person_id) is not PersonId:
+            raise TypeError("person_id must be PersonId")
+        if self.space_id is not None and type(self.space_id) is not SpaceId:
+            raise TypeError("space_id must be SpaceId")
+        if self.person_id is not None and self.space_id is not None:
+            raise ValueError("reflection has one canonical owner")
+        if self.cycle_id is not None:
+            require_opaque_token(self.cycle_id, name="cycle_id", max_length=64)
+        if self.run_id is not None and (
+            type(self.run_id) is not int or not 1 <= self.run_id <= 2**63 - 1
+        ):
+            raise ValueError("invalid run_id")
+
+
+@final
+@dataclass(frozen=True, slots=True)
 class MemoryFactView:
     fact_id: int
     scope_type: str
@@ -1109,6 +1186,15 @@ class MemoryFactView:
     content: str | None
     excerpt: str | None
     revision: int
+    person_id: str | None = None
+    space_id: str | None = None
+    visibility_type: str | None = None
+    visibility_person_id: str | None = None
+    visibility_space_id: str | None = None
+    review_state: str | None = None
+    importance: int | None = None
+    confidence: float | None = None
+    updated_at: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "revision", _require_int(self.revision, "revision", minimum=1))
@@ -1131,6 +1217,12 @@ class MemoryEvidenceView:
     fact_id: int
     relation: str
     excerpt: str | None
+    event_id: int | None = None
+    tool_receipt_id: int | None = None
+    authority: str | None = None
+    confidence: float | None = None
+    created_at: str | None = None
+    execution_id: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(

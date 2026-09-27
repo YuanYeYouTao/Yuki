@@ -621,3 +621,73 @@ async def test_outbox_metadata_cursor_and_retry_use_original_send_certainty(data
             with pytest.raises(ControlCommandError) as exc:
                 await commands.mutate_plugin(cmd_ctx, command)
             assert exc.value.problem.code is ProblemCode.PRECONDITION_FAILED
+
+
+async def test_approval_snapshot_and_background_pages_use_original_rows(database, plugin):
+    from tests.unit.test_webui_activity import _message, ingress
+
+    from qq_ai_bot.plugin_host.db_models import PluginBackgroundTurnJobModel
+
+    manager, _, _ = plugin
+    queries = ControlQueryService(ControlQueryAdapter(database, plugins=manager))
+    ctx = context("control.plugin.read")
+    approval = await queries.read_plugin_approval(ctx, PLUGIN)
+    assert approval.fields["manifest_hash_matches"]
+    assert set(approval.fields["requested_permissions"]) == {
+        "plugin.config.read",
+        "storage.private",
+    }
+    assert approval.fields["revision"] > 0
+    resolver, uow, bot = await ingress(database)
+    for i in range(3):
+        admitted = await resolver.pre_admit(
+            bot, _message(message_id=f"background-{i}", text="private original")
+        )
+        appended = await uow.append_inbound(admitted.message, admitted)
+        async with database.immediate_session() as session:
+            session.add(
+                PluginBackgroundTurnJobModel(
+                    source_event_id=appended.event.id,
+                    plugin_id=PLUGIN,
+                    target_type="group",
+                    target_id="private target",
+                    bot_user_id="8000",
+                    agent_intent="private intent",
+                    generated_text="private output",
+                    status="completed",
+                    created_at=datetime.now(UTC),
+                    updated_at=datetime.now(UTC),
+                    next_attempt_at=datetime.now(UTC),
+                )
+            )
+    statements = []
+
+    def capture(_conn, _cursor, statement, *args):
+        if statement.lstrip().startswith("SELECT"):
+            statements.append(statement.lower().split("\nfrom ")[0])
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
+    try:
+        first = await queries.list_plugin_background_turns(
+            ctx, PageRequest(limit=2), plugin_id=PLUGIN
+        )
+        second = await queries.list_plugin_background_turns(
+            ctx, PageRequest(limit=2, cursor=first.next_cursor), plugin_id=PLUGIN
+        )
+        assert len(first.items) == 2 and len(second.items) == 1 and second.next_cursor is None
+        assert int(first.items[-1].resource_id) > int(second.items[0].resource_id)
+        assert not any(
+            name in "\n".join(statements)
+            for name in ("agent_intent", "generated_text", ".target_id", "bot_user_id")
+        )
+        with pytest.raises(ControlQueryError):
+            await queries.list_plugin_background_turns(
+                ctx, PageRequest(cursor=first.next_cursor), plugin_id="other.plugin"
+            )
+        denied_before = len(statements)
+        with pytest.raises(ControlQueryError) as denied:
+            await queries.list_plugin_background_turns(context(), PageRequest(), plugin_id=PLUGIN)
+        assert denied.value.problem.code is ProblemCode.CAPABILITY_DENIED
+        assert len(statements) == denied_before
+    finally:
+        event.remove(database.engine.sync_engine, "before_cursor_execute", capture)

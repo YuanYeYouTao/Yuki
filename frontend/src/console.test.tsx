@@ -424,3 +424,62 @@ describe("management transport and evidence", () => {
     },
   );
 });
+
+it("keeps the selected default conversation and notebook section across refresh", async () => {
+  const { default: App } = await import("./App");
+  window.history.replaceState({}, "", "/#overview");
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+    const method = String(url).split("/").pop()!;
+    let data: unknown = { items: [], next_cursor: null };
+    if (method === "session")
+      data = {
+        csrf: "fixture",
+        content_access: { chat: true },
+        surface: {
+          protocol_version: "1",
+          methods: [
+            "read_system",
+            "read_health",
+            "list_conversations",
+            "list_chat_events",
+            "read_config_file",
+          ].map((name) => ({ name, authorized: true, kind: "query" })),
+        },
+      };
+    if (method === "list_conversations")
+      data = {
+        items: [{ conversation_id: "original-default", kind: "group" }],
+        next_cursor: null,
+      };
+    if (method === "read_system") data = { version: "fixture" };
+    if (method === "read_health") data = { components: [] };
+    if (method === "read_config_file")
+      data = {
+        fields: {
+          file_id: "bot_persona",
+          revision: "original",
+          content: "fixture",
+          valid: true,
+        },
+      };
+    if (method === "read_persona")
+      data = { fields: { system_prompt: "fixture persona" } };
+    return new Response(JSON.stringify({ data }), { status: 200 });
+  });
+  render(<App />);
+  await waitFor(() =>
+    expect(screen.getByLabelText("会话")).toHaveValue("original-default"),
+  );
+  await userEvent.click(screen.getByRole("tab", { name: "人格" }));
+  expect(
+    await screen.findByRole("heading", { name: "当前加载的人格提示词" }),
+  ).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "刷新数据" }));
+  await waitFor(() =>
+    expect(screen.getByLabelText("会话")).toHaveValue("original-default"),
+  );
+  expect(screen.getByRole("tab", { name: "人格" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+});

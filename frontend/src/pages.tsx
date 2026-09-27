@@ -81,6 +81,7 @@ export function Health({ refresh }: { refresh: number }) {
 export function Autonomy(props: PageProps) {
   const { refresh, conversation } = props;
   const [origin, selectOrigin] = useState("semantic_observation");
+  const [run, selectRun] = useState("");
   const { data, error, loading } = useQuery<Row>(
     "read_participation",
     {},
@@ -141,8 +142,92 @@ export function Autonomy(props: PageProps) {
             ["feedback", "反馈"],
             ["resource_id", "Run"],
           ]}
+          actions={(row) => (
+            <button
+              className="btn-secondary"
+              disabled={!props.allowed("list_participation_feedback")}
+              onClick={() => selectRun(String(row.resource_id))}
+            >
+              全部反馈
+            </button>
+          )}
         />
       </Section>
+      {run && (
+        <Section title={`自主轮 ${run} · 原反馈历史`}>
+          <QueryList
+            method="list_participation_feedback"
+            args={{
+              run_id: run,
+              include_content: props.allowed("read_execution_trace"),
+            }}
+            refresh={refresh}
+            onRow={flatten}
+            columns={[
+              ["sequence", "顺序"],
+              ["outcome", "实际结果", status],
+              ["created_at", "提交时间", stamp],
+              [
+                "actual_targets",
+                "实际目标",
+                (value) =>
+                  value == null ? (
+                    "未授权读取"
+                  ) : (
+                    <JsonNote title="目标引用" value={value} />
+                  ),
+              ],
+              [
+                "effects",
+                "实际效果引用",
+                (value) =>
+                  value == null ? (
+                    "未授权读取"
+                  ) : (
+                    <JsonNote title="原效果与调用" value={value} />
+                  ),
+              ],
+              [
+                "considered_sources",
+                "使用来源",
+                (value) =>
+                  value == null ? (
+                    "未授权读取"
+                  ) : (
+                    <JsonNote title="原内部来源" value={value} />
+                  ),
+              ],
+            ]}
+            actions={(row) => (
+              <>
+                {Array.isArray(row.effects) &&
+                  [
+                    ...new Set(
+                      row.effects
+                        .map(
+                          (ref) =>
+                            /^work-model:([^:]+):\d+$/.exec(String(ref))?.[1],
+                        )
+                        .filter(Boolean),
+                    ),
+                  ].map((work) => (
+                    <a
+                      className="file-open"
+                      key={String(work)}
+                      href={`#audit?work=${encodeURIComponent(String(work))}`}
+                    >
+                      工作 {String(work).slice(0, 8)} 的执行轨迹
+                    </a>
+                  ))}
+              </>
+            )}
+          />
+          <p className="small">
+            按原 sequence
+            追加反馈。效果引用保留原回执身份；结果未知不会变成已发送。
+          </p>
+        </Section>
+      )}
       <Section title="决策时间线">
         <label className="form-group">
           记录类型
@@ -172,288 +257,15 @@ export function Autonomy(props: PageProps) {
   );
 }
 
-export function Memory({ allowed, act, refresh }: PageProps) {
-  return (
-    <>
-      <Section title="长期记忆">
-        <div className="settings-actions">
-          {[
-            ["rebuild_memory", "重建", "plan"],
-            ["dream_memory", "梦境整理", "plan"],
-            ["maintain_memory", "维护索引", "run"],
-          ].map(([method, label, action]) => (
-            <button
-              key={method}
-              className="btn-secondary"
-              disabled={!allowed(method)}
-              onClick={() =>
-                act({
-                  method,
-                  label,
-                  revision: 0,
-                  payload: { action, resource_id: "yuki", spec: {} },
-                  edit: "spec",
-                })
-              }
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        <QueryList
-          method="list_memory_facts"
-          refresh={refresh}
-          columns={[
-            ["fact_id", "编号"],
-            ["category", "类别"],
-            ["scope_type", "范围"],
-            ["content", "内容", (v, row) => text(v || row.excerpt)],
-            ["status", "状态", status],
-            ["revision", "版本"],
-          ]}
-          actions={(row) => (
-            <>
-              {["confirm", "quarantine"].map((action) => (
-                <button
-                  key={action}
-                  className="btn-secondary"
-                  disabled={!allowed("mutate_memory")}
-                  onClick={() =>
-                    act({
-                      method: "mutate_memory",
-                      label: action === "confirm" ? "确认记忆" : "隔离记忆",
-                      revision: Number(row.revision),
-                      payload: { action, resource_id: String(row.fact_id) },
-                    })
-                  }
-                >
-                  {action === "confirm" ? "确认" : "隔离"}
-                </button>
-              ))}
-            </>
-          )}
-        />
-      </Section>
-      <Section title="证据">
-        <QueryList
-          method="list_memory_evidence"
-          refresh={refresh}
-          columns={[
-            ["evidence_id", "证据"],
-            ["fact_id", "记忆"],
-            ["relation", "关系"],
-            ["excerpt", "原文摘录"],
-          ]}
-        />
-      </Section>
-      <Section title="记忆工作">
-        <QueryList
-          method="list_memory_jobs"
-          refresh={refresh}
-          columns={[
-            ["job_id", "任务"],
-            ["kind", "类型"],
-            ["status", "状态", status],
-            ["operation", "进度"],
-          ]}
-        />
-      </Section>
-    </>
-  );
-}
+import { Memory } from "./memory";
+export { Memory };
 
 export { Tools } from "./tools";
 
-export function Files({ refresh }: PageProps) {
-  const [id, setId] = useState("");
-  const file = useQuery<Row>(
-    "read_workspace",
-    { artifact_id: id },
-    refresh,
-    !!id,
-  );
-  const fields = file.data?.fields as Row | undefined;
-  return (
-    <>
-      <Section title="Yuki 的共享工作区">
-        <QueryList
-          method="list_workspace"
-          refresh={refresh}
-          onRow={flatten}
-          columns={[
-            ["name", "文件"],
-            ["size", "字节"],
-            ["revision", "版本"],
-            ["immutable", "快照", status],
-            ["modified_at", "修改时间", stamp],
-          ]}
-          actions={(row) => (
-            <>
-              <button
-                className="btn-secondary"
-                onClick={() => setId(String(row.resource_id))}
-              >
-                打开
-              </button>
-              <a
-                className="btn-secondary"
-                href={`/api/control/files/workspace/${encodeURIComponent(String(row.resource_id))}`}
-                download
-              >
-                下载
-              </a>
-            </>
-          )}
-        />
-      </Section>
-      {id && (
-        <Section title={fields ? text(fields.name) : "文件内容"}>
-          {file.error != null && <ErrorNote error={file.error} />}
-          {fields && (
-            <>
-              <p className="small">
-                版本 {text(fields.revision)} · SHA256 {text(fields.sha256)}
-              </p>
-              {fields.binary ? (
-                <Empty>二进制文件，不能作为文本预览。</Empty>
-              ) : (
-                <pre className="file-preview">{text(fields.text)}</pre>
-              )}
-              {fields.truncated === true && (
-                <p className="small">预览已截断。</p>
-              )}
-            </>
-          )}
-        </Section>
-      )}
-    </>
-  );
-}
+import { Files } from "./workspace";
+export { Files };
 
-export function Identity({ allowed, act, refresh }: PageProps) {
-  return (
-    <>
-      <Section title="用户身份">
-        <QueryList
-          method="list_persons"
-          refresh={refresh}
-          columns={[
-            ["person_id", "Person"],
-            ["enabled", "启用", status],
-            ["binding_count", "绑定"],
-            ["revision", "版本"],
-          ]}
-          actions={(row) => (
-            <button
-              className="btn-secondary"
-              disabled={
-                !row.person_id ||
-                !allowed(row.enabled ? "disable_person" : "enable_person")
-              }
-              onClick={() =>
-                act({
-                  method: row.enabled ? "disable_person" : "enable_person",
-                  label: row.enabled ? "停用用户" : "启用用户",
-                  revision: Number(row.revision),
-                  payload: {},
-                  target: { kind: "person", id: row.person_id },
-                })
-              }
-            >
-              {row.enabled ? "停用" : "启用"}
-            </button>
-          )}
-        />
-      </Section>
-      <Section title="群与空间">
-        <QueryList
-          method="list_spaces"
-          refresh={refresh}
-          columns={[
-            ["name", "名称"],
-            ["space_id", "Space"],
-            ["enabled", "启用", status],
-            ["autonomous_enabled", "自主参与", status],
-            ["revision", "版本"],
-          ]}
-          actions={(row) => (
-            <button
-              className="btn-secondary"
-              disabled={
-                !row.space_id ||
-                !allowed(row.enabled ? "disable_space" : "enable_space")
-              }
-              onClick={() =>
-                act({
-                  method: row.enabled ? "disable_space" : "enable_space",
-                  label: row.enabled ? "停用空间" : "启用空间",
-                  revision: Number(row.revision),
-                  payload: {},
-                  target: { kind: "space", id: row.space_id },
-                })
-              }
-            >
-              {row.enabled ? "停用" : "启用"}
-            </button>
-          )}
-        />
-      </Section>
-      <Section title="连接入口">
-        <QueryList
-          method="list_presences"
-          refresh={refresh}
-          columns={[
-            ["presence_id", "Presence"],
-            ["platform", "平台"],
-            ["connection_state", "连接", status],
-            ["enabled", "启用", status],
-            ["ingest_eligible", "接入", status],
-          ]}
-          actions={(row) => (
-            <>
-              {[
-                ["start_presence", "启动"],
-                ["stop_presence", "停止"],
-              ].map(([method, label]) => (
-                <button
-                  key={method}
-                  className="btn-secondary"
-                  disabled={!allowed(method)}
-                  onClick={() =>
-                    act({
-                      method,
-                      label,
-                      revision: Number(row.revision),
-                      payload: {},
-                      target: { kind: "presence", id: row.presence_id },
-                    })
-                  }
-                >
-                  {label}
-                </button>
-              ))}
-              <button
-                className="btn-secondary"
-                disabled={!allowed("set_presence_ingest")}
-                onClick={() =>
-                  act({
-                    method: "set_presence_ingest",
-                    label: row.ingest_eligible ? "停止接入" : "开启接入",
-                    revision: Number(row.revision),
-                    payload: { ingest_eligible: !row.ingest_eligible },
-                    target: { kind: "presence", id: row.presence_id },
-                  })
-                }
-              >
-                切换接入
-              </button>
-            </>
-          )}
-        />
-      </Section>
-    </>
-  );
-}
+export { Identity } from "./identity";
 
 export function SettingsPage({ allowed, act, refresh }: PageProps) {
   const [scopeType, setScopeType] = useState("global"),
@@ -680,7 +492,7 @@ export function Assets({ allowed, act, refresh }: PageProps) {
   );
 }
 
-export function Audit({ allowed, act, refresh, conversation }: PageProps) {
+export function Audit({ allowed, refresh, conversation }: PageProps) {
   const [operation, setOperation] = useState<string | null>(null);
   const [operationKind, setOperationKind] = useState("control");
   const receipt = useQuery<Row>(
@@ -694,7 +506,9 @@ export function Audit({ allowed, act, refresh, conversation }: PageProps) {
     ? { turn_id: params.get("turn") }
     : params.get("work")
       ? { work_id: params.get("work") }
-      : {};
+      : params.get("event")
+        ? { source_event_id: Number(params.get("event")) }
+        : {};
   return (
     <>
       <Traces scope={scope} refresh={refresh} />
@@ -739,22 +553,9 @@ export function Audit({ allowed, act, refresh, conversation }: PageProps) {
         {receipt.data && (
           <JsonNote title="原操作当前回执" value={receipt.data} />
         )}
-        <button
-          className="btn-secondary"
-          disabled={!allowed("cancel_operation")}
-          onClick={() =>
-            act({
-              method: "cancel_operation",
-              label: "取消长期操作",
-              revision: 0,
-              payload: { action: "cancel", resource_id: "" },
-              edit: "payload",
-              hint: "填写支持取消的 rebuild 或 dream 操作 ID，以及刚读取的资源版本。结果未知的操作应先核对持久回执。",
-            })
-          }
-        >
-          取消长期操作
-        </button>
+        <p className="small">
+          重建与梦境的执行管理，请在记忆页读取原计划版本后操作。
+        </p>
       </Section>
       <Section title="管理审计">
         <QueryList

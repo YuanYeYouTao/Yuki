@@ -526,6 +526,8 @@ class ApplicationContainer:
             embeddings=self.memory_embeddings,
             plugins=self.plugin_manager,
             workspace=self.workspace_service.store,
+            workspace_service=self.workspace_service,
+            rebuild_service=self.memory_rebuild_service,
             conversation_media=self.conversation_media,
             model_catalog=self.model_profiles,
             participation_snapshot=lambda: self.semantic_participation.control_snapshot(),

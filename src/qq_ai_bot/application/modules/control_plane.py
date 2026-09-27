@@ -20,12 +20,14 @@ from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
 from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
+from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
 from qq_ai_bot.persistence.control_command import ControlCommandAdapter
 from qq_ai_bot.persistence.control_query import ControlQueryAdapter
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.plugin_host.manager import PluginManager
+from qq_ai_bot.workspace.service import WorkspaceService
 from qq_ai_bot.workspace.store import WorkspaceStore
 
 
@@ -42,6 +44,8 @@ class ControlPlaneModule:
     def build(
         *,
         settings: Settings,
+        workspace_service: WorkspaceService | None = None,
+        rebuild_service: MemoryRebuildService | None = None,
         database: Database,
         runtime_config: RuntimeConfigService,
         connections: GatewayConnectionRegistry,
@@ -72,6 +76,8 @@ class ControlPlaneModule:
             maintenance=maintenance,
             embeddings=embeddings,
             plugins=plugins,
+            workspace_service=workspace_service,
+            rebuild_service=rebuild_service,
         )
         return ControlPlaneBundle(
             access=ControlOperatorAccess(database, settings.control_operators_file),
@@ -85,6 +91,8 @@ class ControlPlaneModule:
                     connection_registry=connections,
                     plugins=plugins,
                     workspace=workspace,
+                    workspace_service=workspace_service,
+                    automation=automation,
                     conversation_media=conversation_media,
                     model_catalog=model_catalog,
                     participation_snapshot=participation_snapshot,

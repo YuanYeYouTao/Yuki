@@ -110,7 +110,9 @@ async def test_participation_history_reports_latest_feedback_without_replaying_d
     repository = AutonomyRepository(database)
     binding = await _enable(repository, scene)
     first = (await _accept(repository, scene, binding, proposal="first")).run
-    await repository.record_feedback(first.run_id, sequence=1, outcome="running")
+    await repository.record_feedback(
+        first.run_id, sequence=1, outcome="running", effect_refs=("receipt:fixture",)
+    )
     await repository.record_feedback(first.run_id, sequence=2, outcome="completed")
     second = (
         await _accept(
@@ -138,6 +140,38 @@ async def test_participation_history_reports_latest_feedback_without_replaying_d
     assert second_page.items[0].fields["feedback"] == "completed"
     assert (await repository.get_run(first.run_id)).feedback_sequence == 2
     assert "sources_json" not in json.dumps(dict(second_page.items[0].fields))
+    statements = []
+
+    def capture(_, __, statement, *args):
+        statements.append(statement)
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
+    try:
+        feedback = await queries.list_participation_feedback(
+            ctx, PageRequest(limit=1), run_id=first.run_id, include_content=True
+        )
+    finally:
+        event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
+    assert feedback.items[0].fields["outcome"] == "running"
+    assert "effects" not in feedback.items[0].fields
+    assert not any("payload_json" in sql or "sources_json" in sql for sql in statements)
+    final = await queries.list_participation_feedback(
+        ctx, PageRequest(limit=1, cursor=feedback.next_cursor), run_id=first.run_id
+    )
+    assert final.items[0].fields["outcome"] == "completed" and final.next_cursor is None
+    with pytest.raises(ControlQueryError):
+        await queries.list_participation_feedback(
+            ctx, PageRequest(cursor=feedback.next_cursor), run_id=second.run_id
+        )
+    full_ctx = context("control.execution.metadata.read", "control.execution.content.read")
+    full = await queries.list_participation_feedback(
+        full_ctx, PageRequest(limit=1), run_id=first.run_id, include_content=True
+    )
+    assert full.items[0].fields["effects"] == ("receipt:fixture",)
+    with pytest.raises(ControlQueryError):
+        await queries.list_participation_feedback(
+            full_ctx, PageRequest(cursor=full.next_cursor), run_id=first.run_id
+        )
 
 
 @pytest.mark.asyncio

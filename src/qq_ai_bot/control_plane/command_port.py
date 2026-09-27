@@ -15,6 +15,18 @@ class ControlCommandPort(Protocol):
         self, principal: ControlPrincipal, target: object, command: ControlCommand
     ) -> ControlResult: ...
 
+    async def mutate_workspace(
+        self, principal: ControlPrincipal, target: object, command: ControlCommand
+    ) -> ControlResult: ...
+
+    async def mutate_environment_file(
+        self, principal: ControlPrincipal, target: object, command: ControlCommand
+    ) -> ControlResult: ...
+
+    async def mutate_environment_terminal(
+        self, principal: ControlPrincipal, target: object, command: ControlCommand
+    ) -> ControlResult: ...
+
     async def mutate_work(
         self, principal: ControlPrincipal, target: object, command: ControlCommand
     ) -> ControlResult: ...
@@ -125,6 +137,13 @@ class ControlCommandPort(Protocol):
     ) -> ControlResult: ...
 
     async def rollback_config(
+        self,
+        principal: ControlPrincipal,
+        target: object,
+        command: ControlCommand,
+    ) -> ControlResult: ...
+
+    async def mutate_relationship(
         self,
         principal: ControlPrincipal,
         target: object,

@@ -9,10 +9,11 @@ export interface Intent {
   revision: number;
   payload: Row;
   target?: Row;
-  edit?: "spec" | "value" | "payload";
+  edit?: "value";
   hint?: string;
   valueKind?: "boolean" | "number" | "string" | "secret";
   review?: Row | string;
+  onReceipt?: (requestId: string, result: Row) => void;
 }
 export function ActionSheet({
   intent,
@@ -24,18 +25,7 @@ export function ActionSheet({
   completed: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
-  const [draft, setDraft] = useState(
-    intent.valueKind === "string" || intent.valueKind === "secret"
-      ? String(intent.payload.value ?? "")
-      : JSON.stringify(
-          intent.edit === "payload"
-            ? intent.payload
-            : (intent.payload[intent.edit || "spec"] ?? {}),
-          null,
-          2,
-        ),
-  );
-  const [revision, setRevision] = useState(intent.revision);
+  const [draft, setDraft] = useState(String(intent.payload.value ?? ""));
   const [error, setError] = useState<unknown>(null),
     [busy, setBusy] = useState(false),
     [result, setResult] = useState<Row | null>(null);
@@ -55,21 +45,18 @@ export function ActionSheet({
       )
         throw new Error("invalid number");
       const edited =
-        intent.valueKind === "string" || intent.valueKind === "secret"
-          ? draft
-          : intent.valueKind === "number"
-            ? Number(draft)
-            : JSON.parse(draft);
-      const payload =
-        intent.edit === "payload"
-          ? edited
-          : {
-              ...intent.payload,
-              ...(intent.edit ? { [intent.edit]: edited } : {}),
-            };
+        intent.valueKind === "number"
+          ? Number(draft)
+          : intent.valueKind === "boolean"
+            ? draft === "true"
+            : draft;
+      const payload = {
+        ...intent.payload,
+        ...(intent.edit ? { value: edited } : {}),
+      };
       envelope = {
         request_id: crypto.randomUUID(),
-        expected_revision: revision,
+        expected_revision: intent.revision,
         payload,
         target: intent.target || { kind: "yuki" },
       };
@@ -82,6 +69,7 @@ export function ActionSheet({
     try {
       const value = await command(intent.method, envelope);
       setResult(value);
+      intent.onReceipt?.(envelope.request_id, value);
       completed();
     } catch (e) {
       setError(e);
@@ -129,22 +117,8 @@ export function ActionSheet({
         (typeof intent.review === "string" ? (
           <pre className="persona-text">{intent.review}</pre>
         ) : (
-          <JsonNote title="即将保存的配置" value={intent.review} />
+          <JsonNote title="即将提交的内容" value={intent.review} />
         ))}
-      {intent.edit === "payload" && (
-        <label className="form-group">
-          刚读取的资源版本
-          <input
-            className="form-control"
-            type="number"
-            min="0"
-            step="1"
-            value={revision}
-            disabled={!!submitted}
-            onChange={(e) => setRevision(Number(e.target.value))}
-          />
-        </label>
-      )}
       {!result && intent.edit && (
         <label className="form-group">
           {intent.edit === "value" ? "新的值" : "操作内容"}

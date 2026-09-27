@@ -258,6 +258,30 @@ CONTROL_CAPABILITY_DESCRIPTORS: Final[tuple[ControlCapabilityDescriptor, ...]] =
         mutating=True,
     ),
     _descriptor(
+        "control.workspace.mutate",
+        CapabilityFamily.CONTROL,
+        CapabilitySensitivity.MUTATE,
+        mutating=True,
+    ),
+    _descriptor(
+        "control.environment.file.mutate",
+        CapabilityFamily.CONTROL,
+        CapabilitySensitivity.MUTATE,
+        mutating=True,
+    ),
+    _descriptor(
+        "control.terminal.mutate",
+        CapabilityFamily.CONTROL,
+        CapabilitySensitivity.MUTATE,
+        mutating=True,
+    ),
+    _descriptor(
+        "control.terminal.content.read",
+        CapabilityFamily.CONTROL,
+        CapabilitySensitivity.CONTENT_READ,
+        mutating=False,
+    ),
+    _descriptor(
         "control.workspace.metadata.read",
         CapabilityFamily.CONTROL,
         CapabilitySensitivity.METADATA_READ,

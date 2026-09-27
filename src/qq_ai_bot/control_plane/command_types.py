@@ -85,11 +85,15 @@ _MANAGEMENT_OPERATIONS: Final[frozenset[str]] = frozenset(
     {
         "control.config.file.save",
         "control.plugin.configure",
+        "control.workspace.mutate",
+        "control.environment.file.mutate",
+        "control.terminal.mutate",
         "control.work.mutate",
         "control.config.set",
         "control.config.unset",
         "control.config.rollback",
         "control.memory.mutate",
+        "control.relationship.mutate",
         "control.memory.rebuild",
         "control.memory.dream",
         "control.memory.maintenance",
@@ -178,12 +182,16 @@ class CommandOperation(StrEnum):
     CONFIG_UNSET = "control.config.unset"
     CONFIG_ROLLBACK = "control.config.rollback"
     MEMORY_MUTATE = "control.memory.mutate"
+    RELATIONSHIP_MUTATE = "control.relationship.mutate"
     MEMORY_REBUILD = "control.memory.rebuild"
     MEMORY_DREAM = "control.memory.dream"
     MEMORY_MAINTENANCE = "control.memory.maintenance"
     AUTOMATION_MUTATE = "control.automation.mutate"
     PLUGIN_MUTATE = "control.plugin.mutate"
     PLUGIN_CONFIGURE = "control.plugin.configure"
+    WORKSPACE_MUTATE = "control.workspace.mutate"
+    ENVIRONMENT_FILE_MUTATE = "control.environment.file.mutate"
+    TERMINAL_MUTATE = "control.terminal.mutate"
     WORK_MUTATE = "control.work.mutate"
     MCP_MUTATE = "control.mcp.mutate"
     EMOJI_MUTATE = "control.emoji.mutate"
@@ -1112,6 +1120,45 @@ def _require_management_semantics(
             raise _mismatch()
         return
     action = _material_action(material)
+    if operation == CommandOperation.WORKSPACE_MUTATE.value:
+        if action not in {"upload", "edit", "delete"} or status not in {
+            "saved",
+            "saved_import_failed",
+            "deleted",
+        }:
+            raise _mismatch()
+        _require_generated_id(resource_id)
+        if action == "upload":
+            if _material_resource(material) != "yuki" or status == "deleted":
+                raise _mismatch()
+        elif resource_id != _material_resource(material) or (action == "delete") != (
+            status == "deleted"
+        ):
+            raise _mismatch()
+        return
+    if operation == CommandOperation.ENVIRONMENT_FILE_MUTATE.value:
+        if (
+            action not in {"write", "mkdir", "move", "delete", "patch", "publish"}
+            or resource_id != "environment"
+            or resource_id != _material_resource(material)
+            or status != "saved"
+        ):
+            raise _mismatch()
+        return
+    if operation == CommandOperation.TERMINAL_MUTATE.value:
+        if (
+            action not in {"exec", "write", "control"}
+            or _material_resource(material) != "environment"
+            or status != "accepted"
+        ):
+            raise _mismatch()
+        _require_generated_id(resource_id)
+        spec = material.get("spec")
+        if action != "exec" and (
+            not isinstance(spec, Mapping) or spec.get("run_id") != resource_id
+        ):
+            raise _mismatch()
+        return
     if operation == CommandOperation.WORK_MUTATE.value:
         if action not in {"cancel", "resume"} or resource_id != _material_resource(material):
             raise _mismatch()
@@ -1135,6 +1182,13 @@ def _require_management_semantics(
         ):
             raise _mismatch()
         return
+    if operation == CommandOperation.RELATIONSHIP_MUTATE.value:
+        if action not in {"set_affection", "set_trust", "adjust_affection"} or status != action:
+            raise _mismatch()
+        if resource_id != semantic_target_id or resource_id != _material_resource(material):
+            raise _mismatch()
+        _require_generated_id(resource_id)
+        return
     if operation == CommandOperation.MEMORY_MUTATE.value:
         if action not in {"confirm", "quarantine"} or status != action:
             raise _mismatch()
@@ -1142,11 +1196,33 @@ def _require_management_semantics(
             raise _mismatch()
         return
     if operation == CommandOperation.MEMORY_REBUILD.value:
-        if action not in {"plan", "start", "cancel"} or status not in _REBUILD_STATUSES:
+        if (
+            action
+            not in {
+                "plan",
+                "start",
+                "cancel",
+                "pause",
+                "resume",
+                "commit",
+                "approve",
+                "reject",
+                "retry",
+            }
+            or status not in _REBUILD_STATUSES
+        ):
             raise _mismatch()
         if action == "plan" and status != "planned":
             raise _mismatch()
         if action == "start" and status not in _REBUILD_START_STATUSES:
+            raise _mismatch()
+        if action in {"pause", "retry"} and status not in {"extraction_paused", "commit_paused"}:
+            raise _mismatch()
+        if action == "resume" and status not in {"extracting", "committing"}:
+            raise _mismatch()
+        if action == "commit" and status != "committing":
+            raise _mismatch()
+        if action in {"approve", "reject"} and status != "review":
             raise _mismatch()
         if action == "cancel" and status != "cancelled":
             raise _mismatch()
@@ -1156,11 +1232,11 @@ def _require_management_semantics(
             raise _mismatch()
         return
     if operation == CommandOperation.MEMORY_DREAM.value:
-        if action not in {"plan", "start", "cancel"} or status not in _DREAM_STATUSES:
+        if action not in {"plan", "start", "cancel", "retry"} or status not in _DREAM_STATUSES:
             raise _mismatch()
         if action == "plan" and status != "planned":
             raise _mismatch()
-        if action == "start" and status not in _DREAM_START_STATUSES:
+        if action in {"start", "retry"} and status not in _DREAM_START_STATUSES:
             raise _mismatch()
         if action == "cancel" and status != "cancelled":
             raise _mismatch()
@@ -1275,7 +1351,7 @@ def _require_management_semantics(
         if separator != ":" or rest != resource_id:
             raise _mismatch()
         allowed = {
-            "rebuild": _REBUILD_START_STATUSES,
+            "rebuild": frozenset({"extraction_paused", "commit_paused"}),
             "dream": _DREAM_START_STATUSES,
             "plugin-outbox": frozenset({"pending", "failed"}),
             "automation": frozenset({"active"}),

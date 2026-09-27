@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { AutomationHistory } from "./automation-history";
+import { AutomationEditor } from "./automation-editor";
 import type { Row } from "./api";
 import type { PageProps } from "./pages";
 import { useQuery } from "./hooks";
@@ -236,6 +237,8 @@ function WorkDetail({
   );
 }
 export function Work({ allowed, act, refresh, conversation }: PageProps) {
+  const props = { allowed, act, refresh, conversation };
+  const [editing, setEditing] = useState<"create" | "update" | null>(null);
   const [workId, selectWork] = useState<string | null>(null);
   const [id, setId] = useState<number | null>(null);
   const detail = useQuery<Row>(
@@ -306,24 +309,7 @@ export function Work({ allowed, act, refresh, conversation }: PageProps) {
           <button
             className="btn-primary"
             disabled={!allowed("mutate_automation")}
-            onClick={() =>
-              act({
-                method: "mutate_automation",
-                label: "创建自动化",
-                revision: 0,
-                payload: {
-                  action: "create",
-                  resource_id: "yuki",
-                  spec: {
-                    owner_id: "",
-                    conversation_id: conversation || null,
-                    script: {},
-                  },
-                },
-                edit: "spec",
-                hint: "指定委托人的内部 Person ID，并填写完整脚本。投递目标必须明确声明。",
-              })
-            }
+            onClick={() => setEditing("create")}
           >
             新建
           </button>
@@ -349,7 +335,10 @@ export function Work({ allowed, act, refresh, conversation }: PageProps) {
                   !allowed("read_automation") &&
                   !allowed("list_automation_runs")
                 }
-                onClick={() => setId(Number(row.automation_id))}
+                onClick={() => {
+                  setId(Number(row.automation_id));
+                  setEditing(null);
+                }}
               >
                 详情
               </button>
@@ -384,6 +373,9 @@ export function Work({ allowed, act, refresh, conversation }: PageProps) {
           )}
         />
       </Section>
+      {editing === "create" && (
+        <AutomationEditor props={props} close={() => setEditing(null)} />
+      )}
       {id != null && (
         <Section title={`自动化 #${id}`}>
           {detail.error != null && <ErrorNote error={detail.error} />}
@@ -406,23 +398,21 @@ export function Work({ allowed, act, refresh, conversation }: PageProps) {
               <button
                 className="btn-secondary"
                 disabled={!allowed("mutate_automation")}
-                onClick={() =>
-                  act({
-                    method: "mutate_automation",
-                    label: "更新自动化脚本",
-                    revision: Number(fields.revision),
-                    payload: {
-                      action: "update",
-                      resource_id: String(id),
-                      spec: fields.script,
-                    },
-                    edit: "spec",
-                    hint: "保留原任务的创建者与投递场景，按刚读取的版本验证脚本。",
-                  })
-                }
+                onClick={() => setEditing("update")}
               >
                 编辑脚本
               </button>
+              {editing === "update" && fields.script != null && (
+                <AutomationEditor
+                  key={`${id}:${fields.revision}`}
+                  automationId={id}
+                  creatorKind={String(fields.creator_kind)}
+                  revision={Number(fields.revision)}
+                  initial={fields.script as Row}
+                  props={props}
+                  close={() => setEditing(null)}
+                />
+              )}
             </>
           )}
           <AutomationHistory
