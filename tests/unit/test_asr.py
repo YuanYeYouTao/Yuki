@@ -404,6 +404,8 @@ async def test_derived_audio_updates_revision_and_survives_migration_rollback(
         await connection.execute(
             text("ALTER TABLE admin_operation_events DROP COLUMN control_request_id")
         )
+        await connection.execute(text("DROP TABLE execution_trace_entries"))
+        await connection.execute(text("DROP TABLE execution_trace_state"))
     await asyncio.to_thread(command.upgrade, config, "head")
     await require_canonical_schema(database.url)
     assert any(r.id == saved.id for r in await harness.ledger.search(keyword="迁移之后"))

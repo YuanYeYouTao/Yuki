@@ -49,6 +49,7 @@ from qq_ai_bot.domain.messages import (
     PromptRequestDiagnostics,
 )
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
+from qq_ai_bot.execution_trace.recorder import trace_span
 from qq_ai_bot.llm.base import LLMEmptyResponseError
 from qq_ai_bot.memory.attribution import (
     MemoryAttributionWorker,
@@ -896,6 +897,18 @@ class ChatService:
             self._concurrency.conversation(conversation_key),
             AsyncExitStack() as memory_cleanup,
         ):
+            # Capture the diagnostic privacy generation before assembling history
+            # and Memory, so an erasure during context building fences its copy too.
+            await memory_cleanup.enter_async_context(
+                trace_span(
+                    "chat_processing",
+                    {},
+                    recorder=getattr(self._models, "traces", None),
+                    conversation_id=inbound.conversation_id,
+                    source_event_id=inbound.source_event_id,
+                    origin=turn_origin.value,
+                )
+            )
             work_control = None
             if self._settings.runtime_work_enabled and inbound.conversation_id and turn_snapshot:
                 from qq_ai_bot.runtime.work_activation import activate_work, current_work_control
@@ -1467,6 +1480,7 @@ class ChatService:
                 before_model_request=before_model_request,
                 canonical_conversation_id=runtime.effective_conversation_id,
                 execution_id=runtime.effective_execution_id,
+                source_event_id=runtime.effective_trigger_event_id,
             ),
             backend,
         )

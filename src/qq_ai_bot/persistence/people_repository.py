@@ -909,6 +909,24 @@ class PeopleRepository:
         if alias_keys:
             web_match.append(WebSearchRunModel.conversation_key.in_(alias_keys))
         await session.execute(delete(RuntimeTurnObservationModel).where(or_(*observation_match)))
+        # Prompts and tool results can mention a Person in any conversation.
+        # Disposable diagnostics must not retain content after privacy deletion.
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+        from qq_ai_bot.execution_trace.db_models import (
+            ExecutionTraceEntryModel,
+            ExecutionTraceStateModel,
+        )
+
+        await session.execute(
+            sqlite_insert(ExecutionTraceStateModel)
+            .values(id=1, privacy_generation=1)
+            .on_conflict_do_update(
+                index_elements=["id"],
+                set_={"privacy_generation": ExecutionTraceStateModel.privacy_generation + 1},
+            )
+        )
+        await session.execute(delete(ExecutionTraceEntryModel))
         if speech_match:
             await session.execute(delete(SpeechGenerationModel).where(or_(*speech_match)))
         if tool_match:

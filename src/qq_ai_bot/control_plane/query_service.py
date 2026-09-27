@@ -11,6 +11,7 @@ from qq_ai_bot.control_plane.query_port import ControlQueryPort
 from qq_ai_bot.control_plane.query_types import (
     AuditEventView,
     AutomationView,
+    ChatEventView,
     ConfigOverrideView,
     ConfigQueryScope,
     ConfigSpecView,
@@ -18,6 +19,8 @@ from qq_ai_bot.control_plane.query_types import (
     ConversationView,
     EffectiveConfigView,
     EmojiAssetView,
+    ExecutionTraceFilter,
+    ExecutionTraceView,
     IdentityBindingView,
     ManagementHealthView,
     McpServerView,
@@ -30,6 +33,7 @@ from qq_ai_bot.control_plane.query_types import (
     PluginRuntimeView,
     PluginView,
     PresenceView,
+    SocialReceiptView,
     SpaceActiveRouteView,
     SpaceBindingIngestRouteView,
     SpaceBindingView,
@@ -40,6 +44,7 @@ from qq_ai_bot.control_plane.query_types import (
 )
 from qq_ai_bot.control_plane.surface import ControlSurfaceView, describe_surface, method_capability
 from qq_ai_bot.domain.control import DecisionContext
+from qq_ai_bot.domain.identity import ConversationId
 
 
 def _require_context(context: object) -> DecisionContext[ControlPrincipal, object, object]:
@@ -74,6 +79,56 @@ class ControlQueryService:
         if port is None:
             raise TypeError("port is required")
         self._port = port
+
+    async def list_execution_trace(
+        self,
+        context: object,
+        request: PageRequest,
+        *,
+        scope: ExecutionTraceFilter,
+        include_content: bool = False,
+    ) -> Page[ExecutionTraceView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("list_execution_trace"))
+        if type(include_content) is not bool:
+            raise TypeError("include_content must be bool")
+        if include_content:
+            _require_capability(authorized, "control.execution.content.read")
+        return await self._port.list_execution_trace(
+            request, scope=scope, include_content=include_content
+        )
+
+    async def read_execution_trace(
+        self, context: object, entry_id: int, *, conversation_id: ConversationId | None = None
+    ) -> ExecutionTraceView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_execution_trace"))
+        return await self._port.read_execution_trace(entry_id, conversation_id=conversation_id)
+
+    async def list_chat_events(
+        self,
+        context: object,
+        request: PageRequest,
+        *,
+        conversation_id: ConversationId,
+        include_content: bool = False,
+    ) -> Page[ChatEventView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("list_chat_events"))
+        if type(include_content) is not bool:
+            raise TypeError("include_content must be bool")
+        if include_content:
+            _require_capability(authorized, "control.chat.content.read")
+        return await self._port.list_chat_events(
+            request, conversation_id=conversation_id, include_content=include_content
+        )
+
+    async def list_social_receipts(
+        self, context: object, request: PageRequest, *, conversation_id: ConversationId
+    ) -> Page[SocialReceiptView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("list_social_receipts"))
+        return await self._port.list_social_receipts(request, conversation_id=conversation_id)
 
     def describe(self, context: object) -> ControlSurfaceView:
         authorized = _require_context(context)

@@ -8,12 +8,13 @@ import json
 import logging
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Protocol
 
 from sqlalchemy.exc import SQLAlchemyError
 
 from qq_ai_bot.domain.messages import ChatRequest, ChatResponse, minimum_reasoning_effort
+from qq_ai_bot.execution_trace.recorder import TraceRecorder, record_trace, trace_span
 from qq_ai_bot.llm.base import LLMUnsupportedFeatureError
 from qq_ai_bot.model_runtime.dispatch_guard import check_model_dispatch
 from qq_ai_bot.model_runtime.models import (
@@ -281,6 +282,7 @@ class TaskModelExecutor:
         router: ModelRouter,
         pool: ModelClientPool,
         invocations: ModelInvocationRepository | None = None,
+        traces: TraceRecorder | None = None,
         max_concurrency: int | None = None,
         compaction_timeout_seconds: float = 90.0,
         self_reflection_timeout_seconds: float = 180.0,
@@ -292,6 +294,7 @@ class TaskModelExecutor:
         self._compaction_timeout_seconds = compaction_timeout_seconds
         self._self_reflection_timeout_seconds = self_reflection_timeout_seconds
         self._invocations = invocations
+        self.traces = traces
         self._invocation_record_failures = 0
         self._semaphore = (
             asyncio.Semaphore(max_concurrency) if max_concurrency is not None else None
@@ -322,6 +325,29 @@ class TaskModelExecutor:
         priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
         canonical_conversation_id: str | None = None,
     ) -> ChatResponse:
+        async with trace_span(
+            "model",
+            {"task": task.value, "request": asdict(request)},
+            recorder=self.traces,
+            conversation_id=canonical_conversation_id,
+        ) as span:
+            response = await self._execute(
+                task,
+                request,
+                priority=priority,
+                canonical_conversation_id=canonical_conversation_id,
+            )
+            span.result = asdict(response)
+            return response
+
+    async def _execute(
+        self,
+        task: ModelTask,
+        request: ChatRequest,
+        *,
+        priority: ModelExecutionPriority,
+        canonical_conversation_id: str | None,
+    ) -> ChatResponse:
         required: set[ModelCapability] = {ModelCapability.REASONING}
         if request.tools and not request.structured_output:
             required.add(ModelCapability.TOOLS)
@@ -336,6 +362,16 @@ class TaskModelExecutor:
         if any(message.images for message in request.messages):
             required.add(ModelCapability.IMAGE_INPUT)
         _route, profile = self._router.route(task, required_capabilities=frozenset(required))
+        await record_trace(
+            "model_route",
+            {
+                "task": task.value,
+                "profile_id": profile.id,
+                "provider": profile.provider,
+                "protocol": profile.protocol.value,
+                "model": profile.model,
+            },
+        )
         for continuation in (
             *((request.continuation,) if request.continuation is not None else ()),
             *(

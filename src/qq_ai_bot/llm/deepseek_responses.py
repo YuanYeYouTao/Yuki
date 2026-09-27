@@ -34,6 +34,7 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
+from qq_ai_bot.execution_trace.recorder import record_http_response, trace_span
 from qq_ai_bot.llm.base import (
     LLMConfigurationError,
     LLMEmptyResponseError,
@@ -355,14 +356,18 @@ class DeepSeekResponsesProvider(LLMProvider):
     async def _post(self, payload: dict[str, Any]) -> httpx.Response:
         from qq_ai_bot.model_runtime.dispatch_guard import check_model_dispatch
 
-        await check_model_dispatch()
-        response = await self._client.post(
-            "/responses",
-            headers={**self._headers, "Authorization": f"Bearer {self._api_key}"},
-            json=payload,
-            timeout=self._timeout,
-        )
-        check_provider_response(response)
+        async with trace_span(
+            "provider", {"protocol": "responses", "body": payload, "dispatch": "prepared"}
+        ):
+            await check_model_dispatch()
+            response = await self._client.post(
+                "/responses",
+                headers={**self._headers, "Authorization": f"Bearer {self._api_key}"},
+                json=payload,
+                timeout=self._timeout,
+            )
+            await record_http_response(response)
+            check_provider_response(response)
         return response
 
     @classmethod

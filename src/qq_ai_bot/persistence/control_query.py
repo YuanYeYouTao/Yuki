@@ -37,6 +37,7 @@ from qq_ai_bot.control_plane.query_cursors import (
 from qq_ai_bot.control_plane.query_types import (
     AuditEventView,
     AutomationView,
+    ChatEventView,
     ComponentHealthView,
     ConfigOverrideView,
     ConfigOwnerKind,
@@ -48,6 +49,8 @@ from qq_ai_bot.control_plane.query_types import (
     EffectiveConfigView,
     EmojiAssetView,
     EmojiSpaceEnablementView,
+    ExecutionTraceFilter,
+    ExecutionTraceView,
     IdentityBindingView,
     IdentityResolution,
     ManagementHealthView,
@@ -67,6 +70,7 @@ from qq_ai_bot.control_plane.query_types import (
     QueryResourceKind,
     QueueSummary,
     RouteKind,
+    SocialReceiptView,
     SpaceActiveRouteView,
     SpaceBindingIngestRouteView,
     SpaceBindingView,
@@ -570,6 +574,9 @@ class ControlQueryAdapter:
         if type(database) is not Database:
             raise TypeError("database must be Database")
         self._database = database
+        from qq_ai_bot.persistence.control_execution_query import ControlExecutionQueryAdapter
+
+        self._execution = ControlExecutionQueryAdapter(self._reader)
         self._settings = settings
         self._config = runtime_config
         self._registry = runtime_config.registry if runtime_config is not None else ConfigRegistry()
@@ -577,6 +584,34 @@ class ControlQueryAdapter:
         self._connections = connection_registry
         self._plugins = plugins
         self._runtime_health = runtime_health
+
+    async def list_execution_trace(
+        self, request: PageRequest, *, scope: ExecutionTraceFilter, include_content: bool = False
+    ) -> Page[ExecutionTraceView]:
+        return await self._execution.list_execution_trace(
+            request, scope=scope, include_content=include_content
+        )
+
+    async def read_execution_trace(
+        self, entry_id: int, *, conversation_id: ConversationId | None = None
+    ) -> ExecutionTraceView:
+        return await self._execution.read_execution_trace(entry_id, conversation_id=conversation_id)
+
+    async def list_chat_events(
+        self,
+        request: PageRequest,
+        *,
+        conversation_id: ConversationId,
+        include_content: bool = False,
+    ) -> Page[ChatEventView]:
+        return await self._execution.list_chat_events(
+            request, conversation_id=conversation_id, include_content=include_content
+        )
+
+    async def list_social_receipts(
+        self, request: PageRequest, *, conversation_id: ConversationId
+    ) -> Page[SocialReceiptView]:
+        return await self._execution.list_social_receipts(request, conversation_id=conversation_id)
 
     @asynccontextmanager
     async def _reader(self) -> AsyncIterator[AsyncSession]:

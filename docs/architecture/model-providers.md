@@ -100,7 +100,9 @@ Claude 思考开启时不支持强制调用特定工具，适配为 auto；结�
   因此不能宣称这些协议在跨 Work 的缓存复用上与 Responses 完全一样。
 - Chat `length`、Claude `max_tokens`、Gemini `MAX_TOKENS` 均转为 INCOMPLETE；
   Runner 的既有截断处理不会执行其中的工具。不自动增加预算。
-- reasoning、签名、完整工具回执不进入对外消息或内容日志；只有显式 send_message 交付。
+- reasoning、签名、完整工具回执不进入对外消息或普通运行日志；只有显式 send_message 交付。
+- [执行诊断](execution-trace.md) 单独保存实际返回的可读思考和工具结果；正文权限查询，按期清理。
+  不透明签名/加密状态只留摘要，原恢复 journal 继续按协议私有合同保存。
 - 请求原生服务端工具时，传输结果不明不自动重试；普通有界传输重试仍计入 Work 请求预算。
 
 ## 验证边界与协议来源

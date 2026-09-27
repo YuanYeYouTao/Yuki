@@ -116,6 +116,10 @@ class Settings(BaseSettings):
     llm_model: str = ""
     llm_timeout_seconds: float = 120.0
     llm_max_retries: int = 2
+    execution_trace_retention_days: int = Field(default=30, ge=1, le=365)
+    execution_trace_max_payload_bytes: int = Field(
+        default=16 * 1024 * 1024, ge=1024, le=64 * 1024 * 1024
+    )
     llm_temperature: float = 0.7
     llm_max_output_tokens: int = 8192
     llm_thinking_enabled: bool | None = True

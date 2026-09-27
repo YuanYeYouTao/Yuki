@@ -72,6 +72,10 @@ class OneBotSettings(DomainSettings):
 
 
 class ModelRuntimeSettings(DomainSettings):
+    execution_trace_retention_days: int = Field(default=30, ge=1, le=365)
+    execution_trace_max_payload_bytes: int = Field(
+        default=16 * 1024 * 1024, ge=1024, le=64 * 1024 * 1024
+    )
     memory_self_reflection_timeout_seconds: float = Field(default=180.0, gt=0)
     conversation_rollup_model_timeout_seconds: float = Field(gt=0)
     llm_provider: str

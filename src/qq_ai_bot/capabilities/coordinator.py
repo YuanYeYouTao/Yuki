@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
 from qq_ai_bot.domain.messages import ToolCall
+from qq_ai_bot.execution_trace.recorder import trace_span
 
 logger = logging.getLogger(__name__)
 TOOL_RESULT_MISSING = "tool_result_missing"
@@ -80,32 +81,35 @@ class ToolInvocationCoordinator:
 
         async def execute_one(call: ToolCall) -> None:
             async with semaphore:
+                async with trace_span("tool", {"call": asdict(call)}) as span:
+                    await execute_recorded(call)
+                    span.result = results[call.id]
 
-                async def invoke() -> str:
-                    return await backend.execute(
-                        call.function.name, call.function.arguments, runtime
-                    )
+        async def execute_recorded(call: ToolCall) -> None:
 
-                control = getattr(runtime, "work_control", None)
-                session = getattr(control, "session", None)
-                check_effect = getattr(backend, "is_side_effecting", None)
-                side_effecting = not callable(check_effect) or bool(
-                    check_effect(
-                        call.function.name,
-                        call.function.arguments,
-                        runtime,
-                    )
+            async def invoke() -> str:
+                return await backend.execute(call.function.name, call.function.arguments, runtime)
+
+            control = getattr(runtime, "work_control", None)
+            session = getattr(control, "session", None)
+            check_effect = getattr(backend, "is_side_effecting", None)
+            side_effecting = not callable(check_effect) or bool(
+                check_effect(
+                    call.function.name,
+                    call.function.arguments,
+                    runtime,
                 )
-                results[call.id] = (
-                    await session.execute(
-                        call,
-                        invoke,
-                        side_effecting=side_effecting,
-                        allow_pending=call.function.name == "send_message",
-                    )
-                    if session
-                    else await invoke()
+            )
+            results[call.id] = (
+                await session.execute(
+                    call,
+                    invoke,
+                    side_effecting=side_effecting,
+                    allow_pending=call.function.name == "send_message",
                 )
+                if session
+                else await invoke()
+            )
 
         def is_parallel_safe(call: ToolCall) -> bool:
             check = getattr(backend, "parallel_safe", None)

@@ -7,7 +7,7 @@ import inspect
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -31,6 +31,7 @@ from qq_ai_bot.domain.messages import (
     ResponseCitation,
     ToolCall,
 )
+from qq_ai_bot.execution_trace.recorder import trace_span
 from qq_ai_bot.llm.base import (
     LLMEmptyResponseError,
     LLMError,
@@ -84,6 +85,7 @@ class AgentRuntime:
     dynamic_context_prepared: bool = False
     work_control: WorkControl | None = None
     execution_id: str | None = None
+    source_event_id: int | None = None
     fixed_tools: tuple[ChatTool, ...] | None = None
     context_token_limit: int | None = None
     invocation_source: dict[str, Any] | None = None
@@ -151,6 +153,25 @@ class AgentRunner:
         self.main_contract: MainAgentContract | None = None
 
     async def run(
+        self,
+        initial_messages: tuple[ChatMessage, ...],
+        runtime: AgentRuntime,
+        tools: AgentToolBackend | None,
+    ) -> AgentRunResult:
+        async with trace_span(
+            "turn",
+            {"messages": [asdict(message) for message in initial_messages]},
+            recorder=getattr(self._models, "traces", None),
+            conversation_id=runtime.canonical_conversation_id,
+            execution_id=runtime.execution_id,
+            source_event_id=runtime.source_event_id,
+            origin=runtime.origin.value,
+        ) as span:
+            result = await self._run_with_receipts(initial_messages, runtime, tools)
+            span.result = asdict(result)
+            return result
+
+    async def _run_with_receipts(
         self,
         initial_messages: tuple[ChatMessage, ...],
         runtime: AgentRuntime,
@@ -968,6 +989,32 @@ class AgentRunner:
         )
 
     async def _execute_tool_batch(
+        self,
+        calls: tuple[ToolCall, ...],
+        tools: AgentToolBackend | None,
+        runtime: AgentRuntime,
+        *,
+        remaining_calls: int,
+        max_parallel_calls: int,
+        reusable_results: dict[tuple[str, str], str],
+        cacheable_names: frozenset[str],
+        declared_names: frozenset[str],
+    ) -> CoordinatedToolResult:
+        async with trace_span("tool_batch", {"calls": [asdict(call) for call in calls]}) as span:
+            result = await self._execute_tool_batch_impl(
+                calls,
+                tools,
+                runtime,
+                remaining_calls=remaining_calls,
+                max_parallel_calls=max_parallel_calls,
+                reusable_results=reusable_results,
+                cacheable_names=cacheable_names,
+                declared_names=declared_names,
+            )
+            span.result = asdict(result)
+            return result
+
+    async def _execute_tool_batch_impl(
         self,
         calls: tuple[ToolCall, ...],
         tools: AgentToolBackend | None,

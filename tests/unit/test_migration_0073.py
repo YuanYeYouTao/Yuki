@@ -46,7 +46,7 @@ def test_upgrade_keeps_receipts_and_accepts_only_complete_intents(tmp_path, monk
             "'{}', '{}', 1, 0, '2026-09-27')",
         )
         previous = db.execute("SELECT * FROM control_command_receipts").fetchall()
-    command.upgrade(config, "head")
+    command.upgrade(config, "0073")
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0073",)
         assert db.execute("SELECT * FROM control_command_receipts").fetchall() == previous

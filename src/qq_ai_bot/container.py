@@ -1064,6 +1064,8 @@ class ApplicationContainer:
                         speech_files,
                     )
                 turn_observations_deleted = await self.turn_observations.cleanup_expired()
+                if self.models.traces is not None:
+                    await self.models.traces.cleanup_expired()
                 if turn_observations_deleted:
                     logger.info(
                         "runtime_turn_observations_cleaned count=%d",
