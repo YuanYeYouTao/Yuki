@@ -135,6 +135,7 @@ class ControlMemoryQueryAdapter:
         if kind not in {"rebuild", "dream"}:
             raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
         model = MemoryRebuildRunModel if kind == "rebuild" else MemoryDreamRunModel
+        statistics_name = "plan_statistics_json" if kind == "rebuild" else "statistics_json"
         names = [
             "id",
             "public_id",
@@ -145,7 +146,7 @@ class ControlMemoryQueryAdapter:
             "completed_at",
             "cancelled_at",
             "error_category",
-            "plan_statistics_json",
+            statistics_name,
         ]
         names.extend(
             [
@@ -177,14 +178,14 @@ class ControlMemoryQueryAdapter:
             fields = {
                 key: _stamp(value) if isinstance(value, datetime) else value
                 for key, value in row.items()
-                if key not in {"id", "plan_statistics_json"}
+                if key not in {"id", statistics_name}
             }
             from pydantic import ValidationError
 
             from qq_ai_bot.memory.dream.models import DreamPlanStatistics
             from qq_ai_bot.memory.rebuild.models import MemoryRebuildPlanStatistics
 
-            raw_statistics = row["plan_statistics_json"]
+            raw_statistics = row[statistics_name]
             if isinstance(raw_statistics, str) and len(raw_statistics.encode("utf-8")) <= 65536:
                 try:
                     schema = (

@@ -90,3 +90,26 @@ async def test_maintenance_detail_exposes_original_revision_not_private_selectio
             context("control.memory.metadata.read"), f"control:{identity}"
         )
     assert bad.value.problem.code == ProblemCode.VALIDATION_ERROR
+
+
+async def test_dream_detail_uses_original_dream_columns_not_rebuild_statistics(database):
+    from tests.unit.test_memory_dream import _empty_dream_statistics
+
+    from qq_ai_bot.memory.dream.models import DreamRunMode
+    from qq_ai_bot.memory.dream.repository import DreamRepository
+
+    run = await DreamRepository(database).create_run(
+        mode=DreamRunMode.FULL,
+        statistics=_empty_dream_statistics(),
+        clusters=(),
+        snapshot_max_fact_id=0,
+        actor_user_id=None,
+        scheduled_slot=None,
+    )
+    view = await ControlQueryService(ControlQueryAdapter(database)).read_memory_maintenance_run(
+        context("control.memory.metadata.read"), f"dream:{run.public_id}"
+    )
+    assert view.fields["plan_statistics"]["eligible_facts"] == 0
+    assert view.fields["revision"] == state_revision(run.updated_at)
+    assert view.fields["model_calls"] == 0
+    assert "statistics_json" not in view.fields and "created_by_user_id" not in view.fields
