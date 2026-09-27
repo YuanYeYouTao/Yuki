@@ -21,10 +21,8 @@ def upgrade() -> None:
     # Only a proven receipt/audit pair is migrated. QQ audit provenance is untouched.
     op.execute(
         sa.text("""UPDATE admin_operation_events SET
-        control_request_id = (SELECT request_id FROM control_command_receipts
-            WHERE audit_id = admin_operation_events.id),
-        actor_principal_id = (SELECT principal_id FROM control_command_receipts
-            WHERE audit_id = admin_operation_events.id),
+        control_request_id = trigger_message_id,
+        actor_principal_id = actor_user_id,
         actor_principal_kind = 'control', trigger_message_id = ''
         WHERE id IN (SELECT r.audit_id FROM control_command_receipts r
             WHERE r.audit_id IS NOT NULL AND r.principal_id = admin_operation_events.actor_user_id

@@ -30,7 +30,20 @@ def test_upgrade_keeps_receipts_and_accepts_only_complete_intents(tmp_path, monk
             "INSERT INTO control_command_receipts (principal_id, request_id, payload_hash, "
             "status, problem_code, audit_id, created_at, updated_at) VALUES (?, ?, ?, 'failed', "
             "'validation_error', 1, '2026-09-27', '2026-09-27')",
+            (str(uuid4()), str(uuid4()), "1" * 64),
+        )
+        db.execute(
+            "INSERT INTO control_command_receipts (principal_id, request_id, payload_hash, "
+            "status, problem_code, audit_id, created_at, updated_at) VALUES (?, ?, ?, 'failed', "
+            "'validation_error', 1, '2026-09-27', '2026-09-27')",
             (principal, request, "0" * 64),
+        )
+        db.execute(
+            "INSERT INTO admin_operation_events (id, actor_user_id, trigger_message_id, "
+            "conversation_key, capability, operation, target_type, target_id, before_json, "
+            "after_json, success, duration_seconds, created_at) VALUES (2, '9000', '1234567', "
+            "'group:test', 'runtime_config', 'set_override', 'config.global', 'reply.enabled', "
+            "'{}', '{}', 1, 0, '2026-09-27')",
         )
         previous = db.execute("SELECT * FROM control_command_receipts").fetchall()
     command.upgrade(config, "head")
@@ -41,6 +54,10 @@ def test_upgrade_keeps_receipts_and_accepts_only_complete_intents(tmp_path, monk
             "SELECT actor_principal_id, control_request_id, trigger_message_id "
             "FROM admin_operation_events WHERE id=1"
         ).fetchone() == (principal, request, "")
+        assert db.execute(
+            "SELECT actor_user_id, actor_principal_id, control_request_id, trigger_message_id "
+            "FROM admin_operation_events WHERE id=2"
+        ).fetchone() == ("9000", None, None, "1234567")
         for status, problem in (("running", None), ("unknown", "process_restart")):
             new_request = str(uuid4())
             db.execute(

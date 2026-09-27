@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -466,11 +468,23 @@ class RuntimeConfigService:
         self.registry = registry or ConfigRegistry()
         self._repository = repository or RuntimeConfigRepository(database)
         self._audit = audit or AdminAuditService(database)
-        self._mutation_lock = database.runtime_config_mutation_lock
         self._active_restart: dict[
             tuple[str, ConfigScopeType, str], RuntimeConfigOverrideRecord
         ] = {}
         self._initialized = False
+
+    @asynccontextmanager
+    async def _mutation_session(self, session: AsyncSession | None) -> AsyncIterator[AsyncSession]:
+        """Use the caller's writer or own one for the entire validate/write/audit cycle.
+
+        Supplied sessions belong to the Control Plane's short writer transaction.
+        A process lock here would invert its ordering against the SQLite writer.
+        """
+        if session is not None:
+            yield session
+        else:
+            async with self._database.immediate_session() as owned:
+                yield owned
 
     async def initialize(self) -> None:
         """Activate persisted restart-required overrides for this process."""
@@ -698,7 +712,7 @@ class RuntimeConfigService:
                 detail=str(exc),
             )
 
-        async with self._mutation_lock:
+        async with self._mutation_session(session) as session:
             try:
                 storage_scope_id, person_id, space_id = await self._bind_write_scope(
                     scope,
@@ -741,43 +755,7 @@ class RuntimeConfigService:
                     delete_override=False,
                     session=session,
                 )
-                row, audit = await self._repository.save_with_audit(
-                    spec=spec,
-                    value=converted,
-                    scope_type=scope,
-                    scope_id=storage_scope_id,
-                    actor=actor,
-                    before_state=(
-                        _override_state(before_override, public_scope_id=public_scope_id)
-                        if before_override is not None
-                        else _missing_override_state(spec.key, scope, public_scope_id)
-                    ),
-                    started=started,
-                    person_id=person_id,
-                    space_id=space_id,
-                    session=session,
-                )
-                pending_restart = (
-                    spec.apply_mode is ConfigApplyMode.RESTART_REQUIRED
-                    and converted != before_effective.value
-                )
-                return ConfigChangeResult(
-                    success=True,
-                    key=spec.key,
-                    scope_type=scope,
-                    scope_id=public_scope_id,
-                    before=before_effective.value,
-                    after=converted,
-                    apply_mode=spec.apply_mode,
-                    pending_restart=pending_restart,
-                    change_id=audit.id,
-                    version=row.version,
-                    detail=self._apply_detail(
-                        spec.apply_mode,
-                        pending_restart=pending_restart,
-                    ),
-                )
-            except (OSError, RuntimeError, ValueError) as exc:
+            except ValueError as exc:
                 category = self._error_category(exc)
                 await self._audit.record(
                     actor=actor,
@@ -801,6 +779,43 @@ class RuntimeConfigService:
                     error_category=category,
                     detail=str(exc),
                 )
+
+            row, audit = await self._repository.save_with_audit(
+                spec=spec,
+                value=converted,
+                scope_type=scope,
+                scope_id=storage_scope_id,
+                actor=actor,
+                before_state=(
+                    _override_state(before_override, public_scope_id=public_scope_id)
+                    if before_override is not None
+                    else _missing_override_state(spec.key, scope, public_scope_id)
+                ),
+                started=started,
+                person_id=person_id,
+                space_id=space_id,
+                session=session,
+            )
+            pending_restart = (
+                spec.apply_mode is ConfigApplyMode.RESTART_REQUIRED
+                and converted != before_effective.value
+            )
+            return ConfigChangeResult(
+                success=True,
+                key=spec.key,
+                scope_type=scope,
+                scope_id=public_scope_id,
+                before=before_effective.value,
+                after=converted,
+                apply_mode=spec.apply_mode,
+                pending_restart=pending_restart,
+                change_id=audit.id,
+                version=row.version,
+                detail=self._apply_detail(
+                    spec.apply_mode,
+                    pending_restart=pending_restart,
+                ),
+            )
 
     async def delete_override(
         self,
@@ -852,7 +867,7 @@ class RuntimeConfigService:
                 error_category=category,
                 detail=str(exc),
             )
-        async with self._mutation_lock:
+        async with self._mutation_session(session) as session:
             storage_scope_id, bound_person_id, bound_space_id = await self._bind_write_scope(
                 scope,
                 normalized_scope_id,
@@ -909,61 +924,7 @@ class RuntimeConfigService:
                     delete_override=True,
                     session=session,
                 )
-                audit = await self._repository.delete_with_audit(
-                    spec=spec,
-                    scope_type=scope,
-                    scope_id=before.scope_id,
-                    actor=actor,
-                    before=before,
-                    started=started,
-                    public_scope_id=public_scope_id,
-                    session=session,
-                )
-                remaining = await self._repository.list_relevant(
-                    user_id=normalized_scope_id if scope is ConfigScopeType.USER else None,
-                    group_id=normalized_scope_id if scope is ConfigScopeType.GROUP else None,
-                    session=session,
-                )
-                person_id, space_id = await self._owner_match(
-                    user_id=normalized_scope_id if scope is ConfigScopeType.USER else None,
-                    group_id=normalized_scope_id if scope is ConfigScopeType.GROUP else None,
-                    session=session,
-                )
-                after_effective = self._resolve(
-                    spec,
-                    remaining,
-                    user_id=normalized_scope_id if scope is ConfigScopeType.USER else None,
-                    group_id=normalized_scope_id if scope is ConfigScopeType.GROUP else None,
-                    honor_restart_activation=False,
-                    person_id=person_id,
-                    space_id=space_id,
-                )
-                active_effective = await self.get_effective(
-                    spec.key,
-                    user_id=normalized_scope_id if scope is ConfigScopeType.USER else None,
-                    group_id=normalized_scope_id if scope is ConfigScopeType.GROUP else None,
-                    session=session,
-                )
-                pending_restart = (
-                    spec.apply_mode is ConfigApplyMode.RESTART_REQUIRED
-                    and after_effective.value != active_effective.value
-                )
-                return ConfigChangeResult(
-                    True,
-                    spec.key,
-                    scope,
-                    public_scope_id,
-                    before=before.value,
-                    after=after_effective.value,
-                    apply_mode=spec.apply_mode,
-                    pending_restart=pending_restart,
-                    change_id=audit.id,
-                    detail=self._apply_detail(
-                        spec.apply_mode,
-                        pending_restart=pending_restart,
-                    ),
-                )
-            except (OSError, RuntimeError, ValueError) as exc:
+            except ValueError as exc:
                 category = self._error_category(exc)
                 await self._audit.record(
                     actor=actor,
@@ -986,6 +947,61 @@ class RuntimeConfigService:
                     error_category=category,
                     detail=str(exc),
                 )
+
+            audit = await self._repository.delete_with_audit(
+                spec=spec,
+                scope_type=scope,
+                scope_id=before.scope_id,
+                actor=actor,
+                before=before,
+                started=started,
+                public_scope_id=public_scope_id,
+                session=session,
+            )
+            remaining = await self._repository.list_relevant(
+                user_id=normalized_scope_id if scope is ConfigScopeType.USER else None,
+                group_id=normalized_scope_id if scope is ConfigScopeType.GROUP else None,
+                session=session,
+            )
+            person_id, space_id = await self._owner_match(
+                user_id=normalized_scope_id if scope is ConfigScopeType.USER else None,
+                group_id=normalized_scope_id if scope is ConfigScopeType.GROUP else None,
+                session=session,
+            )
+            after_effective = self._resolve(
+                spec,
+                remaining,
+                user_id=normalized_scope_id if scope is ConfigScopeType.USER else None,
+                group_id=normalized_scope_id if scope is ConfigScopeType.GROUP else None,
+                honor_restart_activation=False,
+                person_id=person_id,
+                space_id=space_id,
+            )
+            active_effective = await self.get_effective(
+                spec.key,
+                user_id=normalized_scope_id if scope is ConfigScopeType.USER else None,
+                group_id=normalized_scope_id if scope is ConfigScopeType.GROUP else None,
+                session=session,
+            )
+            pending_restart = (
+                spec.apply_mode is ConfigApplyMode.RESTART_REQUIRED
+                and after_effective.value != active_effective.value
+            )
+            return ConfigChangeResult(
+                True,
+                spec.key,
+                scope,
+                public_scope_id,
+                before=before.value,
+                after=after_effective.value,
+                apply_mode=spec.apply_mode,
+                pending_restart=pending_restart,
+                change_id=audit.id,
+                detail=self._apply_detail(
+                    spec.apply_mode,
+                    pending_restart=pending_restart,
+                ),
+            )
 
     async def history(
         self,
@@ -1099,7 +1115,7 @@ class RuntimeConfigService:
                 detail=str(exc),
             )
 
-        async with self._mutation_lock:
+        async with self._mutation_session(session) as session:
             storage_scope_id, person_id, space_id = await self._bind_write_scope(
                 scope,
                 scope_id,
@@ -1168,56 +1184,6 @@ class RuntimeConfigService:
                         delete_override=False,
                         session=session,
                     )
-                    prior_version = _state_value(before_state, "version")
-                    initial = (
-                        int(prior_version) + 1
-                        if isinstance(prior_version, int) and not isinstance(prior_version, bool)
-                        else 1
-                    )
-                    row, audit = await self._repository.save_with_audit(
-                        spec=spec,
-                        value=converted,
-                        scope_type=scope,
-                        scope_id=storage_scope_id,
-                        actor=actor,
-                        before_state=(
-                            _override_state(current, public_scope_id=public_scope_id)
-                            if current
-                            else _missing_override_state(spec.key, scope, public_scope_id)
-                        ),
-                        started=started,
-                        initial_version=initial,
-                        operation=f"rollback:{change_id}",
-                        person_id=person_id,
-                        space_id=space_id,
-                        session=session,
-                    )
-                    active_effective = await self.get_effective(
-                        spec.key,
-                        user_id=scope_id if scope is ConfigScopeType.USER else None,
-                        group_id=scope_id if scope is ConfigScopeType.GROUP else None,
-                        session=session,
-                    )
-                    pending_restart = (
-                        spec.apply_mode is ConfigApplyMode.RESTART_REQUIRED
-                        and converted != active_effective.value
-                    )
-                    return ConfigChangeResult(
-                        True,
-                        spec.key,
-                        scope,
-                        public_scope_id,
-                        before=current.value if current else None,
-                        after=converted,
-                        apply_mode=spec.apply_mode,
-                        pending_restart=pending_restart,
-                        change_id=audit.id,
-                        version=row.version,
-                        detail=self._apply_detail(
-                            spec.apply_mode,
-                            pending_restart=pending_restart,
-                        ),
-                    )
                 except ValueError as exc:
                     await self._audit.record(
                         actor=actor,
@@ -1245,6 +1211,57 @@ class RuntimeConfigService:
                         error_category="validation_error",
                         detail=str(exc),
                     )
+
+                prior_version = _state_value(before_state, "version")
+                initial = (
+                    int(prior_version) + 1
+                    if isinstance(prior_version, int) and not isinstance(prior_version, bool)
+                    else 1
+                )
+                row, audit = await self._repository.save_with_audit(
+                    spec=spec,
+                    value=converted,
+                    scope_type=scope,
+                    scope_id=storage_scope_id,
+                    actor=actor,
+                    before_state=(
+                        _override_state(current, public_scope_id=public_scope_id)
+                        if current
+                        else _missing_override_state(spec.key, scope, public_scope_id)
+                    ),
+                    started=started,
+                    initial_version=initial,
+                    operation=f"rollback:{change_id}",
+                    person_id=person_id,
+                    space_id=space_id,
+                    session=session,
+                )
+                active_effective = await self.get_effective(
+                    spec.key,
+                    user_id=scope_id if scope is ConfigScopeType.USER else None,
+                    group_id=scope_id if scope is ConfigScopeType.GROUP else None,
+                    session=session,
+                )
+                pending_restart = (
+                    spec.apply_mode is ConfigApplyMode.RESTART_REQUIRED
+                    and converted != active_effective.value
+                )
+                return ConfigChangeResult(
+                    True,
+                    spec.key,
+                    scope,
+                    public_scope_id,
+                    before=current.value if current else None,
+                    after=converted,
+                    apply_mode=spec.apply_mode,
+                    pending_restart=pending_restart,
+                    change_id=audit.id,
+                    version=row.version,
+                    detail=self._apply_detail(
+                        spec.apply_mode,
+                        pending_restart=pending_restart,
+                    ),
+                )
             if current is None:
                 await self._audit.record(
                     actor=actor,
@@ -2018,6 +2035,8 @@ class RuntimeConfigService:
                     created_at=datetime.now(UTC),
                     updated_at=datetime.now(UTC),
                     updated_by="validation",
+                    canonical_person_id=scope_id if scope_type is ConfigScopeType.USER else None,
+                    canonical_space_id=scope_id if scope_type is ConfigScopeType.GROUP else None,
                 )
             )
         user_ids = {row.scope_id for row in records if row.scope_type is ConfigScopeType.USER}
@@ -2037,8 +2056,10 @@ class RuntimeConfigService:
                     self._resolve(
                         min_spec,
                         tuple(records),
-                        user_id=user_id,
-                        group_id=group_id,
+                        user_id=None,
+                        group_id=None,
+                        person_id=user_id,
+                        space_id=group_id,
                     ).value,
                 )
             )
@@ -2048,8 +2069,10 @@ class RuntimeConfigService:
                     self._resolve(
                         max_spec,
                         tuple(records),
-                        user_id=user_id,
-                        group_id=group_id,
+                        user_id=None,
+                        group_id=None,
+                        person_id=user_id,
+                        space_id=group_id,
                     ).value,
                 )
             )
