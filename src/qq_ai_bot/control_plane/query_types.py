@@ -97,6 +97,8 @@ class QueryResourceKind(StrEnum):
     MEMORY_FACT = "memory_fact"
     MEMORY_JOB = "memory_job"
     AUTOMATION = "automation"
+    AUTOMATION_RUN = "automation_run"
+    AUTOMATION_STEP = "automation_step"
     PLUGIN = "plugin"
     PLUGIN_OUTBOX = "plugin_outbox"
     MCP = "mcp"

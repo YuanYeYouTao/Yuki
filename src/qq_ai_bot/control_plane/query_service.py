@@ -200,6 +200,27 @@ class ControlQueryService:
         _require_capability(authorized, method_capability("read_automation"))
         return await self._port.read_automation(automation_id)
 
+    async def list_automation_runs(
+        self, context: object, request: PageRequest, *, automation_id: int
+    ) -> Page[ActivityView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("list_automation_runs"))
+        return await self._port.list_automation_runs(request, automation_id=automation_id)
+
+    async def list_automation_steps(
+        self,
+        context: object,
+        request: PageRequest,
+        *,
+        automation_id: int,
+        run_id: int | None = None,
+    ) -> Page[ActivityView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("list_automation_steps"))
+        return await self._port.list_automation_steps(
+            request, automation_id=automation_id, run_id=run_id
+        )
+
     async def list_model_usage(self, context: object, request: PageRequest) -> Page[ActivityView]:
         authorized = _require_context(context)
         _require_capability(authorized, method_capability("list_model_usage"))

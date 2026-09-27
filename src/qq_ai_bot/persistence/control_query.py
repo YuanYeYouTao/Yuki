@@ -605,6 +605,9 @@ class ControlQueryAdapter:
         from qq_ai_bot.persistence.control_work_query import ControlWorkQueryAdapter
 
         self._work_details = ControlWorkQueryAdapter(self._reader)
+        from qq_ai_bot.persistence.control_automation_query import ControlAutomationQueryAdapter
+
+        self._automation_details = ControlAutomationQueryAdapter(self._reader)
         self._settings = settings
         self._model_catalog = model_catalog
         self._config = runtime_config
@@ -700,7 +703,21 @@ class ControlQueryAdapter:
         return await self._activity.list_work(request, include_content=include_content)
 
     async def read_automation(self, automation_id: int) -> ActivityView:
-        return await self._activity.read_automation(automation_id)
+        return await self._automation_details.read_automation(automation_id)
+
+    async def list_automation_runs(
+        self, request: PageRequest, *, automation_id: int
+    ) -> Page[ActivityView]:
+        return await self._automation_details.list_automation_runs(
+            request, automation_id=automation_id
+        )
+
+    async def list_automation_steps(
+        self, request: PageRequest, *, automation_id: int, run_id: int | None = None
+    ) -> Page[ActivityView]:
+        return await self._automation_details.list_automation_steps(
+            request, automation_id=automation_id, run_id=run_id
+        )
 
     async def list_model_usage(self, request: PageRequest) -> Page[ActivityView]:
         return await self._activity.list_model_usage(request)

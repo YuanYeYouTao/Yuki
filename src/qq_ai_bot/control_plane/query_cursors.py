@@ -36,6 +36,8 @@ CANONICAL_RESOURCE_KINDS: Final[frozenset[QueryResourceKind]] = frozenset(
         QueryResourceKind.MEMORY_FACT,
         QueryResourceKind.MEMORY_JOB,
         QueryResourceKind.AUTOMATION,
+        QueryResourceKind.AUTOMATION_RUN,
+        QueryResourceKind.AUTOMATION_STEP,
         QueryResourceKind.PLUGIN,
         QueryResourceKind.PLUGIN_OUTBOX,
         QueryResourceKind.MCP,

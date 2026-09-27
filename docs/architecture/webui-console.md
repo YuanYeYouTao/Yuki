@@ -62,7 +62,7 @@ UTF-8；完整下载最多 32 MiB，校验原摘要。大文件与不存在/过�
 | 手帐/聊天 | 会话、接收/发送账本、附件、事件到执行轨迹、当前人格 |
 | 运行状态 | 现有 System/Health；未知健康状态保留 null，不调用模型探测 |
 | 模型/用量 | 已加载 Profile/Route、磁盘配置表单与原子保存；实际调用、tokens/缓存/耗时/错误。元数据不显示地址/环境变量引用，文件正文单独授权；密钥与请求头始终不显示 |
-| Work/自动化 | 原 Work 预算、等待、子工作、输入、效果/投递意图、检查点与恢复元数据、轨迹；自动化脚本、最近 20 run/200 step；创建、编辑、暂停/恢复、取消、run_now |
+| Work/自动化 | 原 Work 预算、等待、子工作、输入、效果/投递意图、检查点与恢复元数据、轨迹；自动化脚本、执行与步骤历史分页；创建、编辑、暂停/恢复、取消、run_now |
 | 自主参与 | 当前只读控制器状态与已接纳轮次/最新反馈；不 tick、不重算、不调用 Jev |
 | Memory | fact、证据、维护工作、确认/隔离、既有 rebuild/dream/maintain 入口 |
 | 插件/MCP | 原 schema 配置、GitHub queue/cursor/诊断、通知 outbox；Manager 批准/启停/doctor、MCP refresh/reconnect |
@@ -138,6 +138,17 @@ transport target 或子任务 brief/result。等待条件只返回审核字段�
 树内未决效果/未知投递、失效 generation、缺失必要 journal 拒绝续跑。
 自动化 Work 仍归原 run/step worker，不通过此入口建立独立恢复链。
 
+## 自动化执行历史
+
+`read_automation` 返回原定义与版本；删除原固定 20 run/200 step 快照。
+`list_automation_runs` 与 `list_automation_steps` 按原内部记录 ID 分页，游标绑定
+自动化及所选执行；步骤查询核验执行属于该自动化，不按平台目标重新推断归属。
+页面可选择一次执行查看步骤，也可浏览全部步骤。
+
+历史元数据独立使用 `control.automation.read`，不需要脚本正文权限。
+SQL 只读取状态、时间、能力、计数和错误类别，不加载 authority snapshot、私有
+输入/输出摘要或结果正文。查询不重跑、补发或调用模型；执行内容沿原授权诊断查看。
+
 ## 插件配置与只读状态
 
 `read_plugin_configuration` / `configure_plugin` 使用 Manager 已批准并注册的原 Pydantic
@@ -180,6 +191,7 @@ accepted/committed cursor、轮询/成功时间、暂停、失败、限流、pen
 - Jev 完整决策历史、参与参数编辑与关系/自省统计；当前未持久化的数据不能伪造为历史。
 - 插件 background turn 的完整历史分页，以及插件领域明确定义的队列维护动作；不提供任意 KV 编辑或无证据重发。
 - Memory 主体/证据筛选与关系详情、完整 schema 表单。
+- 自动化脚本及维护动作的完整 schema 表单；当前 JSON 编辑保留原完整校验。
 - 工作区上传/编辑/删除/终端，与对应文件审批、版本与持久环境合同。
 
 新增这些能力时补齐公共 Query/Command 合同，禁止页面绕过服务直接写 ORM、
@@ -201,6 +213,7 @@ cd ..
 uv sync --frozen --extra dev
 uv run pytest tests/unit/test_webui_http.py tests/unit/test_webui_activity.py \
   tests/unit/test_control_config_files.py tests/unit/test_control_work_details.py \
+  tests/unit/test_control_automation_history.py \
   tests/unit/test_control_plugin_configuration.py plugins/github-monitor/tests
 ```
 

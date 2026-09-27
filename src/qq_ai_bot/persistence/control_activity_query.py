@@ -31,7 +31,6 @@ from qq_ai_bot.conversation.media_service import ConversationMediaError, Convers
 from qq_ai_bot.domain.identity import ConversationId
 from qq_ai_bot.model_runtime.db_models import ModelInvocationModel
 from qq_ai_bot.persistence.control_execution_query import _key, _page
-from qq_ai_bot.persistence.models import AutomationModel, AutomationRunModel, AutomationStepRunModel
 from qq_ai_bot.persistence.unit_of_work import state_revision
 from qq_ai_bot.plugin_host.db_models import PluginNotificationOutboxModel
 from qq_ai_bot.runtime.work_schema_v1 import work
@@ -351,84 +350,6 @@ class ControlActivityQueryAdapter:
                 QueryResourceKind.WORK,
                 "work",
                 selected[-1]["id"] if selected else None,
-            )
-
-    async def read_automation(self, automation_id: int) -> ActivityView:
-        if type(automation_id) is not int or not 1 <= automation_id <= 2**63 - 1:
-            raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
-        async with self._reader() as session:
-            row = await session.get(AutomationModel, automation_id)
-            if row is None:
-                raise ControlQueryError(Problem(ProblemCode.NOT_FOUND))
-            runs = list(
-                await session.scalars(
-                    select(AutomationRunModel)
-                    .where(AutomationRunModel.automation_id == automation_id)
-                    .order_by(AutomationRunModel.id.desc())
-                    .limit(20)
-                )
-            )
-            steps = (
-                list(
-                    await session.scalars(
-                        select(AutomationStepRunModel)
-                        .where(AutomationStepRunModel.run_id.in_([item.id for item in runs]))
-                        .order_by(AutomationStepRunModel.id.desc())
-                        .limit(200)
-                    )
-                )
-                if runs
-                else []
-            )
-            # Do not expose authority snapshots, transport IDs or raw result payloads.
-            return ActivityView(
-                str(row.id),
-                {
-                    "name": row.name,
-                    "revision": state_revision(row.updated_at),
-                    "status": row.status,
-                    "creator_kind": row.creator_kind,
-                    "creator_person_id": row.canonical_creator_person_id,
-                    "target_person_id": row.canonical_target_person_id,
-                    "target_space_id": row.canonical_target_space_id,
-                    "timezone": row.timezone,
-                    "schedule": json.loads(row.schedule_json),
-                    "script": json.loads(row.script_json),
-                    "script_hash": row.script_hash,
-                    "next_run_at": _stamp(row.next_run_at),
-                    "last_run_at": _stamp(row.last_run_at),
-                    "run_count": row.run_count,
-                    "consecutive_failures": row.consecutive_failures,
-                    "runs": [
-                        {
-                            "id": item.id,
-                            "status": item.status,
-                            "scheduled_for": _stamp(item.scheduled_for),
-                            "started_at": _stamp(item.actual_started_at),
-                            "finished_at": _stamp(item.finished_at),
-                            "model_calls": item.llm_calls,
-                            "tool_calls": item.tool_calls,
-                            "sent_messages": item.messages_sent,
-                            "error_category": item.error_category,
-                        }
-                        for item in runs
-                    ],
-                    "steps": [
-                        {
-                            "id": item.id,
-                            "run_id": item.run_id,
-                            "step_id": item.step_id,
-                            "capability": item.capability,
-                            "status": item.status,
-                            "started_at": _stamp(item.started_at),
-                            "finished_at": _stamp(item.finished_at),
-                            "error_category": item.error_category,
-                        }
-                        for item in steps
-                    ],
-                    "runs_limit": 20,
-                    "steps_limit": 200,
-                },
             )
 
     async def list_model_usage(self, request: PageRequest) -> Page[ActivityView]:

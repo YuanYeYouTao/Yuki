@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { AutomationHistory } from "./automation-history";
 import type { Row } from "./api";
 import type { PageProps } from "./pages";
 import { useQuery } from "./hooks";
@@ -11,7 +12,6 @@ import {
   JsonNote,
   QueryList,
   Section,
-  Table,
 } from "./components";
 const flatten = (row: Row): Row => ({ ...row, ...((row.fields as Row) || {}) });
 const status = (value: unknown) => <Badge value={value} />;
@@ -345,7 +345,10 @@ export function Work({ allowed, act, refresh, conversation }: PageProps) {
             <>
               <button
                 className="btn-secondary"
-                disabled={!allowed("read_automation")}
+                disabled={
+                  !allowed("read_automation") &&
+                  !allowed("list_automation_runs")
+                }
                 onClick={() => setId(Number(row.automation_id))}
               >
                 详情
@@ -420,32 +423,14 @@ export function Work({ allowed, act, refresh, conversation }: PageProps) {
               >
                 编辑脚本
               </button>
-              <h3>最近执行（最多 20 次）</h3>
-              <Table
-                rows={fields.runs as Row[]}
-                columns={[
-                  ["id", "执行 ID"],
-                  ["status", "状态", status],
-                  ["scheduled_for", "计划时间", stamp],
-                  ["model_calls", "模型调用"],
-                  ["tool_calls", "工具调用"],
-                  ["sent_messages", "消息"],
-                  ["error_category", "原因"],
-                ]}
-              />
-              <h3>执行步骤（最多 200 项）</h3>
-              <Table
-                rows={fields.steps as Row[]}
-                columns={[
-                  ["run_id", "执行 ID"],
-                  ["step_id", "步骤"],
-                  ["capability", "能力"],
-                  ["status", "状态", status],
-                  ["error_category", "原因"],
-                ]}
-              />
             </>
           )}
+          <AutomationHistory
+            key={id}
+            automationId={id}
+            allowed={allowed}
+            refresh={refresh}
+          />
         </Section>
       )}
     </>

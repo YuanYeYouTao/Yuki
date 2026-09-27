@@ -55,6 +55,8 @@ _SIMPLE_QUERIES = frozenset(name for kind, name, _ in _METHODS if kind == "query
     "read_plugin_observation",
     "list_plugin_outbox",
     "read_automation",
+    "list_automation_runs",
+    "list_automation_steps",
     "read_workspace",
     "list_work",
     "download_workspace",
@@ -333,6 +335,16 @@ def attach_webui(
             if set(data) != {key}:
                 raise ValueError("invalid activity lookup")
             result = await getattr(queries, method)(ctx, data[key])
+        elif method in {"list_automation_runs", "list_automation_steps"}:
+            keys = {"page", "automation_id"} | (
+                {"run_id"} if method == "list_automation_steps" else set()
+            )
+            if set(data) - keys or "automation_id" not in data:
+                raise ValueError("invalid automation history")
+            args = {"automation_id": data["automation_id"]}
+            if method == "list_automation_steps":
+                args["run_id"] = data.get("run_id")
+            result = await getattr(queries, method)(ctx, page, **args)
         elif method == "list_plugin_outbox":
             if set(data) - {"plugin_id", "page"} or "plugin_id" not in data:
                 raise ValueError("invalid plugin outbox scope")

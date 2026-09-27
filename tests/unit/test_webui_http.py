@@ -7,6 +7,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from tests.conftest import make_settings
+from tests.unit import test_control_automation_history as automation_fixtures
 from tests.unit import test_control_work_details as work_fixtures
 from tests.unit.test_control_operator_access import operator_file
 
@@ -27,6 +28,7 @@ from qq_ai_bot.workspace.store import WorkspaceStore
 ORIGIN = "http://127.0.0.1:18765"
 SECRET = "webui-fixture-" + "a" * 48
 detailed_work = work_fixtures.detailed_work
+histories = automation_fixtures.histories
 
 
 @pytest.fixture
@@ -44,6 +46,7 @@ async def web(database, tmp_path, monkeypatch):
             "control.chat.metadata.read",
             "control.execution.metadata.read",
             "control.work.mutate",
+            "control.automation.read",
         ),
     )
     settings = make_settings(
@@ -134,6 +137,33 @@ async def test_work_history_and_mutation_use_original_command_receipt(web, detai
         headers=headers,
     )
     assert response.status_code == 400
+
+
+async def test_automation_history_http_does_not_require_script_content(web, histories):
+    client, _, _ = web
+    owner, _other, run, foreign = histories
+    headers = await signed_in(client)
+    for method, args in (
+        ("list_automation_runs", {"automation_id": owner}),
+        ("list_automation_steps", {"automation_id": owner, "run_id": run}),
+    ):
+        response = await client.post(
+            f"/api/control/queries/{method}", json={**args, "page": {"limit": 10}}, headers=headers
+        )
+        assert response.status_code == 200
+        assert (
+            len(response.json()["data"]["items"]) == 10 and response.json()["data"]["next_cursor"]
+        )
+    response = await client.post(
+        "/api/control/queries/list_automation_steps",
+        json={"automation_id": owner, "run_id": foreign},
+        headers=headers,
+    )
+    assert response.status_code == 404
+    response = await client.post(
+        "/api/control/queries/read_automation", json={"automation_id": owner}, headers=headers
+    )
+    assert response.status_code == 403
 
 
 @pytest.mark.asyncio
