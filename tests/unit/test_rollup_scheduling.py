@@ -184,7 +184,9 @@ async def test_started_maintenance_survives_chat_but_yields_to_exclusive(exclusi
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("expires", [False, True])
-async def test_required_rollup_joins_existing_claim_and_has_bounded_fallback(database, expires):
+async def test_required_rollup_joins_existing_claim_and_has_bounded_fallback(
+    database, expires, monkeypatch
+):
     from qq_ai_bot.conversation.rollup.repository import ConversationRollupRepository
     from qq_ai_bot.conversation.rollup.worker import ConversationRollupWorker
     from qq_ai_bot.domain.conversations import ConversationScope
@@ -221,6 +223,18 @@ async def test_required_rollup_joins_existing_claim_and_has_bounded_fallback(dat
     await worker.start()
     try:
         await asyncio.wait_for(started.wait(), 2)
+        # Hold the worker until the required caller has captured the initial
+        # coverage. Merely creating its task does not guarantee it has started.
+        initial_read = asyncio.Event()
+        original_status = repository.status
+
+        async def observed_status(*args, **kwargs):
+            result = await original_status(*args, **kwargs)
+            if asyncio.current_task() is required:
+                initial_read.set()
+            return result
+
+        monkeypatch.setattr(repository, "status", observed_status)
         required = asyncio.create_task(
             service.ensure_required_coverage(
                 repository=repository,
@@ -230,6 +244,7 @@ async def test_required_rollup_joins_existing_claim_and_has_bounded_fallback(dat
                 deadline=asyncio.get_running_loop().time() + (0.05 if expires else 1),
             )
         )
+        await asyncio.wait_for(initial_read.wait(), 2)
         if not expires:
             finish.set()
         assert await asyncio.wait_for(required, 2) == 1
