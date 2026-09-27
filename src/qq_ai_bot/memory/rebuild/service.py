@@ -62,7 +62,6 @@ async def prepare_rebuild_core(
     settings: Settings,
     ledger: EventLedgerRepository,
     selection: MemoryRebuildSelection,
-    model_name: str | None = None,
 ) -> PreparedRebuildPlan:
     if not settings.memory_rebuild_enabled:
         raise RuntimeError("MEMORY_REBUILD_ENABLED is false")
@@ -93,9 +92,7 @@ async def plan_rebuild_core(
     if prepared is None:
         if session is not None:
             raise ValueError("rebuild plan must be prepared before opening a writer")
-        prepared = await prepare_rebuild_core(
-            settings=settings, ledger=ledger, selection=selection, model_name=model_name
-        )
+        prepared = await prepare_rebuild_core(settings=settings, ledger=ledger, selection=selection)
     selection_json = canonical_json(selection)
     return await repository.create_run(
         selection=selection,

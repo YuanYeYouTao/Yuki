@@ -562,8 +562,6 @@ class ControlCommandAdapter:
             parse_problem=parse_problem,
             target_problem=None,
             mutate=lambda session: self._run_management(
-                session,
-                command,
                 CommandOperation.CONFIG_SET.value,
                 lambda: self._management.set_config(
                     session, principal, command, _require_parsed(parsed)
@@ -590,8 +588,6 @@ class ControlCommandAdapter:
             parse_problem=parse_problem,
             target_problem=None,
             mutate=lambda session: self._run_management(
-                session,
-                command,
                 CommandOperation.CONFIG_UNSET.value,
                 lambda: self._management.unset_config(
                     session, principal, command, _require_parsed(parsed)
@@ -616,8 +612,6 @@ class ControlCommandAdapter:
             parse_problem=parse_problem,
             target_problem=None,
             mutate=lambda session: self._run_management(
-                session,
-                command,
                 CommandOperation.CONFIG_ROLLBACK.value,
                 lambda: self._management.rollback_config(
                     session, principal, command, _require_parsed(parsed)
@@ -840,8 +834,6 @@ class ControlCommandAdapter:
             parse_problem=parse_problem,
             target_problem=None,
             mutate=lambda session: self._run_management(
-                session,
-                command,
                 operation,
                 lambda: _require_parsed(invoke)(
                     session,
@@ -855,13 +847,9 @@ class ControlCommandAdapter:
 
     async def _run_management(
         self,
-        session: AsyncSession,
-        command: ControlCommand,
         operation: str,
         invoke: Callable[[], Awaitable[ManagementMutation]],
     ) -> _Success:
-        if command is None:
-            raise _fail(ProblemCode.VALIDATION_ERROR)
         try:
             mutation = await invoke()
         except ManagementUnavailable as exc:

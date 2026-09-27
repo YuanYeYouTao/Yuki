@@ -471,7 +471,6 @@ class RuntimeConfigService:
         self._active_restart: dict[
             tuple[str, ConfigScopeType, str], RuntimeConfigOverrideRecord
         ] = {}
-        self._initialized = False
 
     @asynccontextmanager
     async def _mutation_session(self, session: AsyncSession | None) -> AsyncIterator[AsyncSession]:
@@ -495,7 +494,6 @@ class RuntimeConfigService:
             for row in records
             if row.apply_mode is ConfigApplyMode.RESTART_REQUIRED and self._valid_stored_record(row)
         }
-        self._initialized = True
 
     async def startup_settings_updates(self) -> dict[str, object]:
         """Map activated global restart overrides back to long-lived Settings fields."""
@@ -684,7 +682,6 @@ class RuntimeConfigService:
                 spec,
                 scope_type,
                 scope_id,
-                actor,
             )
             converted = self.registry.convert(spec, value)
         except (KeyError, PermissionError, ValueError) as exc:
@@ -843,7 +840,6 @@ class RuntimeConfigService:
                 spec,
                 scope_type,
                 scope_id,
-                actor,
             )
         except (KeyError, PermissionError, ValueError) as exc:
             category = self._error_category(exc)
@@ -1090,7 +1086,7 @@ class RuntimeConfigService:
             spec = self.registry.get(key)
             scope = ConfigScopeType(str(_state_value(before_state, "scope_type")))
             scope_id = str(_state_value(before_state, "scope_id") or "")
-            self._validate_write(spec, scope.value, scope_id, actor)
+            self._validate_write(spec, scope.value, scope_id)
         except (KeyError, PermissionError, ValueError) as exc:
             category = self._error_category(exc)
             await self._audit.record(
@@ -1961,7 +1957,6 @@ class RuntimeConfigService:
         spec: ConfigSpec,
         scope_type: str,
         scope_id: str,
-        actor: AuditSubject,
     ) -> tuple[ConfigScopeType, str]:
         if not spec.mutable:
             if spec.apply_mode is ConfigApplyMode.SECRET:
