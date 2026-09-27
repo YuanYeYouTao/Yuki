@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities.catalog import UnifiedToolCatalog, UnifiedToolCatalogEntry
 from qq_ai_bot.capabilities.models import (
-    CapabilityDescriptor,
     CapabilityEffect,
     CapabilityExposure,
     CapabilityTrustSource,
@@ -17,10 +16,7 @@ from qq_ai_bot.capabilities.search_index import CapabilitySearchHit
 from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.runtime.contracts import CapabilityExposureSnapshot, MemoryCapabilityView
 
-RESIDENT_KERNEL_TOOLS = frozenset({REQUEST_TOOLS_NAME})
 CONDITIONAL_KERNEL_TOOLS = frozenset({"get_my_capabilities", "read_tool_artifact"})
-DEFAULT_LEXICAL_CANDIDATE_LIMIT = 10
-DEFAULT_NON_RESIDENT_LIMIT = 8
 DEFAULT_FIRST_ROUND_HARD_CAP = 16
 SCHEMA_REVISION_CONFLICT = "capability_schema_revision_conflict"
 NO_LONGER_AUTHORIZED = "capability_no_longer_authorized"
@@ -131,15 +127,11 @@ class AuthorityFirstExposurePlanner:
     def __init__(
         self,
         *,
-        lexical_candidate_limit: int = DEFAULT_LEXICAL_CANDIDATE_LIMIT,
-        non_resident_limit: int = DEFAULT_NON_RESIDENT_LIMIT,
         first_round_hard_cap: int = DEFAULT_FIRST_ROUND_HARD_CAP,
         schema_token_budget: int | None = None,
         mcp_schema_token_budget: int | None = None,
         mcp_tool_limit: int | None = None,
     ) -> None:
-        self._lexical_limit = lexical_candidate_limit
-        self._non_resident_limit = non_resident_limit
         self._hard_cap = first_round_hard_cap
         self._schema_token_budget = schema_token_budget
         self._mcp_schema_token_budget = mcp_schema_token_budget
@@ -177,9 +169,9 @@ class AuthorityFirstExposurePlanner:
                 if entry.descriptor.namespace_id in eager:
                     add(entry)
 
-        # First-round schemas are part of the DeepSeek prefix from token 0.
-        # Do not vary them with the current message, permission phrasing, or
-        # lexical hits; request_tools remains the growth path.
+        # Local exposure ignores message text and lexical hits. The Main Agent
+        # declaration is frozen separately by MainAgentContract; request_tools
+        # only searches that declared catalog.
         del query, hits
         for name in CONDITIONAL_KERNEL_TOOLS:
             candidate = by_id.get(name)
@@ -211,18 +203,17 @@ class AuthorityFirstExposurePlanner:
             selected_ids=selected_ids,
             catalog=catalog,
             requestable_ids=requestable_ids,
-            hard_cap=self._bundle_hard_cap(kernel_tools, growth=False),
+            hard_cap=self._bundle_hard_cap(kernel_tools),
             schema_token_budget=self._schema_token_budget,
             mcp_schema_token_budget=self._mcp_schema_token_budget,
             mcp_tool_limit=self._mcp_tool_limit,
-            drop_on_reject=True,
         )
         if rejected:
             reason = f"{BUNDLE_EXCEEDS_BUDGET}:{','.join(rejected)}"
 
         selected = _clip_budget(
             selected,
-            hard_cap=self._bundle_hard_cap(kernel_tools, growth=False),
+            hard_cap=self._bundle_hard_cap(kernel_tools),
             schema_token_budget=self._schema_token_budget,
             preserve_ids={
                 entry.descriptor.model_name for entry in selected if entry.descriptor.bundle_scopes
@@ -258,73 +249,8 @@ class AuthorityFirstExposurePlanner:
             reason=reason,
         )
 
-    def plan_growth(
-        self,
-        *,
-        current_ids: frozenset[str],
-        catalog: UnifiedToolCatalog,
-        requestable_ids: frozenset[str],
-        hits: tuple[CapabilitySearchHit, ...],
-        limit: int,
-        memory_view: MemoryCapabilityView | None,
-        kernel_tools: tuple[ChatTool, ...],
-    ) -> ExposurePlan:
-        by_id = {entry.descriptor.model_name: entry for entry in catalog.entries}
-        added: list[UnifiedToolCatalogEntry] = []
-        for hit in hits:
-            if len(added) >= limit:
-                break
-            if hit.capability_id in current_ids or hit.capability_id not in requestable_ids:
-                continue
-            entry = by_id.get(hit.capability_id)
-            if entry is None:
-                continue
-            if _is_synthetic(entry):
-                continue
-            added.append(entry)
-        kept = [by_id[name] for name in current_ids if name in by_id]
-        seed = list(kept)
-        seed_ids = {entry.descriptor.model_name for entry in seed}
-        for entry in added:
-            if entry.descriptor.model_name in seed_ids:
-                continue
-            seed.append(entry)
-            seed_ids.add(entry.descriptor.model_name)
-        selected, _selected_ids, rejected = _expand_selected_bundles(
-            seed,
-            selected_ids=seed_ids,
-            catalog=catalog,
-            requestable_ids=requestable_ids,
-            hard_cap=self._bundle_hard_cap(kernel_tools, growth=True),
-            schema_token_budget=self._schema_token_budget,
-            mcp_schema_token_budget=self._mcp_schema_token_budget,
-            mcp_tool_limit=self._mcp_tool_limit,
-            drop_on_reject=False,
-        )
-        reason = "request_tools"
-        if rejected:
-            reason = f"{BUNDLE_EXCEEDS_BUDGET}:{','.join(rejected)}"
-        loaded_count = sum(
-            1 for entry in selected if entry.descriptor.model_name not in current_ids
-        )
-        callable_ids = frozenset(item.descriptor.model_name for item in selected) | frozenset(
-            tool.name for tool in kernel_tools
-        )
-        if memory_view is not None and memory_view.exclusive_namespace:
-            callable_ids = _restrict_exclusive_write(selected, kernel_tools, memory_view)
-        return ExposurePlan(
-            entries=tuple(selected),
-            kernel_tools=kernel_tools,
-            callable_ids=callable_ids,
-            omitted_count=max(0, len(hits) - loaded_count),
-            reason=reason,
-        )
-
-    def _bundle_hard_cap(self, kernel_tools: tuple[ChatTool, ...], *, growth: bool) -> int:
-        first_round = max(0, self._hard_cap - len(kernel_tools))
-        if not growth or self._mcp_tool_limit is None:
-            return first_round
-        return max(first_round, self._mcp_tool_limit)
+    def _bundle_hard_cap(self, kernel_tools: tuple[ChatTool, ...]) -> int:
+        return max(0, self._hard_cap - len(kernel_tools))
 
 
 def _is_synthetic(entry: UnifiedToolCatalogEntry) -> bool:
@@ -360,7 +286,6 @@ def _expand_selected_bundles(
     schema_token_budget: int | None,
     mcp_schema_token_budget: int | None,
     mcp_tool_limit: int | None,
-    drop_on_reject: bool,
 ) -> tuple[list[UnifiedToolCatalogEntry], set[str], tuple[str, ...]]:
     """Load every required member of a selected bundle, or refuse that bundle."""
 
@@ -397,9 +322,8 @@ def _expand_selected_bundles(
             mcp_tool_limit=mcp_tool_limit,
         ):
             rejected.append(scope)
-            if drop_on_reject:
-                kept = [entry for entry in kept if scope not in entry.descriptor.bundle_scopes]
-                kept_ids = {entry.descriptor.model_name for entry in kept}
+            kept = [entry for entry in kept if scope not in entry.descriptor.bundle_scopes]
+            kept_ids = {entry.descriptor.model_name for entry in kept}
             continue
         kept = trial
         kept_ids = {entry.descriptor.model_name for entry in kept}
@@ -516,22 +440,3 @@ def _restrict_exclusive_write(
         if entry.descriptor.model_name in CONDITIONAL_KERNEL_TOOLS:
             allowed.add(entry.descriptor.model_name)
     return frozenset(allowed)
-
-
-def is_memory_write_entry(entry: UnifiedToolCatalogEntry) -> bool:
-    return entry.descriptor.namespace_id == "memory.state.write" or (
-        entry.descriptor.model_name == "memory_change"
-        and entry.descriptor.effect is CapabilityEffect.WRITE_STATE
-    )
-
-
-def descriptor_is_business_write(descriptor: CapabilityDescriptor) -> bool:
-    return (
-        descriptor.effect
-        in {
-            CapabilityEffect.WRITE_STATE,
-            CapabilityEffect.PLATFORM_MUTATE,
-            CapabilityEffect.PLATFORM_SEND,
-        }
-        and descriptor.namespace_id != "memory.state.write"
-    )

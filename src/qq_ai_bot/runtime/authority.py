@@ -1,4 +1,4 @@
-"""Trusted per-turn authority, scene facts and taint state.
+"""Trusted per-turn authority and scene facts.
 
 ``TurnAuthority`` is built exclusively by host factories from trusted inputs
 (settings, coordinator, ledger).  Model output must never flow into any field
@@ -194,39 +194,3 @@ class TurnSceneFacts:
             raise InvalidTurnContextError("group scene requires a group id")
         if self.scope_type is ScopeType.PRIVATE and self.group_id is not None:
             raise InvalidTurnContextError("private scene must not carry a group id")
-
-
-class TurnTaintState:
-    """Monotonic taint flags for one turn.
-
-    Flags can only be raised, never cleared: once external data entered the
-    model context, or a durable mutation committed, the rest of the turn must
-    behave accordingly.
-    """
-
-    __slots__ = ("_external_data_consumed", "_mutation_committed")
-
-    def __init__(self) -> None:
-        self._external_data_consumed = False
-        self._mutation_committed = False
-
-    @property
-    def external_data_consumed(self) -> bool:
-        return self._external_data_consumed
-
-    @property
-    def mutation_committed(self) -> bool:
-        return self._mutation_committed
-
-    def mark_external_data_consumed(self) -> None:
-        self._external_data_consumed = True
-
-    def mark_mutation_committed(self) -> None:
-        self._mutation_committed = True
-
-    def __repr__(self) -> str:
-        return (
-            "TurnTaintState("
-            f"external_data_consumed={self._external_data_consumed}, "
-            f"mutation_committed={self._mutation_committed})"
-        )

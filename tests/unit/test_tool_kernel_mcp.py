@@ -591,7 +591,7 @@ class _BusinessFailureConnection(FakeMCPConnection):
 
 
 @pytest.mark.asyncio
-async def test_lazy_mcp_discovery_same_name_is_collision_free_and_calls_fake_transports(
+async def test_mcp_manifest_discovery_same_name_is_collision_free_and_calls_fake_transports(
     database: Database,
     tmp_path: Path,
 ) -> None:
@@ -639,10 +639,7 @@ async def test_lazy_mcp_discovery_same_name_is_collision_free_and_calls_fake_tra
     assert synthetic["mcp__music__discover"].provider_metadata == {"synthetic": True}
     assert synthetic["mcp__mcd__discover"].provider_metadata == {"synthetic": True}
     assert synthetic["mcp__music__discover"].namespace_id == "mcp.music"
-    await provider.prepare_scopes((), SimpleNamespace(runtime_config=None))
-    assert not any(connection.connected for connection in connections.values())
-    await provider.ensure_server_metadata("music", SimpleNamespace(runtime_config=None))
-    await manager.ensure_metadata("mcd")
+    await provider.prepare_manifest(SimpleNamespace(runtime_config=None))
     descriptors = provider.descriptors(SimpleNamespace(runtime_config=None))
     names = [item.model_name for item in descriptors]
     assert "mcp__music__search" in names

@@ -723,11 +723,11 @@ async def test_creation_replay_and_run_budget_are_atomic(database, tmp_path):
     created, _ = await service.create_task(
         task, actor=ToolActor.from_inbound(_inbound()), conversation_key="private:10001"
     )
-    same = await service.find_equivalent_task(
+    same = await service.find_equivalent_directory_entries(
         {**task, "name": "另一个名字"}, actor=ToolActor.from_inbound(_inbound())
     )
-    assert [row.id for row in same] == [created.id]
-    assert not await service.find_equivalent_task(
+    assert [entry.record.id for entry in same] == [created.id]
+    assert not await service.find_equivalent_directory_entries(
         {**task, "goal": "吃饭"}, actor=ToolActor.from_inbound(_inbound())
     )
 

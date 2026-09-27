@@ -482,21 +482,6 @@ class AutomationCapabilityHandlers:
             }
         )
 
-    async def _generation_messages(
-        self,
-        arguments: dict[str, Any],
-        context: CapabilityExecutionContext,
-        *,
-        runtime_config: RuntimeConfigSnapshot | None = None,
-    ) -> tuple[ChatMessage, ...]:
-        return (
-            await self._generation_composition(
-                arguments,
-                context,
-                runtime_config=runtime_config,
-            )
-        ).messages
-
     async def _generation_composition(
         self,
         arguments: dict[str, Any],

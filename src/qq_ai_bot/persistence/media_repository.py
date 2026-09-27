@@ -57,29 +57,6 @@ class MediaAnalysisRepository:
             )
         return self._record(row) if row is not None else None
 
-    async def get_cached(
-        self,
-        *,
-        content_hash: str,
-        analysis_mode: str,
-        question_hash: str | None,
-        provider: str,
-        model: str,
-        prompt_version: str,
-        now: datetime | None = None,
-    ) -> MediaAnalysisRecord | None:
-        """Compatibility spelling for callers that use get-style repository APIs."""
-
-        return await self.find_cached(
-            content_hash=content_hash,
-            analysis_mode=analysis_mode,
-            question_hash=question_hash,
-            provider=provider,
-            model=model,
-            prompt_version=prompt_version,
-            now=now,
-        )
-
     async def find_latest_for_content(
         self,
         *,

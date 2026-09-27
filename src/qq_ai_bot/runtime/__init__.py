@@ -12,7 +12,6 @@ refactor:
   authority snapshot and its pure revalidation function.
 - ``turn``: ``TurnContext`` / ``TurnState`` and untrusted-content wrappers.
 - ``result`` / ``delivery``: turn outcome and delivery accounting.
-- ``invariants``: the turn phase machine with its legal transitions.
 - ``observability``: ambient ``runtime_turn_id`` correlation plus the
   content-free observation row contract.
 - ``contracts``: cross-domain pure data (memory capability view, tool batch

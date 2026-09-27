@@ -97,24 +97,6 @@ class AutomationService:
         )
         return row, plan
 
-    async def find_equivalent_task(
-        self,
-        task_payload: object,
-        *,
-        actor: ToolActor,
-        max_runs: int | None = None,
-    ) -> tuple[AutomationRecord, ...]:
-        """Exact structured candidates only; the Agent decides whether to create."""
-
-        return tuple(
-            entry.record
-            for entry in await self.find_equivalent_directory_entries(
-                task_payload,
-                actor=actor,
-                max_runs=max_runs,
-            )
-        )
-
     async def find_equivalent_directory_entries(
         self,
         task_payload: object,

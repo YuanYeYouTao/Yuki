@@ -419,8 +419,6 @@ class AgentRunner:
                 async def dispatch(
                     execute: Callable[[], Awaitable[ChatResponse]] = execute,
                     sequence: TranscriptRequest = sequence,
-                    request_count: int = request_index + 1,
-                    prior_tools: int = calls_used,
                 ) -> ChatResponse:
                     # Admission can wait behind other conversations. Validate
                     # only after acquiring the slot, immediately before execution.

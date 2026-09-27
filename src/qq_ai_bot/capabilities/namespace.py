@@ -309,10 +309,5 @@ RESERVED_PLUGIN_NAMESPACE_PREFIXES: frozenset[str] = frozenset(
 )
 
 
-def namespace_parent(namespace_id: str) -> str | None:
-    parent = namespace_id.rpartition(".")[0]
-    return parent or None
-
-
 def lookup_namespace(namespace_id: str) -> CapabilityNamespace | None:
     return NAMESPACE_BY_ID.get(namespace_id)
