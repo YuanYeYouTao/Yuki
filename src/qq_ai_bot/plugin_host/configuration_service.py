@@ -91,7 +91,10 @@ class PluginConfigurationService:
             rows = list(
                 (await session.scalars(stmt.order_by(PluginConfigValueModel.key).limit(257))).all()
             )
-            if len(rows) > 256:
+            if (
+                len(rows) > 256
+                or sum(len(row.value_json.encode("utf-8")) for row in rows) > MAX_BYTES
+            ):
                 raise PluginConfigurationError("state_mismatch")
             for row in rows:
                 await require_config_readable(session, row)
@@ -122,7 +125,10 @@ class PluginConfigurationService:
                 for row in sorted(rows, key=lambda row: row.key)
             ],
         ]
-        revision = int(hashlib.sha256(_json(material).encode()).hexdigest()[:13], 16) + 1
+        # Values are bounded separately. Hash framing must not halve their byte
+        # budget by JSON-escaping the already serialized original row values.
+        encoded = json.dumps(material, ensure_ascii=False, allow_nan=False, sort_keys=True)
+        revision = int(hashlib.sha256(encoded.encode()).hexdigest()[:13], 16) + 1
         return revision
 
     def _require_schema(self, plugin_id: str) -> type[BaseModel]:
@@ -130,6 +136,8 @@ class PluginConfigurationService:
             raise PluginConfigurationError("validation_error")
         schema = self._schema(plugin_id)
         if schema is None:
+            raise PluginConfigurationError("operation_unavailable")
+        if len(schema.model_fields) > 256:
             raise PluginConfigurationError("operation_unavailable")
         return schema
 
@@ -157,12 +165,14 @@ class PluginConfigurationService:
         if self._schema(plugin_id) is not schema:
             raise PluginConfigurationError("version_conflict")
         _json(values)
+        document_schema = schema.model_json_schema()
+        _json(document_schema)
         return {
             "plugin_id": plugin_id,
             "scope_type": scope_type,
             "owner_id": owner_id,
             "revision": revision,
-            "schema": schema.model_json_schema(),
+            "schema": document_schema,
             "values": values,
             "valid": valid,
             "apply_mode": "plugin_defined",

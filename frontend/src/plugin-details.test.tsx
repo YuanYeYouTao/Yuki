@@ -166,6 +166,9 @@ it("switches canonical owner explicitly and resets the old scope draft", async (
     "11111111-1111-4111-8111-111111111111",
   );
   expect(
+    screen.queryByRole("button", { name: "检查并保存" }),
+  ).not.toBeInTheDocument();
+  expect(
     fetch.mock.calls.filter(([url]) =>
       String(url).endsWith("read_plugin_configuration"),
     ),

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from fastapi import FastAPI
+from pydantic import create_model
 from sqlalchemy import event, select
 from tests.conftest import make_settings
 from tests.unit.test_canonical_ingress import _message
@@ -54,6 +55,7 @@ from qq_ai_bot.plugin_host.repository import (
 )
 from qq_ai_bot.plugin_host.storage import BoundStorageFacade
 from qq_ai_bot.webui.http import attach_webui
+from yuki_plugin_sdk.models import StrictModel
 from yuki_plugin_sdk.observation import PluginObservationRequest
 from yuki_plugin_sdk.permissions import PluginPermission
 
@@ -220,6 +222,31 @@ async def test_concurrent_scope_saves_have_one_winner(plugin):
         )
         == 1
     )
+
+
+async def test_serialized_config_budget_does_not_count_hash_framing_twice(database, plugin):
+    class Document(StrictModel):
+        content: str = ""
+
+    service = PluginConfigurationService(database, lambda _: Document)
+    view = await service.read(PLUGIN)
+    content = '"\\' * 50000
+    revision = await service.save(
+        PLUGIN,
+        view["revision"],
+        {"scope_type": "global", "owner_id": None, "values": {"content": content}},
+    )
+    current = await service.read(PLUGIN)
+    assert current["revision"] == revision and current["values"]["content"] == content
+
+
+async def test_schema_with_more_than_supported_key_count_is_unavailable(database, plugin):
+    schema = create_model(
+        "TooManyKeys", __base__=StrictModel, **{f"field_{i}": (int, 1) for i in range(257)}
+    )
+    service = PluginConfigurationService(database, lambda _: schema)
+    with pytest.raises(PluginConfigurationError, match="operation_unavailable"):
+        await service.read(PLUGIN)
 
 
 async def test_scope_owner_must_be_live_canonical_identity(database, plugin):

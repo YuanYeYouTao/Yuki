@@ -231,6 +231,9 @@ export function PluginDetails({
     props.allowed("read_plugin_configuration"),
   );
   const fields = query.data?.fields as Row | undefined;
+  const scopeReady =
+    scope === selection.scope_type &&
+    (scope === "global" || owner === selection.owner_id);
   return (
     <>
       <Section title={`${pluginId} · 配置`}>
@@ -283,7 +286,8 @@ export function PluginDetails({
         )}
         {query.error != null && <ErrorNote error={query.error} />}
         {query.loading && <Empty>正在读取原配置…</Empty>}
-        {fields && (
+        {!scopeReady && <Empty>范围已更改，请先读取此范围的配置。</Empty>}
+        {fields && scopeReady && (
           <ConfigDraft
             key={`${pluginId}:${fields.scope_type}:${fields.owner_id}:${fields.revision}`}
             fields={fields}
