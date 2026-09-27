@@ -157,16 +157,27 @@ class TraceRecorder:
             )
 
     async def cleanup_expired(self, *, now: datetime | None = None) -> int:
-        async with self.database.sessions() as session, session.begin():
-            selected = (
-                select(ExecutionTraceEntryModel.id)
-                .where(ExecutionTraceEntryModel.expires_at <= (now or datetime.now(UTC)))
-                .limit(500)
-            )
-            result = await session.execute(
-                delete(ExecutionTraceEntryModel).where(ExecutionTraceEntryModel.id.in_(selected))
-            )
-            return int(getattr(result, "rowcount", 0) or 0)
+        cutoff = now or datetime.now(UTC)
+        deleted = 0
+        while True:
+            async with self.database.sessions() as session, session.begin():
+                selected = (
+                    select(ExecutionTraceEntryModel.id)
+                    .where(ExecutionTraceEntryModel.expires_at <= cutoff)
+                    .order_by(ExecutionTraceEntryModel.expires_at, ExecutionTraceEntryModel.id)
+                    .limit(500)
+                )
+                result = await session.execute(
+                    delete(ExecutionTraceEntryModel).where(
+                        ExecutionTraceEntryModel.id.in_(selected)
+                    )
+                )
+                batch = int(getattr(result, "rowcount", 0) or 0)
+            deleted += batch
+            if batch < 500:
+                return deleted
+            # Drain this fixed expiry window, releasing the writer between batches.
+            await asyncio.sleep(0)
 
 
 async def record_trace(kind: str, payload: object) -> None:

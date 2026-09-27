@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
-from sqlalchemy import event, select
+from sqlalchemy import event, insert, select
 from tests.conftest import MemorySender, build_harness, make_settings
 from tests.support.fixed_contract_fixture import bind_main_contract
 from tests.support.runtime_wire import install_wire
@@ -319,6 +319,41 @@ async def test_query_authorization_paging_retention_and_corruption(database):
     async with trace_span("turn", {}, recorder=recorder):
         pass
     assert (await rows(database))[0].id > 3
+
+
+async def test_expiry_cleanup_drains_backlog_in_separate_short_transactions(database):
+    now = datetime.now(UTC)
+    expired = dict(
+        turn_id="expired",
+        operation_id="expired",
+        kind="model_start",
+        payload_status="omitted_size",
+        payload_bytes=2048,
+        created_at=now - timedelta(days=31),
+        expires_at=now - timedelta(days=1),
+    )
+    async with database.sessions() as session, session.begin():
+        await session.execute(
+            insert(ExecutionTraceEntryModel), [dict(expired) for _ in range(1001)]
+        )
+        await session.execute(
+            insert(ExecutionTraceEntryModel),
+            dict(expired, turn_id="live", expires_at=now + timedelta(days=1)),
+        )
+    commits = []
+
+    def committed(conn):
+        commits.append(conn)
+
+    event.listen(database.engine.sync_engine, "commit", committed)
+    try:
+        assert await TraceRecorder(database).cleanup_expired(now=now) == 1001
+    finally:
+        event.remove(database.engine.sync_engine, "commit", committed)
+    assert len(commits) == 3
+    remaining = await rows(database)
+    assert len(remaining) == 1 and remaining[0].turn_id == "live"
+    assert await TraceRecorder(database).cleanup_expired(now=now) == 0
 
 
 async def test_privacy_forget_fences_inflight_context_and_new_calls_can_record(database):
