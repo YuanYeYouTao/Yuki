@@ -239,10 +239,16 @@ class ConfigFileService:
             except asyncio.CancelledError:
                 # The OS write cannot be interrupted. Keep ownership until it ends;
                 # cancellation still becomes an unknown persistent control receipt.
-                try:
-                    await writing
-                finally:
-                    raise
+                while not writing.done():
+                    try:
+                        await asyncio.shield(writing)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                if not writing.cancelled():
+                    writing.exception()
+                raise
 
     @staticmethod
     def _replace(path: Path, original: bytes | None, content: bytes) -> int:

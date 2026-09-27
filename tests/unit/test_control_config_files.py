@@ -354,6 +354,9 @@ async def test_cancellation_keeps_file_ownership_until_os_write_finishes(files, 
     writing.cancel()
     await asyncio.sleep(0)
     assert service._lock.locked()
+    writing.cancel()
+    await asyncio.sleep(0)
+    assert service._lock.locked() and not writing.done()
     finish.set()
     with pytest.raises(asyncio.CancelledError):
         await writing
