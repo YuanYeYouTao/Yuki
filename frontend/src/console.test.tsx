@@ -49,9 +49,7 @@ it("shows actual semantic dimensions and distinguishes them from admission", () 
   );
   expect(screen.getByText("原观察内容")).toBeInTheDocument();
   expect(screen.getByText("interaction_mark")).toBeInTheDocument();
-  expect(
-    screen.getByRole("cell", { name: "invite_yuki", exact: true }),
-  ).toBeInTheDocument();
+  expect(screen.getByRole("cell", { name: "invite_yuki" })).toBeInTheDocument();
   expect(screen.getByText("90.0%")).toBeInTheDocument();
   expect(screen.getByText("10.0%")).toBeInTheDocument();
   expect(
