@@ -2,7 +2,7 @@
 
 import json
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -259,6 +259,17 @@ async def test_latest_history_cursor_and_event_lookup_never_cross_conversations(
         ),
     )
     assert [row.event_id for row in window.items] == ids[1:4]
+    local_zone = timezone(timedelta(hours=8))
+    local_window = await service.list_chat_events(
+        ctx,
+        PageRequest(),
+        conversation_id=conversation,
+        history=ChatHistoryFilter(
+            since=(stamp + timedelta(minutes=1)).astimezone(local_zone),
+            until=(stamp + timedelta(minutes=3)).astimezone(local_zone),
+        ),
+    )
+    assert [row.event_id for row in local_window.items] == ids[1:4]
 
 
 @pytest.mark.asyncio

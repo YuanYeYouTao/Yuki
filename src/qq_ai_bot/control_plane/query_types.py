@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Final, Literal, final
 
@@ -187,8 +187,10 @@ class ChatHistoryFilter:
             if self.event_id > 2**63 - 1:
                 raise ValueError("event_id exceeds ledger range")
         for name in ("since", "until"):
-            if getattr(self, name) is not None:
-                require_aware_datetime(getattr(self, name), name=name)
+            value = getattr(self, name)
+            if value is not None:
+                require_aware_datetime(value, name=name)
+                object.__setattr__(self, name, value.astimezone(UTC))
         if self.since and self.until and self.since > self.until:
             raise ValueError("invalid time range")
 
