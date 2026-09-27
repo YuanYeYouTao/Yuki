@@ -68,6 +68,10 @@ export function TraceReader({ id }: { id: number }) {
               {stamp(data.created_at)} · {text(data.kind)} ·{" "}
               {text(data.payload_status)} · 有效至 {stamp(data.expires_at)}
             </p>
+            <p className="small">
+              轮次 {text(data.turn_id)} · 原会话 {text(data.conversation_id)} ·
+              执行 {text(data.execution_id)}
+            </p>
             <TraceContent row={data} />
           </>
         )
@@ -82,6 +86,11 @@ export function Traces({
   scope?: Row;
   refresh?: number;
 }) {
+  return (
+    <TraceList key={JSON.stringify(scope)} scope={scope} refresh={refresh} />
+  );
+}
+function TraceList({ scope, refresh }: { scope: Row; refresh: number }) {
   const [selected, setSelected] = useState<number | null>(null),
     [turn, setTurn] = useState(""),
     [draft, setDraft] = useState("");
@@ -115,7 +124,7 @@ export function Traces({
             scope: {
               ...scope,
               ...(turn ? { turn_id: turn } : {}),
-              descending: !turn,
+              descending: !(turn || scope.turn_id),
             },
           }}
           refresh={refresh}
@@ -123,6 +132,7 @@ export function Traces({
             ["created_at", "时间", (v) => stamp(v)],
             ["kind", "步骤"],
             ["origin", "来源"],
+            ["conversation_id", "原会话"],
             [
               "turn_id",
               "轮次",
@@ -140,6 +150,7 @@ export function Traces({
               ),
             ],
             ["parent_operation_id", "父步骤"],
+            ["delivered_event_id", "已发送事件"],
             ["payload_status", "正文", (v) => <Badge value={v} />],
           ]}
           actions={(row) => (

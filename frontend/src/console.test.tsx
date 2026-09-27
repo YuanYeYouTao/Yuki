@@ -254,52 +254,61 @@ describe("management transport and evidence", () => {
       first.request_id,
     );
   });
-  it("starts with newest events and uses internal ids to open the execution trail", async () => {
-    const fetch = vi
-      .spyOn(globalThis, "fetch")
-      .mockImplementation((url, options) => {
-        const body = JSON.parse(String(options?.body));
-        if (String(url).endsWith("list_chat_events")) {
-          expect(body.history.descending).toBe(true);
-          return ok({
-            data: {
-              items: [
-                {
-                  event_id: 142,
-                  direction: "inbound",
-                  content: "fixture hello",
-                  occurred_at: "2026-09-27T08:00:00Z",
-                  origin: "qq",
-                  sender_display_name: "fixture",
-                },
-              ],
-              next_cursor: null,
-            },
-            problem: null,
-          });
-        }
-        expect(body.scope.source_event_id).toBe(142);
-        expect(body.scope.conversation_id).toBe("canonical-fixture");
-        return ok({ data: { items: [], next_cursor: null }, problem: null });
-      });
-    render(
-      <Chat
-        conversation="canonical-fixture"
-        content
-        refresh={0}
-        notebook={<div>notebook</div>}
-      />,
-    );
-    await screen.findByText("fixture hello");
-    await userEvent.click(
-      screen.getByRole("button", { name: "#142 · 查看本轮" }),
-    );
-    await waitFor(() =>
-      expect(
-        fetch.mock.calls.some(([url]) =>
-          String(url).endsWith("list_execution_trace"),
-        ),
-      ).toBe(true),
-    );
-  });
+  it.each(["inbound", "outbound"])(
+    "uses internal %s event ids to open the execution trail",
+    async (direction) => {
+      const fetch = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementation((url, options) => {
+          const body = JSON.parse(String(options?.body));
+          if (String(url).endsWith("list_chat_events")) {
+            expect(body.history.descending).toBe(true);
+            return ok({
+              data: {
+                items: [
+                  {
+                    event_id: 142,
+                    direction,
+                    content: "fixture hello",
+                    occurred_at: "2026-09-27T08:00:00Z",
+                    origin: "qq",
+                    sender_display_name: "fixture",
+                  },
+                ],
+                next_cursor: null,
+              },
+              problem: null,
+            });
+          }
+          expect(
+            body.scope[
+              direction === "outbound"
+                ? "delivered_event_id"
+                : "source_event_id"
+            ],
+          ).toBe(142);
+          expect(body.scope.conversation_id).toBe("canonical-fixture");
+          return ok({ data: { items: [], next_cursor: null }, problem: null });
+        });
+      render(
+        <Chat
+          conversation="canonical-fixture"
+          content
+          refresh={0}
+          notebook={<div>notebook</div>}
+        />,
+      );
+      await screen.findByText("fixture hello");
+      await userEvent.click(
+        screen.getByRole("button", { name: "#142 · 查看本轮" }),
+      );
+      await waitFor(() =>
+        expect(
+          fetch.mock.calls.some(([url]) =>
+            String(url).endsWith("list_execution_trace"),
+          ),
+        ).toBe(true),
+      );
+    },
+  );
 });

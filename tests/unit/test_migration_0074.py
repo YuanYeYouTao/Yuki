@@ -26,7 +26,7 @@ def test_upgrade_preserves_business_rows_and_matches_metadata(tmp_path, monkeypa
         previous = db.execute("SELECT * FROM admin_operation_events").fetchall()
     command.upgrade(config, "head")
     with sqlite3.connect(path) as db:
-        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0074",)
+        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0075",)
         assert db.execute("SELECT * FROM admin_operation_events").fetchall() == previous
         assert db.execute("SELECT count(*) FROM execution_trace_entries").fetchone() == (0,)
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -48,7 +48,10 @@ def test_upgrade_preserves_business_rows_and_matches_metadata(tmp_path, monkeypa
                     sorted(
                         (i["name"], tuple(i["column_names"])) for i in inspector.get_indexes(name)
                     ),
-                    inspector.get_foreign_keys(name),
+                    sorted(
+                        inspector.get_foreign_keys(name),
+                        key=lambda fk: fk["constrained_columns"],
+                    ),
                 )
 
             assert schema(migrated) == schema(runtime)

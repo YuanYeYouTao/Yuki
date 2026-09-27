@@ -45,6 +45,8 @@ React + TypeScript + Vite 的正式前端位于 `frontend/`，构建产物进入
 支持 Chat、Responses、Claude、Gemini 的文本展示，并保留完整的脱敏诊断 JSON。
 不推断或补写未保存的思考。超期、正文超限、未授权或诊断缺失明确展示。
 诊断索引沿用 turn/operation/parent/work/execution/event ID，不反向驱动执行或恢复。
+已发送消息按原成功回执核验后记录 `delivered_event_id`，可进入真正执行轮次；
+跨会话发送按目标事件的会话核验。原事件来源不改写，旧投递关联不猜测回填。
 
 聊天附件通过原 `ConversationMediaService` 核验会话、generation、starts_after 和
 24 小时有效期；读取后再次核验。单次最多 32 MiB、验证摘要、安全打开文件，

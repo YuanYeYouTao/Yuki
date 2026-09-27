@@ -23,6 +23,7 @@ class ExecutionTraceEntryModel(Base):
         Index("ix_execution_trace_turn_id", "turn_id", "id"),
         Index("ix_execution_trace_work_id", "work_id", "id"),
         Index("ix_execution_trace_operation_id", "operation_id", "id"),
+        Index("ix_execution_trace_delivered_event", "delivered_event_id", "id"),
         Index("ix_execution_trace_expires", "expires_at", "id"),
         {"sqlite_autoincrement": True},
     )
@@ -49,3 +50,9 @@ class ExecutionTraceEntryModel(Base):
     payload_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    delivered_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey(
+            "chat_events.id", name="fk_execution_trace_delivered_event", ondelete="SET NULL"
+        ),
+        nullable=True,
+    )

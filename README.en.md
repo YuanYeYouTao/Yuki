@@ -1,4 +1,4 @@
-<!-- release-baseline: version=3.8.4 schema=0074 -->
+<!-- release-baseline: version=3.8.4 schema=0075 -->
 
 [简体中文](README.md) · English
 
@@ -134,7 +134,7 @@ Read the [shared development contract](docs/architecture/development-contract.md
 
 One database represents one long-lived Yuki. People, groups, QQ accounts, and gateway connections are modeled separately, so conversation history and relationships are not tied to a single login. The backend checks tool permissions, budgets, idempotency, and audit records.
 
-Yuki currently provides QQ interaction, a CLI, and a Control Plane business layer for a future admin interface. **There is no Yuki admin WebUI or admin HTTP API yet.**
+Yuki provides QQ interaction, a CLI, and a shared Control Plane. This development branch adds a hand-journal WebUI and same-origin admin HTTP, disabled by default. The published 3.8.4 assets remain unchanged. Build instructions, authorization, and remaining scope are documented in [WebUI](docs/architecture/webui-console.md).
 
 ```bash
 uv sync --extra dev

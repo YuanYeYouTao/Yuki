@@ -25,6 +25,7 @@ from qq_ai_bot.execution_trace.payload import decode_payload, encode_payload
 from qq_ai_bot.execution_trace.recorder import (
     TraceRecorder,
     current_trace,
+    record_confirmed_delivery,
     record_trace,
     trace_span,
 )
@@ -269,6 +270,80 @@ async def test_cancel_preserves_error_and_clears_scope(database):
     assert [row.kind for row in evidence] == ["turn_start", "turn_error"]
     assert decoded(evidence[-1])["data"]["error_category"] == "CancelledError"
     assert current_trace.get() is None
+
+
+async def test_confirmed_cross_conversation_delivery_links_only_the_true_turn(database, tmp_path):
+    env = await social_env(database, tmp_path)
+    assert await env.router.cas_takeover_person(env.person) == "taken"
+    recorder = TraceRecorder(database)
+    async with trace_span(
+        "turn",
+        {"prompt": "original group context"},
+        recorder=recorder,
+        conversation_id=env.context.conversation_id,
+    ):
+        sent = await env.service.execute(
+            "send_message",
+            {"text": "private delivery", "target": {"kind": "person", "target_id": env.person}},
+            env.context,
+        )
+    async with database.sessions() as session:
+        outbound = await session.get(ChatEventModel, sent["event_id"])
+        destination = ConversationId.parse(outbound.canonical_conversation_id)
+    assert destination.text != env.context.conversation_id
+    operator = context("control.execution.metadata.read")
+    queries = ControlQueryService(ControlQueryAdapter(database))
+    linked = await queries.list_execution_trace(
+        operator,
+        PageRequest(),
+        scope=ExecutionTraceFilter(conversation_id=destination, delivered_event_id=outbound.id),
+    )
+    assert [row.kind for row in linked.items] == ["turn_start", "social_delivery", "turn_end"]
+    assert all(row.conversation_id.text == env.context.conversation_id for row in linked.items)
+    wrong_scope = await queries.list_execution_trace(
+        operator,
+        PageRequest(),
+        scope=ExecutionTraceFilter(
+            conversation_id=ConversationId.parse(env.context.conversation_id),
+            delivered_event_id=outbound.id,
+        ),
+    )
+    assert not wrong_scope.items
+    assert recorder.record_failures == 0
+
+
+async def test_delivery_recording_failure_cannot_downgrade_or_repeat_the_confirmed_send(
+    database, tmp_path
+):
+    env = await social_env(database, tmp_path)
+    recorder = TraceRecorder(database)
+
+    def fail_delivery(_connection, _cursor, statement, parameters, *_args):
+        if (
+            statement.startswith("INSERT INTO execution_trace_entries")
+            and "social_delivery" in parameters
+        ):
+            raise RuntimeError("diagnostics unavailable")
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", fail_delivery)
+    try:
+        async with trace_span(
+            "turn", {}, recorder=recorder, conversation_id=env.context.conversation_id
+        ):
+            result = await env.service.execute("send_message", {"text": "once"}, env.context)
+            assert result["status"] == "succeeded"
+    finally:
+        event.remove(database.engine.sync_engine, "before_cursor_execute", fail_delivery)
+    receipt = await env.service.receipts.get(result["operation_id"])
+    assert receipt.status == "succeeded" and receipt.event_id == result["event_id"]
+    assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
+    assert recorder.record_failures == 1
+    assert not any(row.delivered_event_id for row in await rows(database))
+    async with trace_span(
+        "turn", {}, recorder=recorder, conversation_id=env.context.conversation_id
+    ):
+        await record_confirmed_delivery(result["operation_id"], result["event_id"] + 1)
+    assert recorder.record_failures == 2
 
 
 async def test_query_authorization_paging_retention_and_corruption(database):
@@ -526,6 +601,24 @@ async def test_real_runner_records_tools_and_original_chat_delivery(
     assert full.items and any(item.source_event_id == admitted.id for item in full.items)
     assert any(item.work_id for item in full.items) is work_enabled
     assert len({item.turn_id for item in full.items}) == 1
+    outgoing = next(item for item in messages.items if item.direction == "outbound")
+    delivery_trace = await service.list_execution_trace(
+        operator,
+        PageRequest(limit=100),
+        scope=ExecutionTraceFilter(
+            conversation_id=conversation_id, delivered_event_id=outgoing.event_id
+        ),
+    )
+    assert {item.id for item in delivery_trace.items} == {item.id for item in full.items}
+    assert any(item.delivered_event_id == outgoing.event_id for item in delivery_trace.items)
+    wrong_conversation = await service.list_execution_trace(
+        operator,
+        PageRequest(),
+        scope=ExecutionTraceFilter(
+            conversation_id=ConversationId.new(), delivered_event_id=outgoing.event_id
+        ),
+    )
+    assert not wrong_conversation.items
     from sqlalchemy import delete
 
     from qq_ai_bot.persistence.database import Database

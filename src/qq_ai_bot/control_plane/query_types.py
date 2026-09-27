@@ -119,6 +119,7 @@ class ExecutionTraceFilter:
     work_id: str | None = None
     execution_id: str | None = None
     source_event_id: int | None = None
+    delivered_event_id: int | None = None
 
     def __post_init__(self) -> None:
         _require_bool(self.descending, "descending")
@@ -128,10 +129,12 @@ class ExecutionTraceFilter:
             value = getattr(self, name)
             if value is not None:
                 require_opaque_token(value, name=name, max_length=128)
-        if self.source_event_id is not None:
-            _require_int(self.source_event_id, "source_event_id", minimum=1)
-            if self.source_event_id > 2**63 - 1:
-                raise ValueError("source_event_id exceeds ledger range")
+        for name in ("source_event_id", "delivered_event_id"):
+            value = getattr(self, name)
+            if value is not None:
+                _require_int(value, name, minimum=1)
+                if value > 2**63 - 1:
+                    raise ValueError(f"{name} exceeds ledger range")
 
 
 @final
@@ -154,6 +157,7 @@ class ExecutionTraceView:
     created_at: datetime
     expires_at: datetime
     payload: JsonObject | None = None
+    delivered_event_id: int | None = None
 
     def __post_init__(self) -> None:
         _require_int(self.id, "id", minimum=1)
@@ -164,6 +168,8 @@ class ExecutionTraceView:
             require_opaque_token(getattr(self, name), name=name, max_length=64)
         if self.source_event_id is not None:
             _require_int(self.source_event_id, "source_event_id", minimum=1)
+        if self.delivered_event_id is not None:
+            _require_int(self.delivered_event_id, "delivered_event_id", minimum=1)
         if self.conversation_id is not None and type(self.conversation_id) is not ConversationId:
             raise TypeError("conversation_id must be ConversationId")
         require_aware_datetime(self.created_at, name="created_at")

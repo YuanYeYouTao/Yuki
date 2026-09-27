@@ -18,7 +18,7 @@ export function Chat({
 }) {
   const [cursor, setCursor] = useState<string | null>(null),
     [older, setOlder] = useState<Row[]>([]),
-    [selected, setSelected] = useState<number | null>(null);
+    [selected, setSelected] = useState<Row | null>(null);
   const [since, setSince] = useState(""),
     [until, setUntil] = useState(""),
     [filter, setFilter] = useState<Row>({});
@@ -187,7 +187,7 @@ export function Chat({
                     <footer>
                       <button
                         className="file-open"
-                        onClick={() => setSelected(Number(row.event_id))}
+                        onClick={() => setSelected(row)}
                       >
                         #{text(row.event_id)} · 查看本轮
                       </button>
@@ -216,15 +216,23 @@ export function Chat({
       {selected != null && (
         <div className="chat-trace">
           <button className="btn-secondary" onClick={() => setSelected(null)}>
-            收起事件 #{selected}
+            收起事件 #{text(selected.event_id)}
           </button>
           <Traces
-            scope={{ conversation_id: conversation, source_event_id: selected }}
+            scope={{
+              conversation_id: conversation,
+              [selected.direction === "outbound"
+                ? "delivered_event_id"
+                : "source_event_id"]: Number(selected.event_id),
+            }}
             refresh={refresh}
           />
           <JsonNote
             title="事件关联"
-            value={{ event_id: selected, conversation_id: conversation }}
+            value={{
+              event_id: selected.event_id,
+              conversation_id: conversation,
+            }}
           />
         </div>
       )}

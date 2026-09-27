@@ -99,6 +99,7 @@ def _build_trace_view(row: ExecutionTraceEntryModel, include_content: bool) -> E
         activation_id=row.activation_id,
         execution_id=row.execution_id,
         source_event_id=row.source_event_id,
+        delivered_event_id=row.delivered_event_id,
         generation=row.generation,
         origin=row.origin,
         kind=row.kind,
@@ -134,6 +135,7 @@ class ControlExecutionQueryAdapter:
                 scope.work_id,
                 scope.execution_id,
                 scope.source_event_id,
+                scope.delivered_event_id,
                 scope.descending,
             ]
         )
@@ -151,7 +153,7 @@ class ControlExecutionQueryAdapter:
         )
         if not include_content:
             stmt = stmt.options(defer(ExecutionTraceEntryModel.payload_gzip, raiseload=True))
-        if scope.conversation_id:
+        if scope.conversation_id and scope.delivered_event_id is None:
             stmt = stmt.where(
                 ExecutionTraceEntryModel.conversation_id == scope.conversation_id.text
             )
@@ -167,6 +169,24 @@ class ControlExecutionQueryAdapter:
             stmt = stmt.where(ExecutionTraceEntryModel.execution_id == scope.execution_id)
         if scope.source_event_id:
             stmt = stmt.where(ExecutionTraceEntryModel.source_event_id == scope.source_event_id)
+        if scope.delivered_event_id:
+            # The confirmed outgoing event may belong to a different destination
+            # than the original turn. Only its durable diagnostic link locates it.
+            deliveries = (
+                select(ExecutionTraceEntryModel.turn_id)
+                .join(
+                    ChatEventModel, ChatEventModel.id == ExecutionTraceEntryModel.delivered_event_id
+                )
+                .where(
+                    ExecutionTraceEntryModel.delivered_event_id == scope.delivered_event_id,
+                    ExecutionTraceEntryModel.expires_at > datetime.now(UTC),
+                )
+            )
+            if scope.conversation_id:
+                deliveries = deliveries.where(
+                    ChatEventModel.canonical_conversation_id == scope.conversation_id.text
+                )
+            stmt = stmt.where(ExecutionTraceEntryModel.turn_id.in_(deliveries))
         if key:
             stmt = stmt.where(
                 ExecutionTraceEntryModel.id < int(key)

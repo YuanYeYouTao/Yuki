@@ -22,6 +22,10 @@
   chat_events.id，不用平台 message_id 猜测归属。没有聊天事件的后台工作不伪造事件。
 - 接收与已发送正文继续查询 chat_events；投递状态继续查询原 Social 持久回执。
   Agent 结束不等于消息送达，工具返回文本不等于外部效果已确认。
+- Social 成功投递及事件入账提交之后，可添加 `social_delivery` 诊断；
+  `delivered_event_id` 由原成功回执与出站账本校验，保留原 source_event_id。
+  查询已发送事件可进入真正执行轮次；跨会话投递按目标事件所属会话核验后显示原轮次，
+  该轮的原会话仍单独显示。关联写入失败不降级成功，不补发；旧记录不回填。
 
 ## 内容、生命周期与失败
 
@@ -51,7 +55,7 @@ EXECUTION_TRACE_MAX_PAYLOAD_BYTES。超过上限保留明确 omitted 元数据�
 分页 cursor 绑定资源、会话及筛选范围；查询不触发模型、重跑或任何真实效果。
 不公开原 journal、媒体缓存宿主路径、HTTP 凭据和不透明 Provider 恢复状态。
 正文权限可查看真实提示词和工具参数中的工作区路径及用户内容；它不是公开访问接口。
-HTTP 登录和正式 WebUI 接线仍遵守 control-plane-foundation 的独立建设合同。
+HTTP 登录和正式 WebUI 接线遵守 control-plane-foundation，当前实现见 [WebUI](webui-console.md)。
 
 ## 验收
 
