@@ -75,6 +75,22 @@ class RuntimeConfigOverrideRecord:
     canonical_space_id: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ConfigInspection:
+    """Current process value and desired persisted value from the same resolver."""
+
+    effective: EffectiveConfigValue
+    saved: EffectiveConfigValue
+    version: int | None
+
+    @property
+    def pending_restart(self) -> bool:
+        return (
+            self.effective.apply_mode is ConfigApplyMode.RESTART_REQUIRED
+            and self.effective.value != self.saved.value
+        )
+
+
 def _record(row: RuntimeConfigOverrideModel) -> RuntimeConfigOverrideRecord:
     try:
         decoded: ConfigValue = json.loads(row.value_json)
@@ -557,6 +573,74 @@ class RuntimeConfigService:
             person_id=person_id,
             space_id=space_id,
         )
+
+    async def inspect_configs(
+        self,
+        keys: tuple[str, ...],
+        *,
+        scope: MemoryConfigScope | None = None,
+        session: AsyncSession | None = None,
+    ) -> tuple[ConfigInspection, ...]:
+        """Inspect canonical owners without transport identity lookup or writes."""
+        scope = scope if scope is not None else MemoryConfigScope()
+        records = await self._repository.list_all(session=session)
+        async with optional_session(self._database, session, write=False) as active:
+            for owner_id, model in (
+                (scope.person_id, CanonicalPersonModel),
+                (scope.space_id, CanonicalSpaceModel),
+            ):
+                if owner_id is not None and await active.get(model, owner_id) is None:
+                    raise CanonicalIdentityError("canonical_owner_missing")
+        inspections: list[ConfigInspection] = []
+        for key in keys:
+            spec = self.registry.get(key)
+            if spec.sensitive or spec.apply_mode is ConfigApplyMode.SECRET:
+                protected = EffectiveConfigValue(
+                    key=spec.key,
+                    value=None,
+                    source="protected",
+                    scope_type=None,
+                    scope_id="",
+                    apply_mode=spec.apply_mode,
+                    configured=bool(spec.default_getter(self._settings)),
+                )
+                inspections.append(ConfigInspection(protected, protected, None))
+                continue
+            effective = self._resolve(
+                spec,
+                records,
+                user_id=None,
+                group_id=None,
+                person_id=scope.person_id,
+                space_id=scope.space_id,
+            )
+            saved = self._resolve(
+                spec,
+                records,
+                user_id=None,
+                group_id=None,
+                person_id=scope.person_id,
+                space_id=scope.space_id,
+                honor_restart_activation=False,
+            )
+            selected = (
+                self._canonical_row(
+                    [
+                        row
+                        for row in records
+                        if row.config_key == key and self._valid_stored_record(row)
+                    ],
+                    scope=saved.scope_type,
+                    person_id=scope.person_id,
+                    space_id=scope.space_id,
+                )
+                if saved.scope_type is not None
+                else None
+            )
+            inspections.append(
+                ConfigInspection(effective, saved, selected.version if selected else None)
+            )
+        return tuple(inspections)
 
     async def set_override(
         self,
@@ -1270,14 +1354,20 @@ class RuntimeConfigService:
             )
 
     async def pending_restart_count(self) -> int:
+        return len(await self.pending_restart_entries())
+
+    async def pending_restart_entries(
+        self, *, session: AsyncSession | None = None
+    ) -> tuple[str, ...]:
+        """One key per changed owner; activated overrides are not pending."""
         current = {
             (row.config_key, row.scope_type, row.scope_id): row
-            for row in await self._repository.list_all()
+            for row in await self._repository.list_all(session=session)
             if row.apply_mode is ConfigApplyMode.RESTART_REQUIRED and self._valid_stored_record(row)
         }
         keys = set(current) | set(self._active_restart)
-        pending = 0
-        for key in keys:
+        pending: list[str] = []
+        for key in sorted(keys):
             config_key, _scope_type, _scope_id = key
             spec = self.registry.get(config_key)
             current_value = (
@@ -1289,8 +1379,8 @@ class RuntimeConfigService:
                 else spec.default_getter(self._settings)
             )
             if current_value != active_value:
-                pending += 1
-        return pending
+                pending.append(config_key)
+        return tuple(pending)
 
     async def snapshot(
         self,

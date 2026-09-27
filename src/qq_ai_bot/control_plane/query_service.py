@@ -11,6 +11,7 @@ from qq_ai_bot.control_plane.query_types import (
     AuditEventView,
     AutomationView,
     ConfigOverrideView,
+    ConfigQueryScope,
     ConfigSpecView,
     ControlQueryError,
     ConversationView,
@@ -164,11 +165,11 @@ class ControlQueryService:
         return await self._port.list_config_specs(request)
 
     async def list_effective_configs(
-        self, context: object, request: PageRequest
+        self, context: object, request: PageRequest, *, scope: ConfigQueryScope | None = None
     ) -> Page[EffectiveConfigView]:
         authorized = _require_context(context)
         _require_capability(authorized, "control.config.read")
-        return await self._port.list_effective_configs(request)
+        return await self._port.list_effective_configs(request, scope=scope)
 
     async def list_config_overrides(
         self, context: object, request: PageRequest

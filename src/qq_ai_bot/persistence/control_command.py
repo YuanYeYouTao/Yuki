@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
+from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.config import Settings
 from qq_ai_bot.control_plane.command_types import (
     CACHEABLE_COMMAND_FAILURES,
@@ -84,6 +85,7 @@ from qq_ai_bot.identity.db_models import (
 from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
+from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.control_management import (
     ControlManagementGateway,
     ManagementFailure,
@@ -244,6 +246,8 @@ class ControlCommandAdapter:
         runtime_config: RuntimeConfigService | None = None,
         maintenance: MemoryMaintenanceWorker | None = None,
         embeddings: MemoryEmbeddingRuntime | None = None,
+        automation: AutomationService | None = None,
+        memories: MemoryFactService | None = None,
     ) -> None:
         if type(database) is not Database:
             raise TypeError("database must be Database")
@@ -256,6 +260,8 @@ class ControlCommandAdapter:
             mcp=mcp_manager,
             maintenance=maintenance,
             embeddings=embeddings,
+            automation=automation,
+            memories=memories,
         )
 
     async def enable_person(

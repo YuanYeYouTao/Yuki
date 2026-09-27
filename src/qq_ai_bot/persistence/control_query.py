@@ -6,6 +6,7 @@ import json
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from hashlib import sha256
 from typing import Protocol, TypedDict, TypeVar
 
 from sqlalchemy import Select, event, func, select, tuple_
@@ -15,6 +16,8 @@ from sqlalchemy.orm import InstrumentedAttribute
 
 from qq_ai_bot import __version__
 from qq_ai_bot.admin.config_registry import ConfigRegistry
+from qq_ai_bot.admin.config_service import RuntimeConfigService
+from qq_ai_bot.config import Settings
 from qq_ai_bot.control_plane.operations import OperationRef, OperationStatus, StateEpoch
 from qq_ai_bot.control_plane.paging import Page, PageRequest
 from qq_ai_bot.control_plane.problems import Problem, ProblemCode
@@ -30,6 +33,7 @@ from qq_ai_bot.control_plane.query_types import (
     AutomationView,
     ConfigOverrideView,
     ConfigOwnerKind,
+    ConfigQueryScope,
     ConfigSpecView,
     ControlQueryError,
     ConversationView,
@@ -83,6 +87,7 @@ from qq_ai_bot.domain.identity import (
     SpaceBindingId,
     SpaceId,
 )
+from qq_ai_bot.domain.memory_config import MemoryConfigScope
 from qq_ai_bot.emoji.db_models import EmojiAssetModel, EmojiScopeStateModel
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
@@ -91,6 +96,7 @@ from qq_ai_bot.identity.db_models import (
     PresenceModel,
     SpaceBindingModel,
 )
+from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.memory.audit import MemoryAuditService
 from qq_ai_bot.memory.embedding.health import MemoryEmbeddingHealthService
@@ -110,6 +116,7 @@ from qq_ai_bot.persistence.models import (
     MemoryJobModel,
     RuntimeConfigOverrideModel,
 )
+from qq_ai_bot.persistence.unit_of_work import state_revision
 from qq_ai_bot.plugin_host.db_models import PluginInstallationModel
 from qq_ai_bot.speech.db_models import SpeechVoiceProfileModel
 
@@ -372,6 +379,7 @@ def _project_emoji_asset(
         _try_space_id(row.canonical_first_seen_space_id) if reveal_first_seen_space else None
     )
     return EmojiAssetView(
+        revision=state_revision(row.updated_at),
         asset_id=str(row.id),
         status=str(row.status),
         enabled=bool(row.pinned) or str(row.status) == "adopted",
@@ -522,7 +530,8 @@ class ControlQueryAdapter:
         self,
         database: Database,
         *,
-        settings: object | None = None,
+        settings: Settings | None = None,
+        runtime_config: RuntimeConfigService | None = None,
         mcp_manager: MCPManager | None = None,
         connection_registry: object | None = None,
     ) -> None:
@@ -530,6 +539,8 @@ class ControlQueryAdapter:
             raise TypeError("database must be Database")
         self._database = database
         self._settings = settings
+        self._config = runtime_config
+        self._registry = runtime_config.registry if runtime_config is not None else ConfigRegistry()
         self._mcp = mcp_manager
         self._connections = connection_registry
 
@@ -620,21 +631,10 @@ class ControlQueryAdapter:
         )
 
     async def _pending_restart(self, session: AsyncSession) -> PendingRestartView:
-        rows = list(
-            await session.scalars(
-                select(RuntimeConfigOverrideModel.config_key)
-                .where(RuntimeConfigOverrideModel.apply_mode == "restart_required")
-                .distinct()
-                .order_by(RuntimeConfigOverrideModel.config_key.asc())
-            )
-        )
-        keys: list[str] = []
-        for raw in rows:
-            token = _safe_token(raw, fallback="", max_length=128)
-            if token:
-                keys.append(token)
-        unique = tuple(dict.fromkeys(keys))
-        return PendingRestartView(unique, len(unique))
+        if self._config is None:
+            raise ControlQueryError(Problem(ProblemCode.OPERATION_UNAVAILABLE))
+        pending = tuple(sorted(set(await self._config.pending_restart_entries(session=session))))
+        return PendingRestartView(pending, len(pending))
 
     async def _counts(self, session: AsyncSession) -> dict[str, CountSnapshot]:
         return {
@@ -1247,7 +1247,7 @@ class ControlQueryAdapter:
         snapshot_at = _now()
         async with self._reader() as session:
             epoch, _revision = await self._runtime(session)
-            _phase, key = self._cursor_state(request, QueryResourceKind.CONFIG, epoch=epoch)
+            _phase, key = self._cursor_state(request, QueryResourceKind.CONFIG_SPEC, epoch=epoch)
             overrides = {
                 (
                     row.config_key,
@@ -1256,7 +1256,7 @@ class ControlQueryAdapter:
                 )
                 for row in (await session.scalars(select(RuntimeConfigOverrideModel))).all()
             }
-        specs = sorted(ConfigRegistry().list(), key=lambda item: item.key)
+        specs = sorted(self._registry.list(), key=lambda item: item.key)
         if key is not None:
             specs = [item for item in specs if item.key > key]
         window = specs[: request.limit + 1]
@@ -1272,61 +1272,101 @@ class ControlQueryAdapter:
                 mutable=item.mutable,
                 sensitive=item.sensitive or item.apply_mode.value == "secret",
                 configured=_spec_is_configured(item, overrides, self._settings),
+                display_name=item.display_name,
+                description=item.description,
+                minimum=item.minimum,
+                maximum=item.maximum,
+                choices=item.choices,
+                allowed_scopes=tuple(scope.value for scope in item.allowed_scopes),
             )
             for item in window
         ]
         return self._page(
             items,
-            kind=QueryResourceKind.CONFIG,
+            kind=QueryResourceKind.CONFIG_SPEC,
             phase=QueryCursorPhase.CANONICAL,
             next_key=window[-1].key if more else None,
             snapshot_at=snapshot_at,
         )
 
-    async def list_effective_configs(self, request: PageRequest) -> Page[EffectiveConfigView]:
+    async def list_effective_configs(
+        self, request: PageRequest, *, scope: ConfigQueryScope | None = None
+    ) -> Page[EffectiveConfigView]:
+        if scope is None:
+            scope = ConfigQueryScope()
+        if type(scope) is not ConfigQueryScope:
+            raise TypeError("scope must be ConfigQueryScope")
+        if self._config is None:
+            raise ControlQueryError(Problem(ProblemCode.PRECONDITION_FAILED))
         snapshot_at = _now()
+        scope_key = (
+            sha256(
+                (
+                    f"{scope.person_id.text if scope.person_id else ''}/"
+                    f"{scope.space_id.text if scope.space_id else ''}"
+                ).encode()
+            ).hexdigest()
+            + ":"
+        )
         async with self._reader() as session:
             epoch, _revision = await self._runtime(session)
-            _phase, key = self._cursor_state(request, QueryResourceKind.CONFIG, epoch=epoch)
-            snapshots = {
-                row.config_key: (row.scope_type, int(row.version), row.value_json)
-                for row in (await session.scalars(select(RuntimeConfigOverrideModel))).all()
-                if row.scope_type == "global"
-            }
-        specs = sorted(ConfigRegistry().list(), key=lambda item: item.key)
-        if key is not None:
-            specs = [item for item in specs if item.key > key]
-        window = specs[: request.limit + 1]
-        more = len(window) == request.limit + 1
-        if more:
-            window = window[:-1]
-        items: list[EffectiveConfigView] = []
-        for spec in window:
-            secret = spec.apply_mode.value == "secret" or spec.sensitive
-            override = snapshots.get(spec.key)
-            items.append(
-                EffectiveConfigView(
-                    key=spec.key,
-                    source="override" if override is not None else "default",
-                    scope_type="global" if override is None else override[0],
-                    apply_mode=spec.apply_mode.value,
-                    configured=override is not None
-                    or _spec_is_configured(spec, {}, self._settings),
-                    pending_restart=spec.apply_mode.value == "restart_required"
-                    and override is not None,
-                    version=None if override is None else override[1],
-                    value=None if secret or override is None else _safe_config_value(override[2]),
-                    owner_kind=ConfigOwnerKind.GLOBAL,
-                    person_id=None,
-                    space_id=None,
-                    owner_resolution=None if override is None else IdentityResolution.CANONICAL,
-                )
+            _phase, key = self._cursor_state(
+                request, QueryResourceKind.CONFIG_EFFECTIVE, epoch=epoch
             )
+            if key is not None:
+                if not key.startswith(scope_key):
+                    raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
+                key = key[len(scope_key) :]
+            specs = sorted(self._config.registry.list(), key=lambda item: item.key)
+            if key is not None:
+                specs = [item for item in specs if item.key > key]
+            window = specs[: request.limit + 1]
+            more = len(window) == request.limit + 1
+            if more:
+                window = window[:-1]
+            try:
+                inspected = await self._config.inspect_configs(
+                    tuple(item.key for item in window),
+                    scope=MemoryConfigScope(
+                        person_id=scope.person_id.text if scope.person_id else None,
+                        space_id=scope.space_id.text if scope.space_id else None,
+                    ),
+                    session=session,
+                )
+            except CanonicalIdentityError as exc:
+                raise ControlQueryError(Problem(ProblemCode.STATE_MISMATCH)) from exc
+            items = []
+            for spec, result in zip(window, inspected, strict=True):
+                effective, saved = result.effective, result.saved
+                scope_type = saved.scope_type.value if saved.scope_type else "global"
+                owner_kind = {"user": ConfigOwnerKind.PERSON, "group": ConfigOwnerKind.SPACE}.get(
+                    scope_type, ConfigOwnerKind.GLOBAL
+                )
+                items.append(
+                    EffectiveConfigView(
+                        key=spec.key,
+                        source=effective.source,
+                        scope_type=scope_type,
+                        apply_mode=spec.apply_mode.value,
+                        configured=effective.configured
+                        if effective.configured is not None
+                        else effective.value is not None,
+                        pending_restart=result.pending_restart,
+                        version=result.version,
+                        value=effective.value,
+                        saved_value=saved.value,
+                        saved_source=saved.source,
+                        owner_kind=owner_kind,
+                        person_id=scope.person_id if owner_kind is ConfigOwnerKind.PERSON else None,
+                        space_id=scope.space_id if owner_kind is ConfigOwnerKind.SPACE else None,
+                        owner_resolution=IdentityResolution.CANONICAL,
+                    )
+                )
         return self._page(
             items,
-            kind=QueryResourceKind.CONFIG,
+            kind=QueryResourceKind.CONFIG_EFFECTIVE,
             phase=QueryCursorPhase.CANONICAL,
-            next_key=window[-1].key if more else None,
+            next_key=scope_key + window[-1].key if more else None,
             snapshot_at=snapshot_at,
         )
 
@@ -1338,7 +1378,7 @@ class ControlQueryAdapter:
     ) -> Page[ConfigOverrideView]:
         del reveal_external
         snapshot_at = _now()
-        specs = {item.key: item for item in ConfigRegistry().list()}
+        specs = {item.key: item for item in self._registry.list()}
         async with self._reader() as session:
             epoch, _revision = await self._runtime(session)
             _phase, key = self._cursor_state(request, QueryResourceKind.CONFIG, epoch=epoch)
@@ -1391,6 +1431,7 @@ class ControlQueryAdapter:
             items = [
                 MemoryFactView(
                     fact_id=int(row.id),
+                    revision=state_revision(row.updated_at),
                     scope_type=str(row.scope_type),
                     kind=str(row.kind),
                     category=str(row.category or "uncategorized"),
@@ -1417,7 +1458,9 @@ class ControlQueryAdapter:
         snapshot_at = _now()
         async with self._reader() as session:
             epoch, _revision = await self._runtime(session)
-            _phase, key = self._cursor_state(request, QueryResourceKind.MEMORY_FACT, epoch=epoch)
+            _phase, key = self._cursor_state(
+                request, QueryResourceKind.MEMORY_EVIDENCE, epoch=epoch
+            )
             after = decode_integer_cursor_key(key, minimum=1) if key is not None else 0
             stmt = select(MemoryEvidenceModel)
             if after:
@@ -1438,7 +1481,7 @@ class ControlQueryAdapter:
             ]
             return self._page(
                 items,
-                kind=QueryResourceKind.MEMORY_FACT,
+                kind=QueryResourceKind.MEMORY_EVIDENCE,
                 phase=QueryCursorPhase.CANONICAL,
                 next_key=str(rows[-1].id) if more else None,
                 snapshot_at=snapshot_at,
@@ -1555,6 +1598,7 @@ class ControlQueryAdapter:
             items = [
                 AutomationView(
                     automation_id=int(row.id),
+                    revision=state_revision(row.updated_at),
                     name=str(row.name),
                     status=str(row.status),
                     run_count=int(row.run_count),
@@ -1593,6 +1637,7 @@ class ControlQueryAdapter:
             items = [
                 PluginView(
                     plugin_id=str(row.plugin_id),
+                    revision=state_revision(row.updated_at),
                     name=str(row.name),
                     version=str(row.version),
                     status=str(row.status),
@@ -1621,11 +1666,16 @@ class ControlQueryAdapter:
                     )
                 )
             }
+            revisions = {
+                str(row.server_id): state_revision(row.updated_at)
+                for row in await session.scalars(select(MCPServerStateModel))
+            }
             if self._mcp is not None:
                 statuses = await self._mcp.statuses(session=session)
                 items = [
                     McpServerView(
                         server_id=item.server_id,
+                        revision=revisions.get(item.server_id, 0),
                         enabled=bool(item.enabled),
                         healthy=bool(item.connected),
                         tool_count=int(item.configured_tools or tool_counts.get(item.server_id, 0)),
@@ -1641,6 +1691,7 @@ class ControlQueryAdapter:
                 items = [
                     McpServerView(
                         server_id=str(row.server_id),
+                        revision=revisions[str(row.server_id)],
                         enabled=bool(row.enabled),
                         healthy=str(row.status) == "connected",
                         tool_count=tool_counts.get(str(row.server_id), 0),
@@ -1728,6 +1779,7 @@ class ControlQueryAdapter:
             items = [
                 SpeechProfileView(
                     profile_id=str(row.profile_id),
+                    revision=state_revision(row.updated_at),
                     status="enabled" if row.enabled else "disabled",
                     enabled=bool(row.enabled),
                 )

@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import ConfigApplyMode, ConfigChangeResult
-from qq_ai_bot.automation.registry import build_capability_registry
 from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.config import Settings
@@ -43,7 +42,6 @@ from qq_ai_bot.memory.rebuild.service import (
     plan_rebuild_core,
     start_rebuild_core,
 )
-from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
@@ -60,7 +58,6 @@ from qq_ai_bot.plugin_host.notification_repository import PluginNotificationRepo
 from qq_ai_bot.plugin_host.repository import PluginApprovalError, PluginInstallationRepository
 from qq_ai_bot.speech.db_models import SpeechVoiceProfileModel
 from qq_ai_bot.speech.repository import VoiceProfileRepository
-from qq_ai_bot.time.service import TimeContextService
 
 
 class ManagementUnavailable(Exception):
@@ -184,6 +181,8 @@ class ControlManagementGateway:
         mcp: MCPManager | None = None,
         maintenance: MemoryMaintenanceWorker | None = None,
         embeddings: MemoryEmbeddingRuntime | None = None,
+        automation: AutomationService | None = None,
+        memories: MemoryFactService | None = None,
     ) -> None:
         self._database = database
         self._settings = settings
@@ -191,7 +190,8 @@ class ControlManagementGateway:
         self._mcp = mcp
         self._maintenance = maintenance
         self._embeddings = embeddings
-        self._automation: AutomationService | None = None
+        self._automation = automation
+        self._memories = memories
 
     def _require_settings(self) -> Settings:
         if self._settings is None:
@@ -201,24 +201,17 @@ class ControlManagementGateway:
     def _config_service(self) -> RuntimeConfigService:
         if self._runtime_config is not None:
             return self._runtime_config
-        settings = self._require_settings()
-        self._runtime_config = RuntimeConfigService(settings=settings, database=self._database)
-        return self._runtime_config
+        raise ManagementUnavailable
 
     def _facts(self) -> MemoryFactService:
-        return MemoryFactService(MemoryFactRepository(self._database))
+        if self._memories is None:
+            raise ManagementUnavailable
+        return self._memories
 
     def _automation_service(self) -> AutomationService:
         if self._automation is not None:
             return self._automation
-        settings = self._require_settings()
-        self._automation = AutomationService(
-            settings=settings,
-            repository=AutomationRepository(self._database),
-            registry=build_capability_registry(),
-            time_service=TimeContextService(self._database),
-        )
-        return self._automation
+        raise ManagementUnavailable
 
     async def set_config(
         self,
@@ -296,7 +289,6 @@ class ControlManagementGateway:
             fact_id = int(parsed.resource_id)
         except ValueError as exc:
             raise ManagementFailure(ProblemCode.VALIDATION_ERROR) from exc
-        self._require_settings()
         facts = self._facts()
         current = await facts.get_fact(fact_id, session=session)
         if current is None:
@@ -539,7 +531,9 @@ class ControlManagementGateway:
         parsed: ManagementActionPayload,
     ) -> ManagementMutation:
         service = self._automation_service()
-        actor = principal.principal_id.text
+        if principal.person_id is None:
+            raise ManagementFailure(ProblemCode.PRECONDITION_FAILED)
+        actor = principal.person_id.text
         if parsed.action == "create":
             _require_revision(0, command.expected_revision)
             if parsed.spec is None:

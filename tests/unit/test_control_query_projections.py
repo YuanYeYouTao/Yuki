@@ -12,7 +12,9 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import event, func, select, text
+from tests.conftest import make_settings
 
+from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.control_plane import (
     AuditEventView,
     ControlPrincipal,
@@ -127,8 +129,14 @@ def _service(
     *,
     connection_registry: object | None = None,
 ) -> ControlQueryService:
+    settings = make_settings(database.url)
     return ControlQueryService(
-        ControlQueryAdapter(database, connection_registry=connection_registry)
+        ControlQueryAdapter(
+            database,
+            connection_registry=connection_registry,
+            settings=settings,
+            runtime_config=RuntimeConfigService(settings=settings, database=database),
+        )
     )
 
 

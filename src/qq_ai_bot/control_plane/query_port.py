@@ -9,6 +9,7 @@ from qq_ai_bot.control_plane.query_types import (
     AuditEventView,
     AutomationView,
     ConfigOverrideView,
+    ConfigQueryScope,
     ConfigSpecView,
     ConversationView,
     EffectiveConfigView,
@@ -91,7 +92,9 @@ class ControlQueryPort(Protocol):
 
     async def list_config_specs(self, request: PageRequest) -> Page[ConfigSpecView]: ...
 
-    async def list_effective_configs(self, request: PageRequest) -> Page[EffectiveConfigView]: ...
+    async def list_effective_configs(
+        self, request: PageRequest, *, scope: ConfigQueryScope | None = None
+    ) -> Page[EffectiveConfigView]: ...
 
     async def list_config_overrides(
         self,

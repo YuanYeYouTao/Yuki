@@ -88,6 +88,9 @@ class QueryResourceKind(StrEnum):
     AUDIT = "audit"
     OPERATION = "operation"
     CONFIG = "config"
+    CONFIG_SPEC = "config_spec"
+    CONFIG_EFFECTIVE = "config_effective"
+    MEMORY_EVIDENCE = "memory_evidence"
     MEMORY_FACT = "memory_fact"
     MEMORY_JOB = "memory_job"
     AUTOMATION = "automation"
@@ -783,6 +786,19 @@ class AuditEventView:
 
 @final
 @dataclass(frozen=True, slots=True)
+class ConfigQueryScope:
+    person_id: PersonId | None = None
+    space_id: SpaceId | None = None
+
+    def __post_init__(self) -> None:
+        if self.person_id is not None and type(self.person_id) is not PersonId:
+            raise TypeError("person_id must be PersonId or None")
+        if self.space_id is not None and type(self.space_id) is not SpaceId:
+            raise TypeError("space_id must be SpaceId or None")
+
+
+@final
+@dataclass(frozen=True, slots=True)
 class ConfigSpecView:
     key: str
     category: str
@@ -791,6 +807,12 @@ class ConfigSpecView:
     mutable: bool
     sensitive: bool
     configured: bool
+    display_name: str
+    description: str
+    minimum: float | None
+    maximum: float | None
+    choices: tuple[str, ...]
+    allowed_scopes: tuple[str, ...]
 
     def __post_init__(self) -> None:
         require_opaque_token(self.key, name="key", max_length=128)
@@ -815,6 +837,8 @@ class EffectiveConfigView:
     pending_restart: bool
     version: int | None
     value: str | int | float | bool | None
+    saved_value: str | int | float | bool | None
+    saved_source: str
     owner_kind: ConfigOwnerKind | None = None
     person_id: PersonId | None = None
     space_id: SpaceId | None = None
@@ -823,13 +847,14 @@ class EffectiveConfigView:
     def __post_init__(self) -> None:
         require_opaque_token(self.key, name="key", max_length=128)
         require_opaque_token(self.source, name="source", max_length=32)
+        require_opaque_token(self.saved_source, name="saved_source", max_length=32)
         require_opaque_token(self.scope_type, name="scope_type", max_length=16)
         require_opaque_token(self.apply_mode, name="apply_mode", max_length=32)
         _require_bool(self.configured, "configured")
         _require_bool(self.pending_restart, "pending_restart")
         if self.version is not None:
             object.__setattr__(self, "version", _require_int(self.version, "version", minimum=1))
-        if self.apply_mode == "secret" and self.value is not None:
+        if self.apply_mode == "secret" and (self.value is not None or self.saved_value is not None):
             raise ValueError("secret config cannot carry a value")
         _validate_config_owner(
             owner_kind=self.owner_kind,
@@ -884,8 +909,10 @@ class MemoryFactView:
     status: str
     content: str | None
     excerpt: str | None
+    revision: int
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "revision", _require_int(self.revision, "revision", minimum=1))
         object.__setattr__(self, "fact_id", _require_int(self.fact_id, "fact_id", minimum=1))
         require_opaque_token(self.scope_type, name="scope_type", max_length=16)
         require_opaque_token(self.kind, name="kind", max_length=16)
@@ -956,8 +983,10 @@ class AutomationView:
     target_kind: str
     target_id: str
     route_state: str  # missing | paused | configured (not live health)
+    revision: int
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "revision", _require_int(self.revision, "revision", minimum=1))
         object.__setattr__(
             self, "automation_id", _require_int(self.automation_id, "automation_id", minimum=1)
         )
@@ -979,8 +1008,10 @@ class PluginView:
     version: str
     status: str
     enabled: bool
+    revision: int
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "revision", _require_int(self.revision, "revision", minimum=1))
         require_opaque_token(self.plugin_id, name="plugin_id", max_length=128)
         if type(self.name) is not str or not self.name or len(self.name) > 128:
             raise ValueError("name must be a nonempty display token")
@@ -996,8 +1027,10 @@ class McpServerView:
     enabled: bool
     healthy: bool
     tool_count: int
+    revision: int
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "revision", _require_int(self.revision, "revision", minimum=0))
         require_opaque_token(self.server_id, name="server_id", max_length=128)
         _require_bool(self.enabled, "enabled")
         _require_bool(self.healthy, "healthy")
@@ -1029,12 +1062,14 @@ class EmojiAssetView:
     asset_id: str
     status: str
     enabled: bool
+    revision: int
     global_enabled: bool | None = None
     space_enablements: tuple[EmojiSpaceEnablementView, ...] = ()
     first_seen_person_id: PersonId | None = None
     first_seen_space_id: SpaceId | None = None
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "revision", _require_int(self.revision, "revision", minimum=1))
         require_opaque_token(self.asset_id, name="asset_id", max_length=128)
         require_opaque_token(self.status, name="status", max_length=32)
         _require_bool(self.enabled, "enabled")
@@ -1061,8 +1096,10 @@ class SpeechProfileView:
     profile_id: str
     status: str
     enabled: bool
+    revision: int
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "revision", _require_int(self.revision, "revision", minimum=1))
         require_opaque_token(self.profile_id, name="profile_id", max_length=128)
         require_opaque_token(self.status, name="status", max_length=32)
         _require_bool(self.enabled, "enabled")

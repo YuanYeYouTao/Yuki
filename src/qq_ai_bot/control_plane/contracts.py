@@ -44,6 +44,7 @@ from qq_ai_bot.control_plane.query_service import ControlQueryService
 from qq_ai_bot.control_plane.query_types import (
     AuditEventView,
     AutomationView,
+    ConfigQueryScope,
     ConfigSpecView,
     ControlQueryError,
     ConversationView,
@@ -98,6 +99,7 @@ __all__ = [
     "CatalogCapabilityView",
     "CatalogSourceKind",
     "CommandOperation",
+    "ConfigQueryScope",
     "ConfigSpecView",
     "ControlCapabilityDescriptor",
     "ControlCommand",
