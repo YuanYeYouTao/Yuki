@@ -156,7 +156,10 @@ async def _host(database, tmp_path, *, observer=True):
     app = SimpleNamespace(
         database=database,
         ledger=EventLedgerRepository(database),
-        settings=SimpleNamespace(bot_aliases=("Yuki", "由纪")),
+        settings=SimpleNamespace(
+            bot_aliases=("Yuki", "由纪"),
+            semantic_participation_model_config_file=tmp_path / "autonomous-model.json",
+        ),
         runtime_config=SimpleNamespace(
             snapshot=AsyncMock(
                 return_value=SimpleNamespace(

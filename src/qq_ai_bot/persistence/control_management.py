@@ -269,7 +269,13 @@ class ControlManagementGateway:
                 )
             except ConfigFileError as exc:
                 raise ManagementFailure(ProblemCode(exc.category)) from None
-            return ManagementMutation(parsed.resource_id, revision, "saved_pending_restart")
+            return ManagementMutation(
+                parsed.resource_id,
+                revision,
+                "saved_pending_reload"
+                if parsed.resource_id == "autonomous_model"
+                else "saved_pending_restart",
+            )
         if operation == CommandOperation.PLUGIN_MUTATE.value:
             manager = self._plugins
             if manager is None:

@@ -396,3 +396,17 @@ select:focus-visible {
 .persona-editor {
   min-height: 340px;
 }
+/* Semantic probabilities stay readable within the table on narrow screens. */
+.probability-list {
+  min-width: 16rem;
+}
+.probability-list > div {
+  display: grid;
+  grid-template-columns: minmax(8rem, 1fr) 5rem 3.5rem;
+  gap: 0.5rem;
+  align-items: center;
+}
+.probability-list meter {
+  width: 100%;
+  accent-color: var(--accent);
+}

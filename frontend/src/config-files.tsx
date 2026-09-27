@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { SchemaFields } from "./schema-fields";
+import { AutonomyParameterFields } from "./autonomy-parameters";
 import type { Row } from "./api";
 import type { PageProps } from "./pages";
 import { useQuery } from "./hooks";
@@ -9,6 +10,7 @@ const names: Record<string, string> = {
   model_profiles: "模型 Profile 与任务路由",
   system_prompt: "System Prompt 模板",
   bot_persona: "共享人格原文",
+  autonomous_model: "自主机会 · 热更新参数",
   provider: "供应商",
   protocol: "协议",
   base_url: "服务地址",
@@ -201,6 +203,8 @@ function Draft({ fields, props }: { fields: Row; props: PageProps }) {
   const fileId = String(fields.file_id);
   const [document, setDocument] = useState<Row>((fields.document || {}) as Row);
   const [content, setContent] = useState(String(fields.content || ""));
+  const hotReload = fields.apply_mode === "hot_reload";
+  const [hasDocument, setHasDocument] = useState(fields.document != null);
   return (
     <>
       {fields.exists === false && (
@@ -217,9 +221,32 @@ function Draft({ fields, props }: { fields: Row; props: PageProps }) {
           磁盘配置未通过校验。修正后保存；当前运行配置不会随编辑改变。
         </p>
       )}
-      {fileId === "model_profiles" &&
-      fields.document &&
-      fields.profile_schema ? (
+      {fileId === "autonomous_model" && fields.parameter_schema ? (
+        hasDocument ? (
+          <AutonomyParameterFields
+            fields={fields}
+            document={document}
+            change={setDocument}
+          />
+        ) : (
+          <>
+            <Empty>
+              磁盘参数格式无效。可在服务器修正，或明确以默认参数建立新草稿。
+            </Empty>
+            <button
+              className="btn-secondary"
+              onClick={() => {
+                setDocument(structuredClone(fields.defaults as Row));
+                setHasDocument(true);
+              }}
+            >
+              使用默认参数建立草稿
+            </button>
+          </>
+        )
+      ) : fileId === "model_profiles" &&
+        fields.document &&
+        fields.profile_schema ? (
         <ModelDocument
           fields={fields}
           document={document}
@@ -239,7 +266,9 @@ function Draft({ fields, props }: { fields: Row; props: PageProps }) {
         </label>
       )}
       <p className="small">
-        保存后需重启应用才会加载。不会重写历史聊天或重跑已有工作；实际注入内容可在执行轨迹中查看。
+        {hotReload
+          ? "保存后由原控制器下一次采样加载；回执只证明文件保存。刷新页面核对生效值，控制器未运行时不会冒充已加载。不会重算历史、重跑或重置已有工作。"
+          : "保存后需重启应用才会加载。不会重写历史聊天或重跑已有工作；实际注入内容可在执行轨迹中查看。"}
       </p>
       {fields.writable_directory === false && (
         <p className="error-note">
@@ -251,7 +280,9 @@ function Draft({ fields, props }: { fields: Row; props: PageProps }) {
         (fileId !== "model_profiles" || fields.profile_schema) && (
           <button
             className="btn-primary"
-            disabled={fields.writable_directory === false}
+            disabled={
+              fields.writable_directory === false || (hotReload && !hasDocument)
+            }
             onClick={() =>
               props.act({
                 method: "save_config_file",
@@ -261,10 +292,15 @@ function Draft({ fields, props }: { fields: Row; props: PageProps }) {
                   action: "save",
                   resource_id: fileId,
                   spec:
-                    fileId === "model_profiles" ? { document } : { content },
+                    fileId === "model_profiles" || hotReload
+                      ? { document }
+                      : { content },
                 },
-                review: fileId === "model_profiles" ? document : content,
-                hint: "将核对刚读取的文件版本并原子保存。持久回执中的 saved_pending_restart 表示已保存，尚需重启加载。",
+                review:
+                  fileId === "model_profiles" || hotReload ? document : content,
+                hint: hotReload
+                  ? "核对原文件版本并原子保存。saved_pending_reload 表示已保存，等待原控制器下一轮加载；实际生效请刷新核对。"
+                  : "将核对刚读取的文件版本并原子保存。持久回执中的 saved_pending_restart 表示已保存，尚需重启加载。",
               })
             }
           >

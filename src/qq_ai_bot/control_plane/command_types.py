@@ -1124,9 +1124,12 @@ def _require_management_semantics(
             raise _mismatch()
         return
     if operation == CommandOperation.CONFIG_FILE_SAVE.value:
+        expected_status = (
+            "saved_pending_reload" if resource_id == "autonomous_model" else "saved_pending_restart"
+        )
         if (
             action != "save"
-            or status != "saved_pending_restart"
+            or status != expected_status
             or resource_id != semantic_target_id
             or resource_id != _material_resource(material)
         ):

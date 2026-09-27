@@ -6,6 +6,120 @@ import { TraceContent } from "./traces";
 import { ActionSheet } from "./actions";
 import { Chat } from "./chat";
 import { displayTrace } from "./trace-display";
+import { Autonomy } from "./pages";
+
+it("shows actual semantic dimensions and distinguishes them from admission", () => {
+  render(
+    <TraceContent
+      row={{
+        origin: "semantic_observation",
+        payload: {
+          data: {
+            elapsed_seconds: 0.3,
+            observation: {
+              provider: "typesafe",
+              model_revision: "jev-fixture",
+              rubric_revision: "v6",
+              input_tokens: 21,
+              output_tokens: 5,
+              invalid_dimensions: [],
+              snapshot: {
+                sequence: 4,
+                scope: { generation: 2 },
+                focus: {
+                  ref: { event_id: "event:42" },
+                  at: 1790000000,
+                  author: "fixture",
+                  kind: "human",
+                  text: "原观察内容",
+                },
+                context: [],
+              },
+              answers: {
+                interaction_mark: {
+                  choice: "invite_yuki",
+                  probabilities: { invite_yuki: 0.9, unknown: 0.1 },
+                },
+              },
+            },
+          },
+        },
+      }}
+    />,
+  );
+  expect(screen.getByText("原观察内容")).toBeInTheDocument();
+  expect(screen.getByText("interaction_mark")).toBeInTheDocument();
+  expect(
+    screen.getByRole("cell", { name: "invite_yuki", exact: true }),
+  ).toBeInTheDocument();
+  expect(screen.getByText("90.0%")).toBeInTheDocument();
+  expect(screen.getByText("10.0%")).toBeInTheDocument();
+  expect(
+    screen.getByText(/不等于 Host 已接纳或 Yuki 已发言/),
+  ).toBeInTheDocument();
+});
+
+it("filters the original decision timeline by conversation and origin without execution", async () => {
+  const requests: { method: string; body: Record<string, unknown> }[] = [];
+  const fetch = vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation(async (url, options) => {
+      const method = String(url).split("/").pop()!;
+      requests.push({
+        method,
+        body: JSON.parse(String(options?.body || "{}")),
+      });
+      return new Response(
+        JSON.stringify({
+          data:
+            method === "read_participation"
+              ? { fields: { scopes: [], running: true } }
+              : { items: [], next_cursor: null },
+          problem: null,
+        }),
+        { status: 200 },
+      );
+    });
+  const act = vi.fn();
+  render(
+    <Autonomy
+      allowed={(method) => method !== "read_config_file"}
+      act={act}
+      refresh={0}
+      conversation="canonical-fixture"
+    />,
+  );
+  await waitFor(() =>
+    expect(
+      requests.some((item) => item.method === "list_execution_trace"),
+    ).toBe(true),
+  );
+  expect(
+    requests.find((item) => item.method === "list_execution_trace")?.body.scope,
+  ).toEqual({
+    origin: "semantic_observation",
+    conversation_id: "canonical-fixture",
+    descending: true,
+  });
+  const user = userEvent.setup();
+  await user.selectOptions(
+    screen.getByRole("combobox", { name: "记录类型" }),
+    "participation_decision",
+  );
+  await waitFor(() =>
+    expect(
+      requests.some(
+        (item) =>
+          (item.body.scope as Record<string, unknown>)?.origin ===
+          "participation_decision",
+      ),
+    ).toBe(true),
+  );
+  expect(act).not.toHaveBeenCalled();
+  expect(
+    fetch.mock.calls.every(([url]) => !String(url).includes("/commands/")),
+  ).toBe(true);
+});
 
 function ok(value: unknown) {
   return Promise.resolve(

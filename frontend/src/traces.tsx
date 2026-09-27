@@ -8,9 +8,38 @@ import {
   JsonNote,
   QueryList,
   Section,
+  Table,
 } from "./components";
 import type { Row } from "./api";
 import { displayTrace } from "./trace-display";
+
+function Probabilities({ value }: { value: unknown }) {
+  const probabilities = (
+    value && typeof value === "object" ? value : {}
+  ) as Row;
+  return (
+    <div className="probability-list">
+      {Object.entries(probabilities)
+        .sort((a, b) => Number(b[1]) - Number(a[1]))
+        .map(([option, chance]) => (
+          <div key={option}>
+            <span>{option}</span>
+            {typeof chance === "number" &&
+            Number.isFinite(chance) &&
+            chance >= 0 &&
+            chance <= 1 ? (
+              <>
+                <meter min={0} max={1} value={chance} aria-label={option} />
+                <span>{(chance * 100).toFixed(1)}%</span>
+              </>
+            ) : (
+              <span>{text(chance)}</span>
+            )}
+          </div>
+        ))}
+    </div>
+  );
+}
 
 export function TraceContent({ row }: { row: Row }) {
   const evidence = row.payload as Row | null;
@@ -23,8 +52,88 @@ export function TraceContent({ row }: { row: Row }) {
       </Empty>
     );
   const { prompts, reasoning, replies } = displayTrace(evidence);
+  const data = (evidence.data || evidence) as Row;
+  const observation = data.observation as Row | undefined;
+  const snapshot = (data.snapshot || observation?.snapshot) as Row | undefined;
+  const proposal = data.proposal as Row | undefined;
   return (
     <>
+      {snapshot && (
+        <>
+          <h3>实际语义观察</h3>
+          <p className="small">
+            原代次 {text((snapshot.scope as Row)?.generation)} · 请求序号{" "}
+            {text(snapshot.sequence)} · 来源{" "}
+            {text(((snapshot.focus as Row)?.ref as Row)?.event_id)}
+          </p>
+          <Table
+            rows={
+              [snapshot.focus, ...((snapshot.context || []) as Row[])] as Row[]
+            }
+            columns={[
+              ["at", "事件时间", stamp],
+              ["author", "作者"],
+              ["kind", "类型"],
+              ["text", "实际观察内容"],
+            ]}
+          />
+        </>
+      )}
+      {observation && (
+        <>
+          <p className="small">
+            {text(observation.provider)} · {text(observation.model_revision)} ·
+            rubric {text(observation.rubric_revision)} · 耗时{" "}
+            {text(data.elapsed_seconds)} 秒
+          </p>
+          <p className="small">
+            输入 tokens {text(observation.input_tokens)} · 输出 tokens{" "}
+            {text(observation.output_tokens)} · 无效维度{" "}
+            {text(observation.invalid_dimensions)}
+          </p>
+          <Table
+            rows={Object.entries((observation.answers || {}) as Row).map(
+              ([dimension, answer]) => ({ dimension, ...(answer as Row) }),
+            )}
+            columns={[
+              ["dimension", "语义维度"],
+              ["choice", "原选择"],
+              [
+                "probabilities",
+                "全部概率",
+                (value) => <Probabilities value={value} />,
+              ],
+            ]}
+          />
+          <p className="small">
+            这是 Jev 返回的语义结果，不等于 Host 已接纳或 Yuki 已发言。
+          </p>
+        </>
+      )}
+      {proposal && (
+        <>
+          <h3>Host 待接纳提议</h3>
+          <p>
+            类型 {text(proposal.kind)} · 原提议 {text(proposal.proposal_id)} ·
+            owner {text(data.owner)}
+          </p>
+          <p className="small">
+            参数版本 {text(data.model_profile)} · 创建{" "}
+            {stamp(proposal.created_at)} · 到期 {stamp(proposal.expires_at)}
+          </p>
+          <JsonNote
+            title="原来源与支持"
+            value={{
+              sources: proposal.sources,
+              supports: proposal.supports,
+              support: proposal.support,
+            }}
+          />
+        </>
+      )}
+      {row.origin === "participation_decision" && data.result != null && (
+        <JsonNote title="原 Host 接纳结果" value={data.result} />
+      )}
       {prompts.length > 0 && (
         <div className="prompt-messages">
           {prompts.map((message, i) => (
@@ -82,21 +191,36 @@ export function TraceReader({ id }: { id: number }) {
 export function Traces({
   scope = {},
   refresh = 0,
+  title = "执行轨迹",
 }: {
   scope?: Row;
   refresh?: number;
+  title?: string;
 }) {
   return (
-    <TraceList key={JSON.stringify(scope)} scope={scope} refresh={refresh} />
+    <TraceList
+      key={JSON.stringify(scope)}
+      scope={scope}
+      refresh={refresh}
+      title={title}
+    />
   );
 }
-function TraceList({ scope, refresh }: { scope: Row; refresh: number }) {
+function TraceList({
+  scope,
+  refresh,
+  title,
+}: {
+  scope: Row;
+  refresh: number;
+  title: string;
+}) {
   const [selected, setSelected] = useState<number | null>(null),
     [turn, setTurn] = useState(""),
     [draft, setDraft] = useState("");
   return (
     <>
-      <Section title="执行轨迹">
+      <Section title={title}>
         <form
           className="search-line"
           onSubmit={(e) => {

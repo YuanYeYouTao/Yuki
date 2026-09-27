@@ -401,6 +401,7 @@ class Settings(BaseSettings):
     semantic_participation_api_key: SecretStr = Field(default=SecretStr(""), repr=False)
     semantic_participation_model: str = "jev-1.13.0"
     semantic_participation_state_path: Path = Path("data/participation.sqlite3")
+    semantic_participation_model_config_file: Path = Path("config/autonomous-model.json")
     runtime_work_enabled: bool = False
     subagents_enabled: bool = False
     subagent_context_token_limit: int = Field(default=131072, ge=8192)

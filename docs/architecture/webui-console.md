@@ -63,7 +63,7 @@ UTF-8；完整下载最多 32 MiB，校验原摘要。大文件与不存在/过�
 | 运行状态 | 现有 System/Health；未知健康状态保留 null，不调用模型探测 |
 | 模型/用量 | 已加载 Profile/Route、磁盘配置表单与原子保存；实际调用、tokens/缓存/耗时/错误。元数据不显示地址/环境变量引用，文件正文单独授权；密钥与请求头始终不显示 |
 | Work/自动化 | 原 Work 预算、等待、子工作、输入、效果/投递意图、检查点与恢复元数据、轨迹；自动化脚本、执行与步骤历史分页；创建、编辑、暂停/恢复、取消、run_now |
-| 自主参与 | 当前只读控制器状态与已接纳轮次/最新反馈；不 tick、不重算、不调用 Jev |
+| 自主参与 | 当前控制器状态、已接纳轮次/最新反馈、Jev/Host 决策诊断时间线、完整数学参数表单与原热更新文件；查询不 tick、不重算、不调用 Jev |
 | Memory | fact、证据、维护工作、确认/隔离、既有 rebuild/dream/maintain 入口 |
 | 插件/MCP | 原 schema 配置、GitHub queue/cursor/诊断、通知 outbox；Manager 批准/启停/doctor、MCP refresh/reconnect |
 | 身份/配置 | canonical Person/Space/Presence 与原动作；Registry schema、作用域有效配置、保存/删除覆盖 |
@@ -77,7 +77,7 @@ UTF-8；完整下载最多 32 MiB，校验原摘要。大文件与不存在/过�
 ## 启动文件的编辑与生效
 
 `read_config_file` / `save_config_file` 只接受 `model_profiles`、`system_prompt`、
-`bot_persona` 三个逻辑文件 ID，路径来自原 Settings；不接受浏览器提供的宿主路径。
+`bot_persona`、`autonomous_model` 四个逻辑文件 ID，路径来自原 Settings；不接受浏览器提供的宿主路径。
 `control.config.file.content.read` 与 `control.config.file.mutate` 为独立 operator 能力，
 普通配置元数据读取不获得文件正文或写入权限。保存原文不进入审计正文，审计只保留
 文件 ID、版本、状态；请求摘要仍绑定原内容，按原 UUID 防重放。
@@ -101,12 +101,19 @@ TOML 文档校验及 Settings 环境变量引用解析；不按型号猜供应�
 文件替换或最终回执提交后结果未知，保留原 request/unknown，不自动保存第二次。
 不会重写聊天历史、清空会话或重跑已有 Work。
 
+`autonomous_model` 是原控制器的热更新 JSON 参数文件。完整数值 schema 直接来自
+固定独立库，页面按语义分组显示；不复制默认值/校验边界或重算机会率。
+`apply_mode=hot_reload`，保存回执为 `saved_pending_reload`；磁盘与当前实际生效参数
+分别显示。查询不刷新控制器，下一轮原采样才应用；原请求回执与 unknown 围栏不变。
+
 ### 容器中的可写启动文件
 
 基础 Compose 的 `/app/config` 为只读。可选 `docker-compose.webui.yml` 把三个启动文件
 放到 `/app/webui-config` 可写目录；启用前将当前实际使用的 Profile、System Prompt、
 人格原文分别复制到宿主 `./webui-config/model_profiles.toml`、`system_prompt.md`、
 `persona.md`，逐一核对存在且内容正确。不要用示例文件覆盖现有配置。
+现有自主模型挂载参数也需复制为 `./webui-config/autonomous-model.json`；没有原覆盖
+文件时可保持不存在并使用默认值。overlay 将原热更新路径指向同一可写目录。
 沿现有 Compose 文件列表追加此 overlay；它不发布端口，不设置域名或 operator。
 
 原子替换需要挂载整个目录并允许目录写入，不能只挂载单个文件。页面显示目录不可写时
@@ -149,6 +156,14 @@ transport target 或子任务 brief/result。等待条件只返回审核字段�
 SQL 只读取状态、时间、能力、计数和错误类别，不加载 authority snapshot、私有
 输入/输出摘要或结果正文。查询不重跑、补发或调用模型；执行内容沿原授权诊断查看。
 
+## Jev 与 Host 决策诊断
+
+原观察适配器的实际 Snapshot、返回概率、无效维度、usage 和耗时沿既有 Recorder 保存；
+原 Host 接纳记录 proposal、owner、参数版本与实际 accepted/busy/rejected 结果。
+页面按会话及 origin 分页，正文授权后显示来源、全部概率与完整诊断；没有记录的
+旧历史、超期或隐私删除记录不回填。没有 usage 时保留未知，不从文本估算 tokens。
+它是有保留期限的诊断历史，不能用于重放或恢复，也不冒充长期计费统计。
+
 ## 插件配置与只读状态
 
 `read_plugin_configuration` / `configure_plugin` 使用 Manager 已批准并注册的原 Pydantic
@@ -188,7 +203,7 @@ accepted/committed cursor、轮询/成功时间、暂停、失败、限流、pen
 
 本层不是完整 WebUI 的最终验收。后续沿原领域服务继续建设：
 
-- Jev 完整决策历史、参与参数编辑与关系/自省统计；当前未持久化的数据不能伪造为历史。
+- 关系/自省统计与自主轮的完整反馈详情；原诊断未记录的历史不能伪造。
 - 插件 background turn 的完整历史分页，以及插件领域明确定义的队列维护动作；不提供任意 KV 编辑或无证据重发。
 - Memory 主体/证据筛选与关系详情、完整 schema 表单。
 - 自动化脚本及维护动作的完整 schema 表单；当前 JSON 编辑保留原完整校验。

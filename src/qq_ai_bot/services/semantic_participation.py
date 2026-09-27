@@ -51,6 +51,7 @@ from qq_ai_bot.conversation.initiative_sources import memory_revision, source_re
 from qq_ai_bot.conversation.self_initiative import validate_self_initiative
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import InboundMessage
+from qq_ai_bot.execution_trace.recorder import TraceRecorder, trace_span
 from qq_ai_bot.identity.db_models import CanonicalSpaceModel, PresenceModel, SpaceBindingModel
 from qq_ai_bot.memory.self_origin import read_self_seed_candidates, read_self_seed_page
 from qq_ai_bot.persistence.models import ChatEventModel, MemoryEvidenceModel
@@ -102,13 +103,20 @@ class _ScopeCapacityBusy(RuntimeError):
 
 
 class SemanticParticipationService:
-    def __init__(self, app: Any, *, model_config_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        app: Any,
+        *,
+        model_config_path: Path | None = None,
+        traces: TraceRecorder | None = None,
+    ) -> None:
         self.app = app
         self.database = app.database
         self.repository = AutonomyRepository(self.database)
         self.work = WorkRepository(self.database)
         self._store: SnapshotStore | None = None
         self._observer: JevObserver | None = None
+        self._traces = traces
         self._sessions: dict[tuple[str, int], _Session] = {}
         self._dirty: dict[str, dict[int, bool]] = {}
         self._task: asyncio.Task[None] | None = None
@@ -117,7 +125,9 @@ class SemanticParticipationService:
         self._dirty_overflows = 0
         self._last_discovery_at = 0.0
         self._discovery_cursor = 0
-        self._model_config_path = model_config_path or Path("config/autonomous-model.json")
+        self._model_config_path = (
+            model_config_path or app.settings.semantic_participation_model_config_file
+        )
         self._model_parameters = DEFAULT_AUTONOMY_PARAMETERS
         self._model_seen_digest = ""
         self._model_active_digest = "default"
@@ -206,6 +216,10 @@ class SemanticParticipationService:
             ],
             "retention": "current_bounded_snapshot",
         }
+
+    def control_model_parameters(self) -> AutonomyParameters:
+        """Return the immutable profile actually in use; do not refresh or tick."""
+        return self._model_parameters
 
     async def health(self) -> dict[str, object]:
         from qq_ai_bot.services.participation_diagnostics import participation_diagnostics
@@ -325,7 +339,13 @@ class SemanticParticipationService:
             if loaded
             else Controller(scene.scope, time.time(), self._model_parameters)
         )
-        observation = ObservationSession(controller, self._observer) if self._observer else None
+        from qq_ai_bot.services.participation_trace import TracedSemanticObserver
+
+        observation = (
+            ObservationSession(controller, TracedSemanticObserver(self._observer, self._traces))
+            if self._observer
+            else None
+        )
         item = _Session(
             scene,
             controller,
@@ -713,6 +733,22 @@ class SemanticParticipationService:
                 offered.pop(old_key)
 
     async def _admit(self, item: _Session, binding: AutonomyBinding, proposal: Proposal) -> None:
+        async with trace_span(
+            "participation_decision",
+            {
+                "proposal": proposal.model_dump(mode="json"),
+                "owner": binding.effective_owner.value,
+                "model_profile": self._model_active_digest[:12],
+            },
+            recorder=self._traces,
+            conversation_id=item.scene.conversation_id,
+            origin="participation_decision",
+        ) as span:
+            span.result = await self._admit_proposal(item, binding, proposal)
+
+    async def _admit_proposal(
+        self, item: _Session, binding: AutonomyBinding, proposal: Proposal
+    ) -> dict[str, object]:
         now = time.time()
         valid = (
             proposal.scope == item.scene.scope
@@ -814,7 +850,7 @@ class SemanticParticipationService:
                     at=now,
                 )
             )
-            return
+            return {"outcome": "rejected", "reason": "source_or_scene_invalid"}
         result = await self.repository.accept_host_proposal(
             proposal_id=proposal.proposal_id,
             binding=binding,
@@ -851,6 +887,10 @@ class SemanticParticipationService:
                     at=now,
                 )
             )
+        return {
+            "outcome": result.outcome,
+            "run_id": result.run.run_id if result.run is not None else None,
+        }
 
     @staticmethod
     def _source(item: _Session, ref: SourceRef) -> InitiativeSource:

@@ -529,6 +529,7 @@ class ApplicationContainer:
             conversation_media=self.conversation_media,
             model_catalog=self.model_profiles,
             participation_snapshot=lambda: self.semantic_participation.control_snapshot(),
+            autonomy_parameters=lambda: self.semantic_participation.control_model_parameters(),
             runtime_health=lambda: control_runtime_health(self),
         )
         self.emoji_collector.set_event_publisher(self.plugin_events)
@@ -552,7 +553,7 @@ class ApplicationContainer:
         self._automation_handlers._agent_runner = self.chat._agent_runner
         from qq_ai_bot.services.semantic_participation import SemanticParticipationService
 
-        self.semantic_participation = SemanticParticipationService(self)
+        self.semantic_participation = SemanticParticipationService(self, traces=self.models.traces)
         self.autonomous_groups = AutonomousGroupService(
             chat=self.chat,
             runtime_config=self.runtime_config,

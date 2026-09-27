@@ -156,3 +156,86 @@ it("disables saving a readonly startup directory", async () => {
   expect(screen.getByText(/配置目录当前不可写/)).toBeInTheDocument();
   expect(act).not.toHaveBeenCalled();
 });
+
+it("reviews original hot parameter revision and preserves unrelated schema fields", async () => {
+  const fetch = file({
+    file_id: "autonomous_model",
+    revision: 73,
+    valid: true,
+    apply_mode: "hot_reload",
+    matches_loaded: false,
+    parameter_schema: {
+      properties: {
+        intrinsic_interval_seconds: {
+          type: "number",
+          minimum: 1,
+          maximum: 86400,
+          default: 600,
+        },
+        pressure_bias: {
+          type: "number",
+          minimum: -20,
+          maximum: 20,
+          default: 0.2,
+        },
+      },
+    },
+    document: { intrinsic_interval_seconds: 600, pressure_bias: 0.2 },
+    loaded_document: { intrinsic_interval_seconds: 600, pressure_bias: 0.2 },
+  });
+  const act = vi.fn();
+  render(<ConfigFile fileId="autonomous_model" props={{ ...props, act }} />);
+  const user = userEvent.setup();
+  const interval = await screen.findByRole("spinbutton", {
+    name: "无来源基率分母（秒）",
+  });
+  await user.clear(interval);
+  await user.type(interval, "120");
+  await user.click(screen.getByRole("button", { name: "检查并保存" }));
+  expect(act).toHaveBeenCalledWith(
+    expect.objectContaining({
+      revision: 73,
+      payload: {
+        action: "save",
+        resource_id: "autonomous_model",
+        spec: {
+          document: { intrinsic_interval_seconds: 120, pressure_bias: 0.2 },
+        },
+      },
+      hint: expect.stringContaining("saved_pending_reload"),
+    }),
+  );
+  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(
+    screen.queryByText(/保存后需重启应用才会加载/),
+  ).not.toBeInTheDocument();
+});
+
+it("requires explicit default draft to repair invalid hot parameters", async () => {
+  file({
+    file_id: "autonomous_model",
+    revision: 74,
+    valid: false,
+    apply_mode: "hot_reload",
+    parameter_schema: {
+      properties: { pressure_bias: { type: "number", default: 0.2 } },
+    },
+    defaults: { pressure_bias: 0.2 },
+    loaded_document: { pressure_bias: 0.4 },
+  });
+  const act = vi.fn();
+  render(<ConfigFile fileId="autonomous_model" props={{ ...props, act }} />);
+  expect(
+    await screen.findByRole("button", { name: "检查并保存" }),
+  ).toBeDisabled();
+  const user = userEvent.setup();
+  await user.click(
+    screen.getByRole("button", { name: "使用默认参数建立草稿" }),
+  );
+  expect(screen.getByRole("button", { name: "检查并保存" })).toBeEnabled();
+  expect(act).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("button", { name: "检查并保存" }));
+  expect(act.mock.calls[0][0].payload.spec).toEqual({
+    document: { pressure_bias: 0.2 },
+  });
+});

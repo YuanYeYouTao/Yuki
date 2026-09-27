@@ -7,5 +7,6 @@ services:
       MODEL_PROFILES_FILE: /app/webui-config/model_profiles.toml
       SYSTEM_PROMPT_FILE: /app/webui-config/system_prompt.md
       BOT_PERSONA_FILE: /app/webui-config/persona.md
+      SEMANTIC_PARTICIPATION_MODEL_CONFIG_FILE: /app/webui-config/autonomous-model.json
     volumes:
       - ./webui-config:/app/webui-config

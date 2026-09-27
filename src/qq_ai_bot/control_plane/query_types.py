@@ -123,6 +123,7 @@ class ExecutionTraceFilter:
     execution_id: str | None = None
     source_event_id: int | None = None
     delivered_event_id: int | None = None
+    origin: str | None = None
 
     def __post_init__(self) -> None:
         _require_bool(self.descending, "descending")
@@ -132,6 +133,8 @@ class ExecutionTraceFilter:
             value = getattr(self, name)
             if value is not None:
                 require_opaque_token(value, name=name, max_length=128)
+        if self.origin is not None:
+            require_opaque_token(self.origin, name="origin", max_length=64)
         for name in ("source_event_id", "delivered_event_id"):
             value = getattr(self, name)
             if value is not None:

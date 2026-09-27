@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from yuki_participation.autonomy_parameters import AutonomyParameters
+
 from qq_ai_bot.admin.config_files import ConfigFileService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.application.control_access import ControlOperatorAccess
@@ -53,9 +55,12 @@ class ControlPlaneModule:
         conversation_media: ConversationMediaService | None = None,
         model_catalog: ModelProfileCatalog | None = None,
         participation_snapshot: Callable[[], Awaitable[dict[str, object]]] | None = None,
+        autonomy_parameters: Callable[[], AutonomyParameters] | None = None,
         runtime_health: Callable[[], Awaitable[tuple[ComponentHealthView, ...]]] | None = None,
     ) -> ControlPlaneBundle:
-        config_files = ConfigFileService(settings, model_catalog)
+        config_files = ConfigFileService(
+            settings, model_catalog, autonomy_parameters=autonomy_parameters
+        )
         writer = ControlCommandAdapter(
             database,
             settings=settings,

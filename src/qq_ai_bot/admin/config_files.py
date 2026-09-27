@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import stat
 import tempfile
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
 import tomlkit
 from pydantic import TypeAdapter, ValidationError
+from yuki_participation.autonomy_parameters import DEFAULT_AUTONOMY_PARAMETERS, AutonomyParameters
 
 from qq_ai_bot.config import Settings
 from qq_ai_bot.model_runtime.models import ModelProfile, ModelTask
@@ -25,7 +27,7 @@ from qq_ai_bot.model_runtime.profiles import (
 )
 
 MAX_CONFIG_BYTES = 256 * 1024
-CONFIG_FILE_IDS = frozenset({"model_profiles", "system_prompt", "bot_persona"})
+CONFIG_FILE_IDS = frozenset({"model_profiles", "system_prompt", "bot_persona", "autonomous_model"})
 _PUBLIC_PROFILE_FIELDS: dict[str, TypeAdapter[Any]] = {
     name: TypeAdapter(field.annotation)
     for name, field in ModelProfile.model_fields.items()
@@ -77,9 +79,16 @@ def _plain(value: Any) -> Any:
 class ConfigFileService:
     """Paths come only from server Settings. Saving never reloads running providers."""
 
-    def __init__(self, settings: Settings, catalog: ModelProfileCatalog | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        catalog: ModelProfileCatalog | None = None,
+        *,
+        autonomy_parameters: Callable[[], AutonomyParameters] | None = None,
+    ) -> None:
         self._settings = settings
         self._catalog = catalog
+        self._autonomy_parameters = autonomy_parameters
         self._lock = asyncio.Lock()
 
     def _path(self, file_id: str) -> Path:
@@ -87,6 +96,7 @@ class ConfigFileService:
             "model_profiles": self._settings.model_profiles_file,
             "system_prompt": self._settings.system_prompt_file,
             "bot_persona": self._settings.resolved_bot_persona_file,
+            "autonomous_model": self._settings.semantic_participation_model_config_file,
         }
         if type(file_id) is not str or file_id not in paths:
             raise ConfigFileError("validation_error")
@@ -109,14 +119,26 @@ class ConfigFileService:
             "file_id": file_id,
             "exists": content is not None,
             "revision": _revision(content),
-            "apply_mode": "restart",
+            "apply_mode": "hot_reload" if file_id == "autonomous_model" else "restart",
             "valid": True,
             "matches_loaded": None,
             "writable_directory": await asyncio.to_thread(os.access, path.parent, os.W_OK),
         }
         try:
             text = "" if content is None else content.decode("utf-8")
-            if file_id == "model_profiles":
+            if file_id == "autonomous_model":
+                result["parameter_schema"] = AutonomyParameters.model_json_schema()
+                result["defaults"] = DEFAULT_AUTONOMY_PARAMETERS.model_dump(mode="json")
+                loaded = self._autonomy_parameters() if self._autonomy_parameters else None
+                result["loaded_document"] = loaded.model_dump(mode="json") if loaded else None
+                parameters = (
+                    AutonomyParameters.model_validate_json(content)
+                    if content is not None
+                    else DEFAULT_AUTONOMY_PARAMETERS
+                )
+                result["document"] = parameters.model_dump(mode="json")
+                result["matches_loaded"] = parameters == loaded if loaded else None
+            elif file_id == "model_profiles":
                 # Headers are kept server-side even for content-authorized readers.
                 raw: dict[str, Any] = (
                     tomllib.loads(text)
@@ -201,7 +223,12 @@ class ConfigFileService:
             if _revision(original) != expected_revision:
                 raise ConfigFileError("version_conflict")
             try:
-                if file_id == "model_profiles":
+                if file_id == "autonomous_model":
+                    if set(spec) != {"document"} or not isinstance(spec["document"], Mapping):
+                        raise ValueError("invalid document")
+                    parameters = AutonomyParameters.model_validate(_plain(spec["document"]))
+                    text = json.dumps(parameters.model_dump(mode="json"), indent=2) + "\n"
+                elif file_id == "model_profiles":
                     if set(spec) != {"document"} or not isinstance(spec["document"], Mapping):
                         raise ValueError("invalid document")
                     document = _plain(spec["document"])

@@ -78,7 +78,9 @@ export function Health({ refresh }: { refresh: number }) {
   );
 }
 
-export function Autonomy({ refresh, conversation }: PageProps) {
+export function Autonomy(props: PageProps) {
+  const { refresh, conversation } = props;
+  const [origin, selectOrigin] = useState("semantic_observation");
   const { data, error, loading } = useQuery<Row>(
     "read_participation",
     {},
@@ -141,7 +143,31 @@ export function Autonomy({ refresh, conversation }: PageProps) {
           ]}
         />
       </Section>
-      <Traces refresh={refresh} />
+      <Section title="决策时间线">
+        <label className="form-group">
+          记录类型
+          <select
+            className="form-control"
+            value={origin}
+            onChange={(e) => selectOrigin(e.target.value)}
+          >
+            <option value="semantic_observation">Jev 实际语义观察</option>
+            <option value="participation_decision">Host 提议与接纳</option>
+          </select>
+        </label>
+        <p className="small">
+          沿原诊断保留期限查询；上线前未保存、过期或隐私删除的判定不会补写。没有记录不表示没有观察。
+        </p>
+      </Section>
+      <Traces
+        refresh={refresh}
+        scope={{
+          origin,
+          ...(conversation ? { conversation_id: conversation } : {}),
+        }}
+        title="语义与接纳记录"
+      />
+      <ConfigFile fileId="autonomous_model" props={props} />
     </>
   );
 }

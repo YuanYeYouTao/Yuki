@@ -5,11 +5,19 @@
 自主机会模型的可调系数、采样基率和时间尺度集中在
 [`config/autonomous-model.example.json`](../../config/autonomous-model.example.json)。
 将其复制为宿主机挂载的 `config/autonomous-model.json` 后，可原子替换该文件；
+路径可通过 `SEMANTIC_PARTICIPATION_MODEL_CONFIG_FILE` 配置，默认仍为上述文件。
 SemanticParticipationService 每次约两秒的采样轮读取内容散列，校验成功才把完整配置
 应用到所有当前 scope。无需重新构建或重启 Bot。无文件时使用镜像内默认值；删除文件
 会恢复默认值。无效 JSON、未知字段或越界数值会记录错误类别并在健康状态中显示
 `model_config_error`，已生效的上一版参数继续使用；健康状态的 `model_profile`
 是生效内容散列前缀。
+
+WebUI 自主活动页复用该文件与独立库的完整 `AutonomyParameters` schema，
+通过原 `read_config_file` / `save_config_file`、独立文件授权、摘要版本与持久回执
+读取和原子保存。逻辑 ID 为 `autonomous_model`，客户端不能提供宿主路径。
+页面分别显示磁盘值和控制器实际生效值；`saved_pending_reload` 只证明文件保存，
+原控制器下一轮采样才载入。查询不刷新参数、不 tick、不建立新控制器。
+无文件时展示默认值；无效磁盘格式不回显任意原文，可明确选择默认参数建立草稿。
 
 热更新只改变之后的机会率，不重放旧消息、不重新计算已接纳 Work 或回执，也不累积
 停机时的抽样。已裁剪的历史迹线不会因为调大衰减时标而恢复。配置涵盖非请求自主机会

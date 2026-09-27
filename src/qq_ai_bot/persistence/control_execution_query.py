@@ -137,6 +137,7 @@ class ControlExecutionQueryAdapter:
                 scope.source_event_id,
                 scope.delivered_event_id,
                 scope.descending,
+                scope.origin,
             ]
         )
         key = _key(request, QueryResourceKind.EXECUTION_TRACE, partition)
@@ -159,6 +160,8 @@ class ControlExecutionQueryAdapter:
             )
         if scope.turn_id:
             stmt = stmt.where(ExecutionTraceEntryModel.turn_id == scope.turn_id)
+        if scope.origin:
+            stmt = stmt.where(ExecutionTraceEntryModel.origin == scope.origin)
         if scope.work_id:
             related_turns = select(ExecutionTraceEntryModel.turn_id).where(
                 ExecutionTraceEntryModel.work_id == scope.work_id,
