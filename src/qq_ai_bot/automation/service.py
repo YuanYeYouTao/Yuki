@@ -701,7 +701,7 @@ class AutomationService:
             raise PermissionError("automation has no canonical creator")
         now = self._time.clock.now()
         if action == "pause":
-            await self._repository.set_status(
+            changed = await self._repository.set_status(
                 automation_id,
                 creator_person_id=owner_person_id,
                 status=AutomationStatus.PAUSED,
@@ -709,7 +709,7 @@ class AutomationService:
                 session=session,
             )
         elif action == "cancel":
-            await self._repository.set_status(
+            changed = await self._repository.set_status(
                 automation_id,
                 creator_person_id=owner_person_id,
                 status=AutomationStatus.CANCELLED,
@@ -718,7 +718,7 @@ class AutomationService:
             )
         elif action == "resume":
             next_run = initial_run_at(existing.script.schedule, now, existing.timezone)
-            await self._repository.resume(
+            changed = await self._repository.resume(
                 automation_id,
                 creator_person_id=owner_person_id,
                 next_run_at=next_run,
@@ -726,7 +726,7 @@ class AutomationService:
                 session=session,
             )
         elif action == "run_now":
-            await self._repository.schedule_now(
+            changed = await self._repository.schedule_now(
                 automation_id,
                 creator_person_id=owner_person_id,
                 now=now,
@@ -734,6 +734,8 @@ class AutomationService:
             )
         else:
             raise ValueError(f"unsupported automation action: {action}")
+        if not changed:
+            raise ValueError("automation state does not allow this action")
         current = await self._repository.get(automation_id, session=session)
         if current is None:
             raise LookupError("automation not found")

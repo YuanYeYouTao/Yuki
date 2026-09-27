@@ -963,7 +963,10 @@ class ControlCommandAdapter:
                     )
                 else:
                     try:
-                        success = await mutate(session)
+                        # A domain rejection may follow a partial database write.
+                        # Roll it back before committing the original failure receipt.
+                        async with session.begin_nested():
+                            success = await mutate(session)
                     except _CachedFailure as failure:
                         if failure.problem.code not in CACHEABLE_COMMAND_FAILURES:
                             raise ControlCommandError(failure.problem) from None
@@ -1359,7 +1362,7 @@ class ControlCommandAdapter:
             return None
         from qq_ai_bot.memory.dream.repository import DreamRepository
         from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
-        from qq_ai_bot.persistence.control_management import _dream_status, _op_ref, _rebuild_status
+        from qq_ai_bot.persistence.control_operations import dream_operation, rebuild_operation
 
         if kind == "rebuild":
             rebuild = await MemoryRebuildRepository(self._database).get_run(
@@ -1367,30 +1370,12 @@ class ControlCommandAdapter:
             )
             if rebuild is None or ref != f"rebuild:{rebuild.public_id}":
                 raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-            return _op_ref(
-                f"rebuild:{rebuild.public_id}",
-                _rebuild_status(rebuild.status.value),
-                created_at=rebuild.created_at,
-                updated_at=rebuild.updated_at,
-                progress=(
-                    1.0 if rebuild.status.value in {"completed", "cancelled", "failed"} else None
-                ),
-                error_category=rebuild.error_category,
-            )
+            return rebuild_operation(rebuild)
         if kind == "dream":
             dream = await DreamRepository(self._database).get_run(resource_id, session=session)
             if dream is None or ref != f"dream:{dream.public_id}":
                 raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-            return _op_ref(
-                f"dream:{dream.public_id}",
-                _dream_status(dream.status.value),
-                created_at=dream.created_at,
-                updated_at=dream.updated_at,
-                progress=(
-                    1.0 if dream.status.value in {"completed", "cancelled", "rolled_back"} else None
-                ),
-                error_category=dream.error_category,
-            )
+            return dream_operation(dream)
         raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
 
     async def _record_success(

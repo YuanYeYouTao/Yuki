@@ -23,7 +23,7 @@ from qq_ai_bot.control_plane.command_types import (
     ManagementActionPayload,
 )
 from qq_ai_bot.control_plane.commands import ControlCommand
-from qq_ai_bot.control_plane.operations import OperationRef, OperationStatus, StateEpoch
+from qq_ai_bot.control_plane.operations import OperationRef
 from qq_ai_bot.control_plane.principal import ControlPrincipal
 from qq_ai_bot.control_plane.problems import ProblemCode
 from qq_ai_bot.emoji.db_models import EmojiAssetModel
@@ -47,6 +47,7 @@ from qq_ai_bot.memory.rebuild.service import (
     start_rebuild_core,
 )
 from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.persistence.control_operations import dream_operation, rebuild_operation
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.persistence.models import (
@@ -123,54 +124,6 @@ def _map_config_error(result: ConfigChangeResult) -> ProblemCode:
     if category == "validation_error":
         return ProblemCode.VALIDATION_ERROR
     return ProblemCode.PRECONDITION_FAILED
-
-
-def _op_ref(
-    operation_id: str,
-    status: OperationStatus,
-    *,
-    created_at: datetime,
-    updated_at: datetime,
-    progress: float | None,
-    error_category: str | None = None,
-) -> OperationRef:
-    return OperationRef(
-        operation_id=operation_id,
-        status=status,
-        progress=progress,
-        state_epoch=StateEpoch.V2,
-        error_category=error_category,
-        created_at=created_at,
-        updated_at=updated_at,
-    )
-
-
-def _rebuild_status(value: str) -> OperationStatus:
-    mapping = {
-        "planned": OperationStatus.QUEUED,
-        "extracting": OperationStatus.RUNNING,
-        "extraction_paused": OperationStatus.BLOCKED,
-        "review": OperationStatus.WAITING,
-        "committing": OperationStatus.RUNNING,
-        "commit_paused": OperationStatus.BLOCKED,
-        "completed": OperationStatus.SUCCEEDED,
-        "cancelled": OperationStatus.CANCELLED,
-        "failed": OperationStatus.FAILED,
-    }
-    return mapping[value]
-
-
-def _dream_status(value: str) -> OperationStatus:
-    mapping = {
-        "planned": OperationStatus.QUEUED,
-        "running": OperationStatus.RUNNING,
-        "partial_failed": OperationStatus.FAILED,
-        "completed": OperationStatus.SUCCEEDED,
-        "cancelled": OperationStatus.CANCELLED,
-        "rolling_back": OperationStatus.RUNNING,
-        "rolled_back": OperationStatus.CANCELLED,
-    }
-    return mapping[value]
 
 
 class ControlManagementGateway:
@@ -563,13 +516,7 @@ class ControlManagementGateway:
             loaded.public_id,
             revision,
             loaded.status.value,
-            operation=_op_ref(
-                f"rebuild:{loaded.public_id}",
-                _rebuild_status(loaded.status.value),
-                created_at=loaded.created_at,
-                updated_at=loaded.updated_at,
-                progress=1.0 if loaded.status.value == "completed" else None,
-            ),
+            operation=rebuild_operation(loaded),
         )
 
     async def dream_memory(
@@ -638,13 +585,7 @@ class ControlManagementGateway:
             current.public_id,
             revision,
             current.status.value,
-            operation=_op_ref(
-                f"dream:{current.public_id}",
-                _dream_status(current.status.value),
-                created_at=current.created_at,
-                updated_at=current.updated_at,
-                progress=1.0 if current.status.value == "completed" else None,
-            ),
+            operation=dream_operation(current),
         )
 
     async def mutate_automation(

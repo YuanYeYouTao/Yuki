@@ -64,7 +64,9 @@
 ## 命令、外部效果与恢复
 
 数据库修改在短事务内保留 request ID、expected revision、同步审计和幂等回执。
-配置领域审计和 Control Plane 回执分别保留证据，但共享真实 principal 与独立 control_request_id；
+领域数据库修改使用原事务的 savepoint；被拒绝时先撤销本次领域写入，再在同一短事务登记
+原请求的失败审计和回执。它不用于外部效果，也不能把网络或文件效果当成可回滚写入。
+成功配置的领域审计和 Control Plane 回执分别保留证据，但共享真实 principal 与独立 control_request_id；
 平台 trigger_message_id 留空。0073 迁移仅转换由既有回执证明关联的历史控制审计，QQ 审计不改写。
 
 插件 approve/enable/disable/doctor 使用实际 PluginManager。批准与运行状态分别查询，
@@ -89,6 +91,8 @@ Memory rebuild 历史扫描、Dream embedding reconcile/聚类在写事务外准
 
 `read_operation` / `list_operations(kind=control|rebuild|dream)` 查询原状态。
 waiting/blocked/unknown 不压成 running/failed；无可计算进度时 progress 为 null，终态为 1。
+rebuild/dream 的首次命令、重入与查询复用同一投影；旧诊断不冒充已取消/成功/运行状态的当前错误。
+失败诊断缺失或不符合公开分类时给出通用失败类别，不输出原始诊断，也不修改领域证据。
 自动化 run_now 是新的调度，不能充当旧 run 恢复。插件通知 retry 仅接受已有证据证明的发送前暂态失败，
 保留尝试预算；已发送、未知、处理中和预算耗尽拒绝重发。
 
@@ -98,6 +102,7 @@ operator Principal 负责管理授权和审计；自动化长期 owner 明确为
 创建可用 spec 包装：`script`、`owner_id`、`conversation_id`、可选 `max_runs`。
 无包装时兼容绑定了 Person 的 operator 默认归属；无 Person 时必须明确 owner。
 更新保留既有 owner 和场景，不改成操作人；SELF 暂停/恢复等操作不要求 Person QQ 绑定。
+仓库禁止把 completed/cancelled 改回可调度状态；管理入口检查实际变更结果，领域拒绝不增加 revision。
 
 群任务要求明确 canonical Conversation、当前 SpaceActiveRoute、Binding 和真实 Presence。
 Person 账号复用活动路由，多个候选没有明确路由时拒绝首项猜测。私聊场景与 owner 匹配。

@@ -401,6 +401,9 @@ class AutomationRepository:
                 .where(
                     AutomationModel.id == automation_id,
                     self._owner_clause(creator_person_id),
+                    AutomationModel.status.not_in(
+                        [AutomationStatus.CANCELLED.value, AutomationStatus.COMPLETED.value]
+                    ),
                 )
                 .values(**values)
             )
