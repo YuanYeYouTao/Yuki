@@ -124,6 +124,9 @@ def bootstrap(settings: Settings | None = None) -> None:
     if not isinstance(driver, FastAPIDriver):
         raise RuntimeError("FastAPI driver is required")
     driver.server_app.add_api_route("/healthz", healthz, methods=["GET"])
+    from qq_ai_bot.webui.http import attach_webui
+
+    attach_webui(driver.server_app, app_settings, lambda: get_container().control_plane)
 
     nonebot.load_plugin("qq_ai_bot.plugins.ai_chat")
 

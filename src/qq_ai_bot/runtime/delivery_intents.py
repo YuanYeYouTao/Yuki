@@ -9,7 +9,7 @@ from sqlalchemy import select, true, update
 from sqlalchemy.dialects.sqlite import insert
 
 from qq_ai_bot.runtime.work_recovery_schema import deliveries
-from qq_ai_bot.runtime.work_repository import WorkConflict, bounded_json
+from qq_ai_bot.runtime.work_repository import TERMINAL, WorkConflict, bounded_json
 from qq_ai_bot.runtime.work_schema_v1 import work
 
 if TYPE_CHECKING:
@@ -29,6 +29,16 @@ async def reserve(
     encoded_payload = bounded_json(payload)
     async with control.repository.database.immediate_session() as session:
         await control.repository._assert_lease(session, control.lease)
+        active = await session.scalar(
+            select(work.c.id).where(
+                work.c.id == identity,
+                work.c.conversation_id == control.lease.conversation_id,
+                work.c.generation == control.lease.generation,
+                work.c.state.not_in(TERMINAL),
+            )
+        )
+        if active is None:
+            raise WorkConflict("work_delivery_obsolete")
         if isinstance(target_value, dict) and target_value.get("kind") in {"person", "space"}:
             target = f"{target_value['kind']}:{target_value['id']}"
         else:

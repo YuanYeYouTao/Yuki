@@ -252,6 +252,54 @@ def _descriptor(
 
 CONTROL_CAPABILITY_DESCRIPTORS: Final[tuple[ControlCapabilityDescriptor, ...]] = (
     _descriptor(
+        "control.work.mutate",
+        CapabilityFamily.CONTROL,
+        CapabilitySensitivity.MUTATE,
+        mutating=True,
+    ),
+    _descriptor(
+        "control.workspace.mutate",
+        CapabilityFamily.CONTROL,
+        CapabilitySensitivity.MUTATE,
+        mutating=True,
+    ),
+    _descriptor(
+        "control.environment.file.mutate",
+        CapabilityFamily.CONTROL,
+        CapabilitySensitivity.MUTATE,
+        mutating=True,
+    ),
+    _descriptor(
+        "control.terminal.mutate",
+        CapabilityFamily.CONTROL,
+        CapabilitySensitivity.MUTATE,
+        mutating=True,
+    ),
+    _descriptor(
+        "control.terminal.content.read",
+        CapabilityFamily.CONTROL,
+        CapabilitySensitivity.CONTENT_READ,
+        mutating=False,
+    ),
+    _descriptor(
+        "control.workspace.metadata.read",
+        CapabilityFamily.CONTROL,
+        CapabilitySensitivity.METADATA_READ,
+        mutating=False,
+    ),
+    _descriptor(
+        "control.workspace.content.read",
+        CapabilityFamily.CONTROL,
+        CapabilitySensitivity.CONTENT_READ,
+        mutating=False,
+    ),
+    _descriptor(
+        "control.automation.content.read",
+        CapabilityFamily.CONTROL,
+        CapabilitySensitivity.CONTENT_READ,
+        mutating=False,
+    ),
+    _descriptor(
         "control.execution.metadata.read",
         CapabilityFamily.CONTROL,
         CapabilitySensitivity.METADATA_READ,
@@ -479,6 +527,18 @@ CONTROL_CAPABILITY_DESCRIPTORS: Final[tuple[ControlCapabilityDescriptor, ...]] =
         mutating=True,
     ),
     _descriptor(
+        "control.config.file.content.read",
+        CapabilityFamily.CONTROL,
+        CapabilitySensitivity.CONTENT_READ,
+        mutating=False,
+    ),
+    _descriptor(
+        "control.config.file.mutate",
+        CapabilityFamily.CONTROL,
+        CapabilitySensitivity.MUTATE,
+        mutating=True,
+    ),
+    _descriptor(
         "control.config.read",
         CapabilityFamily.CONTROL,
         CapabilitySensitivity.METADATA_READ,
@@ -534,6 +594,18 @@ CONTROL_CAPABILITY_DESCRIPTORS: Final[tuple[ControlCapabilityDescriptor, ...]] =
     ),
     _descriptor(
         "control.automation.mutate",
+        CapabilityFamily.CONTROL,
+        CapabilitySensitivity.MUTATE,
+        mutating=True,
+    ),
+    _descriptor(
+        "control.plugin.config.content.read",
+        CapabilityFamily.CONTROL,
+        CapabilitySensitivity.CONTENT_READ,
+        mutating=False,
+    ),
+    _descriptor(
+        "control.plugin.config.mutate",
         CapabilityFamily.CONTROL,
         CapabilitySensitivity.MUTATE,
         mutating=True,

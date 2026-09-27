@@ -14,6 +14,11 @@
 ## 记录与身份
 
 - 主 Agent 普通聊天、自主轮、自动化、插件与子工作复用原 Runner。
+- Jev 真实观察与 Host proposal 接纳复用同一有期限的诊断库：保存经过原适配器
+  准备的实际 Snapshot、返回的全部概率/无效维度/usage、观察耗时及原接纳结果。
+  只记录真正发生的观察或接纳尝试，不按采样 tick 制造空记录；不创建第二个 observer。
+  来源沿原 `event:<chat_events.id>` 或 memory ref；无来源提议不伪造聊天事件。
+  不记录鉴权头、原 Provider 错误正文或凭据；旧快照不回填为完整判定历史。
 - 保存初始编译消息、逐次模型调用、实际 HTTP JSON 请求与返回、工具批次及逐项结果。
 - HTTP 重试分别记录；请求准备、响应收到、上游拒绝和取消分别标明，不把准备当作送达。
 - 保存 Provider 实际返回的可读思考；没有返回时不伪造。加密思考、签名与不透明续跑块
@@ -22,6 +27,10 @@
   chat_events.id，不用平台 message_id 猜测归属。没有聊天事件的后台工作不伪造事件。
 - 接收与已发送正文继续查询 chat_events；投递状态继续查询原 Social 持久回执。
   Agent 结束不等于消息送达，工具返回文本不等于外部效果已确认。
+- Social 成功投递及事件入账提交之后，可添加 `social_delivery` 诊断；
+  `delivered_event_id` 由原成功回执与出站账本校验，保留原 source_event_id。
+  查询已发送事件可进入真正执行轮次；跨会话投递按目标事件所属会话核验后显示原轮次，
+  该轮的原会话仍单独显示。关联写入失败不降级成功，不补发；旧记录不回填。
 
 ## 内容、生命周期与失败
 
@@ -49,9 +58,10 @@ EXECUTION_TRACE_MAX_PAYLOAD_BYTES。超过上限保留明确 omitted 元数据�
 元数据读取和正文读取分别授权；正文/思考/工具参数默认不随列表下发。
 元数据查询不从数据库加载压缩正文；读取正文时校验保存状态、完整性与摘要，缺失不冒充空白内容。
 分页 cursor 绑定资源、会话及筛选范围；查询不触发模型、重跑或任何真实效果。
+`ExecutionTraceFilter.origin` 可按实际来源筛选 Jev 观察或 Host 接纳，游标同样绑定来源。
 不公开原 journal、媒体缓存宿主路径、HTTP 凭据和不透明 Provider 恢复状态。
 正文权限可查看真实提示词和工具参数中的工作区路径及用户内容；它不是公开访问接口。
-HTTP 登录和正式 WebUI 接线仍遵守 control-plane-foundation 的独立建设合同。
+HTTP 登录和正式 WebUI 接线遵守 control-plane-foundation，当前实现见 [WebUI](webui-console.md)。
 
 ## 验收
 

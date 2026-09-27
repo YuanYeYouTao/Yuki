@@ -4,16 +4,20 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from qq_ai_bot.control_plane.json_types import JsonObject
 from qq_ai_bot.control_plane.operations import OperationKind, OperationRef
 from qq_ai_bot.control_plane.paging import Page, PageRequest
 from qq_ai_bot.control_plane.query_types import (
+    ActivityView,
     AuditEventView,
     AutomationView,
     ChatEventView,
+    ChatHistoryFilter,
     ConfigOverrideView,
     ConfigQueryScope,
     ConfigSpecView,
     ConversationView,
+    DownloadView,
     EffectiveConfigView,
     EmojiAssetView,
     ExecutionTraceFilter,
@@ -25,11 +29,13 @@ from qq_ai_bot.control_plane.query_types import (
     MemoryFactView,
     MemoryHealthView,
     MemoryJobView,
+    MemoryQueryFilter,
     PersonActiveRouteView,
     PersonView,
     PluginRuntimeView,
     PluginView,
     PresenceView,
+    ReflectionQueryFilter,
     SocialReceiptView,
     SpaceActiveRouteView,
     SpaceBindingIngestRouteView,
@@ -39,11 +45,79 @@ from qq_ai_bot.control_plane.query_types import (
     SystemSnapshot,
     YukiSummaryView,
 )
-from qq_ai_bot.domain.identity import ConversationId
+from qq_ai_bot.domain.identity import ConversationId, PersonId, PrincipalId, RequestId
 
 
 class ControlQueryPort(Protocol):
     """Read-only projections. Must not return catalog rows or session objects."""
+
+    async def list_plugin_outbox(
+        self, request: PageRequest, *, plugin_id: str
+    ) -> Page[ActivityView]: ...
+    async def list_plugin_background_turns(
+        self, request: PageRequest, *, plugin_id: str
+    ) -> Page[ActivityView]: ...
+    async def list_participation_feedback(
+        self, request: PageRequest, *, run_id: str, include_content: bool = False
+    ) -> Page[ActivityView]: ...
+
+    async def read_plugin_observation(
+        self, plugin_id: str, *, cursor: str | None = None, limit: int = 10
+    ) -> ActivityView: ...
+
+    async def read_plugin_configuration(
+        self, plugin_id: str, *, scope_type: str = "global", owner_id: str | None = None
+    ) -> ActivityView: ...
+
+    async def download_workspace(self, artifact_id: str) -> DownloadView: ...
+    async def download_chat_media(
+        self, conversation_id: ConversationId, event_id: int, attachment_index: int
+    ) -> DownloadView: ...
+
+    async def read_model_catalog(self) -> ActivityView: ...
+    async def read_config_file(self, file_id: str) -> ActivityView: ...
+
+    async def read_persona(self) -> ActivityView: ...
+
+    async def list_participation_runs(
+        self, request: PageRequest, *, conversation_id: ConversationId | None = None
+    ) -> Page[ActivityView]: ...
+
+    async def read_participation(self) -> ActivityView: ...
+
+    async def read_work(self, work_id: str, *, include_content: bool = False) -> ActivityView: ...
+
+    async def list_work_history(
+        self, request: PageRequest, *, work_id: str, section: str, include_content: bool = False
+    ) -> Page[ActivityView]: ...
+
+    async def list_work(
+        self, request: PageRequest, *, include_content: bool = False
+    ) -> Page[ActivityView]: ...
+    async def read_automation(self, automation_id: int) -> ActivityView: ...
+    async def read_automation_schema(self) -> ActivityView: ...
+    async def read_memory_maintenance_schema(self) -> ActivityView: ...
+    async def list_memory_rebuild_proposals(
+        self, request: PageRequest, *, run_id: str, include_content: bool = False
+    ) -> Page[ActivityView]: ...
+
+    async def read_memory_maintenance_run(self, operation_id: str) -> ActivityView: ...
+    async def list_model_usage(self, request: PageRequest) -> Page[ActivityView]: ...
+    async def list_workspace(self, request: PageRequest) -> Page[ActivityView]: ...
+    async def read_terminal_submission(
+        self, request_id: RequestId, principal_id: PrincipalId
+    ) -> ActivityView: ...
+
+    async def read_environment(self, section: str, arguments: JsonObject) -> ActivityView: ...
+
+    async def read_workspace(self, artifact_id: str) -> ActivityView: ...
+
+    async def list_automation_runs(
+        self, request: PageRequest, *, automation_id: int
+    ) -> Page[ActivityView]: ...
+    async def list_automation_steps(
+        self, request: PageRequest, *, automation_id: int, run_id: int | None = None
+    ) -> Page[ActivityView]: ...
 
     async def list_execution_trace(
         self, request: PageRequest, *, scope: ExecutionTraceFilter, include_content: bool = False
@@ -59,6 +133,7 @@ class ControlQueryPort(Protocol):
         *,
         conversation_id: ConversationId,
         include_content: bool = False,
+        history: ChatHistoryFilter | None = None,
     ) -> Page[ChatEventView]: ...
 
     async def list_social_receipts(
@@ -136,11 +211,23 @@ class ControlQueryPort(Protocol):
         reveal_external: bool,
     ) -> Page[ConfigOverrideView]: ...
 
+    async def read_self_reflection_health(self) -> ActivityView: ...
+    async def list_self_reflection_history(
+        self, request: PageRequest, *, section: str, scope: ReflectionQueryFilter | None = None
+    ) -> Page[ActivityView]: ...
+
+    async def list_relationships(self, request: PageRequest) -> Page[ActivityView]: ...
+    async def read_relationship(self, person_id: PersonId) -> ActivityView: ...
+    async def list_relationship_history(
+        self, request: PageRequest, *, person_id: PersonId, section: str
+    ) -> Page[ActivityView]: ...
+
     async def list_memory_facts(
         self,
         request: PageRequest,
         *,
         include_content: bool,
+        scope: MemoryQueryFilter | None = None,
     ) -> Page[MemoryFactView]: ...
 
     async def list_memory_evidence(
@@ -148,7 +235,10 @@ class ControlQueryPort(Protocol):
         request: PageRequest,
         *,
         include_content: bool,
+        scope: MemoryQueryFilter | None = None,
     ) -> Page[MemoryEvidenceView]: ...
+
+    async def read_memory_fact(self, fact_id: int, *, include_content: bool) -> ActivityView: ...
 
     async def list_memory_jobs(self, request: PageRequest) -> Page[MemoryJobView]: ...
 
@@ -157,6 +247,8 @@ class ControlQueryPort(Protocol):
     async def list_automations(self, request: PageRequest) -> Page[AutomationView]: ...
 
     async def list_plugins(self, request: PageRequest) -> Page[PluginView]: ...
+
+    async def read_plugin_approval(self, plugin_id: str) -> ActivityView: ...
 
     async def read_plugin_runtime(self, plugin_id: str) -> PluginRuntimeView: ...
 

@@ -265,6 +265,15 @@ doctor。
 
 ## 开发验证
 
+启用 WebUI 后，可在「插件与 MCP」打开 GitHub Monitor 的配置、仓库 queue/cursor/诊断
+及 Host 通知 outbox。配置来自已批准注册的 schema；修改保存原 Host 配置表，插件按
+自身读取逻辑生效。只读状态使用 SDK 的可选 `observe`，不访问 GitHub、不轮询或封口，
+不返回 prepared 通知内容。队列未建立或状态损坏会明确显示，不当作零。
+
+页面重试复用原 Host 管理入口，仅允许确认未发送、有原内部归属和剩余预算的失败。
+`uncertain`、有平台回执或缺少 canonical owner 的旧记录不能重发。配置/状态正文与
+修改能力须在 operator 声明中分别授权；参见 [WebUI 合同](../../docs/architecture/webui-console.md)。
+
 ```bash
 uv run ruff check plugins/github-monitor
 uv run pytest -q plugins/github-monitor/tests

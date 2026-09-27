@@ -751,9 +751,9 @@ class DreamRepository:
             )
         return bool(cast(CursorResult[Any], result).rowcount)
 
-    async def retry_failed(self, public_id: str) -> int:
+    async def retry_failed(self, public_id: str, *, session: AsyncSession | None = None) -> int:
         now = datetime.now(UTC)
-        async with self.database.sessions() as session, session.begin():
+        async with optional_session(self.database, session, write=True) as session:
             run_id = await session.scalar(
                 select(MemoryDreamRunModel.id).where(MemoryDreamRunModel.public_id == public_id)
             )

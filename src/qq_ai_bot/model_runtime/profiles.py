@@ -7,7 +7,7 @@ import os
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
@@ -20,6 +20,24 @@ from qq_ai_bot.model_runtime.models import (
     ModelTask,
     StructuredOutputMode,
 )
+
+if TYPE_CHECKING:
+    from qq_ai_bot.config import Settings
+    from qq_ai_bot.settings_domains import ModelRuntimeSettings
+
+
+def model_profile_environment(settings: Settings | ModelRuntimeSettings) -> dict[str, str]:
+    """Startup, CLI and management resolve the same public Settings aliases."""
+    return {
+        "LLM_BASE_URL": settings.llm_base_url,
+        "LLM_MODEL": settings.llm_model,
+        "LLM_REASONING_EFFORT": settings.llm_reasoning_effort.value
+        if settings.llm_reasoning_effort
+        else "",
+        "LLM_FLASH_BASE_URL": settings.llm_flash_base_url,
+        "LLM_FLASH_MODEL": settings.llm_flash_model,
+    }
+
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +161,18 @@ def load_model_profile_catalog(
         )
 
     try:
-        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+        content = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ModelRuntimeConfigurationError("cannot read model profile configuration") from exc
+    return parse_model_profile_catalog(content, environment=environment)
+
+
+def parse_model_profile_catalog(
+    content: str, *, environment: Mapping[str, str] | None = None
+) -> ModelProfileCatalog:
+    """Validate the same document for startup and management, without file I/O."""
+    try:
+        raw = tomllib.loads(content)
         version = raw.get("schema_version", 1)
         if version != PROFILE_SCHEMA_VERSION:
             raise ModelRuntimeConfigurationError(

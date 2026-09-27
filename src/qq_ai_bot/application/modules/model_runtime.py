@@ -16,6 +16,7 @@ from qq_ai_bot.model_runtime import (
     TaskModelExecutor,
     load_model_profile_catalog,
 )
+from qq_ai_bot.model_runtime.profiles import model_profile_environment
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.settings_domains import ModelRuntimeSettings
 
@@ -55,17 +56,7 @@ class ModelRuntimeModule:
             legacy_max_output_tokens=settings.llm_max_output_tokens,
             legacy_thinking_enabled=settings.llm_thinking_enabled,
             legacy_reasoning_effort=settings.llm_reasoning_effort,
-            environment={
-                "LLM_BASE_URL": settings.llm_base_url,
-                "LLM_MODEL": settings.llm_model,
-                "LLM_REASONING_EFFORT": (
-                    settings.llm_reasoning_effort.value
-                    if settings.llm_reasoning_effort is not None
-                    else ""
-                ),
-                "LLM_FLASH_BASE_URL": settings.llm_flash_base_url,
-                "LLM_FLASH_MODEL": settings.llm_flash_model,
-            },
+            environment=model_profile_environment(settings),
         )
         clients = ModelClientPool(
             secret_overrides={

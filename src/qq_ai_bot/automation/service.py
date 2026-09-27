@@ -68,6 +68,27 @@ class AutomationService:
     def enabled(self) -> bool:
         return self._settings.automation_enabled
 
+    def management_schema(self) -> dict[str, object]:
+        """Project the running registry's public declarations without executing handlers."""
+        return {
+            "script": AutomationScript.model_json_schema(),
+            "capabilities": [
+                {
+                    "name": item.name,
+                    "description": item.description,
+                    "schema": item.input_schema,
+                    "permission": item.required_permission.value,
+                    "permitted_levels": [
+                        level.value for level in PermissionLevel if item.permits(level)
+                    ],
+                    "risk": item.risk_class.value,
+                    "schema_version": item.schema_version,
+                    "provider_plugin_id": item.provider_plugin_id,
+                }
+                for item in self._registry.list()
+            ],
+        }
+
     async def create_task(
         self,
         task_payload: object,

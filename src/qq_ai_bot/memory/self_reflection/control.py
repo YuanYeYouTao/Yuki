@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, literal, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy.orm import load_only
 
 from qq_ai_bot.config import Settings
 from qq_ai_bot.persistence.database import Database
@@ -111,7 +112,22 @@ class ReflectionControlRepository:
                     )
                 )
             ).all()
-            runs = (await session.scalars(select(Run).where(Run.status != "completed"))).all()
+            runs = (
+                await session.scalars(
+                    select(Run)
+                    .options(
+                        load_only(
+                            Run.conversation_key_hash,
+                            Run.last_event_id,
+                            Run.status,
+                            Run.retry_state,
+                            Run.next_attempt_at,
+                            Run.processed_events,
+                        )
+                    )
+                    .where(Run.status != "completed")
+                )
+            ).all()
             calls = int(
                 await session.scalar(
                     select(func.count(Request.id)).where(Request.local_date == day)
@@ -145,6 +161,7 @@ class ReflectionControlRepository:
             recent_cycles = (
                 await session.scalars(
                     select(Cycle)
+                    .options(load_only(Cycle.created_at, Cycle.report_json))
                     .where(Cycle.completed_at >= now - timedelta(hours=24))
                     .order_by(Cycle.created_at.asc())
                 )

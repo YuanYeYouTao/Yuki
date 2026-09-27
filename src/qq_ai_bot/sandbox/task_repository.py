@@ -157,6 +157,11 @@ class SandboxTaskRepository:
 
     async def receive(self, event: dict[str, Any]) -> None:
         """Persist a completion before the caller may acknowledge it to Manager."""
+        if str(event.get("request_id", "")).startswith("control:"):
+            from qq_ai_bot.sandbox.control_completions import record_control_completion
+
+            await record_control_completion(self.database, event)
+            return
         run_id = str(UUID(event["run_id"]))
         result = event.get("result")
         if (

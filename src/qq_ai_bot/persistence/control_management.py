@@ -11,6 +11,7 @@ from typing import Protocol
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.admin.config_files import CONFIG_FILE_IDS, ConfigFileError, ConfigFileService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import ConfigApplyMode, ConfigChangeResult, ControlAuditRef
 from qq_ai_bot.automation.repository import AutomationRepository
@@ -26,6 +27,7 @@ from qq_ai_bot.control_plane.commands import ControlCommand
 from qq_ai_bot.control_plane.operations import OperationRef
 from qq_ai_bot.control_plane.principal import ControlPrincipal
 from qq_ai_bot.control_plane.problems import ProblemCode
+from qq_ai_bot.domain.identity import PersonId
 from qq_ai_bot.emoji.db_models import EmojiAssetModel
 from qq_ai_bot.emoji.lifecycle import EmojiLifecycleService
 from qq_ai_bot.emoji.models import EmojiLifecycleStatus
@@ -40,8 +42,10 @@ from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
 from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
 from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
 from qq_ai_bot.memory.rebuild.service import (
+    MemoryRebuildService,
     PreparedRebuildPlan,
     cancel_rebuild_core,
+    manage_rebuild_core,
     plan_rebuild_core,
     prepare_rebuild_core,
     start_rebuild_core,
@@ -54,14 +58,22 @@ from qq_ai_bot.persistence.models import (
     AutomationModel,
     MemoryFactModel,
     MemoryRebuildRunModel,
+    PersonRelationshipModel,
 )
+from qq_ai_bot.persistence.relationship_repository import RelationshipRepository
 from qq_ai_bot.persistence.unit_of_work import next_updated_at
 from qq_ai_bot.persistence.unit_of_work import state_revision as _state_revision
+from qq_ai_bot.plugin_host.configuration_service import (
+    PluginConfigurationError,
+    PluginConfigurationService,
+)
 from qq_ai_bot.plugin_host.db_models import PluginInstallationModel, PluginNotificationOutboxModel
 from qq_ai_bot.plugin_host.manager import PluginManager
 from qq_ai_bot.plugin_host.notification_repository import PluginNotificationRepository
+from qq_ai_bot.plugin_host.ownership import PluginOwnershipError
 from qq_ai_bot.speech.db_models import SpeechVoiceProfileModel
 from qq_ai_bot.speech.repository import VoiceProfileRepository
+from qq_ai_bot.workspace.service import WorkspaceService
 from yuki_plugin_sdk.permissions import PluginPermission
 
 
@@ -129,11 +141,33 @@ def _map_config_error(result: ConfigChangeResult) -> ProblemCode:
 class ControlManagementGateway:
     """Reuse existing domain services inside the control-plane unit of work."""
 
+    async def mutate_work(
+        self,
+        session: AsyncSession,
+        principal: ControlPrincipal,
+        command: ControlCommand,
+        parsed: ManagementActionPayload,
+    ) -> ManagementMutation:
+        from qq_ai_bot.runtime.work_management import WorkManagementError, manage_work
+
+        if parsed.spec is not None:
+            raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
+        try:
+            revision, state = await manage_work(
+                session, parsed.resource_id, command.expected_revision, parsed.action
+            )
+        except WorkManagementError as exc:
+            raise ManagementFailure(ProblemCode(exc.code)) from exc
+        return ManagementMutation(parsed.resource_id, revision, state)
+
     def __init__(
         self,
         database: Database,
         *,
         settings: Settings | None = None,
+        workspace_service: WorkspaceService | None = None,
+        rebuild_service: MemoryRebuildService | None = None,
+        config_files: ConfigFileService | None = None,
         runtime_config: RuntimeConfigService | None = None,
         mcp: MCPManager | None = None,
         maintenance: MemoryMaintenanceWorker | None = None,
@@ -142,7 +176,12 @@ class ControlManagementGateway:
         memories: MemoryFactService | None = None,
         plugins: PluginManager | None = None,
     ) -> None:
+        from qq_ai_bot.persistence.control_workspace import ControlWorkspace
+
+        self._workspace_control = ControlWorkspace(workspace_service)
         self._database = database
+        self._config_files = config_files or (ConfigFileService(settings) if settings else None)
+        self._rebuild_service = rebuild_service
         self._settings = settings
         self._runtime_config = runtime_config
         self._mcp = mcp
@@ -159,7 +198,59 @@ class ControlManagementGateway:
         operation: str,
         parsed: ManagementActionPayload,
     ) -> None:
-        if operation == CommandOperation.PLUGIN_MUTATE.value:
+        if operation in {
+            CommandOperation.WORKSPACE_MUTATE.value,
+            CommandOperation.ENVIRONMENT_FILE_MUTATE.value,
+            CommandOperation.TERMINAL_MUTATE.value,
+        }:
+            from qq_ai_bot.domain.identity import RequestId
+            from qq_ai_bot.persistence.control_workspace import arguments, upload
+
+            if self._workspace_control.workspace is None:
+                raise ManagementUnavailable
+            try:
+                if operation == CommandOperation.WORKSPACE_MUTATE.value:
+                    if parsed.action == "upload":
+                        if parsed.resource_id != "yuki" or command.expected_revision != 0:
+                            raise ValueError("invalid upload target")
+                        upload(parsed)
+                    else:
+                        RequestId.parse(parsed.resource_id)
+                        if command.expected_revision < 1:
+                            raise ValueError("artifact revision required")
+                        if parsed.action == "edit":
+                            spec = parsed.spec or {}
+                            if (
+                                set(spec) != {"name", "text"}
+                                or any(type(v) is not str for v in spec.values())
+                                or len(str(spec["text"]).encode()) > 65536
+                            ):
+                                raise ValueError("invalid artifact edit")
+                        elif parsed.action != "delete" or parsed.spec is not None:
+                            raise ValueError("invalid artifact action")
+                else:
+                    if parsed.resource_id != "environment" or command.expected_revision != 0:
+                        raise ValueError("invalid environment target")
+                    self._workspace_control.transport()
+                    arguments(parsed, terminal=operation == CommandOperation.TERMINAL_MUTATE.value)
+            except (TypeError, ValueError):
+                raise ManagementFailure(ProblemCode.VALIDATION_ERROR) from None
+            return
+        if operation == CommandOperation.PLUGIN_CONFIGURE.value:
+            if self._plugins is None:
+                raise ManagementUnavailable
+            if parsed.action != "save" or parsed.spec is None:
+                raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
+        elif operation == CommandOperation.CONFIG_FILE_SAVE.value:
+            if self._config_files is None:
+                raise ManagementUnavailable
+            if (
+                parsed.action != "save"
+                or parsed.resource_id not in CONFIG_FILE_IDS
+                or parsed.spec is None
+            ):
+                raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
+        elif operation == CommandOperation.PLUGIN_MUTATE.value:
             if self._plugins is None:
                 raise ManagementUnavailable
             if parsed.action not in {"approve", "enable", "disable", "doctor"}:
@@ -209,6 +300,51 @@ class ControlManagementGateway:
         operation: str,
         parsed: ManagementActionPayload,
     ) -> ManagementMutation:
+        if operation in {
+            CommandOperation.WORKSPACE_MUTATE.value,
+            CommandOperation.ENVIRONMENT_FILE_MUTATE.value,
+            CommandOperation.TERMINAL_MUTATE.value,
+        }:
+            from qq_ai_bot.workspace.store import WorkspaceError
+
+            try:
+                resource, revision, status = await self._workspace_control.mutate(
+                    principal, command, parsed, operation
+                )
+            except WorkspaceError as exc:
+                code = (
+                    ProblemCode.VERSION_CONFLICT
+                    if str(exc) == "version_conflict"
+                    else ProblemCode.PRECONDITION_FAILED
+                )
+                raise ManagementFailure(code) from None
+            return ManagementMutation(resource, revision, status)
+        if operation == CommandOperation.PLUGIN_CONFIGURE.value:
+            if self._plugins is None:
+                raise ManagementUnavailable
+            try:
+                revision = await PluginConfigurationService(
+                    self._database, self._plugins.configuration_schema
+                ).save(parsed.resource_id, command.expected_revision, parsed.spec or {})
+            except PluginConfigurationError as exc:
+                raise ManagementFailure(ProblemCode(exc.category)) from None
+            return ManagementMutation(parsed.resource_id, revision, "saved")
+        if operation == CommandOperation.CONFIG_FILE_SAVE.value:
+            if self._config_files is None:
+                raise ManagementUnavailable
+            try:
+                revision = await self._config_files.save(
+                    parsed.resource_id, command.expected_revision, parsed.spec or {}
+                )
+            except ConfigFileError as exc:
+                raise ManagementFailure(ProblemCode(exc.category)) from None
+            return ManagementMutation(
+                parsed.resource_id,
+                revision,
+                "saved_pending_reload"
+                if parsed.resource_id == "autonomous_model"
+                else "saved_pending_restart",
+            )
         if operation == CommandOperation.PLUGIN_MUTATE.value:
             manager = self._plugins
             if manager is None:
@@ -393,6 +529,43 @@ class ControlManagementGateway:
         revision = result.version if result.version is not None and result.version >= 1 else 1
         return ManagementMutation(str(parsed.change_id), revision, "rolled_back")
 
+    async def mutate_relationship(
+        self,
+        session: AsyncSession,
+        principal: ControlPrincipal,
+        command: ControlCommand,
+        parsed: ManagementActionPayload,
+    ) -> ManagementMutation:
+        try:
+            person = PersonId.parse(parsed.resource_id)
+        except (ValueError, TypeError) as exc:
+            raise ManagementFailure(ProblemCode.VALIDATION_ERROR) from exc
+        if parsed.spec is None or set(parsed.spec) != {"value"}:
+            raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
+        value = parsed.spec["value"]
+        lower, upper = (-20, 20) if parsed.action == "adjust_affection" else (0, 100)
+        if (
+            parsed.action not in {"set_affection", "set_trust", "adjust_affection"}
+            or type(value) is not int
+            or not lower <= value <= upper
+        ):
+            raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
+        row = await session.get(PersonRelationshipModel, person.text)
+        if row is None:
+            raise ManagementFailure(ProblemCode.NOT_FOUND)
+        before = row.updated_at
+        _require_revision(state_revision(before), command.expected_revision)
+        await RelationshipRepository(self._database).set_for_person(
+            session,
+            person,
+            actor_id=principal.principal_id.text,
+            action=parsed.action,
+            value=value,
+        )
+        return ManagementMutation(
+            person.text, await _persist_revision(session, row, before), parsed.action
+        )
+
     async def mutate_memory(
         self,
         session: AsyncSession,
@@ -494,6 +667,59 @@ class ControlManagementGateway:
             run = await start_rebuild_core(
                 repository, parsed.resource_id, settings=settings, session=session
             )
+        elif parsed.action in {"pause", "resume", "commit", "approve", "reject", "retry"}:
+            existing = await repository.get_run(parsed.resource_id, session=session)
+            if existing is None:
+                raise ManagementFailure(ProblemCode.NOT_FOUND)
+            _require_revision(state_revision(existing.updated_at), command.expected_revision)
+            proposal_ids = None
+            if parsed.action in {"approve", "reject"}:
+                spec = parsed.spec or {}
+                if (
+                    set(spec) != {"proposal_ids"}
+                    or not isinstance(spec["proposal_ids"], tuple)
+                    or not 1 <= len(spec["proposal_ids"]) <= 100
+                    or any(
+                        type(item) is not int or not 1 <= item <= 2**63 - 1
+                        for item in spec["proposal_ids"]
+                    )
+                ):
+                    raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
+                proposal_ids = tuple(item for item in spec["proposal_ids"] if type(item) is int)
+                from qq_ai_bot.persistence.models import MemoryRebuildProposalModel
+
+                actual = set(
+                    (
+                        await session.scalars(
+                            select(MemoryRebuildProposalModel.id)
+                            .join(
+                                MemoryRebuildRunModel,
+                                MemoryRebuildRunModel.id == MemoryRebuildProposalModel.run_id,
+                            )
+                            .where(
+                                MemoryRebuildRunModel.public_id == parsed.resource_id,
+                                MemoryRebuildProposalModel.id.in_(proposal_ids),
+                                MemoryRebuildProposalModel.review_status == "pending",
+                            )
+                        )
+                    ).all()
+                )
+                if actual != set(proposal_ids):
+                    raise ManagementFailure(ProblemCode.PRECONDITION_FAILED)
+            elif parsed.spec is not None:
+                raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
+            if self._rebuild_service is None:
+                raise ManagementUnavailable
+            run = await manage_rebuild_core(
+                repository,
+                parsed.resource_id,
+                action=parsed.action,
+                settings=settings,
+                model_name=self._rebuild_service.extractor.model_name,
+                actor_user_id=actor,
+                proposal_ids=proposal_ids,
+                session=session,
+            )
         elif parsed.action == "cancel":
             existing = await repository.get_run(parsed.resource_id, session=session)
             if existing is None:
@@ -547,11 +773,16 @@ class ControlManagementGateway:
                 )
             except RuntimeError as exc:
                 raise ManagementFailure(ProblemCode.PRECONDITION_FAILED) from exc
-        elif parsed.action == "start":
+        elif parsed.action in {"start", "retry"}:
             existing = await repository.get_run(parsed.resource_id, session=session)
             if existing is None:
                 raise ManagementFailure(ProblemCode.NOT_FOUND)
             _require_revision(state_revision(existing.updated_at), command.expected_revision)
+            if parsed.action == "retry":
+                if existing.status.value != "partial_failed" or not await repository.retry_failed(
+                    parsed.resource_id, session=session
+                ):
+                    raise ManagementFailure(ProblemCode.PRECONDITION_FAILED)
             if not await repository.start_run(parsed.resource_id, session=session):
                 raise ManagementFailure(ProblemCode.PRECONDITION_FAILED)
             loaded = await repository.get_run(parsed.resource_id, session=session)
@@ -703,9 +934,12 @@ class ControlManagementGateway:
                 or current_outbox.attempts >= current_outbox.max_attempts
             ):
                 raise ManagementFailure(ProblemCode.PRECONDITION_FAILED)
-            await PluginNotificationRepository(self._database).retry_outbox(
-                item_id, error_category="manual_retry", session=session
-            )
+            try:
+                await PluginNotificationRepository(self._database).retry_outbox(
+                    item_id, error_category="manual_retry", session=session
+                )
+            except PluginOwnershipError:
+                raise ManagementFailure(ProblemCode.STATE_MISMATCH) from None
             updated_outbox = await session.get(PluginNotificationOutboxModel, item_id)
             if updated_outbox is None:
                 raise ManagementFailure(ProblemCode.NOT_FOUND)
@@ -835,14 +1069,14 @@ class ControlManagementGateway:
                 session,
                 principal,
                 command,
-                ManagementActionPayload(action="start", resource_id=rest),
+                ManagementActionPayload(action="retry", resource_id=rest),
             )
         if kind == "dream":
             return await self.dream_memory(
                 session,
                 principal,
                 command,
-                ManagementActionPayload(action="start", resource_id=rest),
+                ManagementActionPayload(action="retry", resource_id=rest),
             )
         if kind == "plugin-outbox":
             return await self.retry_plugin_notification(

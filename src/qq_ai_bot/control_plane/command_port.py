@@ -11,6 +11,26 @@ from qq_ai_bot.control_plane.principal import ControlPrincipal
 class ControlCommandPort(Protocol):
     """Authorized mutations. Must not invent principals or capability strings."""
 
+    async def configure_plugin(
+        self, principal: ControlPrincipal, target: object, command: ControlCommand
+    ) -> ControlResult: ...
+
+    async def mutate_workspace(
+        self, principal: ControlPrincipal, target: object, command: ControlCommand
+    ) -> ControlResult: ...
+
+    async def mutate_environment_file(
+        self, principal: ControlPrincipal, target: object, command: ControlCommand
+    ) -> ControlResult: ...
+
+    async def mutate_environment_terminal(
+        self, principal: ControlPrincipal, target: object, command: ControlCommand
+    ) -> ControlResult: ...
+
+    async def mutate_work(
+        self, principal: ControlPrincipal, target: object, command: ControlCommand
+    ) -> ControlResult: ...
+
     async def enable_person(
         self,
         principal: ControlPrincipal,
@@ -123,6 +143,13 @@ class ControlCommandPort(Protocol):
         command: ControlCommand,
     ) -> ControlResult: ...
 
+    async def mutate_relationship(
+        self,
+        principal: ControlPrincipal,
+        target: object,
+        command: ControlCommand,
+    ) -> ControlResult: ...
+
     async def mutate_memory(
         self,
         principal: ControlPrincipal,
@@ -156,6 +183,10 @@ class ControlCommandPort(Protocol):
         principal: ControlPrincipal,
         target: object,
         command: ControlCommand,
+    ) -> ControlResult: ...
+
+    async def save_config_file(
+        self, principal: ControlPrincipal, target: object, command: ControlCommand
     ) -> ControlResult: ...
 
     async def mutate_plugin(

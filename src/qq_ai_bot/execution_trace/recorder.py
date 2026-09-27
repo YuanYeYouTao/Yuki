@@ -81,7 +81,14 @@ class TraceRecorder:
             )
             return TraceCoverage(None, 1)
 
-    async def append(self, scope: TraceScope, kind: str, payload: object) -> None:
+    async def append(
+        self,
+        scope: TraceScope,
+        kind: str,
+        payload: object,
+        *,
+        delivery: tuple[str, int] | None = None,
+    ) -> None:
         from qq_ai_bot.runtime.work_activation import current_work_control
 
         try:
@@ -94,6 +101,7 @@ class TraceRecorder:
             work_id = None
             activation_id = None
             generation = None
+            delivered_event_id = None
             if control is not None:
                 conversation_id = conversation_id or control.lease.conversation_id
                 activation_id = control.lease.owner
@@ -111,6 +119,25 @@ class TraceRecorder:
                     event = await session.get(ChatEventModel, source_event_id)
                     if event is None or event.canonical_conversation_id != conversation_id:
                         raise ValueError("invalid_trace_source_event")
+                if delivery is not None:
+                    from qq_ai_bot.social.db_models import SocialOperationModel
+
+                    operation_id, event_id = delivery
+                    receipt = await session.get(SocialOperationModel, operation_id)
+                    event = await session.get(ChatEventModel, event_id)
+                    if (
+                        receipt is None
+                        or receipt.status != "succeeded"
+                        or receipt.event_id != event_id
+                        or receipt.source_conversation_id != conversation_id
+                        or event is None
+                        or event.direction != "outbound"
+                        or event.author_kind != "yuki"
+                        or event.suppression_status != "keeper"
+                        or event.canonical_conversation_id is None
+                    ):
+                        raise ValueError("invalid_trace_delivery")
+                    delivered_event_id = event.id
             values = dict(
                 conversation_id=conversation_id,
                 turn_id=scope.turn_id,
@@ -120,6 +147,7 @@ class TraceRecorder:
                 activation_id=activation_id,
                 execution_id=scope.execution_id,
                 source_event_id=source_event_id,
+                delivered_event_id=delivered_event_id,
                 generation=generation,
                 origin=scope.origin,
                 kind=kind,
@@ -184,6 +212,18 @@ async def record_trace(kind: str, payload: object) -> None:
     scope = current_trace.get()
     if scope is not None:
         await scope.recorder.append(scope, kind, payload)
+
+
+async def record_confirmed_delivery(operation_id: str, event_id: int) -> None:
+    """Post-commit diagnostic link; never controls or retries the actual send."""
+    scope = current_trace.get()
+    if scope is not None:
+        await scope.recorder.append(
+            scope,
+            "social_delivery",
+            {"social_operation_id": operation_id, "event_id": event_id},
+            delivery=(operation_id, event_id),
+        )
 
 
 @dataclass(slots=True)

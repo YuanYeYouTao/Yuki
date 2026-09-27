@@ -1365,6 +1365,9 @@ class SocialService:
                     # The send and ledger already committed. A wakeup failure
                     # cannot downgrade success or create a retryable delivery.
                     logging.getLogger(__name__).exception("social_post_commit_notify_failed")
+                from qq_ai_bot.execution_trace.recorder import record_confirmed_delivery
+
+                await record_confirmed_delivery(receipt.operation_id, appended.event.id)
         completed = await self.receipts.get(receipt.operation_id)
         await self._record_work_delivery(completed)
         if caption or caption_segments:

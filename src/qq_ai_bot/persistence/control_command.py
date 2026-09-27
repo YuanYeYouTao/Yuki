@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.admin.config_files import ConfigFileService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.config import Settings
@@ -85,6 +86,7 @@ from qq_ai_bot.identity.db_models import (
 from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
+from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.control_external import ExternalControlExecutor
 from qq_ai_bot.persistence.control_management import (
@@ -97,6 +99,7 @@ from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import AdminOperationEventModel
 from qq_ai_bot.persistence.unit_of_work import next_updated_at
 from qq_ai_bot.plugin_host.manager import PluginManager
+from qq_ai_bot.workspace.service import WorkspaceService
 
 _INVALID_TARGET = "invalid"
 
@@ -245,6 +248,9 @@ class ControlCommandAdapter:
         database: Database,
         *,
         settings: Settings | None = None,
+        workspace_service: WorkspaceService | None = None,
+        rebuild_service: MemoryRebuildService | None = None,
+        config_files: ConfigFileService | None = None,
         mcp_manager: MCPManager | None = None,
         runtime_config: RuntimeConfigService | None = None,
         maintenance: MemoryMaintenanceWorker | None = None,
@@ -260,6 +266,7 @@ class ControlCommandAdapter:
         self._management = ControlManagementGateway(
             database,
             settings=settings,
+            config_files=config_files,
             runtime_config=runtime_config,
             mcp=mcp_manager,
             maintenance=maintenance,
@@ -267,6 +274,8 @@ class ControlCommandAdapter:
             automation=automation,
             memories=memories,
             plugins=plugins,
+            workspace_service=workspace_service,
+            rebuild_service=rebuild_service,
         )
         self._external = ExternalControlExecutor(self)
 
@@ -619,6 +628,21 @@ class ControlCommandAdapter:
             ),
         )
 
+    async def mutate_relationship(
+        self,
+        principal: ControlPrincipal,
+        target: object,
+        command: ControlCommand,
+    ) -> ControlResult:
+        return await self._management_action(
+            principal,
+            target,
+            command,
+            operation=CommandOperation.RELATIONSHIP_MUTATE.value,
+            capability="control.relationship.mutate",
+            invoke=self._management.mutate_relationship,
+        )
+
     async def mutate_memory(
         self,
         principal: ControlPrincipal,
@@ -693,6 +717,19 @@ class ControlCommandAdapter:
             invoke=self._management.mutate_automation,
         )
 
+    async def save_config_file(
+        self, principal: ControlPrincipal, target: object, command: ControlCommand
+    ) -> ControlResult:
+        if target is not YukiControlTarget.PERMANENT_YUKI:
+            raise ControlCommandError(Problem(ProblemCode.VALIDATION_ERROR))
+        return await self._management_action(
+            principal,
+            target,
+            command,
+            operation=CommandOperation.CONFIG_FILE_SAVE.value,
+            capability="control.config.file.mutate",
+        )
+
     async def mutate_plugin(
         self,
         principal: ControlPrincipal,
@@ -706,6 +743,64 @@ class ControlCommandAdapter:
             operation=CommandOperation.PLUGIN_MUTATE.value,
             capability="control.plugin.mutate",
             invoke=self._management.retry_plugin_notification,
+        )
+
+    async def configure_plugin(
+        self, principal: ControlPrincipal, target: object, command: ControlCommand
+    ) -> ControlResult:
+        if target is not YukiControlTarget.PERMANENT_YUKI:
+            raise ControlCommandError(Problem(ProblemCode.VALIDATION_ERROR))
+        return await self._management_action(
+            principal,
+            target,
+            command,
+            operation=CommandOperation.PLUGIN_CONFIGURE.value,
+            capability="control.plugin.config.mutate",
+        )
+
+    async def mutate_workspace(
+        self, principal: ControlPrincipal, target: object, command: ControlCommand
+    ) -> ControlResult:
+        return await self._management_action(
+            principal,
+            target,
+            command,
+            operation=CommandOperation.WORKSPACE_MUTATE.value,
+            capability="control.workspace.mutate",
+        )
+
+    async def mutate_environment_file(
+        self, principal: ControlPrincipal, target: object, command: ControlCommand
+    ) -> ControlResult:
+        return await self._management_action(
+            principal,
+            target,
+            command,
+            operation=CommandOperation.ENVIRONMENT_FILE_MUTATE.value,
+            capability="control.environment.file.mutate",
+        )
+
+    async def mutate_environment_terminal(
+        self, principal: ControlPrincipal, target: object, command: ControlCommand
+    ) -> ControlResult:
+        return await self._management_action(
+            principal,
+            target,
+            command,
+            operation=CommandOperation.TERMINAL_MUTATE.value,
+            capability="control.terminal.mutate",
+        )
+
+    async def mutate_work(
+        self, principal: ControlPrincipal, target: object, command: ControlCommand
+    ) -> ControlResult:
+        return await self._management_action(
+            principal,
+            target,
+            command,
+            operation=CommandOperation.WORK_MUTATE.value,
+            capability="control.work.mutate",
+            invoke=self._management.mutate_work,
         )
 
     async def mutate_mcp(
@@ -799,7 +894,15 @@ class ControlCommandAdapter:
         parsed, material, parse_problem = _try_parse(command, parse_management_action)
         if parsed is not None and (
             operation
-            in {CommandOperation.MCP_MUTATE.value, CommandOperation.MEMORY_MAINTENANCE.value}
+            in {
+                CommandOperation.WORKSPACE_MUTATE.value,
+                CommandOperation.ENVIRONMENT_FILE_MUTATE.value,
+                CommandOperation.TERMINAL_MUTATE.value,
+                CommandOperation.MCP_MUTATE.value,
+                CommandOperation.MEMORY_MAINTENANCE.value,
+                CommandOperation.CONFIG_FILE_SAVE.value,
+                CommandOperation.PLUGIN_CONFIGURE.value,
+            }
             or (operation == CommandOperation.PLUGIN_MUTATE.value and parsed.action != "retry")
         ):
             return await self._external.execute(

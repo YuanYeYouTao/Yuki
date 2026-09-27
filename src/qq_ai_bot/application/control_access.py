@@ -78,6 +78,32 @@ class ControlOperatorAccess:
             raise ValueError("invalid control operator configuration") from exc
         self._operators = operators
 
+    async def resolve_session(
+        self, principal_id: PrincipalId, credential_digest: bytes
+    ) -> ControlPrincipal:
+        """Recheck server-owned grants and credential rotation on each browser request."""
+        matches = [
+            declaration
+            for declaration in self._operators
+            if PrincipalId.parse(declaration.principal_id) == principal_id
+        ]
+        if len(matches) != 1 or not matches[0].enabled:
+            raise ControlQueryError(Problem(ProblemCode.UNAUTHENTICATED))
+        declaration = matches[0]
+        secret = os.environ.get(declaration.token_env, "")
+        if (
+            not secret.isascii()
+            or not 32 <= len(secret) <= 4096
+            or not hmac.compare_digest(hashlib.sha256(secret.encode()).digest(), credential_digest)
+        ):
+            raise ControlQueryError(Problem(ProblemCode.UNAUTHENTICATED))
+        principal = declaration.principal(PrincipalSource.FUTURE_WEB)
+        if principal.person_id is not None:
+            async with self._database.sessions() as session:
+                if await session.get(CanonicalPersonModel, principal.person_id.text) is None:
+                    raise ControlQueryError(Problem(ProblemCode.UNAUTHENTICATED))
+        return principal
+
     async def authenticate(
         self,
         credential: object,

@@ -47,6 +47,41 @@ def _require_command(
 class ControlCommandService:
     """Authorize then mutate. Does not invent principals, actors, or capabilities."""
 
+    async def mutate_workspace(self, context: object, command: object) -> ControlResult:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("mutate_workspace"))
+        return await self._port.mutate_workspace(
+            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
+        )
+
+    async def mutate_environment_file(self, context: object, command: object) -> ControlResult:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("mutate_environment_file"))
+        return await self._port.mutate_environment_file(
+            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
+        )
+
+    async def mutate_environment_terminal(self, context: object, command: object) -> ControlResult:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("mutate_environment_terminal"))
+        return await self._port.mutate_environment_terminal(
+            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
+        )
+
+    async def mutate_work(self, context: object, command: object) -> ControlResult:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("mutate_work"))
+        return await self._port.mutate_work(
+            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
+        )
+
+    async def configure_plugin(self, context: object, command: object) -> ControlResult:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("configure_plugin"))
+        return await self._port.configure_plugin(
+            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
+        )
+
     def __init__(self, port: ControlCommandPort) -> None:
         if port is None:
             raise TypeError("port is required")
@@ -164,6 +199,13 @@ class ControlCommandService:
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 
+    async def mutate_relationship(self, context: object, command: object) -> ControlResult:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("mutate_relationship"))
+        return await self._port.mutate_relationship(
+            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
+        )
+
     async def mutate_memory(self, context: object, command: object) -> ControlResult:
         authorized = _require_context(context)
         _require_capability(authorized, method_capability("mutate_memory"))
@@ -196,6 +238,13 @@ class ControlCommandService:
         authorized = _require_context(context)
         _require_capability(authorized, method_capability("mutate_automation"))
         return await self._port.mutate_automation(
+            authorized.principal, authorized.canonical_target, _require_command(authorized, command)
+        )
+
+    async def save_config_file(self, context: object, command: object) -> ControlResult:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("save_config_file"))
+        return await self._port.save_config_file(
             authorized.principal, authorized.canonical_target, _require_command(authorized, command)
         )
 

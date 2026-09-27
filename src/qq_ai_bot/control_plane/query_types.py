@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Final, Literal, final
 
@@ -95,37 +95,59 @@ class QueryResourceKind(StrEnum):
     CONFIG_EFFECTIVE = "config_effective"
     MEMORY_EVIDENCE = "memory_evidence"
     MEMORY_FACT = "memory_fact"
+    MEMORY_REBUILD_PROPOSAL = "memory_rebuild_proposal"
     MEMORY_JOB = "memory_job"
+    RELATIONSHIP = "relationship"
+    RELATIONSHIP_EVENT = "relationship_event"
+    RELATIONSHIP_JOB = "relationship_job"
+    REFLECTION = "reflection"
     AUTOMATION = "automation"
+    AUTOMATION_RUN = "automation_run"
+    AUTOMATION_STEP = "automation_step"
     PLUGIN = "plugin"
+    PLUGIN_OUTBOX = "plugin_outbox"
+    PLUGIN_BACKGROUND = "plugin_background"
+    PARTICIPATION_FEEDBACK = "participation_feedback"
     MCP = "mcp"
     EMOJI = "emoji"
     SPEECH = "speech"
     CHAT_EVENT = "chat_event"
     EXECUTION_TRACE = "execution_trace"
     SOCIAL_RECEIPT = "social_receipt"
+    WORK = "work"
+    MODEL_USAGE = "model_usage"
+    WORKSPACE = "workspace"
+    PARTICIPATION = "participation"
 
 
 @final
 @dataclass(frozen=True, slots=True)
 class ExecutionTraceFilter:
+    descending: bool = False
     conversation_id: ConversationId | None = None
     turn_id: str | None = None
     work_id: str | None = None
     execution_id: str | None = None
     source_event_id: int | None = None
+    delivered_event_id: int | None = None
+    origin: str | None = None
 
     def __post_init__(self) -> None:
+        _require_bool(self.descending, "descending")
         if self.conversation_id is not None and type(self.conversation_id) is not ConversationId:
             raise TypeError("conversation_id must be ConversationId")
         for name in ("turn_id", "work_id", "execution_id"):
             value = getattr(self, name)
             if value is not None:
                 require_opaque_token(value, name=name, max_length=128)
-        if self.source_event_id is not None:
-            _require_int(self.source_event_id, "source_event_id", minimum=1)
-            if self.source_event_id > 2**63 - 1:
-                raise ValueError("source_event_id exceeds ledger range")
+        if self.origin is not None:
+            require_opaque_token(self.origin, name="origin", max_length=64)
+        for name in ("source_event_id", "delivered_event_id"):
+            value = getattr(self, name)
+            if value is not None:
+                _require_int(value, name, minimum=1)
+                if value > 2**63 - 1:
+                    raise ValueError(f"{name} exceeds ledger range")
 
 
 @final
@@ -148,6 +170,7 @@ class ExecutionTraceView:
     created_at: datetime
     expires_at: datetime
     payload: JsonObject | None = None
+    delivered_event_id: int | None = None
 
     def __post_init__(self) -> None:
         _require_int(self.id, "id", minimum=1)
@@ -158,12 +181,37 @@ class ExecutionTraceView:
             require_opaque_token(getattr(self, name), name=name, max_length=64)
         if self.source_event_id is not None:
             _require_int(self.source_event_id, "source_event_id", minimum=1)
+        if self.delivered_event_id is not None:
+            _require_int(self.delivered_event_id, "delivered_event_id", minimum=1)
         if self.conversation_id is not None and type(self.conversation_id) is not ConversationId:
             raise TypeError("conversation_id must be ConversationId")
         require_aware_datetime(self.created_at, name="created_at")
         require_aware_datetime(self.expires_at, name="expires_at")
         if self.payload is not None:
             object.__setattr__(self, "payload", freeze_json_object(self.payload))
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class ChatHistoryFilter:
+    descending: bool = False
+    event_id: int | None = None
+    since: datetime | None = None
+    until: datetime | None = None
+
+    def __post_init__(self) -> None:
+        _require_bool(self.descending, "descending")
+        if self.event_id is not None:
+            _require_int(self.event_id, "event_id", minimum=1)
+            if self.event_id > 2**63 - 1:
+                raise ValueError("event_id exceeds ledger range")
+        for name in ("since", "until"):
+            value = getattr(self, name)
+            if value is not None:
+                require_aware_datetime(value, name=name)
+                object.__setattr__(self, name, value.astimezone(UTC))
+        if self.since and self.until and self.since > self.until:
+            raise ValueError("invalid time range")
 
 
 @final
@@ -186,6 +234,7 @@ class ChatEventView:
     visual_summary: str | None
     sender_display_name: str | None
     attachment_indexes: tuple[int, ...]
+    suppression_status: str = "keeper"
 
     def __post_init__(self) -> None:
         _require_int(self.event_id, "event_id", minimum=1)
@@ -1058,6 +1107,76 @@ class ConfigOverrideView:
 
 @final
 @dataclass(frozen=True, slots=True)
+class MemoryQueryFilter:
+    """Selectors over original canonical ownership and internal evidence IDs."""
+
+    scope_type: str | None = None
+    person_id: PersonId | None = None
+    space_id: SpaceId | None = None
+    visibility_type: str | None = None
+    visibility_person_id: PersonId | None = None
+    visibility_space_id: SpaceId | None = None
+    kind: str | None = None
+    status: str | None = None
+    review_state: str | None = None
+    fact_id: int | None = None
+    event_id: int | None = None
+    tool_receipt_id: int | None = None
+
+    def __post_init__(self) -> None:
+        choices = {
+            "scope_type": {"person", "person_group", "group", "self"},
+            "visibility_type": {"global", "private", "group"},
+            "kind": {"fact", "preference", "episode"},
+            "status": {"active", "contested", "superseded", "invalidated"},
+            "review_state": {"verified", "quarantined", "legacy_unreviewed"},
+        }
+        for name, allowed in choices.items():
+            value = getattr(self, name)
+            if value is not None and (type(value) is not str or value not in allowed):
+                raise ValueError(f"invalid {name}")
+        for name, cls in (
+            ("person_id", PersonId),
+            ("space_id", SpaceId),
+            ("visibility_person_id", PersonId),
+            ("visibility_space_id", SpaceId),
+        ):
+            value = getattr(self, name)
+            if value is not None and type(value) is not cls:
+                raise TypeError(f"invalid {name}")
+        for name in ("fact_id", "event_id", "tool_receipt_id"):
+            value = getattr(self, name)
+            if value is not None and (type(value) is not int or not 1 <= value <= 2**63 - 1):
+                raise ValueError(f"invalid {name}")
+        if self.event_id is not None and self.tool_receipt_id is not None:
+            raise ValueError("evidence source selectors are mutually exclusive")
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class ReflectionQueryFilter:
+    person_id: PersonId | None = None
+    space_id: SpaceId | None = None
+    cycle_id: str | None = None
+    run_id: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.person_id is not None and type(self.person_id) is not PersonId:
+            raise TypeError("person_id must be PersonId")
+        if self.space_id is not None and type(self.space_id) is not SpaceId:
+            raise TypeError("space_id must be SpaceId")
+        if self.person_id is not None and self.space_id is not None:
+            raise ValueError("reflection has one canonical owner")
+        if self.cycle_id is not None:
+            require_opaque_token(self.cycle_id, name="cycle_id", max_length=64)
+        if self.run_id is not None and (
+            type(self.run_id) is not int or not 1 <= self.run_id <= 2**63 - 1
+        ):
+            raise ValueError("invalid run_id")
+
+
+@final
+@dataclass(frozen=True, slots=True)
 class MemoryFactView:
     fact_id: int
     scope_type: str
@@ -1067,6 +1186,15 @@ class MemoryFactView:
     content: str | None
     excerpt: str | None
     revision: int
+    person_id: str | None = None
+    space_id: str | None = None
+    visibility_type: str | None = None
+    visibility_person_id: str | None = None
+    visibility_space_id: str | None = None
+    review_state: str | None = None
+    importance: int | None = None
+    confidence: float | None = None
+    updated_at: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "revision", _require_int(self.revision, "revision", minimum=1))
@@ -1089,6 +1217,12 @@ class MemoryEvidenceView:
     fact_id: int
     relation: str
     excerpt: str | None
+    event_id: int | None = None
+    tool_receipt_id: int | None = None
+    authority: str | None = None
+    confidence: float | None = None
+    created_at: str | None = None
+    execution_id: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -1298,3 +1432,37 @@ class SpeechProfileView:
         require_opaque_token(self.profile_id, name="profile_id", max_length=128)
         require_opaque_token(self.status, name="status", max_length=32)
         _require_bool(self.enabled, "enabled")
+
+
+@dataclass(frozen=True, slots=True)
+class ActivityView:
+    """Reviewed activity projection. Contents are constructed field by field by adapters."""
+
+    resource_id: str
+    fields: JsonObject
+
+    def __init__(self, resource_id: str, fields: object) -> None:
+        require_opaque_token(resource_id, name="resource_id", max_length=256)
+        object.__setattr__(self, "resource_id", resource_id)
+        object.__setattr__(self, "fields", freeze_json_object(fields))
+
+
+@dataclass(frozen=True, slots=True)
+class DownloadView:
+    name: str
+    content: bytes
+    media_type: str = "application/octet-stream"
+
+    def __post_init__(self) -> None:
+        if type(self.name) is not str or not self.name or len(self.name) > 128:
+            raise ValueError("invalid download name")
+        if type(self.content) is not bytes or len(self.content) > 32 * 1024 * 1024:
+            raise ValueError("download exceeds limit")
+        if self.media_type not in {
+            "application/octet-stream",
+            "image/png",
+            "image/jpeg",
+            "image/webp",
+            "image/gif",
+        }:
+            raise ValueError("invalid download media type")

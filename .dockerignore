@@ -18,6 +18,9 @@ __pycache__
 workspace
 social-transfer
 sandbox-runtime
+webui-config
 tests
 tmp
 docs/operations/static-review-*.md
+frontend/node_modules
+src/qq_ai_bot/webui/assets

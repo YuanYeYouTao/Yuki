@@ -76,6 +76,42 @@ class Settings(BaseSettings):
         populate_by_name=True,
     )
 
+    webui_enabled: bool = False
+    webui_origin: str = "http://127.0.0.1:18765"
+    webui_session_seconds: int = Field(default=21600, ge=300, le=86400)
+    webui_max_body_bytes: int = Field(default=1048576, ge=1024, le=16777216)
+
+    @field_validator("webui_origin")
+    @classmethod
+    def valid_webui_origin(cls, value: str) -> str:
+        from urllib.parse import urlsplit
+
+        if any(char.isspace() or ord(char) < 32 for char in value) or "\\" in value:
+            raise ValueError("WEBUI_ORIGIN must be an HTTP(S) origin")
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in {"", "/"}
+        ):
+            raise ValueError("WEBUI_ORIGIN must be an HTTP(S) origin")
+        if parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+            raise ValueError("non-local WebUI origins require HTTPS")
+        port = parsed.port
+        if port is not None and not 1 <= port <= 65535:
+            raise ValueError("WEBUI_ORIGIN has an invalid port")
+        host = parsed.hostname.encode("idna").decode("ascii").lower()
+        if "%" in host:
+            raise ValueError("WEBUI_ORIGIN has an invalid host")
+        authority = f"[{host}]" if ":" in host else host
+        if port is not None and port != (443 if parsed.scheme == "https" else 80):
+            authority += f":{port}"
+        return f"{parsed.scheme}://{authority}"
+
     app_host: str = "0.0.0.0"
     app_port: int = 8080
     log_level: str = "INFO"
@@ -139,6 +175,7 @@ class Settings(BaseSettings):
     # Compatibility for deployments created before BOT_PERSONA_FILE existed.
     yuki_persona_file: Path | None = None
     _bot_persona: str = PrivateAttr(default="")
+    _loaded_bot_persona_file: Path | None = PrivateAttr(default=None)
 
     database_url: str = "sqlite+aiosqlite:///./data/qq_ai_bot.db"
     control_operators_file: Path | None = None
@@ -364,6 +401,7 @@ class Settings(BaseSettings):
     semantic_participation_api_key: SecretStr = Field(default=SecretStr(""), repr=False)
     semantic_participation_model: str = "jev-1.13.0"
     semantic_participation_state_path: Path = Path("data/participation.sqlite3")
+    semantic_participation_model_config_file: Path = Path("config/autonomous-model.json")
     runtime_work_enabled: bool = False
     subagents_enabled: bool = False
     subagent_context_token_limit: int = Field(default=131072, ge=8192)
@@ -800,13 +838,7 @@ class Settings(BaseSettings):
     def _load_system_prompt_file(self) -> Self:
         """Load the shared UTF-8 persona without changing prompt assembly semantics."""
 
-        persona_file = self.bot_persona_file or self.yuki_persona_file or Path("config/persona.md")
-        if (
-            self.bot_persona_file is None
-            and persona_file == Path("config/yuki_persona_core.md")
-            and not persona_file.exists()
-        ):
-            persona_file = Path("config/persona.md")
+        persona_file = self.resolved_bot_persona_file
         persona_setting = (
             "BOT_PERSONA_FILE"
             if self.bot_persona_file is not None or self.yuki_persona_file is None
@@ -819,6 +851,7 @@ class Settings(BaseSettings):
         if not persona:
             raise ValueError(f"{persona_setting} must not be empty")
         self._bot_persona = persona
+        self._loaded_bot_persona_file = persona_file
 
         if self.system_prompt_file is not None:
             try:
@@ -835,6 +868,20 @@ class Settings(BaseSettings):
             self._bot_persona,
         )
         return self
+
+    @property
+    def resolved_bot_persona_file(self) -> Path:
+        """Use exactly the startup selection, including the old default-path alias."""
+        if self._loaded_bot_persona_file is not None:
+            return self._loaded_bot_persona_file
+        persona_file = self.bot_persona_file or self.yuki_persona_file or Path("config/persona.md")
+        if (
+            self.bot_persona_file is None
+            and persona_file == Path("config/yuki_persona_core.md")
+            and not persona_file.exists()
+        ):
+            persona_file = Path("config/persona.md")
+        return persona_file
 
     @property
     def bot_persona(self) -> str:

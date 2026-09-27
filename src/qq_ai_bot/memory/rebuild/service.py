@@ -172,6 +172,76 @@ def extraction_fingerprint(settings: Settings, *, model_name: str | None = None)
     return hashlib.sha256(canonical_json(payload).encode()).hexdigest()
 
 
+async def manage_rebuild_core(
+    repository: MemoryRebuildRepository,
+    run_id: str,
+    *,
+    action: str,
+    settings: Settings,
+    model_name: str,
+    actor_user_id: str,
+    proposal_ids: tuple[int, ...] | None = None,
+    session: AsyncSession | None = None,
+) -> MemoryRebuildRun:
+    """One state machine for trusted CLI/Control, under their existing authority."""
+    run = await repository.get_run(run_id, session=session)
+    if run is None:
+        raise ValueError("memory rebuild run not found")
+    if action in {"approve", "reject"}:
+        if run.status is not MemoryRebuildRunStatus.REVIEW:
+            raise ValueError("run is not ready for review")
+        await repository.set_review(
+            run_id,
+            proposal_ids=proposal_ids,
+            status=MemoryRebuildReviewStatus.APPROVED
+            if action == "approve"
+            else MemoryRebuildReviewStatus.REJECTED,
+            actor_user_id=actor_user_id,
+            session=session,
+        )
+    else:
+        if action == "pause":
+            target = {
+                MemoryRebuildRunStatus.EXTRACTING: MemoryRebuildRunStatus.EXTRACTION_PAUSED,
+                MemoryRebuildRunStatus.COMMITTING: MemoryRebuildRunStatus.COMMIT_PAUSED,
+            }.get(run.status)
+        elif action == "resume":
+            if not settings.memory_rebuild_enabled:
+                raise RuntimeError("MEMORY_REBUILD_ENABLED is false")
+            target = {
+                MemoryRebuildRunStatus.EXTRACTION_PAUSED: MemoryRebuildRunStatus.EXTRACTING,
+                MemoryRebuildRunStatus.COMMIT_PAUSED: MemoryRebuildRunStatus.COMMITTING,
+            }.get(run.status)
+            if (
+                target is MemoryRebuildRunStatus.EXTRACTING
+                and run.extraction_fingerprint
+                != extraction_fingerprint(settings, model_name=model_name)
+            ):
+                raise ValueError("extraction_fingerprint_changed; create a new run")
+        elif action == "retry":
+            if run.status is not MemoryRebuildRunStatus.FAILED:
+                raise ValueError("only failed runs can be retried")
+            target = await repository.reset_failed(run_id, session=session)
+        elif action == "commit":
+            if not settings.memory_rebuild_enabled:
+                raise RuntimeError("MEMORY_REBUILD_ENABLED is false")
+            if run.status is not MemoryRebuildRunStatus.REVIEW:
+                raise ValueError("run is not in review")
+            if await repository.pending_review_count(run_id, session=session):
+                raise ValueError("all proposals must be approved or rejected before commit")
+            target = MemoryRebuildRunStatus.COMMITTING
+        else:
+            raise ValueError("unsupported rebuild action")
+        if target is None or not await repository.transition(
+            run_id, expected={run.status}, status=target, session=session
+        ):
+            raise RuntimeError("memory rebuild state changed concurrently")
+    loaded = await repository.get_run(run_id, session=session)
+    if loaded is None:
+        raise ValueError("memory rebuild run not found")
+    return loaded
+
+
 class MemoryRebuildService:
     """All command, tool, and worker entry points share this state machine."""
 
@@ -288,40 +358,25 @@ class MemoryRebuildService:
 
     async def pause(self, run_id: str, *, actor_user_id: str) -> MemoryRebuildRun:
         self._authorize(actor_user_id)
-        run = await self._require(run_id)
-        target = {
-            MemoryRebuildRunStatus.EXTRACTING: MemoryRebuildRunStatus.EXTRACTION_PAUSED,
-            MemoryRebuildRunStatus.COMMITTING: MemoryRebuildRunStatus.COMMIT_PAUSED,
-        }.get(run.status)
-        if target is None:
-            raise ValueError("run is not executing")
-        if not await self.repository.transition(run_id, expected={run.status}, status=target):
-            raise RuntimeError("memory rebuild state changed concurrently")
-        return await self._require(run_id)
+        return await manage_rebuild_core(
+            self.repository,
+            run_id,
+            action="pause",
+            settings=self.settings,
+            model_name=self.extractor.model_name,
+            actor_user_id=actor_user_id,
+        )
 
     async def resume(self, run_id: str, *, actor_user_id: str) -> MemoryRebuildRun:
         self._authorize(actor_user_id)
-        self._available()
-        if await self.repository.executing_count():
-            raise RuntimeError("another memory rebuild run is executing")
-        run = await self._require(run_id)
-        target = {
-            MemoryRebuildRunStatus.EXTRACTION_PAUSED: MemoryRebuildRunStatus.EXTRACTING,
-            MemoryRebuildRunStatus.COMMIT_PAUSED: MemoryRebuildRunStatus.COMMITTING,
-        }.get(run.status)
-        if target is None:
-            raise ValueError("run is not paused")
-        if target is MemoryRebuildRunStatus.EXTRACTING and (
-            run.extraction_fingerprint
-            != extraction_fingerprint(
-                self.settings,
-                model_name=self.extractor.model_name,
-            )
-        ):
-            raise ValueError("extraction_fingerprint_changed; create a new run")
-        if not await self.repository.transition(run_id, expected={run.status}, status=target):
-            raise RuntimeError("another memory rebuild run is executing")
-        return await self._require(run_id)
+        return await manage_rebuild_core(
+            self.repository,
+            run_id,
+            action="resume",
+            settings=self.settings,
+            model_name=self.extractor.model_name,
+            actor_user_id=actor_user_id,
+        )
 
     async def cancel(
         self,
@@ -424,11 +479,9 @@ class MemoryRebuildService:
         changed = await self.repository.set_review(
             run_id,
             proposal_ids=proposal_ids,
-            status=(
-                MemoryRebuildReviewStatus.APPROVED
-                if approved
-                else MemoryRebuildReviewStatus.REJECTED
-            ),
+            status=MemoryRebuildReviewStatus.APPROVED
+            if approved
+            else MemoryRebuildReviewStatus.REJECTED,
             actor_user_id=actor_user_id,
         )
         self.metrics.increment(
@@ -439,37 +492,25 @@ class MemoryRebuildService:
 
     async def commit(self, run_id: str, *, actor_user_id: str) -> MemoryRebuildRun:
         self._authorize(actor_user_id)
-        self._available()
-        run = await self._require(run_id)
-        if run.status is not MemoryRebuildRunStatus.REVIEW:
-            raise ValueError("run is not in review")
-        if await self.repository.pending_review_count(run_id):
-            raise ValueError("all proposals must be approved or rejected before commit")
-        if await self.repository.executing_count():
-            raise RuntimeError("another memory rebuild run is executing")
-        changed = await self.repository.transition(
+        return await manage_rebuild_core(
+            self.repository,
             run_id,
-            expected={MemoryRebuildRunStatus.REVIEW},
-            status=MemoryRebuildRunStatus.COMMITTING,
+            action="commit",
+            settings=self.settings,
+            model_name=self.extractor.model_name,
+            actor_user_id=actor_user_id,
         )
-        if not changed:
-            raise RuntimeError("another memory rebuild run is executing")
-        return await self._require(run_id)
 
     async def retry(self, run_id: str, *, actor_user_id: str) -> MemoryRebuildRun:
         self._authorize(actor_user_id)
-        run = await self._require(run_id)
-        if run.status is not MemoryRebuildRunStatus.FAILED:
-            raise ValueError("only failed runs can be retried")
-        target = await self.repository.reset_failed(run_id)
-        changed = await self.repository.transition(
+        return await manage_rebuild_core(
+            self.repository,
             run_id,
-            expected={MemoryRebuildRunStatus.FAILED},
-            status=target,
+            action="retry",
+            settings=self.settings,
+            model_name=self.extractor.model_name,
+            actor_user_id=actor_user_id,
         )
-        if not changed:
-            raise RuntimeError("memory rebuild state changed concurrently")
-        return await self._require(run_id)
 
     async def purge(self, run_id: str, *, actor_user_id: str) -> bool:
         self._authorize(actor_user_id)

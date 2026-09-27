@@ -132,3 +132,54 @@ async def test_control_rejects_ambiguous_owner_binding_without_creating_task(dat
             ),
         )
     assert await AutomationRepository(database).active_count() == 0
+
+
+async def test_control_agent_form_keeps_original_scene_and_work_budget(database, tmp_path):
+    env = await social_env(database, tmp_path)
+    service = automation_service(database)
+    payload = {
+        "version": 1,
+        "name": "browser form",
+        "timezone": "Asia/Shanghai",
+        "schedule": {"type": "after", "seconds": 1},
+        "steps": [
+            {
+                "id": "step_1",
+                "call": "yuki.agent",
+                "arguments": {
+                    "instruction": "offline",
+                    "context_profile": "none",
+                    "delivery_target": "none",
+                    "max_model_requests": 1,
+                    "max_tool_calls": 0,
+                },
+            }
+        ],
+    }
+    row = await service.administer_create(
+        payload,
+        owner_id="self",
+        conversation_id=env.context.conversation_id,
+        creation_source_key="control-form-test",
+    )
+    assert row.creator_kind == "self"
+
+    commands = ControlCommandService(ControlCommandAdapter(database, automation=service))
+    ctx = context("control.automation.mutate")
+    result = await commands.mutate_automation(
+        ctx,
+        ControlCommand(
+            request_id=ctx.request_id,
+            expected_revision=0,
+            payload={
+                "action": "create",
+                "resource_id": "yuki",
+                "spec": {
+                    "script": payload,
+                    "owner_id": "self",
+                    "conversation_id": env.context.conversation_id,
+                },
+            },
+        ),
+    )
+    assert result.success

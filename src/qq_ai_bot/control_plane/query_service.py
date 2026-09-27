@@ -3,20 +3,24 @@
 from __future__ import annotations
 
 from qq_ai_bot.control_plane.decision import decide
+from qq_ai_bot.control_plane.json_types import JsonObject
 from qq_ai_bot.control_plane.operations import OperationKind, OperationRef
 from qq_ai_bot.control_plane.paging import Page, PageRequest
 from qq_ai_bot.control_plane.principal import ControlPrincipal
 from qq_ai_bot.control_plane.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_port import ControlQueryPort
 from qq_ai_bot.control_plane.query_types import (
+    ActivityView,
     AuditEventView,
     AutomationView,
     ChatEventView,
+    ChatHistoryFilter,
     ConfigOverrideView,
     ConfigQueryScope,
     ConfigSpecView,
     ControlQueryError,
     ConversationView,
+    DownloadView,
     EffectiveConfigView,
     EmojiAssetView,
     ExecutionTraceFilter,
@@ -28,11 +32,13 @@ from qq_ai_bot.control_plane.query_types import (
     MemoryFactView,
     MemoryHealthView,
     MemoryJobView,
+    MemoryQueryFilter,
     PersonActiveRouteView,
     PersonView,
     PluginRuntimeView,
     PluginView,
     PresenceView,
+    ReflectionQueryFilter,
     SocialReceiptView,
     SpaceActiveRouteView,
     SpaceBindingIngestRouteView,
@@ -44,7 +50,7 @@ from qq_ai_bot.control_plane.query_types import (
 )
 from qq_ai_bot.control_plane.surface import ControlSurfaceView, describe_surface, method_capability
 from qq_ai_bot.domain.control import DecisionContext
-from qq_ai_bot.domain.identity import ConversationId
+from qq_ai_bot.domain.identity import ConversationId, PersonId, RequestId
 
 
 def _require_context(context: object) -> DecisionContext[ControlPrincipal, object, object]:
@@ -75,10 +81,235 @@ def _reveal_external(context: DecisionContext[ControlPrincipal, object, object])
 class ControlQueryService:
     """Authorize then project. Does not invent principals or actors."""
 
+    async def list_plugin_background_turns(
+        self, context: object, request: PageRequest, *, plugin_id: str
+    ) -> Page[ActivityView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("list_plugin_background_turns"))
+        return await self._port.list_plugin_background_turns(request, plugin_id=plugin_id)
+
+    async def list_participation_feedback(
+        self, context: object, request: PageRequest, *, run_id: str, include_content: bool = False
+    ) -> Page[ActivityView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("list_participation_feedback"))
+        if type(include_content) is not bool:
+            raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
+        return await self._port.list_participation_feedback(
+            request,
+            run_id=run_id,
+            include_content=include_content
+            and authorized.principal.allows("control.execution.content.read"),
+        )
+
+    async def list_plugin_outbox(
+        self, context: object, request: PageRequest, *, plugin_id: str
+    ) -> Page[ActivityView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("list_plugin_outbox"))
+        return await self._port.list_plugin_outbox(request, plugin_id=plugin_id)
+
+    async def read_plugin_observation(
+        self, context: object, plugin_id: str, *, cursor: str | None = None, limit: int = 10
+    ) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_plugin_observation"))
+        return await self._port.read_plugin_observation(plugin_id, cursor=cursor, limit=limit)
+
+    async def read_plugin_configuration(
+        self,
+        context: object,
+        plugin_id: str,
+        *,
+        scope_type: str = "global",
+        owner_id: str | None = None,
+    ) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_plugin_configuration"))
+        return await self._port.read_plugin_configuration(
+            plugin_id, scope_type=scope_type, owner_id=owner_id
+        )
+
     def __init__(self, port: ControlQueryPort) -> None:
         if port is None:
             raise TypeError("port is required")
         self._port = port
+
+    async def download_workspace(self, context: object, artifact_id: str) -> DownloadView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("download_workspace"))
+        return await self._port.download_workspace(artifact_id)
+
+    async def download_chat_media(
+        self, context: object, conversation_id: ConversationId, event_id: int, attachment_index: int
+    ) -> DownloadView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("download_chat_media"))
+        return await self._port.download_chat_media(conversation_id, event_id, attachment_index)
+
+    async def read_model_catalog(self, context: object) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_model_catalog"))
+        return await self._port.read_model_catalog()
+
+    async def read_config_file(self, context: object, file_id: str) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_config_file"))
+        return await self._port.read_config_file(file_id)
+
+    async def read_persona(self, context: object) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_persona"))
+        return await self._port.read_persona()
+
+    async def list_participation_runs(
+        self,
+        context: object,
+        request: PageRequest,
+        *,
+        conversation_id: ConversationId | None = None,
+    ) -> Page[ActivityView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("list_participation_runs"))
+        return await self._port.list_participation_runs(request, conversation_id=conversation_id)
+
+    async def read_participation(self, context: object) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_participation"))
+        return await self._port.read_participation()
+
+    async def read_work(
+        self, context: object, work_id: str, *, include_content: bool = False
+    ) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_work"))
+        if type(include_content) is not bool:
+            raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
+        if include_content:
+            _require_capability(authorized, "control.execution.content.read")
+        return await self._port.read_work(work_id, include_content=include_content)
+
+    async def list_work_history(
+        self,
+        context: object,
+        request: PageRequest,
+        *,
+        work_id: str,
+        section: str,
+        include_content: bool = False,
+    ) -> Page[ActivityView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("list_work_history"))
+        if type(include_content) is not bool:
+            raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
+        if include_content:
+            _require_capability(authorized, "control.execution.content.read")
+        return await self._port.list_work_history(
+            request, work_id=work_id, section=section, include_content=include_content
+        )
+
+    async def list_work(
+        self, context: object, request: PageRequest, *, include_content: bool = False
+    ) -> Page[ActivityView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("list_work"))
+        if type(include_content) is not bool:
+            raise TypeError("include_content must be bool")
+        if include_content:
+            _require_capability(authorized, "control.execution.content.read")
+        return await self._port.list_work(request, include_content=include_content)
+
+    async def read_automation_schema(self, context: object) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_automation_schema"))
+        return await self._port.read_automation_schema()
+
+    async def read_memory_maintenance_schema(self, context: object) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_memory_maintenance_schema"))
+        return await self._port.read_memory_maintenance_schema()
+
+    async def list_memory_rebuild_proposals(
+        self, context: object, request: PageRequest, *, run_id: str, include_content: bool = False
+    ) -> Page[ActivityView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("list_memory_rebuild_proposals"))
+        if type(include_content) is not bool:
+            raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
+        return await self._port.list_memory_rebuild_proposals(
+            request,
+            run_id=run_id,
+            include_content=include_content
+            and authorized.principal.allows("control.memory.content.read"),
+        )
+
+    async def read_memory_maintenance_run(self, context: object, operation_id: str) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_memory_maintenance_run"))
+        return await self._port.read_memory_maintenance_run(operation_id)
+
+    async def read_automation(self, context: object, automation_id: int) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_automation"))
+        return await self._port.read_automation(automation_id)
+
+    async def list_automation_runs(
+        self, context: object, request: PageRequest, *, automation_id: int
+    ) -> Page[ActivityView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("list_automation_runs"))
+        return await self._port.list_automation_runs(request, automation_id=automation_id)
+
+    async def list_automation_steps(
+        self,
+        context: object,
+        request: PageRequest,
+        *,
+        automation_id: int,
+        run_id: int | None = None,
+    ) -> Page[ActivityView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("list_automation_steps"))
+        return await self._port.list_automation_steps(
+            request, automation_id=automation_id, run_id=run_id
+        )
+
+    async def list_model_usage(self, context: object, request: PageRequest) -> Page[ActivityView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("list_model_usage"))
+        return await self._port.list_model_usage(request)
+
+    async def list_workspace(self, context: object, request: PageRequest) -> Page[ActivityView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("list_workspace"))
+        return await self._port.list_workspace(request)
+
+    async def read_terminal_submission(
+        self, context: object, request_id: RequestId
+    ) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_terminal_submission"))
+        if type(request_id) is not RequestId:
+            raise TypeError("request_id must be RequestId")
+        return await self._port.read_terminal_submission(
+            request_id, authorized.principal.principal_id
+        )
+
+    async def read_environment(
+        self, context: object, section: str, arguments: JsonObject
+    ) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_environment"))
+        if section in {"files", "file"}:
+            _require_capability(authorized, "control.workspace.content.read")
+        elif section == "terminal":
+            _require_capability(authorized, "control.terminal.content.read")
+        return await self._port.read_environment(section, arguments)
+
+    async def read_workspace(self, context: object, artifact_id: str) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_workspace"))
+        return await self._port.read_workspace(artifact_id)
 
     async def list_execution_trace(
         self,
@@ -112,6 +343,7 @@ class ControlQueryService:
         *,
         conversation_id: ConversationId,
         include_content: bool = False,
+        history: ChatHistoryFilter | None = None,
     ) -> Page[ChatEventView]:
         authorized = _require_context(context)
         _require_capability(authorized, method_capability("list_chat_events"))
@@ -119,8 +351,9 @@ class ControlQueryService:
             raise TypeError("include_content must be bool")
         if include_content:
             _require_capability(authorized, "control.chat.content.read")
+        options = {} if history is None else {"history": history}
         return await self._port.list_chat_events(
-            request, conversation_id=conversation_id, include_content=include_content
+            request, conversation_id=conversation_id, include_content=include_content, **options
         )
 
     async def list_social_receipts(
@@ -256,22 +489,69 @@ class ControlQueryService:
             request, reveal_external=_reveal_external(authorized)
         )
 
+    async def read_self_reflection_health(self, context: object) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_self_reflection_health"))
+        return await self._port.read_self_reflection_health()
+
+    async def list_self_reflection_history(
+        self,
+        context: object,
+        request: PageRequest,
+        *,
+        section: str,
+        scope: ReflectionQueryFilter | None = None,
+    ) -> Page[ActivityView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("list_self_reflection_history"))
+        return await self._port.list_self_reflection_history(request, section=section, scope=scope)
+
+    async def list_relationships(self, context: object, request: PageRequest) -> Page[ActivityView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("list_relationships"))
+        return await self._port.list_relationships(request)
+
+    async def read_relationship(self, context: object, person_id: PersonId) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_relationship"))
+        return await self._port.read_relationship(person_id)
+
+    async def list_relationship_history(
+        self, context: object, request: PageRequest, *, person_id: PersonId, section: str
+    ) -> Page[ActivityView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("list_relationship_history"))
+        return await self._port.list_relationship_history(
+            request, person_id=person_id, section=section
+        )
+
     async def list_memory_facts(
-        self, context: object, request: PageRequest
+        self, context: object, request: PageRequest, *, scope: MemoryQueryFilter | None = None
     ) -> Page[MemoryFactView]:
         authorized = _require_context(context)
         _require_capability(authorized, method_capability("list_memory_facts"))
         return await self._port.list_memory_facts(
-            request, include_content=authorized.principal.allows("control.memory.content.read")
+            request,
+            include_content=authorized.principal.allows("control.memory.content.read"),
+            scope=scope,
         )
 
     async def list_memory_evidence(
-        self, context: object, request: PageRequest
+        self, context: object, request: PageRequest, *, scope: MemoryQueryFilter | None = None
     ) -> Page[MemoryEvidenceView]:
         authorized = _require_context(context)
         _require_capability(authorized, method_capability("list_memory_evidence"))
         return await self._port.list_memory_evidence(
-            request, include_content=authorized.principal.allows("control.memory.content.read")
+            request,
+            include_content=authorized.principal.allows("control.memory.content.read"),
+            scope=scope,
+        )
+
+    async def read_memory_fact(self, context: object, fact_id: int) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_memory_fact"))
+        return await self._port.read_memory_fact(
+            fact_id, include_content=authorized.principal.allows("control.memory.content.read")
         )
 
     async def list_memory_jobs(self, context: object, request: PageRequest) -> Page[MemoryJobView]:
@@ -293,6 +573,11 @@ class ControlQueryService:
         authorized = _require_context(context)
         _require_capability(authorized, method_capability("list_plugins"))
         return await self._port.list_plugins(request)
+
+    async def read_plugin_approval(self, context: object, plugin_id: str) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_plugin_approval"))
+        return await self._port.read_plugin_approval(plugin_id)
 
     async def read_plugin_runtime(self, context: object, plugin_id: str) -> PluginRuntimeView:
         authorized = _require_context(context)

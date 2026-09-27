@@ -54,3 +54,18 @@ plugin.toml
 
 所有 Facade 都是能力边界，不是 Repository 的别名；插件永远不能获得 SQLAlchemy Session。
 
+## 管理界面的可选只读观察
+
+需要提供插件领域状态时可实现 `yuki_plugin_sdk.observation.ObservablePlugin`：
+`async observe(context: PluginObservationContext, request: PluginObservationRequest) -> JsonObject`。
+这不是新的必需生命周期；只实现 register/start/stop 的旧插件仍能运行。
+请求有 repository 等插件自定义 cursor（最多 512 字符）与 limit（1–20），由插件核验
+分页含义，不接收任意命名空间或工具名。只有已经运行且获准的实例可被观察。
+
+context 仅有 `get_config(key)` 和 `get_state(namespace, key)`，绑定自身插件、全局 config
+及原批准权限；没有写操作、HTTP、Secret、通知或 Agent 服务。callback 必须无副作用，
+从原插件状态投影审核过的字段，不返回 Secret、私有 payload 或未来执行的冻结原文。
+Host 在 Manager lock/写事务外调用，工厂与 callback 最多 5 秒、JSON 结果最多 64 KiB，
+生命周期发生变化则拒绝旧投影。仍是可信 Python 插件合同，不能替代 OS 隔离。
+GitHub Monitor 的实现参考 `github_monitor/observation.py`；Host 不解释插件私有 KV。
+
