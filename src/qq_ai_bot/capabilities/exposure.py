@@ -169,9 +169,9 @@ class AuthorityFirstExposurePlanner:
                 if entry.descriptor.namespace_id in eager:
                     add(entry)
 
-        # First-round schemas are part of the DeepSeek prefix from token 0.
-        # Do not vary them with the current message, permission phrasing, or
-        # lexical hits; request_tools remains the growth path.
+        # Local exposure ignores message text and lexical hits. The Main Agent
+        # declaration is frozen separately by MainAgentContract; request_tools
+        # only searches that declared catalog.
         del query, hits
         for name in CONDITIONAL_KERNEL_TOOLS:
             candidate = by_id.get(name)

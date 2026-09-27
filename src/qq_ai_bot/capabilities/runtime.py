@@ -1,7 +1,7 @@
-"""Per-turn capability runtime: pin revision, expose, search, validate.
+"""Per-turn authorized catalog, local exposure, search and call validation.
 
-Chat and AgentRunner may only consume this object for tool exposure.  Planner
-fields are not read.
+MainAgentContract owns the fixed model declaration. This runtime projects
+local authority and searches the catalog without growing that declaration.
 """
 
 from __future__ import annotations

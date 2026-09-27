@@ -61,37 +61,6 @@ class MCPToolProvider:
             descriptors.append(self._gateway_descriptor())
         return tuple(descriptors)
 
-    async def prepare_scopes(self, scopes: tuple[str, ...], context: Any) -> None:
-        """Discover selected servers. Empty scopes discover nothing."""
-
-        if not scopes or not self._configure_runtime(context):
-            return
-        for server_id in self._manager.configured_server_ids:
-            config = self._manager.server_config(server_id)
-            assert config is not None
-            scope = mcp_capability_namespace(server_id, config)
-            bundle_scopes = {bundle.scope for bundle in config.yuki.tool_bundles.values()}
-            if (
-                scope not in scopes
-                and "mcp" not in scopes
-                and not bundle_scopes.intersection(scopes)
-            ):
-                continue
-            try:
-                await self._manager.ensure_metadata(server_id)
-            except (OSError, RuntimeError, TimeoutError, ValueError):
-                continue
-
-    async def ensure_server_metadata(self, server_id: str, context: Any) -> None:
-        """Connect one configured server after FTS hits its synthetic document."""
-
-        if not self._configure_runtime(context):
-            return
-        try:
-            await self._manager.ensure_metadata(server_id)
-        except (OSError, RuntimeError, TimeoutError, ValueError):
-            return
-
     def scope_summaries(self, runtime: Any | None = None) -> tuple[ToolScopeSummary, ...]:
         """Expose compact config metadata without connecting lazy servers."""
 
