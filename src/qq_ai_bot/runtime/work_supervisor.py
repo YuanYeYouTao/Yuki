@@ -66,6 +66,10 @@ def activation_details(control: WorkControl) -> dict[str, Any]:
 
 
 async def recover_failure(control: WorkControl, exc: BaseException) -> ActivationOutcome:
+    assert control.current is not None
+    observed = await control.repository.get(control.current["id"])
+    if observed is not None and observed["state"] == "cancelled":
+        return _cancelled(control, observed)
     failure = classify_failure(exc)
     reason = ExitReason.PAUSED
     if isinstance(exc, WorkBudgetExceeded):
@@ -79,6 +83,9 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
     elif isinstance(exc, WorkConflict):
         # A stale owner must never commit a new state over its replacement.
         if not await control.repository.valid(control.lease):
+            observed = await control.repository.get(control.current["id"])
+            if observed is not None and observed["state"] == "cancelled":
+                return _cancelled(control, observed)
             raise exc
         if failure.code == "work_journal_source_changed" and await _has_recorded_effects(control):
             failure = replace(
@@ -96,6 +103,11 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
     )
     identity = control.current["id"]
     async with control.repository.database.immediate_session() as session:
+        current = (
+            (await session.execute(select(work).where(work.c.id == identity))).mappings().first()
+        )
+        if current is not None and current["state"] == "cancelled":
+            return _cancelled(control, dict(current))
         await control.repository._assert_lease(session, control.lease)
         prior = (
             (await session.execute(select(recovery).where(recovery.c.work_id == identity)))
@@ -206,6 +218,17 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
         attempts,
     )
     return outcome
+
+
+def _cancelled(control: WorkControl, current: dict[str, Any]) -> ActivationOutcome:
+    """A committed cancellation is an exit, never a second failure notice."""
+    control.current = current
+    control.ending = "cancelled"
+    control.settled = True
+    control.outcome = ActivationOutcome(
+        ExitReason.CANCELLED, current["id"], **activation_details(control)
+    )
+    return control.outcome
 
 
 async def settle(control: WorkControl, *, delivered: bool, pending_inputs: bool) -> None:

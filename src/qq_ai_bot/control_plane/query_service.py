@@ -165,6 +165,25 @@ class ControlQueryService:
             _require_capability(authorized, "control.execution.content.read")
         return await self._port.read_work(work_id, include_content=include_content)
 
+    async def list_work_history(
+        self,
+        context: object,
+        request: PageRequest,
+        *,
+        work_id: str,
+        section: str,
+        include_content: bool = False,
+    ) -> Page[ActivityView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("list_work_history"))
+        if type(include_content) is not bool:
+            raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
+        if include_content:
+            _require_capability(authorized, "control.execution.content.read")
+        return await self._port.list_work_history(
+            request, work_id=work_id, section=section, include_content=include_content
+        )
+
     async def list_work(
         self, context: object, request: PageRequest, *, include_content: bool = False
     ) -> Page[ActivityView]:

@@ -15,6 +15,10 @@ class ControlCommandPort(Protocol):
         self, principal: ControlPrincipal, target: object, command: ControlCommand
     ) -> ControlResult: ...
 
+    async def mutate_work(
+        self, principal: ControlPrincipal, target: object, command: ControlCommand
+    ) -> ControlResult: ...
+
     async def enable_person(
         self,
         principal: ControlPrincipal,

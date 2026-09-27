@@ -5,6 +5,7 @@ import { useQuery } from "./hooks";
 import { stamp, text } from "./format";
 import {
   Badge,
+  type Column,
   Empty,
   ErrorNote,
   JsonNote,
@@ -15,14 +16,65 @@ import {
 const flatten = (row: Row): Row => ({ ...row, ...((row.fields as Row) || {}) });
 const status = (value: unknown) => <Badge value={value} />;
 
+function WorkActions({
+  workId,
+  fields,
+  allowed,
+  act,
+}: {
+  workId: string;
+  fields: Row;
+  allowed: PageProps["allowed"];
+  act: PageProps["act"];
+}) {
+  if (
+    !allowed("mutate_work") ||
+    ["completed", "failed", "cancelled"].includes(String(fields.state))
+  )
+    return null;
+  const submit = (action: string, label: string) =>
+    act({
+      method: "mutate_work",
+      label,
+      revision: Number(fields.revision),
+      payload: { resource_id: workId, action },
+      hint:
+        action === "cancel"
+          ? "停止这个工作及其子工作。已发出的效果保留原回执，其他工作继续。"
+          : "续原工作，不重置预算或重发已有效果。等待、未知效果和原恢复边界仍由执行层核验。",
+    });
+  return (
+    <div className="settings-actions">
+      {["waiting_user", "suspended"].includes(String(fields.state)) && (
+        <button
+          className="btn-secondary"
+          onClick={() => submit("resume", "续跑原工作")}
+        >
+          续跑原工作
+        </button>
+      )}
+      <button
+        className="btn-secondary"
+        onClick={() => submit("cancel", "取消工作树")}
+      >
+        取消工作树
+      </button>
+    </div>
+  );
+}
+
 function WorkDetail({
   workId,
   allowed,
+  act,
   refresh,
+  selectWork,
 }: {
   workId: string;
   allowed: PageProps["allowed"];
+  act: PageProps["act"];
   refresh: number;
+  selectWork: (id: string) => void;
 }) {
   const detail = useQuery<Row>(
     "read_work",
@@ -69,101 +121,114 @@ function WorkDetail({
           <JsonNote title="共享累计预算" value={fields.shared_budget} />
           <JsonNote title="原检查点状态" value={fields.journal} />
           <JsonNote title="恢复调度状态" value={fields.recovery} />
-          <h3>信号等待</h3>
-          {(fields.waits as Row[]).map((wait) => (
-            <div className="paper-note" key={String(wait.id)}>
-              <p>
-                {String(wait.id)} · {String(wait.mode)} ·{" "}
-                <Badge value={wait.status} /> · 截止{" "}
-                {wait.deadline == null ? "无期限" : stamp(wait.deadline)}
-              </p>
-              {wait.conditions != null && (
-                <JsonNote title="条件及满足状态" value={wait.conditions} />
+          <WorkActions
+            workId={workId}
+            fields={fields}
+            allowed={allowed}
+            act={act}
+          />
+          {[
+            [
+              "waits",
+              "信号等待",
+              [
+                ["id", "原等待 ID"],
+                ["mode", "方式"],
+                ["status", "状态", status],
+                ["deadline", "截止", stamp],
+                ["created", "登记时间", stamp],
+                [
+                  "conditions",
+                  "条件",
+                  (value: unknown) =>
+                    value == null ? (
+                      "未读取正文"
+                    ) : (
+                      <JsonNote title="条件及满足状态" value={value} />
+                    ),
+                ],
+              ],
+            ],
+            [
+              "children",
+              "子工作",
+              [
+                ["id", "Work"],
+                ["state", "状态", status],
+                ["reason", "原因"],
+                ["model_requests", "模型请求"],
+                ["tool_calls", "工具调用"],
+                ["updated", "更新", stamp],
+              ],
+            ],
+            [
+              "inputs",
+              "接纳输入",
+              [
+                ["id", "内部输入 ID"],
+                ["event_id", "内部事件 ID"],
+                ["kind", "类型"],
+                ["state", "状态", status],
+                ["ready", "准备完成", status],
+                ["created", "时间", stamp],
+              ],
+            ],
+            [
+              "effects",
+              "业务效果回执",
+              [
+                ["effect_key", "原效果键"],
+                ["kind", "类型"],
+                ["state", "状态", status],
+                ["updated", "时间", stamp],
+              ],
+            ],
+            [
+              "deliveries",
+              "投递意图",
+              [
+                ["id", "原投递 ID"],
+                ["kind", "类型"],
+                ["state", "状态", status],
+                ["message_count", "消息数"],
+                ["not_before", "最早执行", stamp],
+                ["updated", "时间", stamp],
+              ],
+            ],
+          ].map(([section, label, columns]) => (
+            <div key={String(section)} role="region" aria-label={String(label)}>
+              <h3>{String(label)}</h3>
+              {allowed("list_work_history") && (
+                <QueryList
+                  key={`${workId}:${section}`}
+                  method="list_work_history"
+                  args={{
+                    work_id: workId,
+                    section,
+                    include_content:
+                      section === "waits" && allowed("read_execution_trace"),
+                  }}
+                  refresh={refresh}
+                  onRow={flatten}
+                  columns={columns as Column[]}
+                  actions={
+                    section === "children"
+                      ? (row) => (
+                          <button
+                            className="btn-secondary"
+                            onClick={() => selectWork(String(row.id))}
+                          >
+                            工作详情
+                          </button>
+                        )
+                      : undefined
+                  }
+                />
               )}
             </div>
           ))}
-          {!(fields.waits as Row[]).length && <Empty>没有持久等待绑定。</Empty>}
-          {fields.waits_has_more === true && (
-            <p className="small">仅显示最近 20 项等待绑定。</p>
-          )}
-          <h3>子工作</h3>
-          <Table
-            rows={fields.children as Row[]}
-            columns={[
-              ["id", "Work"],
-              ["state", "状态", status],
-              ["reason", "原因"],
-              ["model_requests", "模型请求"],
-              ["tool_calls", "工具调用"],
-              ["updated", "更新时间", stamp],
-            ]}
-            actions={(row) => (
-              <a
-                className="file-open"
-                href={`#audit?work=${encodeURIComponent(String(row.id))}`}
-              >
-                执行轨迹
-              </a>
-            )}
-          />
-          <h3>接纳输入</h3>
-          <Table
-            rows={fields.inputs as Row[]}
-            columns={[
-              ["id", "内部输入 ID"],
-              ["event_id", "内部事件 ID"],
-              ["kind", "类型"],
-              ["state", "状态", status],
-              ["ready", "准备完成", status],
-              ["created", "时间", stamp],
-            ]}
-          />
-          <h3>业务效果回执</h3>
-          <Table
-            rows={fields.effects as Row[]}
-            columns={[
-              ["effect_key", "原效果键"],
-              ["kind", "类型"],
-              ["state", "状态", status],
-              ["updated", "时间", stamp],
-            ]}
-          />
-          <h3>投递意图</h3>
-          <Table
-            rows={fields.deliveries as Row[]}
-            columns={[
-              ["id", "原投递 ID"],
-              ["kind", "类型"],
-              ["state", "状态", status],
-              ["message_count", "消息数"],
-              [
-                "not_before",
-                "最早执行",
-                (value) => (value == null ? "无延迟" : stamp(value)),
-              ],
-              ["updated", "时间", stamp],
-            ]}
-          />
           <p className="small">
-            每类最多显示最近 20 项。
-            {["children", "inputs", "effects", "deliveries"]
-              .filter((name) => fields[`${name}_has_more`])
-              .map(
-                (name) =>
-                  ({
-                    children: "子工作",
-                    inputs: "输入",
-                    effects: "效果",
-                    deliveries: "投递",
-                  })[name],
-              )
-              .join("、")}{" "}
-            {["children", "inputs", "effects", "deliveries"].some(
-              (name) => fields[`${name}_has_more`],
-            )
-              ? "还有更早的记录。"
-              : ""}{" "}
-            请求正文、工具结果与投递详情可沿原执行轨迹查看。
+            历史按登记时间分页。请求正文、工具结果与投递详情沿原执行轨迹查看。
           </p>
         </>
       )}
@@ -227,7 +292,14 @@ export function Work({ allowed, act, refresh, conversation }: PageProps) {
         />
       </Section>
       {workId && (
-        <WorkDetail workId={workId} allowed={allowed} refresh={refresh} />
+        <WorkDetail
+          key={workId}
+          workId={workId}
+          allowed={allowed}
+          act={act}
+          refresh={refresh}
+          selectWork={selectWork}
+        />
       )}
       <Section title="定时与自动化">
         <div className="settings-actions">

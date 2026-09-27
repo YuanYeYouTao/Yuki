@@ -85,6 +85,7 @@ _MANAGEMENT_OPERATIONS: Final[frozenset[str]] = frozenset(
     {
         "control.config.file.save",
         "control.plugin.configure",
+        "control.work.mutate",
         "control.config.set",
         "control.config.unset",
         "control.config.rollback",
@@ -183,6 +184,7 @@ class CommandOperation(StrEnum):
     AUTOMATION_MUTATE = "control.automation.mutate"
     PLUGIN_MUTATE = "control.plugin.mutate"
     PLUGIN_CONFIGURE = "control.plugin.configure"
+    WORK_MUTATE = "control.work.mutate"
     MCP_MUTATE = "control.mcp.mutate"
     EMOJI_MUTATE = "control.emoji.mutate"
     SPEECH_MUTATE = "control.speech.mutate"
@@ -1110,6 +1112,13 @@ def _require_management_semantics(
             raise _mismatch()
         return
     action = _material_action(material)
+    if operation == CommandOperation.WORK_MUTATE.value:
+        if action not in {"cancel", "resume"} or resource_id != _material_resource(material):
+            raise _mismatch()
+        _require_generated_id(resource_id)
+        if status != {"cancel": "cancelled", "resume": "queued"}[action]:
+            raise _mismatch()
+        return
     if operation == CommandOperation.PLUGIN_CONFIGURE.value:
         if action != "save" or status != "saved" or resource_id != _material_resource(material):
             raise _mismatch()
@@ -1544,6 +1553,8 @@ def failure_audit_target_type(operation: str) -> str:
         return "memory"
     if operation.startswith("control.automation."):
         return "automation"
+    if operation.startswith("control.work."):
+        return "work"
     if operation.startswith("control.plugin."):
         return "plugin"
     if operation.startswith("control.mcp."):

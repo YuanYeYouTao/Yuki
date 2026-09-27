@@ -737,6 +737,18 @@ class ControlCommandAdapter:
             capability="control.plugin.config.mutate",
         )
 
+    async def mutate_work(
+        self, principal: ControlPrincipal, target: object, command: ControlCommand
+    ) -> ControlResult:
+        return await self._management_action(
+            principal,
+            target,
+            command,
+            operation=CommandOperation.WORK_MUTATE.value,
+            capability="control.work.mutate",
+            invoke=self._management.mutate_work,
+        )
+
     async def mutate_mcp(
         self,
         principal: ControlPrincipal,

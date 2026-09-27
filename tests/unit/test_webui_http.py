@@ -7,6 +7,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from tests.conftest import make_settings
+from tests.unit import test_control_work_details as work_fixtures
 from tests.unit.test_control_operator_access import operator_file
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
@@ -25,6 +26,7 @@ from qq_ai_bot.workspace.store import WorkspaceStore
 
 ORIGIN = "http://127.0.0.1:18765"
 SECRET = "webui-fixture-" + "a" * 48
+detailed_work = work_fixtures.detailed_work
 
 
 @pytest.fixture
@@ -41,6 +43,7 @@ async def web(database, tmp_path, monkeypatch):
             "control.workspace.content.read",
             "control.chat.metadata.read",
             "control.execution.metadata.read",
+            "control.work.mutate",
         ),
     )
     settings = make_settings(
@@ -86,6 +89,51 @@ async def signed_in(client):
     assert session.status_code == 200
     assert session.json()["content_access"]["chat"] is False
     return {"Origin": ORIGIN, "X-Yuki-CSRF": session.json()["csrf"]}
+
+
+async def test_work_history_and_mutation_use_original_command_receipt(web, detailed_work):
+    client, _, _ = web
+    identity, _ = detailed_work
+    headers = await signed_in(client)
+    response = await client.post(
+        "/api/control/queries/list_work_history",
+        json={"work_id": identity, "section": "inputs", "page": {"limit": 20}},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    page = response.json()["data"]
+    assert len(page["items"]) == 20 and page["next_cursor"]
+    response = await client.post(
+        "/api/control/queries/list_work_history",
+        json={
+            "work_id": identity,
+            "section": "inputs",
+            "page": {"limit": 20, "cursor": page["next_cursor"]},
+        },
+        headers=headers,
+    )
+    assert len(response.json()["data"]["items"]) == 5
+    request_id = str(uuid4())
+    command = {
+        "request_id": request_id,
+        "expected_revision": 1,
+        "payload": {"resource_id": identity, "action": "cancel"},
+    }
+    headers["X-Request-ID"] = request_id
+    first = await client.post("/api/control/commands/mutate_work", json=command, headers=headers)
+    assert (
+        first.status_code == 200
+        and first.json()["data"]["effective_state"]["status"] == "cancelled"
+    )
+    assert (
+        await client.post("/api/control/commands/mutate_work", json=command, headers=headers)
+    ).json() == first.json()
+    response = await client.post(
+        "/api/control/queries/list_work_history",
+        json={"work_id": identity, "section": "source_json"},
+        headers=headers,
+    )
+    assert response.status_code == 400
 
 
 @pytest.mark.asyncio

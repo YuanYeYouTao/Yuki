@@ -135,6 +135,25 @@ def _map_config_error(result: ConfigChangeResult) -> ProblemCode:
 class ControlManagementGateway:
     """Reuse existing domain services inside the control-plane unit of work."""
 
+    async def mutate_work(
+        self,
+        session: AsyncSession,
+        principal: ControlPrincipal,
+        command: ControlCommand,
+        parsed: ManagementActionPayload,
+    ) -> ManagementMutation:
+        from qq_ai_bot.runtime.work_management import WorkManagementError, manage_work
+
+        if parsed.spec is not None:
+            raise ManagementFailure(ProblemCode.VALIDATION_ERROR)
+        try:
+            revision, state = await manage_work(
+                session, parsed.resource_id, command.expected_revision, parsed.action
+            )
+        except WorkManagementError as exc:
+            raise ManagementFailure(ProblemCode(exc.code)) from exc
+        return ManagementMutation(parsed.resource_id, revision, state)
+
     def __init__(
         self,
         database: Database,

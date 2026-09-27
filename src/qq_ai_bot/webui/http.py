@@ -41,6 +41,7 @@ from qq_ai_bot.webui.sessions import BrowserSessions
 
 _SIMPLE_QUERIES = frozenset(name for kind, name, _ in _METHODS if kind == "query") - {
     "read_work",
+    "list_work_history",
     "read_config_file",
     "read_execution_trace",
     "list_execution_trace",
@@ -309,6 +310,19 @@ def attach_webui(
                 raise ValueError("invalid work query")
             result = await queries.list_work(
                 ctx, page, include_content=data.get("include_content", False)
+            )
+        elif method == "list_work_history":
+            if set(data) - {"page", "work_id", "section", "include_content"} or not {
+                "work_id",
+                "section",
+            } <= set(data):
+                raise ValueError("invalid work history")
+            result = await queries.list_work_history(
+                ctx,
+                page,
+                work_id=data["work_id"],
+                section=data["section"],
+                include_content=data.get("include_content", False),
             )
         elif method == "read_config_file":
             if set(data) != {"file_id"}:

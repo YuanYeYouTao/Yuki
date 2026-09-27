@@ -5,12 +5,12 @@ import time
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import event, insert
+from sqlalchemy import event, insert, update
 from tests.unit.test_canonical_ingress import _message
 from tests.unit.test_control_plane_foundation import context
 from tests.unit.test_webui_activity import ingress
 
-from qq_ai_bot.control_plane import ControlQueryError, ControlQueryService, ProblemCode
+from qq_ai_bot.control_plane import ControlQueryError, ControlQueryService, PageRequest, ProblemCode
 from qq_ai_bot.persistence.control_query import ControlQueryAdapter
 from qq_ai_bot.runtime.subagent_schema import budgets, children
 from qq_ai_bot.runtime.work_recovery_schema import deliveries, recovery
@@ -158,18 +158,25 @@ async def test_metadata_projection_does_not_read_private_payload_columns(databas
     event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
     try:
         service = ControlQueryService(ControlQueryAdapter(database))
-        result = await service.read_work(context("control.execution.metadata.read"), identity)
+        ctx = context("control.execution.metadata.read")
+        result = await service.read_work(ctx, identity)
+        history = {
+            section: await service.list_work_history(
+                ctx, PageRequest(), work_id=identity, section=section
+            )
+            for section in ("children", "inputs", "effects", "deliveries", "waits")
+        }
     finally:
         event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
     fields = result.fields
     assert fields["state"] == "waiting_external"
     assert fields["model_requests"] == 7 and fields["tool_calls"] == 8
     assert fields["shared_budget"]["models"] == 9
-    assert fields["children"][0]["id"] == child
-    assert len(fields["inputs"]) == 20 and fields["inputs_has_more"] is True
-    assert fields["effects"][0]["state"] == "unknown"
-    assert fields["deliveries"][0]["id"] == "original-delivery"
-    assert "goal" not in fields and "conditions" not in fields["waits"][0]
+    assert history["children"].items[0].resource_id == child
+    assert len(history["inputs"].items) == 20 and history["inputs"].next_cursor is not None
+    assert history["effects"].items[0].fields["state"] == "unknown"
+    assert history["deliveries"].items[0].resource_id == "original-delivery"
+    assert "goal" not in fields and "conditions" not in history["waits"].items[0].fields
     assert not any(
         token in " ".join(statements)
         for token in (
@@ -194,7 +201,10 @@ async def test_content_and_child_lineage_remain_on_original_work(database, detai
     ctx = context("control.execution.metadata.read", "control.execution.content.read")
     result = await service.read_work(ctx, identity, include_content=True)
     assert result.fields["goal"] == "正文目标"
-    conditions = result.fields["waits"][0]["conditions"]
+    wait_history = await service.list_work_history(
+        ctx, PageRequest(), work_id=identity, section="waits", include_content=True
+    )
+    conditions = wait_history.items[0].fields["conditions"]
     assert conditions[0]["matched"] is True and conditions[1]["matched"] is False
     assert "private" not in repr(result.fields) and "opaque-provider-state" not in repr(
         result.fields
@@ -222,3 +232,74 @@ async def test_missing_work_is_not_reconstructed(database):
     with pytest.raises(ControlQueryError) as exc:
         await service.read_work(context("control.execution.metadata.read"), str(uuid4()))
     assert exc.value.problem.code is ProblemCode.NOT_FOUND
+
+
+async def test_input_keyset_reads_all_history_and_binds_scope(database, detailed_work):
+    identity, child = detailed_work
+    service = ControlQueryService(ControlQueryAdapter(database))
+    ctx = context("control.execution.metadata.read")
+    first = await service.list_work_history(
+        ctx, PageRequest(limit=20), work_id=identity, section="inputs"
+    )
+    async with database.immediate_session() as session:
+        await session.execute(update(inputs).values(state="pending"))
+    second = await service.list_work_history(
+        ctx, PageRequest(limit=20, cursor=first.next_cursor), work_id=identity, section="inputs"
+    )
+    ids = [int(row.resource_id) for row in (*first.items, *second.items)]
+    assert len(ids) == 25 and len(set(ids)) == 25 and ids == sorted(ids, reverse=True)
+    assert second.next_cursor is None
+    for target, section in ((child, "inputs"), (identity, "effects")):
+        with pytest.raises(ControlQueryError) as exc:
+            await service.list_work_history(
+                ctx, PageRequest(cursor=first.next_cursor), work_id=target, section=section
+            )
+        assert exc.value.problem.code is ProblemCode.VALIDATION_ERROR
+
+
+async def test_equal_timestamp_and_full_length_effect_keys_paginate(database, detailed_work):
+    identity, _ = detailed_work
+    now = time.time()
+    keys = [letter * 256 for letter in "abc"]
+    async with database.immediate_session() as session:
+        await session.execute(
+            insert(effects),
+            [
+                {
+                    "effect_key": key,
+                    "work_id": identity,
+                    "kind": "tool",
+                    "state": "accepted",
+                    "created": now,
+                    "updated": now,
+                }
+                for key in keys
+            ],
+        )
+    service = ControlQueryService(ControlQueryAdapter(database))
+    ctx = context("control.execution.metadata.read")
+    first = await service.list_work_history(
+        ctx, PageRequest(limit=2), work_id=identity, section="effects"
+    )
+    second = await service.list_work_history(
+        ctx, PageRequest(limit=2, cursor=first.next_cursor), work_id=identity, section="effects"
+    )
+    assert [row.resource_id for row in (*first.items, *second.items)] == [
+        *reversed(keys),
+        "original-effect",
+    ]
+
+
+async def test_wait_content_grant_cursor_and_invalid_sections(database, detailed_work):
+    identity, _ = detailed_work
+    service = ControlQueryService(ControlQueryAdapter(database))
+    ctx = context("control.execution.metadata.read")
+    with pytest.raises(ControlQueryError) as exc:
+        await service.list_work_history(
+            ctx, PageRequest(), work_id=identity, section="waits", include_content=True
+        )
+    assert exc.value.problem.code is ProblemCode.CAPABILITY_DENIED
+    for section in ("source_json", "arbitrary_table", [], None):
+        with pytest.raises(ControlQueryError) as exc:
+            await service.list_work_history(ctx, PageRequest(), work_id=identity, section=section)
+        assert exc.value.problem.code is ProblemCode.VALIDATION_ERROR

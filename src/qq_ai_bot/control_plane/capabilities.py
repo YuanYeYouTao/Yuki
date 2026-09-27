@@ -252,6 +252,12 @@ def _descriptor(
 
 CONTROL_CAPABILITY_DESCRIPTORS: Final[tuple[ControlCapabilityDescriptor, ...]] = (
     _descriptor(
+        "control.work.mutate",
+        CapabilityFamily.CONTROL,
+        CapabilitySensitivity.MUTATE,
+        mutating=True,
+    ),
+    _descriptor(
         "control.workspace.metadata.read",
         CapabilityFamily.CONTROL,
         CapabilitySensitivity.METADATA_READ,

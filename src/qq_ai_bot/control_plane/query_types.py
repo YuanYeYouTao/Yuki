@@ -1345,7 +1345,7 @@ class ActivityView:
     fields: JsonObject
 
     def __init__(self, resource_id: str, fields: object) -> None:
-        require_opaque_token(resource_id, name="resource_id", max_length=128)
+        require_opaque_token(resource_id, name="resource_id", max_length=256)
         object.__setattr__(self, "resource_id", resource_id)
         object.__setattr__(self, "fields", freeze_json_object(fields))
 

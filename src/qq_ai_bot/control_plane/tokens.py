@@ -6,7 +6,8 @@ import unicodedata
 from datetime import datetime
 from typing import Final
 
-MAX_CURSOR_LENGTH: Final[int] = 256
+# Original Work effect/delivery keys may be 256 bytes, plus scope/keyset framing.
+MAX_CURSOR_LENGTH: Final[int] = 512
 MAX_RESOURCE_TOKEN_LENGTH: Final[int] = 128
 MAX_CAPABILITY_ID_LENGTH: Final[int] = 128
 

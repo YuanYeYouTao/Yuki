@@ -78,6 +78,10 @@ class ControlQueryPort(Protocol):
 
     async def read_work(self, work_id: str, *, include_content: bool = False) -> ActivityView: ...
 
+    async def list_work_history(
+        self, request: PageRequest, *, work_id: str, section: str, include_content: bool = False
+    ) -> Page[ActivityView]: ...
+
     async def list_work(
         self, request: PageRequest, *, include_content: bool = False
     ) -> Page[ActivityView]: ...
