@@ -21,7 +21,7 @@ Provider 原生工具还有独立的协议和配置合同，不能只检查函�
 `TurnCapabilityRuntime.discover_declared()`，只搜索已声明目录、返回用法。
 它不加载 schema、不重排声明、不授予权限，也不重建已有 Provider continuation。
 Capability Runtime 中的局部 exposure、FTS 检索与执行集合不是主 Agent 模型声明的真源。
-不能把旧的 `plan_growth` / 动态 schema 路径写成当前主入口合同。
+目录查询不再保留动态加载 schema 或增长工具声明的执行路径。
 
 ## 调用与效果
 

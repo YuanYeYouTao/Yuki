@@ -1076,7 +1076,6 @@ class GroupSettingsRepository:
         group_id: str,
         *,
         name: str = "",
-        enabled_if_new: bool = False,
     ) -> GroupSetting:
         """Create an observed group without overwriting an existing access switch."""
 

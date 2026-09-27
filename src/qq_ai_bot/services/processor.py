@@ -1345,7 +1345,6 @@ class MessageProcessor:
         await self._groups.observe(
             message.group_id,
             name=group_name,
-            enabled_if_new=policy.enabled,
         )
 
     async def _effective_group_policy(self, group_id: str | None) -> EffectiveGroupPolicy | None:

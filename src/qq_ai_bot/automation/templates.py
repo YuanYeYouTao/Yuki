@@ -33,10 +33,6 @@ def referenced_steps(value: Any) -> frozenset[str]:
     return frozenset(references)
 
 
-def contains_step_reference(value: Any) -> bool:
-    return bool(referenced_steps(value))
-
-
 def validate_templates(value: Any) -> None:
     """Reject unknown built-ins and malformed step-reference syntax at creation."""
 

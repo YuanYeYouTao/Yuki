@@ -22,7 +22,6 @@ from qq_ai_bot.automation.worker import AutomationWorker
 from qq_ai_bot.capabilities.results import ToolArtifactWriter, ToolResultBudgeter
 from qq_ai_bot.config import Settings
 from qq_ai_bot.emoji.repository import EmojiRepository
-from qq_ai_bot.emoji.selector import EmojiSelector
 from qq_ai_bot.emoji.storage import EmojiStorage
 from qq_ai_bot.identity.routing import PresenceRouter
 from qq_ai_bot.mcp.automation import MCPAutomationBridge
@@ -31,7 +30,6 @@ from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.model_runtime.executor import ModelExecutor
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import (
-    AgentActionRepository,
     EventLedgerRepository,
     RelationshipRepository,
 )
@@ -67,10 +65,8 @@ class AutomationModule:
         memories: MemoryFactService,
         relationships: RelationshipRepository,
         admin_audit: AdminAuditService,
-        agent_actions: AgentActionRepository,
         web_provider: WebSearchProvider | None,
         emoji_repository: EmojiRepository,
-        emoji_selector: EmojiSelector,
         emoji_storage: EmojiStorage,
         speech: SpeechService,
         mcp_manager: MCPManager,
@@ -87,10 +83,8 @@ class AutomationModule:
         self._memories = memories
         self._relationships = relationships
         self._admin_audit = admin_audit
-        self._agent_actions = agent_actions
         self._web_provider = web_provider
         self._emoji_repository = emoji_repository
-        self._emoji_selector = emoji_selector
         self._emoji_storage = emoji_storage
         self._speech = speech
         self._mcp_manager = mcp_manager

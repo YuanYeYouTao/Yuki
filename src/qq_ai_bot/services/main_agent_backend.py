@@ -114,7 +114,7 @@ class MainAgentBackend(AgentToolBackend):
         self.failed_model_requests = max(self.failed_model_requests, model_requests)
 
     async def prepare(self, runtime: AgentRuntime | None = None) -> None:
-        """Hydrate lazy MCP metadata before the first model request."""
+        """Prepare the local authorized catalog before the first model request."""
 
         del runtime
         if self._capability_runtime is not None:
@@ -274,14 +274,6 @@ class MainAgentBackend(AgentToolBackend):
         )
         mcp = self._runtime.runtime_config.mcp if self._runtime.runtime_config else None
         tooling = self._runtime.runtime_config.tooling if self._runtime.runtime_config else None
-        request_runtime = self._request_runtime()
-
-        async def ensure_metadata(server_id: str) -> None:
-            provider = self._provider_registry.provider("mcp") if self._provider_registry else None
-            prepare = getattr(provider, "ensure_server_metadata", None)
-            if callable(prepare):
-                await prepare(server_id, request_runtime)
-
         authority = TurnAuthority(
             actor_user_id=(
                 ""
@@ -314,8 +306,6 @@ class MainAgentBackend(AgentToolBackend):
             mcp_schema_token_budget=mcp.schema_token_budget if mcp is not None else None,
             mcp_tool_limit=mcp.selected_tool_limit if mcp is not None else None,
             first_round_hard_cap=(tooling.first_round_hard_cap if tooling is not None else None),
-            ensure_metadata=ensure_metadata,
-            refresh_registry=self._refresh_capability_registry,
             on_searched=self._publish_capability_searched,
         )
         return self._capability_runtime

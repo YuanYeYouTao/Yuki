@@ -1,4 +1,4 @@
-"""Compatibility facade over the 1.9 PromptProgram compiler."""
+"""Compose the current prompt program, conversation history and runtime context."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.rollup.renderer import render_rollup_message
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage
-from qq_ai_bot.domain.relationships import RelationshipSnapshot, style_policy
+from qq_ai_bot.domain.relationships import style_policy
 from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE, entity_memory_rule
 from qq_ai_bot.persistence.event_repository import ConversationReadVersion
 from qq_ai_bot.prompting import (
@@ -300,19 +300,4 @@ class PromptComposer:
             metrics=metrics,
             read_version=context.read_version,
             visible_event_ids=context.visible_event_ids,
-        )
-
-    @staticmethod
-    def relationship_policy(
-        snapshot: RelationshipSnapshot,
-        scope_type: ScopeType,
-        runtime: RuntimeConfigSnapshot,
-    ) -> str:
-        """Compatibility projection used by integrations during 1.9 migration."""
-
-        return (
-            f"关系阶段：{snapshot.stage.value}；交流风格："
-            f"{style_policy(snapshot.stage, scope_type)}"
-            f"；无证据说法仅在关系权重差至少 {runtime.relationship.conflict_preference_min_gap} 时"
-            "作为倾向参考，客观证据始终优先。"
         )

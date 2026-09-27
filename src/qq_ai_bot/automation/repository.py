@@ -206,15 +206,6 @@ class AutomationRepository:
             ).all()
             return tuple(str(account) for account in accounts)
 
-    async def preferred_active_creator_account(
-        self,
-        creator_person_id: str,
-        *,
-        session: AsyncSession | None = None,
-    ) -> str | None:
-        accounts = await self.active_creator_accounts(creator_person_id, session=session)
-        return accounts[0] if accounts else None
-
     async def get_by_creation_key(
         self,
         creator_person_id: str,

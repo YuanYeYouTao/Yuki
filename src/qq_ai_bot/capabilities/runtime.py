@@ -7,7 +7,7 @@ fields are not read.
 from __future__ import annotations
 
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from qq_ai_bot.capabilities.catalog import (
@@ -19,11 +19,9 @@ from qq_ai_bot.capabilities.catalog import (
 from qq_ai_bot.capabilities.exposure import (
     DEFAULT_FIRST_ROUND_HARD_CAP,
     NO_LONGER_AUTHORIZED,
-    SCHEMA_REVISION_CONFLICT,
     AuthorityFirstExposurePlanner,
     DeclaredSchemaLedger,
     ExposurePlan,
-    is_memory_write_entry,
     is_prefix_declarable,
 )
 from qq_ai_bot.capabilities.models import CapabilityDescriptor
@@ -44,9 +42,6 @@ from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.runtime.authority import TurnAuthority, TurnSceneFacts
 from qq_ai_bot.runtime.contracts import CapabilityExposureSnapshot, MemoryCapabilityView
 from qq_ai_bot.runtime.origin import TurnOrigin
-
-EnsureMetadata = Callable[[str], Awaitable[None]]
-RefreshRegistry = Callable[[], tuple[DescriptorRegistrySnapshot, FtsCapabilitySearchIndex]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,8 +102,6 @@ class TurnCapabilityRuntime:
         mcp_schema_token_budget: int | None = None,
         mcp_tool_limit: int | None = None,
         first_round_hard_cap: int | None = None,
-        ensure_metadata: EnsureMetadata | None = None,
-        refresh_registry: RefreshRegistry | None = None,
         on_searched: OnCapabilitySearched | None = None,
     ) -> None:
         self._registry = registry
@@ -129,12 +122,7 @@ class TurnCapabilityRuntime:
             mcp_tool_limit=mcp_tool_limit,
         )
         self._validator = JsonSchemaCapabilityValidator()
-        self._ensure_metadata = ensure_metadata
-        self._refresh_registry = refresh_registry
         self._on_searched = on_searched
-        self._mcp_schema_token_budget = mcp_schema_token_budget
-        self._mcp_tool_limit = mcp_tool_limit
-        self._discovered_mcp_providers: tuple[str, ...] = ()
         self._authorized = self._project_authorized()
         self._ledger = DeclaredSchemaLedger(
             registry_revision=registry.revision,
@@ -158,9 +146,6 @@ class TurnCapabilityRuntime:
     @property
     def authorized_catalog(self) -> UnifiedToolCatalog:
         return self._authorized.catalog
-
-    def pin_catalog_revision(self) -> int:
-        return int(self._registry.revision[:8], 16)
 
     def sync_memory_view(self, view: MemoryCapabilityView | None) -> None:
         """Re-project authority when the memory contract revision changes.
@@ -239,13 +224,6 @@ class TurnCapabilityRuntime:
 
         return self.initial_exposure(query)
 
-    async def search(self, query: CapabilityQuery) -> tuple[CapabilitySearchHit, ...]:
-        await self._hydrate_lazy_mcp(query)
-        started = time.perf_counter()
-        hits = self._search_local(query, limit=query.limit)
-        self._notify_searched(query, hits, started)
-        return hits
-
     def discover_declared(
         self,
         query: CapabilityQuery,
@@ -276,59 +254,6 @@ class TurnCapabilityRuntime:
                 "instruction": "这些工具已在固定清单中；查询不会加载 Schema 或扩大执行权限。",
             },
             **({} if available else {"error": "capability_not_found"}),
-        }
-
-    async def request_tools(self, query: CapabilityQuery) -> dict[str, object]:
-        hits = await self.search(query)
-        authorized_hits = tuple(
-            hit for hit in hits if hit.capability_id in self._authorized.requestable_ids
-        )
-        if not authorized_hits:
-            return {
-                "ok": False,
-                "error": "capability_not_found",
-                "detail": "当前真实用户和场景允许的工具目录中没有匹配能力",
-            }
-        current = frozenset(self._ledger.declared) - {REQUEST_TOOLS_NAME}
-        kernel = (request_tools_definition(),) if not self._policy_context.tools_closed else ()
-        plan = self._planner.plan_growth(
-            current_ids=current,
-            catalog=self._authorized.catalog,
-            requestable_ids=self._authorized.requestable_ids,
-            hits=authorized_hits,
-            limit=query.limit,
-            memory_view=self._memory_view,
-            kernel_tools=kernel,
-        )
-        loaded = [entry for entry in plan.entries if entry.descriptor.model_name not in current]
-        if any(is_memory_write_entry(entry) for entry in loaded):
-            self._exclusive_write = True
-            if self._memory_view is not None:
-                self._memory_view = self._memory_view.model_copy(
-                    update={
-                        "exclusive_namespace": "memory.state.write",
-                        "transition_revision": self._memory_view.transition_revision + 1,
-                    }
-                )
-        self._plan = plan
-        conflict = self._apply_plan(plan)
-        if conflict == SCHEMA_REVISION_CONFLICT:
-            if not self.rebuild_after_schema_conflict():
-                return {"ok": False, "error": SCHEMA_REVISION_CONFLICT}
-            self._restart_provider_chain = True
-        return {
-            "ok": True,
-            "data": {
-                "loaded_tools": [
-                    {
-                        "name": entry.descriptor.model_name,
-                        "namespace": entry.descriptor.namespace_id,
-                        "description": entry.compact_description,
-                    }
-                    for entry in loaded
-                ],
-                "instruction": "下一步直接调用 loaded_tools 中的真实工具",
-            },
         }
 
     def validate_call(self, name: str, arguments_json: str) -> tuple[bool, str | None]:
@@ -431,49 +356,6 @@ class TurnCapabilityRuntime:
             :limit
         ]
 
-    async def _hydrate_lazy_mcp(self, query: CapabilityQuery) -> None:
-        if self._ensure_metadata is None:
-            return
-        has_synthetic = any(
-            (entry.descriptor.provider_metadata or {}).get("synthetic")
-            for entry in self._authorized.catalog.entries
-        )
-        if not has_synthetic:
-            return
-        hits = self._search_local(query, limit=10)
-        servers = [
-            self._server_id(hit.capability_id)
-            for hit in hits
-            if hit.synthetic and self._server_id(hit.capability_id)
-        ]
-        if not servers:
-            return
-        discovered: list[str] = []
-        for server_id in tuple(dict.fromkeys(servers))[:2]:
-            try:
-                await self._ensure_metadata(server_id)
-            except (OSError, RuntimeError, TimeoutError, ValueError):
-                continue
-            discovered.append(f"mcp.{server_id}")
-        if not discovered:
-            return
-        self._discovered_mcp_providers = tuple(
-            dict.fromkeys((*self._discovered_mcp_providers, *discovered))
-        )
-        if self._refresh_registry is None:
-            return
-        registry, index = self._refresh_registry()
-        self._registry = registry
-        self._index = index
-        self._ledger.registry_revision = registry.revision
-        self._authorized = self._project_authorized()
-        quarantined = self._validator.admit(self._authorized.catalog.entries)
-        if quarantined:
-            requestable = frozenset(
-                item for item in self._authorized.requestable_ids if item not in set(quarantined)
-            )
-            self._authorized = replace(self._authorized, requestable_ids=requestable)
-
     def _project_authorized(self) -> AuthorizedCatalogSnapshot:
         visible = self._policy.visible(
             tuple(entry.descriptor for entry in self._registry.catalog.entries),
@@ -494,13 +376,6 @@ class TurnCapabilityRuntime:
             catalog=catalog,
             requestable_ids=frozenset(visible_names),
         )
-
-    @staticmethod
-    def _server_id(capability_id: str) -> str:
-        if capability_id.startswith("mcp__"):
-            parts = capability_id.split("__", 2)
-            return parts[1] if len(parts) > 1 else ""
-        return ""
 
 
 def _bounded_text(value: str, maximum: int) -> str:

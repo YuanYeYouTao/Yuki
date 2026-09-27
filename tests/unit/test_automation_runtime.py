@@ -245,10 +245,11 @@ async def test_generation_keeps_dynamic_automation_data_out_of_system_messages(
         conversation_key="private:7777:10001",
     )
     instruction = "dynamic instruction must stay untrusted"
-    messages = await handlers._generation_messages(
+    composition = await handlers._generation_composition(
         {"instruction": instruction, "context_profile": "none"},
         context,
     )
+    messages = composition.messages
     assert [message.role for message in messages] == ["system", "user"]
     assert all(
         instruction not in message.content for message in messages if message.role == "system"

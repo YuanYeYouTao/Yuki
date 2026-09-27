@@ -335,7 +335,7 @@ class MemorySessionState:
     """In-memory holder for one turn's contract, machines and ledgers.
 
     This is not the I/O session.  Chat must not reach into these fields
-    except through the later ``MemoryTurnSession`` implementation.
+    except through the concrete ``TurnMemorySession`` implementation.
     """
 
     __slots__ = (
