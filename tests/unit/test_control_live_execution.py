@@ -8,6 +8,7 @@ from tests.support.social_identity_cases import social_env
 from tests.unit.test_control_plane_foundation import context
 
 from qq_ai_bot.control_plane import ControlQueryError, ControlQueryService, PageRequest
+from qq_ai_bot.control_plane.query_types import ExecutionTraceFilter
 from qq_ai_bot.domain.identity import ConversationId
 from qq_ai_bot.execution_trace.db_models import ExecutionTraceEntryModel as Trace
 from qq_ai_bot.execution_trace.recorder import TraceRecorder, trace_span
@@ -44,19 +45,29 @@ async def test_live_execution_requires_real_process_span_and_expiring_evidence(d
     assert completed.fields["state"] == "idle"
     assert completed.fields["recent"][0]["status"] == "completed"
     assert completed.fields["coverage_note"] is None
-    statements: list[str] = []
+    statements: list[tuple[str, object]] = []
 
-    def capture(_connection, _cursor, statement, *_args):
-        statements.append(statement)
+    def capture(_connection, _cursor, statement, parameters, *_args):
+        statements.append((statement, parameters))
 
     event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
     try:
         await read_conversation_execution(database.sessions, conversation, recorder)
     finally:
         event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
-    trace_queries = [sql for sql in statements if "execution_trace_entries" in sql]
+    trace_queries = [sql for sql, _ in statements if "execution_trace_entries" in sql]
     assert trace_queries and all("LIMIT" in sql.upper() for sql in trace_queries)
     assert all("payload_gzip" not in sql for sql in trace_queries)
+    step_sql, step_params = next(
+        (sql, params)
+        for sql, params in statements
+        if "INDEXED BY ix_execution_trace_turn_id" in sql and "LIMIT 33" in sql
+    )
+    async with database.engine.connect() as connection:
+        plan = (
+            await connection.exec_driver_sql("EXPLAIN QUERY PLAN " + step_sql, step_params)
+        ).all()
+    assert any("USING INDEX ix_execution_trace_turn_id" in row[3] for row in plan)
 
     # A start without its terminal receipt must not keep a turn "running"
     # after the actual process span has exited.
@@ -82,17 +93,35 @@ async def test_live_execution_requires_real_process_span_and_expiring_evidence(d
 
 
 @pytest.mark.asyncio
+async def test_live_execution_keeps_two_recent_turns_with_bounded_root_scan(database, tmp_path):
+    env = await social_env(database, tmp_path)
+    conversation = ConversationId.parse(env.context.conversation_id)
+    recorder = TraceRecorder(database)
+    for _ in range(3):
+        async with trace_span(
+            "chat_processing", {}, recorder=recorder, conversation_id=conversation.text
+        ):
+            async with trace_span("turn", {}):
+                pass
+    view = await read_conversation_execution(database.sessions, conversation, recorder)
+    assert view.fields["state"] == "idle"
+    recent = view.fields["recent"]
+    assert len(recent) == 2
+    assert len({item["turn_id"] for item in recent}) == 2
+
+
+@pytest.mark.asyncio
 async def test_inbound_event_links_only_real_runner_turns_and_can_have_multiple(database, tmp_path):
     env = await social_env(database, tmp_path)
     conversation = ConversationId.parse(env.context.conversation_id)
     async with database.sessions() as session:
-        event = await session.scalar(
+        chat_event = await session.scalar(
             select(ChatEventModel).where(
                 ChatEventModel.canonical_conversation_id == conversation.text
             )
         )
-        assert event is not None
-        event_id = event.id
+        assert chat_event is not None
+        event_id = chat_event.id
     recorder = TraceRecorder(database)
 
     no_turn = await list_event_turns(
@@ -131,16 +160,51 @@ async def test_inbound_event_links_only_real_runner_turns_and_can_have_multiple(
         ):
             async with trace_span("turn", {}):
                 pass
-    linked = await list_event_turns(
-        database.sessions,
-        PageRequest(),
-        conversation_id=conversation,
-        event_id=event_id,
-        direction="inbound",
-    )
+    statements: list[tuple[str, object]] = []
+
+    def capture(_connection, _cursor, statement, parameters, *_args):
+        statements.append((statement, parameters))
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
+    try:
+        linked = await list_event_turns(
+            database.sessions,
+            PageRequest(),
+            conversation_id=conversation,
+            event_id=event_id,
+            direction="inbound",
+        )
+        turns = await ControlQueryService(ControlQueryAdapter(database)).list_execution_trace(
+            context("control.execution.metadata.read"),
+            PageRequest(limit=20, number=1),
+            scope=ExecutionTraceFilter(
+                conversation_id=conversation,
+                turn_id=linked.items[0].fields["turn_id"],
+                descending=False,
+            ),
+        )
+    finally:
+        event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
     assert linked.total == 2
     assert len({item.fields["turn_id"] for item in linked.items}) == 2
     assert all(item.fields["trace_status"] == "completed" for item in linked.items)
+    assert turns.total == 4
+    assert [item.id for item in turns.items] == sorted(item.id for item in turns.items)
+    assert all(
+        item.turn_id == linked.items[0].fields["turn_id"] and item.conversation_id == conversation
+        for item in turns.items
+    )
+    indexed_sql = [
+        (sql, params)
+        for sql, params in statements
+        if "INDEXED BY ix_execution_trace_turn_id" in sql
+    ]
+    assert len(indexed_sql) >= 3
+    assert any("count(" in sql.lower() for sql, _ in indexed_sql)
+    async with database.engine.connect() as connection:
+        for sql, params in indexed_sql:
+            plan = (await connection.exec_driver_sql("EXPLAIN QUERY PLAN " + sql, params)).all()
+            assert any("USING INDEX ix_execution_trace_turn_id" in row[3] for row in plan)
 
 
 @pytest.mark.asyncio

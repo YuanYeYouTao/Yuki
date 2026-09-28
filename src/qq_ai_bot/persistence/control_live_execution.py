@@ -7,7 +7,7 @@ from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 from typing import TypedDict, cast
 
-from sqlalchemy import func, select
+from sqlalchemy import DateTime, Integer, String, bindparam, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -36,26 +36,41 @@ class _StepRow(TypedDict):
 async def _steps(
     session: AsyncSession, *, conversation_id: str, turn_id: str, observed_at: datetime
 ) -> tuple[list[_StepRow], bool, str | None, str | None]:
-    rows = (
-        await session.execute(
-            select(Trace.id, Trace.kind, Trace.created_at, Trace.payload_status, Trace.origin)
-            .where(
-                Trace.conversation_id == conversation_id,
-                Trace.turn_id == turn_id,
-                Trace.expires_at > observed_at,
-            )
-            .order_by(Trace.id.desc())
-            .limit(33)
+    # SQLite otherwise chooses the conversation index and scans unrelated
+    # turns in a busy group. Keep both the turn and conversation checks.
+    statement = (
+        text(
+            "SELECT id, kind, created_at, payload_status, origin "
+            "FROM execution_trace_entries INDEXED BY ix_execution_trace_turn_id "
+            "WHERE conversation_id = :conversation_id AND turn_id = :turn_id "
+            "AND expires_at > :observed_at ORDER BY id DESC LIMIT 33"
         )
-    ).all()
-    latest_kind = rows[0].kind if rows else None
-    origin = next((row.origin for row in rows if row.origin), None)
+        .bindparams(bindparam("observed_at", type_=DateTime(timezone=True)))
+        .columns(
+            id=Integer,
+            kind=String,
+            created_at=DateTime(timezone=True),
+            payload_status=String,
+            origin=String,
+        )
+    )
+    result = await session.execute(
+        statement,
+        {
+            "conversation_id": conversation_id,
+            "turn_id": turn_id,
+            "observed_at": observed_at,
+        },
+    )
+    rows = result.mappings().all()
+    latest_kind = rows[0]["kind"] if rows else None
+    origin = next((row["origin"] for row in rows if row["origin"]), None)
     steps: list[_StepRow] = [
         {
-            "id": row.id,
-            "kind": row.kind,
-            "created_at": _stamp(row.created_at),
-            "payload_status": row.payload_status,
+            "id": row["id"],
+            "kind": row["kind"],
+            "created_at": _stamp(row["created_at"]),
+            "payload_status": row["payload_status"],
         }
         for row in reversed(rows[:32])
     ]
@@ -73,20 +88,22 @@ def _completion(kind: str | None) -> str:
 async def _terminal_kind(
     session: AsyncSession, *, conversation_id: str, turn_id: str, observed_at: datetime
 ) -> str | None:
+    statement = text(
+        "SELECT kind FROM execution_trace_entries INDEXED BY ix_execution_trace_turn_id "
+        "WHERE conversation_id = :conversation_id AND turn_id = :turn_id "
+        "AND expires_at > :observed_at "
+        "AND kind IN ('chat_processing_end', 'chat_processing_error', 'turn_end', 'turn_error') "
+        "ORDER BY id DESC LIMIT 1"
+    ).bindparams(bindparam("observed_at", type_=DateTime(timezone=True)))
     return cast(
         str | None,
         await session.scalar(
-            select(Trace.kind)
-            .where(
-                Trace.conversation_id == conversation_id,
-                Trace.turn_id == turn_id,
-                Trace.expires_at > observed_at,
-                Trace.kind.in_(
-                    ("chat_processing_end", "chat_processing_error", "turn_end", "turn_error")
-                ),
-            )
-            .order_by(Trace.id.desc())
-            .limit(1)
+            statement,
+            {
+                "conversation_id": conversation_id,
+                "turn_id": turn_id,
+                "observed_at": observed_at,
+            },
         ),
     )
 
@@ -121,10 +138,10 @@ async def read_conversation_execution(
                     Trace.kind.in_(("chat_processing_start", "turn_start")),
                 )
                 .order_by(Trace.id.desc())
-                .limit(24)
+                .limit(6)
             )
         ).all()
-        recent_ids = list(dict.fromkeys(row.turn_id for row in root_rows))[:8]
+        recent_ids = list(dict.fromkeys(row.turn_id for row in root_rows))[:3]
         active: list[dict[str, object]] = []
         for turn_id, spans in list(active_by_turn.items())[:8]:
             steps, truncated, latest_kind, origin = await _steps(
@@ -280,18 +297,30 @@ async def list_event_turns(
         )
         items = []
         for row in selected:
-            turn_first = (
-                await session.execute(
-                    select(Trace.created_at, Trace.origin)
-                    .where(
-                        Trace.turn_id == row["turn_id"],
-                        Trace.conversation_id == row["conversation_id"],
-                        Trace.expires_at > observed_at,
-                    )
-                    .order_by(Trace.id.asc())
-                    .limit(1)
+            first_statement = (
+                text(
+                    "SELECT created_at, origin FROM execution_trace_entries "
+                    "INDEXED BY ix_execution_trace_turn_id "
+                    "WHERE turn_id = :turn_id AND conversation_id = :conversation_id "
+                    "AND expires_at > :observed_at ORDER BY id ASC LIMIT 1"
                 )
-            ).first()
+                .bindparams(bindparam("observed_at", type_=DateTime(timezone=True)))
+                .columns(created_at=DateTime(timezone=True), origin=String)
+            )
+            turn_first = (
+                (
+                    await session.execute(
+                        first_statement,
+                        {
+                            "turn_id": row["turn_id"],
+                            "conversation_id": row["conversation_id"],
+                            "observed_at": observed_at,
+                        },
+                    )
+                )
+                .mappings()
+                .first()
+            )
             terminal = await _terminal_kind(
                 session,
                 conversation_id=row["conversation_id"],
@@ -303,9 +332,9 @@ async def list_event_turns(
                     row["turn_id"],
                     {
                         "turn_id": row["turn_id"],
-                        "origin": turn_first.origin if turn_first else None,
+                        "origin": turn_first["origin"] if turn_first else None,
                         "created_at": _stamp(
-                            turn_first.created_at if turn_first else row["created_at"]
+                            turn_first["created_at"] if turn_first else row["created_at"]
                         ),
                         "original_conversation_id": row["conversation_id"],
                         "trace_status": _completion(terminal),

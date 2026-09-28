@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import Integer, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
@@ -199,6 +199,24 @@ class ControlExecutionQueryAdapter:
             )
         if scope.turn_id:
             stmt = stmt.where(ExecutionTraceEntryModel.turn_id == scope.turn_id)
+            if scope.conversation_id and scope.delivered_event_id is None:
+                # SQLite may otherwise scan the entire conversation for a
+                # single turn. Keep the original filters and use the existing
+                # turn index to enumerate only candidate ledger rows.
+                turn_rows = (
+                    text(
+                        "SELECT id FROM execution_trace_entries "
+                        "INDEXED BY ix_execution_trace_turn_id "
+                        "WHERE turn_id = :indexed_turn_id "
+                        "AND conversation_id = :indexed_conversation_id"
+                    )
+                    .bindparams(
+                        indexed_turn_id=scope.turn_id,
+                        indexed_conversation_id=scope.conversation_id.text,
+                    )
+                    .columns(id=Integer)
+                )
+                stmt = stmt.where(ExecutionTraceEntryModel.id.in_(turn_rows))
         if scope.origin:
             stmt = stmt.where(ExecutionTraceEntryModel.origin == scope.origin)
         if scope.work_id:
