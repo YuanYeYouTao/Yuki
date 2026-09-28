@@ -1265,6 +1265,15 @@ class MemoryHealthView:
     index: str
     embedding: str
     consistency: str
+    embedding_requested: bool | None = None
+    embedding_configured: bool | None = None
+    embedding_ready_count: int | None = None
+    embedding_fact_count: int | None = None
+    embedding_failed_jobs: int | None = None
+    embedding_last_error: str | None = None
+    embedding_saved_enabled: bool | None = None
+    embedding_config_version: int | None = None
+    embedding_pending_restart: bool = False
 
     def __post_init__(self) -> None:
         require_opaque_token(self.index, name="index", max_length=32)

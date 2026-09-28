@@ -13,6 +13,18 @@ from qq_ai_bot.admin.models import ConfigApplyMode, ConfigSpec
 def restart_config_specs() -> tuple[ConfigSpec, ...]:
     return (
         _spec(
+            "memory.embedding_enabled",
+            "记忆向量检索服务",
+            "默认尝试启用；缺少 Embedding 地址或密钥时降级为全文检索。保存后重启 Bot 生效。",
+            value_type="boolean",
+            scopes=_G,
+            mode=ConfigApplyMode.RESTART_REQUIRED,
+            env_alias="MEMORY_EMBEDDING_ENABLED",
+            getter=_field("memory_embedding_enabled"),
+            settings_fields=("memory_embedding_enabled",),
+            category="memory",
+        ),
+        _spec(
             "execution_trace.retention_days",
             "执行诊断保留天数",
             "重启后生效；仅影响诊断记录，不影响任务恢复。",

@@ -23,7 +23,10 @@
 | 8 上线验收 | 最新后端全量 1,607 通过、7 个 Windows 平台跳过；前端 79 通过且构建通过，Ruff/diff 检查通过 | Windows mypy 有 29 项未改动 POSIX 文件的类型错误，需 Linux CI；尚无最新提交的 CI、PR、合并及本轮部署验收 |
 | 9 状态与收发消息 | 本地补发送者、已确认投递、截断和操作耗时；后端 6、前端 10 定向通过 | 跨轮归属、实际线上页面与更深操作内容仍待验收 |
 | 10 高危：跨供应商缓存 | 已拆开总输入确认占比与已报样本率；修复 Claude 原生搜索的缓存断点 | Gemini 逐调用前缀与真实账单未核对，无法保证隐式缓存命中；其他 Provider 尚待实测 |
-| 11 高危：Gemini 代理抓包 | 用户确认是清理前旧请求；已核对结构和线上 Base URL，确认 114 个函数声明及非官方顶层字段 | 需确认抓包所在代理处理阶段及最终发往 Google 的请求；当前字段顺序是否影响缓存不能凭单次抓包判断 |
+| 11 高危：Gemini 代理抓包 | 用户确认是清理前旧请求；已核对结构、线上 Base URL，以及代理入站/转发/响应三栏 | 需确认最终发往 Google 的请求；当前字段顺序是否影响缓存不能凭单次抓包判断 |
+| 12 高危：Gemini 思考档位与代理改写 | 新截图显示代理把入站 `thinkingLevel: medium` 改成转发 `thinkingBudget: 4096` | Gemini 3.8 默认改为 `low`，消除固定预算改写，并以实际请求确认档位热更新 |
+| 13 高危：本轮运行资料夹杂弱相关内容 | 外部事件抓包的约 7.2 千字符动态资料中，约 6.2 千字符是场景上下文：8 条字面匹配记忆、10 条 GitHub 事件；另有 3 个空短期状态槽 | 按用户决定移除自动注入的旧外部事件摘要与记忆事实，改由模型按意图调用记忆工具；保留当前触发事件与交付状态 |
+| 14 记忆向量服务启用与降级 | 本地改为默认请求启用、缺少独立 Embedding 凭据时退回 FTS，并在记忆页显示真实配置/索引状态和全局开关 | 需要带实际 Embedding 凭据验证索引构建与语义命中；旧部署的显式关闭值不会被默认值覆盖 |
 
 ## 任务与完成标准
 
@@ -62,12 +65,22 @@
 - [ ] **10. 高危：其他 Provider 的缓存命中与前缀稳定性**：以实际供应商账单/原始 usage 对齐总输入、缓存读写和缺失字段；逐一审计 Gemini、Anthropic、OpenAI 等请求的固定 system/tool 前缀、消息顺序、动态时间/上下文插入位置、工具声明和切换续接；按供应商官方缓存语义优化，并以重复请求的真实命中和成本验收。当前：Gemini 外部图约 21.2% 的总输入命中与 Yuki 线上 71.5% 的“已报告子集命中”不一致，先修统计展示并定位请求前缀，不能把显示比例当成优化成效。
   - [x] 修复 Claude 原生搜索追加到工具列表后缓存断点未落在最终工具上的问题；协议定向 7 项、Ruff 通过。
   - [x] Gemini 适配器的静态系统说明、动态用户上下文位置和 `cachedContentTokenCount` 映射已审计；未发现有证据的序列化错误。官方文档指出 Gemini 3.8 Flash 隐式缓存最低 4,096 Token，依赖相同的大前缀和短时间重用，不保证命中。
-  - [x] 对旧抓包与现行 PromptCompiler 核对：固定系统说明独立于消息历史；`contents` 按旧到新排列，运行时间等逐轮资料附在当前用户消息中，因而不会每轮改写系统说明。会话摘要位于历史最前端；摘要重写或历史窗口裁剪会改变其后的共同前缀，须计入实际缓存失效原因。工具声明虽在 JSON 对象中列于 `contents` 后，不能据此推断模型按该文本顺序读取或缓存。
-  - [ ] 按单次真实请求核对前缀长度、前缀 hash、时间间隔和服务端缓存回执。自我反思的固定说明在本地代码中约 3,280 字符，不能凭字符数断言已过 4,096 Token 门槛；需用实际模型 `countTokens` 或等价回执确认，再决定是否调整布局。
+  - [x] 对旧抓包与现行 PromptCompiler 核对：固定系统说明独立于消息历史；`contents` 按旧到新排列，运行时间等逐轮资料附在当前用户消息中，因而不会每轮改写系统说明。会话摘要位于历史最前端；为控制上下文长度而重写摘要或裁剪历史时，共同前缀变化属于必要代价，应在分析命中率时单独标记，不能为了缓存阻止正确的摘要更新。工具声明虽在 JSON 对象中列于 `contents` 后，不能据此推断模型按该文本顺序读取或缓存。
+  - [ ] 按单次真实请求核对前缀长度、前缀 hash、时间间隔和服务端缓存回执；区分必要的摘要重写/历史裁剪与摘要未变时的非预期前缀变化。自我反思的固定说明在本地代码中约 3,280 字符，不能凭字符数断言已过 4,096 Token 门槛；需用实际模型 `countTokens` 或等价回执确认，再决定是否调整布局。
   - [ ] 对比逐供应商的真实费用与命中，再决定是否引入有存储费用、需维护 TTL/模型/工具版本的 Gemini 显式缓存；逐供应商验收优化后的命中率。
 - [ ] **11. 高危：Gemini 代理请求格式与顺序**：用户确认这份抓包是删除 `request_tools` 前的旧请求。顶层为 `_session_thinking_id`、`thinkingConfig`、`systemInstruction`、`contents`、`tools`，缺少仓库适配器对函数请求会构造的 `generationConfig` 和 `toolConfig`；共有 56 条历史 `contents`、114 项函数声明。线上连接的 Base URL 指向抓包 Host 的 `/v1beta`；仓库 HEAD 和本地新适配器均把思考参数放在官方 `generationConfig.thinkingConfig`，没有 `_session_thinking_id`。JSON 属性排列本身不改变协议语义，但 Google 未承诺隐式缓存如何按原始 JSON 字节计算；需识别抓包是在旧部署出站、代理入口还是代理改写后，并核对最终上游请求的字段和值。
   - [x] 仅元数据方式检查抓包：历史按旧到新放在 `contents`，本轮运行资料放最后一个 user 消息尾部；未见仅因消息数组顺序就颠倒新旧上下文的证据。当前配置和本地代码与抓包差异已定位，不把代理差异误记为本地已修复。
+  - [x] 代理截图明确区分入站 Request、转发 Forwarded 与 Response：该次请求返回 200，代理把模型名映射到 `gemini-3.8-flash-tiered`，并把 `thinkingLevel: medium` 改为 `includeThoughts: true`、`thinkingBudget: 4096`；该次显示约 46.9% 缓存命中。这说明代理可处理此请求，不证明转发页所示 JSON 原样到达 Google，也不证明其他请求的缓存表现。
   - [ ] 用相同执行 ID 对照 Yuki 出站、代理入站/出站和 Google 回执；确认是否真的发送了非官方顶层字段，以及旧工具声明是由哪个已部署版本注入。新版本部署后再抓包验收。
+- [ ] **12. 高危：Gemini 3.8 默认使用 low，且不得被固定预算覆盖**：用户要求 Gemini 3.8 默认以 `thinkingLevel: low` 思考，而不是 `medium`；代理把 `medium` 改成 `thinkingBudget: 4096` 也不可接受。修正 WebUI 预设与现有连接的目标配置，查明代理路由/转换规则的所有者，确保实际模型请求保留所选 `thinkingLevel` 档位，不再注入固定的 4096 思考预算；新激活默认请求须在 Yuki 出站、代理入站及转发记录中体现 `low`，显式改档后按新档位生效，已开始的请求维持原档位。分别验证 low/medium/high、旧连接的 `reasoning_effort_env` 覆盖、保存失败与热更新边界。这里的 `thinkingBudget: 4096` 是输出思考预算，**不是** Gemini 隐式缓存的 4,096 输入 Token 门槛；两者不能混淆。当前只记录问题，未修改代理或上线配置。
+- [ ] **13. 高危：取消自动注入旧外部事件和记忆事实**：用户提供的一条外部 GitHub 事件唤醒输入共约 7,561 字符，其中动态资料约 7,161 字符；`context.people_and_scene` 约 6,207 字符，包含 4 条群记忆、4 条自我记忆和 10 条外部事件；8 条记忆均标为 `lexical_match`，部分与当前分支创建事件明显弱相关；`runtime.short_state` 还带了 3 个空文本槽。用户决定将自动附加的旧外部事件摘要和自动召回记忆事实全部移出本轮运行资料，记忆仅在 Agent 判断当前问题依赖过去事实时按意图调用 `get_person_memories`、`get_group_memories`、`get_self_memories`，已知事实 ID 可用 `get_memory_fact`；`search_chat_history` 查询聊天账本，不等于长期记忆检索。保留当前触发事件、必要的当前场景身份、已确认交付回执及非空短期状态；不删除持久记忆或历史账本。实施时核对所有正常聊天、SELF、外部唤醒和 Work 入口，确保工具仍可读且权限/回执不退化；比较模型是否主动补查、错误率、输入 Token 与缓存。当前仅更新目标，未修改运行策略。
+  - [ ] 研究并实现模型侧单一 `search_memory` 检索入口，收拢现有 Person/Group/SELF 三个列表工具；按需检索和多次补查由主 Agent 发起，目标解析、历史关系授权、歧义处理、跨目标检索与结果排序在后端完成。保留按 fact ID 精确读取和证据读取的独立语义；词法与向量保留独立候选通道，以中文真实样本校准高精度筛选。旧工具引用、稳定工具合同、子任务、观测与回执需一起迁移。具体工作包、默认授权范围、降级与验收见 [search_memory 按需检索任务书](../architecture/Yuki-search-memory-taskbook-2026-09-29.md)。当前仅完成设计记录，未改工具声明或运行代码。
+  - [ ] 核对并改进历史聊天成本：同一发送者相邻事件在本地投影中可合并文本，但 Gemini 适配器把相邻 `user` 消息合为一个 `contents` 条目时只是延长 `parts` 数组，没有合成一段逐行紧凑文本。用户旧抓包有 56 个 `contents`（25 user、31 model），user 内共 202 个 `text` part、文本约 25,938 字符；其中一个 user 条目有 64 个 part。DeepSeek Responses 把每条投影后的消息写成独立 `input` 项，DeepSeek Chat Completions 把每条写成独立 `messages` 项，同样没有跨不同发送者做逐行合并。系统说明约 6,218 字符，114 项工具声明的 JSON 约 61,993 字符，不能把高输入量全归咎于历史。核实旧历史经 rollup 替换后的实际窗口，设计保留发送者、时间、内部事件 ID、回复关系与工具回合边界的紧凑历史投影；对比各协议真实 `countTokens`/usage、模型理解和缓存，而非仅比较 JSON 字节数。DeepSeek 线上逐字请求尚无本轮抓包，仅确认本地适配器行为。
+  - [ ] 跨 Provider 试验与约束：共享历史投影进入 Gemini、DeepSeek Responses/Chat Completions 以及其他 Provider 适配器；先用同一组真实结构样本核对各协议的 Token、缓存、轮次/工具语义和输出质量，确认紧凑逐行投影有净收益且不损坏内部 ID、发送者和回复关系。试验成功后，把通过验证的历史投影及 Provider 适配责任写入 `docs/architecture/development-contract.md`，作为所有 Provider 的共同开发约束；试验前不把方案当成已验证合同。
+
+- [ ] **14. 记忆 Embedding 默认启用、管理页开关与明确降级**：默认请求启用独立 Qwen DashScope Embedding；缺少地址或密钥时不阻止 Bot 启动，检索退回 FTS，并在记忆页写明 `not_configured`、本地覆盖量、失败任务与待重启状态。管理员可在记忆页保存全局启停，原配置回执和版本围栏保持不变；旧部署显式 `false` 优先于新默认值。当前只完成本地代码和定向验证，未部署，也没有凭真实 Embedding 凭据验证建索引与语义命中。
+  - [x] 默认启用意图、无凭据降级、全局 restart-required 配置和管理页操作已实现；配置单测 32 项、Control Plane 单测 11 项、记忆页 3 项、前端构建和 Ruff 通过。
+  - [ ] 实际服务器确认是否有 DashScope 地址/Key，重启后验证向量覆盖、一次语义候选及 FTS 故障降级。Embedding 地址和 Key 仍由服务器启动环境提供，WebUI 本轮不编辑密钥；完整的 WebUI 凭据接入需沿私有密钥文件和权限边界设计，不能写入普通配置覆盖表。
 
 官方依据：[Gemini 缓存](https://ai.google.dev/gemini-api/docs/generate-content/caching)、[Claude 工具缓存断点](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-use-with-prompt-caching)、[OpenAI 前缀缓存](https://developers.openai.com/api/docs/guides/prompt-caching)、[DeepSeek 上下文缓存](https://api-docs.deepseek.com/guides/kv_cache/)。这些机制的门槛、TTL 和费用不同，不能要求相同命中率。
 

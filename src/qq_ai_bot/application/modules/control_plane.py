@@ -94,6 +94,7 @@ class ControlPlaneModule:
                     settings=settings,
                     config_files=config_files,
                     runtime_config=runtime_config,
+                    embeddings=embeddings,
                     mcp_manager=mcp,
                     connection_registry=connections,
                     plugins=plugins,

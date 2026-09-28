@@ -77,7 +77,13 @@ async def override(
                 config_key=key,
                 scope_type=scope,
                 value_json=json.dumps(value),
-                value_type="integer" if type(value) is int else "string",
+                value_type=(
+                    "boolean"
+                    if type(value) is bool
+                    else "integer"
+                    if type(value) is int
+                    else "string"
+                ),
                 apply_mode=mode,
                 canonical_person_id=owner if scope == "user" else None,
                 canonical_space_id=owner if scope == "group" else None,
@@ -119,6 +125,42 @@ async def test_config_defaults_schema_and_secrets(database: Database) -> None:
         with pytest.raises(ControlQueryError) as exc:
             await read(ctx, PageRequest(cursor=specs.next_cursor))
         assert exc.value.problem.code is ProblemCode.VALIDATION_ERROR
+
+
+@pytest.mark.asyncio
+async def test_memory_health_reports_missing_embedding_provider_as_degraded(
+    database: Database,
+) -> None:
+    settings = make_settings(
+        database.url,
+        memory_embedding_enabled=True,
+        memory_embedding_base_url="",
+        memory_embedding_api_key="",
+    )
+    runtime = RuntimeConfigService(settings=settings, database=database)
+    await runtime.initialize()
+    health = await ControlQueryAdapter(
+        database, settings=settings, runtime_config=runtime
+    ).read_memory_health()
+    assert health.embedding == "not_configured"
+    assert health.embedding_requested is True
+    assert health.embedding_configured is False
+    assert health.embedding_saved_enabled is True
+    assert health.embedding_config_version is None
+
+
+@pytest.mark.asyncio
+async def test_embedding_admin_switch_activates_at_next_start(database: Database) -> None:
+    settings = make_settings(database.url, memory_embedding_enabled=True)
+    await override(
+        database,
+        "memory.embedding_enabled",
+        False,
+        mode="restart_required",
+    )
+    runtime = RuntimeConfigService(settings=settings, database=database)
+    await runtime.initialize()
+    assert (await runtime.startup_settings_updates())["memory_embedding_enabled"] is False
 
 
 @pytest.mark.asyncio

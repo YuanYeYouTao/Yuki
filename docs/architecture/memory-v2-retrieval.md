@@ -92,6 +92,10 @@ overview 没有执行主题匹配，因此候选投影的 `lexical_match` 与 `s
 
 ## 检索核
 
+- 新部署默认请求启用 Embedding；缺少 DashScope 地址或密钥时不创建 Provider，
+  明确标为 `not_configured` 并继续使用 FTS。管理界面的全局开关保存后重启生效；
+  `memory.semantic_enabled` 是独立的热检索策略开关，不能用它证明向量服务已配置或索引已覆盖。
+  旧部署显式 `MEMORY_EMBEDDING_ENABLED=false` 继续保持关闭，直到管理员修改。
 - QueryBuilder 规范化文本、有界引用和结构化 intent；保留 FTS、短词 LIKE、
   embedding 与现有 rerank。
 - 非空且启用语义检索时生成 query embedding；overview、lexical 不调用 embedding。

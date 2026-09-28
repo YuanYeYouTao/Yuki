@@ -27,7 +27,19 @@ function scene() {
         : method === "read_display_names"
           ? { fields: { names: { [owner]: "夜聊群" } } }
           : method === "read_memory_health"
-            ? { index: "ok", embedding: "degraded", consistency: "ok" }
+            ? {
+                index: "ok",
+                embedding: "not_configured",
+                consistency: "ok",
+                embedding_requested: true,
+                embedding_configured: false,
+                embedding_ready_count: 0,
+                embedding_fact_count: 12,
+                embedding_failed_jobs: 0,
+                embedding_saved_enabled: true,
+                embedding_config_version: null,
+                embedding_pending_restart: false,
+              }
             : {
                 items:
                   method === "list_spaces"
@@ -63,6 +75,26 @@ function scene() {
   render(<Memory allowed={() => true} act={act} refresh={0} conversation="" />);
   return { requests, act, user: userEvent.setup() };
 }
+
+it("shows missing embedding credentials and can disable the global service", async () => {
+  const { act, user } = scene();
+  expect(
+    await screen.findByText(/缺少 Embedding 地址或 API Key/),
+  ).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "关闭向量检索" }));
+  expect(act).toHaveBeenCalledWith(
+    expect.objectContaining({
+      method: "set_config",
+      revision: 0,
+      payload: {
+        key: "memory.embedding_enabled",
+        scope_type: "global",
+        scope_id: "",
+        value: false,
+      },
+    }),
+  );
+});
 
 it("applies canonical ownership on submit and clears unrelated SELF selectors", async () => {
   const { requests, user } = scene();

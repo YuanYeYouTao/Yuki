@@ -127,6 +127,7 @@ from qq_ai_bot.memory.audit import MemoryAuditService
 from qq_ai_bot.memory.dream.db_models import MemoryDreamRunModel
 from qq_ai_bot.memory.embedding.health import MemoryEmbeddingHealthService
 from qq_ai_bot.memory.embedding.repository import MemoryEmbeddingRepository
+from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.memory.embedding.text import EmbeddingDocumentBuilder
 from qq_ai_bot.memory.errors import MemoryRetrievalError
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
@@ -584,6 +585,7 @@ class ControlQueryAdapter:
         settings: Settings | None = None,
         workspace_service: WorkspaceService | None = None,
         runtime_config: RuntimeConfigService | None = None,
+        embeddings: MemoryEmbeddingRuntime | None = None,
         mcp_manager: MCPManager | None = None,
         connection_registry: object | None = None,
         plugins: PluginManager | None = None,
@@ -632,6 +634,7 @@ class ControlQueryAdapter:
         self._settings = settings
         self._model_catalog = model_catalog
         self._config = runtime_config
+        self._embeddings = embeddings
         self._registry = runtime_config.registry if runtime_config is not None else ConfigRegistry()
         self._mcp = mcp_manager
         self._connections = connection_registry
@@ -2058,21 +2061,39 @@ class ControlQueryAdapter:
         except (MemoryRetrievalError, DatabaseError, RuntimeError, ValueError):
             index = "unavailable"
         embedding = "unavailable"
+        embedding_report = None
         try:
             enabled = bool(getattr(self._settings, "memory_embedding_enabled", False))
-            report = await MemoryEmbeddingHealthService(
-                enabled=enabled,
-                provider=None,
-                repository=MemoryEmbeddingRepository(self._database),
-                profile_id=None,
-                documents=EmbeddingDocumentBuilder(template_version=1, max_characters=2000),
-            ).health()
-            if enabled and report.coverage_ratio < 1:
+            embedding_report = (
+                await self._embeddings.health()
+                if self._embeddings is not None
+                else await MemoryEmbeddingHealthService(
+                    enabled=enabled,
+                    provider=None,
+                    repository=MemoryEmbeddingRepository(self._database),
+                    profile_id=None,
+                    documents=EmbeddingDocumentBuilder(template_version=1, max_characters=2000),
+                ).health()
+            )
+            if not enabled:
+                embedding = "disabled"
+            elif not embedding_report.provider_configured:
+                embedding = "not_configured"
+            elif embedding_report.coverage_ratio < 1 or embedding_report.failed_job_count:
                 embedding = "degraded"
             else:
                 embedding = "ok"
         except (RuntimeError, ValueError, DatabaseError):
             embedding = "unavailable"
+        embedding_saved_enabled = None
+        embedding_config_version = None
+        embedding_pending_restart = False
+        if self._config is not None:
+            inspected = await self._config.inspect_configs(("memory.embedding_enabled",))
+            setting = inspected[0]
+            embedding_saved_enabled = bool(setting.saved.value)
+            embedding_config_version = setting.version
+            embedding_pending_restart = setting.pending_restart
         consistency = "unavailable"
         try:
             consistency_health = await MemoryAuditService(
@@ -2081,7 +2102,26 @@ class ControlQueryAdapter:
             consistency = "ok" if consistency_health.healthy else "degraded"
         except (RuntimeError, ValueError, DatabaseError):
             consistency = "unavailable"
-        return MemoryHealthView(index=index, embedding=embedding, consistency=consistency)
+        return MemoryHealthView(
+            index=index,
+            embedding=embedding,
+            consistency=consistency,
+            embedding_requested=(embedding_report.enabled if embedding_report else None),
+            embedding_configured=(
+                embedding_report.provider_configured if embedding_report else None
+            ),
+            embedding_ready_count=(
+                embedding_report.ready_embedding_count if embedding_report else None
+            ),
+            embedding_fact_count=(embedding_report.active_fact_count if embedding_report else None),
+            embedding_failed_jobs=(embedding_report.failed_job_count if embedding_report else None),
+            embedding_last_error=(
+                embedding_report.last_error_category if embedding_report else None
+            ),
+            embedding_saved_enabled=embedding_saved_enabled,
+            embedding_config_version=embedding_config_version,
+            embedding_pending_restart=embedding_pending_restart,
+        )
 
     async def list_automations(self, request: PageRequest) -> Page[AutomationView]:
         snapshot_at = _now()

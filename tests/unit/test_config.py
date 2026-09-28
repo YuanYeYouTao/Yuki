@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.messages import ReasoningEffort
+from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.model_runtime.models import ModelProfile
 from qq_ai_bot.vision.models import (
     PreparedFrame,
@@ -230,7 +231,14 @@ def test_daily_chat_delay_range_must_be_ordered() -> None:
         )
 
 
-def test_memory_embedding_disabled_needs_no_secret_but_enabled_does() -> None:
+def test_memory_embedding_defaults_on_but_degrades_without_provider_credentials() -> None:
+    default = Settings.model_validate(
+        {"memory_embedding_base_url": "", "memory_embedding_api_key": ""}
+    )
+    assert default.memory_embedding_enabled is True
+    assert default.memory_embedding_configured is False
+    assert MemoryEmbeddingRuntime._build_provider(default) is None
+
     disabled = Settings.model_validate(
         {
             "memory_embedding_enabled": False,
@@ -239,15 +247,6 @@ def test_memory_embedding_disabled_needs_no_secret_but_enabled_does() -> None:
         }
     )
     assert disabled.memory_embedding_configured is False
-
-    with pytest.raises(ValidationError, match="MEMORY_EMBEDDING_BASE_URL"):
-        Settings.model_validate(
-            {
-                "memory_embedding_enabled": True,
-                "memory_embedding_base_url": "",
-                "memory_embedding_api_key": "",
-            }
-        )
 
     enabled = Settings.model_validate(
         {

@@ -317,7 +317,7 @@ class Settings(BaseSettings):
     memory_stale_max_importance: int = 2
     memory_stale_max_confidence: float = 0.7
 
-    memory_embedding_enabled: bool = False
+    memory_embedding_enabled: bool = True
     memory_embedding_provider: str = "qwen_dashscope"
     memory_embedding_base_url: str = ""
     memory_embedding_api_key: str = Field(default="", repr=False)
@@ -905,13 +905,6 @@ class Settings(BaseSettings):
             raise ValueError("qwen_dashscope currently supports 1024 dimensions")
         if self.memory_embedding_document_template_version != 1:
             raise ValueError("unsupported MEMORY_EMBEDDING_DOCUMENT_TEMPLATE_VERSION")
-        if self.memory_embedding_enabled and not (
-            self.memory_embedding_base_url.strip() and self.memory_embedding_api_key
-        ):
-            raise ValueError(
-                "MEMORY_EMBEDDING_BASE_URL and MEMORY_EMBEDDING_API_KEY are required "
-                "when MEMORY_EMBEDDING_ENABLED=true"
-            )
         return self
 
     @model_validator(mode="after")
@@ -1076,5 +1069,5 @@ class Settings(BaseSettings):
         return bool(
             self.memory_embedding_enabled
             and self.memory_embedding_base_url.strip()
-            and self.memory_embedding_api_key
+            and self.memory_embedding_api_key.strip()
         )
