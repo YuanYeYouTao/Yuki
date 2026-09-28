@@ -44,19 +44,29 @@ async def test_live_execution_requires_real_process_span_and_expiring_evidence(d
     assert completed.fields["state"] == "idle"
     assert completed.fields["recent"][0]["status"] == "completed"
     assert completed.fields["coverage_note"] is None
-    statements: list[str] = []
+    statements: list[tuple[str, object]] = []
 
-    def capture(_connection, _cursor, statement, *_args):
-        statements.append(statement)
+    def capture(_connection, _cursor, statement, parameters, *_args):
+        statements.append((statement, parameters))
 
     event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
     try:
         await read_conversation_execution(database.sessions, conversation, recorder)
     finally:
         event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
-    trace_queries = [sql for sql in statements if "execution_trace_entries" in sql]
+    trace_queries = [sql for sql, _ in statements if "execution_trace_entries" in sql]
     assert trace_queries and all("LIMIT" in sql.upper() for sql in trace_queries)
     assert all("payload_gzip" not in sql for sql in trace_queries)
+    step_sql, step_params = next(
+        (sql, params)
+        for sql, params in statements
+        if "INDEXED BY ix_execution_trace_turn_id" in sql and "LIMIT 33" in sql
+    )
+    async with database.engine.connect() as connection:
+        plan = (
+            await connection.exec_driver_sql("EXPLAIN QUERY PLAN " + step_sql, step_params)
+        ).all()
+    assert any("USING INDEX ix_execution_trace_turn_id" in row[3] for row in plan)
 
     # A start without its terminal receipt must not keep a turn "running"
     # after the actual process span has exited.
@@ -79,6 +89,24 @@ async def test_live_execution_requires_real_process_span_and_expiring_evidence(d
         )
     expired = await read_conversation_execution(database.sessions, conversation, recorder)
     assert expired.fields["state"] == "idle" and expired.fields["recent"] == ()
+
+
+@pytest.mark.asyncio
+async def test_live_execution_keeps_two_recent_turns_with_bounded_root_scan(database, tmp_path):
+    env = await social_env(database, tmp_path)
+    conversation = ConversationId.parse(env.context.conversation_id)
+    recorder = TraceRecorder(database)
+    for _ in range(3):
+        async with trace_span(
+            "chat_processing", {}, recorder=recorder, conversation_id=conversation.text
+        ):
+            async with trace_span("turn", {}):
+                pass
+    view = await read_conversation_execution(database.sessions, conversation, recorder)
+    assert view.fields["state"] == "idle"
+    recent = view.fields["recent"]
+    assert len(recent) == 2
+    assert len({item["turn_id"] for item in recent}) == 2
 
 
 @pytest.mark.asyncio
