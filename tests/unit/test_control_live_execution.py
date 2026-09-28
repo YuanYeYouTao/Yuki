@@ -41,6 +41,7 @@ async def test_live_execution_requires_real_process_span_and_expiring_evidence(d
         assert len(active.fields["active"]) == 1
         assert active.fields["active"][0]["evidence"] == "live_runner_span"
         assert active.fields["active"][0]["steps"][0]["kind"] == "chat_processing_start"
+        assert active.fields["active"][0]["steps"][0]["operation_id"]
 
     completed = await read_conversation_execution(database.sessions, conversation, recorder)
     assert completed.fields["state"] == "idle"

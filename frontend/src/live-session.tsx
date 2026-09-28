@@ -4,9 +4,11 @@ import type { Row } from "./api";
 import { Empty, ErrorNote, Section } from "./components";
 import { originName, stamp, text } from "./format";
 import { Traces } from "./traces";
+import { TraceStepDetail } from "./trace-step-detail";
 
 type Step = {
   id: number;
+  operation_id?: string;
   kind: string;
   created_at: string;
   payload_status: string;
@@ -61,9 +63,12 @@ const stepName: Record<string, string> = {
   provider_start: "联系模型服务",
   provider_end: "模型服务已返回",
   provider_error: "模型服务失败",
-  tool_batch_start: "执行工具",
-  tool_batch_end: "工具已返回",
+  tool_batch_start: "开始工具批次",
+  tool_batch_end: "工具批次结束",
   tool_batch_error: "工具执行失败",
+  tool_start: "调用工具",
+  tool_end: "工具返回结果",
+  tool_error: "工具调用失败",
   social_delivery: "消息已投递",
   model_route: "选择模型",
   provider_request: "发送模型请求",
@@ -71,10 +76,50 @@ const stepName: Record<string, string> = {
   tool_result_staged: "记录工具结果",
 };
 
-function TurnCard({ turn, content }: { turn: Turn; content: boolean }) {
+function TurnCard({
+  turn,
+  content,
+  traceContent,
+}: {
+  turn: Turn;
+  content: boolean;
+  traceContent: boolean;
+}) {
   const [expanded, setExpanded] = useState(false);
   const [showSteps, setShowSteps] = useState(false);
+  const [showOperations, setShowOperations] = useState(false);
+  const [selectedStepId, setSelectedStepId] = useState<number | null>(null);
   const visibleSteps = showSteps ? turn.steps : turn.steps.slice(-3);
+  const operations = turn.steps.filter(
+    (step) =>
+      ["recorded", "redacted"].includes(step.payload_status) &&
+      ([
+        "tool_start",
+        "tool_end",
+        "model_route",
+        "model_end",
+        "social_delivery",
+      ].includes(step.kind) ||
+        step.kind.endsWith("_error")),
+  );
+  const recentOperations = operations.slice(-8);
+  const selectedStep = turn.steps.find((step) => step.id === selectedStepId);
+  const family = selectedStep?.kind.replace(/_(start|end|error)$/, "");
+  const pairedStep =
+    selectedStep?.operation_id && family
+      ? turn.steps.find(
+          (step) =>
+            step.id !== selectedStep.id &&
+            step.operation_id === selectedStep.operation_id &&
+            step.kind.replace(/_(start|end|error)$/, "") === family &&
+            step.kind !== selectedStep.kind,
+        )
+      : undefined;
+  const detailSteps = selectedStep
+    ? [selectedStep, ...(pairedStep ? [pairedStep] : [])].sort(
+        (a, b) => a.id - b.id,
+      )
+    : [];
   const activePhase: Record<string, string> = {
     chat_processing_start: "正在处理收到的消息",
     model_start: "正在等待模型回复",
@@ -151,17 +196,77 @@ function TurnCard({ turn, content }: { turn: Turn; content: boolean }) {
             ` · ${turn.usage.missing_usage_calls} 次上游未报总 Token`}
         </p>
       )}
+      {traceContent && operations.length > 0 && (
+        <button
+          type="button"
+          className="file-open"
+          onClick={() => {
+            setShowOperations((value) => !value);
+            setSelectedStepId(null);
+          }}
+        >
+          {showOperations
+            ? "收起本轮具体操作"
+            : `查看本轮具体操作（${operations.length} 条）`}
+        </button>
+      )}
+      {showOperations && (
+        <div
+          className="trace-operation-pair"
+          role="group"
+          aria-label="本轮具体操作"
+        >
+          {operations.length > recentOperations.length && (
+            <p className="small">
+              这里只展开最近 8 条关键操作；较早步骤可在下面逐项查看。
+            </p>
+          )}
+          {recentOperations.map((step) => (
+            <TraceStepDetail key={step.id} id={step.id} />
+          ))}
+        </div>
+      )}
       <ol className="live-steps" aria-label="最近执行状态">
         {visibleSteps.map((step) => (
           <li key={step.id}>
             <time>{stamp(step.created_at)}</time>
             <span>{stepName[step.kind] || text(step.kind)}</span>
-            {step.payload_status !== "recorded" && (
-              <span className="small"> · 正文 {text(step.payload_status)}</span>
+            {step.payload_status === "redacted" && (
+              <span className="small"> · 部分字段已脱敏</span>
             )}
+            {step.payload_status === "omitted_size" && (
+              <span className="small"> · 内容过大未保存</span>
+            )}
+            {traceContent &&
+              ["recorded", "redacted"].includes(step.payload_status) && (
+                <button
+                  type="button"
+                  className="file-open"
+                  aria-label={`查看记录 #${step.id} 的具体操作`}
+                  aria-expanded={selectedStepId === step.id}
+                  onClick={() => {
+                    setShowOperations(false);
+                    setSelectedStepId((current) =>
+                      current === step.id ? null : step.id,
+                    );
+                  }}
+                >
+                  {selectedStepId === step.id ? "收起细节" : "具体操作"}
+                </button>
+              )}
           </li>
         ))}
       </ol>
+      {!traceContent && (
+        <p className="small">工具参数、模型请求和结果需要执行正文读取权限。</p>
+      )}
+      {detailSteps.length > 0 && (
+        <div className="trace-operation-pair" aria-label="本步的具体操作与结果">
+          {detailSteps.map((step) => (
+            <TraceStepDetail key={step.id} id={step.id} />
+          ))}
+        </div>
+      )}
       {turn.steps.length > 3 && (
         <button
           type="button"
@@ -183,7 +288,7 @@ function TurnCard({ turn, content }: { turn: Turn; content: boolean }) {
         className="file-open"
         onClick={() => setExpanded((value) => !value)}
       >
-        {expanded ? "收起完整执行过程" : "展开模型、工具和结果"}
+        {expanded ? "收起原始轨迹表" : "查看原始轨迹表"}
       </button>
       {expanded && (
         <Traces
@@ -203,10 +308,12 @@ export function LiveSession({
   conversation,
   refresh,
   content = false,
+  traceContent = false,
 }: {
   conversation: string;
   refresh: number;
   content?: boolean;
+  traceContent?: boolean;
 }) {
   const [state, setState] = useState<{
     conversation: string;
@@ -285,7 +392,12 @@ export function LiveSession({
             </p>
           )}
           {data.active.map((turn) => (
-            <TurnCard key={turn.turn_id} turn={turn} content={content} />
+            <TurnCard
+              key={turn.turn_id}
+              turn={turn}
+              content={content}
+              traceContent={traceContent}
+            />
           ))}
           {!!data.recent.length && (
             <>
@@ -298,7 +410,12 @@ export function LiveSession({
               </button>
               {showRecent &&
                 data.recent.map((turn) => (
-                  <TurnCard key={turn.turn_id} turn={turn} content={content} />
+                  <TurnCard
+                    key={turn.turn_id}
+                    turn={turn}
+                    content={content}
+                    traceContent={traceContent}
+                  />
                 ))}
             </>
           )}

@@ -49,10 +49,10 @@ it("shows current conversation activity and opens the original turn", async () =
   });
   render(<LiveSession conversation="conversation-a" refresh={0} />);
   expect(await screen.findByText("正在执行 1 个轮次")).toBeInTheDocument();
-  expect(screen.getAllByText("执行工具").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("开始工具批次").length).toBeGreaterThan(0);
   await userEvent
     .setup()
-    .click(screen.getByRole("button", { name: "展开模型、工具和结果" }));
+    .click(screen.getByRole("button", { name: "查看原始轨迹表" }));
   await waitFor(() =>
     expect(calls.some((call) => call.method === "list_execution_trace")).toBe(
       true,
@@ -117,6 +117,98 @@ it("shows linked received and sent messages with content only when granted", asy
   expect(calls[0].include_content).toBe(true);
 });
 
+it("opens a recorded tool call with its actual arguments and paired result", async () => {
+  const calls: string[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
+    const method = String(url).split("/").pop()!;
+    calls.push(method);
+    if (method === "read_conversation_execution")
+      return answer({
+        fields: {
+          conversation_id: "conversation-a",
+          observed_at: "2026-09-28T08:00:00Z",
+          state: "idle",
+          active: [],
+          recent: [
+            {
+              turn_id: "turn-one",
+              original_conversation_id: "conversation-a",
+              started_at: "2026-09-28T07:59:00Z",
+              latest_kind: "turn_end",
+              status: "completed",
+              steps: [
+                {
+                  id: 12,
+                  operation_id: "tool-op",
+                  kind: "tool_start",
+                  created_at: "2026-09-28T07:59:10Z",
+                  payload_status: "recorded",
+                },
+                {
+                  id: 13,
+                  operation_id: "tool-op",
+                  kind: "tool_end",
+                  created_at: "2026-09-28T07:59:11Z",
+                  payload_status: "recorded",
+                },
+              ],
+            },
+          ],
+        },
+      });
+    const id = JSON.parse(String(options?.body)).entry_id;
+    return answer(
+      id === 12
+        ? {
+            kind: "tool_start",
+            payload_status: "recorded",
+            payload: {
+              data: {
+                call: {
+                  function: {
+                    name: "search_web",
+                    arguments: '{"query":"weather"}',
+                  },
+                },
+              },
+            },
+          }
+        : {
+            kind: "tool_end",
+            payload_status: "recorded",
+            payload: { data: { result: '{"ok":true,"count":2}' } },
+          },
+    );
+  });
+  render(
+    <LiveSession conversation="conversation-a" refresh={0} traceContent />,
+  );
+  await userEvent
+    .setup()
+    .click(await screen.findByRole("button", { name: "查看最近一次轮次" }));
+  expect(calls).not.toContain("read_execution_trace");
+  await userEvent
+    .setup()
+    .click(screen.getByRole("button", { name: "查看记录 #12 的具体操作" }));
+  expect(await screen.findByText("search_web")).toBeInTheDocument();
+  expect(screen.getByText("实际参数")).toBeInTheDocument();
+  expect(screen.getAllByText("工具返回结果").length).toBeGreaterThan(0);
+  expect(screen.getByText(/"weather"/)).toBeInTheDocument();
+  expect(screen.getByText(/"count": 2/)).toBeInTheDocument();
+  expect(
+    calls.filter((method) => method === "read_execution_trace"),
+  ).toHaveLength(2);
+  await userEvent
+    .setup()
+    .click(screen.getByRole("button", { name: "查看本轮具体操作（2 条）" }));
+  expect(
+    await screen.findByRole("group", { name: "本轮具体操作" }),
+  ).toHaveTextContent("search_web");
+  expect(screen.getByRole("group", { name: "本轮具体操作" })).toHaveTextContent(
+    '"count": 2',
+  );
+});
+
 it("refreshes an expanded active turn when a new step arrives", async () => {
   let step = 12;
   let traceReads = 0;
@@ -159,7 +251,7 @@ it("refreshes an expanded active turn when a new step arrives", async () => {
   await screen.findByText("正在执行 1 个轮次");
   await userEvent
     .setup()
-    .click(screen.getByRole("button", { name: "展开模型、工具和结果" }));
+    .click(screen.getByRole("button", { name: "查看原始轨迹表" }));
   await waitFor(() => expect(traceReads).toBe(1));
   step = 13;
   view.rerender(<LiveSession conversation="conversation-a" refresh={1} />);

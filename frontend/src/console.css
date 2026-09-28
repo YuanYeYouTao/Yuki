@@ -441,6 +441,39 @@ pre {
 .live-steps li span {
   margin-left: 8px;
 }
+.live-steps li .file-open {
+  margin-left: 10px;
+}
+.trace-operation-pair {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0;
+}
+.trace-step-detail {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  min-width: 0;
+}
+.trace-step-detail p {
+  margin: 8px 0;
+}
+.trace-step-detail details {
+  margin-top: 8px;
+}
+.trace-detail-value {
+  margin-top: 8px;
+}
+.trace-detail-value pre {
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 10px;
+  border-radius: 6px;
+  background: var(--bg-secondary);
+}
 .right-container .settings-content {
   padding: 14px;
 }
