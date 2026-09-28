@@ -694,10 +694,7 @@ class ControlActivityQueryAdapter:
             ).all()
             buckets = (
                 await session.execute(
-                    select(bucket, *measures)
-                    .where(*period)
-                    .group_by(bucket)
-                    .order_by(bucket)
+                    select(bucket, *measures).where(*period).group_by(bucket).order_by(bucket)
                 )
             ).all()
 

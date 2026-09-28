@@ -159,8 +159,10 @@ async def test_model_key_command_receipt_and_audit_do_not_store_key(database, fi
         audits = (await session.scalars(select(AdminOperationEventModel))).all()
         receipts = (await session.scalars(select(ControlCommandReceiptModel))).all()
     assert "audit-private-key" not in " ".join(
-        [*(row.before_json + row.after_json for row in audits),
-         *(row.effective_state_json or "" for row in receipts)]
+        [
+            *(row.before_json + row.after_json for row in audits),
+            *(row.effective_state_json or "" for row in receipts),
+        ]
     )
 
 

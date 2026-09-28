@@ -66,7 +66,14 @@ it("shows window totals, keeps cached input inside input, and marks missing usag
                 },
               ],
               buckets: [
-                { at: "2026-09-28T08:00:00Z", calls: 3, total_tokens: 120 },
+                {
+                  at: "2026-09-28T08:00:00Z",
+                  calls: 3,
+                  total_tokens: 120,
+                  cache_reported_input_tokens: 100,
+                  cache_reported_cached_tokens: 60,
+                  cache_unreported_calls: 1,
+                },
               ],
             },
           },
@@ -89,6 +96,11 @@ it("shows window totals, keeps cached input inside input, and marks missing usag
     screen.getByRole("list", { name: "API 调用次数" }),
   ).toBeInTheDocument();
   expect(screen.getByRole("list", { name: "Token 用量" })).toBeInTheDocument();
+  expect(
+    screen.getByRole("listitem", {
+      name: /08:00:00Z UTC：120 Token；缓存命中率 60.0%/,
+    }),
+  ).toBeInTheDocument();
   expect(screen.getByText(/1 次调用的上游未报告总 Token/)).toBeInTheDocument();
   expect(screen.getByText(/不是供应商账单/)).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "最近 7 天" }));

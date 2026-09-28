@@ -49,12 +49,14 @@ function UsageBars({
           const at = String(row.at || "");
           const label = at.includes("T") ? at.slice(11, 16) : at.slice(5);
           const value = Number(row[metric] || 0);
+          const cache = `缓存命中率 ${cacheRate(row)}；${count(row.cache_unreported_calls)} 次调用未报告缓存量`;
           return (
             <div
               className="usage-bar-item"
               role="listitem"
               key={at}
-              aria-label={`${at} UTC：${count(value)}${metric === "calls" ? " 次调用" : " Token"}`}
+              aria-label={`${at} UTC：${count(value)}${metric === "calls" ? " 次调用" : " Token"}；${cache}`}
+              title={`${at} UTC · ${cache}`}
             >
               <span className="usage-bar-value">{count(value)}</span>
               <div

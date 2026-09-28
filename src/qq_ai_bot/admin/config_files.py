@@ -145,9 +145,7 @@ class ConfigFileService:
                 result["document"] = parameters.model_dump(mode="json")
                 result["matches_loaded"] = parameters == loaded if loaded else None
             elif file_id == "model_profiles":
-                _secret_bytes, saved_keys = await asyncio.to_thread(
-                    read_model_secrets, path
-                )
+                _secret_bytes, saved_keys = await asyncio.to_thread(read_model_secrets, path)
                 # Headers are kept server-side even for content-authorized readers.
                 raw: dict[str, Any] = (
                     tomllib.loads(text)
@@ -269,8 +267,7 @@ class ConfigFileService:
                             or type(value) is not str
                             or name in saved_keys
                             or not any(
-                                isinstance(profile, dict)
-                                and profile.get("api_key_env") == name
+                                isinstance(profile, dict) and profile.get("api_key_env") == name
                                 for profile in profiles.values()
                             )
                         ):
@@ -308,9 +305,7 @@ class ConfigFileService:
             except (TypeError, ValueError, UnicodeError, tomlkit.exceptions.TOMLKitError) as exc:
                 raise ConfigFileError("validation_error") from exc
             writing = asyncio.create_task(
-                asyncio.to_thread(
-                    self._replace_model_bundle, path, original, content, secret_write
-                )
+                asyncio.to_thread(self._replace_model_bundle, path, original, content, secret_write)
             )
             try:
                 return await asyncio.shield(writing)
