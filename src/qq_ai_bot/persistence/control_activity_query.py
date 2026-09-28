@@ -651,8 +651,21 @@ class ControlActivityQueryAdapter:
             func.coalesce(func.sum(model.total_tokens), 0),
             func.coalesce(func.sum(model.cached_prompt_tokens), 0),
             func.count(model.id).filter(model.total_tokens.is_(None)),
+            func.coalesce(
+                func.sum(model.prompt_tokens).filter(model.cached_prompt_tokens.is_not(None)),
+                0,
+            ),
+            func.count(model.id).filter(model.cached_prompt_tokens.is_(None)),
+            func.coalesce(
+                func.sum(model.cached_prompt_tokens).filter(model.prompt_tokens.is_not(None)),
+                0,
+            ),
         )
         period = (model.created_at >= since, model.created_at < until)
+        bucket = func.strftime(
+            "%Y-%m-%dT%H:00:00Z" if window == "24h" else "%Y-%m-%d",
+            model.created_at,
+        )
         async with self._reader() as session:
             totals = (await session.execute(select(*measures).where(*period))).one()
             groups = (
@@ -661,6 +674,27 @@ class ControlActivityQueryAdapter:
                     .where(*period)
                     .group_by(model.provider, model.model)
                     .order_by(func.sum(model.total_tokens).desc())
+                )
+            ).all()
+            profiles = (
+                await session.execute(
+                    select(model.profile_id, model.provider, model.model, *measures)
+                    .where(*period)
+                    .group_by(model.profile_id, model.provider, model.model)
+                    .order_by(func.sum(model.total_tokens).desc())
+                )
+            ).all()
+            tasks = (
+                await session.execute(
+                    select(model.task, *measures)
+                    .where(*period)
+                    .group_by(model.task)
+                    .order_by(func.sum(model.total_tokens).desc())
+                )
+            ).all()
+            buckets = (
+                await session.execute(
+                    select(bucket, *measures).where(*period).group_by(bucket).order_by(bucket)
                 )
             ).all()
 
@@ -672,6 +706,9 @@ class ControlActivityQueryAdapter:
                 "total_tokens": int(values[3] or 0),
                 "cached_input_tokens": int(values[4] or 0),
                 "missing_usage_calls": int(values[5] or 0),
+                "cache_reported_input_tokens": int(values[6] or 0),
+                "cache_unreported_calls": int(values[7] or 0),
+                "cache_reported_cached_tokens": int(values[8] or 0),
             }
 
         return ActivityView(
@@ -684,6 +721,17 @@ class ControlActivityQueryAdapter:
                 "models": [
                     {"provider": row[0], "model": row[1], **usage(row[2:])} for row in groups
                 ],
+                "profiles": [
+                    {
+                        "profile_id": row[0],
+                        "provider": row[1],
+                        "model": row[2],
+                        **usage(row[3:]),
+                    }
+                    for row in profiles
+                ],
+                "tasks": [{"task": row[0], **usage(row[1:])} for row in tasks],
+                "buckets": [{"at": row[0], **usage(row[1:])} for row in buckets],
             },
         )
 

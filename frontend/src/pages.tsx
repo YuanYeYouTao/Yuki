@@ -35,16 +35,19 @@ export function Health({
   refresh,
   conversation,
   chatContent,
+  traceContent,
 }: {
   refresh: number;
   conversation: string;
   chatContent?: boolean;
+  traceContent?: boolean;
 }) {
   return (
     <LiveSession
       conversation={conversation}
       refresh={refresh}
       content={!!chatContent}
+      traceContent={!!traceContent}
     />
   );
 }
@@ -663,6 +666,7 @@ export function Notebook({ props }: { props: PageProps }) {
         refresh={props.refresh}
         conversation={props.conversation}
         chatContent={props.chatContent}
+        traceContent={props.allowed("read_execution_trace")}
       />
     ),
     system: () => <SystemHealth refresh={props.refresh} />,

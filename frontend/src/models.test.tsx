@@ -22,6 +22,9 @@ it("shows window totals, keeps cached input inside input, and marks missing usag
               output_tokens: 20,
               total_tokens: 120,
               cached_input_tokens: 60,
+              cache_reported_input_tokens: 100,
+              cache_reported_cached_tokens: 60,
+              cache_unreported_calls: 1,
               missing_usage_calls: 1,
               models: [
                 {
@@ -31,8 +34,45 @@ it("shows window totals, keeps cached input inside input, and marks missing usag
                   total_tokens: 120,
                   input_tokens: 100,
                   cached_input_tokens: 60,
+                  cache_reported_input_tokens: 100,
+                  cache_reported_cached_tokens: 60,
+                  cache_unreported_calls: 1,
                   output_tokens: 20,
                   missing_usage_calls: 1,
+                },
+              ],
+              profiles: [
+                {
+                  profile_id: "main",
+                  provider: "fixture",
+                  model: "m1",
+                  calls: 3,
+                  total_tokens: 120,
+                  cached_input_tokens: 60,
+                  cache_reported_input_tokens: 100,
+                  cache_reported_cached_tokens: 60,
+                  cache_unreported_calls: 1,
+                },
+              ],
+              tasks: [
+                {
+                  task: "chat_agent",
+                  calls: 3,
+                  total_tokens: 120,
+                  cached_input_tokens: 60,
+                  cache_reported_input_tokens: 100,
+                  cache_reported_cached_tokens: 60,
+                  cache_unreported_calls: 1,
+                },
+              ],
+              buckets: [
+                {
+                  at: "2026-09-28T08:00:00Z",
+                  calls: 3,
+                  total_tokens: 120,
+                  cache_reported_input_tokens: 100,
+                  cache_reported_cached_tokens: 60,
+                  cache_unreported_calls: 1,
                 },
               ],
             },
@@ -51,7 +91,16 @@ it("shows window totals, keeps cached input inside input, and marks missing usag
   render(
     <Models allowed={() => true} act={() => {}} refresh={0} conversation="" />,
   );
-  expect(await screen.findByText(/60 Token 命中缓存/)).toBeInTheDocument();
+  expect(await screen.findAllByText(/缓存命中率 60.0%/)).toHaveLength(2);
+  expect(
+    screen.getByRole("list", { name: "API 调用次数" }),
+  ).toBeInTheDocument();
+  expect(screen.getByRole("list", { name: "Token 用量" })).toBeInTheDocument();
+  expect(
+    screen.getByRole("listitem", {
+      name: /08:00:00Z UTC：120 Token；缓存命中率 60.0%/,
+    }),
+  ).toBeInTheDocument();
   expect(screen.getByText(/1 次调用的上游未报告总 Token/)).toBeInTheDocument();
   expect(screen.getByText(/不是供应商账单/)).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "最近 7 天" }));

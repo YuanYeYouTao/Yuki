@@ -35,6 +35,10 @@ class ModelClientPool:
         self._clients: dict[tuple[str, float], LLMProvider] = {}
         self._connection_pools: dict[tuple[str, str, str], httpx.AsyncClient] = {}
 
+    def api_key_for(self, profile: ModelProfile) -> str:
+        secret = self._secret_overrides.get(profile.api_key_env)
+        return os.getenv(profile.api_key_env, "") if secret is None else secret
+
     def get(self, profile: ModelProfile, *, timeout_seconds: float | None = None) -> LLMProvider:
         injected = self._injected_profiles.get(profile.id)
         if injected is not None:
@@ -48,9 +52,7 @@ class ModelClientPool:
         if profile.provider.casefold() == "fake":
             provider: LLMProvider = FakeLLMProvider()
         elif profile.provider.casefold() in CHAT_VENDORS | {"anthropic", "gemini"}:
-            api_key = self._secret_overrides.get(profile.api_key_env)
-            if api_key is None:
-                api_key = os.getenv(profile.api_key_env, "")
+            api_key = self.api_key_for(profile)
             if not api_key:
                 raise LLMConfigurationError(
                     f"model profile {profile.id} is missing secret environment variable "

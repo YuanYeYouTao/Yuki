@@ -25,6 +25,12 @@ from qq_ai_bot.model_runtime.profiles import (
     model_profile_environment,
     parse_model_profile_catalog,
 )
+from qq_ai_bot.model_runtime.secrets import (
+    KEY_ALIAS,
+    encode_model_secrets,
+    model_secrets_path,
+    read_model_secrets,
+)
 
 MAX_CONFIG_BYTES = 256 * 1024
 CONFIG_FILE_IDS = frozenset({"model_profiles", "system_prompt", "bot_persona", "autonomous_model"})
@@ -139,6 +145,7 @@ class ConfigFileService:
                 result["document"] = parameters.model_dump(mode="json")
                 result["matches_loaded"] = parameters == loaded if loaded else None
             elif file_id == "model_profiles":
+                _secret_bytes, saved_keys = await asyncio.to_thread(read_model_secrets, path)
                 # Headers are kept server-side even for content-authorized readers.
                 raw: dict[str, Any] = (
                     tomllib.loads(text)
@@ -190,9 +197,18 @@ class ConfigFileService:
                 }
                 result["profile_schema"] = ModelProfile.model_json_schema()
                 result["tasks"] = [task.value for task in ModelTask]
+                result["saved_api_key_profiles"] = [
+                    name
+                    for name, profile in raw_profiles.items()
+                    if isinstance(profile, dict) and profile.get("api_key_env") in saved_keys
+                ]
                 if content is not None:
                     saved = self._catalog_from(text)
                     result["matches_loaded"] = saved == self._catalog if self._catalog else None
+                    result["resolved_profiles"] = {
+                        name: {"base_url": profile.base_url, "model": profile.model}
+                        for name, profile in saved.profiles.items()
+                    }
             else:
                 result["content"] = text
                 if not text.strip():
@@ -222,6 +238,7 @@ class ConfigFileService:
             original = await asyncio.to_thread(_read, path)
             if _revision(original) != expected_revision:
                 raise ConfigFileError("version_conflict")
+            secret_write: tuple[Path, bytes | None, bytes] | None = None
             try:
                 if file_id == "autonomous_model":
                     if set(spec) != {"document"} or not isinstance(spec["document"], Mapping):
@@ -229,12 +246,39 @@ class ConfigFileService:
                     parameters = AutonomyParameters.model_validate(_plain(spec["document"]))
                     text = json.dumps(parameters.model_dump(mode="json"), indent=2) + "\n"
                 elif file_id == "model_profiles":
-                    if set(spec) != {"document"} or not isinstance(spec["document"], Mapping):
+                    if set(spec) not in ({"document"}, {"document", "api_keys"}) or not isinstance(
+                        spec["document"], Mapping
+                    ):
                         raise ValueError("invalid document")
                     document = _plain(spec["document"])
                     profiles = document.get("profiles")
                     if not isinstance(profiles, dict):
                         raise ValueError("invalid profiles")
+                    updates = spec.get("api_keys", {})
+                    if not isinstance(updates, Mapping):
+                        raise ValueError("invalid key updates")
+                    previous_secret_bytes, saved_keys = await asyncio.to_thread(
+                        read_model_secrets, path
+                    )
+                    for name, value in updates.items():
+                        if (
+                            type(name) is not str
+                            or KEY_ALIAS.fullmatch(name) is None
+                            or type(value) is not str
+                            or name in saved_keys
+                            or not any(
+                                isinstance(profile, dict) and profile.get("api_key_env") == name
+                                for profile in profiles.values()
+                            )
+                        ):
+                            raise ValueError("invalid model key update")
+                        saved_keys[name] = value
+                    if updates:
+                        secret_write = (
+                            model_secrets_path(path),
+                            previous_secret_bytes,
+                            encode_model_secrets(saved_keys),
+                        )
                     existing = tomllib.loads(original.decode("utf-8")) if original else {}
                     old_profiles = existing.get("profiles", {})
                     if not isinstance(old_profiles, dict):
@@ -260,7 +304,9 @@ class ConfigFileService:
                     raise ValueError("file too large")
             except (TypeError, ValueError, UnicodeError, tomlkit.exceptions.TOMLKitError) as exc:
                 raise ConfigFileError("validation_error") from exc
-            writing = asyncio.create_task(asyncio.to_thread(self._replace, path, original, content))
+            writing = asyncio.create_task(
+                asyncio.to_thread(self._replace_model_bundle, path, original, content, secret_write)
+            )
             try:
                 return await asyncio.shield(writing)
             except asyncio.CancelledError:
@@ -276,6 +322,18 @@ class ConfigFileService:
                 if not writing.cancelled():
                     writing.exception()
                 raise
+
+    def _replace_model_bundle(
+        self,
+        path: Path,
+        original: bytes | None,
+        content: bytes,
+        secret_write: tuple[Path, bytes | None, bytes] | None,
+    ) -> int:
+        if secret_write is not None:
+            secret_path, previous, replacement = secret_write
+            self._replace(secret_path, previous, replacement)
+        return self._replace(path, original, content)
 
     @staticmethod
     def _replace(path: Path, original: bytes | None, content: bytes) -> int:
@@ -298,7 +356,7 @@ class ConfigFileService:
             os.replace(temporary, path)
             # Exceptions after replacement propagate: the control receipt becomes unknown.
             if os.name == "posix":
-                folder = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+                folder = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
                 try:
                     os.fsync(folder)
                 finally:

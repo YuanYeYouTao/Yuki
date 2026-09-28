@@ -80,8 +80,15 @@ Claude 思考开启时不支持强制调用特定工具，适配为 auto；结�
 严格检查恰好一个 emit_result 及 schema，不增加隐藏模型调用。
 
 `headers` 支持 OpenRouter 的站点标识、Anthropic beta 等非鉴权 Header；不能覆盖认证字段，
-不能放换行或把密钥写入 TOML。密钥只从 `api_key_env` 获取；客户端不跨供应商或密钥来源共享。
+不能放换行或把密钥写入 TOML。`api_key_env` 是密钥引用；可读取进程环境变量，或由 WebUI
+将 operator 输入的 API Key 保存在模型文件同目录的私有 `model_profiles.secrets.json` 中。
+WebUI 查询不会回传密钥；客户端不跨供应商或密钥来源共享。
 新增供应商示例见 [多供应商配置](../../config/model_profiles.providers.example.toml)。
+Gemini 3.8 Flash 的官方模型 ID 是 `gemini-3.8-flash`。WebUI 的 Google Gemini 预设使用
+`https://generativelanguage.googleapis.com/v1beta` 与原生 GenerateContent，预填该 ID、
+`medium` 思考强度及文字、图片、工具、结构化输出能力。适配器保留工具回合的 thought signature，
+按上游 `cachedContentTokenCount` 统计缓存。此连接不实现 Interactions API、Live/TTS 或
+Google 内置搜索工具；这些能力不能因为模型本身支持就标成已接入。
 无 TOML 的兼容配置也使用同一个客户端池；显式 `LLM_PROVIDER=anthropic/gemini`
 分别采用对应原生协议，其他兼容供应商保持 Chat。额外命名的 endpoint/model/key 变量需要
 存在于进程环境；Docker Compose 的 env_file 会加载 `.env`。本地 CLI 若只使用 Settings

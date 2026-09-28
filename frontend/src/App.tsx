@@ -424,7 +424,11 @@ function Console({
               <Empty>当前账号未授予该页面的读取权限。</Empty>
             ) : (
               pages[route]?.() || (
-                <Health refresh={refresh} conversation={conversation} />
+                <Health
+                  refresh={refresh}
+                  conversation={conversation}
+                  traceContent={allowed("read_execution_trace")}
+                />
               )
             )}
           </div>

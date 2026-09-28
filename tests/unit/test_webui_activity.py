@@ -138,7 +138,13 @@ async def test_model_usage_summary_counts_every_call_without_double_counting_cac
     assert recent["total_tokens"] == 120
     assert recent["cached_input_tokens"] == 60
     assert recent["missing_usage_calls"] == 1
+    assert recent["cache_reported_input_tokens"] == 100
+    assert recent["cache_unreported_calls"] == 1
     assert recent["models"][0]["calls"] == 2
+    assert recent["models"][0]["cache_reported_input_tokens"] == 100
+    assert recent["profiles"][0]["profile_id"] == "main"
+    assert recent["tasks"][0]["task"] == "chat_agent"
+    assert sum(bucket["calls"] for bucket in recent["buckets"]) == 2
     assert (await queries.read_model_usage_summary(permission, "7d")).fields["calls"] == 3
     with pytest.raises(ControlQueryError):
         await queries.read_model_usage_summary(permission, "all")

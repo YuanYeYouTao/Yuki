@@ -29,6 +29,7 @@ def _stamp(value: datetime | None) -> str | None:
 
 class _StepRow(TypedDict):
     id: int
+    operation_id: str
     kind: str
     created_at: str | None
     payload_status: str
@@ -43,7 +44,7 @@ async def _steps(
     # turns in a busy group. Keep both the turn and conversation checks.
     statement = (
         text(
-            "SELECT id, kind, created_at, payload_status, origin, "
+            "SELECT id, operation_id, kind, created_at, payload_status, origin, "
             "source_event_id, delivered_event_id "
             "FROM execution_trace_entries INDEXED BY ix_execution_trace_turn_id "
             "WHERE conversation_id = :conversation_id AND turn_id = :turn_id "
@@ -52,6 +53,7 @@ async def _steps(
         .bindparams(bindparam("observed_at", type_=DateTime(timezone=True)))
         .columns(
             id=Integer,
+            operation_id=String,
             kind=String,
             created_at=DateTime(timezone=True),
             payload_status=String,
@@ -74,6 +76,7 @@ async def _steps(
     steps: list[_StepRow] = [
         {
             "id": row["id"],
+            "operation_id": row["operation_id"],
             "kind": row["kind"],
             "created_at": _stamp(row["created_at"]),
             "payload_status": row["payload_status"],

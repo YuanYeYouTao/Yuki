@@ -235,7 +235,7 @@ def _run_page_state_machine(
 ) -> tuple[int | None, _SetupDraft]:
     titles = {
         "basic": "基础配置与主模型",
-        "flash": "Flash 模型",
+        "flash": "辅助任务模型",
         "embedding": "Embedding",
         "web": "Web 搜索",
         "vision": "Vision",
@@ -363,8 +363,8 @@ def _page_basic(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
 def _page_flash(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
     del paths
     environment = draft.environment
-    ui.info("Flash 用于后台结构化任务，会增加一个模型连接。")
-    draft.flash_enabled = ui.confirm("启用 Flash 模型？", default=draft.flash_enabled)
+    ui.info("辅助任务模型用于后台结构化任务，会增加一个模型连接。")
+    draft.flash_enabled = ui.confirm("启用辅助任务模型？", default=draft.flash_enabled)
     if not draft.flash_enabled:
         return
     reuse = ui.confirm("复用主模型 Base URL 和 API Key？", default=True)
@@ -387,7 +387,7 @@ def _page_flash(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
         )
     )
     environment["LLM_FLASH_MODEL"] = ui.ask(
-        "Flash 模型名",
+        "辅助任务模型名",
         default=_real_value(environment.get("LLM_FLASH_MODEL", "")),
         required=True,
     )
@@ -660,7 +660,7 @@ def _select_sections(ui: TerminalUI, draft: _SetupDraft) -> tuple[str, ...]:
     ui.navigation_hint()
     labels = {
         "basic": "基础配置与主模型（已配置）",
-        "flash": f"Flash（{'开启' if draft.flash_enabled else '关闭'}）",
+        "flash": f"辅助任务模型（{'开启' if draft.flash_enabled else '关闭'}）",
         "embedding": _feature_label(
             "Embedding", _as_bool(draft.environment.get("MEMORY_EMBEDDING_ENABLED", "false"))
         ),
@@ -931,8 +931,8 @@ def _render_summary(
     ui.line(f"主模型：{environment['LLM_MODEL']}")
     ui.line("主模型 API Key：已配置")
     if flash_enabled:
-        ui.line(f"Flash 模型：{environment.get('LLM_FLASH_MODEL', '未配置')}")
-        ui.line("Flash API Key：已配置")
+        ui.line(f"辅助任务模型：{environment.get('LLM_FLASH_MODEL', '未配置')}")
+        ui.line("辅助任务模型 API Key：已配置")
     if _as_bool(environment.get("MEMORY_EMBEDDING_ENABLED", "false")):
         ui.line(f"Embedding 模型：{environment.get('MEMORY_EMBEDDING_MODEL', '未配置')}")
         ui.line("Embedding API Key：已配置")

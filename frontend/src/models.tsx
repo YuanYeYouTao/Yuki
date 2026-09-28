@@ -15,6 +15,62 @@ import { stamp } from "./format";
 const flatten = (row: Row): Row => ({ ...row, ...((row.fields as Row) || {}) });
 const status = (value: unknown) => <Badge value={value} />;
 const count = (value: unknown) => Number(value || 0).toLocaleString("zh-CN");
+const cacheRate = (usage: Row) => {
+  const input = Number(usage.cache_reported_input_tokens || 0);
+  const cached = Number(usage.cache_reported_cached_tokens || 0);
+  return input > 0 ? `${((cached / input) * 100).toFixed(1)}%` : "—";
+};
+function CacheReport({ usage }: { usage: Row }) {
+  return (
+    <span>
+      缓存命中率 {cacheRate(usage)} · 命中 {count(usage.cached_input_tokens)}{" "}
+      Token
+      {Number(usage.cache_unreported_calls || 0) > 0 &&
+        ` · ${count(usage.cache_unreported_calls)} 次调用未报告缓存量`}
+    </span>
+  );
+}
+function UsageBars({
+  rows,
+  metric,
+  title,
+}: {
+  rows: Row[];
+  metric: "calls" | "total_tokens";
+  title: string;
+}) {
+  if (!rows.length) return <Empty>这个时间范围没有可绘制的调用记录。</Empty>;
+  const maximum = Math.max(1, ...rows.map((row) => Number(row[metric] || 0)));
+  return (
+    <div className="usage-plot">
+      <h3>{title}</h3>
+      <div className="usage-bars" role="list" aria-label={title}>
+        {rows.map((row) => {
+          const at = String(row.at || "");
+          const label = at.includes("T") ? at.slice(11, 16) : at.slice(5);
+          const value = Number(row[metric] || 0);
+          const cache = `缓存命中率 ${cacheRate(row)}；${count(row.cache_unreported_calls)} 次调用未报告缓存量`;
+          return (
+            <div
+              className="usage-bar-item"
+              role="listitem"
+              key={at}
+              aria-label={`${at} UTC：${count(value)}${metric === "calls" ? " 次调用" : " Token"}；${cache}`}
+              title={`${at} UTC · ${cache}`}
+            >
+              <span className="usage-bar-value">{count(value)}</span>
+              <div
+                className="usage-bar"
+                style={{ height: `${Math.max(4, (value / maximum) * 100)}%` }}
+              />
+              <small>{label}</small>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 function UsageSummary({ refresh }: { refresh: number }) {
   const [window, setWindow] = useState("24h");
@@ -25,6 +81,9 @@ function UsageSummary({ refresh }: { refresh: number }) {
   );
   const usage = (summary.data?.fields || summary.data) as Row | null;
   const models = (usage?.models || []) as Row[];
+  const profiles = (usage?.profiles || []) as Row[];
+  const tasks = (usage?.tasks || []) as Row[];
+  const buckets = (usage?.buckets || []) as Row[];
   return (
     <Section title="Token 用量">
       <div className="usage-range" role="group" aria-label="用量时间范围">
@@ -69,11 +128,8 @@ function UsageSummary({ refresh }: { refresh: number }) {
             </div>
           </div>
           <p className="small">
-            输入中已有 {count(usage.cached_input_tokens)} Token 命中缓存
-            {Number(usage.input_tokens) > 0
-              ? `（${Math.round((Number(usage.cached_input_tokens) / Number(usage.input_tokens)) * 100)}%）`
-              : ""}
-            ，不会重复加到总量。
+            <CacheReport usage={usage} />
+            。缓存 Token 已包含在输入中，不重复计入总量。
           </p>
           {Number(usage.missing_usage_calls) > 0 && (
             <p className="small usage-warning">
@@ -85,8 +141,39 @@ function UsageSummary({ refresh }: { refresh: number }) {
             {stamp(usage.since)} 至 {stamp(usage.until)} ·
             统计已入账的全部模型调用，包括未绑定聊天轮次的后台调用；不是供应商账单或剩余额度。
           </p>
+          <p className="small">
+            按 UTC 时段聚合；尚无可靠单价配置，因此不显示推算费用。
+          </p>
+          <div className="usage-plot-grid">
+            <UsageBars rows={buckets} metric="calls" title="API 调用次数" />
+            <UsageBars
+              rows={buckets}
+              metric="total_tokens"
+              title="Token 用量"
+            />
+          </div>
+          <div className="usage-model-grid">
+            {models.map((model) => (
+              <article
+                className="usage-model-card"
+                key={`${model.provider}:${model.model}`}
+              >
+                <h3>
+                  {String(model.provider)} · {String(model.model)}
+                </h3>
+                <p>
+                  {count(model.calls)} 次调用 · {count(model.total_tokens)}{" "}
+                  Token
+                </p>
+                <p className="small">
+                  <CacheReport usage={model} />
+                </p>
+              </article>
+            ))}
+          </div>
           <details>
-            <summary>按 Provider 和模型查看</summary>
+            <summary>按模型、用途和连接查看明细</summary>
+            <h3>模型</h3>
             <Table
               rows={models}
               columns={[
@@ -96,8 +183,47 @@ function UsageSummary({ refresh }: { refresh: number }) {
                 ["total_tokens", "Token", count],
                 ["input_tokens", "输入", count],
                 ["cached_input_tokens", "其中缓存", count],
+                ["cache_reported_input_tokens", "缓存率分母", count],
+                ["cache_unreported_calls", "未报缓存", count],
+                [
+                  "cache_reported_cached_tokens",
+                  "缓存率",
+                  (_, row) => cacheRate(row),
+                ],
                 ["output_tokens", "输出", count],
                 ["missing_usage_calls", "未报总量", count],
+              ]}
+            />
+            <h3>任务用途</h3>
+            <Table
+              rows={tasks}
+              columns={[
+                ["task", "用途"],
+                ["calls", "调用", count],
+                ["total_tokens", "Token", count],
+                [
+                  "cache_reported_cached_tokens",
+                  "缓存命中率",
+                  (_, row) => cacheRate(row),
+                ],
+                ["cache_unreported_calls", "未报缓存", count],
+              ]}
+            />
+            <h3>模型连接</h3>
+            <Table
+              rows={profiles}
+              columns={[
+                ["profile_id", "内部连接编号"],
+                ["provider", "供应商"],
+                ["model", "模型"],
+                ["calls", "调用", count],
+                ["total_tokens", "Token", count],
+                [
+                  "cache_reported_cached_tokens",
+                  "缓存命中率",
+                  (_, row) => cacheRate(row),
+                ],
+                ["cache_unreported_calls", "未报缓存", count],
               ]}
             />
           </details>
@@ -117,15 +243,18 @@ export function Models(props: PageProps) {
   const fields = catalog.data?.fields as Row | undefined;
   return (
     <>
-      <Section title="已加载的模型与路由">
+      <UsageSummary refresh={refresh} />
+      <ConfigFile fileId="model_profiles" props={props} />
+      <Section title="当前生效配置">
         {catalog.error != null && <ErrorNote error={catalog.error} />}
         {fields ? (
-          <>
+          <details>
+            <summary>查看已加载的模型与任务路由</summary>
             <Table
               rows={fields.profiles as Row[]}
               columns={[
-                ["id", "Profile"],
-                ["provider", "Provider"],
+                ["id", "内部连接编号"],
+                ["provider", "供应商"],
                 ["protocol", "协议"],
                 ["model", "模型"],
                 ["max_output_tokens", "输出预算"],
@@ -137,13 +266,13 @@ export function Models(props: PageProps) {
               rows={fields.routes as Row[]}
               columns={[
                 ["task", "任务"],
-                ["profile_id", "使用 Profile"],
+                ["profile_id", "使用连接"],
               ]}
             />
             <p className="small">
-              Profile 文件变更于重启生效。凭据与请求头不显示。
+              模型连接配置变更于重启生效。凭据与请求头不显示。
             </p>
-          </>
+          </details>
         ) : (
           <Empty>
             {allowed("read_model_catalog")
@@ -152,8 +281,6 @@ export function Models(props: PageProps) {
           </Empty>
         )}
       </Section>
-      <ConfigFile fileId="model_profiles" props={props} />
-      <UsageSummary refresh={refresh} />
       <Section title="调用明细">
         <QueryList
           method="list_model_usage"
@@ -162,7 +289,7 @@ export function Models(props: PageProps) {
           columns={[
             ["created_at", "时间", stamp],
             ["task", "任务"],
-            ["profile_id", "Profile"],
+            ["profile_id", "内部连接编号"],
             ["model", "模型"],
             ["success", "成功", status],
             ["prompt_tokens", "输入"],
