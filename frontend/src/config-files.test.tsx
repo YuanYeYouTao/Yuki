@@ -244,6 +244,49 @@ it("starts a new configuration with an opaque connection ID and all task routes"
   expect(screen.getByText(`内部连接编号：${connectionId}`)).toBeInTheDocument();
 });
 
+it("offers a Gemini 3.8 Flash native connection with its verified input capabilities", async () => {
+  file({
+    file_id: "model_profiles",
+    revision: 0,
+    valid: true,
+    profile_schema: {
+      properties: {
+        reasoning_effort: { $ref: "#/$defs/ReasoningEffort" },
+      },
+      $defs: {
+        ReasoningEffort: {
+          enum: ["none", "minimal", "low", "medium", "high", "max"],
+          type: "string",
+        },
+      },
+    },
+    tasks: ["chat_agent"],
+    document: { schema_version: 3, profiles: {}, routes: {} },
+  });
+  render(<ConfigFile fileId="model_profiles" props={props} />);
+  await userEvent.click(
+    await screen.findByRole("button", { name: "添加模型连接" }),
+  );
+  await userEvent.selectOptions(
+    screen.getByRole("combobox", { name: "供应商" }),
+    "gemini",
+  );
+  expect(screen.getByRole("combobox", { name: "接口协议" })).toHaveValue(
+    "gemini",
+  );
+  expect(screen.getByRole("textbox", { name: "模型 ID" })).toHaveValue(
+    "gemini-3.8-flash",
+  );
+  expect(screen.getByRole("textbox", { name: "API Base URL" })).toHaveValue(
+    "https://generativelanguage.googleapis.com/v1beta",
+  );
+  await userEvent.click(screen.getByText("高级参数与能力声明"));
+  expect(screen.getByRole("combobox", { name: "思考强度" })).toHaveValue(
+    "medium",
+  );
+  expect(screen.queryByRole("option", { name: "max" })).not.toBeInTheDocument();
+});
+
 it("does not request file contents without the separate content grant", async () => {
   const fetch = vi.spyOn(globalThis, "fetch");
   render(

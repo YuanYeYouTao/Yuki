@@ -658,6 +658,65 @@ async def test_gemini_parallel_receipts_keep_signature_and_call_order():
         assert all("_call_ids" not in item for item in payload["contents"])
 
 
+async def test_gemini_38_flash_native_wire_and_usage_without_paid_call():
+    async with httpx.AsyncClient() as client:
+        adapter = provider(GeminiProvider, client)
+        original = replace(
+            request(), model="gemini-3.8-flash", reasoning_effort=ReasoningEffort.MEDIUM
+        )
+        payload = adapter._build_payload(original)
+        assert adapter._path(original) == "models/gemini-3.8-flash:generateContent"
+        assert adapter._request_headers()["x-goog-api-key"] == "synthetic-key"
+        assert payload["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "medium"}
+        assert "temperature" not in payload["generationConfig"]
+        assert payload["tools"][0]["functionDeclarations"][0]["name"] == "inspect"
+        answer = adapter._parse(
+            httpx.Response(
+                200,
+                json={
+                    "candidates": [
+                        {
+                            "finishReason": "STOP",
+                            "content": {
+                                "role": "model",
+                                "parts": [
+                                    {
+                                        "functionCall": {
+                                            "name": "inspect",
+                                            "args": {},
+                                            "id": "call-38",
+                                        },
+                                        "thoughtSignature": "opaque-38",
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                    "usageMetadata": {
+                        "promptTokenCount": 200,
+                        "cachedContentTokenCount": 120,
+                        "candidatesTokenCount": 10,
+                        "thoughtsTokenCount": 5,
+                        "totalTokenCount": 215,
+                    },
+                },
+            ),
+            original,
+        )
+        assert answer.tool_calls[0].id == "call-38"
+        assert answer.cached_prompt_tokens == 120
+        assert answer.total_tokens == 215
+        transcript = TurnTranscript(original.messages)
+        transcript.accept(answer.continuation)
+        transcript.append_result("call-38", "{}")
+        sequence = transcript.request()
+        replay = adapter._build_payload(
+            replace(original, continuation=sequence.continuation, continuation_items=sequence.items)
+        )
+        assert replay["contents"][-2]["parts"][0]["thoughtSignature"] == "opaque-38"
+        assert replay["contents"][-1]["parts"][0]["functionResponse"]["id"] == "call-38"
+
+
 @pytest.mark.parametrize(
     "vendor,protocol",
     [

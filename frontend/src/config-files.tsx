@@ -258,8 +258,21 @@ function ModelDocument({
                     provider: event.target.value,
                     protocol: preset?.protocol || "chat_completions",
                     base_url: preset?.url || "",
-                    model: "",
+                    model:
+                      event.target.value === "gemini" ? "gemini-3.8-flash" : "",
                     api_key_env: "",
+                    reasoning_effort:
+                      event.target.value === "gemini" ? "medium" : "low",
+                    capabilities:
+                      event.target.value === "gemini"
+                        ? [
+                            "reasoning",
+                            "tools",
+                            "structured_output",
+                            "image_input",
+                            "long_context",
+                          ]
+                        : ["reasoning", "tools", "structured_output"],
                   };
                   delete next.base_url_env;
                   delete next.model_env;
@@ -360,13 +373,18 @@ function ModelDocument({
                 "model",
                 "api_key_env",
               ]}
-              choices={(name, values) =>
-                ["reasoning_effort", "effort_levels"].includes(name)
-                  ? values.filter(
-                      (value) => !["none", "minimal"].includes(value),
-                    )
-                  : values
-              }
+              choices={(name, values) => {
+                if (!["reasoning_effort", "effort_levels"].includes(name))
+                  return values;
+                const supported =
+                  profile.provider === "gemini" &&
+                  String(profile.model) === "gemini-3.8-flash"
+                    ? ["low", "medium", "high"]
+                    : values.filter(
+                        (value) => !["none", "minimal"].includes(value),
+                      );
+                return values.filter((value) => supported.includes(value));
+              }}
               schema={schema}
               root={schema}
               prefix={`profile-${selected}`}
