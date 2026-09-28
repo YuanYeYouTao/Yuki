@@ -117,10 +117,13 @@ export function Models(props: PageProps) {
   const fields = catalog.data?.fields as Row | undefined;
   return (
     <>
-      <Section title="已加载的模型与路由">
+      <UsageSummary refresh={refresh} />
+      <ConfigFile fileId="model_profiles" props={props} />
+      <Section title="当前生效配置">
         {catalog.error != null && <ErrorNote error={catalog.error} />}
         {fields ? (
-          <>
+          <details>
+            <summary>查看已加载的模型与任务路由</summary>
             <Table
               rows={fields.profiles as Row[]}
               columns={[
@@ -143,7 +146,7 @@ export function Models(props: PageProps) {
             <p className="small">
               Profile 文件变更于重启生效。凭据与请求头不显示。
             </p>
-          </>
+          </details>
         ) : (
           <Empty>
             {allowed("read_model_catalog")
@@ -152,8 +155,6 @@ export function Models(props: PageProps) {
           </Empty>
         )}
       </Section>
-      <ConfigFile fileId="model_profiles" props={props} />
-      <UsageSummary refresh={refresh} />
       <Section title="调用明细">
         <QueryList
           method="list_model_usage"
