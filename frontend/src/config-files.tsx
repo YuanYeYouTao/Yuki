@@ -140,7 +140,13 @@ const presetValues = (provider: string): Row => {
     api_key_env: "",
     reasoning_effort: gemini ? "medium" : "low",
     capabilities: gemini
-      ? ["reasoning", "tools", "structured_output", "image_input", "long_context"]
+      ? [
+          "reasoning",
+          "tools",
+          "structured_output",
+          "image_input",
+          "long_context",
+        ]
       : ["reasoning", "tools", "structured_output"],
   };
 };
