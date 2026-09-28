@@ -211,13 +211,13 @@ export function Autonomy(props: PageProps) {
                         )
                         .filter(Boolean),
                     ),
-                  ].map((work) => (
+                  ].map((work, index) => (
                     <a
                       className="file-open"
                       key={String(work)}
                       href={`#audit?work=${encodeURIComponent(String(work))}`}
                     >
-                      工作 {String(work).slice(0, 8)} 的执行轨迹
+                      关联工作 {index + 1} · 查看执行轨迹
                     </a>
                   ))}
               </>

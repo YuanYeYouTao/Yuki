@@ -247,6 +247,10 @@ Manager，无额外逐文件审批或权限状态。
 仅这一路 WebUI 命令和 socket 请求允许 6 MiB 帧，其他请求继续使用原限额。已发布
 artifact 作为独立快照只读展示，删除快照不再冒充删除工作文件。终端页面连接原 tty，
 击键使用原 Control 请求回执顺序发送；断线按原 run 和请求查询，未知结果不自动重输。
+上线时先同步宿主机 `yuki-sandbox` Manager 的 `persistent.py`、`manager.py`、`client.py`
+和 `workspace/files.py`，再替换 Bot 镜像；仅更新 Bot 会让旧 Manager 拒绝
+`workspace_upload`。Manager 重启沿原回执恢复，保留运行中的 `yuki-environment` 容器和
+持久工作区，SnowLuma 不参与替换。
 
 终端 request token 为 `control:<authenticated principal UUID>:<original request UUID>`，
 Manager 的原持久启动标记和 run UUID 保留。操作先提交短 Control intent，再在 SQLite
