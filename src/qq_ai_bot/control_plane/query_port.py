@@ -52,7 +52,7 @@ class ControlQueryPort(Protocol):
     """Read-only projections. Must not return catalog rows or session objects."""
 
     async def read_conversation_execution(
-        self, conversation_id: ConversationId
+        self, conversation_id: ConversationId, *, include_content: bool = False
     ) -> ActivityView: ...
     async def list_event_turns(
         self,
@@ -121,6 +121,7 @@ class ControlQueryPort(Protocol):
 
     async def read_memory_maintenance_run(self, operation_id: str) -> ActivityView: ...
     async def list_model_usage(self, request: PageRequest) -> Page[ActivityView]: ...
+    async def read_model_usage_summary(self, window: str) -> ActivityView: ...
     async def list_workspace(self, request: PageRequest) -> Page[ActivityView]: ...
     async def read_terminal_submission(
         self, request_id: RequestId, principal_id: PrincipalId

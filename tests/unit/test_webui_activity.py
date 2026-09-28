@@ -106,6 +106,47 @@ async def test_metadata_queries_do_not_load_message_bodies_and_usage_null_is_not
 
 
 @pytest.mark.asyncio
+async def test_model_usage_summary_counts_every_call_without_double_counting_cache(database):
+    now = datetime.now(UTC)
+    async with database.sessions() as session, session.begin():
+        for created_at, prompt, output, cached, total in (
+            (now - timedelta(hours=1), 100, 20, 60, 120),
+            (now - timedelta(hours=2), None, None, None, None),
+            (now - timedelta(days=2), 10, 5, 0, 15),
+        ):
+            session.add(
+                ModelInvocationModel(
+                    task="chat_agent",
+                    profile_id="main",
+                    provider="fixture",
+                    model="offline",
+                    success=total is not None,
+                    latency_seconds=1,
+                    created_at=created_at,
+                    prompt_tokens=prompt,
+                    completion_tokens=output,
+                    cached_prompt_tokens=cached,
+                    total_tokens=total,
+                )
+            )
+    queries = ControlQueryService(ControlQueryAdapter(database))
+    permission = context("control.execution.metadata.read")
+    recent = (await queries.read_model_usage_summary(permission, "24h")).fields
+    assert recent["calls"] == 2
+    assert recent["input_tokens"] == 100
+    assert recent["output_tokens"] == 20
+    assert recent["total_tokens"] == 120
+    assert recent["cached_input_tokens"] == 60
+    assert recent["missing_usage_calls"] == 1
+    assert recent["models"][0]["calls"] == 2
+    assert (await queries.read_model_usage_summary(permission, "7d")).fields["calls"] == 3
+    with pytest.raises(ControlQueryError):
+        await queries.read_model_usage_summary(permission, "all")
+    with pytest.raises(ControlQueryError):
+        await queries.read_model_usage_summary(context("control.chat.metadata.read"), "24h")
+
+
+@pytest.mark.asyncio
 async def test_participation_history_reports_latest_feedback_without_replaying_decisions(database):
     from tests.unit.test_autonomy_repository import _accept, _enable, _event, _scene
 

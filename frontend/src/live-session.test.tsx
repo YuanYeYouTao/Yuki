@@ -69,6 +69,54 @@ it("shows current conversation activity and opens the original turn", async () =
   ).not.toBeInTheDocument();
 });
 
+it("shows linked received and sent messages with content only when granted", async () => {
+  const calls: Record<string, unknown>[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, options) => {
+    const body = JSON.parse(String(options?.body));
+    calls.push(body);
+    return answer({
+      fields: {
+        conversation_id: "conversation-a",
+        observed_at: "2026-09-28T08:00:00Z",
+        state: "active",
+        recent: [],
+        active: [
+          {
+            turn_id: "turn-a",
+            original_conversation_id: "conversation-a",
+            origin: "user_message",
+            started_at: "2026-09-28T07:59:00Z",
+            latest_kind: "provider_start",
+            status: "active",
+            steps: [],
+            messages: [
+              {
+                event_id: 1,
+                direction: "received",
+                conversation_id: "conversation-a",
+                occurred_at: "2026-09-28T07:59:00Z",
+                content: "请查一下",
+              },
+              {
+                event_id: 2,
+                direction: "sent",
+                conversation_id: "conversation-b",
+                occurred_at: "2026-09-28T08:00:00Z",
+                content: "我去查一下",
+              },
+            ],
+          },
+        ],
+      },
+    });
+  });
+  render(<LiveSession conversation="conversation-a" refresh={0} content />);
+  expect(await screen.findByText("请查一下")).toBeInTheDocument();
+  expect(screen.getByText("我去查一下")).toBeInTheDocument();
+  expect(screen.getByText(/发送到其他会话/)).toBeInTheDocument();
+  expect(calls[0].include_content).toBe(true);
+});
+
 it("refreshes an expanded active turn when a new step arrives", async () => {
   let step = 12;
   let traceReads = 0;

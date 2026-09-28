@@ -12,6 +12,7 @@ from qq_ai_bot.control_plane.query_types import ExecutionTraceFilter
 from qq_ai_bot.domain.identity import ConversationId
 from qq_ai_bot.execution_trace.db_models import ExecutionTraceEntryModel as Trace
 from qq_ai_bot.execution_trace.recorder import TraceRecorder, trace_span
+from qq_ai_bot.model_runtime.db_models import ModelInvocationModel
 from qq_ai_bot.persistence.control_live_execution import (
     list_event_turns,
     read_conversation_execution,
@@ -115,6 +116,82 @@ async def test_live_execution_keeps_two_recent_turns_with_bounded_root_scan(data
     recent = view.fields["recent"]
     assert len(recent) == 2
     assert len({item["turn_id"] for item in recent}) == 2
+
+
+@pytest.mark.asyncio
+async def test_live_turn_links_received_message_and_requires_content_grant(database, tmp_path):
+    env = await social_env(database, tmp_path)
+    conversation = ConversationId.parse(env.context.conversation_id)
+    async with database.sessions() as session:
+        inbound = await session.scalar(
+            select(ChatEventModel).where(
+                ChatEventModel.canonical_conversation_id == conversation.text,
+                ChatEventModel.direction == "inbound",
+            )
+        )
+        assert inbound is not None
+        event_id = inbound.id
+        saved_content = inbound.content
+    recorder = TraceRecorder(database)
+    async with trace_span(
+        "chat_processing",
+        {},
+        recorder=recorder,
+        conversation_id=conversation.text,
+        source_event_id=event_id,
+    ):
+        pass
+    turn_id = (await read_conversation_execution(database.sessions, conversation, recorder)).fields[
+        "recent"
+    ][0]["turn_id"]
+    async with database.sessions() as session, session.begin():
+        session.add(
+            ModelInvocationModel(
+                task="chat_agent",
+                profile_id="main",
+                provider="fixture",
+                model="offline",
+                success=True,
+                latency_seconds=1,
+                created_at=datetime.now(UTC),
+                runtime_turn_id=turn_id,
+                prompt_tokens=100,
+                cached_prompt_tokens=60,
+                completion_tokens=20,
+                total_tokens=120,
+            )
+        )
+    queries = ControlQueryService(ControlQueryAdapter(database, trace_recorder=recorder))
+    metadata = (
+        await queries.read_conversation_execution(
+            context("control.execution.metadata.read"),
+            conversation,
+        )
+    ).fields["recent"][0]["messages"]
+    assert metadata[0]["event_id"] == event_id
+    assert metadata[0]["direction"] == "received"
+    assert metadata[0]["content"] is None
+    usage = (
+        await queries.read_conversation_execution(
+            context("control.execution.metadata.read"), conversation
+        )
+    ).fields["recent"][0]["usage"]
+    assert usage == {
+        "calls": 1,
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "total_tokens": 120,
+        "cached_input_tokens": 60,
+        "missing_usage_calls": 0,
+    }
+    contents = (
+        await queries.read_conversation_execution(
+            context("control.execution.metadata.read", "control.chat.content.read"),
+            conversation,
+            include_content=True,
+        )
+    ).fields["recent"][0]["messages"]
+    assert contents[0]["content"] == saved_content
 
 
 @pytest.mark.asyncio
@@ -244,6 +321,18 @@ async def test_outbound_event_links_to_original_conversation_turn(database, tmp_
     )
     assert linked.total == 1
     assert linked.items[0].fields["original_conversation_id"] == env.context.conversation_id
+    origin = ConversationId.parse(env.context.conversation_id)
+    summary = await read_conversation_execution(
+        database.sessions, origin, recorder, include_content=True
+    )
+    sent_messages = summary.fields["recent"][0]["messages"]
+    assert any(
+        item["event_id"] == delivered.id
+        and item["direction"] == "sent"
+        and item["conversation_id"] == target.text
+        and item["content"] == "private delivery"
+        for item in sent_messages
+    )
 
 
 @pytest.mark.asyncio
@@ -259,6 +348,10 @@ async def test_live_query_service_requires_execution_metadata_capability(databas
     with pytest.raises(ControlQueryError):
         await queries.read_conversation_execution(
             context("control.chat.metadata.read"), conversation
+        )
+    with pytest.raises(ControlQueryError):
+        await queries.read_conversation_execution(
+            context("control.execution.metadata.read"), conversation, include_content=True
         )
     with pytest.raises(ControlQueryError):
         await queries.list_event_turns(

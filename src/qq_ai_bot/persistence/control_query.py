@@ -816,6 +816,9 @@ class ControlQueryAdapter:
     async def list_model_usage(self, request: PageRequest) -> Page[ActivityView]:
         return await self._activity.list_model_usage(request)
 
+    async def read_model_usage_summary(self, window: str) -> ActivityView:
+        return await self._activity.read_model_usage_summary(window)
+
     async def list_workspace(self, request: PageRequest) -> Page[ActivityView]:
         return await self._activity.list_workspace(request)
 
@@ -857,13 +860,16 @@ class ControlQueryAdapter:
             history=history,
         )
 
-    async def read_conversation_execution(self, conversation_id: ConversationId) -> ActivityView:
+    async def read_conversation_execution(
+        self, conversation_id: ConversationId, *, include_content: bool = False
+    ) -> ActivityView:
         from qq_ai_bot.persistence.control_live_execution import read_conversation_execution
 
         return await read_conversation_execution(
             self._reader,
             conversation_id,
             self._trace_recorder,
+            include_content=include_content,
         )
 
     async def list_event_turns(

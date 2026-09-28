@@ -185,7 +185,13 @@ function Console({
       document.body.className = "";
     };
   }, [dashboard, route]);
-  const props: PageProps = { allowed, act: setIntent, refresh, conversation };
+  const props: PageProps = {
+    allowed,
+    act: setIntent,
+    refresh,
+    conversation,
+    chatContent: session.content_access.chat,
+  };
   const pages: Record<string, () => React.ReactNode> = {
     autonomy: () => <Autonomy {...props} />,
     work: () => <Work {...props} />,

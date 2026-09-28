@@ -69,6 +69,12 @@ export function Chat({
   });
   const current = timeline.scope === scope ? timeline : null;
   const rows = current?.rows ?? EMPTY_ROWS;
+  const visibleReplies = new Map<number, number>();
+  for (const row of rows) {
+    if (row.direction !== "outbound" || !row.caused_by_event_id) continue;
+    const source = Number(row.caused_by_event_id);
+    visibleReplies.set(source, (visibleReplies.get(source) || 0) + 1);
+  }
   const scrollRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const followRef = useRef(true);
@@ -521,7 +527,24 @@ export function Chat({
                           {senderName}
                           <time>{stamp(row.occurred_at)}</time>
                         </div>
+                        <span
+                          className={`chat-direction ${sent ? "outbound" : "inbound"}`}
+                        >
+                          {sent ? "已发出" : "已收到"}
+                        </span>
                       </div>
+                      {!sent && !!visibleReplies.get(Number(row.event_id)) && (
+                        <p className="chat-connection">
+                          当前加载的记录中，Yuki 因这条消息发出{" "}
+                          {visibleReplies.get(Number(row.event_id))}{" "}
+                          条消息。它们仍按实际发出时间排列。
+                        </p>
+                      )}
+                      {sent && !!row.caused_by_event_id && (
+                        <p className="chat-connection">
+                          来源：内部事件 #{text(row.caused_by_event_id)}
+                        </p>
+                      )}
                       <div className={`message ${sent ? "assistant" : "user"}`}>
                         {row.content === null
                           ? "消息正文未授权读取"

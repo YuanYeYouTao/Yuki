@@ -27,6 +27,7 @@ class ModelInvocationModel(Base):
         CheckConstraint("latency_seconds >= 0", name="ck_model_invocations_latency"),
         Index("ix_model_invocations_task_created", "task", "created_at"),
         Index("ix_model_invocations_profile_created", "profile_id", "created_at"),
+        Index("ix_model_invocations_created", "created_at"),
         Index("ix_model_invocations_runtime_turn", "runtime_turn_id"),
         Index("ix_model_invocations_canonical_conversation_id", "canonical_conversation_id"),
     )

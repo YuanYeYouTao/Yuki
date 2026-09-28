@@ -26,6 +26,7 @@ export interface PageProps {
   act: (intent: Intent) => void;
   refresh: number;
   conversation: string;
+  chatContent?: boolean;
 }
 const flatten = (row: Row): Row => ({ ...row, ...((row.fields as Row) || {}) });
 const status = (value: unknown) => <Badge value={value} />;
@@ -33,11 +34,19 @@ const status = (value: unknown) => <Badge value={value} />;
 export function Health({
   refresh,
   conversation,
+  chatContent,
 }: {
   refresh: number;
   conversation: string;
+  chatContent?: boolean;
 }) {
-  return <LiveSession conversation={conversation} refresh={refresh} />;
+  return (
+    <LiveSession
+      conversation={conversation}
+      refresh={refresh}
+      content={!!chatContent}
+    />
+  );
 }
 
 export function SystemHealth({ refresh }: { refresh: number }) {
@@ -650,7 +659,11 @@ export function Notebook({ props }: { props: PageProps }) {
   ];
   const contents: Record<string, () => ReactNode> = {
     status: () => (
-      <Health refresh={props.refresh} conversation={props.conversation} />
+      <Health
+        refresh={props.refresh}
+        conversation={props.conversation}
+        chatContent={props.chatContent}
+      />
     ),
     system: () => <SystemHealth refresh={props.refresh} />,
     persona: () => <Persona {...props} />,
