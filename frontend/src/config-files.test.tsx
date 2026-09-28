@@ -231,6 +231,10 @@ it("starts a new configuration with an opaque connection ID and all task routes"
     document: { schema_version: 3, profiles: {}, routes: {} },
   });
   render(<ConfigFile fileId="model_profiles" props={props} />);
+  await userEvent.selectOptions(
+    await screen.findByRole("combobox", { name: "新连接供应商" }),
+    "openai",
+  );
   await userEvent.click(
     await screen.findByRole("button", { name: "添加模型连接" }),
   );
@@ -264,12 +268,12 @@ it("offers a Gemini 3.8 Flash native connection with its verified input capabili
     document: { schema_version: 3, profiles: {}, routes: {} },
   });
   render(<ConfigFile fileId="model_profiles" props={props} />);
+  await userEvent.selectOptions(
+    await screen.findByRole("combobox", { name: "新连接供应商" }),
+    "gemini",
+  );
   await userEvent.click(
     await screen.findByRole("button", { name: "添加模型连接" }),
-  );
-  await userEvent.selectOptions(
-    screen.getByRole("combobox", { name: "供应商" }),
-    "gemini",
   );
   expect(screen.getByRole("combobox", { name: "接口协议" })).toHaveValue(
     "gemini",
