@@ -1,8 +1,10 @@
 """Real store/CAS and Control receipts; offline Manager protocol, no executions."""
 
 import base64
+import os
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -24,9 +26,11 @@ from qq_ai_bot.persistence.control_query import ControlQueryAdapter
 from qq_ai_bot.persistence.models import AdminOperationEventModel
 from qq_ai_bot.sandbox.client import SandboxClient
 from qq_ai_bot.sandbox.db_models import SandboxTaskContinuationModel
+from qq_ai_bot.sandbox.persistent import PersistentManager
 from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
+from qq_ai_bot.workspace.files import FileWorkspace
 from qq_ai_bot.workspace.service import WorkspaceService
-from qq_ai_bot.workspace.store import WorkspaceStore
+from qq_ai_bot.workspace.store import WorkspaceError, WorkspaceStore
 
 
 def command(ctx, revision, payload):
@@ -236,3 +240,117 @@ async def test_terminal_submission_uses_authenticated_operator_and_denies_before
             {"request_id": f"control:{ctx.principal.principal_id.text}:{request.text}"},
         )
     assert observed[0] != observed[1]
+
+
+async def test_binary_upload_writes_only_the_real_workspace_with_original_request(
+    database, tmp_path, monkeypatch
+):
+    raw = b"\x00\xff\x89PNG\r\n"
+    seen = []
+    writes = []
+
+    class FakeFiles:
+        def write(self, path, content, expected_version):
+            writes.append((path, content, expected_version))
+            return {"path": path, "size": len(content), "version": "written-sha"}
+
+    async def execute(self, name, args, *, request_id, source=None):
+        seen.append((name, args, request_id))
+        return PersistentManager.file_operation(SimpleNamespace(files=FakeFiles()), name, args)
+
+    monkeypatch.setattr(SandboxClient, "execute", execute)
+    store = WorkspaceStore(tmp_path / "artifacts")
+    service = WorkspaceService(store)
+    service.sandbox = SandboxClient(Path("offline.sock"))
+    commands = ControlCommandService(ControlCommandAdapter(database, workspace_service=service))
+    ctx = context("control.environment.file.mutate")
+    upload = command(
+        ctx,
+        0,
+        {
+            "resource_id": "environment",
+            "action": "upload",
+            "spec": {
+                "path": "/workspace/pictures/photo.png",
+                "base64": base64.b64encode(raw).decode(),
+                "expected_version": "missing",
+            },
+        },
+    )
+    result = await commands.mutate_environment_file(ctx, upload)
+    assert result.success, (result.effective_state, result.operation, seen, writes)
+    assert await commands.mutate_environment_file(ctx, upload) == result
+    assert len(seen) == 1 and seen[0][0] == "workspace_upload"
+    assert seen[0][2] == ctx.request_id.text
+    assert writes == [("/workspace/pictures/photo.png", raw, "missing")]
+    assert not store.root.exists()  # no artifact snapshot or indirect checkout
+
+
+@pytest.mark.skipif(os.name != "posix", reason="FileWorkspace uses POSIX directory FDs")
+def test_manager_binary_upload_writes_real_workspace_bytes(tmp_path):
+    files = FileWorkspace(tmp_path / "persistent-workspace")
+    files.root.mkdir()
+    result = PersistentManager.file_operation(
+        SimpleNamespace(files=files),
+        "workspace_upload",
+        {
+            "path": "/workspace/pictures/photo.png",
+            "base64": base64.b64encode(b"\x00PNG").decode(),
+            "expected_version": "missing",
+        },
+    )
+    assert result["size"] == 4
+    assert (files.root / "pictures" / "photo.png").read_bytes() == b"\x00PNG"
+    with pytest.raises(WorkspaceError, match="version_conflict"):
+        PersistentManager.file_operation(
+            SimpleNamespace(files=files),
+            "workspace_upload",
+            {
+                "path": "/workspace/pictures/photo.png",
+                "base64": base64.b64encode(b"changed").decode(),
+                "expected_version": "missing",
+            },
+        )
+    assert (files.root / "pictures" / "photo.png").read_bytes() == b"\x00PNG"
+
+
+@pytest.mark.parametrize("invalid_kind", ["invalid_base64", "oversized"])
+async def test_binary_upload_rejects_invalid_or_oversized_bytes_before_manager(
+    database, tmp_path, monkeypatch, invalid_kind
+):
+    encoded = (
+        "%%%"
+        if invalid_kind == "invalid_base64"
+        else base64.b64encode(b"x" * (4 * 1024 * 1024 + 1)).decode()
+    )
+    called = False
+
+    async def execute(self, name, args, *, request_id, source=None):
+        nonlocal called
+        called = True
+        return {}
+
+    monkeypatch.setattr(SandboxClient, "execute", execute)
+    service = WorkspaceService(WorkspaceStore(tmp_path / "artifacts"))
+    service.sandbox = SandboxClient(Path("offline.sock"))
+    commands = ControlCommandService(ControlCommandAdapter(database, workspace_service=service))
+    ctx = context("control.environment.file.mutate")
+    with pytest.raises(ControlCommandError) as bad:
+        await commands.mutate_environment_file(
+            ctx,
+            command(
+                ctx,
+                0,
+                {
+                    "resource_id": "environment",
+                    "action": "upload",
+                    "spec": {
+                        "path": "/workspace/photo.png",
+                        "base64": encoded,
+                        "expected_version": "missing",
+                    },
+                },
+            ),
+        )
+    assert bad.value.problem.code is ProblemCode.VALIDATION_ERROR
+    assert not called

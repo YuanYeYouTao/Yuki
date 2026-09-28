@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any, cast
 from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.sandbox.environment_tools import EXECUTION_TOOLS, SANDBOX_TOOLS, environment_tools
 
+MAX_CONTROL_UPLOAD_WIRE = 6 * 1024 * 1024
+
 if TYPE_CHECKING:
     from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
 
@@ -89,7 +91,7 @@ class SandboxClient:
         message = (
             json.dumps({"method": name, "args": args, "request_id": request_id}).encode() + b"\n"
         )
-        if len(message) > 262144:
+        if len(message) > (MAX_CONTROL_UPLOAD_WIRE if name == "workspace_upload" else 262144):
             return {"error": "request_too_large", "retryable": False}
         if name in EXECUTION_TOOLS and self.tasks is not None:
             if source is None:
@@ -104,7 +106,7 @@ class SandboxClient:
             if prepared is not None and prepared.status == "completed" and prepared.run_id is None:
                 return cast(dict[str, Any], json.loads(prepared.completion_json or "{}"))
         try:
-            async with asyncio.timeout(7):
+            async with asyncio.timeout(25 if name == "workspace_upload" else 7):
                 connect = getattr(asyncio, "open_unix_connection", None)
                 if connect is None:
                     return {"error": "sandbox_unavailable", "retryable": False}

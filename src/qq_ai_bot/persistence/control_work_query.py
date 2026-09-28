@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from qq_ai_bot.control_plane.paging import Cursor, Page, PageRequest
 from qq_ai_bot.control_plane.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_types import ActivityView, ControlQueryError
+from qq_ai_bot.persistence.control_paging import numbered_statement
 from qq_ai_bot.runtime.subagent_schema import budgets, children
 from qq_ai_bot.runtime.work_recovery_schema import deliveries, recovery
 from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, journal, work
@@ -145,7 +146,22 @@ class ControlWorkQueryAdapter:
         async with self._reader() as session:
             if await session.scalar(select(work.c.id).where(work.c.id == work_id)) is None:
                 raise ControlQueryError(Problem(ProblemCode.NOT_FOUND))
-            rows = (await session.execute(stmt)).mappings().all()
+            rows = (
+                (
+                    await session.execute(
+                        (
+                            sql_window := await numbered_statement(
+                                session,
+                                stmt,
+                                request,
+                                order=(table.c.created.desc(), table.c[key].desc()),
+                            )
+                        ).statement
+                    )
+                )
+                .mappings()
+                .all()
+            )
         shown = []
         for row in rows[: request.limit]:
             fields = self._record(
@@ -158,7 +174,7 @@ class ControlWorkQueryAdapter:
         if len(rows) > request.limit:
             last_row = rows[request.limit - 1]
             cursor = Cursor(prefix + float(last_row["created"]).hex() + "|" + str(last_row[key]))
-        return Page(shown, cursor, datetime.now(UTC))
+        return Page(shown, cursor, datetime.now(UTC), total=sql_window.total, number=request.number)
 
     async def read_work(self, work_id: str, *, include_content: bool = False) -> ActivityView:
         if type(work_id) is not str or type(include_content) is not bool:

@@ -14,6 +14,7 @@ import {
   Table,
 } from "./components";
 import { ConfigFile } from "./config-files";
+import { MediaPreview } from "./preview";
 export { Models } from "./models";
 import { Work } from "./work";
 export { Work };
@@ -431,7 +432,17 @@ export function Assets({ allowed, act, refresh }: PageProps) {
           method="list_emoji_assets"
           refresh={refresh}
           columns={[
-            ["asset_id", "表情"],
+            [
+              "asset_id",
+              "表情",
+              (value) => (
+                <MediaPreview
+                  compact
+                  title="表情"
+                  url={`/api/control/files/emoji/${encodeURIComponent(String(value))}`}
+                />
+              ),
+            ],
             ["status", "状态", status],
             ["enabled", "启用", status],
             ["revision", "版本"],
@@ -602,10 +613,12 @@ export function Persona(props: PageProps) {
       {error != null && <ErrorNote error={error} />}
       {data && (
         <div className="paper-note">
-          <h2>当前加载的人格提示词</h2>
-          <pre className="persona-text">
-            {text((data.fields as Row).system_prompt)}
-          </pre>
+          <details>
+            <summary>当前加载的完整人格提示词</summary>
+            <pre className="persona-text">
+              {text((data.fields as Row).system_prompt)}
+            </pre>
+          </details>
           <p className="small">单次轮次实际注入的上下文请在执行轨迹中查看。</p>
         </div>
       )}

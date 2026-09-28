@@ -4,6 +4,8 @@ import { useState } from "react";
 import type { Row, Page } from "./api";
 import { Empty, ErrorNote, Icon, JsonNote } from "./components";
 import { Traces } from "./traces";
+import { MediaPreview } from "./preview";
+import { Avatar, useDisplayNames } from "./names";
 
 export function Chat({
   conversation,
@@ -16,8 +18,8 @@ export function Chat({
   refresh: number;
   notebook: React.ReactNode;
 }) {
-  const [cursor, setCursor] = useState<string | null>(null),
-    [older, setOlder] = useState<Row[]>([]),
+  const [pageNumber, setPageNumber] = useState(1),
+    [pageInput, setPageInput] = useState("1"),
     [selected, setSelected] = useState<Row | null>(null);
   const [since, setSince] = useState(""),
     [until, setUntil] = useState(""),
@@ -29,7 +31,7 @@ export function Chat({
       conversation_id: conversation,
       include_content: content,
       history: { descending: true, ...filter },
-      page: { limit: 40, cursor },
+      page: { limit: 40, number: pageNumber },
     },
     refresh,
     !!conversation,
@@ -38,13 +40,20 @@ export function Chat({
   const [pageKey, setPageKey] = useState(key);
   if (pageKey !== key) {
     setPageKey(key);
-    setCursor(null);
-    setOlder([]);
+    setPageNumber(1);
+    setPageInput("1");
     setSelected(null);
   }
-  const rows = [...(data?.items || []), ...older].sort(
-    (a, b) => Number(a.event_id) - Number(b.event_id),
+  const rows = [...(data?.items || [])].sort(
+    (a, b) =>
+      new Date(String(b.occurred_at)).valueOf() -
+        new Date(String(a.occurred_at)).valueOf() ||
+      Number(b.event_id) - Number(a.event_id),
   );
+  const names = useDisplayNames({
+    person: rows.map((row) => String(row.author_person_id || "")),
+  });
+  const totalPages = Math.max(1, Math.ceil((data?.total || 0) / 40));
   const ids = new Set<number>();
   return (
     <>
@@ -110,17 +119,62 @@ export function Chat({
               <Empty>选择一个会话，翻阅 Yuki 接收和发送的消息。</Empty>
             )}
             {error != null && <ErrorNote error={error} />}
-            {data?.next_cursor && (
-              <button
-                className="btn-secondary"
-                disabled={loading}
-                onClick={() => {
-                  setOlder(rows);
-                  setCursor(data.next_cursor);
-                }}
-              >
-                加载更早的消息
-              </button>
+            {!!conversation && (
+              <div className="pagination chat-pagination">
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  disabled={pageNumber <= 1 || loading}
+                  onClick={() => {
+                    setPageNumber(pageNumber - 1);
+                    setPageInput(String(pageNumber - 1));
+                  }}
+                >
+                  上一页
+                </button>
+                <span className="small">
+                  第 {pageNumber} 页 / 共 {totalPages} 页 · 共{" "}
+                  {data?.total ?? "?"} 条
+                </span>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  disabled={
+                    pageNumber >= totalPages || loading || data?.total == null
+                  }
+                  onClick={() => {
+                    setPageNumber(pageNumber + 1);
+                    setPageInput(String(pageNumber + 1));
+                  }}
+                >
+                  下一页
+                </button>
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const target = Number(pageInput);
+                    if (
+                      Number.isInteger(target) &&
+                      target >= 1 &&
+                      target <= totalPages
+                    )
+                      setPageNumber(target);
+                  }}
+                >
+                  <label>
+                    跳至{" "}
+                    <input
+                      aria-label="聊天页码"
+                      type="number"
+                      min="1"
+                      max={totalPages}
+                      value={pageInput}
+                      onChange={(e) => setPageInput(e.target.value)}
+                    />
+                  </label>
+                  <button className="btn-secondary">跳转</button>
+                </form>
+              </div>
             )}
             {loading && <Empty>正在翻阅…</Empty>}
             {conversation && !loading && !error && !rows.length && <Empty />}
@@ -133,6 +187,13 @@ export function Chat({
               })
               .map((row) => {
                 const sent = row.direction === "outbound";
+                const senderName = sent
+                  ? "Yuki"
+                  : text(
+                      names[String(row.author_person_id)] ||
+                        row.sender_display_name ||
+                        "未命名人物",
+                    );
                 return (
                   <article
                     key={Number(row.event_id)}
@@ -140,23 +201,43 @@ export function Chat({
                   >
                     <div className="chat-header">
                       <div className="avatar">
-                        <Icon name={sent ? "moon-star" : "cat"} />
+                        <Avatar
+                          kind={sent ? "presence" : "person"}
+                          id={
+                            sent ? row.author_presence_id : row.author_person_id
+                          }
+                          label={`${senderName} 的头像`}
+                          fallback={senderName}
+                        />
                       </div>
                       <div className="sender-name">
-                        {sent
-                          ? "Yuki"
-                          : text(
-                              row.sender_display_name ||
-                                row.author_person_id ||
-                                row.author_kind,
-                            )}
+                        {senderName}
                         <time>{stamp(row.occurred_at)}</time>
                       </div>
                     </div>
                     <div className={`message ${sent ? "assistant" : "user"}`}>
                       {row.content === null
                         ? "消息正文未授权读取"
-                        : text(row.content)}
+                        : row.content
+                          ? text(row.content)
+                          : null}
+                      {Array.isArray(row.media_references) &&
+                        row.media_references.map((reference, index) => {
+                          const media = reference as Row;
+                          const path =
+                            media.kind === "emoji"
+                              ? `emoji/${encodeURIComponent(String(media.id))}`
+                              : `workspace/${encodeURIComponent(String(media.id))}`;
+                          return (
+                            <MediaPreview
+                              key={`${path}:${index}`}
+                              title={
+                                media.kind === "emoji" ? "表情" : "图片或文件"
+                              }
+                              url={`/api/control/files/${path}`}
+                            />
+                          );
+                        })}
                       {!!row.audio_transcript && (
                         <p className="small">
                           语音：{text(row.audio_transcript)}
@@ -169,19 +250,24 @@ export function Chat({
                       )}
                       {Array.isArray(row.attachment_indexes) &&
                         row.attachment_indexes.length > 0 && (
-                          <p className="small">
+                          <div className="chat-attachments">
                             {row.attachment_indexes.map((v) => (
-                              <a
+                              <MediaPreview
                                 key={Number(v)}
-                                className="file-open"
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                href={`/api/control/files/chat/${encodeURIComponent(conversation)}/${row.event_id}/${Number(v)}`}
-                              >
-                                打开附件 {Number(v) + 1}{" "}
-                              </a>
+                                title={`附件 ${Number(v) + 1}`}
+                                url={`/api/control/files/chat/${encodeURIComponent(conversation)}/${row.event_id}/${Number(v)}`}
+                              />
                             ))}
-                          </p>
+                          </div>
+                        )}
+                      {!row.content &&
+                        (!Array.isArray(row.media_references) ||
+                          !row.media_references.length) &&
+                        (!Array.isArray(row.attachment_indexes) ||
+                          !row.attachment_indexes.length) && (
+                          <span className="small">
+                            这条事件没有保存可显示的正文或媒体
+                          </span>
                         )}
                     </div>
                     <footer>

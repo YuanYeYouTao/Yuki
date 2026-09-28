@@ -1,4 +1,4 @@
-"""Opaque cursor pagination. Offset is not part of the protocol."""
+"""Opaque cursor and explicit numbered browsing over live authorized records."""
 
 from __future__ import annotations
 
@@ -35,10 +35,11 @@ class Cursor:
 @final
 @dataclass(frozen=True, slots=True)
 class PageRequest:
-    """Limit-only page request. There is no offset field."""
+    """Cursor continuation or numbered browsing; the two are mutually exclusive."""
 
     limit: int = DEFAULT_PAGE_LIMIT
     cursor: Cursor | None = None
+    number: int | None = None
 
     def __post_init__(self) -> None:
         if type(self.limit) is not int or type(self.limit) is bool:
@@ -47,6 +48,11 @@ class PageRequest:
             raise ValueError("limit must be between 1 and 100")
         if self.cursor is not None and type(self.cursor) is not Cursor:
             raise TypeError("cursor must be Cursor or None")
+        if self.number is not None:
+            if type(self.number) is not int or not 1 <= self.number <= 1000000:
+                raise ValueError("page number must be between 1 and 1000000")
+            if self.cursor is not None:
+                raise ValueError("numbered pages cannot use a cursor")
 
 
 @final
@@ -57,12 +63,17 @@ class Page[T]:
     items: tuple[T, ...]
     next_cursor: Cursor | None = None
     snapshot_at: datetime | None = None
+    total: int | None = None
+    number: int | None = None
 
     def __init__(
         self,
         items: Sequence[T],
         next_cursor: Cursor | None = None,
         snapshot_at: datetime | None = None,
+        *,
+        total: int | None = None,
+        number: int | None = None,
     ) -> None:
         if isinstance(items, (str, bytes)):
             raise TypeError("page items must be a sequence")
@@ -70,6 +81,10 @@ class Page[T]:
             raise TypeError("next_cursor must be Cursor or None")
         object.__setattr__(self, "items", tuple(items))
         object.__setattr__(self, "next_cursor", next_cursor)
+        if total is not None and (type(total) is not int or total < 0):
+            raise ValueError("invalid page total")
+        object.__setattr__(self, "total", total)
+        object.__setattr__(self, "number", number)
         object.__setattr__(
             self,
             "snapshot_at",
@@ -99,6 +114,8 @@ def paginate[T](
     if len(keys) != len(set(keys)):
         raise ValueError("sort_key must be unique")
     start = 0
+    if request.number is not None:
+        start = (request.number - 1) * request.limit
     if request.cursor is not None:
         try:
             start = keys.index(request.cursor.value) + 1
@@ -108,4 +125,4 @@ def paginate[T](
     next_cursor = None
     if start + request.limit < len(ordered) and window:
         next_cursor = Cursor(sort_key(window[-1]))
-    return Page(window, next_cursor=next_cursor)
+    return Page(window, next_cursor=next_cursor, total=len(ordered), number=request.number)

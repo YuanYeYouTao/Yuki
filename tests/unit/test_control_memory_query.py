@@ -151,6 +151,37 @@ async def test_all_pages_owner_self_visibility_and_source(database, memory_scene
     assert content.fields["last_injected_at"] is None
 
 
+async def test_numbered_memory_pages_count_filtered_rows_and_sort_by_record_time(
+    database, memory_scene
+):
+    env, ids, _source, _receipts = memory_scene
+    async with database.immediate_session() as session:
+        first = await session.get(MemoryFactModel, ids[0])
+        assert first is not None
+        first.updated_at = datetime.now(UTC) + timedelta(hours=1)
+
+    queries = ControlQueryService(ControlQueryAdapter(database))
+    ctx = context("control.memory.metadata.read")
+    scope = MemoryQueryFilter(person_id=PersonId.parse(env.person))
+    first_page = await queries.list_memory_facts(ctx, PageRequest(limit=10, number=1), scope=scope)
+    last_page = await queries.list_memory_facts(ctx, PageRequest(limit=10, number=4), scope=scope)
+    beyond_end = await queries.list_memory_facts(ctx, PageRequest(limit=10, number=5), scope=scope)
+    assert first_page.total == last_page.total == beyond_end.total == 33
+    assert first_page.number == 1 and last_page.number == 4
+    assert first_page.items[0].fact_id == ids[0]
+    assert len(last_page.items) == 3
+    assert beyond_end.items == () and beyond_end.next_cursor is None
+    assert first_page.next_cursor is None
+
+    group = await queries.list_memory_facts(
+        ctx,
+        PageRequest(limit=10, number=1),
+        scope=MemoryQueryFilter(space_id=SpaceId.parse(env.space)),
+    )
+    assert group.total == 1
+    assert [item.fact_id for item in group.items] == [ids[33]]
+
+
 async def test_cursors_bind_all_filters_kind_and_content(database, memory_scene):
     env, ids, _, _ = memory_scene
     queries = ControlQueryService(ControlQueryAdapter(database))

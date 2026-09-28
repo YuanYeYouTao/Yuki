@@ -19,7 +19,7 @@ from qq_ai_bot.application.control_access import ControlOperatorAccess
 from qq_ai_bot.application.modules.control_plane import ControlPlaneBundle
 from qq_ai_bot.control_plane.command_service import ControlCommandService
 from qq_ai_bot.control_plane.query_service import ControlQueryService
-from qq_ai_bot.control_plane.query_types import ControlQueryError
+from qq_ai_bot.control_plane.query_types import ControlQueryError, DownloadView
 from qq_ai_bot.domain.identity import PersonId
 from qq_ai_bot.identity.db_models import CanonicalPersonModel
 from qq_ai_bot.persistence.control_command import ControlCommandAdapter
@@ -186,6 +186,21 @@ async def test_memory_scope_http_metadata_and_detail(web, memory_scene):
         },
     )
     assert len(response.json()["data"]["items"]) == 3
+    numbered = await client.post(
+        "/api/control/queries/list_memory_facts",
+        headers=headers,
+        json={"scope": {"person_id": env.person}, "page": {"limit": 10, "number": 4}},
+    )
+    assert numbered.status_code == 200
+    assert numbered.json()["data"]["total"] == 33
+    assert numbered.json()["data"]["number"] == 4
+    assert len(numbered.json()["data"]["items"]) == 3
+    invalid_page = await client.post(
+        "/api/control/queries/list_memory_facts",
+        headers=headers,
+        json={"scope": {"person_id": env.person}, "page": {"limit": 10, "number": 0}},
+    )
+    assert invalid_page.status_code == 400
     response = await client.post(
         "/api/control/queries/read_memory_fact", headers=headers, json={"fact_id": ids[0]}
     )
@@ -559,3 +574,23 @@ async def test_file_download_never_executes_workspace_html_and_static_assets_are
     ):
         response = await client.get(f"/ui/{asset}")
         assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_avatar_cache_is_private_and_bound_to_login_cookie(web, monkeypatch):
+    client, bundle, _ = web
+    owner = str(uuid4())
+    path = f"/api/control/files/avatar/person/{owner}"
+    assert (await client.get(path)).status_code == 401
+
+    async def avatar(_context, kind, owner_id):
+        assert kind == "person" and owner_id == owner
+        return DownloadView("avatar", b"\x89PNG\r\n\x1a\nportrait", "image/png")
+
+    monkeypatch.setattr(bundle.queries, "download_avatar", avatar)
+    await signed_in(client)
+    response = await client.get(path)
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "private, max-age=3600"
+    assert response.headers["vary"] == "Cookie"
+    assert response.headers["x-content-type-options"] == "nosniff"

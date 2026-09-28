@@ -13,6 +13,7 @@ import {
 } from "./components";
 import { SchemaFields } from "./schema-fields";
 import { stamp } from "./format";
+import { OwnerPicker } from "./owner-picker";
 
 const labels: Record<string, string> = {
   poll_interval_seconds: "轮询间隔（秒）",
@@ -246,18 +247,20 @@ export function PluginDetails({
               onChange={(e) => setScope(e.target.value)}
             >
               <option value="global">全局</option>
-              <option value="user">Person</option>
-              <option value="group">Space</option>
+              <option value="user">人物</option>
+              <option value="group">群</option>
             </select>
           </label>
           {scope !== "global" && (
             <label className="form-group">
-              内部 {scope === "user" ? "Person" : "Space"} ID
-              <input
-                className="form-control"
+              {scope === "user" ? "人物" : "群"}
+              <OwnerPicker
+                kind={scope === "user" ? "person" : "space"}
+                label={scope === "user" ? "人物" : "群"}
                 value={owner}
-                onChange={(e) => setOwner(e.target.value)}
-                placeholder="canonical UUID"
+                change={setOwner}
+                refresh={props.refresh}
+                empty="选择范围"
               />
             </label>
           )}
@@ -278,8 +281,7 @@ export function PluginDetails({
           </button>
         </div>
         <p className="small">
-          范围所属身份使用内部 Person / Space
-          ID；通知目标字段仍使用插件的外部投递合同。不同范围是否被插件消费，由其功能决定。
+          按人物或群名选择配置范围；通知目标字段仍使用插件的外部投递合同。不同范围是否被插件消费，由其功能决定。
         </p>
         {!props.allowed("read_plugin_configuration") && (
           <Empty>需要插件配置正文读取权限。</Empty>

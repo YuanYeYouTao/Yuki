@@ -75,31 +75,47 @@ function responses() {
                 next_cursor: null,
               },
             }
-          : {
-              items: [
-                {
-                  resource_id: "1",
-                  fields: {
-                    outbox_id: 1,
-                    source_event_id: 6912,
-                    status: "failed",
-                    revision: 123,
-                    can_retry: true,
-                  },
+          : method === "read_display_names"
+            ? {
+                fields: {
+                  names: { "11111111-1111-4111-8111-111111111111": "夜聊群" },
                 },
-                {
-                  resource_id: "2",
-                  fields: {
-                    outbox_id: 2,
-                    source_event_id: 6913,
-                    status: "uncertain",
-                    revision: 124,
-                    can_retry: false,
-                  },
-                },
-              ],
-              next_cursor: null,
-            };
+              }
+            : method === "list_spaces"
+              ? {
+                  items: [
+                    {
+                      space_id: "11111111-1111-4111-8111-111111111111",
+                      name: "夜聊群",
+                    },
+                  ],
+                  next_cursor: null,
+                }
+              : {
+                  items: [
+                    {
+                      resource_id: "1",
+                      fields: {
+                        outbox_id: 1,
+                        source_event_id: 6912,
+                        status: "failed",
+                        revision: 123,
+                        can_retry: true,
+                      },
+                    },
+                    {
+                      resource_id: "2",
+                      fields: {
+                        outbox_id: 2,
+                        source_event_id: 6913,
+                        status: "uncertain",
+                        revision: 124,
+                        can_retry: false,
+                      },
+                    },
+                  ],
+                  next_cursor: null,
+                };
     return new Response(JSON.stringify({ data, problem: null }), {
       status: 200,
     });
@@ -161,8 +177,8 @@ it("switches canonical owner explicitly and resets the old scope draft", async (
     screen.getByRole("combobox", { name: "配置范围" }),
     "group",
   );
-  await user.type(
-    screen.getByRole("textbox", { name: "内部 Space ID" }),
+  await user.selectOptions(
+    screen.getByRole("combobox", { name: "群" }),
     "11111111-1111-4111-8111-111111111111",
   );
   expect(

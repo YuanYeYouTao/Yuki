@@ -5,6 +5,7 @@ import type { Row } from "./api";
 import type { PageProps } from "./pages";
 import { useQuery } from "./hooks";
 import { stamp, text } from "./format";
+import { useDisplayNames } from "./names";
 import {
   Badge,
   type Column,
@@ -84,8 +85,11 @@ function WorkDetail({
     allowed("read_work"),
   );
   const fields = detail.data?.fields as Row | undefined;
+  const names = useDisplayNames({
+    conversation: [String(fields?.conversation_id || "")],
+  });
   return (
-    <Section title={`Work ${workId}`}>
+    <Section title="工作详情">
       {detail.error != null && <ErrorNote error={detail.error} />}
       {detail.loading && <Empty>正在读取工作详情…</Empty>}
       {fields && (
@@ -108,11 +112,12 @@ function WorkDetail({
           {fields.goal != null && (
             <pre className="persona-text">{String(fields.goal)}</pre>
           )}
-          <p>
-            根工作：{String(fields.root_id)} · 会话：
-            {String(fields.conversation_id)} · Generation：
+          <p>会话：{names[String(fields.conversation_id)] || "未命名会话"}</p>
+          <details className="reference-id">
+            <summary>内部工作编号</summary>
+            工作：{workId} · 根工作：{String(fields.root_id)} · Generation：
             {String(fields.generation)}
-          </p>
+          </details>
           <a
             className="file-open"
             href={`#audit?work=${encodeURIComponent(workId)}`}
@@ -265,7 +270,16 @@ export function Work({ allowed, act, refresh, conversation }: PageProps) {
           refresh={refresh}
           onRow={flatten}
           columns={[
-            ["resource_id", "Work"],
+            [
+              "resource_id",
+              "工作",
+              (value) => (
+                <details className="reference-id">
+                  <summary>工作记录</summary>
+                  {text(value)}
+                </details>
+              ),
+            ],
             ["conversation_id", "会话"],
             ["goal", "目标"],
             ["state", "状态", status],

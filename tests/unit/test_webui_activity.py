@@ -19,7 +19,7 @@ from qq_ai_bot.identity.canonical_repository import ensure_presence
 from qq_ai_bot.model_runtime.db_models import ModelInvocationModel
 from qq_ai_bot.operations.reset_conversations import reset_all
 from qq_ai_bot.persistence.control_query import ControlQueryAdapter
-from qq_ai_bot.persistence.models import ConversationMediaItemModel
+from qq_ai_bot.persistence.models import ChatEventModel, ConversationMediaItemModel
 from qq_ai_bot.runtime.work_schema_v1 import work
 from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
 
@@ -304,6 +304,33 @@ async def test_latest_history_cursor_and_event_lookup_never_cross_conversations(
         ),
     )
     assert [row.event_id for row in local_window.items] == ids[1:4]
+
+    # Numbered browsing uses the original event time, including when ledger IDs
+    # and occurrence order differ. The count stays within the selected scope.
+    async with database.sessions() as session, session.begin():
+        earliest_id = await session.get(ChatEventModel, ids[0])
+        assert earliest_id is not None
+        earliest_id.occurred_at = stamp + timedelta(minutes=20)
+    numbered = await service.list_chat_events(
+        ctx,
+        PageRequest(limit=2, number=1),
+        conversation_id=conversation,
+        history=ChatHistoryFilter(descending=True),
+    )
+    assert numbered.total == 5 and numbered.number == 1
+    assert [row.event_id for row in numbered.items] == [ids[0], ids[4]]
+    assert numbered.next_cursor is None
+    filtered = await service.list_chat_events(
+        ctx,
+        PageRequest(limit=2, number=2),
+        conversation_id=conversation,
+        history=ChatHistoryFilter(
+            descending=True,
+            since=stamp + timedelta(minutes=2),
+            until=stamp + timedelta(minutes=4),
+        ),
+    )
+    assert filtered.total == 3 and [row.event_id for row in filtered.items] == [ids[2]]
 
 
 @pytest.mark.asyncio

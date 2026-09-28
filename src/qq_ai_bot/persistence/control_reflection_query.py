@@ -6,11 +6,13 @@ import json
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import func, literal, select, tuple_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
+from sqlalchemy.sql.elements import ColumnElement
 
 from qq_ai_bot.config import Settings
 from qq_ai_bot.control_plane.paging import Page, PageRequest
@@ -29,6 +31,7 @@ from qq_ai_bot.memory.self_reflection.db_models import (
 from qq_ai_bot.persistence.control_activity_query import _stamp
 from qq_ai_bot.persistence.control_execution_query import _key, _page
 from qq_ai_bot.persistence.control_memory_query import _id
+from qq_ai_bot.persistence.control_paging import numbered_statement
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     MemorySelfReflectionCycleModel as Cycle,
@@ -139,6 +142,7 @@ class ControlReflectionQueryAdapter:
         model: type[Request] | type[Result]
         marker: InstrumentedAttribute[str] | InstrumentedAttribute[int]
         after: str | int
+        numbered_order: tuple[ColumnElement[Any], ...]
         if section == "states":
             names = (
                 "id",
@@ -297,17 +301,37 @@ class ControlReflectionQueryAdapter:
                     raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
                 after = _id(int(key))
                 stmt = stmt.where(marker < after)
+        if section == "states":
+            numbered_order = (State.updated_at.desc(), State.id.desc())
+        elif section == "runs":
+            numbered_order = (Run.started_at.desc(), Run.id.desc())
+        elif section == "cycles":
+            numbered_order = (Cycle.created_at.desc(), Cycle.id.desc())
+        elif section == "receipt_cursors":
+            numbered_order = (
+                InitiativeRunModel.created_at.desc(),
+                InitiativeReflectionCursorModel.initiative_run_id.desc(),
+            )
+        else:
+            numbered_order = (model.created_at.desc(), model.id.desc())
         async with self._reader() as session:
             rows = (
                 (
                     await session.execute(
-                        stmt.order_by(
-                            *(
-                                [Cycle.created_at.desc(), Cycle.id.desc()]
-                                if section == "cycles"
-                                else [marker.desc()]
+                        (
+                            sql_window := await numbered_statement(
+                                session,
+                                stmt.order_by(
+                                    *(
+                                        [Cycle.created_at.desc(), Cycle.id.desc()]
+                                        if section == "cycles"
+                                        else [marker.desc()]
+                                    )
+                                ).limit(request.limit + 1),
+                                request,
+                                order=numbered_order,
                             )
-                        ).limit(request.limit + 1)
+                        ).statement
                     )
                 )
                 .mappings()
@@ -341,4 +365,6 @@ class ControlReflectionQueryAdapter:
             QueryResourceKind.REFLECTION,
             partition,
             next_key,
+            total=sql_window.total,
+            number=request.number,
         )

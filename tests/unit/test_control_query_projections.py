@@ -5,7 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import math
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -42,6 +42,10 @@ from qq_ai_bot.control_plane.query_types import (
     LAST4_MIN_SOURCE_LENGTH,
     REDACTED_DISPLAY,
     QueryCursorPhase,
+)
+from qq_ai_bot.conversation.canonical_db_models import (
+    CanonicalConversationModel,
+    ConversationLegacyAliasModel,
 )
 from qq_ai_bot.domain.identity import PersonId, PrincipalId, RequestId, SpaceId
 from qq_ai_bot.gateway.providers import builtin_provider_catalog
@@ -297,6 +301,99 @@ async def test_person_pages_are_unique_stable_keyset(database: Database) -> None
         cursor = page.next_cursor
     assert seen == ids
     assert pages >= 4
+
+
+@pytest.mark.asyncio
+async def test_person_numbered_pages_report_total_and_show_newest_first(database: Database) -> None:
+    for _ in range(12):
+        await _add_person(database)
+    service = _service(database)
+    context = _context(_principal("identity.person.read"))
+    async with database.sessions() as session:
+        count = int(
+            await session.scalar(select(func.count()).select_from(CanonicalPersonModel)) or 0
+        )
+    first = await service.list_persons(context, PageRequest(limit=5, number=1))
+    final_number = (count + 4) // 5
+    last = await service.list_persons(context, PageRequest(limit=5, number=final_number))
+    assert first.total == last.total == count
+    assert first.number == 1 and last.number == final_number
+    assert first.next_cursor is None
+    assert len(first.items) == 5 and len(last.items) == count - (final_number - 1) * 5
+    assert all(item.person_id is not None for item in first.items)
+    async with database.sessions() as session:
+        expected = list(
+            await session.scalars(
+                select(CanonicalPersonModel.id)
+                .order_by(CanonicalPersonModel.updated_at.desc(), CanonicalPersonModel.id.desc())
+                .limit(5)
+            )
+        )
+    assert [item.person_id.text for item in first.items if item.person_id] == expected
+
+
+@pytest.mark.asyncio
+async def test_conversation_numbered_pages_show_recent_activity_before_old_ids(
+    database: Database,
+) -> None:
+    rows: list[tuple[str, str, datetime]] = []
+    for index, minutes in enumerate((0, 20, 10)):
+        person_id = await _add_person(database)
+        rows.append(
+            (
+                f"00000000-0000-4000-8000-{index + 1:012d}",
+                person_id,
+                _NOW + timedelta(minutes=minutes),
+            )
+        )
+    async with database.sessions() as session, session.begin():
+        for index, (conversation_id, person_id, updated_at) in enumerate(rows):
+            alias_id = _uuid()
+            session.add(
+                CanonicalConversationModel(
+                    id=conversation_id,
+                    kind="private",
+                    person_id=person_id,
+                    space_id=None,
+                    primary_alias_id=alias_id,
+                    primary_marker=1,
+                    generation=1,
+                    starts_after_event_id=0,
+                    last_event_id=index + 1,
+                    last_generation_change_event_id=0,
+                    covered_through_event_id=0,
+                    uncovered_event_count=0,
+                    uncovered_character_count=0,
+                    revision=1,
+                    created_at=_NOW,
+                    updated_at=updated_at,
+                )
+            )
+            session.add(
+                ConversationLegacyAliasModel(
+                    id=alias_id,
+                    conversation_id=conversation_id,
+                    scope_key=f"bot:1:private:{index}:{alias_id}",
+                    is_primary=1,
+                    created_at=_NOW,
+                    updated_at=updated_at,
+                )
+            )
+    service = _service(database)
+    context = _context(_principal("conversation.metadata.read"))
+    first = await service.list_conversations(context, PageRequest(limit=2, number=1))
+    second = await service.list_conversations(context, PageRequest(limit=2, number=2))
+    assert first.total == second.total == 3
+    assert [item.conversation_id.text for item in first.items] == [rows[1][0], rows[2][0]]
+    assert [item.conversation_id.text for item in second.items] == [rows[0][0]]
+
+
+def test_numbered_page_rejects_cursor_and_invalid_page_number() -> None:
+    for number in (0, -1, True, 1.5, 1_000_001):
+        with pytest.raises(ValueError):
+            PageRequest(number=number)
+    with pytest.raises(ValueError):
+        PageRequest(number=1, cursor=Cursor("opaque"))
 
 
 @pytest.mark.asyncio

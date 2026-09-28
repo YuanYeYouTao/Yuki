@@ -1138,7 +1138,7 @@ def _require_management_semantics(
         return
     if operation == CommandOperation.ENVIRONMENT_FILE_MUTATE.value:
         if (
-            action not in {"write", "mkdir", "move", "delete", "patch", "publish"}
+            action not in {"write", "upload", "mkdir", "move", "delete", "patch", "publish"}
             or resource_id != "environment"
             or resource_id != _material_resource(material)
             or status != "saved"

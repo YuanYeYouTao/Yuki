@@ -27,15 +27,45 @@ from qq_ai_bot.control_plane.query_types import (
     QueryResourceKind,
     SocialReceiptView,
 )
-from qq_ai_bot.domain.identity import ConversationId, PersonId, PresenceId
+from qq_ai_bot.domain.identity import ConversationId, PersonId, PresenceId, RequestId
 from qq_ai_bot.execution_trace.db_models import ExecutionTraceEntryModel
 from qq_ai_bot.execution_trace.payload import decode_payload
+from qq_ai_bot.persistence.control_paging import numbered_statement
 from qq_ai_bot.persistence.models import ChatEventModel, ConversationMediaItemModel
 from qq_ai_bot.social.db_models import SocialOperationModel
 
 
 def _aware(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _media_references(segments_json: str | None) -> tuple[dict[str, str], ...]:
+    if not segments_json or len(segments_json) > 65536:
+        return ()
+    try:
+        segments = json.loads(segments_json)
+    except (TypeError, ValueError):
+        return ()
+    if not isinstance(segments, list):
+        return ()
+    found = []
+    for segment in segments[:64]:
+        if not isinstance(segment, dict) or segment.get("type") not in {"image", "file"}:
+            continue
+        data = segment.get("data")
+        if not isinstance(data, dict):
+            continue
+        for key, kind in (("artifact_id", "artifact"), ("emoji_id", "emoji")):
+            value = data.get(key)
+            if not isinstance(value, str):
+                continue
+            try:
+                identity = RequestId.parse(value).text
+            except (TypeError, ValueError):
+                continue
+            found.append({"kind": kind, "id": identity})
+            break
+    return tuple(found)
 
 
 def _key(request: PageRequest, kind: QueryResourceKind, scope: str) -> str | None:
@@ -60,13 +90,22 @@ def _page[T](
     kind: QueryResourceKind,
     scope: str,
     key: str | None,
+    *,
+    total: int | None = None,
+    number: int | None = None,
 ) -> Page[T]:
     more = len(rows) > request.limit
     cursor = None
     if more and key is not None:
         prefix = hashlib.sha256(scope.encode()).hexdigest()[:32]
         cursor = encode_query_cursor(kind, QueryCursorPhase.CANONICAL, f"{prefix}:{key}")
-    return Page(items, next_cursor=cursor, snapshot_at=datetime.now(UTC))
+    return Page(
+        items,
+        next_cursor=cursor if number is None else None,
+        snapshot_at=datetime.now(UTC),
+        total=total,
+        number=number,
+    )
 
 
 def _trace_view(row: ExecutionTraceEntryModel, include_content: bool) -> ExecutionTraceView:
@@ -200,11 +239,26 @@ class ControlExecutionQueryAdapter:
             async with self._reader() as session:
                 rows = list(
                     await session.scalars(
-                        stmt.order_by(
-                            ExecutionTraceEntryModel.id.desc()
-                            if scope.descending
-                            else ExecutionTraceEntryModel.id.asc()
-                        ).limit(request.limit + 1)
+                        (
+                            sql_window := await numbered_statement(
+                                session,
+                                stmt.order_by(
+                                    ExecutionTraceEntryModel.id.desc()
+                                    if scope.descending
+                                    else ExecutionTraceEntryModel.id.asc()
+                                ).limit(request.limit + 1),
+                                request,
+                                order=(
+                                    ExecutionTraceEntryModel.created_at.desc(),
+                                    ExecutionTraceEntryModel.id.desc(),
+                                )
+                                if scope.descending
+                                else (
+                                    ExecutionTraceEntryModel.created_at.asc(),
+                                    ExecutionTraceEntryModel.id.asc(),
+                                ),
+                            )
+                        ).statement
                     )
                 )
                 selected = rows[: request.limit]
@@ -215,6 +269,8 @@ class ControlExecutionQueryAdapter:
                     QueryResourceKind.EXECUTION_TRACE,
                     partition,
                     str(selected[-1].id) if selected else None,
+                    total=sql_window.total,
+                    number=request.number,
                 )
         except SQLAlchemyError as exc:
             raise ControlQueryError(Problem(ProblemCode.OPERATION_UNAVAILABLE)) from exc
@@ -271,7 +327,11 @@ class ControlExecutionQueryAdapter:
             ChatEventModel.canonical_conversation_id == conversation_id.text
         )
         stmt = stmt.options(
-            defer(ChatEventModel.segments_json, raiseload=True),
+            *(
+                (defer(ChatEventModel.segments_json, raiseload=True),)
+                if not include_content
+                else ()
+            ),
             defer(ChatEventModel.external_payload_json, raiseload=True),
         )
         if not include_content:
@@ -299,7 +359,20 @@ class ControlExecutionQueryAdapter:
             )
         order = ChatEventModel.id.desc() if history.descending else ChatEventModel.id.asc()
         async with self._reader() as session:
-            rows = list(await session.scalars(stmt.order_by(order).limit(request.limit + 1)))
+            rows = list(
+                await session.scalars(
+                    (
+                        sql_window := await numbered_statement(
+                            session,
+                            stmt.order_by(order).limit(request.limit + 1),
+                            request,
+                            order=(ChatEventModel.occurred_at.desc(), ChatEventModel.id.desc())
+                            if history.descending
+                            else (ChatEventModel.occurred_at.asc(), ChatEventModel.id.asc()),
+                        )
+                    ).statement
+                )
+            )
             selected = rows[: request.limit]
             attachments: dict[int, list[int]] = {}
             if selected:
@@ -344,6 +417,9 @@ class ControlExecutionQueryAdapter:
                     else None,
                     attachment_indexes=tuple(attachments.get(row.id, ())),
                     suppression_status=row.suppression_status,
+                    media_references=_media_references(row.segments_json)
+                    if include_content
+                    else (),
                 )
                 for row in selected
             ]
@@ -354,6 +430,8 @@ class ControlExecutionQueryAdapter:
                 QueryResourceKind.CHAT_EVENT,
                 partition,
                 str(selected[-1].id) if selected else None,
+                total=sql_window.total,
+                number=request.number,
             )
 
     async def list_social_receipts(
@@ -372,7 +450,17 @@ class ControlExecutionQueryAdapter:
         async with self._reader() as session:
             rows = list(
                 await session.scalars(
-                    stmt.order_by(SocialOperationModel.id).limit(request.limit + 1)
+                    (
+                        sql_window := await numbered_statement(
+                            session,
+                            stmt.order_by(SocialOperationModel.id).limit(request.limit + 1),
+                            request,
+                            order=(
+                                SocialOperationModel.created_at.desc(),
+                                SocialOperationModel.id.desc(),
+                            ),
+                        )
+                    ).statement
                 )
             )
             selected = rows[: request.limit]
@@ -401,4 +489,6 @@ class ControlExecutionQueryAdapter:
                 QueryResourceKind.SOCIAL_RECEIPT,
                 partition,
                 selected[-1].id if selected else None,
+                total=sql_window.total,
+                number=request.number,
             )

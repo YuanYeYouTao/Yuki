@@ -3,6 +3,8 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Memory } from "./memory";
 
+const owner = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
 function scene() {
   const requests: { method: string; body: Record<string, unknown> }[] = [];
   vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
@@ -22,31 +24,37 @@ function scene() {
               content: "original private fact",
             },
           }
-        : method === "read_memory_health"
-          ? { index: "ok", embedding: "degraded", consistency: "ok" }
-          : {
-              items:
-                method === "list_memory_facts"
-                  ? [
-                      {
-                        fact_id: 12,
-                        scope_type: "self",
-                        status: "active",
-                        review_state: "verified",
-                      },
-                    ]
-                  : method === "list_memory_evidence"
-                    ? [
-                        {
-                          evidence_id: 4,
-                          fact_id: 12,
-                          event_id: 83,
-                          relation: "agent_reflection",
-                        },
-                      ]
-                    : [],
-              next_cursor: null,
-            };
+        : method === "read_display_names"
+          ? { fields: { names: { [owner]: "夜聊群" } } }
+          : method === "read_memory_health"
+            ? { index: "ok", embedding: "degraded", consistency: "ok" }
+            : {
+                items:
+                  method === "list_spaces"
+                    ? [{ space_id: owner, name: "夜聊群" }]
+                    : method === "list_persons"
+                      ? [{ person_id: owner }]
+                      : method === "list_memory_facts"
+                        ? [
+                            {
+                              fact_id: 12,
+                              scope_type: "self",
+                              status: "active",
+                              review_state: "verified",
+                            },
+                          ]
+                        : method === "list_memory_evidence"
+                          ? [
+                              {
+                                evidence_id: 4,
+                                fact_id: 12,
+                                event_id: 83,
+                                relation: "agent_reflection",
+                              },
+                            ]
+                          : [],
+                next_cursor: null,
+              };
     return new Response(JSON.stringify({ data, problem: null }), {
       status: 200,
     });
@@ -66,9 +74,8 @@ it("applies canonical ownership on submit and clears unrelated SELF selectors", 
     screen.getByRole("combobox", { name: "SELF 可见范围" }),
     "group",
   );
-  const owner = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-  await user.type(
-    screen.getByRole("textbox", { name: "可见 Space UUID" }),
+  await user.selectOptions(
+    screen.getByRole("combobox", { name: "可见群" }),
     owner,
   );
   expect(
@@ -97,8 +104,8 @@ it("applies canonical ownership on submit and clears unrelated SELF selectors", 
     screen.getByRole("combobox", { name: "记忆归属" }),
     "person",
   );
-  await user.type(
-    screen.getByRole("textbox", { name: "主体 Person UUID" }),
+  await user.selectOptions(
+    screen.getByRole("combobox", { name: "记忆人物" }),
     owner,
   );
   await user.click(screen.getByRole("button", { name: "应用全库筛选" }));

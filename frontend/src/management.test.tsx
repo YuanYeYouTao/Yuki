@@ -27,7 +27,7 @@ function responses(values: Record<string, unknown>) {
   });
 }
 
-it("uploads bytes with a metadata review and never edits a truncated snapshot", async () => {
+it("keeps published snapshots distinct from live workspace files", async () => {
   responses({
     list_workspace: {
       items: [
@@ -49,33 +49,18 @@ it("uploads bytes with a metadata review and never edits a truncated snapshot", 
   });
   const act = vi.fn();
   render(<Files {...props} act={act} />);
-  await userEvent.click(await screen.findByRole("button", { name: "打开" }));
+  await userEvent.click(
+    screen.getByText("已发布的文件快照（独立于当前工作区）"),
+  );
+  await userEvent.click(await screen.findByRole("button", { name: "查看" }));
+  expect(await screen.findByText("快照预览已截断。")).toBeInTheDocument();
   expect(
-    await screen.findByText("预览已截断，不能用片段覆盖完整文件。"),
-  ).toBeInTheDocument();
-  expect(
-    screen.queryByRole("button", { name: "检查并保存" }),
+    screen.queryByRole("button", { name: "保存到工作区" }),
   ).not.toBeInTheDocument();
-  const file = new File(["uploaded"], "new.txt");
-  Object.defineProperty(file, "arrayBuffer", {
-    value: async () => new TextEncoder().encode("uploaded").buffer,
-  });
-  await userEvent.upload(
-    screen.getByLabelText("上传文件（最多 640 KiB）"),
-    file,
-  );
-  expect(act).toHaveBeenCalledWith(
-    expect.objectContaining({
-      method: "mutate_workspace",
-      revision: 0,
-      payload: {
-        resource_id: "yuki",
-        action: "upload",
-        spec: { name: "new.txt", base64: btoa("uploaded") },
-      },
-      review: { name: "new.txt", size: 8 },
-    }),
-  );
+  expect(
+    screen.queryByRole("button", { name: "删除共享文件快照" }),
+  ).not.toBeInTheDocument();
+  expect(act).not.toHaveBeenCalled();
 });
 
 it("reviews original plugin hash and selected declared permissions without raw JSON", async () => {

@@ -36,14 +36,16 @@ function backend() {
             ? {
                 items: [
                   {
-                    resource_id: args.page.cursor ? "6911" : "6912",
+                    resource_id: args.page.number === 2 ? "6911" : "6912",
                     fields: {
-                      id: args.page.cursor ? 6911 : 6912,
-                      event_id: args.page.cursor ? 12 : 13,
+                      id: args.page.number === 2 ? 6911 : 6912,
+                      event_id: args.page.number === 2 ? 12 : 13,
                     },
                   },
                 ],
-                next_cursor: args.page.cursor ? null : "original-cursor",
+                total: 31,
+                number: args.page.number,
+                next_cursor: null,
               }
             : { items: [], next_cursor: null };
     return new Response(JSON.stringify({ data }), {

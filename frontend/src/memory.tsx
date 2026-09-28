@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Row } from "./api";
 import type { PageProps } from "./pages";
+import { OwnerPicker } from "./owner-picker";
 import { useQuery } from "./hooks";
 import {
   Badge,
@@ -130,17 +131,17 @@ function MemoryFacts(props: PageProps) {
   const self = draft.scope_type === "self";
   const ownerInputs: [string, string][] = self
     ? draft.visibility_type === "private"
-      ? [["visibility_person_id", "可见 Person UUID"]]
+      ? [["visibility_person_id", "可见人物"]]
       : draft.visibility_type === "group"
-        ? [["visibility_space_id", "可见 Space UUID"]]
+        ? [["visibility_space_id", "可见群"]]
         : []
     : draft.scope_type === "person"
-      ? [["person_id", "主体 Person UUID"]]
+      ? [["person_id", "记忆人物"]]
       : draft.scope_type === "group"
-        ? [["space_id", "主体 Space UUID"]]
+        ? [["space_id", "记忆群"]]
         : [
-            ["person_id", "主体 Person UUID"],
-            ["space_id", "主体 Space UUID"],
+            ["person_id", "记忆人物"],
+            ["space_id", "记忆群"],
           ];
   return (
     <>
@@ -226,11 +227,12 @@ function MemoryFacts(props: PageProps) {
           {ownerInputs.map(([key, label]) => (
             <label className="form-group" key={key}>
               {label}
-              <input
-                className="form-control"
+              <OwnerPicker
+                kind={key.includes("person") ? "person" : "space"}
+                label={label}
                 value={draft[key] || ""}
-                onChange={(e) => update(key, e.target.value)}
-                placeholder="canonical UUID"
+                change={(value) => update(key, value)}
+                refresh={props.refresh}
               />
             </label>
           ))}
@@ -280,7 +282,7 @@ function MemoryFacts(props: PageProps) {
           </div>
         </form>
         <p className="small">
-          主体使用内部 Person / Space UUID；SELF
+          按人物或群名称选择范围；SELF
           的可见主体与记忆所有者分别查询。来源事件是
           chat_events.id，工具证据是原持久回执 ID。
         </p>

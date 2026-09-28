@@ -8,6 +8,8 @@ supervisor records; it never replays a dispatched command.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import json
 import logging
@@ -24,7 +26,7 @@ from uuid import UUID, uuid4, uuid5
 from qq_ai_bot.sandbox.environment_tools import EXECUTION_TOOLS
 from qq_ai_bot.sandbox.execd import Execd
 from qq_ai_bot.sandbox.manager import TERMINAL, Manager, identifier
-from qq_ai_bot.workspace.files import FileWorkspace
+from qq_ai_bot.workspace.files import MAX_CONTROL_UPLOAD, FileWorkspace
 from qq_ai_bot.workspace.store import WorkspaceError, WorkspaceStore
 
 LABEL = "io.yuki.sandbox=persistent-v1"
@@ -767,6 +769,17 @@ class PersistentManager(Manager):
             return self.files.read(path, offset=args.get("offset", 0))
         if method == "workspace_write":
             return self.files.write(path, args["text"].encode(), expected_version=version)
+        if method == "workspace_upload":
+            encoded = args["base64"]
+            if not isinstance(encoded, str) or len(encoded) > (MAX_CONTROL_UPLOAD + 2) // 3 * 4:
+                raise WorkspaceError("upload_too_large")
+            try:
+                data = base64.b64decode(encoded, validate=True)
+            except (ValueError, binascii.Error) as exc:
+                raise WorkspaceError("invalid_upload") from exc
+            if len(data) > MAX_CONTROL_UPLOAD:
+                raise WorkspaceError("upload_too_large")
+            return self.files.write(path, data, expected_version=version)
         if method == "workspace_mkdir":
             return self.files.mkdir(path)
         if method == "workspace_move":

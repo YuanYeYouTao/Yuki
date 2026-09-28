@@ -32,7 +32,7 @@ it("edits persona as exact text and carries the original file revision to review
   render(<ConfigFile fileId="system_prompt" props={{ ...props, act }} />);
   const user = userEvent.setup();
   const text = await screen.findByRole("textbox", {
-    name: "System Prompt 模板",
+    name: "主人格提示词（System Prompt）",
   });
   await user.clear(text);
   await user.type(text, '第一行\n保留 "引号" 和 <标签>');

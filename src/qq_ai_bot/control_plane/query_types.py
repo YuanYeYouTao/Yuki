@@ -235,6 +235,7 @@ class ChatEventView:
     sender_display_name: str | None
     attachment_indexes: tuple[int, ...]
     suppression_status: str = "keeper"
+    media_references: tuple[JsonObject, ...] = ()
 
     def __post_init__(self) -> None:
         _require_int(self.event_id, "event_id", minimum=1)
@@ -636,6 +637,7 @@ class PersonView:
     created_at: datetime | None
     updated_at: datetime | None
     binding_count: int
+    display_name: str | None = None
 
     def __post_init__(self) -> None:
         if self.person_id is not None and type(self.person_id) is not PersonId:

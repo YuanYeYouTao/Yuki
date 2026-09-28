@@ -18,6 +18,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, load_only
 
+from qq_ai_bot.control_plane.media_types import raster_type
 from qq_ai_bot.control_plane.paging import Cursor, Page, PageRequest
 from qq_ai_bot.control_plane.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_cursors import decode_integer_cursor_key
@@ -32,6 +33,7 @@ from qq_ai_bot.conversation.media_service import ConversationMediaError, Convers
 from qq_ai_bot.domain.identity import ConversationId, RequestId
 from qq_ai_bot.model_runtime.db_models import ModelInvocationModel
 from qq_ai_bot.persistence.control_execution_query import _key, _page
+from qq_ai_bot.persistence.control_paging import numbered_statement
 from qq_ai_bot.persistence.unit_of_work import state_revision
 from qq_ai_bot.plugin_host.db_models import (
     PluginBackgroundTurnJobModel,
@@ -113,7 +115,18 @@ class ControlActivityQueryAdapter:
             stmt = stmt.where(model.id < _integer_key(key))
         async with self._reader() as session:
             rows = (
-                (await session.execute(stmt.order_by(model.id.desc()).limit(request.limit + 1)))
+                (
+                    await session.execute(
+                        (
+                            sql_window := await numbered_statement(
+                                session,
+                                stmt.order_by(model.id.desc()).limit(request.limit + 1),
+                                request,
+                                order=(model.created_at.desc(), model.id.desc()),
+                            )
+                        ).statement
+                    )
+                )
                 .mappings()
                 .all()
             )
@@ -133,6 +146,8 @@ class ControlActivityQueryAdapter:
             QueryResourceKind.PLUGIN_BACKGROUND,
             plugin_id,
             str(rows[request.limit - 1]["id"]) if len(rows) >= request.limit else None,
+            total=sql_window.total,
+            number=request.number,
         )
 
     async def list_participation_feedback(
@@ -160,7 +175,18 @@ class ControlActivityQueryAdapter:
             ):
                 raise ControlQueryError(Problem(ProblemCode.NOT_FOUND))
             rows = (
-                (await session.execute(stmt.order_by(model.sequence).limit(request.limit + 1)))
+                (
+                    await session.execute(
+                        (
+                            sql_window := await numbered_statement(
+                                session,
+                                stmt.order_by(model.sequence).limit(request.limit + 1),
+                                request,
+                                order=(model.created_at.desc(), model.sequence.desc()),
+                            )
+                        ).statement
+                    )
+                )
                 .mappings()
                 .all()
             )
@@ -216,6 +242,8 @@ class ControlActivityQueryAdapter:
             QueryResourceKind.PARTICIPATION_FEEDBACK,
             partition,
             str(rows[request.limit - 1]["sequence"]) if len(rows) >= request.limit else None,
+            total=sql_window.total,
+            number=request.number,
         )
 
     async def list_plugin_outbox(
@@ -266,7 +294,16 @@ class ControlActivityQueryAdapter:
             stmt = stmt.where(model.id < int(key))
         async with self._reader() as session:
             rows = (
-                await session.execute(stmt.order_by(model.id.desc()).limit(request.limit + 1))
+                await session.execute(
+                    (
+                        sql_window := await numbered_statement(
+                            session,
+                            stmt.order_by(model.id.desc()).limit(request.limit + 1),
+                            request,
+                            order=(model.created_at.desc(), model.id.desc()),
+                        )
+                    ).statement
+                )
             ).all()
         items = [
             ActivityView(
@@ -304,6 +341,8 @@ class ControlActivityQueryAdapter:
             QueryResourceKind.PLUGIN_OUTBOX,
             plugin_id,
             str(rows[request.limit - 1].id) if len(rows) >= request.limit else None,
+            total=sql_window.total,
+            number=request.number,
         )
 
     async def list_participation_runs(
@@ -352,9 +391,19 @@ class ControlActivityQueryAdapter:
         async with self._reader() as session:
             rows = list(
                 await session.scalars(
-                    stmt.order_by(
-                        InitiativeRunModel.created_at.desc(), InitiativeRunModel.id.desc()
-                    ).limit(request.limit + 1)
+                    (
+                        sql_window := await numbered_statement(
+                            session,
+                            stmt.order_by(
+                                InitiativeRunModel.created_at.desc(), InitiativeRunModel.id.desc()
+                            ).limit(request.limit + 1),
+                            request,
+                            order=(
+                                InitiativeRunModel.created_at.desc(),
+                                InitiativeRunModel.id.desc(),
+                            ),
+                        )
+                    ).statement
                 )
             )
             selected = rows[: request.limit]
@@ -406,6 +455,8 @@ class ControlActivityQueryAdapter:
                 json.dumps([_stamp(last.created_at), last.id], separators=(",", ":"))
                 if last
                 else None,
+                total=sql_window.total,
+                number=request.number,
             )
 
     async def download_workspace(self, artifact_id: str) -> DownloadView:
@@ -413,7 +464,7 @@ class ControlActivityQueryAdapter:
             metadata, data = await asyncio.to_thread(
                 self._store().read_bytes, artifact_id, max_bytes=32 * 1024 * 1024
             )
-            return DownloadView(metadata["name"], data)
+            return DownloadView(metadata["name"], data, raster_type(data))
         except WorkspaceError as exc:
             raise ControlQueryError(Problem(ProblemCode.NOT_FOUND)) from exc
 
@@ -491,7 +542,16 @@ class ControlActivityQueryAdapter:
         async with self._reader() as session:
             rows = list(
                 (
-                    await session.execute(stmt.order_by(work.c.id).limit(request.limit + 1))
+                    await session.execute(
+                        (
+                            sql_window := await numbered_statement(
+                                session,
+                                stmt.order_by(work.c.id).limit(request.limit + 1),
+                                request,
+                                order=(work.c.created.desc(), work.c.id.desc()),
+                            )
+                        ).statement
+                    )
                 ).mappings()
             )
             selected = rows[: request.limit]
@@ -510,6 +570,8 @@ class ControlActivityQueryAdapter:
                 QueryResourceKind.WORK,
                 "work",
                 selected[-1]["id"] if selected else None,
+                total=sql_window.total,
+                number=request.number,
             )
 
     async def list_model_usage(self, request: PageRequest) -> Page[ActivityView]:
@@ -522,7 +584,17 @@ class ControlActivityQueryAdapter:
         async with self._reader() as session:
             rows = list(
                 await session.scalars(
-                    stmt.order_by(ModelInvocationModel.id.desc()).limit(request.limit + 1)
+                    (
+                        sql_window := await numbered_statement(
+                            session,
+                            stmt.order_by(ModelInvocationModel.id.desc()).limit(request.limit + 1),
+                            request,
+                            order=(
+                                ModelInvocationModel.created_at.desc(),
+                                ModelInvocationModel.id.desc(),
+                            ),
+                        )
+                    ).statement
                 )
             )
             selected = rows[: request.limit]
@@ -555,6 +627,8 @@ class ControlActivityQueryAdapter:
                 QueryResourceKind.MODEL_USAGE,
                 "usage",
                 str(selected[-1].id) if selected else None,
+                total=sql_window.total,
+                number=request.number,
             )
 
     def _store(self) -> WorkspaceStore:
@@ -568,6 +642,7 @@ class ControlActivityQueryAdapter:
                 self._store().list,
                 cursor=request.cursor.value if request.cursor else "",
                 limit=request.limit,
+                number=request.number,
             )
             return Page(
                 [
@@ -591,6 +666,8 @@ class ControlActivityQueryAdapter:
                 ],
                 next_cursor=Cursor(result["next_cursor"]) if result["next_cursor"] else None,
                 snapshot_at=datetime.now(UTC),
+                total=result.get("total"),
+                number=request.number,
             )
         except WorkspaceError as exc:
             raise ControlQueryError(Problem(ProblemCode.STATE_MISMATCH)) from exc

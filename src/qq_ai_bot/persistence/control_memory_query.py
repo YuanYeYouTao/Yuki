@@ -26,6 +26,7 @@ from qq_ai_bot.domain.relationships import stage_for_score
 from qq_ai_bot.memory.dream.db_models import MemoryDreamRunModel
 from qq_ai_bot.persistence.control_activity_query import _stamp
 from qq_ai_bot.persistence.control_execution_query import _key, _page
+from qq_ai_bot.persistence.control_paging import numbered_statement
 from qq_ai_bot.persistence.models import (
     MemoryEvidenceModel,
     MemoryFactModel,
@@ -265,7 +266,18 @@ class ControlMemoryQueryAdapter:
             ):
                 raise ControlQueryError(Problem(ProblemCode.NOT_FOUND))
             rows = (
-                (await session.execute(stmt.order_by(model.id).limit(request.limit + 1)))
+                (
+                    await session.execute(
+                        (
+                            sql_window := await numbered_statement(
+                                session,
+                                stmt.order_by(model.id).limit(request.limit + 1),
+                                request,
+                                order=(model.updated_at.desc(), model.id.desc()),
+                            )
+                        ).statement
+                    )
+                )
                 .mappings()
                 .all()
             )
@@ -290,7 +302,14 @@ class ControlMemoryQueryAdapter:
                 )
             result.append(ActivityView(str(row["id"]), fields))
         return _page(
-            result, rows, request, kind, partition, result[-1].resource_id if result else None
+            result,
+            rows,
+            request,
+            kind,
+            partition,
+            result[-1].resource_id if result else None,
+            total=sql_window.total,
+            number=request.number,
         )
 
     def __init__(self, reader: Callable[[], AbstractAsyncContextManager[AsyncSession]]) -> None:
@@ -317,7 +336,17 @@ class ControlMemoryQueryAdapter:
             rows = (
                 (
                     await session.execute(
-                        stmt.order_by(model.canonical_person_id).limit(request.limit + 1)
+                        (
+                            sql_window := await numbered_statement(
+                                session,
+                                stmt.order_by(model.canonical_person_id).limit(request.limit + 1),
+                                request,
+                                order=(
+                                    model.updated_at.desc(),
+                                    model.canonical_person_id.desc(),
+                                ),
+                            )
+                        ).statement
                     )
                 )
                 .mappings()
@@ -331,6 +360,8 @@ class ControlMemoryQueryAdapter:
             kind,
             "canonical_relationships",
             rows[request.limit - 1]["canonical_person_id"] if len(rows) >= request.limit else None,
+            total=sql_window.total,
+            number=request.number,
         )
 
     @staticmethod
@@ -415,7 +446,18 @@ class ControlMemoryQueryAdapter:
             stmt = stmt.where(model.id < self._marker(key))
         async with self._reader() as session:
             rows = (
-                (await session.execute(stmt.order_by(model.id.desc()).limit(request.limit + 1)))
+                (
+                    await session.execute(
+                        (
+                            sql_window := await numbered_statement(
+                                session,
+                                stmt.order_by(model.id.desc()).limit(request.limit + 1),
+                                request,
+                                order=(model.created_at.desc(), model.id.desc()),
+                            )
+                        ).statement
+                    )
+                )
                 .mappings()
                 .all()
             )
@@ -436,6 +478,8 @@ class ControlMemoryQueryAdapter:
             kind,
             scope,
             str(rows[request.limit - 1]["id"]) if len(rows) >= request.limit else None,
+            total=sql_window.total,
+            number=request.number,
         )
 
     async def list_memory_facts(
@@ -462,7 +506,18 @@ class ControlMemoryQueryAdapter:
             stmt = stmt.where(model.id > self._marker(key))
         async with self._reader() as session:
             rows = (
-                (await session.execute(stmt.order_by(model.id).limit(request.limit + 1)))
+                (
+                    await session.execute(
+                        (
+                            sql_window := await numbered_statement(
+                                session,
+                                stmt.order_by(model.id).limit(request.limit + 1),
+                                request,
+                                order=(model.updated_at.desc(), model.id.desc()),
+                            )
+                        ).statement
+                    )
+                )
                 .mappings()
                 .all()
             )
@@ -495,6 +550,8 @@ class ControlMemoryQueryAdapter:
             QueryResourceKind.MEMORY_FACT,
             partition,
             str(rows[request.limit - 1]["id"]) if len(rows) >= request.limit else None,
+            total=sql_window.total,
+            number=request.number,
         )
 
     async def list_memory_evidence(
@@ -532,7 +589,18 @@ class ControlMemoryQueryAdapter:
             stmt = stmt.where(model.id > self._marker(key))
         async with self._reader() as session:
             rows = (
-                (await session.execute(stmt.order_by(model.id).limit(request.limit + 1)))
+                (
+                    await session.execute(
+                        (
+                            sql_window := await numbered_statement(
+                                session,
+                                stmt.order_by(model.id).limit(request.limit + 1),
+                                request,
+                                order=(model.created_at.desc(), model.id.desc()),
+                            )
+                        ).statement
+                    )
+                )
                 .mappings()
                 .all()
             )
@@ -558,6 +626,8 @@ class ControlMemoryQueryAdapter:
             QueryResourceKind.MEMORY_EVIDENCE,
             partition,
             str(rows[request.limit - 1]["id"]) if len(rows) >= request.limit else None,
+            total=sql_window.total,
+            number=request.number,
         )
 
     @staticmethod

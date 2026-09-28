@@ -546,6 +546,9 @@ class Settings(BaseSettings):
     emoji_worker_retry_delay_seconds: float = 30.0
     emoji_analysis_version: str = "emoji-v1"
     emoji_storage_root: Path = Path("data/emoji")
+    # Optional read-only mount of the existing Manager's /workspace, for WebUI
+    # binary preview. This never creates a second writable workspace.
+    webui_workspace_directory: Path | None = None
     emoji_preview_max_dimension: int = 512
 
     # Local speech uses a separate, network-isolated Genie-TTS worker.  Optional

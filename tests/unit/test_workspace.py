@@ -22,10 +22,17 @@ def test_workspace_expiry_revision_quota_and_file_integrity(
     assert same["expires_at"] == first["expires_at"] and same["revision"] == 2
     with pytest.raises(WorkspaceError, match="version_conflict"):
         store.write("note.txt", b"new", artifact_id=identity, expected_revision=1)
+    clock[0] += 10
     second = store.write("more.txt", b"1234567")
     with pytest.raises(WorkspaceError, match="workspace_full"):
         store.write("full.txt", b"x")
     assert len(store.list()["items"]) == 2
+    newest = store.list(limit=1, number=1)
+    older = store.list(limit=1, number=2)
+    assert newest["total"] == older["total"] == 2
+    assert newest["items"][0]["artifact_id"] == second["artifact_id"]
+    assert older["items"][0]["artifact_id"] == identity
+    assert store.list(limit=1, number=3)["items"] == []
     restarted = WorkspaceStore(store.root, ttl=100, capacity=12, max_file=10, max_objects=2)
     assert restarted.read(identity)["expires_at"] == first["expires_at"]
     for name in ("../escape", "/etc/passwd", "a\\b", "C:secret"):

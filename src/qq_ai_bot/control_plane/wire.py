@@ -102,11 +102,13 @@ def decode_command(body: object) -> ControlCommand:
 
 def decode_page(body: object) -> PageRequest:
     try:
-        if not isinstance(body, Mapping) or set(body) - {"limit", "cursor"}:
+        if not isinstance(body, Mapping) or set(body) - {"limit", "cursor", "number"}:
             raise ValueError("invalid page envelope")
         raw_cursor = body.get("cursor")
         return PageRequest(
-            limit=body.get("limit", 20), cursor=None if raw_cursor is None else Cursor(raw_cursor)
+            limit=body.get("limit", 20),
+            cursor=None if raw_cursor is None else Cursor(raw_cursor),
+            number=body.get("number"),
         )
     except (TypeError, ValueError) as exc:
         raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR)) from exc
