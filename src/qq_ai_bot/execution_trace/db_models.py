@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, LargeBinary, String
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, LargeBinary, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from qq_ai_bot.persistence.models import Base
@@ -20,6 +20,18 @@ class ExecutionTraceEntryModel(Base):
     __tablename__ = "execution_trace_entries"
     __table_args__ = (
         Index("ix_execution_trace_conversation_id", "conversation_id", "id"),
+        Index(
+            "ix_execution_trace_roots",
+            "conversation_id",
+            "id",
+            sqlite_where=text("kind IN ('chat_processing_start', 'turn_start')"),
+        ),
+        Index(
+            "ix_execution_trace_source_event",
+            "source_event_id",
+            "id",
+            sqlite_where=text("source_event_id IS NOT NULL"),
+        ),
         Index("ix_execution_trace_turn_id", "turn_id", "id"),
         Index("ix_execution_trace_work_id", "work_id", "id"),
         Index("ix_execution_trace_operation_id", "operation_id", "id"),

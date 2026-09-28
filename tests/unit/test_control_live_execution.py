@@ -58,15 +58,22 @@ async def test_live_execution_requires_real_process_span_and_expiring_evidence(d
     trace_queries = [sql for sql, _ in statements if "execution_trace_entries" in sql]
     assert trace_queries and all("LIMIT" in sql.upper() for sql in trace_queries)
     assert all("payload_gzip" not in sql for sql in trace_queries)
+    root_sql, root_params = next(
+        (sql, params) for sql, params in statements if "INDEXED BY ix_execution_trace_roots" in sql
+    )
     step_sql, step_params = next(
         (sql, params)
         for sql, params in statements
         if "INDEXED BY ix_execution_trace_turn_id" in sql and "LIMIT 33" in sql
     )
     async with database.engine.connect() as connection:
+        root_plan = (
+            await connection.exec_driver_sql("EXPLAIN QUERY PLAN " + root_sql, root_params)
+        ).all()
         plan = (
             await connection.exec_driver_sql("EXPLAIN QUERY PLAN " + step_sql, step_params)
         ).all()
+    assert any("USING INDEX ix_execution_trace_roots" in row[3] for row in root_plan)
     assert any("USING INDEX ix_execution_trace_turn_id" in row[3] for row in plan)
 
     # A start without its terminal receipt must not keep a turn "running"
@@ -201,10 +208,13 @@ async def test_inbound_event_links_only_real_runner_turns_and_can_have_multiple(
     ]
     assert len(indexed_sql) >= 3
     assert any("count(" in sql.lower() for sql, _ in indexed_sql)
+    assert any("INDEXED BY ix_execution_trace_source_event" in sql for sql, _ in indexed_sql)
     async with database.engine.connect() as connection:
         for sql, params in indexed_sql:
             plan = (await connection.exec_driver_sql("EXPLAIN QUERY PLAN " + sql, params)).all()
             assert any("USING INDEX ix_execution_trace_turn_id" in row[3] for row in plan)
+            if "INDEXED BY ix_execution_trace_source_event" in sql:
+                assert any("USING INDEX ix_execution_trace_source_event" in row[3] for row in plan)
 
 
 @pytest.mark.asyncio
