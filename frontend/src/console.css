@@ -198,6 +198,24 @@ pre {
   scrollbar-gutter: stable;
   flex: 1;
 }
+.chat-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 100%;
+}
+.chat-timeline > :first-child {
+  margin-top: auto;
+}
+.chat-older,
+.chat-return-latest {
+  align-self: center;
+}
+.chat-return-latest {
+  position: sticky;
+  top: 8px;
+  z-index: 2;
+}
 .chat-block footer {
   display: flex;
   gap: 12px;
@@ -235,9 +253,41 @@ pre {
 .chat-filters input[type="number"] {
   width: 85px;
 }
-.chat-trace {
-  padding: 20px;
-  background: var(--bg-secondary);
+.live-session {
+  display: grid;
+  gap: 12px;
+}
+.live-status {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--accent-hover);
+}
+.live-turn {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-card);
+}
+.live-turn header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+}
+.live-turn header time,
+.live-steps time {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+}
+.live-steps {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+  padding-left: 1.4rem;
+}
+.live-steps li span {
+  margin-left: 8px;
 }
 .right-container .settings-content {
   padding: 14px;

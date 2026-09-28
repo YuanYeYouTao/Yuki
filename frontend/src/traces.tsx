@@ -226,26 +226,31 @@ function TraceList({
   const [selected, setSelected] = useState<number | null>(null),
     [turn, setTurn] = useState(""),
     [draft, setDraft] = useState("");
+  const fixedTurn = Boolean(scope.turn_id);
   return (
     <>
       <Section title={title}>
-        <form
-          className="search-line"
-          onSubmit={(e) => {
-            e.preventDefault();
-            setTurn(draft.trim());
-            setSelected(null);
-          }}
-        >
-          <input
-            className="form-control"
-            aria-label="轮次编号"
-            placeholder="按完整轮次编号查询…"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-          />
-          <button className="btn-secondary">查找</button>
-        </form>
+        {fixedTurn ? (
+          <p className="section-caption">当前轮次：{text(scope.turn_id)}</p>
+        ) : (
+          <form
+            className="search-line"
+            onSubmit={(e) => {
+              e.preventDefault();
+              setTurn(draft.trim());
+              setSelected(null);
+            }}
+          >
+            <input
+              className="form-control"
+              aria-label="轮次编号"
+              placeholder="按完整轮次编号查询…"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+            />
+            <button className="btn-secondary">查找</button>
+          </form>
+        )}
         <p className="section-caption">
           点击轮次查看该轮所有步骤；正文需要单独的内容读取权限。诊断记录超过保留期限后不再显示。
         </p>
@@ -255,7 +260,7 @@ function TraceList({
           args={{
             scope: {
               ...scope,
-              ...(turn ? { turn_id: turn } : {}),
+              ...(!fixedTurn && turn ? { turn_id: turn } : {}),
               descending: !(turn || scope.turn_id),
             },
           }}
@@ -268,18 +273,21 @@ function TraceList({
             [
               "turn_id",
               "轮次",
-              (v, row) => (
-                <button
-                  className="file-open"
-                  onClick={() => {
-                    setTurn(String(v));
-                    setDraft(String(v));
-                    setSelected(null);
-                  }}
-                >
-                  查看 {stamp(row.created_at)} 的轮次
-                </button>
-              ),
+              (v, row) =>
+                fixedTurn ? (
+                  text(v)
+                ) : (
+                  <button
+                    className="file-open"
+                    onClick={() => {
+                      setTurn(String(v));
+                      setDraft(String(v));
+                      setSelected(null);
+                    }}
+                  >
+                    查看 {stamp(row.created_at)} 的轮次
+                  </button>
+                ),
             ],
             ["parent_operation_id", "父步骤"],
             ["delivered_event_id", "已发送事件"],

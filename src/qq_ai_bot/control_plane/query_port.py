@@ -51,6 +51,18 @@ from qq_ai_bot.domain.identity import ConversationId, PersonId, PrincipalId, Req
 class ControlQueryPort(Protocol):
     """Read-only projections. Must not return catalog rows or session objects."""
 
+    async def read_conversation_execution(
+        self, conversation_id: ConversationId
+    ) -> ActivityView: ...
+    async def list_event_turns(
+        self,
+        request: PageRequest,
+        *,
+        conversation_id: ConversationId,
+        event_id: int,
+        direction: str,
+    ) -> Page[ActivityView]: ...
+
     async def list_plugin_outbox(
         self, request: PageRequest, *, plugin_id: str
     ) -> Page[ActivityView]: ...

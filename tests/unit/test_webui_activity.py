@@ -83,6 +83,11 @@ async def test_metadata_queries_do_not_load_message_bodies_and_usage_null_is_not
     finally:
         event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
     assert chat.items[0].content is None and chat.items[0].suppression_status == "keeper"
+    assert chat.total is None
+    assert not any(
+        "count(" in statement.lower() and "chat_events" in statement.lower()
+        for statement in statements
+    )
     ledger_read = next(statement for statement in statements if "FROM chat_events" in statement)
     for column in (
         "chat_events.content",
@@ -248,14 +253,25 @@ async def test_latest_history_cursor_and_event_lookup_never_cross_conversations(
     await uow.append_inbound(other.message, other)
     service = ControlQueryService(ControlQueryAdapter(database))
     ctx = context("control.chat.metadata.read", "control.chat.content.read")
-    first = await service.list_chat_events(
-        ctx,
-        PageRequest(limit=2),
-        conversation_id=conversation,
-        history=ChatHistoryFilter(descending=True),
-        include_content=True,
-    )
+    statements: list[str] = []
+
+    def capture(_connection, _cursor, statement, *_args):
+        statements.append(statement.lower())
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
+    try:
+        first = await service.list_chat_events(
+            ctx,
+            PageRequest(limit=2),
+            conversation_id=conversation,
+            history=ChatHistoryFilter(descending=True),
+            include_content=True,
+        )
+    finally:
+        event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
     assert [row.event_id for row in first.items] == ids[-2:][::-1]
+    assert first.total is None and first.number is None
+    assert not any("count(" in statement for statement in statements)
     second = await service.list_chat_events(
         ctx,
         PageRequest(limit=2, cursor=first.next_cursor),
@@ -263,6 +279,20 @@ async def test_latest_history_cursor_and_event_lookup_never_cross_conversations(
         history=ChatHistoryFilter(descending=True),
     )
     assert [row.event_id for row in second.items] == ids[1:3][::-1]
+    anchored = await service.list_chat_events(
+        ctx,
+        PageRequest(limit=2),
+        conversation_id=conversation,
+        history=ChatHistoryFilter(descending=True, through_event_id=ids[2]),
+    )
+    assert [row.event_id for row in anchored.items] == ids[2:0:-1]
+    with pytest.raises(ControlQueryError):
+        await service.list_chat_events(
+            ctx,
+            PageRequest(limit=2),
+            conversation_id=ConversationId.parse(other.conversation_id),
+            history=ChatHistoryFilter(descending=True, through_event_id=ids[2]),
+        )
     with pytest.raises(ControlQueryError):
         await service.list_chat_events(
             ctx,

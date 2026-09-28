@@ -61,6 +61,8 @@ _METHODS: tuple[tuple[Literal["query", "command"], str, str], ...] = (
     ("query", "list_workspace", "control.workspace.metadata.read"),
     ("query", "read_workspace", "control.workspace.content.read"),
     ("query", "list_execution_trace", "control.execution.metadata.read"),
+    ("query", "read_conversation_execution", "control.execution.metadata.read"),
+    ("query", "list_event_turns", "control.execution.metadata.read"),
     ("query", "read_execution_trace", "control.execution.content.read"),
     ("query", "list_chat_events", "control.chat.metadata.read"),
     ("query", "list_social_receipts", "control.execution.metadata.read"),

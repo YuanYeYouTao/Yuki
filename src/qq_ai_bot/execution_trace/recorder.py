@@ -43,6 +43,18 @@ class TraceScope:
     source_event_id: int | None
 
 
+@dataclass(frozen=True, slots=True)
+class LiveTraceSpan:
+    """Process-local observation of a span that has actually entered its context."""
+
+    turn_id: str
+    operation_id: str
+    conversation_id: str | None
+    family: str
+    origin: str | None
+    started_at: datetime
+
+
 current_trace: ContextVar[TraceScope | None] = ContextVar(
     "execution_diagnostic_scope", default=None
 )
@@ -62,6 +74,16 @@ class TraceRecorder:
         self.retention_days = retention_days
         self.max_payload_bytes = max_payload_bytes
         self.record_failures = 0
+        self._live_spans: dict[str, LiveTraceSpan] = {}
+
+    def live_spans(self, conversation_id: str) -> tuple[LiveTraceSpan, ...]:
+        """A read-only, restart-ephemeral view; never used for recovery or effects."""
+        return tuple(
+            span
+            for span in self._live_spans.values()
+            if span.conversation_id == conversation_id
+            and span.family in {"chat_processing", "turn"}
+        )
 
     async def coverage(self) -> TraceCoverage:
         try:
@@ -262,6 +284,14 @@ async def trace_span(
         source_event_id=source_event_id or (parent.source_event_id if parent else None),
     )
     token = current_trace.set(scope)
+    recorder._live_spans[scope.operation_id] = LiveTraceSpan(
+        turn_id=scope.turn_id,
+        operation_id=scope.operation_id,
+        conversation_id=scope.conversation_id,
+        family=family,
+        origin=scope.origin,
+        started_at=datetime.now(UTC),
+    )
     failures_before = scope.coverage.failures
     try:
         await record_trace(f"{family}_start", payload)
@@ -288,6 +318,7 @@ async def trace_span(
                 },
             )
     finally:
+        recorder._live_spans.pop(scope.operation_id, None)
         current_trace.reset(token)
 
 

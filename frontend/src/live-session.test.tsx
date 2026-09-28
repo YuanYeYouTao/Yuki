@@ -1,0 +1,359 @@
+import { expect, it, vi } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { LiveSession } from "./live-session";
+import { EventTurns } from "./event-turns";
+import { Chat } from "./chat";
+
+function answer(data: unknown) {
+  return Promise.resolve(
+    new Response(JSON.stringify({ data, problem: null }), { status: 200 }),
+  );
+}
+
+it("shows current conversation activity and opens the original turn", async () => {
+  const calls: { method: string; body: Record<string, unknown> }[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
+    const method = String(url).split("/").pop()!;
+    const body = JSON.parse(String(options?.body || "{}"));
+    calls.push({ method, body });
+    if (method === "read_conversation_execution")
+      return answer({
+        fields: {
+          conversation_id: "conversation-a",
+          observed_at: "2026-09-28T08:00:00Z",
+          state: "active",
+          active: [
+            {
+              turn_id: "turn-one",
+              original_conversation_id: "conversation-a",
+              origin: "user_message",
+              started_at: "2026-09-28T07:59:59Z",
+              last_step_at: "2026-09-28T08:00:00Z",
+              latest_kind: "tool_batch_start",
+              status: "active",
+              steps: [
+                {
+                  id: 12,
+                  kind: "tool_batch_start",
+                  created_at: "2026-09-28T08:00:00Z",
+                  payload_status: "recorded",
+                },
+              ],
+            },
+          ],
+          recent: [],
+        },
+      });
+    return answer({ items: [], next_cursor: null });
+  });
+  render(<LiveSession conversation="conversation-a" refresh={0} />);
+  expect(await screen.findByText("正在执行 1 个轮次")).toBeInTheDocument();
+  expect(screen.getAllByText("执行工具").length).toBeGreaterThan(0);
+  await userEvent
+    .setup()
+    .click(screen.getByRole("button", { name: "展开模型、工具和结果" }));
+  await waitFor(() =>
+    expect(calls.some((call) => call.method === "list_execution_trace")).toBe(
+      true,
+    ),
+  );
+  expect(
+    calls.find((call) => call.method === "list_execution_trace")?.body.scope,
+  ).toMatchObject({
+    turn_id: "turn-one",
+    conversation_id: "conversation-a",
+  });
+  expect(
+    screen.queryByRole("textbox", { name: "轮次编号" }),
+  ).not.toBeInTheDocument();
+});
+
+it("refreshes an expanded active turn when a new step arrives", async () => {
+  let step = 12;
+  let traceReads = 0;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+    const method = String(url).split("/").pop()!;
+    if (method === "read_conversation_execution")
+      return answer({
+        fields: {
+          conversation_id: "conversation-a",
+          observed_at: "2026-09-28T08:00:00Z",
+          state: "active",
+          active: [
+            {
+              turn_id: "turn-one",
+              original_conversation_id: "conversation-a",
+              origin: "user_message",
+              started_at: "2026-09-28T07:59:59Z",
+              last_step_at: "2026-09-28T08:00:00Z",
+              latest_kind: "tool_batch_start",
+              status: "active",
+              steps: [
+                {
+                  id: step,
+                  kind: "tool_batch_start",
+                  created_at: "2026-09-28T08:00:00Z",
+                  payload_status: "recorded",
+                },
+              ],
+            },
+          ],
+          recent: [],
+        },
+      });
+    if (method === "list_execution_trace") traceReads++;
+    return answer({ items: [], total: 0, page: { number: 1, limit: 30 } });
+  });
+  const view = render(
+    <LiveSession conversation="conversation-a" refresh={0} />,
+  );
+  await screen.findByText("正在执行 1 个轮次");
+  await userEvent
+    .setup()
+    .click(screen.getByRole("button", { name: "展开模型、工具和结果" }));
+  await waitFor(() => expect(traceReads).toBe(1));
+  step = 13;
+  view.rerender(<LiveSession conversation="conversation-a" refresh={1} />);
+  await waitFor(() => expect(traceReads).toBe(2));
+});
+
+it("keeps the latest completed turn collapsed while idle", async () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+    answer({
+      fields: {
+        conversation_id: "conversation-a",
+        observed_at: "2026-09-28T08:00:00Z",
+        state: "idle",
+        active: [],
+        recent: [
+          {
+            turn_id: "turn-last",
+            original_conversation_id: "conversation-a",
+            origin: "user_message",
+            started_at: "2026-09-28T07:00:00Z",
+            last_step_at: "2026-09-28T07:01:00Z",
+            latest_kind: "turn_end",
+            status: "completed",
+            steps: [],
+          },
+        ],
+      },
+    }),
+  );
+  render(<LiveSession conversation="conversation-a" refresh={0} />);
+  expect(await screen.findByText("当前没有执行")).toBeInTheDocument();
+  expect(screen.queryByText("已完成")).not.toBeInTheDocument();
+  await userEvent
+    .setup()
+    .click(screen.getByRole("button", { name: "查看最近一次轮次" }));
+  expect(screen.getByText("已完成")).toBeInTheDocument();
+});
+
+it("requires an exact event to turn link and lets the reader choose among turns", async () => {
+  const calls: { method: string; body: Record<string, unknown> }[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
+    const method = String(url).split("/").pop()!;
+    const body = JSON.parse(String(options?.body || "{}"));
+    calls.push({ method, body });
+    if (method === "list_event_turns")
+      return answer({
+        items: [
+          {
+            resource_id: "turn-a",
+            fields: {
+              turn_id: "turn-a",
+              origin: "user_message",
+              created_at: "2026-09-28T07:00:00Z",
+              original_conversation_id: "conversation-a",
+              trace_status: "recorded",
+            },
+          },
+          {
+            resource_id: "turn-b",
+            fields: {
+              turn_id: "turn-b",
+              origin: "automation",
+              created_at: "2026-09-28T08:00:00Z",
+              original_conversation_id: "conversation-b",
+              trace_status: "recorded",
+            },
+          },
+        ],
+        total: 2,
+        next_cursor: null,
+      });
+    return answer({ items: [], next_cursor: null });
+  });
+  render(
+    <EventTurns
+      conversation="conversation-a"
+      eventId={42}
+      direction="outbound"
+      refresh={0}
+    />,
+  );
+  expect(await screen.findByText(/多个轮次/)).toBeInTheDocument();
+  expect(screen.queryByText(/本轮执行/)).not.toBeInTheDocument();
+  await userEvent
+    .setup()
+    .click(screen.getByRole("button", { name: /automation/ }));
+  await waitFor(() =>
+    expect(calls.some((call) => call.method === "list_execution_trace")).toBe(
+      true,
+    ),
+  );
+  expect(
+    calls.find((call) => call.method === "list_execution_trace")?.body.scope,
+  ).toMatchObject({
+    turn_id: "turn-b",
+    conversation_id: "conversation-b",
+  });
+  expect(calls[0].body).toMatchObject({
+    conversation_id: "conversation-a",
+    event_id: 42,
+    direction: "outbound",
+  });
+});
+
+it("does not claim a turn when an event has no retained link", async () => {
+  const methods: string[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation((url) => {
+    methods.push(String(url).split("/").pop()!);
+    return answer({ items: [], next_cursor: null });
+  });
+  render(
+    <EventTurns
+      conversation="conversation-a"
+      eventId={43}
+      direction="inbound"
+      refresh={0}
+    />,
+  );
+  expect(await screen.findByText(/没有可查看的执行轮次/)).toBeInTheDocument();
+  expect(methods).toEqual(["list_event_turns"]);
+});
+
+it("forgets prior event turn choices when the same event is refreshed", async () => {
+  let refreshed = false;
+  vi.spyOn(globalThis, "fetch").mockImplementation((url) => {
+    if (!String(url).endsWith("list_event_turns"))
+      return answer({ items: [], total: 0, next_cursor: null });
+    const turns = refreshed ? ["turn-new"] : ["turn-old", "turn-other"];
+    return answer({
+      items: turns.map((turn_id) => ({
+        resource_id: turn_id,
+        fields: {
+          turn_id,
+          origin: "user_message",
+          created_at: "2026-09-28T08:00:00Z",
+          original_conversation_id: "conversation-a",
+          trace_status: "completed",
+        },
+      })),
+      total: turns.length,
+      next_cursor: null,
+    });
+  });
+  const view = render(
+    <EventTurns
+      conversation="conversation-a"
+      eventId={44}
+      direction="inbound"
+      refresh={0}
+    />,
+  );
+  await screen.findAllByRole("button", { name: /聊天消息/ });
+  await userEvent
+    .setup()
+    .click(screen.getAllByRole("button", { name: /聊天消息/ })[0]);
+  expect(
+    screen.getAllByText("turn-old", { exact: false }).length,
+  ).toBeGreaterThan(0);
+  refreshed = true;
+  view.rerender(
+    <EventTurns
+      conversation="conversation-a"
+      eventId={44}
+      direction="inbound"
+      refresh={1}
+    />,
+  );
+  expect(
+    (await screen.findAllByText("turn-new", { exact: false })).length,
+  ).toBeGreaterThan(0);
+  expect(screen.queryAllByText("turn-old", { exact: false })).toHaveLength(0);
+});
+
+it("refreshes current execution immediately when a hidden page becomes visible", async () => {
+  const originalHidden = Object.getOwnPropertyDescriptor(document, "hidden");
+  Object.defineProperty(document, "hidden", {
+    configurable: true,
+    value: true,
+  });
+  let calls = 0;
+  vi.spyOn(globalThis, "fetch").mockImplementation((url) => {
+    if (String(url).endsWith("read_conversation_execution")) calls++;
+    return answer({
+      fields: {
+        conversation_id: "conversation-a",
+        observed_at: "2026-09-28T08:00:00Z",
+        state: "idle",
+        active: [],
+        recent: [],
+      },
+    });
+  });
+  try {
+    const view = render(
+      <LiveSession conversation="conversation-a" refresh={0} />,
+    );
+    await waitFor(() => expect(calls).toBe(1));
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      value: false,
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(calls).toBe(2));
+    view.unmount();
+  } finally {
+    if (originalHidden)
+      Object.defineProperty(document, "hidden", originalHidden);
+    else Reflect.deleteProperty(document, "hidden");
+  }
+});
+
+it("opens event execution beside the chat without losing the timeline", async () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation((url) => {
+    const method = String(url).split("/").pop();
+    if (method === "list_chat_events")
+      return answer({
+        items: [
+          {
+            event_id: 42,
+            direction: "inbound",
+            sender_display_name: "远野",
+            content: "在做什么",
+            occurred_at: "2026-09-28T08:00:00Z",
+          },
+        ],
+        next_cursor: null,
+      });
+    return answer({ items: [], total: 0, next_cursor: null });
+  });
+  render(
+    <Chat
+      conversation="conversation-a"
+      content
+      refresh={0}
+      notebook={<div />}
+    />,
+  );
+  await userEvent
+    .setup()
+    .click(await screen.findByRole("button", { name: "#42 · 查看事件与执行" }));
+  expect(
+    screen.getByRole("dialog", { name: "事件 #42 的执行过程" }),
+  ).toBeInTheDocument();
+  expect(screen.getByText("在做什么")).toBeInTheDocument();
+});
