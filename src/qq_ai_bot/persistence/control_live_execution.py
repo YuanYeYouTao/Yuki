@@ -9,7 +9,6 @@ from typing import TypedDict, cast
 
 from sqlalchemy import DateTime, Integer, String, bindparam, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased
 
 from qq_ai_bot.control_plane.paging import Page, PageRequest
 from qq_ai_bot.control_plane.problems import Problem, ProblemCode
@@ -124,21 +123,23 @@ async def read_conversation_execution(
 
         if await session.get(CanonicalConversationModel, conversation_id.text) is None:
             raise ControlQueryError(Problem(ProblemCode.NOT_FOUND))
-        # The conversation/id index makes this a bounded backwards walk. A
-        # GROUP BY over every retained diagnostic would run on each UI poll.
+        # Ordinary tool/model steps far outnumber roots in a busy group.
+        # Keep the predicate literal so SQLite can select the partial index.
+        root_statement = (
+            text(
+                "SELECT turn_id, created_at FROM execution_trace_entries "
+                "INDEXED BY ix_execution_trace_roots "
+                "WHERE conversation_id = :conversation_id AND expires_at > :observed_at "
+                "AND kind IN ('chat_processing_start', 'turn_start') "
+                "ORDER BY id DESC LIMIT 6"
+            )
+            .bindparams(bindparam("observed_at", type_=DateTime(timezone=True)))
+            .columns(turn_id=String, created_at=DateTime(timezone=True))
+        )
         root_rows = (
             await session.execute(
-                select(
-                    Trace.turn_id,
-                    Trace.created_at,
-                )
-                .where(
-                    Trace.conversation_id == conversation_id.text,
-                    Trace.expires_at > observed_at,
-                    Trace.kind.in_(("chat_processing_start", "turn_start")),
-                )
-                .order_by(Trace.id.desc())
-                .limit(6)
+                root_statement,
+                {"conversation_id": conversation_id.text, "observed_at": observed_at},
             )
         ).all()
         recent_ids = list(dict.fromkeys(row.turn_id for row in root_rows))[:3]
@@ -251,37 +252,67 @@ async def list_event_turns(
             event.author_kind != "yuki" or event.suppression_status != "keeper"
         ):
             return Page((), snapshot_at=observed_at, total=0, number=request.number or 1)
-        source_filter = (
-            (Trace.source_event_id == event_id) & (Trace.conversation_id == conversation_id.text)
-            if direction == "inbound"
-            else (Trace.delivered_event_id == event_id) & (Trace.kind == "social_delivery")
-        )
-        roots = aliased(Trace)
-        # A delivery can land in another conversation. The root must belong to
-        # the same original execution as the linked trace, never merely share
-        # a turn token with an unrelated conversation.
-        runner_turn = (
-            select(roots.id)
+        if direction == "inbound":
+            candidate_statement = (
+                text(
+                    "SELECT turn_id, conversation_id, MIN(created_at) AS created_at, "
+                    "MAX(id) AS last_id FROM execution_trace_entries "
+                    "INDEXED BY ix_execution_trace_source_event "
+                    "WHERE source_event_id = :source_event_id "
+                    "AND source_event_id IS NOT NULL "
+                    "AND conversation_id = :conversation_id "
+                    "AND expires_at > :observed_at "
+                    "GROUP BY turn_id, conversation_id"
+                )
+                .bindparams(
+                    bindparam("source_event_id", event_id),
+                    bindparam("conversation_id", conversation_id.text),
+                    bindparam("observed_at", observed_at, type_=DateTime(timezone=True)),
+                )
+                .columns(
+                    turn_id=String,
+                    conversation_id=String,
+                    created_at=DateTime(timezone=True),
+                    last_id=Integer,
+                )
+            )
+            candidates = candidate_statement.subquery("event_turn_candidates")
+        else:
+            candidates = (
+                select(
+                    Trace.turn_id,
+                    Trace.conversation_id,
+                    func.min(Trace.created_at).label("created_at"),
+                    func.max(Trace.id).label("last_id"),
+                )
+                .where(
+                    Trace.delivered_event_id == event_id,
+                    Trace.kind == "social_delivery",
+                    Trace.expires_at > observed_at,
+                )
+                .group_by(Trace.turn_id, Trace.conversation_id)
+                .subquery("event_turn_candidates")
+            )
+        # Check each distinct candidate once. Correlating this check to every
+        # trace row made SQLite rescan a busy conversation for each step.
+        # A delivery can land elsewhere; the root must share the *original*
+        # conversation as well as the turn token.
+        rows = (
+            select(candidates)
             .where(
-                roots.turn_id == Trace.turn_id,
-                roots.conversation_id == Trace.conversation_id,
-                roots.expires_at > observed_at,
-                roots.kind.in_(("chat_processing_start", "turn_start")),
+                text(
+                    "EXISTS (SELECT 1 FROM execution_trace_entries AS root "
+                    "INDEXED BY ix_execution_trace_turn_id "
+                    "WHERE root.turn_id = event_turn_candidates.turn_id "
+                    "AND root.conversation_id = event_turn_candidates.conversation_id "
+                    "AND root.expires_at > :root_observed_at "
+                    "AND root.kind IN ('chat_processing_start', 'turn_start'))"
+                ).bindparams(
+                    bindparam("root_observed_at", observed_at, type_=DateTime(timezone=True))
+                )
             )
-            .correlate(Trace)
-            .exists()
+            .subquery()
         )
-        grouped = (
-            select(
-                Trace.turn_id,
-                Trace.conversation_id,
-                func.min(Trace.created_at).label("created_at"),
-                func.max(Trace.id).label("last_id"),
-            )
-            .where(source_filter, Trace.expires_at > observed_at, runner_turn)
-            .group_by(Trace.turn_id, Trace.conversation_id)
-        )
-        rows = grouped.subquery()
         total = int(await session.scalar(select(func.count()).select_from(rows)) or 0)
         selected = (
             (
