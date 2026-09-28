@@ -17,6 +17,7 @@ from qq_ai_bot.model_runtime import (
     load_model_profile_catalog,
 )
 from qq_ai_bot.model_runtime.profiles import model_profile_environment
+from qq_ai_bot.model_runtime.secrets import read_model_secrets
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.settings_domains import ModelRuntimeSettings
 
@@ -62,6 +63,7 @@ class ModelRuntimeModule:
             secret_overrides={
                 "LLM_API_KEY": settings.llm_api_key,
                 "LLM_FLASH_API_KEY": settings.llm_flash_api_key,
+                **read_model_secrets(settings.model_profiles_file)[1],
             },
         )
         invocations = ModelInvocationRepository(self._database)

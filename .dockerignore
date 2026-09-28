@@ -2,6 +2,7 @@
 .venv
 .env
 config/system_prompt.md
+config/model_profiles.secrets.json
 data
 napcat-data
 napcat-config

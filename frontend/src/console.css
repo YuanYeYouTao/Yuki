@@ -304,6 +304,62 @@ pre {
 .usage-warning {
   color: var(--accent-hover);
 }
+.usage-plot-grid,
+.usage-model-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+  margin: 16px 0;
+}
+.usage-plot,
+.usage-model-card {
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-card);
+  min-width: 0;
+}
+.usage-plot h3,
+.usage-model-card h3 {
+  margin: 0 0 12px;
+}
+.usage-bars {
+  height: 170px;
+  display: flex;
+  gap: 3px;
+  align-items: end;
+  overflow-x: auto;
+}
+.usage-bar-item {
+  min-width: 22px;
+  height: 100%;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  font-variant-numeric: tabular-nums;
+}
+.usage-bar-item .usage-bar {
+  width: 100%;
+  min-height: 3px;
+  border-radius: 3px 3px 0 0;
+  background: var(--accent);
+}
+.usage-bar-value,
+.usage-bar-item small {
+  font-size: 10px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.provider-basic-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+.provider-basic-fields > :last-child {
+  grid-column: 1 / -1;
+}
 .provider-intro {
   display: grid;
   gap: 4px;
@@ -345,10 +401,7 @@ pre {
 }
 .provider-route {
   display: grid;
-  grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) minmax(
-      180px,
-      1.5fr
-    );
+  grid-template-columns: minmax(120px, 1fr) minmax(180px, 2fr);
   gap: 8px 14px;
   align-items: center;
   padding: 10px 0;
@@ -361,15 +414,9 @@ pre {
 .provider-route small {
   color: var(--text-secondary);
 }
-.provider-route > .small {
-  grid-column: 2 / 4;
-}
 @media (max-width: 600px) {
   .provider-route {
     grid-template-columns: 1fr;
-  }
-  .provider-route > .small {
-    grid-column: 1;
   }
 }
 .live-status {

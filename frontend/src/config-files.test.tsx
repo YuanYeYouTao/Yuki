@@ -80,8 +80,15 @@ it("edits schema fields and routes without discarding server environment referen
           timeout_seconds: 60,
           protocol: "chat_completions",
           model_env: "LLM_MODEL",
+          base_url_env: "LLM_BASE_URL",
+          api_key_env: "LLM_API_KEY",
         },
-        other: { provider: "openai", model: "m2" },
+        other: {
+          provider: "openai",
+          model: "m2",
+          base_url: "https://api.example.test/v1",
+          api_key_env: "OTHER_KEY",
+        },
       },
       routes: { chat_agent: "main", memory_extraction: "main" },
     },
@@ -89,15 +96,16 @@ it("edits schema fields and routes without discarding server environment referen
   const act = vi.fn();
   render(<ConfigFile fileId="model_profiles" props={{ ...props, act }} />);
   const user = userEvent.setup();
+  await user.click(await screen.findByText("高级参数与能力声明"));
   const timeout = await screen.findByRole("spinbutton", { name: "超时（秒）" });
   await user.clear(timeout);
   await user.type(timeout, "90");
   await user.selectOptions(
-    screen.getByRole("combobox", { name: "chat_agent" }),
+    screen.getByRole("combobox", { name: "主对话使用的模型" }),
     "other",
   );
   await user.selectOptions(
-    screen.getByRole("combobox", { name: "协议" }),
+    screen.getByRole("combobox", { name: "接口协议" }),
     "responses",
   );
   await user.click(screen.getByRole("button", { name: "检查并保存" }));
@@ -116,6 +124,8 @@ it("edits schema fields and routes without discarding server environment referen
     timeout_seconds: 90,
     protocol: "responses",
     model_env: "LLM_MODEL",
+    base_url_env: "LLM_BASE_URL",
+    api_key_env: "LLM_API_KEY",
   });
   expect(document.routes).toEqual({
     chat_agent: "other",
@@ -126,7 +136,7 @@ it("edits schema fields and routes without discarding server environment referen
   expect(screen.queryByText("headers")).not.toBeInTheDocument();
 });
 
-it("chooses a Provider and model through the existing Profile route", async () => {
+it("chooses a concrete model connection for a task", async () => {
   file({
     file_id: "model_profiles",
     revision: 4,
@@ -138,8 +148,18 @@ it("chooses a Provider and model through the existing Profile route", async () =
     document: {
       schema_version: 3,
       profiles: {
-        primary: { provider: "openai", model: "one" },
-        backup: { provider: "deepseek", model: "two" },
+        primary: {
+          provider: "openai",
+          model: "one",
+          base_url: "https://api.example.test/v1",
+          api_key_env: "OPENAI_KEY",
+        },
+        backup: {
+          provider: "deepseek",
+          model: "two",
+          base_url: "https://api.deepseek.com",
+          api_key_env: "DEEPSEEK_KEY",
+        },
       },
       routes: { chat_agent: "primary" },
     },
@@ -148,18 +168,80 @@ it("chooses a Provider and model through the existing Profile route", async () =
   render(<ConfigFile fileId="model_profiles" props={{ ...props, act }} />);
   const user = userEvent.setup();
   await user.selectOptions(
-    await screen.findByRole("combobox", { name: "chat_agent Provider" }),
-    "deepseek",
-  );
-  expect(screen.getByRole("combobox", { name: "chat_agent" })).toHaveValue(
+    await screen.findByRole("combobox", { name: "主对话使用的模型" }),
     "backup",
   );
+  expect(
+    screen.getByRole("combobox", { name: "主对话使用的模型" }),
+  ).toHaveValue("backup");
   await user.click(screen.getByRole("button", { name: "检查并保存" }));
   const intent = act.mock.calls[0][0] as Intent;
   expect(
     (intent.payload.spec as { document: { routes: Record<string, string> } })
       .document.routes.chat_agent,
   ).toBe("backup");
+});
+
+it("accepts an API key in the connection form without showing it in the review", async () => {
+  file({
+    file_id: "model_profiles",
+    revision: 9,
+    valid: true,
+    profile_schema: { properties: {} },
+    tasks: ["chat_agent"],
+    document: {
+      schema_version: 3,
+      profiles: {
+        main: {
+          provider: "openai",
+          protocol: "responses",
+          base_url: "https://api.openai.com/v1",
+          model: "test",
+          api_key_env: "LLM_API_KEY",
+        },
+      },
+      routes: { chat_agent: "main" },
+    },
+  });
+  const act = vi.fn();
+  render(<ConfigFile fileId="model_profiles" props={{ ...props, act }} />);
+  await userEvent.type(
+    await screen.findByLabelText(/^API Key/),
+    "private-test-key",
+  );
+  await userEvent.click(screen.getByRole("button", { name: "检查并保存" }));
+  const intent = act.mock.calls[0][0] as Intent;
+  const spec = intent.payload.spec as {
+    document: { profiles: Record<string, { api_key_env: string }> };
+    api_keys: Record<string, string>;
+  };
+  const alias = spec.document.profiles.main.api_key_env;
+  expect(alias).toMatch(/^YUKI_WEBUI_KEY_[A-F0-9]{32}$/);
+  expect(spec.api_keys[alias]).toBe("private-test-key");
+  expect(JSON.stringify(intent.review)).not.toContain("private-test-key");
+});
+
+it("starts a new configuration with an opaque connection ID and all task routes", async () => {
+  file({
+    file_id: "model_profiles",
+    revision: 0,
+    valid: true,
+    profile_schema: { properties: {} },
+    tasks: ["chat_agent", "memory_extraction"],
+    document: { schema_version: 3, profiles: {}, routes: {} },
+  });
+  render(<ConfigFile fileId="model_profiles" props={props} />);
+  await userEvent.click(
+    await screen.findByRole("button", { name: "添加模型连接" }),
+  );
+  const routes = [
+    screen.getByRole("combobox", { name: "主对话使用的模型" }),
+    screen.getByRole("combobox", { name: "记忆提取使用的模型" }),
+  ];
+  const connectionId = (routes[0] as HTMLSelectElement).value;
+  expect(connectionId).toMatch(/^connection_[a-f0-9]{12}$/);
+  expect(routes[1]).toHaveValue(connectionId);
+  expect(screen.getByText(`内部连接编号：${connectionId}`)).toBeInTheDocument();
 });
 
 it("does not request file contents without the separate content grant", async () => {

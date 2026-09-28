@@ -5,7 +5,7 @@ schema_version = 3
 # Other vendors and native Claude/Gemini: see model_profiles.providers.example.toml
 # and docs/architecture/model-providers.md. Vendor settings never select models by content.
 
-[profiles.pro]
+[profiles.primary_agent]
 # For deepseek-flash (V4.1). Remove image_input for a text-only model.
 provider = "deepseek"
 protocol = "responses"
@@ -22,7 +22,7 @@ reasoning_effort_env = "LLM_REASONING_EFFORT"
 structured_output_mode = "function_tool"
 capabilities = ["tools", "reasoning", "long_context", "image_input"]
 
-[profiles.flash]
+[profiles.background_tasks]
 provider = "deepseek"
 protocol = "chat_completions"
 base_url_env = "LLM_FLASH_BASE_URL"
@@ -53,16 +53,16 @@ structured_output_mode = "json_schema"
 capabilities = ["structured_output", "reasoning"]
 
 [routes]
-chat_agent = "pro"
-memory_extraction = "flash"
+chat_agent = "primary_agent"
+memory_extraction = "background_tasks"
 memory_self_reflection = "self_reflection"
-memory_consolidation = "flash"
-memory_dream = "flash"
-memory_attribution = "flash"
-relationship_evaluation = "flash"
-emoji_replacement = "flash"
-automation_text_generation = "flash"
-automation_agent = "pro"
-plugin_agent_session = "pro"
-utility_structured = "flash"
-conversation_compaction = "flash"
+memory_consolidation = "background_tasks"
+memory_dream = "background_tasks"
+memory_attribution = "background_tasks"
+relationship_evaluation = "background_tasks"
+emoji_replacement = "background_tasks"
+automation_text_generation = "background_tasks"
+automation_agent = "primary_agent"
+plugin_agent_session = "primary_agent"
+utility_structured = "background_tasks"
+conversation_compaction = "background_tasks"

@@ -408,6 +408,18 @@ def test_setup_generates_valid_vendor_catalog(tmp_path, protocol, vendor):
         assert catalog.profiles["self_reflection"].provider == vendor
 
 
+def test_setup_names_secondary_connection_by_task_role():
+    document = build_model_profiles(
+        main_protocol="responses", main_provider="deepseek", flash_enabled=True
+    )
+    assert "[profiles.background_tasks]" in document
+    assert "[profiles.primary_agent]" in document
+    assert 'chat_agent = "primary_agent"' in document
+    assert 'memory_extraction = "background_tasks"' in document
+    assert "[profiles.flash]" not in document
+    assert "[profiles.pro]" not in document
+
+
 def test_multi_vendor_example_loads_without_reading_secrets():
     catalog = load_model_profile_catalog(
         Path("config/model_profiles.providers.example.toml"),

@@ -31,7 +31,9 @@ from qq_ai_bot.control_plane import (
 )
 from qq_ai_bot.conversation.canonical_db_models import ControlCommandReceiptModel
 from qq_ai_bot.model_runtime.models import ModelTask
+from qq_ai_bot.model_runtime.pool import ModelClientPool
 from qq_ai_bot.model_runtime.profiles import parse_model_profile_catalog
+from qq_ai_bot.model_runtime.secrets import model_secrets_path, read_model_secrets
 from qq_ai_bot.persistence.control_command import ControlCommandAdapter
 from qq_ai_bot.persistence.control_query import ControlQueryAdapter
 from qq_ai_bot.persistence.models import AdminOperationEventModel
@@ -87,6 +89,89 @@ async def test_saved_and_loaded_states_headers_and_revision(files):
     actual = tomllib.loads(settings.model_profiles_file.read_text(encoding="utf-8"))
     assert actual["profiles"]["main"]["headers"]["X-Site"] == "private-header-value"
     assert saved["document"]["profiles"]["main"]["model"] == "new-model"
+
+
+async def test_operator_entered_model_key_is_private_and_never_read_back(files):
+    settings, service = files
+    first = await service.read("model_profiles")
+    document = first["document"]
+    alias = "YUKI_WEBUI_KEY_" + "A" * 32
+    document["profiles"]["main"].update(
+        provider="openai",
+        protocol="chat_completions",
+        base_url="https://api.example.test/v1",
+        api_key_env=alias,
+    )
+    await service.save(
+        "model_profiles",
+        first["revision"],
+        {"document": document, "api_keys": {alias: "private-test-key"}},
+    )
+    secret_file = model_secrets_path(settings.model_profiles_file)
+    assert read_model_secrets(settings.model_profiles_file)[1] == {alias: "private-test-key"}
+    if os.name == "posix":
+        assert secret_file.stat().st_mode & 0o077 == 0
+    saved = await service.read("model_profiles")
+    assert saved["saved_api_key_profiles"] == ["main"]
+    assert "private-test-key" not in json.dumps(saved)
+    assert "private-test-key" not in settings.model_profiles_file.read_text()
+    catalog = parse_model_profile_catalog(settings.model_profiles_file.read_text())
+    pool = ModelClientPool(secret_overrides=read_model_secrets(settings.model_profiles_file)[1])
+    try:
+        assert pool.api_key_for(catalog.profiles["main"]) == "private-test-key"
+        assert pool.get(catalog.profiles["main"])
+    finally:
+        await pool.close()
+
+
+async def test_model_key_command_receipt_and_audit_do_not_store_key(database, files):
+    settings, service = files
+    alias = "YUKI_WEBUI_KEY_" + "B" * 32
+    view = await service.read("model_profiles")
+    document = view["document"]
+    document["profiles"]["main"].update(
+        provider="openai",
+        protocol="chat_completions",
+        base_url="https://api.example.test/v1",
+        api_key_env=alias,
+    )
+    ctx = replace(
+        context("control.config.file.mutate"), canonical_target=YukiControlTarget.PERMANENT_YUKI
+    )
+    commands = ControlCommandService(
+        ControlCommandAdapter(database, settings=settings, config_files=service)
+    )
+    result = await commands.save_config_file(
+        ctx,
+        ControlCommand(
+            request_id=ctx.request_id,
+            expected_revision=view["revision"],
+            payload={
+                "action": "save",
+                "resource_id": "model_profiles",
+                "spec": {"document": document, "api_keys": {alias: "audit-private-key"}},
+            },
+        ),
+    )
+    assert result.success
+    assert "audit-private-key" not in str(result)
+    async with database.sessions() as session:
+        audits = (await session.scalars(select(AdminOperationEventModel))).all()
+        receipts = (await session.scalars(select(ControlCommandReceiptModel))).all()
+    assert "audit-private-key" not in " ".join(
+        [*(row.before_json + row.after_json for row in audits),
+         *(row.effective_state_json or "" for row in receipts)]
+    )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode enforcement")
+def test_model_key_file_rejects_world_readable_permissions(tmp_path):
+    profile_path = tmp_path / "model_profiles.toml"
+    secret_path = model_secrets_path(profile_path)
+    secret_path.write_text('{"version":1,"keys":{}}', encoding="utf-8")
+    secret_path.chmod(0o644)
+    with pytest.raises(ValueError, match="not private"):
+        read_model_secrets(profile_path)
 
 
 async def test_native_wire_options_roundtrip_does_not_insert_chat_defaults(files):

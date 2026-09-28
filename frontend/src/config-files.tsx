@@ -7,7 +7,7 @@ import { useQuery } from "./hooks";
 import { Badge, Empty, ErrorNote, Section } from "./components";
 
 const names: Record<string, string> = {
-  model_profiles: "Provider 与模型设置",
+  model_profiles: "模型接入与任务用途",
   system_prompt: "主人格提示词（System Prompt）",
   bot_persona: "共享人格提示词（当前参与组装）",
   autonomous_model: "自主机会 · 热更新参数",
@@ -45,65 +45,156 @@ const taskNames: Record<string, string> = {
   utility_structured: "结构化任务",
   conversation_compaction: "会话压缩",
 };
+const providerPresets = [
+  {
+    id: "deepseek",
+    label: "DeepSeek",
+    protocol: "responses",
+    url: "https://api.deepseek.com",
+  },
+  {
+    id: "openai",
+    label: "OpenAI",
+    protocol: "responses",
+    url: "https://api.openai.com/v1",
+  },
+  {
+    id: "anthropic",
+    label: "Anthropic",
+    protocol: "anthropic_messages",
+    url: "https://api.anthropic.com",
+  },
+  {
+    id: "gemini",
+    label: "Google Gemini",
+    protocol: "gemini",
+    url: "https://generativelanguage.googleapis.com/v1beta",
+  },
+  {
+    id: "openrouter",
+    label: "OpenRouter",
+    protocol: "chat_completions",
+    url: "https://openrouter.ai/api/v1",
+  },
+  { id: "qwen", label: "阿里云 Qwen", protocol: "chat_completions", url: "" },
+  {
+    id: "moonshot",
+    label: "Moonshot / Kimi",
+    protocol: "chat_completions",
+    url: "",
+  },
+  { id: "zhipu", label: "智谱 GLM", protocol: "chat_completions", url: "" },
+  { id: "doubao", label: "火山豆包", protocol: "chat_completions", url: "" },
+  { id: "minimax", label: "MiniMax", protocol: "chat_completions", url: "" },
+  {
+    id: "siliconflow",
+    label: "硅基流动",
+    protocol: "chat_completions",
+    url: "",
+  },
+  { id: "together", label: "Together", protocol: "chat_completions", url: "" },
+  { id: "groq", label: "Groq", protocol: "chat_completions", url: "" },
+  { id: "mistral", label: "Mistral", protocol: "chat_completions", url: "" },
+  { id: "xai", label: "xAI", protocol: "chat_completions", url: "" },
+  {
+    id: "azure_openai",
+    label: "Azure OpenAI v1",
+    protocol: "chat_completions",
+    url: "",
+  },
+  {
+    id: "openai_compatible",
+    label: "其他 OpenAI 兼容服务",
+    protocol: "chat_completions",
+    url: "",
+  },
+] as const;
+const connectionLabel = (profile: Row) =>
+  `${String(profile.provider || "未选供应商")} · ${String(profile.model || "未选模型")}`;
+const protocolLabels: Record<string, string> = {
+  chat_completions: "Chat Completions",
+  responses: "Responses",
+  anthropic_messages: "Claude Messages",
+  gemini: "Gemini GenerateContent",
+};
+const protocolsFor = (provider: unknown) =>
+  provider === "anthropic"
+    ? ["anthropic_messages"]
+    : provider === "gemini"
+      ? ["gemini"]
+      : ["deepseek", "openai", "openai_compatible"].includes(String(provider))
+        ? ["chat_completions", "responses"]
+        : ["chat_completions"];
 
 function ModelDocument({
   fields,
   document,
   change,
+  keyInputs,
+  changeKey,
 }: {
   fields: Row;
   document: Row;
   change: (document: Row) => void;
+  keyInputs: Record<string, string>;
+  changeKey: (id: string, value: string) => void;
 }) {
   const profiles = document.profiles as Record<string, Row>;
   const routes = document.routes as Record<string, string>;
+  const resolvedProfiles = (fields.resolved_profiles || {}) as Record<
+    string,
+    Row
+  >;
+  const labelOf = (id: string) =>
+    connectionLabel({
+      ...(resolvedProfiles[id] || {}),
+      ...(profiles[id] || {}),
+    });
   const [selected, select] = useState(Object.keys(profiles)[0] || "");
-  const [newId, setNewId] = useState("");
-  const [error, setError] = useState("");
   const schema = fields.profile_schema as Row;
   function update(profile: Row) {
     change({ ...document, profiles: { ...profiles, [selected]: profile } });
   }
   function add() {
-    if (!/^[a-zA-Z0-9_.-]+$/.test(newId) || Object.hasOwn(profiles, newId)) {
-      setError("请输入未使用的 Profile ID（字母、数字、点、短横线或下划线）。");
-      return;
-    }
+    const id = `connection_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
     change({
       ...document,
+      routes:
+        Object.keys(profiles).length === 0
+          ? Object.fromEntries(
+              (fields.tasks as string[]).map((task) => [task, id]),
+            )
+          : routes,
       profiles: {
         ...profiles,
-        [newId]: {
-          provider: "openai",
-          protocol: "chat_completions",
+        [id]: {
+          provider: "deepseek",
+          protocol: "responses",
+          base_url: "https://api.deepseek.com",
           model: "",
-          timeout_seconds: 60,
+          timeout_seconds: 120,
           max_retries: 2,
-          default_temperature: 1,
-          default_max_output_tokens: 4096,
+          default_temperature: 0.7,
+          default_max_output_tokens: 8192,
           capabilities: ["reasoning", "tools", "structured_output"],
         },
       },
     });
-    select(newId);
-    setNewId("");
-    setError("");
+    select(id);
   }
   const profile = profiles[selected];
-  const providers = [
-    ...new Set(
-      Object.values(profiles).map((item) => String(item.provider || "")),
-    ),
-  ].filter(Boolean);
+  const resolved = resolvedProfiles[selected];
+  const savedKeyProfiles = (fields.saved_api_key_profiles || []) as string[];
   return (
     <>
       <div className="provider-intro">
-        <strong>1. 管理 Provider 配置档</strong>
+        <strong>1. 添加或编辑模型连接</strong>
         <span>
-          每档定义接入类型、协议、服务地址、密钥环境变量和模型；密钥原值只在服务器环境中保存。
+          选择供应商，填写 API 地址、模型和 API Key；密钥只发送给 Yuki
+          服务器保存，不在页面回显。
         </span>
       </div>
-      <div className="provider-profile-list" aria-label="Provider 配置档">
+      <div className="provider-profile-list" aria-label="模型连接">
         {Object.entries(profiles).map(([id, item]) => (
           <button
             type="button"
@@ -112,10 +203,16 @@ function ModelDocument({
             aria-pressed={selected === id}
             onClick={() => select(id)}
           >
-            <strong>{id}</strong>
+            <strong>{labelOf(id)}</strong>
             <span>
-              {String(item.provider || "未选 Provider")} ·{" "}
-              {String(item.model || item.model_env || "未选模型")}
+              {keyInputs[id]
+                ? "有待保存的新 API Key"
+                : savedKeyProfiles.includes(id) &&
+                    String(item.api_key_env || "").startsWith("YUKI_WEBUI_KEY_")
+                  ? "API Key 已保存"
+                  : item.api_key_env
+                    ? "使用服务器已有密钥"
+                    : "尚未设置密钥"}
             </span>
             <small>
               {Object.values(routes).filter((route) => route === id).length}{" "}
@@ -126,75 +223,191 @@ function ModelDocument({
       </div>
       <div className="settings-actions">
         <label className="form-group">
-          当前配置档
+          当前模型连接
           <select
             className="form-control"
             value={selected}
             onChange={(e) => select(e.target.value)}
           >
             {Object.keys(profiles).map((id) => (
-              <option key={id}>{id}</option>
+              <option key={id} value={id}>
+                {labelOf(id)}
+              </option>
             ))}
           </select>
         </label>
-        <label className="form-group">
-          新 Profile ID
-          <input
-            className="form-control"
-            value={newId}
-            onChange={(e) => setNewId(e.target.value)}
-            autoComplete="off"
-          />
-        </label>
         <button type="button" className="btn-secondary" onClick={add}>
-          添加 Profile
+          添加模型连接
         </button>
       </div>
-      {error && (
-        <p role="alert" className="error-note">
-          {error}
-        </p>
-      )}
       {profile && (
         <>
-          <h3>编辑 {selected}</h3>
-          <SchemaFields
-            values={profile}
-            labels={names}
-            omit={["id", "headers", "thinking_enabled"]}
-            choices={(name, values) =>
-              ["reasoning_effort", "effort_levels"].includes(name)
-                ? values.filter((value) => !["none", "minimal"].includes(value))
-                : values
-            }
-            schema={schema}
-            root={schema}
-            prefix={`profile-${selected}`}
-            change={update}
-          />
+          <h3>编辑 {labelOf(selected)}</h3>
+          <div className="provider-basic-fields">
+            <label className="form-group">
+              供应商
+              <select
+                className="form-control"
+                value={String(profile.provider || "")}
+                onChange={(event) => {
+                  const preset = providerPresets.find(
+                    (item) => item.id === event.target.value,
+                  );
+                  const next: Row = {
+                    ...profile,
+                    provider: event.target.value,
+                    protocol: preset?.protocol || "chat_completions",
+                    base_url: preset?.url || "",
+                    model: "",
+                    api_key_env: "",
+                  };
+                  delete next.base_url_env;
+                  delete next.model_env;
+                  update(next);
+                  changeKey(selected, "");
+                }}
+              >
+                {!providerPresets.some(
+                  (item) => item.id === profile.provider,
+                ) && (
+                  <option value={String(profile.provider || "")}>
+                    {String(profile.provider || "当前供应商")}
+                  </option>
+                )}
+                {providerPresets.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="form-group">
+              接口协议
+              <select
+                className="form-control"
+                value={String(profile.protocol || "chat_completions")}
+                onChange={(event) =>
+                  update({ ...profile, protocol: event.target.value })
+                }
+              >
+                {protocolsFor(profile.provider).map((protocol) => (
+                  <option value={protocol} key={protocol}>
+                    {protocolLabels[protocol]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="form-group">
+              API Base URL
+              <input
+                className="form-control"
+                type="url"
+                value={String(profile.base_url || resolved?.base_url || "")}
+                onChange={(event) => {
+                  const next: Row = {
+                    ...profile,
+                    base_url: event.target.value,
+                  };
+                  delete next.base_url_env;
+                  update(next);
+                }}
+                placeholder="https://api.example.com/v1"
+                autoComplete="url"
+              />
+            </label>
+            <label className="form-group">
+              模型 ID
+              <input
+                className="form-control"
+                value={String(profile.model || resolved?.model || "")}
+                onChange={(event) => {
+                  const next: Row = { ...profile, model: event.target.value };
+                  delete next.model_env;
+                  update(next);
+                }}
+                placeholder="输入供应商提供的模型 ID"
+                autoComplete="off"
+              />
+            </label>
+            <label className="form-group">
+              API Key
+              <input
+                className="form-control"
+                type="password"
+                value={keyInputs[selected] || ""}
+                onChange={(event) => changeKey(selected, event.target.value)}
+                placeholder={
+                  profile.api_key_env ? "留空沿用已保存的密钥" : "粘贴 API Key"
+                }
+                autoComplete="new-password"
+              />
+              <small>只在保存时提交新输入；页面不会取回原密钥。</small>
+            </label>
+          </div>
           <details className="json-note">
-            <summary>环境变量引用</summary>
-            <p className="small">
-              引用会覆盖同名直接值；只填写变量名，值在服务器读取。
-            </p>
-            {["base_url_env", "model_env", "reasoning_effort_env"].map(
-              (name) => (
-                <label className="form-group" key={name}>
-                  {names[name]}
-                  <input
-                    className="form-control"
-                    value={String(profile[name] || "")}
-                    autoComplete="off"
-                    onChange={(e) => {
-                      const next = { ...profile };
-                      if (e.target.value) next[name] = e.target.value;
-                      else delete next[name];
-                      update(next);
-                    }}
-                  />
-                </label>
-              ),
-            )}
+            <summary>高级参数与能力声明</summary>
+            <SchemaFields
+              values={profile}
+              labels={names}
+              omit={[
+                "id",
+                "headers",
+                "thinking_enabled",
+                "thinking_mode",
+                "provider",
+                "protocol",
+                "base_url",
+                "model",
+                "api_key_env",
+              ]}
+              choices={(name, values) =>
+                ["reasoning_effort", "effort_levels"].includes(name)
+                  ? values.filter(
+                      (value) => !["none", "minimal"].includes(value),
+                    )
+                  : values
+              }
+              schema={schema}
+              root={schema}
+              prefix={`profile-${selected}`}
+              change={update}
+            />
+            <details className="json-note">
+              <summary>沿用服务器环境变量</summary>
+              <p className="small">
+                仅用于已有部署。编辑上面的地址或模型会改用直接填写的值。
+              </p>
+              {["base_url_env", "model_env", "reasoning_effort_env"].map(
+                (name) => (
+                  <label className="form-group" key={name}>
+                    {names[name]}
+                    <input
+                      className="form-control"
+                      value={String(profile[name] || "")}
+                      autoComplete="off"
+                      onChange={(e) => {
+                        const next = { ...profile };
+                        if (e.target.value) next[name] = e.target.value;
+                        else delete next[name];
+                        update(next);
+                      }}
+                    />
+                  </label>
+                ),
+              )}
+            </details>
+            <label className="form-group">
+              已有密钥的环境变量名
+              <input
+                className="form-control"
+                value={String(profile.api_key_env || "")}
+                onChange={(event) =>
+                  update({ ...profile, api_key_env: event.target.value })
+                }
+                autoComplete="off"
+              />
+            </label>
+            <p className="small">内部连接编号：{selected}</p>
           </details>
           <button
             className="btn-secondary"
@@ -207,21 +420,18 @@ function ModelDocument({
               select(Object.keys(next)[0] || "");
             }}
           >
-            删除此 Profile
+            删除此模型连接
           </button>
           {Object.values(routes).includes(selected) && (
             <p className="small">
-              任务仍引用此 Profile；先调整下面的路由再删除。
+              仍有任务使用此连接；先调整下面的用途再删除。
             </p>
           )}
         </>
       )}
       <div className="provider-intro">
-        <strong>2. 按用途选择配置档</strong>
-        <span>
-          每个用途选择一档已定义的 Provider
-          和模型；保存后需重启才能在新请求中生效。
-        </span>
+        <strong>2. 为任务选择模型</strong>
+        <span>每个用途直接选择上面配置的模型；保存后重启才会用于新请求。</span>
       </div>
       <div className="provider-routes">
         {(fields.tasks as string[]).map((task) => (
@@ -232,28 +442,7 @@ function ModelDocument({
             </span>
             <select
               className="form-control"
-              aria-label={`${task} Provider`}
-              value={String(profiles[routes[task]]?.provider || "")}
-              onChange={(e) => {
-                const next = Object.keys(profiles).find(
-                  (id) => profiles[id].provider === e.target.value,
-                );
-                change({
-                  ...document,
-                  routes: { ...routes, [task]: next || "" },
-                });
-              }}
-            >
-              <option value="">选择 Provider</option>
-              {providers.map((provider) => (
-                <option key={provider} value={provider}>
-                  {provider}
-                </option>
-              ))}
-            </select>
-            <select
-              className="form-control"
-              aria-label={task}
+              aria-label={`${taskNames[task] || task}使用的模型`}
               value={routes[task] || ""}
               onChange={(e) =>
                 change({
@@ -262,35 +451,19 @@ function ModelDocument({
                 })
               }
             >
-              <option value="">请选择 Profile</option>
-              {Object.keys(profiles)
-                .filter(
-                  (id) =>
-                    !routes[task] ||
-                    profiles[id].provider === profiles[routes[task]]?.provider,
-                )
-                .map((id) => (
-                  <option key={id} value={id}>
-                    {String(
-                      profiles[id].model ||
-                        profiles[id].model_env ||
-                        "模型未选",
-                    )}{" "}
-                    · {id}
-                  </option>
-                ))}
+              <option value="">请选择模型连接</option>
+              {Object.keys(profiles).map((id) => (
+                <option key={id} value={id}>
+                  {labelOf(id)}
+                </option>
+              ))}
             </select>
-            <span className="small">
-              当前保存值：
-              {routes[task]
-                ? `${routes[task]} · ${String(profiles[routes[task]]?.provider || "档案缺失")} / ${String(profiles[routes[task]]?.model || profiles[routes[task]]?.model_env || "模型未选")}`
-                : "未选择"}
-            </span>
           </label>
         ))}
       </div>
       <p className="small">
-        保存前会核验全部路由、能力声明、协议参数与服务器环境变量。思考保持应用规定的下限。密钥值不读取；已有自定义请求头原样保留，由服务器配置。
+        保存前会核验全部用途、能力声明和协议参数。已有自定义请求头保留在服务器；API
+        Key 不会回显。
       </p>
     </>
   );
@@ -299,9 +472,32 @@ function ModelDocument({
 function Draft({ fields, props }: { fields: Row; props: PageProps }) {
   const fileId = String(fields.file_id);
   const [document, setDocument] = useState<Row>((fields.document || {}) as Row);
+  const [keyInputs, setKeyInputs] = useState<Record<string, string>>({});
+  const [saveError, setSaveError] = useState("");
   const [content, setContent] = useState(String(fields.content || ""));
   const hotReload = fields.apply_mode === "hot_reload";
   const [hasDocument, setHasDocument] = useState(fields.document != null);
+  function saveModelDocument() {
+    const next = structuredClone(document);
+    const profiles = next.profiles as Record<string, Row>;
+    const apiKeys: Record<string, string> = {};
+    for (const [id, profile] of Object.entries(profiles)) {
+      if (!profile.model && !profile.model_env)
+        throw new Error(`${id} 缺少模型 ID。`);
+      if (!profile.base_url && !profile.base_url_env)
+        throw new Error(`${id} 缺少 API Base URL。`);
+      if (!profile.api_key_env && !keyInputs[id]?.trim())
+        throw new Error(`${id} 缺少 API Key。`);
+      delete profile.thinking_mode;
+    }
+    for (const [id, value] of Object.entries(keyInputs)) {
+      if (!value.trim() || !profiles[id]) continue;
+      const alias = `YUKI_WEBUI_KEY_${crypto.randomUUID().replaceAll("-", "").toUpperCase()}`;
+      profiles[id].api_key_env = alias;
+      apiKeys[alias] = value.trim();
+    }
+    return { document: next, api_keys: apiKeys };
+  }
   return (
     <>
       {fields.exists === false && (
@@ -348,6 +544,10 @@ function Draft({ fields, props }: { fields: Row; props: PageProps }) {
           fields={fields}
           document={document}
           change={setDocument}
+          keyInputs={keyInputs}
+          changeKey={(id, value) =>
+            setKeyInputs((current) => ({ ...current, [id]: value }))
+          }
         />
       ) : fileId === "model_profiles" ? (
         <Empty>磁盘文件无法安全解析，请在服务器修正格式后重新读取。</Empty>
@@ -373,6 +573,11 @@ function Draft({ fields, props }: { fields: Row; props: PageProps }) {
           声明仍应保留在只读配置目录。
         </p>
       )}
+      {saveError && (
+        <p className="error-note" role="alert">
+          {saveError}
+        </p>
+      )}
       {props.allowed("save_config_file") &&
         (fileId !== "model_profiles" || fields.profile_schema) && (
           <button
@@ -380,7 +585,18 @@ function Draft({ fields, props }: { fields: Row; props: PageProps }) {
             disabled={
               fields.writable_directory === false || (hotReload && !hasDocument)
             }
-            onClick={() =>
+            onClick={() => {
+              let modelSave: ReturnType<typeof saveModelDocument> | null = null;
+              try {
+                modelSave =
+                  fileId === "model_profiles" ? saveModelDocument() : null;
+                setSaveError("");
+              } catch (error) {
+                setSaveError(
+                  error instanceof Error ? error.message : "配置内容不完整。",
+                );
+                return;
+              }
               props.act({
                 method: "save_config_file",
                 label: `保存${names[fileId]}`,
@@ -389,17 +605,19 @@ function Draft({ fields, props }: { fields: Row; props: PageProps }) {
                   action: "save",
                   resource_id: fileId,
                   spec:
-                    fileId === "model_profiles" || hotReload
-                      ? { document }
+                    modelSave || hotReload
+                      ? modelSave || { document }
                       : { content },
                 },
                 review:
-                  fileId === "model_profiles" || hotReload ? document : content,
+                  fileId === "model_profiles" || hotReload
+                    ? modelSave?.document || document
+                    : content,
                 hint: hotReload
                   ? "核对原文件版本并原子保存。saved_pending_reload 表示已保存，等待原控制器下一轮加载；实际生效请刷新核对。"
                   : "将核对刚读取的文件版本并原子保存。持久回执中的 saved_pending_restart 表示已保存，尚需重启加载。",
-              })
-            }
+              });
+            }}
           >
             检查并保存
           </button>

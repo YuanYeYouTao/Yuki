@@ -30,6 +30,7 @@ logs/
 .workbuddy/
 config/system_prompt.md
 config/model_profiles.toml
+config/model_profiles.secrets.json
 config/mcp.json
 napcat-data/
 napcat-config/

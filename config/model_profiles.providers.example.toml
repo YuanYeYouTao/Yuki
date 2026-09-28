@@ -23,7 +23,7 @@ structured_output_mode = "json_schema"
 capabilities = ["tools", "structured_output", "reasoning", "image_input", "long_context"]
 # Adaptive-capable Claude required. Older models: wire_options.reasoning = "budget".
 
-[profiles.flash]
+[profiles.background_tasks]
 provider = "qwen"
 protocol = "chat_completions"
 base_url_env = "LLM_FLASH_BASE_URL"
@@ -59,13 +59,13 @@ capabilities = ["structured_output", "reasoning"]
 chat_agent = "main"
 automation_agent = "main"
 plugin_agent_session = "main"
-memory_extraction = "flash"
+memory_extraction = "background_tasks"
 memory_self_reflection = "self_reflection"
-memory_consolidation = "flash"
-memory_dream = "flash"
-memory_attribution = "flash"
-relationship_evaluation = "flash"
-emoji_replacement = "flash"
-automation_text_generation = "flash"
-utility_structured = "flash"
-conversation_compaction = "flash"
+memory_consolidation = "background_tasks"
+memory_dream = "background_tasks"
+memory_attribution = "background_tasks"
+relationship_evaluation = "background_tasks"
+emoji_replacement = "background_tasks"
+automation_text_generation = "background_tasks"
+utility_structured = "background_tasks"
+conversation_compaction = "background_tasks"
