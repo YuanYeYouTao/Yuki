@@ -196,6 +196,7 @@ class ExecutionTraceView:
 class ChatHistoryFilter:
     descending: bool = False
     event_id: int | None = None
+    through_event_id: int | None = None
     since: datetime | None = None
     until: datetime | None = None
 
@@ -205,6 +206,12 @@ class ChatHistoryFilter:
             _require_int(self.event_id, "event_id", minimum=1)
             if self.event_id > 2**63 - 1:
                 raise ValueError("event_id exceeds ledger range")
+        if self.through_event_id is not None:
+            _require_int(self.through_event_id, "through_event_id", minimum=1)
+            if self.through_event_id > 2**63 - 1:
+                raise ValueError("through_event_id exceeds ledger range")
+            if self.event_id is not None or not self.descending:
+                raise ValueError("through_event_id requires descending history without event_id")
         for name in ("since", "until"):
             value = getattr(self, name)
             if value is not None:

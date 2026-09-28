@@ -102,26 +102,38 @@ it("loads image bytes only when its preview approaches the viewport", async () =
   vi.unstubAllGlobals();
 });
 
-it("jumps directly to a chat history page with a real total", async () => {
-  const seen: number[] = [];
+it("uses a bounded chat cursor, shows older messages above newer ones, and locates an event", async () => {
+  const seen: Array<{
+    cursor?: string;
+    number?: number;
+    history: Record<string, unknown>;
+  }> = [];
   vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, options) => {
     const body = JSON.parse(String(options?.body));
-    seen.push(body.page.number);
+    if (!String(_url).endsWith("list_chat_events"))
+      return new Response(JSON.stringify({ data: { items: [] } }), {
+        status: 200,
+      });
+    seen.push({ ...body.page, history: body.history });
+    const ids = body.history.through_event_id
+      ? [2, 1]
+      : body.page.cursor
+        ? [1]
+        : [3, 2];
     return new Response(
       JSON.stringify({
         data: {
-          items: [
-            {
-              event_id: body.page.number,
-              direction: "inbound",
-              sender_display_name: "远野",
-              content: `第${body.page.number}页`,
-              occurred_at: "2026-09-28T00:00:00Z",
-            },
-          ],
-          total: 81,
-          number: body.page.number,
-          next_cursor: null,
+          items: ids.map((id) => ({
+            event_id: id,
+            direction: "inbound",
+            sender_display_name: "远野",
+            content: `消息${id}`,
+            occurred_at: "2026-09-28T00:00:00Z",
+          })),
+          next_cursor:
+            !body.page.cursor && !body.history.through_event_id
+              ? "older"
+              : null,
         },
         problem: null,
       }),
@@ -137,11 +149,33 @@ it("jumps directly to a chat history page with a real total", async () => {
       notebook={<div />}
     />,
   );
-  expect(await screen.findByText("第1页")).toBeInTheDocument();
-  expect(screen.getByText(/第 1 页 \/ 共 3 页 · 共 81 条/)).toBeInTheDocument();
-  await user.clear(screen.getByRole("spinbutton", { name: "聊天页码" }));
-  await user.type(screen.getByRole("spinbutton", { name: "聊天页码" }), "3");
-  await user.click(screen.getByRole("button", { name: "跳转" }));
-  expect(await screen.findByText("第3页")).toBeInTheDocument();
-  expect(seen).toEqual([1, 3]);
+  expect(await screen.findByText("消息3")).toBeInTheDocument();
+  expect(
+    [...document.querySelectorAll(".chat-timeline article")].map(
+      (row) => row.textContent,
+    ),
+  ).toEqual(
+    expect.arrayContaining([
+      expect.stringContaining("消息2"),
+      expect.stringContaining("消息3"),
+    ]),
+  );
+  expect(screen.queryByRole("spinbutton", { name: "聊天页码" })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "加载更早消息" }));
+  expect(await screen.findByText("消息1")).toBeInTheDocument();
+  expect(
+    [...document.querySelectorAll(".chat-timeline article")].map((row) =>
+      Number(row.getAttribute("data-event-id")),
+    ),
+  ).toEqual([1, 2, 3]);
+  expect(seen.slice(0, 2).map((request) => request.cursor)).toEqual([
+    undefined,
+    "older",
+  ]);
+  expect(seen.every((request) => request.number === undefined)).toBe(true);
+  await user.clear(screen.getByRole("spinbutton", { name: "事件" }));
+  await user.type(screen.getByRole("spinbutton", { name: "事件" }), "2");
+  await user.click(screen.getByRole("button", { name: "查找" }));
+  await waitFor(() => expect(seen.at(-1)?.history.through_event_id).toBe(2));
+  expect(await screen.findByText("消息2")).toBeInTheDocument();
 });

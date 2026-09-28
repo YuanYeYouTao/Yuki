@@ -16,6 +16,7 @@ from qq_ai_bot.control_plane.command_service import ControlCommandService
 from qq_ai_bot.control_plane.query_service import ControlQueryService
 from qq_ai_bot.control_plane.query_types import ComponentHealthView
 from qq_ai_bot.conversation.media_service import ConversationMediaService
+from qq_ai_bot.execution_trace.recorder import TraceRecorder
 from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
 from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
@@ -61,6 +62,7 @@ class ControlPlaneModule:
         participation_snapshot: Callable[[], Awaitable[dict[str, object]]] | None = None,
         autonomy_parameters: Callable[[], AutonomyParameters] | None = None,
         runtime_health: Callable[[], Awaitable[tuple[ComponentHealthView, ...]]] | None = None,
+        trace_recorder: TraceRecorder | None = None,
     ) -> ControlPlaneBundle:
         config_files = ConfigFileService(
             settings, model_catalog, autonomy_parameters=autonomy_parameters
@@ -97,6 +99,7 @@ class ControlPlaneModule:
                     model_catalog=model_catalog,
                     participation_snapshot=participation_snapshot,
                     runtime_health=runtime_health,
+                    trace_recorder=trace_recorder,
                 )
             ),
             commands=ControlCommandService(writer),

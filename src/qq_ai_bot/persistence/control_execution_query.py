@@ -310,6 +310,7 @@ class ControlExecutionQueryAdapter:
                 conversation_id.text,
                 history.descending,
                 history.event_id,
+                history.through_event_id,
                 history.since.isoformat() if history.since else None,
                 history.until.isoformat() if history.until else None,
             ]
@@ -349,6 +350,8 @@ class ControlExecutionQueryAdapter:
             )
         if history.event_id is not None:
             stmt = stmt.where(ChatEventModel.id == history.event_id)
+        if history.through_event_id is not None:
+            stmt = stmt.where(ChatEventModel.id <= history.through_event_id)
         if history.since is not None:
             stmt = stmt.where(ChatEventModel.occurred_at >= history.since)
         if history.until is not None:
@@ -359,6 +362,15 @@ class ControlExecutionQueryAdapter:
             )
         order = ChatEventModel.id.desc() if history.descending else ChatEventModel.id.asc()
         async with self._reader() as session:
+            if history.through_event_id is not None:
+                anchor = await session.scalar(
+                    select(ChatEventModel.id).where(
+                        ChatEventModel.id == history.through_event_id,
+                        ChatEventModel.canonical_conversation_id == conversation_id.text,
+                    )
+                )
+                if anchor is None:
+                    raise ControlQueryError(Problem(ProblemCode.NOT_FOUND))
             rows = list(
                 await session.scalars(
                     (

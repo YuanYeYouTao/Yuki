@@ -417,7 +417,9 @@ function Console({
             !allowed(navigation.find(([id]) => id === route)![3]) ? (
               <Empty>当前账号未授予该页面的读取权限。</Empty>
             ) : (
-              pages[route]?.() || <Health refresh={refresh} />
+              pages[route]?.() || (
+                <Health refresh={refresh} conversation={conversation} />
+              )
             )}
           </div>
         )}

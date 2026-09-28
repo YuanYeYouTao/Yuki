@@ -81,6 +81,28 @@ def _reveal_external(context: DecisionContext[ControlPrincipal, object, object])
 class ControlQueryService:
     """Authorize then project. Does not invent principals or actors."""
 
+    async def read_conversation_execution(
+        self, context: object, conversation_id: ConversationId
+    ) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_conversation_execution"))
+        return await self._port.read_conversation_execution(conversation_id)
+
+    async def list_event_turns(
+        self,
+        context: object,
+        request: PageRequest,
+        *,
+        conversation_id: ConversationId,
+        event_id: int,
+        direction: str,
+    ) -> Page[ActivityView]:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("list_event_turns"))
+        return await self._port.list_event_turns(
+            request, conversation_id=conversation_id, event_id=event_id, direction=direction
+        )
+
     async def read_display_names(self, context: object, references: JsonObject) -> ActivityView:
         from qq_ai_bot.persistence.control_names import NAME_CAPABILITIES
 

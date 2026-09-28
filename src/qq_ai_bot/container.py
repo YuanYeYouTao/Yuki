@@ -533,6 +533,7 @@ class ApplicationContainer:
             participation_snapshot=lambda: self.semantic_participation.control_snapshot(),
             autonomy_parameters=lambda: self.semantic_participation.control_model_parameters(),
             runtime_health=lambda: control_runtime_health(self),
+            trace_recorder=self.models.traces,
         )
         self.emoji_collector.set_event_publisher(self.plugin_events)
         self.emoji_lifecycle.set_event_publisher(self.plugin_events)

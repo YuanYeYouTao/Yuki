@@ -17,6 +17,7 @@ import { ConfigFile } from "./config-files";
 import { MediaPreview } from "./preview";
 export { Models } from "./models";
 import { Work } from "./work";
+import { LiveSession } from "./live-session";
 export { Work };
 import { Traces } from "./traces";
 
@@ -29,12 +30,22 @@ export interface PageProps {
 const flatten = (row: Row): Row => ({ ...row, ...((row.fields as Row) || {}) });
 const status = (value: unknown) => <Badge value={value} />;
 
-export function Health({ refresh }: { refresh: number }) {
+export function Health({
+  refresh,
+  conversation,
+}: {
+  refresh: number;
+  conversation: string;
+}) {
+  return <LiveSession conversation={conversation} refresh={refresh} />;
+}
+
+export function SystemHealth({ refresh }: { refresh: number }) {
   const health = useQuery<Row>("read_health", {}, refresh),
     system = useQuery<Row>("read_system", {}, refresh);
   return (
     <>
-      <Section title="现在的 Yuki">
+      <Section title="系统概况">
         {system.error != null && <ErrorNote error={system.error} />}
         {system.data ? (
           <div className="metric-grid">
@@ -631,13 +642,17 @@ export function Notebook({ props }: { props: PageProps }) {
   const [tab, setTab] = useState("status");
   const tabs = [
     ["status", "状态"],
+    ["system", "系统"],
     ["persona", "人格"],
     ["memory", "记忆"],
     ["work", "工作"],
     ["files", "文件"],
   ];
   const contents: Record<string, () => ReactNode> = {
-    status: () => <Health refresh={props.refresh} />,
+    status: () => (
+      <Health refresh={props.refresh} conversation={props.conversation} />
+    ),
+    system: () => <SystemHealth refresh={props.refresh} />,
     persona: () => <Persona {...props} />,
     memory: () => <Memory {...props} />,
     work: () => <Work {...props} />,

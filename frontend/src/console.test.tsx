@@ -367,7 +367,7 @@ describe("management transport and evidence", () => {
     );
   });
   it.each(["inbound", "outbound"])(
-    "uses internal %s event ids to open the execution trail",
+    "uses internal %s event ids to find linked execution turns",
     async (direction) => {
       const fetch = vi
         .spyOn(globalThis, "fetch")
@@ -392,15 +392,15 @@ describe("management transport and evidence", () => {
               problem: null,
             });
           }
-          expect(
-            body.scope[
-              direction === "outbound"
-                ? "delivered_event_id"
-                : "source_event_id"
-            ],
-          ).toBe(142);
-          expect(body.scope.conversation_id).toBe("canonical-fixture");
-          return ok({ data: { items: [], next_cursor: null }, problem: null });
+          if (String(url).endsWith("list_event_turns")) {
+            expect(body.event_id).toBe(142);
+            expect(body.direction).toBe(direction);
+            expect(body.conversation_id).toBe("canonical-fixture");
+          }
+          return ok({
+            data: { items: [], total: 0, next_cursor: null },
+            problem: null,
+          });
         });
       render(
         <Chat
@@ -412,12 +412,12 @@ describe("management transport and evidence", () => {
       );
       await screen.findByText("fixture hello");
       await userEvent.click(
-        screen.getByRole("button", { name: "#142 · 查看本轮" }),
+        screen.getByRole("button", { name: "#142 · 查看事件与执行" }),
       );
       await waitFor(() =>
         expect(
           fetch.mock.calls.some(([url]) =>
-            String(url).endsWith("list_execution_trace"),
+            String(url).endsWith("list_event_turns"),
           ),
         ).toBe(true),
       );
@@ -453,6 +453,8 @@ it("keeps the selected default conversation and notebook section across refresh"
       };
     if (method === "read_system") data = { version: "fixture" };
     if (method === "read_health") data = { components: [] };
+    if (method === "read_conversation_execution")
+      data = { state: "idle", active: [], recent: [] };
     if (method === "read_config_file")
       data = {
         fields: {
@@ -532,6 +534,8 @@ it("browses recent conversations by numbered page and retains the chosen convers
     }
     if (method === "read_system") data = { version: "fixture" };
     if (method === "read_health") data = { components: [] };
+    if (method === "read_conversation_execution")
+      data = { state: "idle", active: [], recent: [] };
     return new Response(JSON.stringify({ data }), { status: 200 });
   });
   render(<App />);

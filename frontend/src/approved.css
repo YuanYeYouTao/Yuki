@@ -126,10 +126,16 @@ textarea:focus-visible {
   width: 48px;
   height: 48px;
   margin: 0;
+  border-radius: 50%;
+  overflow: hidden;
 }
-.chat-block .avatar img {
-  object-fit: contain;
-  padding: 7px;
+.chat-block .avatar .avatar-photo {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  padding: 0;
 }
 .chat-block .sender-name {
   font-family: var(--font-ui);
@@ -693,9 +699,12 @@ td .small {
   object-fit: cover;
 }
 .avatar-photo {
+  display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
+  object-position: center;
+  border-radius: inherit;
 }
 .avatar-initial {
   display: inline-flex;

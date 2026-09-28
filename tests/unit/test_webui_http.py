@@ -7,6 +7,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from tests.conftest import make_settings
+from tests.support.social_identity_cases import social_env
 from tests.unit import test_control_automation_history as automation_fixtures
 from tests.unit import test_control_memory_query as memory_fixtures
 from tests.unit import test_control_reflection_query as reflection_fixtures
@@ -109,6 +110,89 @@ async def signed_in(client):
     assert session.status_code == 200
     assert session.json()["content_access"]["chat"] is False
     return {"Origin": ORIGIN, "X-Yuki-CSRF": session.json()["csrf"]}
+
+
+async def test_live_execution_http_validates_scope_and_serializes_event_turns(
+    web, database, tmp_path
+):
+    client, _, _ = web
+    env = await social_env(database, tmp_path)
+    async with database.sessions() as session:
+        from sqlalchemy import select
+
+        from qq_ai_bot.persistence.models import ChatEventModel
+
+        event = await session.scalar(select(ChatEventModel))
+        assert event is not None
+    headers = await signed_in(client)
+    live = await client.post(
+        "/api/control/queries/read_conversation_execution",
+        headers=headers,
+        json={"conversation_id": env.context.conversation_id},
+    )
+    assert live.status_code == 200, live.text
+    assert live.json()["data"]["fields"]["conversation_id"] == env.context.conversation_id
+    turns = await client.post(
+        "/api/control/queries/list_event_turns",
+        headers=headers,
+        json={
+            "conversation_id": env.context.conversation_id,
+            "event_id": event.id,
+            "direction": "inbound",
+            "page": {"limit": 20, "number": 1},
+        },
+    )
+    assert turns.status_code == 200 and turns.json()["data"]["items"] == []
+    from qq_ai_bot.execution_trace.recorder import TraceRecorder, trace_span
+
+    async with trace_span(
+        "turn",
+        {},
+        recorder=TraceRecorder(database),
+        conversation_id=env.context.conversation_id,
+        source_event_id=event.id,
+    ):
+        pass
+    linked = await client.post(
+        "/api/control/queries/list_event_turns",
+        headers=headers,
+        json={
+            "conversation_id": env.context.conversation_id,
+            "event_id": event.id,
+            "direction": "inbound",
+        },
+    )
+    assert linked.status_code == 200
+    fields = linked.json()["data"]["items"][0]["fields"]
+    assert fields["original_conversation_id"] == env.context.conversation_id
+    assert fields["trace_status"] == "completed"
+    invalid = (
+        (
+            "read_conversation_execution",
+            {"conversation_id": env.context.conversation_id, "extra": 1},
+        ),
+        (
+            "list_event_turns",
+            {
+                "conversation_id": env.context.conversation_id,
+                "event_id": True,
+                "direction": "inbound",
+            },
+        ),
+        (
+            "list_event_turns",
+            {
+                "conversation_id": env.context.conversation_id,
+                "event_id": event.id,
+                "direction": "sideways",
+            },
+        ),
+    )
+    for method, payload in invalid:
+        response = await client.post(
+            f"/api/control/queries/{method}", headers=headers, json=payload
+        )
+        assert response.status_code == 400
 
 
 async def test_reflection_and_relationship_http_are_metadata_queries(

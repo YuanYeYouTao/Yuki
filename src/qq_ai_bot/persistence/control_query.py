@@ -113,6 +113,7 @@ from qq_ai_bot.domain.identity import (
 )
 from qq_ai_bot.domain.memory_config import MemoryConfigScope
 from qq_ai_bot.emoji.db_models import EmojiAssetModel, EmojiScopeStateModel
+from qq_ai_bot.execution_trace.recorder import TraceRecorder
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
@@ -593,6 +594,7 @@ class ControlQueryAdapter:
         config_files: ConfigFileService | None = None,
         participation_snapshot: Callable[[], Awaitable[dict[str, object]]] | None = None,
         runtime_health: Callable[[], Awaitable[tuple[ComponentHealthView, ...]]] | None = None,
+        trace_recorder: TraceRecorder | None = None,
     ) -> None:
         if type(database) is not Database:
             raise TypeError("database must be Database")
@@ -635,6 +637,9 @@ class ControlQueryAdapter:
         self._connections = connection_registry
         self._plugins = plugins
         self._runtime_health = runtime_health
+        self._trace_recorder = trace_recorder
+        if trace_recorder is not None and not isinstance(trace_recorder, TraceRecorder):
+            raise TypeError("trace_recorder must be TraceRecorder or None")
         self._participation_snapshot = participation_snapshot
 
     async def download_workspace(self, artifact_id: str) -> DownloadView:
@@ -850,6 +855,33 @@ class ControlQueryAdapter:
             conversation_id=conversation_id,
             include_content=include_content,
             history=history,
+        )
+
+    async def read_conversation_execution(self, conversation_id: ConversationId) -> ActivityView:
+        from qq_ai_bot.persistence.control_live_execution import read_conversation_execution
+
+        return await read_conversation_execution(
+            self._reader,
+            conversation_id,
+            self._trace_recorder,
+        )
+
+    async def list_event_turns(
+        self,
+        request: PageRequest,
+        *,
+        conversation_id: ConversationId,
+        event_id: int,
+        direction: str,
+    ) -> Page[ActivityView]:
+        from qq_ai_bot.persistence.control_live_execution import list_event_turns
+
+        return await list_event_turns(
+            self._reader,
+            request,
+            conversation_id=conversation_id,
+            event_id=event_id,
+            direction=direction,
         )
 
     async def list_social_receipts(

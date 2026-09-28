@@ -57,6 +57,8 @@ _SIMPLE_QUERIES = frozenset(name for kind, name, _ in _METHODS if kind == "query
     "read_execution_trace",
     "list_execution_trace",
     "list_chat_events",
+    "read_conversation_execution",
+    "list_event_turns",
     "list_social_receipts",
     "list_effective_configs",
     "list_operations",
@@ -95,11 +97,18 @@ _STATUS = {
 
 
 def _history(raw: Any) -> ChatHistoryFilter:
-    if type(raw) is not dict or set(raw) - {"descending", "event_id", "since", "until"}:
+    if type(raw) is not dict or set(raw) - {
+        "descending",
+        "event_id",
+        "through_event_id",
+        "since",
+        "until",
+    }:
         raise ValueError("invalid chat history filter")
     return ChatHistoryFilter(
         descending=raw.get("descending", False),
         event_id=raw.get("event_id"),
+        through_event_id=raw.get("through_event_id"),
         since=datetime.fromisoformat(raw["since"]) if raw.get("since") else None,
         until=datetime.fromisoformat(raw["until"]) if raw.get("until") else None,
     )
@@ -290,6 +299,26 @@ def attach_webui(
                 )
                 if method == "list_chat_events"
                 else await queries.list_social_receipts(ctx, page, conversation_id=conversation)
+            )
+        elif method == "read_conversation_execution":
+            if set(data) != {"conversation_id"}:
+                raise ValueError("invalid conversation execution query")
+            result = await queries.read_conversation_execution(
+                ctx, ConversationId.parse(data["conversation_id"])
+            )
+        elif method == "list_event_turns":
+            if set(data) - {"conversation_id", "event_id", "direction", "page"} or not {
+                "conversation_id",
+                "event_id",
+                "direction",
+            } <= set(data):
+                raise ValueError("invalid event turn query")
+            result = await queries.list_event_turns(
+                ctx,
+                page,
+                conversation_id=ConversationId.parse(data["conversation_id"]),
+                event_id=data["event_id"],
+                direction=data["direction"],
             )
         elif method == "list_execution_trace":
             if set(data) - {"page", "scope", "include_content"}:
