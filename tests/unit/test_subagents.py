@@ -353,9 +353,9 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
     assert (await repo.get(identity))["state"] == "completed"
     first_tools = provider.requests[0].tools
     names = {t.name for t in first_tools}
-    from qq_ai_bot.runtime.subagent_tools import WORKER_NAMES
+    from qq_ai_bot.runtime.subagent_tools import WORKER_REQUIRED_NAMES
 
-    assert names == WORKER_NAMES
+    assert names == WORKER_REQUIRED_NAMES
     assert "subagent_message" in names and "get_person_memories" in names
     assert not names & {"send_group_message", "memory_change", "subagent_start", "report_progress"}
     await workers.message(lease, parent["id"], identity, "continue", "Check again")

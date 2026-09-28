@@ -17,7 +17,7 @@ from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.subagent_repository import SubagentRepository
 from qq_ai_bot.runtime.subagent_schema import children
-from qq_ai_bot.runtime.subagent_tools import WORKER_NAMES, WORKER_PROMPT
+from qq_ai_bot.runtime.subagent_tools import WORKER_NAMES, WORKER_PROMPT, WORKER_REQUIRED_NAMES
 from qq_ai_bot.runtime.work_activation import current_work_control
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_recovery_schema import recovery
@@ -75,7 +75,7 @@ class SubagentScheduler:
                 if t.name in WORKER_NAMES
             )
             if self.app.database.subagents_enabled and (
-                frozenset(t.name for t in self.definitions) != WORKER_NAMES
+                not WORKER_REQUIRED_NAMES <= frozenset(t.name for t in self.definitions)
             ):
                 raise ValueError("incomplete_worker_tool_manifest")
             self.task = asyncio.create_task(self.loop(), name="subagent-scheduler")
@@ -310,7 +310,7 @@ class SubagentScheduler:
                     t for t in await runner.main_contract.definitions() if t.name in WORKER_NAMES
                 )
             names = frozenset(t.name for t in self.definitions)
-            if names != WORKER_NAMES:
+            if not WORKER_REQUIRED_NAMES <= names:
                 raise ValueError("incomplete_worker_tool_manifest")
             backend = WorkerBackend(MainAgentBackend(self.app.chat, tool_runtime), names)
             now = datetime.now(UTC)

@@ -20,8 +20,10 @@ from qq_ai_bot.domain.messages import (
     ChatMessage,
     ChatRequest,
     ChatTool,
+    FunctionCallOutput,
     ModelResponseStatus,
     NativeToolDefinition,
+    NativeToolStatus,
     NativeToolType,
     ProviderContinuation,
     ReasoningEffort,
@@ -41,15 +43,22 @@ from qq_ai_bot.model_runtime.models import (
     ModelProfile,
     ModelProtocol,
     ModelRoute,
+    ModelSearchMode,
     ModelTask,
 )
 from qq_ai_bot.model_runtime.pool import ModelClientPool
-from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog, load_model_profile_catalog
+from qq_ai_bot.model_runtime.profiles import (
+    ModelProfileCatalog,
+    load_model_profile_catalog,
+    parse_model_profile_catalog,
+)
 from qq_ai_bot.model_runtime.routes import ModelRouter
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.work_journal import decode_transcript, encode_transcript
 from qq_ai_bot.services.agent_runner import AgentRuntime
+from qq_ai_bot.services.native_tool_binder import NativeToolBinder
 from qq_ai_bot.services.turn_transcript import TurnTranscript
+from qq_ai_bot.web.models import WebMode
 
 
 def request():
@@ -606,7 +615,8 @@ def test_responses_revision_ignores_empty_new_defaults_and_canonicalizes_sets():
     legacy = {
         "route": routes[ModelTask.CHAT_AGENT].model_dump(mode="json"),
         "profile": profile.model_dump(
-            mode="json", exclude={"wire_options", "headers", "max_output_tokens_limit"}
+            mode="json",
+            exclude={"wire_options", "headers", "max_output_tokens_limit", "search_mode"},
         ),
     }
     legacy["profile"]["capabilities"] = sorted(legacy["profile"]["capabilities"])
@@ -715,6 +725,603 @@ async def test_gemini_38_flash_native_wire_and_usage_without_paid_call():
         )
         assert replay["contents"][-2]["parts"][0]["thoughtSignature"] == "opaque-38"
         assert replay["contents"][-1]["parts"][0]["functionResponse"]["id"] == "call-38"
+
+
+async def test_gemini_native_search_is_profile_scoped_and_preserves_functions():
+    native = (NativeToolDefinition(NativeToolType.WEB_SEARCH),)
+    binder = NativeToolBinder()
+    kwargs = {
+        "protocol": ModelProtocol.GEMINI,
+        "allowed_capabilities": frozenset({"web_search"}),
+        "web_mode": WebMode.TAVILY,
+        "web_was_used": False,
+        "search_mode": ModelSearchMode.BOTH,
+    }
+    assert binder.bind(capabilities=frozenset({ModelCapability.TOOLS}), **kwargs) == ()
+    assert (
+        binder.bind(
+            capabilities=frozenset({ModelCapability.TOOLS, ModelCapability.NATIVE_WEB_SEARCH}),
+            **kwargs,
+        )
+        == native
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = provider(GeminiProvider, client)
+        configured = replace(request(), native_tools=native)
+        payload = adapter._build_payload(configured)
+        assert payload["tools"] == [
+            {
+                "functionDeclarations": [
+                    {
+                        "name": "inspect",
+                        "description": "Read evidence",
+                        "parametersJsonSchema": {"type": "object", "properties": {}},
+                    }
+                ]
+            },
+            {"googleSearch": {}},
+        ]
+        assert payload["toolConfig"] == {
+            "functionCallingConfig": {"mode": "VALIDATED"},
+            "includeServerSideToolInvocations": True,
+        }
+        answer = adapter._parse(
+            httpx.Response(
+                200,
+                json={
+                    "candidates": [
+                        {
+                            "finishReason": "STOP",
+                            "content": {"role": "model", "parts": [{"text": "grounded answer"}]},
+                            "groundingMetadata": {
+                                "webSearchQueries": ["example search"],
+                                "groundingChunks": [
+                                    {
+                                        "web": {
+                                            "uri": "https://example.org/source",
+                                            "title": "Source",
+                                        }
+                                    },
+                                ],
+                            },
+                        }
+                    ],
+                },
+            ),
+            configured,
+        )
+        assert answer.native_tool_events[0].query == "example search"
+        assert answer.citations[0].url == "https://example.org/source"
+
+
+@pytest.mark.parametrize("mode", [WebMode.NATIVE, WebMode.TAVILY, WebMode.BOTH])
+def test_claude_native_search_excludes_external_search_functions(mode):
+    binder = NativeToolBinder()
+    kwargs = {
+        "protocol": ModelProtocol.ANTHROPIC_MESSAGES,
+        "allowed_capabilities": frozenset({"web_search"}),
+        "web_mode": mode,
+        "search_mode": ModelSearchMode.NATIVE,
+    }
+    native_capabilities = frozenset({ModelCapability.TOOLS, ModelCapability.NATIVE_WEB_SEARCH})
+    assert binder.bind(capabilities=native_capabilities, web_was_used=False, **kwargs) == (
+        NativeToolDefinition(NativeToolType.WEB_SEARCH),
+    )
+    assert binder.excluded_function_names(capabilities=native_capabilities, **kwargs) == frozenset(
+        {"web_search", "read_webpage"}
+    )
+    assert (
+        binder.excluded_function_names(
+            capabilities=frozenset({ModelCapability.TOOLS}),
+            protocol=kwargs["protocol"],
+            allowed_capabilities=kwargs["allowed_capabilities"],
+            web_mode=mode,
+        )
+        == frozenset()
+    )
+    assert (
+        binder.excluded_function_names(
+            capabilities=native_capabilities,
+            protocol=ModelProtocol.GEMINI,
+            allowed_capabilities=kwargs["allowed_capabilities"],
+            web_mode=mode,
+            search_mode=ModelSearchMode.BOTH,
+        )
+        == frozenset()
+    )
+
+
+@pytest.mark.parametrize("has_functions", [False, True])
+async def test_claude_cache_breakpoint_follows_final_native_tool(has_functions):
+    async with httpx.AsyncClient() as client:
+        adapter = provider(AnthropicMessagesProvider, client)
+        original = request()
+        if not has_functions:
+            original = replace(original, tools=())
+        payload = adapter._build_payload(
+            replace(original, native_tools=(NativeToolDefinition(NativeToolType.WEB_SEARCH),))
+        )
+        assert payload["system"][-1]["cache_control"] == {"type": "ephemeral"}
+        assert payload["tools"][-1]["type"] == "web_search_20250305"
+        assert payload["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+        assert all("cache_control" not in tool for tool in payload["tools"][:-1])
+
+
+@pytest.mark.parametrize(
+    "protocol,mode,expected",
+    [
+        (ModelProtocol.GEMINI, WebMode.NATIVE, True),
+        (ModelProtocol.GEMINI, WebMode.BOTH, True),
+        (ModelProtocol.GEMINI, WebMode.TAVILY, False),
+        (ModelProtocol.ANTHROPIC_MESSAGES, WebMode.NATIVE, True),
+        (ModelProtocol.ANTHROPIC_MESSAGES, WebMode.BOTH, False),
+        (ModelProtocol.ANTHROPIC_MESSAGES, WebMode.TAVILY, False),
+    ],
+)
+def test_legacy_search_mode_keeps_global_provider_choice(protocol, mode, expected):
+    binder = NativeToolBinder()
+    capabilities = frozenset({ModelCapability.TOOLS, ModelCapability.NATIVE_WEB_SEARCH})
+    bound = binder.bind(
+        protocol=protocol,
+        capabilities=capabilities,
+        allowed_capabilities=frozenset({"web_search"}),
+        web_mode=mode,
+        web_was_used=False,
+        search_mode=None,
+    )
+    assert bool(bound) is expected
+
+
+def test_responses_native_tool_requires_declared_capability_and_per_connection_mode():
+    binder = NativeToolBinder()
+    kwargs = {
+        "protocol": ModelProtocol.RESPONSES,
+        "allowed_capabilities": frozenset({"web_search"}),
+        "web_mode": WebMode.BOTH,
+        "web_was_used": False,
+    }
+    local_only = frozenset({ModelCapability.REASONING, ModelCapability.TOOLS})
+    native = local_only | {ModelCapability.NATIVE_WEB_SEARCH}
+    assert binder.bind(capabilities=local_only, search_mode=ModelSearchMode.BOTH, **kwargs) == ()
+    assert binder.bind(capabilities=native, search_mode=ModelSearchMode.EXTERNAL, **kwargs) == ()
+    assert binder.bind(capabilities=native, search_mode=ModelSearchMode.BOTH, **kwargs) == (
+        NativeToolDefinition(NativeToolType.WEB_SEARCH),
+    )
+
+
+async def test_gemini_native_search_preserves_server_tool_context_across_function_receipt():
+    wires = []
+
+    def transport(req):
+        wires.append(json.loads(req.content))
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "finishReason": "STOP",
+                        "content": {
+                            "role": "model",
+                            "parts": [
+                                {
+                                    "toolCall": {
+                                        "toolType": "GOOGLE_SEARCH_WEB",
+                                        "id": "search-1",
+                                        "args": {"queries": ["today's weather"]},
+                                    },
+                                    "thoughtSignature": "signed-search",
+                                },
+                                {
+                                    "toolResponse": {
+                                        "toolType": "GOOGLE_SEARCH_WEB",
+                                        "id": "search-1",
+                                        "response": {"search_suggestions": "rain"},
+                                    },
+                                    "thoughtSignature": "signed-result",
+                                },
+                                {
+                                    "functionCall": {
+                                        "name": "inspect",
+                                        "id": "function-1",
+                                        "args": {},
+                                    },
+                                    "thoughtSignature": "signed-function",
+                                },
+                            ],
+                        },
+                    }
+                ],
+                "usageMetadata": {"promptTokenCount": 20, "candidatesTokenCount": 5},
+            },
+        )
+
+    async with httpx.AsyncClient(
+        base_url="https://wire.invalid/v1/", transport=httpx.MockTransport(transport)
+    ) as client:
+        adapter = provider(GeminiProvider, client)
+        original = replace(
+            request(), native_tools=(NativeToolDefinition(NativeToolType.WEB_SEARCH),)
+        )
+        answer = await adapter.complete(original)
+        assert answer.native_tool_events[0].call_id == "search-1"
+        assert answer.native_tool_events[0].query == "today's weather"
+        assert answer.tool_calls[0].id == "function-1"
+        assert answer.continuation is not None
+        await adapter.complete(
+            replace(
+                original,
+                continuation=answer.continuation,
+                function_outputs=(FunctionCallOutput("function-1", '{"ok": true}'),),
+            )
+        )
+        replay = json.dumps(wires[1]["contents"], ensure_ascii=False)
+        assert replay.index("signed-search") < replay.index("signed-result")
+        assert replay.index("signed-result") < replay.index("signed-function")
+        assert replay.index("signed-function") < replay.index("functionResponse")
+
+
+async def test_claude_native_search_pause_preserves_encrypted_result_and_aggregates_usage():
+    wires = []
+    first_blocks = [
+        {
+            "type": "server_tool_use",
+            "id": "srvtoolu_1",
+            "name": "web_search",
+            "input": {"query": "recent launch"},
+        }
+    ]
+
+    def transport(req):
+        wires.append(json.loads(req.content))
+        if len(wires) == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "id": "msg-first",
+                    "stop_reason": "pause_turn",
+                    "content": first_blocks,
+                    "usage": {
+                        "input_tokens": 10,
+                        "cache_read_input_tokens": 3,
+                        "cache_creation_input_tokens": 2,
+                        "output_tokens": 1,
+                    },
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg-second",
+                "stop_reason": "end_turn",
+                "content": [
+                    {
+                        "type": "web_search_tool_result",
+                        "tool_use_id": "srvtoolu_1",
+                        "content": [
+                            {
+                                "type": "web_search_result",
+                                "url": "https://example.org/launch",
+                                "title": "Launch",
+                                "encrypted_content": "opaque-result",
+                            }
+                        ],
+                    },
+                    {
+                        "type": "text",
+                        "text": "Launched today.",
+                        "citations": [
+                            {
+                                "type": "web_search_result_location",
+                                "url": "https://example.org/launch",
+                                "title": "Launch",
+                                "encrypted_index": "opaque-index",
+                            }
+                        ],
+                    },
+                ],
+                "usage": {
+                    "input_tokens": 2,
+                    "cache_read_input_tokens": 5,
+                    "cache_creation_input_tokens": 0,
+                    "output_tokens": 4,
+                },
+            },
+        )
+
+    async with httpx.AsyncClient(
+        base_url="https://wire.invalid/v1/", transport=httpx.MockTransport(transport)
+    ) as client:
+        adapter = provider(AnthropicMessagesProvider, client)
+        original = replace(
+            request(), native_tools=(NativeToolDefinition(NativeToolType.WEB_SEARCH),)
+        )
+        answer = await adapter.complete(original)
+        assert len(wires) == 2
+        assert wires[0]["tools"][-1] == {
+            "type": "web_search_20250305",
+            "name": "web_search",
+            "max_uses": 5,
+            "cache_control": {"type": "ephemeral"},
+        }
+        assert wires[1]["messages"][-1] == {"role": "assistant", "content": first_blocks}
+        assert answer.content == "Launched today."
+        assert answer.prompt_tokens == 22
+        assert answer.cached_prompt_tokens == 8
+        assert answer.completion_tokens == 5
+        assert answer.total_tokens == 27
+        assert answer.native_tool_events[0].call_id == "srvtoolu_1"
+        assert answer.native_tool_events[0].query == "recent launch"
+        assert answer.citations[0].url == "https://example.org/launch"
+        assert answer.continuation is not None
+        assert (
+            answer.continuation.payload[-1]["content"][0]["content"][0]["encrypted_content"]
+            == "opaque-result"
+        )
+
+
+async def test_claude_native_search_error_is_not_reported_as_completed():
+    async with httpx.AsyncClient() as client:
+        adapter = provider(AnthropicMessagesProvider, client)
+        configured = replace(
+            request(), native_tools=(NativeToolDefinition(NativeToolType.WEB_SEARCH),)
+        )
+        answer = adapter._parse(
+            httpx.Response(
+                200,
+                json={
+                    "stop_reason": "end_turn",
+                    "content": [
+                        {
+                            "type": "server_tool_use",
+                            "id": "srvtoolu_2",
+                            "name": "web_search",
+                            "input": {"query": "news"},
+                        },
+                        {
+                            "type": "web_search_tool_result",
+                            "tool_use_id": "srvtoolu_2",
+                            "content": {
+                                "type": "web_search_tool_result_error",
+                                "error_code": "unavailable",
+                            },
+                        },
+                        {"type": "text", "text": "Search failed."},
+                    ],
+                },
+            ),
+            configured,
+        )
+        assert answer.native_tool_events[0].status is NativeToolStatus.FAILED
+        assert answer.native_tool_events[0].error_category == "unavailable"
+
+
+async def test_rejected_provider_response_keeps_only_numeric_usage_diagnostics():
+    async with httpx.AsyncClient() as client:
+        gemini = provider(GeminiProvider, client)
+        with pytest.raises(LLMInvalidResponseError) as gemini_error:
+            gemini._parse(
+                httpx.Response(
+                    200,
+                    json={
+                        "candidates": [{"finishReason": "SAFETY", "content": {"parts": []}}],
+                        "usageMetadata": {
+                            "promptTokenCount": 12,
+                            "candidatesTokenCount": 3,
+                            "thoughtsTokenCount": 2,
+                            "totalTokenCount": 17,
+                            "cachedContentTokenCount": 4,
+                        },
+                        "secret": "private response body",
+                    },
+                ),
+                request(),
+            )
+        assert gemini_error.value.diagnostics == {
+            "usage": {
+                "prompt_tokens": 12,
+                "completion_tokens": 5,
+                "total_tokens": 17,
+                "cached_prompt_tokens": 4,
+            }
+        }
+        claude = provider(AnthropicMessagesProvider, client)
+        with pytest.raises(LLMInvalidResponseError) as claude_error:
+            claude._parse(
+                httpx.Response(
+                    200,
+                    json={
+                        "stop_reason": "refusal",
+                        "content": [{"type": "text", "text": "private response body"}],
+                        "usage": {
+                            "input_tokens": 7,
+                            "cache_read_input_tokens": 3,
+                            "cache_creation_input_tokens": 1,
+                            "output_tokens": 2,
+                        },
+                    },
+                ),
+                request(),
+            )
+        assert claude_error.value.diagnostics == {
+            "usage": {
+                "prompt_tokens": 11,
+                "completion_tokens": 2,
+                "total_tokens": 13,
+                "cached_prompt_tokens": 3,
+            }
+        }
+
+
+async def test_claude_paused_search_failure_reports_prior_usage_without_content():
+    count = 0
+    wires = []
+
+    def transport(req):
+        nonlocal count
+        count += 1
+        wires.append(json.loads(req.content))
+        if count == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "stop_reason": "pause_turn",
+                    "content": [
+                        {
+                            "type": "server_tool_use",
+                            "id": "srvtoolu_3",
+                            "name": "web_search",
+                            "input": {"query": "private query"},
+                        }
+                    ],
+                    "usage": {"input_tokens": 5, "output_tokens": 1},
+                },
+            )
+        if count == 2:
+            return httpx.Response(
+                200,
+                json={
+                    "stop_reason": "refusal",
+                    "content": [{"type": "text", "text": "private refusal"}],
+                    "usage": {"input_tokens": 2, "output_tokens": 3},
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "stop_reason": "end_turn",
+                "content": [
+                    {
+                        "type": "web_search_tool_result",
+                        "tool_use_id": "srvtoolu_3",
+                        "content": [],
+                    },
+                    {"type": "text", "text": "Recovered without new search."},
+                ],
+                "usage": {"input_tokens": 1, "output_tokens": 2},
+            },
+        )
+
+    async with httpx.AsyncClient(
+        base_url="https://wire.invalid/v1/", transport=httpx.MockTransport(transport)
+    ) as client:
+        claude = provider(AnthropicMessagesProvider, client)
+        configured = replace(
+            request(), native_tools=(NativeToolDefinition(NativeToolType.WEB_SEARCH),)
+        )
+        paused = await claude.complete(configured)
+        assert paused.status is ModelResponseStatus.INCOMPLETE
+        assert paused.incomplete_reason == "pause_turn"
+        assert paused.native_tool_events[0].status is NativeToolStatus.SEARCHING
+        assert paused.native_tool_events[0].call_id == "srvtoolu_3"
+        assert paused.prompt_tokens == 7
+        assert paused.completion_tokens == 4
+        assert paused.total_tokens == 11
+        assert paused.continuation is not None
+        assert "private refusal" not in str(paused.continuation)
+        recovered = await claude.complete(replace(configured, continuation=paused.continuation))
+        assert recovered.status is ModelResponseStatus.COMPLETED
+        assert recovered.native_tool_events[0].call_id == "srvtoolu_3"
+        assert len(wires) == 3
+        assert len(wires[2]["messages"]) == 2
+        assert wires[2]["messages"][-1]["content"][0]["id"] == "srvtoolu_3"
+        assert (
+            sum(
+                block.get("type") == "server_tool_use"
+                for message in wires[2]["messages"]
+                for block in message["content"]
+            )
+            == 1
+        )
+
+
+def test_profile_rejects_native_search_claim_for_unsupported_protocol():
+    with pytest.raises(ValidationError, match="native web search is unavailable"):
+        ModelProfile(
+            id="deepseek",
+            provider="deepseek",
+            protocol=ModelProtocol.RESPONSES,
+            base_url="https://api.deepseek.com/v1",
+            api_key_env="DEEPSEEK_KEY",
+            model="deepseek-test",
+            timeout_seconds=30,
+            max_retries=1,
+            default_temperature=0.7,
+            default_max_output_tokens=4096,
+            capabilities=frozenset(
+                {
+                    ModelCapability.REASONING,
+                    ModelCapability.TOOLS,
+                    ModelCapability.NATIVE_WEB_SEARCH,
+                }
+            ),
+        )
+
+
+def test_search_mode_requires_real_native_capability_and_rejects_claude_both():
+    common = dict(
+        id="claude-search",
+        provider="anthropic",
+        protocol=ModelProtocol.ANTHROPIC_MESSAGES,
+        base_url="https://api.anthropic.com",
+        api_key_env="CLAUDE_KEY",
+        model="claude-test",
+        timeout_seconds=30,
+        max_retries=1,
+        default_temperature=0.7,
+        default_max_output_tokens=4096,
+    )
+    with pytest.raises(ValidationError, match="requires native_web_search"):
+        ModelProfile(
+            **common,
+            search_mode=ModelSearchMode.NATIVE,
+            capabilities=frozenset({ModelCapability.REASONING, ModelCapability.TOOLS}),
+        )
+    with pytest.raises(ValidationError, match="cannot combine"):
+        ModelProfile(
+            **common,
+            search_mode=ModelSearchMode.BOTH,
+            capabilities=frozenset(
+                {
+                    ModelCapability.REASONING,
+                    ModelCapability.TOOLS,
+                    ModelCapability.NATIVE_WEB_SEARCH,
+                }
+            ),
+        )
+    native = ModelProfile(
+        **common,
+        search_mode=ModelSearchMode.NATIVE,
+        capabilities=frozenset(
+            {
+                ModelCapability.REASONING,
+                ModelCapability.TOOLS,
+                ModelCapability.NATIVE_WEB_SEARCH,
+            }
+        ),
+    )
+    assert native.model_dump(mode="json")["search_mode"] == "native"
+
+
+def test_search_mode_survives_profile_toml_load():
+    routes = "\n".join(f'{task.value} = "gemini"' for task in ModelTask)
+    document = f"""schema_version = 3
+[profiles.gemini]
+provider = "gemini"
+protocol = "gemini"
+base_url = "https://generativelanguage.googleapis.com/v1beta"
+api_key_env = "GEMINI_KEY"
+model = "gemini-3.8-flash"
+timeout_seconds = 120
+max_retries = 1
+default_temperature = 0.7
+default_max_output_tokens = 8192
+search_mode = "both"
+capabilities = ["reasoning", "tools", "structured_output", "native_web_search"]
+[routes]
+{routes}
+"""
+    catalog = parse_model_profile_catalog(document)
+    assert catalog.profiles["gemini"].search_mode is ModelSearchMode.BOTH
 
 
 @pytest.mark.parametrize(

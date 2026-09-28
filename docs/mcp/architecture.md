@@ -24,7 +24,7 @@ MCP 是 Tool Kernel 的一个 Provider，不是第二套 Agent。配置、连接
 删除允许项时定义会消失。两种情况都会由既有执行器阻止旧任务，而不是把新能力自动补授给它。
 
 启动时准备已启用 MCP 工具，再冻结主 Agent 的完整工具声明。普通聊天即使未调用 MCP，
-声明也保持一致；`request_tools` 只查询目录，不动态注入 Schema。元数据刷新与自动化定义
+声明也保持一致；没有运行时目录查询或 Schema 注入。元数据刷新与自动化定义
 更新不直接改写已冻结的主 Agent 清单；工具合同变化需要重启形成新合同。
 参见 [共同架构约束](../architecture/development-contract.md)。
 

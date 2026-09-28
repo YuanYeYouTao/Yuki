@@ -299,22 +299,6 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
     assert settings.conversation_rollup_summary_max_characters == 2400
     assert settings.conversation_rollup_retry_max_seconds == 960
     assert settings.conversation_rollup_lease_heartbeat_seconds == 60
-    assert settings.tooling_selected_tool_limit == 32
-    assert settings.tooling_first_round_hard_cap == 16
-    assert settings.tooling_first_round_pin_ids == (
-        "memory_change",
-        "get_person_memories",
-        "get_group_memories",
-        "search_chat_history",
-        "get_relationship",
-        "get_self_memories",
-        "web_search",
-        "automation_create",
-        "send_message",
-    )
-    assert settings.tooling_schema_token_budget == 12000
-    assert settings.mcp_selected_tool_limit == 16
-    assert settings.mcp_schema_token_budget == 8000
     assert settings.agent_max_tool_calls == 32
     assert settings.agent_max_model_requests == 24
     assert settings.agent_tool_result_max_characters == 24000

@@ -499,7 +499,9 @@ class MessageProcessor:
         error_category: str | None = None
         working = message
         admitted: IngressPreAdmit | None = None
-        with bind_runtime_turn(correlation):
+        # Media capability checks run before AgentRunner. Pin at admission so a
+        # hot provider switch cannot change the model between those two steps.
+        with bind_runtime_turn(correlation), self._chat.pin_model_runtime():
             try:
                 if self._group_recovery is not None and self._group_recovery.is_enable_request(
                     message

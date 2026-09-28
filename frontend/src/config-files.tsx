@@ -139,6 +139,7 @@ const presetValues = (provider: string): Row => {
     model: gemini ? "gemini-3.8-flash" : "",
     api_key_env: "",
     reasoning_effort: gemini ? "medium" : "low",
+    search_mode: "external",
     capabilities: gemini
       ? [
           "reasoning",
@@ -389,6 +390,56 @@ function ModelDocument({
               <small>只在保存时提交新输入；页面不会取回原密钥。</small>
             </label>
           </div>
+          <label className="form-group">
+            此连接的联网搜索
+            <select
+              className="form-control"
+              aria-label="此连接的联网搜索"
+              value={String(profile.search_mode || "inherit")}
+              onChange={(event) => {
+                const mode = event.target.value;
+                const capabilities = Array.isArray(profile.capabilities)
+                  ? [...profile.capabilities]
+                  : [];
+                const next: Row = {
+                  ...profile,
+                  search_mode: mode === "inherit" ? null : mode,
+                };
+                if (
+                  ["native", "both"].includes(mode) &&
+                  !capabilities.includes("native_web_search")
+                ) {
+                  capabilities.push("native_web_search");
+                  next.capabilities = capabilities;
+                }
+                update(next);
+              }}
+            >
+              {!profile.search_mode && (
+                <option value="inherit">沿用部署搜索设置（旧连接）</option>
+              )}
+              <option value="external">仅外部搜索</option>
+              {(profile.protocol === "gemini" ||
+                profile.protocol === "anthropic_messages" ||
+                (profile.protocol === "responses" &&
+                  profile.provider !== "deepseek")) && (
+                <option value="native">仅供应商原生搜索</option>
+              )}
+              {(profile.protocol === "gemini" ||
+                (profile.protocol === "responses" &&
+                  profile.provider !== "deepseek")) && (
+                <option value="both">原生搜索与外部搜索</option>
+              )}
+            </select>
+            <small>
+              {profile.protocol === "gemini"
+                ? "Gemini 3 的 Google 搜索可与外部搜索并用。"
+                : profile.protocol === "anthropic_messages"
+                  ? "Claude 原生搜索与外部 web_search 同名，因此只能二选一。"
+                  : "外部搜索需在部署中配置；原生搜索需供应商和模型实际支持。"}
+              原生搜索由供应商执行，可能产生额外费用。
+            </small>
+          </label>
           <details className="json-note">
             <summary>高级参数与能力声明</summary>
             <SchemaFields
@@ -404,6 +455,7 @@ function ModelDocument({
                 "base_url",
                 "model",
                 "api_key_env",
+                "search_mode",
               ]}
               choices={(name, values) => {
                 if (!["reasoning_effort", "effort_levels"].includes(name))
@@ -638,7 +690,9 @@ function Draft({ fields, props }: { fields: Row; props: PageProps }) {
       <p className="small">
         {hotReload
           ? "保存后由原控制器下一次采样加载；回执只证明文件保存。刷新页面核对生效值，控制器未运行时不会冒充已加载。不会重算历史、重跑或重置已有工作。"
-          : "保存后需重启应用才会加载。不会重写历史聊天或重跑已有工作；实际注入内容可在执行轨迹中查看。"}
+          : fileId === "model_profiles"
+            ? "保存成功后立即用于新任务；本轮已开始的请求保持原连接。持久 Work 下次激活会按新连接开新链，已执行工具不会重跑。"
+            : "保存后需重启应用才会加载。不会重写历史聊天或重跑已有工作；实际注入内容可在执行轨迹中查看。"}
       </p>
       {fields.writable_directory === false && (
         <p className="error-note">
@@ -688,7 +742,9 @@ function Draft({ fields, props }: { fields: Row; props: PageProps }) {
                     : content,
                 hint: hotReload
                   ? "核对原文件版本并原子保存。saved_pending_reload 表示已保存，等待原控制器下一轮加载；实际生效请刷新核对。"
-                  : "将核对刚读取的文件版本并原子保存。持久回执中的 saved_pending_restart 表示已保存，尚需重启加载。",
+                  : fileId === "model_profiles"
+                    ? "核对原文件版本并保存；applied 表示模型连接与任务用途已在当前进程生效，新任务使用新连接。"
+                    : "将核对刚读取的文件版本并原子保存。持久回执中的 saved_pending_restart 表示已保存，尚需重启加载。",
               });
             }}
           >

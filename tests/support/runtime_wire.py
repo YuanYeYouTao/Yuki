@@ -97,7 +97,8 @@ def install_wire(chat, fake, protocol, *, native=False):
         max_retries=0,
         default_temperature=0.5,
         default_max_output_tokens=1024,
-        capabilities=frozenset(ModelCapability),
+        capabilities=frozenset(ModelCapability)
+        - ({ModelCapability.NATIVE_WEB_SEARCH} if not native else set()),
     )
     models = TaskModelExecutor(
         router=ModelRouter(

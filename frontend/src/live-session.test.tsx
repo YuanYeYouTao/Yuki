@@ -93,6 +93,7 @@ it("shows linked received and sent messages with content only when granted", asy
               {
                 event_id: 1,
                 direction: "received",
+                sender_display_name: "阿远",
                 conversation_id: "conversation-a",
                 occurred_at: "2026-09-28T07:59:00Z",
                 content: "请查一下",
@@ -100,6 +101,8 @@ it("shows linked received and sent messages with content only when granted", asy
               {
                 event_id: 2,
                 direction: "sent",
+                sender_display_name: "Yuki",
+                delivery_status: "confirmed",
                 conversation_id: "conversation-b",
                 occurred_at: "2026-09-28T08:00:00Z",
                 content: "我去查一下",
@@ -113,6 +116,9 @@ it("shows linked received and sent messages with content only when granted", asy
   render(<LiveSession conversation="conversation-a" refresh={0} content />);
   expect(await screen.findByText("请查一下")).toBeInTheDocument();
   expect(screen.getByText("我去查一下")).toBeInTheDocument();
+  expect(screen.getByText(/收到 · 阿远/)).toBeInTheDocument();
+  expect(screen.getByText(/发出 · Yuki/)).toBeInTheDocument();
+  expect(screen.getByText(/已由投递回执确认/)).toBeInTheDocument();
   expect(screen.getByText(/发送到其他会话/)).toBeInTheDocument();
   expect(calls[0].include_content).toBe(true);
 });
@@ -186,6 +192,7 @@ it("opens a recorded tool call with its actual arguments and paired result", asy
   await userEvent
     .setup()
     .click(await screen.findByRole("button", { name: "查看最近一次轮次" }));
+  expect(screen.getAllByText(/工具返回结果 · 1 秒/).length).toBeGreaterThan(0);
   expect(calls).not.toContain("read_execution_trace");
   await userEvent
     .setup()

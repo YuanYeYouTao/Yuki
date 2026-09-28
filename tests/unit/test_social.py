@@ -7,13 +7,24 @@ from uuid import UUID
 
 import pytest
 
-from qq_ai_bot.capabilities.catalog import UnifiedToolCatalog, UnifiedToolCatalogEntry
-from qq_ai_bot.capabilities.exposure import AuthorityFirstExposurePlanner
-from qq_ai_bot.capabilities.models import CapabilityExposure, CapabilityTrustSource
+from qq_ai_bot.capabilities.catalog import (
+    DescriptorRegistrySnapshot,
+    UnifiedToolCatalog,
+    UnifiedToolCatalogEntry,
+)
+from qq_ai_bot.capabilities.models import (
+    AuthorityContext,
+    CapabilityExposure,
+    CapabilityTrustSource,
+)
+from qq_ai_bot.capabilities.policy import CapabilityPolicyContext
 from qq_ai_bot.capabilities.provider import ChatToolCapabilityProvider
+from qq_ai_bot.capabilities.runtime import TurnCapabilityRuntime
 from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
+from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.runtime.authority import TurnAuthority, TurnSceneFacts
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.sandbox.client import sandbox_tools
 from qq_ai_bot.social.automation import automation_name, register_social_automation
@@ -164,20 +175,27 @@ async def test_social_receipt_claim_replay_and_interrupted_delivery(database: Da
         scopes=(),
         revision="1",
     )
-    planner = AuthorityFirstExposurePlanner(first_round_hard_cap=1, schema_token_budget=1)
-    plan = planner.plan_initial(
-        catalog=catalog,
-        requestable_ids=frozenset({"find_contacts"}),
-        hits=(),
+    runtime = TurnCapabilityRuntime(
+        registry=DescriptorRegistrySnapshot(catalog),
+        authority=TurnAuthority(
+            actor_user_id="10001",
+            bot_user_id="80001",
+            origin=TurnOrigin.USER_MESSAGE,
+            permission_ceiling=frozenset(),
+            delegated_authority=None,
+            authority_revision=1,
+        ),
+        scene=TurnSceneFacts(scope_type=ScopeType.PRIVATE, group_id=None),
         memory_view=None,
-        kernel_tools=(),
-        query="unrelated",
-        artifact_available=False,
+        policy_context=CapabilityPolicyContext(
+            authority=AuthorityContext(actor_user_id="10001", is_superuser=False),
+            origin=TurnOrigin.USER_MESSAGE,
+        ),
+        append_only=True,
     )
-    assert {item.descriptor.model_name for item in plan.entries} == {
-        tool.name for tool in definitions
-    }
-    assert plan.callable_ids == frozenset({"find_contacts"})
+    runtime.initial_exposure()
+    assert {tool.name for tool in runtime.definitions()} == {tool.name for tool in definitions}
+    assert "find_contacts" in runtime.callable_capability_ids()
     from qq_ai_bot.automation.authority import PermissionLevel
     from qq_ai_bot.automation.registry import AutomationCapabilityRegistry
 

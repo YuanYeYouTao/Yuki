@@ -222,7 +222,10 @@ async def read_conversation_execution(
             event_id
             for turn in turns
             for step in cast(list[_StepRow], turn["steps"])
-            for event_id in (step["source_event_id"], step["delivered_event_id"])
+            for event_id in (
+                step["source_event_id"],
+                step["delivered_event_id"] if step["kind"] == "social_delivery" else None,
+            )
             if event_id is not None
         }
         event_rows: dict[int, RowMapping] = {}
@@ -239,6 +242,8 @@ async def read_conversation_execution(
                             ChatEventModel.direction.label("direction"),
                             ChatEventModel.author_kind.label("author_kind"),
                             ChatEventModel.suppression_status.label("suppression_status"),
+                            ChatEventModel.sender_group_card.label("sender_group_card"),
+                            ChatEventModel.sender_nickname.label("sender_nickname"),
                             ChatEventModel.canonical_conversation_id.label("conversation_id"),
                             ChatEventModel.occurred_at.label("occurred_at"),
                             content.label("content"),
@@ -249,7 +254,11 @@ async def read_conversation_execution(
         for turn in turns:
             steps = cast(list[_StepRow], turn["steps"])
             source_ids = {step["source_event_id"] for step in steps}
-            delivered_ids = {step["delivered_event_id"] for step in steps}
+            delivered_ids = {
+                step["delivered_event_id"]
+                for step in steps
+                if step["kind"] == "social_delivery"
+            }
             messages = []
             for event_id in sorted(linked_ids & (source_ids | delivered_ids)):
                 row = event_rows.get(event_id)
@@ -273,8 +282,17 @@ async def read_conversation_execution(
                     {
                         "event_id": event_id,
                         "direction": "received" if received else "sent",
+                        "sender_display_name": (
+                            row["sender_group_card"] or row["sender_nickname"] or None
+                        )
+                        if received
+                        else "Yuki",
+                        "delivery_status": "confirmed" if sent else None,
                         "conversation_id": row["conversation_id"],
                         "occurred_at": _stamp(row["occurred_at"]),
+                        "content_truncated": bool(
+                            include_content and snippet and len(snippet) > 500
+                        ),
                         "content": f"{snippet[:500]}…"
                         if snippet and len(snippet) > 500
                         else snippet,

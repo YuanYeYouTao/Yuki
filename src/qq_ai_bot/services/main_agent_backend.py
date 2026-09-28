@@ -26,12 +26,7 @@ from qq_ai_bot.capabilities import (
 )
 from qq_ai_bot.capabilities.catalog import DescriptorRegistrySnapshot
 from qq_ai_bot.capabilities.exposure import NO_LONGER_AUTHORIZED
-from qq_ai_bot.capabilities.request import REQUEST_TOOLS_NAME
-from qq_ai_bot.capabilities.runtime import (
-    CapabilityQuery,
-    CapabilitySearchReport,
-    TurnCapabilityRuntime,
-)
+from qq_ai_bot.capabilities.runtime import TurnCapabilityRuntime
 from qq_ai_bot.capabilities.validation import UNDECLARED_TOOL
 from qq_ai_bot.domain.messages import ChatTool, ToolCall, ToolFunction
 from qq_ai_bot.llm.base import LLMError
@@ -41,10 +36,8 @@ from qq_ai_bot.runtime.observability import identifier_hash
 from qq_ai_bot.runtime.origin import TurnOrigin as RuntimeTurnOrigin
 from qq_ai_bot.services.agent_runner import AgentRuntime, AgentToolBackend
 from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.services.plugin_events import publish_notification
 from qq_ai_bot.services.policies import replies_to_bot
 from qq_ai_bot.services.turn_coordinator import TurnSupersededError
-from yuki_plugin_sdk.events import EventName
 
 if TYPE_CHECKING:
     from qq_ai_bot.services.chat import AdminToolService, ChatService
@@ -93,7 +86,6 @@ class MainAgentBackend(AgentToolBackend):
         self._web_was_used = False
         self._web_calls_used = 0
         self._capability_was_used = False
-        self._search_event_tasks: list[asyncio.Task[None]] = []
         self._admin_retry_constraint: tuple[str, str] | None = None
         self._admin_terminal_failure: dict[str, object] | None = None
         self._completed_admin_mutations: set[tuple[str, str]] = set()
@@ -101,13 +93,10 @@ class MainAgentBackend(AgentToolBackend):
         self._batch: list[ToolCall] = []
         self._batch_lock = asyncio.Lock()
         self._catalog: UnifiedToolCatalog | None = None
-        self._requestable_catalog: UnifiedToolCatalog | None = None
         self._provider_registry: ToolProviderRegistry | None = None
         self._capability_runtime: TurnCapabilityRuntime | None = None
         self._callable_tool_names: set[str] = set()
         self._tool_turn_recorded = False
-        self._request_tools_called = False
-        self._first_real_tool_recorded = False
 
     def record_failure_usage(self, *, tool_calls: int, model_requests: int) -> None:
         self.failed_tool_calls = max(self.failed_tool_calls, tool_calls)
@@ -120,9 +109,8 @@ class MainAgentBackend(AgentToolBackend):
         if self._capability_runtime is not None:
             return
         capability_runtime = self._install_capability_runtime()
-        await capability_runtime.prepare_initial_exposure(self._capability_query())
+        await capability_runtime.prepare_initial_exposure()
         self._catalog = capability_runtime.authorized_catalog
-        self._requestable_catalog = self._catalog
 
     def _memory(self) -> Any:
         return self._memory_session
@@ -205,7 +193,6 @@ class MainAgentBackend(AgentToolBackend):
             )
         definitions = tuple(sorted(definitions, key=lambda tool: tool.name))
         self._callable_tool_names = set(capability_runtime.callable_capability_ids())
-        self._callable_tool_names.update(tool.name for tool in definitions)
         if not self._tool_turn_recorded and definitions:
             self._service._tool_metrics.record_tool_enabled_turn()
             self._tool_turn_recorded = True
@@ -215,42 +202,25 @@ class MainAgentBackend(AgentToolBackend):
     def _ensure_capability_runtime(self) -> TurnCapabilityRuntime:
         if self._capability_runtime is not None:
             self._catalog = self._capability_runtime.authorized_catalog
-            self._requestable_catalog = self._catalog
             return self._capability_runtime
         capability_runtime = self._install_capability_runtime()
-        capability_runtime.initial_exposure(self._capability_query())
+        capability_runtime.initial_exposure()
         self._catalog = capability_runtime.authorized_catalog
-        self._requestable_catalog = self._catalog
         return capability_runtime
-
-    def _capability_query(self) -> CapabilityQuery:
-        return CapabilityQuery(
-            text=self._runtime.selection_query,
-            origin=RuntimeTurnOrigin(self._runtime.origin.value),
-            limit=8,
-            reply_excerpt=(
-                (self._runtime.inbound.reply_text or "")[:500]
-                if self._runtime.inbound is not None
-                else ""
-            ),
-            priority_capability_ids=self._host_priority_capability_ids(),
-        )
 
     def _refresh_capability_registry(
         self,
-    ) -> tuple[DescriptorRegistrySnapshot, Any]:
+    ) -> DescriptorRegistrySnapshot:
         request_runtime = self._request_runtime()
         self._provider_registry = self._service._build_tool_registry(
             request_runtime,
             web_was_used=self._web_was_used,
         )
         catalog = self._provider_registry.catalog(request_runtime)
-        snapshot = DescriptorRegistrySnapshot(catalog)
-        index = self._service._capability_index.index_for(snapshot)
-        return snapshot, index
+        return DescriptorRegistrySnapshot(catalog)
 
     def _install_capability_runtime(self) -> TurnCapabilityRuntime:
-        snapshot, index = self._refresh_capability_registry()
+        snapshot = self._refresh_capability_registry()
         session = self._memory()
         memory_view = session.capability_view() if session is not None else None
         policy_context = CapabilityPolicyContext(
@@ -272,8 +242,6 @@ class MainAgentBackend(AgentToolBackend):
             memory_view=memory_view,
             artifact_available=self._service._tool_artifacts is not None,
         )
-        mcp = self._runtime.runtime_config.mcp if self._runtime.runtime_config else None
-        tooling = self._runtime.runtime_config.tooling if self._runtime.runtime_config else None
         authority = TurnAuthority(
             actor_user_id=(
                 ""
@@ -296,57 +264,13 @@ class MainAgentBackend(AgentToolBackend):
         )
         self._capability_runtime = TurnCapabilityRuntime(
             registry=snapshot,
-            index=index,
             authority=authority,
             scene=self._scene_facts(),
             memory_view=memory_view,
             policy_context=policy_context,
             append_only=self._service._responses_append_only(),
-            schema_token_budget=tooling.schema_token_budget if tooling is not None else None,
-            mcp_schema_token_budget=mcp.schema_token_budget if mcp is not None else None,
-            mcp_tool_limit=mcp.selected_tool_limit if mcp is not None else None,
-            first_round_hard_cap=(tooling.first_round_hard_cap if tooling is not None else None),
-            on_searched=self._publish_capability_searched,
         )
         return self._capability_runtime
-
-    def _publish_capability_searched(self, report: CapabilitySearchReport) -> None:
-        publisher = getattr(self._service, "_event_publisher", None)
-        if publisher is None:
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        self._search_event_tasks.append(
-            loop.create_task(
-                publish_notification(
-                    publisher,
-                    EventName.CAPABILITY_SEARCHED,
-                    {
-                        "origin": report.origin,
-                        "hit_count": report.hit_count,
-                        "latency_ms": report.latency_ms,
-                        "capability_ids": list(report.capability_ids),
-                    },
-                )
-            )
-        )
-
-    def _host_priority_capability_ids(self) -> tuple[str, ...]:
-        """Pin tools implied by deployment config, not the current message or origin."""
-
-        names: list[str] = []
-        tooling = (
-            self._runtime.runtime_config.tooling
-            if self._runtime.runtime_config is not None
-            else None
-        )
-        if tooling is not None:
-            names.extend(getattr(tooling, "first_round_pin_ids", ()))
-        elif getattr(self._service, "_settings", None) is not None:
-            names.extend(self._service._settings.tooling_first_round_pin_ids)
-        return tuple(dict.fromkeys(names))
 
     def _scene_facts(self) -> Any:
         from qq_ai_bot.domain.conversations import ScopeType as DomainScopeType
@@ -387,12 +311,11 @@ class MainAgentBackend(AgentToolBackend):
         exposed_tools = ",".join(sorted(tool.name for tool in definitions)) or "none"
         logger.info(
             "agent_tools_exposed conversation_hash=%s origin=%s "
-            "tools=%s exposed_count=%d requestable_count=%d reason=%s",
+            "tools=%s exposed_count=%d reason=%s",
             identifier_hash(self._runtime.conversation_key) or "missing",
             self._runtime.origin.value,
             exposed_tools,
             len(definitions),
-            len(self._requestable_catalog.entries) if self._requestable_catalog is not None else 0,
             reason,
         )
 
@@ -474,17 +397,6 @@ class MainAgentBackend(AgentToolBackend):
                 },
                 ensure_ascii=False,
             )
-        if name == REQUEST_TOOLS_NAME:
-            if self._exclusive_write() and not self._locator_open():
-                return json.dumps(
-                    {
-                        "ok": False,
-                        "error": "memory_write_scope_restricted",
-                        "detail": "当前记忆写入授权范围内尚未开放补查；目录查询不会扩大权限。",
-                    },
-                    ensure_ascii=False,
-                )
-            return await self._request_tools(arguments_json)
         capability_runtime = self._capability_runtime
         if capability_runtime is not None:
             ok, error = capability_runtime.validate_call(name, arguments_json)
@@ -513,16 +425,6 @@ class MainAgentBackend(AgentToolBackend):
                 )
             return json.dumps({"ok": False, "error": "unknown_capability"})
         binding = descriptor.binding
-        if not self._first_real_tool_recorded:
-            first_round_hit = not self._request_tools_called
-            self._service._tool_metrics.record_first_round_tool_hit(hit=first_round_hit)
-            logger.info(
-                "agent_first_round_tool_hit conversation_hash=%s hit=%s tool=%s",
-                identifier_hash(self._runtime.conversation_key) or "missing",
-                first_round_hit,
-                descriptor.model_name,
-            )
-            self._first_real_tool_recorded = True
         effective_descriptor = self._effective_descriptor(call, descriptor)
         is_web_tool = effective_descriptor.namespace_id.startswith("web.")
         is_memory_read_tool = (
@@ -978,8 +880,6 @@ class MainAgentBackend(AgentToolBackend):
 
     def parallel_safe(self, name: str, runtime: AgentRuntime) -> bool:
         del runtime
-        if name == REQUEST_TOOLS_NAME:
-            return False
         entry = self._catalog.by_model_name(name) if self._catalog is not None else None
         return bool(entry is not None and entry.descriptor.parallel_safe)
 
@@ -994,8 +894,6 @@ class MainAgentBackend(AgentToolBackend):
             return True
 
         del runtime
-        if name == REQUEST_TOOLS_NAME:
-            return False
         entry = self._catalog.by_model_name(name) if self._catalog is not None else None
         descriptor = entry.descriptor if entry is not None else None
         if descriptor is None:
@@ -1027,52 +925,6 @@ class MainAgentBackend(AgentToolBackend):
                 separators=(",", ":"),
             )
         return call.function.name, normalized
-
-    async def _request_tools(self, arguments_json: str) -> str:
-        self._request_tools_called = True
-        self._service._tool_metrics.record_request_tools()
-        if not self._exclusive_write() and not self._eager_memory_read():
-            self._service._tool_metrics.record_automatic_memory_request_tools()
-        try:
-            arguments = json.loads(arguments_json)
-        except json.JSONDecodeError:
-            arguments = None
-        if not isinstance(arguments, dict):
-            return json.dumps(
-                {"ok": False, "error": "invalid_arguments", "detail": "参数必须是对象"},
-                ensure_ascii=False,
-            )
-        query = arguments.get("query")
-        max_results = arguments.get("max_results", 4)
-        if (
-            not isinstance(query, str)
-            or len(query.strip()) < 2
-            or not isinstance(max_results, int)
-            or isinstance(max_results, bool)
-            or not 1 <= max_results <= 8
-        ):
-            return json.dumps(
-                {
-                    "ok": False,
-                    "error": "invalid_arguments",
-                    "detail": "query 至少 2 个字符，max_results 必须为 1 到 8",
-                },
-                ensure_ascii=False,
-            )
-        capability_runtime = self._ensure_capability_runtime()
-        contract = self._service._agent_runner.main_contract
-        if contract is not None:
-            payload = capability_runtime.discover_declared(
-                CapabilityQuery(text=query.strip(), origin=self._runtime.origin, limit=max_results),
-                frozenset(tool.name for tool in await contract.definitions()),
-            )
-            if not payload.get("ok"):
-                self._service._tool_metrics.record_request_tools_zero_result()
-            return json.dumps(payload, ensure_ascii=False)
-        return json.dumps(
-            {"ok": False, "error": "main_agent_contract_unavailable"},
-            ensure_ascii=False,
-        )
 
     def _retry_identity(self, call: ToolCall) -> tuple[str, str] | None:
         if not self._is_mutating_call(call):

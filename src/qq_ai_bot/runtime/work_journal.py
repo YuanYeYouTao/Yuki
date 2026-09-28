@@ -98,6 +98,7 @@ class JournalSnapshot:
     record: dict[str, Any] | None = None
     previous_chain: str | None = None
     compaction_anchor: dict[str, Any] | None = None
+    portable_search: tuple[dict[str, str], ...] = ()
 
 
 class WorkJournal:
@@ -131,6 +132,19 @@ class WorkJournal:
             if not isinstance(payload, dict) or not isinstance(payload.get("metadata", {}), dict):
                 raise JournalUnavailable("work_journal_corrupt")
             contract_changed = row["contract"] != contract
+            progress = payload["metadata"].get("progress", {})
+            portable_search = (
+                progress.get("portable_search", []) if isinstance(progress, dict) else []
+            )
+            if not isinstance(portable_search, list):
+                portable_search = []
+            portable_search = tuple(
+                {"url": item["url"], "title": item.get("title", "")}
+                for item in portable_search[:16]
+                if isinstance(item, dict)
+                and isinstance(item.get("url"), str)
+                and isinstance(item.get("title", ""), str)
+            )
             if contract_changed:
                 payload = payload.get("metadata", {}).get("compaction_anchor")
             try:
@@ -156,6 +170,7 @@ class WorkJournal:
                     "contract_changed",
                     previous_chain=row["chain_id"],
                     compaction_anchor=payload,
+                    portable_search=portable_search,
                 )
             return JournalSnapshot("resume", result, row["chain_id"])
 

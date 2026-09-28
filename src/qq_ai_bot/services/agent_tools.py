@@ -438,8 +438,7 @@ class AgentToolService:
                     "用于查询可修改的配置、管理操作及读取范围；"
                     "按问题整理返回内容；"
                     "默认 summary，具体问题用 focused+category/query，只有明确要求完整清单"
-                    "才用 full。不能查询他人。它不是工具发现接口；需要查询工具用法时"
-                    "应调用 request_tools，不要从权限目录猜测工具名。"
+                    "才用 full。不能查询他人，也不能用权限目录代替工具执行回执。"
                 ),
                 parameters=_object_schema(
                     {
@@ -2803,12 +2802,11 @@ class AgentToolService:
         backend authorization control availability; no failure-driven switching.
         """
 
-        mode = self._settings.web.mode
-        if mode is WebMode.DISABLED:
-            return False
-        if self._web_provider is not None and self._web_sources is not None:
-            return True
-        return mode in {WebMode.NATIVE, WebMode.BOTH}
+        return (
+            self._settings.web.mode in {WebMode.TAVILY, WebMode.BOTH}
+            and self._web_provider is not None
+            and self._web_sources is not None
+        )
 
     def _web_dependencies(
         self,

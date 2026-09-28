@@ -5,6 +5,7 @@ from dataclasses import replace
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, NativeToolDefinition, NativeToolType
 from qq_ai_bot.llm.base import LLMInvalidRequestError, LLMUnsupportedFeatureError
@@ -125,33 +126,25 @@ async def standard_responses_cases():
                 assert len(captured) == 2
                 # Raw calls cannot bypass the effective native capability by
                 # skipping AgentRunner's native binder or advertising a stale bit.
-                for unavailable in (
-                    profile.model_copy(update={"provider": "deepseek"}),
-                    profile.model_copy(
-                        update={
-                            "capabilities": profile.capabilities
-                            - {
-                                ModelCapability.NATIVE_WEB_SEARCH,
-                            }
-                        }
-                    ),
-                ):
-                    denied = TaskModelExecutor(
-                        router=ModelRouter(
-                            ModelProfileCatalog(
-                                profiles={profile.id: unavailable},
-                                routes={
-                                    task: ModelRoute(task=task, profile_id=profile.id)
-                                    for task in ModelTask
-                                },
-                            )
-                        ),
-                        pool=pool,
+                routes = {task: ModelRoute(task=task, profile_id=profile.id) for task in ModelTask}
+                with pytest.raises(ValidationError, match="native web search is unavailable"):
+                    ModelProfileCatalog(
+                        profiles={profile.id: profile.model_copy(update={"provider": "deepseek"})},
+                        routes=routes,
                     )
-                    with pytest.raises(
-                        LLMUnsupportedFeatureError, match="effective model contract"
-                    ):
-                        await denied.execute(ModelTask.CHAT_AGENT, request)
-                    assert len(captured) == 2
+                unavailable = profile.model_copy(
+                    update={
+                        "capabilities": profile.capabilities - {ModelCapability.NATIVE_WEB_SEARCH}
+                    }
+                )
+                denied = TaskModelExecutor(
+                    router=ModelRouter(
+                        ModelProfileCatalog(profiles={profile.id: unavailable}, routes=routes)
+                    ),
+                    pool=pool,
+                )
+                with pytest.raises(LLMUnsupportedFeatureError, match="effective model contract"):
+                    await denied.execute(ModelTask.CHAT_AGENT, request)
+                assert len(captured) == 2
         finally:
             await pool.close()

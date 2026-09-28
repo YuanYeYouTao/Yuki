@@ -50,6 +50,11 @@ WORKER_NAMES = (
     )
 )
 
+# Native-only search connections do not publish these external functions. The
+# worker keeps every other declared tool and uses provider-native search there.
+WORKER_OPTIONAL_NAMES = frozenset({"web_search", "read_webpage"})
+WORKER_REQUIRED_NAMES = WORKER_NAMES - WORKER_OPTIONAL_NAMES
+
 
 def subagent_tools() -> tuple[ChatTool, ...]:
     string = {"type": "string"}

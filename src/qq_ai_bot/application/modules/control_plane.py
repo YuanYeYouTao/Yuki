@@ -23,6 +23,7 @@ from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
 from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
 from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.model_runtime.executor import TaskModelExecutor
 from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
 from qq_ai_bot.persistence.control_command import ControlCommandAdapter
 from qq_ai_bot.persistence.control_query import ControlQueryAdapter
@@ -59,13 +60,17 @@ class ControlPlaneModule:
         workspace: WorkspaceStore | None = None,
         conversation_media: ConversationMediaService | None = None,
         model_catalog: ModelProfileCatalog | None = None,
+        model_executor: TaskModelExecutor | None = None,
         participation_snapshot: Callable[[], Awaitable[dict[str, object]]] | None = None,
         autonomy_parameters: Callable[[], AutonomyParameters] | None = None,
         runtime_health: Callable[[], Awaitable[tuple[ComponentHealthView, ...]]] | None = None,
         trace_recorder: TraceRecorder | None = None,
     ) -> ControlPlaneBundle:
         config_files = ConfigFileService(
-            settings, model_catalog, autonomy_parameters=autonomy_parameters
+            settings,
+            model_catalog,
+            autonomy_parameters=autonomy_parameters,
+            model_executor=model_executor,
         )
         writer = ControlCommandAdapter(
             database,

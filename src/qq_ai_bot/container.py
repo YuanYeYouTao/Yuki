@@ -526,6 +526,7 @@ class ApplicationContainer:
             rebuild_service=self.memory_rebuild_service,
             conversation_media=self.conversation_media,
             model_catalog=self.model_profiles,
+            model_executor=self.models,
             participation_snapshot=lambda: self.semantic_participation.control_snapshot(),
             autonomy_parameters=lambda: self.semantic_participation.control_model_parameters(),
             runtime_health=lambda: control_runtime_health(self),
@@ -611,8 +612,10 @@ class ApplicationContainer:
                     pending_limit=settings.vision_queue_max_pending,
                     timeout=settings.vision_queue_timeout_seconds,
                     max_bytes=settings.vision_max_prepared_bytes,
-                    images_enabled=ModelCapability.IMAGE_INPUT
-                    in self.models.capabilities(ModelTask.CHAT_AGENT),
+                    images_enabled=lambda: (
+                        ModelCapability.IMAGE_INPUT
+                        in self.models.capabilities(ModelTask.CHAT_AGENT)
+                    ),
                 )
             ),
             settings=settings,

@@ -16,9 +16,12 @@ type Step = {
 type TurnMessage = {
   event_id: number;
   direction: "received" | "sent";
+  sender_display_name?: string | null;
+  delivery_status?: "confirmed" | null;
   conversation_id: string;
   occurred_at: string;
   content: string | null;
+  content_truncated?: boolean;
 };
 type Turn = {
   turn_id: string;
@@ -120,6 +123,23 @@ function TurnCard({
         (a, b) => a.id - b.id,
       )
     : [];
+  const operationStart = new Map<string, Step>(
+    turn.steps
+      .filter((step) => step.kind.endsWith("_start") && step.operation_id)
+      .map((step) => [step.operation_id!, step]),
+  );
+  const stepLabel = (step: Step) => {
+    const name = stepName[step.kind] || text(step.kind);
+    const start = step.operation_id
+      ? operationStart.get(step.operation_id)
+      : undefined;
+    const elapsed = start
+      ? Date.parse(step.created_at) - Date.parse(start.created_at)
+      : null;
+    return step.kind.endsWith("_end") && elapsed != null && elapsed >= 0
+      ? `${name} · ${(elapsed / 1000).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} 秒`
+      : name;
+  };
   const activePhase: Record<string, string> = {
     chat_processing_start: "正在处理收到的消息",
     model_start: "正在等待模型回复",
@@ -160,6 +180,9 @@ function TurnCard({
             >
               <strong>
                 {message.direction === "received" ? "收到" : "发出"} ·{" "}
+                {message.sender_display_name ||
+                  (message.direction === "received" ? "发送者未记录" : "Yuki")}
+                {" · "}
                 {stamp(message.occurred_at)}
               </strong>
               <span>
@@ -167,6 +190,12 @@ function TurnCard({
                   ? message.content || "这条消息没有保存文本正文"
                   : "消息正文未授权读取"}
               </span>
+              {message.content_truncated && (
+                <small>这里只显示前 500 字；完整消息请到聊天时间线查看。</small>
+              )}
+              {message.delivery_status === "confirmed" && (
+                <small>已由投递回执确认并写入发送账本</small>
+              )}
               {message.conversation_id !== turn.original_conversation_id && (
                 <small>发送到其他会话 · {message.conversation_id}</small>
               )}
@@ -230,7 +259,7 @@ function TurnCard({
         {visibleSteps.map((step) => (
           <li key={step.id}>
             <time>{stamp(step.created_at)}</time>
-            <span>{stepName[step.kind] || text(step.kind)}</span>
+            <span>{stepLabel(step)}</span>
             {step.payload_status === "redacted" && (
               <span className="small"> · 部分字段已脱敏</span>
             )}
@@ -251,7 +280,9 @@ function TurnCard({
                     );
                   }}
                 >
-                  {selectedStepId === step.id ? "收起细节" : "具体操作"}
+                  {selectedStepId === step.id
+                    ? "收起细节"
+                    : "查看实际参数与结果"}
                 </button>
               )}
           </li>

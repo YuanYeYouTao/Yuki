@@ -1172,11 +1172,15 @@ def _require_management_semantics(
         return
     if operation == CommandOperation.CONFIG_FILE_SAVE.value:
         expected_status = (
-            "saved_pending_reload" if resource_id == "autonomous_model" else "saved_pending_restart"
+            {"saved_pending_reload"}
+            if resource_id == "autonomous_model"
+            else {"applied", "saved_pending_restart"}
+            if resource_id == "model_profiles"
+            else {"saved_pending_restart"}
         )
         if (
             action != "save"
-            or status != expected_status
+            or status not in expected_status
             or resource_id != semantic_target_id
             or resource_id != _material_resource(material)
         ):

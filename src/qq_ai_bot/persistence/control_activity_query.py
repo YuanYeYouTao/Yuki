@@ -655,7 +655,9 @@ class ControlActivityQueryAdapter:
                 func.sum(model.prompt_tokens).filter(model.cached_prompt_tokens.is_not(None)),
                 0,
             ),
-            func.count(model.id).filter(model.cached_prompt_tokens.is_(None)),
+            func.count(model.id).filter(
+                or_(model.cached_prompt_tokens.is_(None), model.prompt_tokens.is_(None))
+            ),
             func.coalesce(
                 func.sum(model.cached_prompt_tokens).filter(model.prompt_tokens.is_not(None)),
                 0,
@@ -697,8 +699,18 @@ class ControlActivityQueryAdapter:
                     select(bucket, *measures).where(*period).group_by(bucket).order_by(bucket)
                 )
             ).all()
+            model_buckets = (
+                await session.execute(
+                    select(model.provider, model.model, bucket, *measures)
+                    .where(*period)
+                    .group_by(model.provider, model.model, bucket)
+                    .order_by(model.provider, model.model, bucket)
+                )
+            ).all()
 
-        def usage(values: Any) -> dict[str, int]:
+        def usage(values: Any) -> dict[str, int | float | None]:
+            reported_input = int(values[6] or 0)
+            reported_cached = int(values[8] or 0)
             return {
                 "calls": int(values[0] or 0),
                 "input_tokens": int(values[1] or 0),
@@ -706,9 +718,11 @@ class ControlActivityQueryAdapter:
                 "total_tokens": int(values[3] or 0),
                 "cached_input_tokens": int(values[4] or 0),
                 "missing_usage_calls": int(values[5] or 0),
-                "cache_reported_input_tokens": int(values[6] or 0),
+                "cache_reported_input_tokens": reported_input,
                 "cache_unreported_calls": int(values[7] or 0),
-                "cache_reported_cached_tokens": int(values[8] or 0),
+                "cache_reported_cached_tokens": reported_cached,
+                "cache_reported_uncached_tokens": max(0, reported_input - reported_cached),
+                "cache_hit_rate": reported_cached / reported_input if reported_input else None,
             }
 
         return ActivityView(
@@ -732,6 +746,10 @@ class ControlActivityQueryAdapter:
                 ],
                 "tasks": [{"task": row[0], **usage(row[1:])} for row in tasks],
                 "buckets": [{"at": row[0], **usage(row[1:])} for row in buckets],
+                "model_buckets": [
+                    {"provider": row[0], "model": row[1], "at": row[2], **usage(row[3:])}
+                    for row in model_buckets
+                ],
             },
         )
 

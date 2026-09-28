@@ -266,7 +266,7 @@ async def _check_responses_reasoning_payload_matches_thinking_preference(
             default_max_output_tokens=1000,
             thinking_enabled=False,
             reasoning_effort=None,
-            capabilities=frozenset(ModelCapability),
+            capabilities=frozenset(ModelCapability) - {ModelCapability.NATIVE_WEB_SEARCH},
         )
         assert profile.thinking_enabled is True
         assert profile.reasoning_effort is ReasoningEffort.LOW

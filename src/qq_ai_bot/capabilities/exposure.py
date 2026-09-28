@@ -1,26 +1,17 @@
-"""Monotonic exposure ledger and authority-first exposure planning (R3 §6-8)."""
+"""Stable tool declarations and per-turn execution grants."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities.catalog import UnifiedToolCatalog, UnifiedToolCatalogEntry
-from qq_ai_bot.capabilities.models import (
-    CapabilityEffect,
-    CapabilityExposure,
-    CapabilityTrustSource,
-)
-from qq_ai_bot.capabilities.request import REQUEST_TOOLS_NAME
-from qq_ai_bot.capabilities.search_index import CapabilitySearchHit
+from qq_ai_bot.capabilities.models import CapabilityEffect
 from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.runtime.contracts import CapabilityExposureSnapshot, MemoryCapabilityView
 
 CONDITIONAL_KERNEL_TOOLS = frozenset({"get_my_capabilities", "read_tool_artifact"})
-DEFAULT_FIRST_ROUND_HARD_CAP = 16
 SCHEMA_REVISION_CONFLICT = "capability_schema_revision_conflict"
 NO_LONGER_AUTHORIZED = "capability_no_longer_authorized"
-BUNDLE_EXCEEDS_BUDGET = "bundle_exceeds_schema_budget"
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +40,7 @@ class DeclaredSchemaLedger:
         extra_tools: tuple[ChatTool, ...] = (),
         callable_ids: frozenset[str],
     ) -> str | None:
-        """Merge newly exposed tools.  Returns a conflict code or None."""
+        """Merge stable schemas while changing grants only at the execution boundary."""
 
         if self.conflict is not None:
             return self.conflict
@@ -95,8 +86,6 @@ class DeclaredSchemaLedger:
                 )
             self.schema_token_total = sum(entry.estimated_schema_tokens for entry in entries)
         self.callable_ids = set(callable_ids)
-        if REQUEST_TOOLS_NAME in {tool.name for tool in extra_tools}:
-            self.callable_ids.add(REQUEST_TOOLS_NAME)
         return None
 
     def declared_tools(self) -> tuple[ChatTool, ...]:
@@ -115,328 +104,46 @@ class DeclaredSchemaLedger:
 @dataclass(frozen=True, slots=True)
 class ExposurePlan:
     entries: tuple[UnifiedToolCatalogEntry, ...]
-    kernel_tools: tuple[ChatTool, ...]
     callable_ids: frozenset[str]
-    omitted_count: int
-    reason: str = "ready"
 
 
-class AuthorityFirstExposurePlanner:
-    """Select kernel tools plus lexical candidates under schema/count caps."""
-
-    def __init__(
-        self,
-        *,
-        first_round_hard_cap: int = DEFAULT_FIRST_ROUND_HARD_CAP,
-        schema_token_budget: int | None = None,
-        mcp_schema_token_budget: int | None = None,
-        mcp_tool_limit: int | None = None,
-    ) -> None:
-        self._hard_cap = first_round_hard_cap
-        self._schema_token_budget = schema_token_budget
-        self._mcp_schema_token_budget = mcp_schema_token_budget
-        self._mcp_tool_limit = mcp_tool_limit
-
-    def plan_initial(
-        self,
-        *,
-        catalog: UnifiedToolCatalog,
-        requestable_ids: frozenset[str],
-        hits: tuple[CapabilitySearchHit, ...],
-        memory_view: MemoryCapabilityView | None,
-        kernel_tools: tuple[ChatTool, ...],
-        query: str,
-        artifact_available: bool,
-        priority_ids: tuple[str, ...] = (),
-    ) -> ExposurePlan:
-        by_id = {entry.descriptor.model_name: entry for entry in catalog.entries}
-        selected: list[UnifiedToolCatalogEntry] = []
-        selected_ids: set[str] = set()
-
-        def add(entry: UnifiedToolCatalogEntry | None, *, require_requestable: bool = True) -> None:
-            if entry is None or entry.descriptor.model_name in selected_ids:
-                return
-            if require_requestable and entry.descriptor.model_name not in requestable_ids:
-                return
-            if _is_synthetic(entry) or _elevated_capability(entry):
-                return
-            selected.append(entry)
-            selected_ids.add(entry.descriptor.model_name)
-
-        if memory_view is not None:
-            eager = set(memory_view.eager_namespaces)
-            for entry in catalog.entries:
-                if entry.descriptor.namespace_id in eager:
-                    add(entry)
-
-        # Local exposure ignores message text and lexical hits. The Main Agent
-        # declaration is frozen separately by MainAgentContract; request_tools
-        # only searches that declared catalog.
-        del query, hits
-        for name in CONDITIONAL_KERNEL_TOOLS:
-            candidate = by_id.get(name)
-            if name == "get_my_capabilities":
-                continue
-            if name == "read_tool_artifact" and not artifact_available:
-                continue
-            add(candidate)
-
-        for name in priority_ids:
-            candidate = by_id.get(name)
-            if candidate is None or not is_prefix_declarable(candidate):
-                continue
-            add(candidate, require_requestable=False)
-
-        reason = "ready"
-        selected = [
-            entry
-            for entry in selected
-            if not (
-                entry.descriptor.trust_source is CapabilityTrustSource.CORE
-                and entry.descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS
-                and is_prefix_declarable(entry)
-            )
-        ]
-        selected_ids = {entry.descriptor.model_name for entry in selected}
-        selected, selected_ids, rejected = _expand_selected_bundles(
-            selected,
-            selected_ids=selected_ids,
-            catalog=catalog,
-            requestable_ids=requestable_ids,
-            hard_cap=self._bundle_hard_cap(kernel_tools),
-            schema_token_budget=self._schema_token_budget,
-            mcp_schema_token_budget=self._mcp_schema_token_budget,
-            mcp_tool_limit=self._mcp_tool_limit,
-        )
-        if rejected:
-            reason = f"{BUNDLE_EXCEEDS_BUDGET}:{','.join(rejected)}"
-
-        selected = _clip_budget(
-            selected,
-            hard_cap=self._bundle_hard_cap(kernel_tools),
-            schema_token_budget=self._schema_token_budget,
-            preserve_ids={
-                entry.descriptor.model_name for entry in selected if entry.descriptor.bundle_scopes
-            },
-        )
-        # Resident core tools have dedicated prefix slots, outside the discovery
-        # budget. Availability changes callability, never the deployment schema.
-        for entry in catalog.entries:
-            if (
-                entry.descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS
-                and entry.descriptor.trust_source is CapabilityTrustSource.CORE
-                and is_prefix_declarable(entry)
-                and entry.descriptor.model_name
-                not in {item.descriptor.model_name for item in selected}
-            ):
-                selected.append(entry)
-        selected_ids = {entry.descriptor.model_name for entry in selected}
-        callable_ids = frozenset(
-            item.descriptor.model_name
-            for item in selected
-            if item.descriptor.model_name in requestable_ids
-        ) | frozenset(tool.name for tool in kernel_tools)
-        if memory_view is not None and memory_view.exclusive_namespace:
-            callable_ids = _restrict_exclusive_write(selected, kernel_tools, memory_view)
-        omitted = sum(
-            1 for item in catalog.entries if item.descriptor.model_name not in selected_ids
-        )
-        return ExposurePlan(
-            entries=tuple(selected),
-            kernel_tools=kernel_tools,
-            callable_ids=callable_ids,
-            omitted_count=omitted,
-            reason=reason,
-        )
-
-    def _bundle_hard_cap(self, kernel_tools: tuple[ChatTool, ...]) -> int:
-        return max(0, self._hard_cap - len(kernel_tools))
-
-
-def _is_synthetic(entry: UnifiedToolCatalogEntry) -> bool:
-    return bool((entry.descriptor.provider_metadata or {}).get("synthetic"))
-
-
-def _elevated_capability(entry: UnifiedToolCatalogEntry) -> bool:
-    """Privileged tools stay requestable, but they are not first-round schemas."""
-
-    descriptor = entry.descriptor
-    return bool(descriptor.required_permissions) or (
-        descriptor.trust_source is CapabilityTrustSource.ADMIN
-    )
-
-
-def is_prefix_declarable(entry: UnifiedToolCatalogEntry) -> bool:
-    """True when a tool may occupy the shared first-round tools[] prefix."""
-
-    return (
-        not _is_synthetic(entry)
-        and not _elevated_capability(entry)
-        and TurnOrigin.USER_MESSAGE in entry.descriptor.allowed_origins
-    )
-
-
-def _expand_selected_bundles(
-    selected: list[UnifiedToolCatalogEntry],
+def stable_exposure_plan(
     *,
-    selected_ids: set[str],
     catalog: UnifiedToolCatalog,
     requestable_ids: frozenset[str],
-    hard_cap: int,
-    schema_token_budget: int | None,
-    mcp_schema_token_budget: int | None,
-    mcp_tool_limit: int | None,
-) -> tuple[list[UnifiedToolCatalogEntry], set[str], tuple[str, ...]]:
-    """Load every required member of a selected bundle, or refuse that bundle."""
+    memory_view: MemoryCapabilityView | None,
+) -> ExposurePlan:
+    """Declare every admitted tool; only the execution grants may change."""
 
-    scopes = tuple(
-        dict.fromkeys(
-            scope for entry in selected for scope in entry.descriptor.bundle_scopes if scope.strip()
-        )
-    )
-    rejected: list[str] = []
-    kept = list(selected)
-    kept_ids = set(selected_ids)
-    for scope in scopes:
-        members = [
-            entry
-            for entry in catalog.entries
-            if scope in entry.descriptor.bundle_scopes
-            and entry.descriptor.model_name in requestable_ids
-            and not _is_synthetic(entry)
-        ]
-        if not members:
-            continue
-        evicted = _evict_same_provider_non_bundle(kept, scope=scope, members=members)
-        trial = [entry for entry in evicted if scope not in entry.descriptor.bundle_scopes]
-        trial.extend(members)
-        if _exceeds_caps(
-            trial,
-            hard_cap=hard_cap,
-            schema_token_budget=schema_token_budget,
-            mcp_schema_token_budget=_bundle_mcp_schema_budget(
-                trial,
-                members,
-                mcp_schema_token_budget=mcp_schema_token_budget,
-            ),
-            mcp_tool_limit=mcp_tool_limit,
-        ):
-            rejected.append(scope)
-            kept = [entry for entry in kept if scope not in entry.descriptor.bundle_scopes]
-            kept_ids = {entry.descriptor.model_name for entry in kept}
-            continue
-        kept = trial
-        kept_ids = {entry.descriptor.model_name for entry in kept}
-    return kept, kept_ids, tuple(rejected)
-
-
-def _evict_same_provider_non_bundle(
-    kept: list[UnifiedToolCatalogEntry],
-    *,
-    scope: str,
-    members: list[UnifiedToolCatalogEntry],
-) -> list[UnifiedToolCatalogEntry]:
-    """Drop leftover lexical MCP hits from the same server so a selected bundle can fit."""
-
-    providers = {entry.descriptor.provider_id for entry in members if entry.descriptor.provider_id}
-    member_ids = {entry.descriptor.model_name for entry in members}
-    return [
-        entry
-        for entry in kept
-        if entry.descriptor.model_name in member_ids
-        or entry.descriptor.trust_source is not CapabilityTrustSource.MCP
-        or entry.descriptor.provider_id not in providers
-        or scope in entry.descriptor.bundle_scopes
-    ]
-
-
-def _bundle_mcp_schema_budget(
-    trial: list[UnifiedToolCatalogEntry],
-    members: list[UnifiedToolCatalogEntry],
-    *,
-    mcp_schema_token_budget: int | None,
-) -> int | None:
-    """Do not let the leftover-MCP budget refuse an already selected bundle."""
-
-    if mcp_schema_token_budget is None:
-        return None
-    member_ids = {entry.descriptor.model_name for entry in members}
-    mcp_ids = {
+    entries = catalog.entries
+    callable_ids = frozenset(
         entry.descriptor.model_name
-        for entry in trial
-        if entry.descriptor.trust_source is CapabilityTrustSource.MCP
-    }
-    if mcp_ids and mcp_ids <= member_ids:
-        return None
-    return mcp_schema_token_budget
-
-
-def _exceeds_caps(
-    entries: list[UnifiedToolCatalogEntry],
-    *,
-    hard_cap: int,
-    schema_token_budget: int | None,
-    mcp_schema_token_budget: int | None,
-    mcp_tool_limit: int | None,
-) -> bool:
-    if hard_cap >= 0 and len(entries) > hard_cap:
-        return True
-    tokens = sum(entry.estimated_schema_tokens for entry in entries)
-    if schema_token_budget is not None and tokens > schema_token_budget:
-        return True
-    mcp_entries = [
-        entry for entry in entries if entry.descriptor.trust_source is CapabilityTrustSource.MCP
-    ]
-    if mcp_tool_limit is not None and len(mcp_entries) > mcp_tool_limit:
-        return True
-    mcp_tokens = sum(entry.estimated_schema_tokens for entry in mcp_entries)
-    return bool(mcp_schema_token_budget is not None and mcp_tokens > mcp_schema_token_budget)
-
-
-def _clip_budget(
-    entries: list[UnifiedToolCatalogEntry],
-    *,
-    hard_cap: int,
-    schema_token_budget: int | None,
-    preserve_ids: set[str] | None = None,
-) -> list[UnifiedToolCatalogEntry]:
-    preserve = preserve_ids or set()
-    selected = [entry for entry in entries if entry.descriptor.model_name in preserve]
-    used = sum(entry.estimated_schema_tokens for entry in selected)
-    selected_ids = {entry.descriptor.model_name for entry in selected}
-    for entry in entries:
-        if entry.descriptor.model_name in selected_ids:
-            continue
-        if len(selected) >= hard_cap:
-            break
-        next_used = used + entry.estimated_schema_tokens
-        if schema_token_budget is not None and next_used > schema_token_budget:
-            continue
-        selected.append(entry)
-        selected_ids.add(entry.descriptor.model_name)
-        used = next_used
-    return selected
+        for entry in entries
+        if entry.descriptor.model_name in requestable_ids
+    )
+    if memory_view is not None and memory_view.exclusive_namespace:
+        callable_ids = _restrict_exclusive_write(entries, callable_ids, memory_view)
+    return ExposurePlan(entries=entries, callable_ids=callable_ids)
 
 
 def _restrict_exclusive_write(
-    entries: tuple[UnifiedToolCatalogEntry, ...] | list[UnifiedToolCatalogEntry],
-    kernel_tools: tuple[ChatTool, ...],
+    entries: tuple[UnifiedToolCatalogEntry, ...],
+    requestable_ids: frozenset[str],
     memory_view: MemoryCapabilityView,
 ) -> frozenset[str]:
-    allowed: set[str] = {tool.name for tool in kernel_tools}
+    allowed: set[str] = set()
     exclusive = memory_view.exclusive_namespace
     eager = set(memory_view.eager_namespaces)
     for entry in entries:
+        name = entry.descriptor.model_name
+        if name not in requestable_ids:
+            continue
         namespace = entry.descriptor.namespace_id
         effect = entry.descriptor.effect
         if namespace == exclusive:
-            allowed.add(entry.descriptor.model_name)
-            continue
-        if namespace in eager and effect is not CapabilityEffect.WRITE_STATE:
-            allowed.add(entry.descriptor.model_name)
-            continue
-        if effect is CapabilityEffect.WRITE_STATE:
-            continue
-        if entry.descriptor.model_name in CONDITIONAL_KERNEL_TOOLS:
-            allowed.add(entry.descriptor.model_name)
+            allowed.add(name)
+        elif namespace in eager and effect is not CapabilityEffect.WRITE_STATE:
+            allowed.add(name)
+        elif name in CONDITIONAL_KERNEL_TOOLS and effect is not CapabilityEffect.WRITE_STATE:
+            allowed.add(name)
     return frozenset(allowed)

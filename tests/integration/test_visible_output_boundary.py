@@ -181,7 +181,12 @@ async def test_provider_text_requires_explicit_delivery(
             max_retries=0,
             default_temperature=0.5,
             default_max_output_tokens=512,
-            capabilities=frozenset(ModelCapability),
+            capabilities=frozenset(ModelCapability)
+            - (
+                {ModelCapability.NATIVE_WEB_SEARCH}
+                if protocol in {ModelProtocol.RESPONSES, ModelProtocol.CHAT_COMPLETIONS}
+                else set()
+            ),
         )
         models = TaskModelExecutor(
             router=ModelRouter(

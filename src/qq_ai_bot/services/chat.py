@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from contextlib import AsyncExitStack
+from contextlib import AbstractContextManager, AsyncExitStack, nullcontext
 from dataclasses import dataclass, replace
 from typing import Any, Protocol, TypedDict, TypeVar, cast
 
@@ -21,9 +21,6 @@ from qq_ai_bot.capabilities import (
     ToolKernelMetrics,
     ToolProvider,
     ToolProviderRegistry,
-)
-from qq_ai_bot.capabilities.runtime import (
-    CapabilityIndexCache,
 )
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
@@ -322,6 +319,11 @@ class _CompletedAgentRun:
 class ChatService:
     """Answer with cross-scope person memory and an event-bound Agent runtime."""
 
+    def pin_model_runtime(self) -> AbstractContextManager[None]:
+        """Keep admission media handling and its Agent run on one model catalog."""
+        pin = getattr(self._models, "pin", None)
+        return pin() if callable(pin) else nullcontext()
+
     def __init__(
         self,
         *,
@@ -376,7 +378,6 @@ class ChatService:
         self._web_sources = web_sources
         self._runtime_config = runtime_config
         self._agent_runner = AgentRunner(models, concurrency)
-        self._capability_index = CapabilityIndexCache()
         self._admin_tools: AdminToolService | None = None
         self._automation_tools: AutomationToolProvider | None = None
         self._plugin_tools: PluginToolProvider | None = None

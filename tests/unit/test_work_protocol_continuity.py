@@ -76,6 +76,12 @@ async def test_compaction_keeps_explicit_task_after_restart(database, tmp_path, 
     )
     control.current = await control.repository.get(control.current["id"])
     control.known_effects = [{"run_id": "original-execution", "pending": True}]
+    first.record_search_sources(
+        [
+            ("https://example.org/verified-source", "Earlier public source"),
+            ("file:///private/secret", "must not migrate"),
+        ]
+    )
     await first.save("paired")
     control.current = await control.repository.get(control.current["id"])
     fresh_task = ChatMessage("user", "new wakeup and refreshed runtime data")
@@ -94,6 +100,9 @@ async def test_compaction_keeps_explicit_task_after_restart(database, tmp_path, 
         assert "不代表当前权限" in carried.content
         assert carried.images == task.images
         assert restored.request().messages[:2] == (fresh_system, fresh_task)
+        source_message = restored.request().messages[3].content
+        assert "https://example.org/verified-source" in source_message
+        assert "file:///private/secret" not in source_message
     compacted = await resumed.compact("Completed checks, pending execution remains")
     assert compacted.chain_id != restored.chain_id
     assert compacted.request().messages[:2] == (fresh_system, task)

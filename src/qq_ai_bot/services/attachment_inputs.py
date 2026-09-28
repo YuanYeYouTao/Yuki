@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -38,7 +39,7 @@ class AttachmentInputService:
         pending_limit: int,
         timeout: float,
         max_bytes: int,
-        images_enabled: bool = True,
+        images_enabled: bool | Callable[[], bool] = True,
     ) -> None:
         self._resolver = resolver
         self._preprocessor = preprocessor
@@ -48,8 +49,17 @@ class AttachmentInputService:
         self._timeout = timeout
         self._max_bytes = max_bytes
         self._limiter = VisionRateLimiter()
-        self.images_enabled = images_enabled
+        self._images_enabled = images_enabled
         self._document_semaphore = asyncio.Semaphore(1)
+
+    @property
+    def images_enabled(self) -> bool:
+        enabled = self._images_enabled
+        return enabled() if callable(enabled) else enabled
+
+    @images_enabled.setter
+    def images_enabled(self, enabled: bool | Callable[[], bool]) -> None:
+        self._images_enabled = enabled
 
     async def prepare(
         self,

@@ -126,7 +126,11 @@ def load_model_profile_catalog(
             "model_profiles_compatibility_mode file=%s profile=main",
             path,
         )
-        capabilities = frozenset(ModelCapability) - {ModelCapability.IMAGE_INPUT}
+        # Legacy environment settings never opted into a provider-native tool.
+        capabilities = frozenset(ModelCapability) - {
+            ModelCapability.IMAGE_INPUT,
+            ModelCapability.NATIVE_WEB_SEARCH,
+        }
         profile = ModelProfile(
             id="main",
             provider=legacy_provider,

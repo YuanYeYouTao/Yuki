@@ -14,11 +14,58 @@ from qq_ai_bot.domain.messages import (
     ChatResponse,
     ChatTool,
     ModelResponseStatus,
+    ProviderContinuation,
     ToolCall,
     ToolFunction,
 )
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.services.agent_runner import AgentRuntime
+
+
+async def test_paused_provider_tool_replays_without_synthetic_recovery_message(database):
+    checkpoint = ProviderContinuation(
+        provider="fake",
+        protocol="chat_completions",
+        payload={"paused": "server-side search"},
+    )
+    responses = iter(
+        (
+            ChatResponse(
+                "",
+                0,
+                status=ModelResponseStatus.INCOMPLETE,
+                incomplete_reason="pause_turn",
+                continuation=checkpoint,
+            ),
+            ChatResponse("完成", 0),
+        )
+    )
+    provider = FakeLLMProvider(lambda _request: next(responses))
+    harness = build_harness(database, make_settings(database.url), provider)
+    chat = harness.processor._chat
+    runtime = AgentRuntime(
+        origin=TurnOrigin.USER_MESSAGE,
+        actor_user_id="1001",
+        actor_is_superuser=False,
+        delegated_authority=None,
+        conversation_key="pause-check",
+        current_group_id=None,
+        bot_user_id="9999",
+        gateway=None,
+        runtime_config=await chat._runtime_config.snapshot(),
+        current_time=chat._time.current_default(),
+        allowed_capabilities=frozenset(),
+        max_tool_calls=0,
+        max_model_requests=2,
+    )
+    result = await chat._agent_runner.run(
+        (ChatMessage(role="user", content="搜索后回答"),), runtime, None
+    )
+    assert result.text == "完成"
+    assert len(provider.requests) == 2
+    assert provider.requests[1].continuation == checkpoint
+    assert provider.requests[1].messages == provider.requests[0].messages
+    assert provider.requests[1].continuation_items == ()
 
 
 @pytest.mark.asyncio

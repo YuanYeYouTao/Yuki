@@ -12,6 +12,7 @@ from qq_ai_bot.llm.vendor_policy import (
     CHAT_VENDORS,
     RESPONSES_VENDORS,
     ChatWireOptions,
+    supports_native_search,
 )
 
 
@@ -63,6 +64,14 @@ class ModelProtocol(StrEnum):
     GEMINI = "gemini"
 
 
+class ModelSearchMode(StrEnum):
+    """Per-connection choice of provider and externally executed search."""
+
+    EXTERNAL = "external"
+    NATIVE = "native"
+    BOTH = "both"
+
+
 class StructuredOutputMode(StrEnum):
     """Supported provider strategies for one validated object."""
 
@@ -92,6 +101,7 @@ class ModelProfile(_FrozenModel):
     thinking_enabled: bool | None = True
     reasoning_effort: ReasoningEffort | None = ReasoningEffort.LOW
     structured_output_mode: StructuredOutputMode = StructuredOutputMode.FUNCTION_TOOL
+    search_mode: ModelSearchMode | None = None
     capabilities: frozenset[ModelCapability] = frozenset()
     wire_options: ChatWireOptions | None = None
     headers: dict[str, str] = Field(default_factory=dict, repr=False)
@@ -168,6 +178,21 @@ class ModelProfile(_FrozenModel):
             raise ValueError(
                 "all generation profiles require the reasoning capability (minimum low)"
             )
+        if ModelCapability.NATIVE_WEB_SEARCH in self.capabilities and not supports_native_search(
+            vendor,
+            self.protocol.value,
+            self.wire_options,
+            has_functions=ModelCapability.TOOLS in self.capabilities,
+        ):
+            raise ValueError("native web search is unavailable for this provider and protocol")
+        if self.search_mode in {ModelSearchMode.NATIVE, ModelSearchMode.BOTH}:
+            if ModelCapability.NATIVE_WEB_SEARCH not in self.capabilities:
+                raise ValueError("native search mode requires native_web_search capability")
+        if self.search_mode is ModelSearchMode.BOTH and self.protocol not in {
+            ModelProtocol.GEMINI,
+            ModelProtocol.RESPONSES,
+        }:
+            raise ValueError("this protocol cannot combine native and external search")
         return self
 
 

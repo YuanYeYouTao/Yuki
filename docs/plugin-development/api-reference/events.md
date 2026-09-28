@@ -21,7 +21,6 @@
 - `turn.rejected`
 - `turn.autonomous_declined`
 - `turn.closed`
-- `capability.searched`
 
 ## 上下文与 Prompt
 

@@ -139,17 +139,65 @@ async def test_model_usage_summary_counts_every_call_without_double_counting_cac
     assert recent["cached_input_tokens"] == 60
     assert recent["missing_usage_calls"] == 1
     assert recent["cache_reported_input_tokens"] == 100
+    assert recent["cache_reported_uncached_tokens"] == 40
+    assert recent["cache_hit_rate"] == pytest.approx(0.6)
     assert recent["cache_unreported_calls"] == 1
     assert recent["models"][0]["calls"] == 2
     assert recent["models"][0]["cache_reported_input_tokens"] == 100
     assert recent["profiles"][0]["profile_id"] == "main"
     assert recent["tasks"][0]["task"] == "chat_agent"
     assert sum(bucket["calls"] for bucket in recent["buckets"]) == 2
+    assert sum(bucket["calls"] for bucket in recent["model_buckets"]) == 2
+    assert recent["model_buckets"][0]["provider"] == "fixture"
+    assert recent["model_buckets"][0]["model"] == "offline"
     assert (await queries.read_model_usage_summary(permission, "7d")).fields["calls"] == 3
     with pytest.raises(ControlQueryError):
         await queries.read_model_usage_summary(permission, "all")
     with pytest.raises(ControlQueryError):
         await queries.read_model_usage_summary(context("control.chat.metadata.read"), "24h")
+
+
+@pytest.mark.asyncio
+async def test_model_usage_summary_keeps_each_model_and_unknown_cache_separate(database):
+    at = datetime.now(UTC) - timedelta(minutes=30)
+    async with database.sessions() as session, session.begin():
+        for model_name, prompt, cached in (
+            ("model-a", 100, 60),
+            ("model-a", 50, None),
+            ("model-a", None, 10),
+            ("model-b", 200, 0),
+        ):
+            session.add(
+                ModelInvocationModel(
+                    task="chat_agent",
+                    profile_id=model_name,
+                    provider="fixture",
+                    model=model_name,
+                    success=True,
+                    latency_seconds=1,
+                    created_at=at,
+                    prompt_tokens=prompt,
+                    completion_tokens=10,
+                    cached_prompt_tokens=cached,
+                    total_tokens=prompt + 10 if prompt is not None else None,
+                )
+            )
+    queries = ControlQueryService(ControlQueryAdapter(database))
+    recent = (
+        await queries.read_model_usage_summary(context("control.execution.metadata.read"), "24h")
+    ).fields
+    by_model = {row["model"]: row for row in recent["model_buckets"]}
+    assert len(by_model) == 2
+    assert by_model["model-a"]["calls"] == 3
+    assert by_model["model-a"]["input_tokens"] == 150
+    assert by_model["model-a"]["cache_reported_input_tokens"] == 100
+    assert by_model["model-a"]["cache_reported_cached_tokens"] == 60
+    assert by_model["model-a"]["cache_reported_uncached_tokens"] == 40
+    assert by_model["model-a"]["cache_unreported_calls"] == 2
+    assert by_model["model-a"]["cache_hit_rate"] == pytest.approx(0.6)
+    assert by_model["model-b"]["cache_hit_rate"] == 0
+    assert by_model["model-a"]["at"] == by_model["model-b"]["at"]
+    assert sum(bucket["calls"] for bucket in recent["buckets"]) == 4
 
 
 @pytest.mark.asyncio

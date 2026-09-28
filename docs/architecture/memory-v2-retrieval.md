@@ -86,7 +86,7 @@ overview 没有执行主题匹配，因此候选投影的 `lexical_match` 与 `s
 - get_memory_fact：同一结构读取政策；get_memory_evidence 仍是更严格的证据接口。
 - 名称须在获准历史关系内精确唯一；歧义最多返回五个候选和 has_more，retryable=false。
   不用全社会关系图作为每轮预取目标。
-- 默认固定首轮读取工具包含 Person、Group、SELF；用户显式 pin 配置保持原值。
+- 主 Agent 的固定工具声明包含 Person、Group、SELF 读取工具；实际调用仍由后端按当前主体和目标核验权限。
 - 同轮相同已授权查询复用检索结果，减少数据库/embedding 工作；每次入口仍重验权限，
   不缓存永久许可。记忆修改清除本轮读缓存；权限拒绝不做自动重试，不新增读取次数配额。
 

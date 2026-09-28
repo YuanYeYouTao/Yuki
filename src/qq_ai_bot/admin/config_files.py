@@ -18,7 +18,9 @@ from pydantic import TypeAdapter, ValidationError
 from yuki_participation.autonomy_parameters import DEFAULT_AUTONOMY_PARAMETERS, AutonomyParameters
 
 from qq_ai_bot.config import Settings
+from qq_ai_bot.model_runtime.executor import TaskModelExecutor
 from qq_ai_bot.model_runtime.models import ModelProfile, ModelTask
+from qq_ai_bot.model_runtime.pool import ModelClientPool
 from qq_ai_bot.model_runtime.profiles import (
     ModelProfileCatalog,
     ModelRuntimeConfigurationError,
@@ -83,7 +85,7 @@ def _plain(value: Any) -> Any:
 
 
 class ConfigFileService:
-    """Paths come only from server Settings. Saving never reloads running providers."""
+    """Versioned startup files, with atomic activation of model connections."""
 
     def __init__(
         self,
@@ -91,11 +93,21 @@ class ConfigFileService:
         catalog: ModelProfileCatalog | None = None,
         *,
         autonomy_parameters: Callable[[], AutonomyParameters] | None = None,
+        model_executor: TaskModelExecutor | None = None,
     ) -> None:
         self._settings = settings
         self._catalog = catalog
         self._autonomy_parameters = autonomy_parameters
+        self._model_executor = model_executor
         self._lock = asyncio.Lock()
+
+    @property
+    def loaded_catalog(self) -> ModelProfileCatalog | None:
+        return self._catalog
+
+    @property
+    def model_hot_reload_enabled(self) -> bool:
+        return self._model_executor is not None
 
     def _path(self, file_id: str) -> Path:
         paths = {
@@ -125,7 +137,12 @@ class ConfigFileService:
             "file_id": file_id,
             "exists": content is not None,
             "revision": _revision(content),
-            "apply_mode": "hot_reload" if file_id == "autonomous_model" else "restart",
+            "apply_mode": (
+                "hot_reload"
+                if file_id == "autonomous_model"
+                or (file_id == "model_profiles" and self._model_executor)
+                else "restart"
+            ),
             "valid": True,
             "matches_loaded": None,
             "writable_directory": await asyncio.to_thread(os.access, path.parent, os.W_OK),
@@ -239,6 +256,8 @@ class ConfigFileService:
             if _revision(original) != expected_revision:
                 raise ConfigFileError("version_conflict")
             secret_write: tuple[Path, bytes | None, bytes] | None = None
+            pending_catalog: ModelProfileCatalog | None = None
+            pending_pool: ModelClientPool | None = None
             try:
                 if file_id == "autonomous_model":
                     if set(spec) != {"document"} or not isinstance(spec["document"], Mapping):
@@ -292,7 +311,22 @@ class ConfigFileService:
                         if "headers" in previous:
                             profile["headers"] = previous["headers"]
                     text = tomlkit.dumps(document)
-                    self._catalog_from(text)
+                    pending_catalog = self._catalog_from(text)
+                    if self._model_executor is not None:
+                        pending_pool = ModelClientPool(
+                            secret_overrides={
+                                "LLM_API_KEY": self._settings.llm_api_key,
+                                "LLM_FLASH_API_KEY": self._settings.llm_flash_api_key,
+                                **saved_keys,
+                            }
+                        )
+                        try:
+                            for profile in pending_catalog.profiles.values():
+                                pending_pool.get(profile)
+                        except Exception:
+                            await pending_pool.close()
+                            pending_pool = None
+                            raise ValueError("model connection unavailable") from None
                 else:
                     if set(spec) != {"content"} or type(spec["content"]) is not str:
                         raise ValueError("invalid content")
@@ -304,9 +338,23 @@ class ConfigFileService:
                     raise ValueError("file too large")
             except (TypeError, ValueError, UnicodeError, tomlkit.exceptions.TOMLKitError) as exc:
                 raise ConfigFileError("validation_error") from exc
-            writing = asyncio.create_task(
-                asyncio.to_thread(self._replace_model_bundle, path, original, content, secret_write)
-            )
+
+            async def persist_and_activate() -> int:
+                try:
+                    revision = await asyncio.to_thread(
+                        self._replace_model_bundle, path, original, content, secret_write
+                    )
+                    if pending_catalog is not None and pending_pool is not None:
+                        assert self._model_executor is not None
+                        self._model_executor.apply_catalog(pending_catalog, pending_pool)
+                        self._catalog = pending_catalog
+                    return revision
+                except BaseException:
+                    if pending_pool is not None and self._catalog is not pending_catalog:
+                        await pending_pool.close()
+                    raise
+
+            writing = asyncio.create_task(persist_and_activate())
             try:
                 return await asyncio.shield(writing)
             except asyncio.CancelledError:

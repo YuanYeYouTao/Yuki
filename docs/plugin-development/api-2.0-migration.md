@@ -23,7 +23,7 @@ Plugin API `2.0` 是破坏性升级。Host 在导入插件代码前校验 `plugi
 | `planner.entered` / `planner.planned` | `turn.admitted` |
 | `planner.interrupted` | 复用 `agent.interrupted` |
 | `planner.fallback` | 删除；无同义事件 |
-| （无） | `capability.searched`、`turn.closed` |
+| （无） | `turn.closed`；旧版曾提供的 `capability.searched` 已随目录查询入口删除 |
 
 Alembic `0038` 会撤销旧 `planner.signal.register` 批准。Manifest、权限、入口或 API 版本变化后，插件进入 `pending_approval`，必须重新审阅，不能沿用旧批准。
 

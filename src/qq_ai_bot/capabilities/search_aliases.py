@@ -1,4 +1,4 @@
-"""Load request_tools aliases from TOML instead of routing word lists."""
+"""Load tool search aliases from TOML instead of routing word lists."""
 
 from __future__ import annotations
 

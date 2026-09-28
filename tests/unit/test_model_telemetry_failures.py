@@ -21,7 +21,12 @@ from qq_ai_bot.domain.messages import (
 from qq_ai_bot.gateway.registry import RegistryClosed
 from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.identity.routing import RouteSendError
-from qq_ai_bot.llm.base import LLMAuthenticationError, LLMInvalidRequestError, LLMTimeoutError
+from qq_ai_bot.llm.base import (
+    LLMAuthenticationError,
+    LLMInvalidRequestError,
+    LLMInvalidResponseError,
+    LLMTimeoutError,
+)
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.model_runtime.executor import TaskModelExecutor
 from qq_ai_bot.model_runtime.models import (
@@ -90,7 +95,7 @@ def executor(provider, telemetry, protocol=ModelProtocol.CHAT_COMPLETIONS):
         max_retries=0,
         default_temperature=0.1,
         default_max_output_tokens=100,
-        capabilities=frozenset(ModelCapability),
+        capabilities=frozenset(ModelCapability) - {ModelCapability.NATIVE_WEB_SEARCH},
     )
     return TaskModelExecutor(
         router=ModelRouter(
@@ -151,6 +156,45 @@ async def test_telemetry_failure_preserves_response_or_original_error(failed, pr
         assert "coverage_incomplete=true" in caplog.text
         assert "private" not in caplog.text
         assert "history" not in caplog.text
+    finally:
+        await models.close()
+
+
+async def test_failed_provider_response_keeps_reported_usage_without_trusting_payload():
+    failure = LLMInvalidResponseError(
+        "blocked",
+        diagnostics={
+            "usage": {
+                "prompt_tokens": 120,
+                "completion_tokens": 4,
+                "total_tokens": 124,
+                "cached_prompt_tokens": 60,
+                "untrusted": "secret",
+            }
+        },
+    )
+
+    class Telemetry:
+        def __init__(self):
+            self.records = []
+
+        async def record(self, **values):
+            self.records.append(values)
+
+    def reject(_request):
+        raise failure
+
+    telemetry = Telemetry()
+    models = executor(FakeLLMProvider(reject), telemetry)
+    try:
+        with pytest.raises(LLMInvalidResponseError) as caught:
+            await models.execute(ModelTask.CHAT_AGENT, ChatRequest(messages=()))
+        assert caught.value is failure
+        assert telemetry.records[0]["success"] is False
+        assert telemetry.records[0]["prompt_tokens"] == 120
+        assert telemetry.records[0]["cached_prompt_tokens"] == 60
+        assert telemetry.records[0]["total_tokens"] == 124
+        assert "untrusted" not in telemetry.records[0]
     finally:
         await models.close()
 

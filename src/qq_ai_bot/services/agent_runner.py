@@ -7,6 +7,7 @@ import inspect
 import json
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Protocol, cast
@@ -40,7 +41,7 @@ from qq_ai_bot.llm.base import (
     LLMUnavailableError,
 )
 from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
-from qq_ai_bot.model_runtime.models import ModelTask
+from qq_ai_bot.model_runtime.models import ModelCapability, ModelTask
 from qq_ai_bot.runtime.activation_outcome import ActivationOutcome
 from qq_ai_bot.runtime.execution_receipts import ExecutionReceipts, current_receipts
 from qq_ai_bot.runtime.work_control import WORK_CONTROL_NAMES, WorkControl, WorkInputsPreparing
@@ -152,24 +153,41 @@ class AgentRunner:
         self._native_tools = NativeToolBinder()
         self.main_contract: MainAgentContract | None = None
 
+    def provider_excluded_function_names(self, runtime: AgentRuntime) -> frozenset[str]:
+        web_config = getattr(runtime.runtime_config, "web", None)
+        try:
+            web_mode = WebMode(getattr(web_config, "mode", WebMode.DISABLED.value))
+        except ValueError:
+            web_mode = WebMode.DISABLED
+        search_mode_getter = getattr(self._models, "search_mode", None)
+        return self._native_tools.excluded_function_names(
+            protocol=self._models.protocol(self._task),
+            capabilities=self._models.capabilities(self._task),
+            allowed_capabilities=runtime.allowed_capabilities,
+            web_mode=web_mode,
+            search_mode=(search_mode_getter(self._task) if callable(search_mode_getter) else None),
+        )
+
     async def run(
         self,
         initial_messages: tuple[ChatMessage, ...],
         runtime: AgentRuntime,
         tools: AgentToolBackend | None,
     ) -> AgentRunResult:
-        async with trace_span(
-            "turn",
-            {"messages": [asdict(message) for message in initial_messages]},
-            recorder=getattr(self._models, "traces", None),
-            conversation_id=runtime.canonical_conversation_id,
-            execution_id=runtime.execution_id,
-            source_event_id=runtime.source_event_id,
-            origin=runtime.origin.value,
-        ) as span:
-            result = await self._run_with_receipts(initial_messages, runtime, tools)
-            span.result = asdict(result)
-            return result
+        pin = getattr(self._models, "pin", None)
+        with pin() if callable(pin) else nullcontext():
+            async with trace_span(
+                "turn",
+                {"messages": [asdict(message) for message in initial_messages]},
+                recorder=getattr(self._models, "traces", None),
+                conversation_id=runtime.canonical_conversation_id,
+                execution_id=runtime.execution_id,
+                source_event_id=runtime.source_event_id,
+                origin=runtime.origin.value,
+            ) as span:
+                result = await self._run_with_receipts(initial_messages, runtime, tools)
+                span.result = asdict(result)
+                return result
 
     async def _run_with_receipts(
         self,
@@ -320,6 +338,20 @@ class AgentRunner:
                         model_requests=request_index,
                         web_was_used=web_was_used,
                     )
+                # Queued Work input may be prepared by a newer ingress catalog
+                # while this activation is still pinned to the old provider.
+                if ModelCapability.IMAGE_INPUT not in self._models.capabilities(self._task):
+                    added = tuple(
+                        replace(
+                            message,
+                            images=(),
+                            content=(message.content or "")
+                            + "\n[本次输入的图片或视频帧未读取：当前模型连接不支持图片输入。]",
+                        )
+                        if message.images
+                        else message
+                        for message in added
+                    )
                 for message in added:
                     transcript.append(message)
             definitions = (
@@ -332,25 +364,20 @@ class AgentRunner:
                 web_mode = WebMode(getattr(web_config, "mode", WebMode.DISABLED.value))
             except ValueError:
                 web_mode = WebMode.DISABLED
-            web_search_selected = any(tool.name == "web_search" for tool in definitions)
-            native_definitions = (
-                self._native_tools.bind(
-                    protocol=self._models.protocol(self._task),
-                    capabilities=self._models.capabilities(self._task),
-                    allowed_capabilities=runtime.allowed_capabilities,
-                    web_mode=web_mode,
-                    web_was_used=web_was_used,
-                )
-                if web_search_selected
-                else ()
+            search_mode_getter = getattr(self._models, "search_mode", None)
+            native_definitions = self._native_tools.bind(
+                protocol=self._models.protocol(self._task),
+                capabilities=self._models.capabilities(self._task),
+                allowed_capabilities=runtime.allowed_capabilities,
+                web_mode=web_mode,
+                web_was_used=web_was_used,
+                search_mode=search_mode_getter(self._task)
+                if callable(search_mode_getter)
+                else None,
             )
-            if web_mode is WebMode.NATIVE and fixed_definitions is None:
-                # Native-only deliberately excludes external search. Mixed mode
-                # keeps the configured external search function alongside the native tool;
-                # availability must not depend on a preceding native failure.
-                definitions = tuple(
-                    item for item in definitions if item.name not in {"web_search", "read_webpage"}
-                )
+            excluded_names = self.provider_excluded_function_names(runtime)
+            if excluded_names:
+                definitions = tuple(item for item in definitions if item.name not in excluded_names)
             restart_chain = getattr(tools, "consume_provider_chain_restart", None)
             if callable(restart_chain):
                 # Discovery/execution policy cannot discard a submitted request prefix.
@@ -358,8 +385,7 @@ class AgentRunner:
             if transcript.continuation is not None:
                 # Responses continuations are one cumulative request chain.
                 # Keep previously declared tools paired with their function outputs.
-                # The Main Agent manifest is already fixed; request_tools only
-                # searches its directory and does not grow this declaration.
+                # The Main Agent manifest is fixed for the submitted chain.
                 definitions = self._merge_function_tools(continuation_tools, definitions)
                 native_definitions = self._merge_native_tools(
                     continuation_native_tools, native_definitions
@@ -553,6 +579,10 @@ class AgentRunner:
                 raise
             native_events.extend(response.native_tool_events)
             citations.extend(response.citations)
+            if control is not None and control.session is not None and response.citations:
+                control.session.record_search_sources(
+                    [(item.url, item.title) for item in response.citations]
+                )
             response_status = response.status
             if response.native_tool_events:
                 web_was_used = True
@@ -624,15 +654,23 @@ class AgentRunner:
                         "provider response remained incomplete after bounded recovery"
                     )
                 incomplete_recovery_used = True
-                transcript.append(
-                    ChatMessage(
-                        role="system",
-                        content=(
-                            "上一响应未完整结束。根据真实回执继续原任务，必要时查询或解释；"
-                            "不要重复任何已经完成的原生搜索或本地工具调用。"
-                        ),
+                if response.incomplete_reason == "pause_turn":
+                    if response.continuation is None:
+                        raise LLMIncompleteResponseError(
+                            "paused provider response has no resumable checkpoint"
+                        )
+                    # Claude's paused server tool must be echoed unchanged.
+                    # A synthetic user/system message would change that replay.
+                else:
+                    transcript.append(
+                        ChatMessage(
+                            role="system",
+                            content=(
+                                "上一响应未完整结束。根据真实回执继续原任务，必要时查询或解释；"
+                                "不要重复任何已经完成的原生搜索或本地工具调用。"
+                            ),
+                        )
                     )
-                )
                 logger.warning(
                     "agent_incomplete_response_recovery reason=%s",
                     response.incomplete_reason or "unknown",
@@ -823,6 +861,25 @@ class AgentRunner:
                     outcome = json.loads(result)
                 except json.JSONDecodeError:
                     outcome = {}
+                if (
+                    call.function.name == "web_search"
+                    and isinstance(outcome, dict)
+                    and outcome.get("ok") is True
+                    and runtime.work_control is not None
+                    and runtime.work_control.session is not None
+                ):
+                    data = outcome.get("data")
+                    sources = data.get("sources") if isinstance(data, dict) else None
+                    if isinstance(sources, list):
+                        runtime.work_control.session.record_search_sources(
+                            [
+                                (source["url"], source.get("title", ""))
+                                for source in sources
+                                if isinstance(source, dict)
+                                and isinstance(source.get("url"), str)
+                                and isinstance(source.get("title", ""), str)
+                            ]
+                        )
                 if call.function.name in EVIDENCE_TOOLS:
                     evidence_observation.emit(
                         "tool_result_staged",

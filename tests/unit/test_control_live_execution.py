@@ -133,6 +133,7 @@ async def test_live_turn_links_received_message_and_requires_content_grant(datab
         assert inbound is not None
         event_id = inbound.id
         saved_content = inbound.content
+        saved_sender = inbound.sender_group_card or inbound.sender_nickname or None
     recorder = TraceRecorder(database)
     async with trace_span(
         "chat_processing",
@@ -171,7 +172,10 @@ async def test_live_turn_links_received_message_and_requires_content_grant(datab
     ).fields["recent"][0]["messages"]
     assert metadata[0]["event_id"] == event_id
     assert metadata[0]["direction"] == "received"
+    assert metadata[0]["sender_display_name"] == saved_sender
+    assert metadata[0]["delivery_status"] is None
     assert metadata[0]["content"] is None
+    assert metadata[0]["content_truncated"] is False
     usage = (
         await queries.read_conversation_execution(
             context("control.execution.metadata.read"), conversation
@@ -332,6 +336,8 @@ async def test_outbound_event_links_to_original_conversation_turn(database, tmp_
         and item["direction"] == "sent"
         and item["conversation_id"] == target.text
         and item["content"] == "private delivery"
+        and item["sender_display_name"] == "Yuki"
+        and item["delivery_status"] == "confirmed"
         for item in sent_messages
     )
 

@@ -689,12 +689,15 @@ class ControlQueryAdapter:
         return await self._activity.download_chat_media(conversation_id, event_id, attachment_index)
 
     async def read_model_catalog(self) -> ActivityView:
-        if self._model_catalog is None:
+        catalog = (
+            self._config_files.loaded_catalog if self._config_files is not None else None
+        ) or self._model_catalog
+        if catalog is None:
             raise ControlQueryError(Problem(ProblemCode.OPERATION_UNAVAILABLE))
         return ActivityView(
             "models",
             {
-                "compatibility_mode": self._model_catalog.compatibility_mode,
+                "compatibility_mode": catalog.compatibility_mode,
                 "profiles": [
                     {
                         "id": item.id,
@@ -707,13 +710,17 @@ class ControlQueryAdapter:
                         "max_output_tokens": item.default_max_output_tokens,
                         "capabilities": sorted(cap.value for cap in item.capabilities),
                     }
-                    for item in self._model_catalog.profiles.values()
+                    for item in catalog.profiles.values()
                 ],
                 "routes": [
                     {"task": task.value, "profile_id": route.profile_id}
-                    for task, route in self._model_catalog.routes.items()
+                    for task, route in catalog.routes.items()
                 ],
-                "apply_mode": "restart",
+                "apply_mode": (
+                    "hot_reload"
+                    if self._config_files and self._config_files.model_hot_reload_enabled
+                    else "restart"
+                ),
             },
         )
 

@@ -80,22 +80,7 @@ async def test_delivery_failure_keeps_normal_answer(
         if model_calls == 2:
             results = [m.content or "" for m in request.messages if m.role == "tool"]
             assert any(failure in r for r in results), results
-            return ChatResponse(
-                "",
-                0,
-                tool_calls=(
-                    ToolCall(
-                        "lookup-after-failure",
-                        ToolFunction("request_tools", json.dumps({"query": tool_name})),
-                    ),
-                ),
-            )
-        if model_calls >= 3:
-            if model_calls == 3:
-                result = json.loads([m.content for m in request.messages if m.role == "tool"][-1])
-                assert result.get("error", result.get("error_code")) != "tools_closed", result
-                assert result.get("ok") is True, result
-            return ChatResponse("", 0)
+        return ChatResponse("", 0)
 
     class Delivery:
         def __init__(self):
@@ -280,7 +265,7 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     )
     admin_text = admin_sender.messages[0].text
     assert "当前权限：超级管理员" in admin_text
-    assert "可修改运行时配置参数：234 项" in admin_text
+    assert "可修改运行时配置参数：228 项" in admin_text
     assert "管理员业务接口：44 项，其中修改型 33 项" in admin_text
     assert "conversation.autonomous_batch_limit" in admin_text
     assert "relationship.set_affection" in admin_text
@@ -714,7 +699,7 @@ async def test_keyerror_during_chat_sends_retry_text(database: Database) -> None
 
 
 @pytest.mark.asyncio
-async def test_ordinary_chat_keeps_generic_tool_request_gateway(
+async def test_ordinary_chat_keeps_generic_tool_contract(
     database: Database,
 ) -> None:
     provider = FakeLLMProvider(lambda _request: "我会按工具回执确认是否记住。")
@@ -728,7 +713,8 @@ async def test_ordinary_chat_keeps_generic_tool_request_gateway(
 
     assert provider.requests
     tool_names = {tool.name for tool in provider.requests[-1].tools}
-    assert "request_tools" in tool_names
+    assert tool_names
+    assert "request_tools" not in tool_names
 
 
 @pytest.mark.asyncio
@@ -770,7 +756,7 @@ async def test_mutation_turn_uses_auto_with_only_write_tool_and_receipt_contract
     assert request.tool_choice == "auto"
     tool_names = {tool.name for tool in request.tools}
     assert "memory_change" in tool_names
-    assert "request_tools" in tool_names
+    assert "request_tools" not in tool_names
     assert any("真实工具回执" in (message.content or "") for message in request.messages)
     assert not sender.messages
 

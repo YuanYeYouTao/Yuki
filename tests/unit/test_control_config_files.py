@@ -30,9 +30,11 @@ from qq_ai_bot.control_plane import (
     YukiControlTarget,
 )
 from qq_ai_bot.conversation.canonical_db_models import ControlCommandReceiptModel
+from qq_ai_bot.model_runtime.executor import TaskModelExecutor
 from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.model_runtime.pool import ModelClientPool
 from qq_ai_bot.model_runtime.profiles import parse_model_profile_catalog
+from qq_ai_bot.model_runtime.routes import ModelRouter
 from qq_ai_bot.model_runtime.secrets import model_secrets_path, read_model_secrets
 from qq_ai_bot.persistence.control_command import ControlCommandAdapter
 from qq_ai_bot.persistence.control_query import ControlQueryAdapter
@@ -89,6 +91,90 @@ async def test_saved_and_loaded_states_headers_and_revision(files):
     actual = tomllib.loads(settings.model_profiles_file.read_text(encoding="utf-8"))
     assert actual["profiles"]["main"]["headers"]["X-Site"] == "private-header-value"
     assert saved["document"]["profiles"]["main"]["model"] == "new-model"
+
+
+async def test_model_save_hot_applies_new_routes_while_pinned_activation_stays_old(files):
+    settings, legacy_service = files
+    initial = legacy_service.loaded_catalog
+    assert initial is not None
+    pool = ModelClientPool()
+    executor = TaskModelExecutor(router=ModelRouter(initial), pool=pool)
+    service = ConfigFileService(settings, initial, model_executor=executor)
+    try:
+        first = await service.read("model_profiles")
+        assert first["apply_mode"] == "hot_reload"
+        document = first["document"]
+        document["profiles"]["main"]["model"] = "replacement"
+        with executor.pin():
+            await service.save("model_profiles", first["revision"], {"document": document})
+            assert executor.model_name(ModelTask.CHAT_AGENT) == "offline"
+        assert executor.model_name(ModelTask.CHAT_AGENT) == "replacement"
+        assert (await service.read("model_profiles"))["matches_loaded"] is True
+    finally:
+        await executor.close()
+
+
+async def test_invalid_hot_connection_does_not_write_or_switch(files):
+    settings, legacy_service = files
+    initial = legacy_service.loaded_catalog
+    assert initial is not None
+    executor = TaskModelExecutor(router=ModelRouter(initial), pool=ModelClientPool())
+    service = ConfigFileService(settings, initial, model_executor=executor)
+    before = settings.model_profiles_file.read_bytes()
+    try:
+        first = await service.read("model_profiles")
+        document = first["document"]
+        document["profiles"]["main"].update(
+            provider="openai",
+            protocol="chat_completions",
+            base_url="https://api.example.test/v1",
+            api_key_env="YUKI_MISSING_TEST_KEY",
+        )
+        with pytest.raises(ConfigFileError, match="validation_error"):
+            await service.save("model_profiles", first["revision"], {"document": document})
+        assert settings.model_profiles_file.read_bytes() == before
+        assert executor.model_name(ModelTask.CHAT_AGENT) == "offline"
+    finally:
+        await executor.close()
+
+
+async def test_hot_model_command_receipt_and_catalog_query_show_applied(database, files):
+    settings, legacy_service = files
+    initial = legacy_service.loaded_catalog
+    assert initial is not None
+    executor = TaskModelExecutor(router=ModelRouter(initial), pool=ModelClientPool())
+    service = ConfigFileService(settings, initial, model_executor=executor)
+    try:
+        view = await service.read("model_profiles")
+        document = view["document"]
+        document["profiles"]["main"]["model"] = "live-model"
+        ctx = replace(
+            context("control.config.file.mutate"),
+            canonical_target=YukiControlTarget.PERMANENT_YUKI,
+        )
+        commands = ControlCommandService(
+            ControlCommandAdapter(database, settings=settings, config_files=service)
+        )
+        command = ControlCommand(
+            request_id=ctx.request_id,
+            expected_revision=view["revision"],
+            payload={
+                "action": "save",
+                "resource_id": "model_profiles",
+                "spec": {"document": document},
+            },
+        )
+        result = await commands.save_config_file(ctx, command)
+        assert result.success and result.effective_state["status"] == "applied"
+        assert (await commands.save_config_file(ctx, command)) == result
+        query = ControlQueryAdapter(
+            database, settings=settings, config_files=service, model_catalog=initial
+        )
+        loaded = await query.read_model_catalog()
+        assert loaded.fields["profiles"][0]["model"] == "live-model"
+        assert loaded.fields["apply_mode"] == "hot_reload"
+    finally:
+        await executor.close()
 
 
 async def test_operator_entered_model_key_is_private_and_never_read_back(files):
