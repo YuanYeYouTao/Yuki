@@ -6,9 +6,12 @@ Agent continuations; Manager completions are recorded by the existing receiver.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import binascii
 import json
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from jsonschema import Draft202012Validator
@@ -21,7 +24,7 @@ from qq_ai_bot.control_plane.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_types import ActivityView, ControlQueryError
 from qq_ai_bot.domain.identity import PrincipalId, RequestId
 from qq_ai_bot.sandbox.client import SandboxClient, sandbox_tools
-from qq_ai_bot.workspace.files import FileWorkspace
+from qq_ai_bot.workspace.files import MAX_CONTROL_UPLOAD, FileWorkspace
 from qq_ai_bot.workspace.service import WorkspaceService
 from qq_ai_bot.workspace.store import WorkspaceError
 from qq_ai_bot.workspace.tools import workspace_tools
@@ -30,6 +33,7 @@ MAX_UPLOAD_BYTES = 640 * 1024
 FILE_ACTIONS = {
     name: f"workspace_{name}" for name in ("write", "mkdir", "move", "delete", "patch", "publish")
 }
+FILE_ACTIONS["upload"] = "workspace_upload"
 TERMINAL_ACTIONS = {name: f"terminal_{name}" for name in ("exec", "write", "control")}
 SCHEMAS = {tool.name: tool.parameters for tool in (*workspace_tools(), *sandbox_tools())}
 
@@ -44,6 +48,17 @@ def plain(value: object) -> Any:
 
 def file_schema(method: str) -> dict[str, Any]:
     """Restrict the original dual file/artifact contract to the Control file route."""
+    if method == "workspace_upload":
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "maxLength": 4096},
+                "base64": {"type": "string", "maxLength": (MAX_CONTROL_UPLOAD + 2) // 3 * 4},
+                "expected_version": {"type": "string"},
+            },
+            "required": ["path", "base64", "expected_version"],
+            "additionalProperties": False,
+        }
     schema: dict[str, Any] = plain(SCHEMAS[method])
     for key in (
         "artifact_id",
@@ -80,6 +95,13 @@ def arguments(parsed: ManagementActionPayload, *, terminal: bool = False) -> dic
         path_parts(args["path"])
         if "destination" in args:
             path_parts(args["destination"])
+        if parsed.action == "upload":
+            try:
+                content = base64.b64decode(args["base64"], validate=True)
+            except (ValueError, binascii.Error) as exc:
+                raise ValueError("invalid upload") from exc
+            if len(content) > MAX_CONTROL_UPLOAD:
+                raise ValueError("upload too large")
     return args
 
 
@@ -99,8 +121,11 @@ def upload(parsed: ManagementActionPayload) -> tuple[str, bytes]:
 
 
 class ControlWorkspace:
-    def __init__(self, workspace: WorkspaceService | None) -> None:
+    def __init__(
+        self, workspace: WorkspaceService | None, *, readonly_root: Path | None = None
+    ) -> None:
         self.workspace = workspace
+        self.readonly_root = readonly_root
 
     def transport(self) -> SandboxClient:
         if self.workspace is None or self.workspace.sandbox is None:
@@ -135,6 +160,18 @@ class ControlWorkspace:
                 },
             )
         data = plain(args)
+        if section == "files" and "number" in data:
+            if self.readonly_root is None:
+                raise ControlQueryError(Problem(ProblemCode.OPERATION_UNAVAILABLE))
+            if set(data) - {"path", "limit", "number"}:
+                raise ValueError("unexpected file listing arguments")
+            result = await asyncio.to_thread(
+                FileWorkspace(self.readonly_root).listing,
+                data.get("path", ""),
+                limit=data.get("limit", 30),
+                number=data["number"],
+            )
+            return ActivityView("environment", result)
         if section == "status":
             if data:
                 raise ValueError("unexpected status arguments")

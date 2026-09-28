@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+from qq_ai_bot.sandbox.client import MAX_CONTROL_UPLOAD_WIRE
 from qq_ai_bot.sandbox.completions import CompletionOutbox
 from qq_ai_bot.workspace.store import WorkspaceError, WorkspaceStore
 
@@ -480,7 +481,7 @@ class Manager:
 
     async def serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
-            async with asyncio.timeout(8):
+            async with asyncio.timeout(30):
                 raw = await reader.readline()
                 request = json.loads(raw)
                 if not isinstance(request, dict):
@@ -536,7 +537,7 @@ async def main() -> None:
     serve_unix = getattr(asyncio, "start_unix_server", None)
     if serve_unix is None:
         raise RuntimeError("unix_socket_required")
-    server = await serve_unix(manager.serve, str(args.socket), limit=262144)
+    server = await serve_unix(manager.serve, str(args.socket), limit=MAX_CONTROL_UPLOAD_WIRE)
     args.socket.chmod(0o660)
     worker = asyncio.create_task(manager.worker())
     task = asyncio.current_task()

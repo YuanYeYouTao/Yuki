@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { Row } from "./api";
 import type { PageProps } from "./pages";
 import { Badge, JsonNote, QueryList, Section } from "./components";
+import { OwnerPicker } from "./owner-picker";
 
 function BindingForm({
   owner,
@@ -132,46 +133,70 @@ function RouteForm({ route, props }: { route?: Row; props: PageProps }) {
           value={kind}
           onChange={(e) => setKind(e.target.value)}
         >
-          {["person_active", "space_active", "space_binding_ingest"].map(
-            (value) => (
-              <option key={value}>{value}</option>
-            ),
-          )}
+          {[
+            ["person_active", "人物的主动发送"],
+            ["space_active", "群的主动发送"],
+            ["space_binding_ingest", "群消息接入"],
+          ].map(([value, title]) => (
+            <option value={value} key={value}>
+              {title}
+            </option>
+          ))}
         </select>
       </label>
       <label className="form-group">
         {kind === "person_active"
-          ? "Person"
+          ? "人物"
           : kind === "space_active"
-            ? "Space"
-            : "SpaceBinding"}{" "}
-        UUID
-        <input
-          className="form-control"
+            ? "群"
+            : "群接入绑定"}
+        <OwnerPicker
+          kind={
+            kind === "person_active"
+              ? "person"
+              : kind === "space_active"
+                ? "space"
+                : "space_binding"
+          }
+          label={
+            kind === "person_active"
+              ? "人物"
+              : kind === "space_active"
+                ? "群"
+                : "群接入绑定"
+          }
           required
-          readOnly={!!route}
+          disabled={!!route}
           value={owner}
-          onChange={(e) => setOwner(e.target.value)}
+          change={setOwner}
+          refresh={props.refresh}
+          empty="选择主体"
         />
       </label>
       {kind !== "space_binding_ingest" && (
         <label className="form-group">
-          {kind === "person_active" ? "IdentityBinding" : "SpaceBinding"} UUID
-          <input
-            className="form-control"
+          {kind === "person_active" ? "人物接入绑定" : "群接入绑定"}
+          <OwnerPicker
+            kind={kind === "person_active" ? "binding" : "space_binding"}
+            label={kind === "person_active" ? "人物接入绑定" : "群接入绑定"}
             required
             value={binding}
-            onChange={(e) => setBinding(e.target.value)}
+            change={setBinding}
+            refresh={props.refresh}
+            empty="选择绑定"
           />
         </label>
       )}
       <label className="form-group">
-        Presence UUID
-        <input
-          className="form-control"
+        Yuki 的平台入口
+        <OwnerPicker
+          kind="presence"
+          label="Yuki 的平台入口"
           required
           value={presence}
-          onChange={(e) => setPresence(e.target.value)}
+          change={setPresence}
+          refresh={props.refresh}
+          empty="选择入口"
         />
       </label>
       <label>
@@ -206,8 +231,7 @@ export function Identity(props: PageProps) {
             method={kind === "person" ? "list_persons" : "list_spaces"}
             refresh={props.refresh}
             columns={[
-              [`${kind}_id`, kind],
-              ["name", "名称"],
+              [`${kind}_id`, kind === "person" ? "人物" : "群"],
               ["enabled", "启用", badge],
               ["binding_count", "绑定"],
               ["revision", "版本"],
@@ -275,11 +299,11 @@ export function Identity(props: PageProps) {
               }
               refresh={props.refresh}
               columns={[
-                ["binding_id", "Binding"],
-                [`${kind}_id`, "内部主体"],
+                ["binding_id", "接入绑定"],
+                [`${kind}_id`, kind === "person" ? "人物" : "群"],
                 ["platform", "平台"],
                 ["display_name", "名称"],
-                ["external", "接入编号"],
+                ["external", "平台账号"],
                 ["status", "状态", badge],
                 ["resolution", "身份状态"],
                 ["revision", "版本"],
@@ -301,7 +325,7 @@ export function Identity(props: PageProps) {
           method="list_presences"
           refresh={props.refresh}
           columns={[
-            ["presence_id", "Presence"],
+            ["presence_id", "Yuki 的平台入口"],
             ["platform", "平台"],
             ["connection_state", "连接", badge],
             ["enabled", "启用", badge],
@@ -378,7 +402,13 @@ export function Identity(props: PageProps) {
             return (
               props.allowed(method) && (
                 <div key={kind}>
-                  <h3>{kind}</h3>
+                  <h3>
+                    {kind === "person_active"
+                      ? "人物主动发送"
+                      : kind === "space_active"
+                        ? "群主动发送"
+                        : "群接入"}
+                  </h3>
                   <QueryList
                     method={method}
                     refresh={props.refresh}

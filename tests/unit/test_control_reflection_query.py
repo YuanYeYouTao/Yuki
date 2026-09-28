@@ -178,6 +178,15 @@ async def test_reflection_owner_pages_cycles_requests_results_and_receipt_waterm
         ctx, PageRequest(limit=30, cursor=page.next_cursor), section="runs", scope=scope
     )
     assert len(page.items) == 30 and len(tail.items) == 4 and tail.next_cursor is None
+    numbered = await q.list_self_reflection_history(
+        ctx, PageRequest(limit=10, number=1), section="runs", scope=scope
+    )
+    final_numbered = await q.list_self_reflection_history(
+        ctx, PageRequest(limit=10, number=4), section="runs", scope=scope
+    )
+    assert numbered.total == final_numbered.total == 34
+    assert numbered.items[0].resource_id == str(ids[0])
+    assert len(final_numbered.items) == 4 and numbered.next_cursor is None
     for changed in (
         ReflectionQueryFilter(space_id=SpaceId.parse(env.space)),
         ReflectionQueryFilter(),

@@ -20,6 +20,7 @@ from qq_ai_bot.workspace.store import WorkspaceError
 
 MAX_TEXT = 32768
 MAX_FILE = 200 * 1024 * 1024
+MAX_CONTROL_UPLOAD = 4 * 1024 * 1024
 
 
 class FileWorkspace:
@@ -198,11 +199,27 @@ class FileWorkspace:
         finally:
             os.close(fd)
 
-    def listing(self, path: str = "", *, cursor: str = "", limit: int = 50) -> dict[str, Any]:
+    def listing(
+        self, path: str = "", *, cursor: str = "", limit: int = 50, number: int | None = None
+    ) -> dict[str, Any]:
         if not 1 <= limit <= 100:
             raise WorkspaceError("invalid_limit")
+        if number is not None and (type(number) is not int or not 1 <= number <= 1000000 or cursor):
+            raise WorkspaceError("invalid_page")
         with self.directory(path) as fd:
             names = sorted(name for name in os.listdir(fd) if name > cursor)
+            total = len(names)
+            if number is not None:
+                # File managers group folders first, then newest real mtime, name as tie breaker.
+                def order(name: str) -> tuple[bool, int, str]:
+                    try:
+                        entry = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                        return (not stat.S_ISDIR(entry.st_mode), -entry.st_mtime_ns, name)
+                    except FileNotFoundError:
+                        return (True, 0, name)
+
+                names.sort(key=order)
+                names = names[(number - 1) * limit :]
             items = []
             for name in names[:limit]:
                 try:
@@ -229,6 +246,8 @@ class FileWorkspace:
             "items": items,
             "next_cursor": names[limit - 1] if len(names) > limit else None,
             "external_untrusted": True,
+            "total": total,
+            "number": number,
         }
 
     def mkdir(self, path: str) -> dict[str, Any]:

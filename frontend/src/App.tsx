@@ -5,6 +5,7 @@ import type { Page, Row, Session } from "./api";
 import { ActionSheet } from "./actions";
 import type { Intent } from "./actions";
 import { Empty, ErrorNote, Icon } from "./components";
+import { Avatar, useDisplayNames } from "./names";
 import { ThemePicker } from "./theme";
 import { Chat } from "./chat";
 import {
@@ -16,6 +17,7 @@ import {
   Identity,
   Memory,
   Models,
+  Persona,
   Notebook,
   SettingsPage,
   Tools,
@@ -29,9 +31,10 @@ const navigation = [
   ["autonomy", "moon-star", "自主活动", "read_participation"],
   ["work", "alarm-clock", "工作与定时", "list_work"],
   ["models", "gear", "模型与用量", "list_model_usage"],
+  ["persona", "fountain-pen", "人格提示词", "read_config_file"],
   ["memory", "notebook", "记忆", "list_memory_facts"],
   ["tools", "box", "插件与 MCP", "list_plugins"],
-  ["files", "folder", "工作区", "list_workspace"],
+  ["files", "folder", "工作区", "read_environment"],
   ["identity", "cat", "身份与连接", "list_persons"],
   ["settings", "fountain-pen", "配置", "list_effective_configs"],
   ["assets", "flower", "表情与语音", "list_emoji_assets"],
@@ -103,15 +106,15 @@ function Console({
   const [intent, setIntent] = useState<Intent | null>(null),
     [error, setError] = useState<unknown>(null);
   const route = address.split("?")[0];
-  const [conversationCursor, setConversationCursor] = useState<string | null>(
-    null,
-  );
-  const [earlierConversations, setEarlierConversations] = useState<Row[]>([]);
+  const [conversationPage, setConversationPage] = useState(1);
+  const [conversationJump, setConversationJump] = useState("1");
+  const [chosenConversationRow, setChosenConversationRow] =
+    useState<Row | null>(null);
   const [collectionRefresh, setCollectionRefresh] = useState(refresh);
   if (collectionRefresh !== refresh) {
     setCollectionRefresh(refresh);
-    setConversationCursor(null);
-    setEarlierConversations([]);
+    setConversationPage(1);
+    setConversationJump("1");
   }
   const allowed = (method: string) =>
     !!session.surface.methods.find(
@@ -119,7 +122,7 @@ function Console({
     );
   const conversations = useQuery<Page>(
     "list_conversations",
-    { page: { limit: 100, cursor: conversationCursor } },
+    { page: { limit: 100, number: conversationPage } },
     refresh,
     allowed("list_conversations"),
   );
@@ -142,17 +145,38 @@ function Console({
     window.addEventListener("hashchange", changed);
     return () => window.removeEventListener("hashchange", changed);
   }, []);
-  const conversationRows = [
-    ...earlierConversations,
-    ...(conversations.data?.items || []),
-  ];
+  const loadedConversations = conversations.data?.items || [];
+  const conversationRows =
+    chosenConversationRow &&
+    !loadedConversations.some(
+      (row) => row.conversation_id === chosenConversationRow.conversation_id,
+    )
+      ? [chosenConversationRow, ...loadedConversations]
+      : loadedConversations;
+  const conversationPages = Math.max(
+    1,
+    Math.ceil((conversations.data?.total || 0) / 100),
+  );
+  const displayNames = useDisplayNames({
+    conversation: conversationRows.map((row) =>
+      String(row.conversation_id || ""),
+    ),
+    person: conversationRows.map((row) => String(row.person_id || "")),
+    space: conversationRows.map((row) => String(row.space_id || "")),
+  });
   const conversation =
     chosenConversation ||
     String(
       conversationRows.find((row) => row.conversation_id)?.conversation_id ||
         "",
     );
-  if (!chosenConversation && conversation) setConversation(conversation);
+  if (!chosenConversation && conversation) {
+    setConversation(conversation);
+    setChosenConversationRow(
+      conversationRows.find((row) => row.conversation_id === conversation) ||
+        null,
+    );
+  }
   const dashboard = ["overview", "chat"].includes(route);
   useEffect(() => {
     document.body.className = dashboard ? "" : "has-settings-sidebar";
@@ -166,6 +190,7 @@ function Console({
     autonomy: () => <Autonomy {...props} />,
     work: () => <Work {...props} />,
     models: () => <Models {...props} />,
+    persona: () => <Persona {...props} />,
     memory: () => <Memory {...props} />,
     tools: () => <Tools {...props} />,
     files: () => <Files {...props} />,
@@ -178,7 +203,16 @@ function Console({
     const owner = row.space_id
       ? spaces.data?.items.find((item) => item.space_id === row.space_id)
       : persons.data?.items.find((item) => item.person_id === row.person_id);
-    return `${String(owner?.name || owner?.display_name || row.kind || "会话")} · ${String(row.conversation_id).slice(0, 8)}`;
+    const candidates = [
+      displayNames[String(row.conversation_id)],
+      displayNames[String(row.space_id || row.person_id)],
+      owner?.name,
+      owner?.display_name,
+    ];
+    return String(
+      candidates.find((value) => value && value !== "redacted") ||
+        (row.space_id ? "未命名群聊" : "未命名私聊"),
+    );
   }
   async function signOut() {
     try {
@@ -232,11 +266,30 @@ function Console({
         </div>
       </header>
       <nav className="quick-row">
+        <span className="conversation-avatar">
+          <Avatar
+            kind="conversation"
+            id={conversation}
+            label="当前会话头像"
+            fallback={name(
+              conversationRows.find(
+                (row) => row.conversation_id === conversation,
+              ) || {},
+            )}
+          />
+        </span>
         <label htmlFor="conversation">会话</label>
         <select
           id="conversation"
           value={conversation}
-          onChange={(e) => setConversation(e.target.value)}
+          onChange={(e) => {
+            setConversation(e.target.value);
+            setChosenConversationRow(
+              conversationRows.find(
+                (row) => row.conversation_id === e.target.value,
+              ) || null,
+            );
+          }}
         >
           <option value="">选择会话</option>
           {conversationRows
@@ -250,17 +303,62 @@ function Console({
               </option>
             ))}
         </select>
-        {conversations.data?.next_cursor && (
-          <button
-            className="header-button"
-            disabled={conversations.loading}
-            onClick={() => {
-              setEarlierConversations(conversationRows);
-              setConversationCursor(conversations.data!.next_cursor);
-            }}
-          >
-            更多会话
-          </button>
+        {allowed("list_conversations") && (
+          <div className="pagination" aria-label="会话分页">
+            <button
+              className="btn-secondary"
+              disabled={conversationPage <= 1 || conversations.loading}
+              onClick={() => {
+                setConversationPage(conversationPage - 1);
+                setConversationJump(String(conversationPage - 1));
+              }}
+            >
+              上一页
+            </button>
+            <span className="small">
+              第 {conversationPage} 页 / 共 {conversationPages} 页 · 共{" "}
+              {conversations.data?.total ?? "?"} 个会话
+            </span>
+            <button
+              className="btn-secondary"
+              disabled={
+                conversations.data?.total == null ||
+                conversationPage >= conversationPages ||
+                conversations.loading
+              }
+              onClick={() => {
+                setConversationPage(conversationPage + 1);
+                setConversationJump(String(conversationPage + 1));
+              }}
+            >
+              下一页
+            </button>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                const target = Number(conversationJump);
+                if (
+                  Number.isInteger(target) &&
+                  target >= 1 &&
+                  target <= conversationPages
+                )
+                  setConversationPage(target);
+              }}
+            >
+              <label>
+                跳至{" "}
+                <input
+                  aria-label="会话页码"
+                  type="number"
+                  min="1"
+                  max={conversationPages}
+                  value={conversationJump}
+                  onChange={(event) => setConversationJump(event.target.value)}
+                />
+              </label>
+              <button className="btn-secondary">跳转</button>
+            </form>
+          </div>
         )}
         {[
           ["chat", "chat-bubble", "聊天记录"],

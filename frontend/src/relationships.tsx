@@ -5,6 +5,7 @@ import { useQuery } from "./hooks";
 import { Empty, ErrorNote, QueryList, Section, Table } from "./components";
 import { stamp, text } from "./format";
 import { Traces } from "./traces";
+import { OwnerPicker } from "./owner-picker";
 
 const flatten = (row: Row): Row => ({ ...row, ...((row.fields as Row) || {}) });
 
@@ -186,13 +187,15 @@ export function Relationships(props: PageProps) {
           }}
         >
           <label>
-            内部 Person UUID
-            <input
-              className="form-control"
+            人物
+            <OwnerPicker
+              kind="person"
+              label="人物"
               required
               value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              placeholder="canonical UUID"
+              change={setDraft}
+              refresh={props.refresh}
+              empty="选择人物"
             />
           </label>
           <button className="btn-secondary">查看人物</button>

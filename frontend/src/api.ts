@@ -3,6 +3,8 @@ export interface Page {
   items: Row[];
   next_cursor: string | null;
   snapshot_at: string | null;
+  total?: number | null;
+  number?: number | null;
 }
 export interface Method {
   name: string;

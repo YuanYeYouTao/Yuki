@@ -133,6 +133,7 @@ from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
 from qq_ai_bot.persistence.control_external import control_operation
 from qq_ai_bot.persistence.control_operations import read_operation
+from qq_ai_bot.persistence.control_paging import numbered_statement
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     AdminOperationEventModel,
@@ -598,7 +599,10 @@ class ControlQueryAdapter:
         self._database = database
         from qq_ai_bot.persistence.control_workspace import ControlWorkspace
 
-        self._workspace_control = ControlWorkspace(workspace_service)
+        self._workspace_control = ControlWorkspace(
+            workspace_service,
+            readonly_root=settings.webui_workspace_directory if settings else None,
+        )
         self._automation = automation
         from qq_ai_bot.persistence.control_execution_query import ControlExecutionQueryAdapter
 
@@ -635,6 +639,39 @@ class ControlQueryAdapter:
 
     async def download_workspace(self, artifact_id: str) -> DownloadView:
         return await self._activity.download_workspace(artifact_id)
+
+    async def read_display_names(
+        self, references: JsonObject, allowed: frozenset[str]
+    ) -> ActivityView:
+        from qq_ai_bot.persistence.control_names import display_names
+
+        return await display_names(self._reader, references, allowed)
+
+    async def download_avatar(self, kind: str, owner_id: str) -> DownloadView:
+        from qq_ai_bot.persistence.control_names import download_avatar
+
+        return await download_avatar(self._reader, kind, owner_id)
+
+    async def download_environment_file(self, path: str) -> DownloadView:
+        import asyncio
+
+        from qq_ai_bot.persistence.control_media_query import workspace_bytes
+        from qq_ai_bot.workspace.store import WorkspaceError
+
+        root = self._settings.webui_workspace_directory if self._settings else None
+        if root is None:
+            raise ControlQueryError(Problem(ProblemCode.OPERATION_UNAVAILABLE))
+        try:
+            return await asyncio.to_thread(workspace_bytes, root, path)
+        except (WorkspaceError, OSError, ValueError) as exc:
+            raise ControlQueryError(Problem(ProblemCode.NOT_FOUND)) from exc
+
+    async def download_emoji(self, asset_id: str) -> DownloadView:
+        from qq_ai_bot.persistence.control_media_query import emoji_download
+
+        return await emoji_download(
+            self._reader, self._settings.emoji_storage_root if self._settings else None, asset_id
+        )
 
     async def list_plugin_outbox(
         self, request: PageRequest, *, plugin_id: str
@@ -863,16 +900,25 @@ class ControlQueryAdapter:
         session: AsyncSession,
         model: type[_T],
         column: InstrumentedAttribute[str],
+        time_column: InstrumentedAttribute[datetime],
         after: str | None,
         limit: int,
-    ) -> tuple[list[_T], bool]:
+        *,
+        request: PageRequest,
+    ) -> tuple[list[_T], bool, int | None]:
         stmt = select(model)
         if after is not None:
             stmt = stmt.where(column > after)
         stmt = stmt.order_by(column.asc()).limit(limit)
-        rows = list(await session.scalars(stmt))
+        window = await numbered_statement(
+            session,
+            stmt,
+            request,
+            order=(time_column.desc(), column.desc()),
+        )
+        rows = list(await session.scalars(window.statement))
         has_more = len(rows) == limit
-        return (rows[:-1] if has_more else rows), has_more
+        return (rows[:-1] if has_more else rows), has_more, window.total
 
     async def _load_by_ids(
         self,
@@ -1040,9 +1086,17 @@ class ControlQueryAdapter:
         phase: QueryCursorPhase,
         next_key: str | None,
         snapshot_at: datetime,
+        total: int | None = None,
+        number: int | None = None,
     ) -> Page[_T]:
         cursor = None if next_key is None else encode_query_cursor(kind, phase, next_key)
-        return Page(items, next_cursor=cursor, snapshot_at=snapshot_at)
+        return Page(
+            items,
+            next_cursor=cursor if number is None else None,
+            snapshot_at=snapshot_at,
+            total=total,
+            number=number,
+        )
 
     async def list_persons(self, request: PageRequest) -> Page[PersonView]:
         snapshot_at = _now()
@@ -1051,12 +1105,14 @@ class ControlQueryAdapter:
             phase, key = self._cursor_state(request, QueryResourceKind.PERSON, epoch=epoch)
             items: list[PersonView] = []
             if phase is QueryCursorPhase.CANONICAL:
-                rows, more = await self._keyset(
+                rows, more, total = await self._keyset(
                     session,
                     CanonicalPersonModel,
                     CanonicalPersonModel.id,
+                    CanonicalPersonModel.updated_at,
                     key,
                     request.limit + 1,
+                    request=request,
                 )
                 counts = await self._binding_counts(session, [row.id for row in rows])
                 items.extend(
@@ -1078,6 +1134,8 @@ class ControlQueryAdapter:
                         phase=QueryCursorPhase.CANONICAL,
                         next_key=rows[-1].id,
                         snapshot_at=snapshot_at,
+                        total=total,
+                        number=request.number,
                     )
             return self._page(
                 items,
@@ -1085,6 +1143,8 @@ class ControlQueryAdapter:
                 phase=QueryCursorPhase.CANONICAL,
                 next_key=None,
                 snapshot_at=snapshot_at,
+                total=total,
+                number=request.number,
             )
 
     async def list_identity_bindings(
@@ -1099,12 +1159,14 @@ class ControlQueryAdapter:
             phase, key = self._cursor_state(request, QueryResourceKind.BINDING, epoch=epoch)
             items: list[IdentityBindingView] = []
             if phase is QueryCursorPhase.CANONICAL:
-                rows, more = await self._keyset(
+                rows, more, total = await self._keyset(
                     session,
                     IdentityBindingModel,
                     IdentityBindingModel.id,
+                    IdentityBindingModel.updated_at,
                     key,
                     request.limit + 1,
+                    request=request,
                 )
                 items.extend(
                     IdentityBindingView(
@@ -1130,6 +1192,8 @@ class ControlQueryAdapter:
                         phase=QueryCursorPhase.CANONICAL,
                         next_key=rows[-1].id,
                         snapshot_at=snapshot_at,
+                        total=total,
+                        number=request.number,
                     )
             return self._page(
                 items,
@@ -1137,6 +1201,8 @@ class ControlQueryAdapter:
                 phase=QueryCursorPhase.CANONICAL,
                 next_key=None,
                 snapshot_at=snapshot_at,
+                total=total,
+                number=request.number,
             )
 
     async def list_spaces(
@@ -1151,12 +1217,14 @@ class ControlQueryAdapter:
             phase, key = self._cursor_state(request, QueryResourceKind.SPACE, epoch=epoch)
             items: list[SpaceView] = []
             if phase is QueryCursorPhase.CANONICAL:
-                rows, more = await self._keyset(
+                rows, more, total = await self._keyset(
                     session,
                     CanonicalSpaceModel,
                     CanonicalSpaceModel.id,
+                    CanonicalSpaceModel.updated_at,
                     key,
                     request.limit + 1,
+                    request=request,
                 )
                 space_ids = [row.id for row in rows]
                 counts = await self._space_binding_counts(session, space_ids)
@@ -1187,6 +1255,8 @@ class ControlQueryAdapter:
                         phase=QueryCursorPhase.CANONICAL,
                         next_key=rows[-1].id,
                         snapshot_at=snapshot_at,
+                        total=total,
+                        number=request.number,
                     )
             return self._page(
                 items,
@@ -1194,6 +1264,8 @@ class ControlQueryAdapter:
                 phase=QueryCursorPhase.CANONICAL,
                 next_key=None,
                 snapshot_at=snapshot_at,
+                total=total,
+                number=request.number,
             )
 
     async def list_space_bindings(
@@ -1208,12 +1280,14 @@ class ControlQueryAdapter:
             phase, key = self._cursor_state(request, QueryResourceKind.SPACE_BINDING, epoch=epoch)
             items: list[SpaceBindingView] = []
             if phase is QueryCursorPhase.CANONICAL:
-                rows, more = await self._keyset(
+                rows, more, total = await self._keyset(
                     session,
                     SpaceBindingModel,
                     SpaceBindingModel.id,
+                    SpaceBindingModel.updated_at,
                     key,
                     request.limit + 1,
+                    request=request,
                 )
                 items.extend(
                     SpaceBindingView(
@@ -1239,6 +1313,8 @@ class ControlQueryAdapter:
                         phase=QueryCursorPhase.CANONICAL,
                         next_key=rows[-1].id,
                         snapshot_at=snapshot_at,
+                        total=total,
+                        number=request.number,
                     )
             return self._page(
                 items,
@@ -1246,6 +1322,8 @@ class ControlQueryAdapter:
                 phase=QueryCursorPhase.CANONICAL,
                 next_key=None,
                 snapshot_at=snapshot_at,
+                total=total,
+                number=request.number,
             )
 
     async def list_presences(
@@ -1260,12 +1338,14 @@ class ControlQueryAdapter:
             phase, key = self._cursor_state(request, QueryResourceKind.PRESENCE, epoch=epoch)
             if phase is not QueryCursorPhase.CANONICAL:
                 raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
-            rows, more = await self._keyset(
+            rows, more, total = await self._keyset(
                 session,
                 PresenceModel,
                 PresenceModel.id,
+                PresenceModel.updated_at,
                 key,
                 request.limit + 1,
+                request=request,
             )
             items = [
                 PresenceView(
@@ -1285,6 +1365,8 @@ class ControlQueryAdapter:
                 phase=QueryCursorPhase.CANONICAL,
                 next_key=rows[-1].id if more else None,
                 snapshot_at=snapshot_at,
+                total=total,
+                number=request.number,
             )
 
     async def list_conversations(self, request: PageRequest) -> Page[ConversationView]:
@@ -1294,12 +1376,14 @@ class ControlQueryAdapter:
             phase, key = self._cursor_state(request, QueryResourceKind.CONVERSATION, epoch=epoch)
             items: list[ConversationView] = []
             if phase is QueryCursorPhase.CANONICAL:
-                rows, more = await self._keyset(
+                rows, more, total = await self._keyset(
                     session,
                     CanonicalConversationModel,
                     CanonicalConversationModel.id,
+                    CanonicalConversationModel.updated_at,
                     key,
                     request.limit + 1,
+                    request=request,
                 )
                 items.extend(
                     ConversationView(
@@ -1325,6 +1409,8 @@ class ControlQueryAdapter:
                         phase=QueryCursorPhase.CANONICAL,
                         next_key=rows[-1].id,
                         snapshot_at=snapshot_at,
+                        total=total,
+                        number=request.number,
                     )
             return self._page(
                 items,
@@ -1332,6 +1418,8 @@ class ControlQueryAdapter:
                 phase=QueryCursorPhase.CANONICAL,
                 next_key=None,
                 snapshot_at=snapshot_at,
+                total=total,
+                number=request.number,
             )
 
     async def list_person_active_routes(self, request: PageRequest) -> Page[PersonActiveRouteView]:
@@ -1339,12 +1427,14 @@ class ControlQueryAdapter:
         async with self._reader() as session:
             epoch, _revision = await self._runtime(session)
             _phase, key = self._cursor_state(request, QueryResourceKind.PERSON_ROUTE, epoch=epoch)
-            rows, more = await self._keyset(
+            rows, more, total = await self._keyset(
                 session,
                 PersonActiveRouteModel,
                 PersonActiveRouteModel.person_id,
+                PersonActiveRouteModel.updated_at,
                 key,
                 request.limit + 1,
+                request=request,
             )
             binding_ids = [row.identity_binding_id for row in rows]
             presence_ids = [row.presence_id for row in rows]
@@ -1381,6 +1471,8 @@ class ControlQueryAdapter:
                 phase=QueryCursorPhase.CANONICAL,
                 next_key=rows[-1].person_id if more else None,
                 snapshot_at=snapshot_at,
+                total=total,
+                number=request.number,
             )
 
     async def list_space_binding_ingest_routes(
@@ -1390,12 +1482,14 @@ class ControlQueryAdapter:
         async with self._reader() as session:
             epoch, _revision = await self._runtime(session)
             _phase, key = self._cursor_state(request, QueryResourceKind.INGEST_ROUTE, epoch=epoch)
-            rows, more = await self._keyset(
+            rows, more, total = await self._keyset(
                 session,
                 SpaceBindingIngestRouteModel,
                 SpaceBindingIngestRouteModel.space_binding_id,
+                SpaceBindingIngestRouteModel.updated_at,
                 key,
                 request.limit + 1,
+                request=request,
             )
             binding_ids = [row.space_binding_id for row in rows]
             presence_ids = [row.ingest_presence_id for row in rows]
@@ -1431,6 +1525,8 @@ class ControlQueryAdapter:
                 phase=QueryCursorPhase.CANONICAL,
                 next_key=rows[-1].space_binding_id if more else None,
                 snapshot_at=snapshot_at,
+                total=total,
+                number=request.number,
             )
 
     async def list_space_active_routes(self, request: PageRequest) -> Page[SpaceActiveRouteView]:
@@ -1438,12 +1534,14 @@ class ControlQueryAdapter:
         async with self._reader() as session:
             epoch, _revision = await self._runtime(session)
             _phase, key = self._cursor_state(request, QueryResourceKind.SPACE_ROUTE, epoch=epoch)
-            rows, more = await self._keyset(
+            rows, more, total = await self._keyset(
                 session,
                 SpaceActiveRouteModel,
                 SpaceActiveRouteModel.space_id,
+                SpaceActiveRouteModel.updated_at,
                 key,
                 request.limit + 1,
+                request=request,
             )
             binding_ids = [row.space_binding_id for row in rows]
             presence_ids = [row.presence_id for row in rows]
@@ -1480,6 +1578,8 @@ class ControlQueryAdapter:
                 phase=QueryCursorPhase.CANONICAL,
                 next_key=rows[-1].space_id if more else None,
                 snapshot_at=snapshot_at,
+                total=total,
+                number=request.number,
             )
 
     async def list_audit_events(self, request: PageRequest) -> Page[AuditEventView]:
@@ -1511,7 +1611,21 @@ class ControlQueryAdapter:
                 AdminOperationEventModel.created_at.asc(),
                 AdminOperationEventModel.id.asc(),
             ).limit(request.limit + 1)
-            rows = list(await session.execute(stmt))
+            rows = list(
+                await session.execute(
+                    (
+                        sql_window := await numbered_statement(
+                            session,
+                            stmt,
+                            request,
+                            order=(
+                                AdminOperationEventModel.created_at.desc(),
+                                AdminOperationEventModel.id.desc(),
+                            ),
+                        )
+                    ).statement
+                )
+            )
             more = len(rows) == request.limit + 1
             if more:
                 rows = rows[:-1]
@@ -1531,6 +1645,8 @@ class ControlQueryAdapter:
                 phase=QueryCursorPhase.TIME_ID,
                 next_key=next_key,
                 snapshot_at=snapshot_at,
+                total=sql_window.total,
+                number=request.number,
             )
 
     async def read_operation(self, operation_id: str) -> OperationRef:
@@ -1557,10 +1673,20 @@ class ControlQueryAdapter:
             if kind is OperationKind.CONTROL:
                 rows = list(
                     await session.scalars(
-                        select(ControlCommandReceiptModel)
-                        .where(ControlCommandReceiptModel.id > after)
-                        .order_by(ControlCommandReceiptModel.id)
-                        .limit(request.limit + 1)
+                        (
+                            sql_window := await numbered_statement(
+                                session,
+                                select(ControlCommandReceiptModel)
+                                .where(ControlCommandReceiptModel.id > after)
+                                .order_by(ControlCommandReceiptModel.id)
+                                .limit(request.limit + 1),
+                                request,
+                                order=(
+                                    ControlCommandReceiptModel.created_at.desc(),
+                                    ControlCommandReceiptModel.id.desc(),
+                                ),
+                            )
+                        ).statement
                     )
                 )
                 more = len(rows) > request.limit
@@ -1573,10 +1699,17 @@ class ControlQueryAdapter:
                 )
                 keys = (
                     await session.execute(
-                        select(model.id, model.public_id)
-                        .where(model.id > after)
-                        .order_by(model.id)
-                        .limit(request.limit + 1)
+                        (
+                            sql_window := await numbered_statement(
+                                session,
+                                select(model.id, model.public_id)
+                                .where(model.id > after)
+                                .order_by(model.id)
+                                .limit(request.limit + 1),
+                                request,
+                                order=(model.created_at.desc(), model.id.desc()),
+                            )
+                        ).statement
                     )
                 ).all()
                 more = len(keys) > request.limit
@@ -1592,6 +1725,8 @@ class ControlQueryAdapter:
                 phase=QueryCursorPhase.CANONICAL,
                 next_key=f"{kind.value}:{last_id}" if more else None,
                 snapshot_at=snapshot_at,
+                total=sql_window.total,
+                number=request.number,
             )
 
     async def list_config_specs(self, request: PageRequest) -> Page[ConfigSpecView]:
@@ -1610,7 +1745,9 @@ class ControlQueryAdapter:
         specs = sorted(self._registry.list(), key=lambda item: item.key)
         if key is not None:
             specs = [item for item in specs if item.key > key]
-        window = specs[: request.limit + 1]
+        total = len(specs)
+        start = (request.number - 1) * request.limit if request.number else 0
+        window = specs[start : start + request.limit + 1]
         more = len(window) == request.limit + 1
         if more:
             window = window[:-1]
@@ -1638,6 +1775,8 @@ class ControlQueryAdapter:
             phase=QueryCursorPhase.CANONICAL,
             next_key=window[-1].key if more else None,
             snapshot_at=snapshot_at,
+            total=total,
+            number=request.number,
         )
 
     async def list_effective_configs(
@@ -1671,7 +1810,9 @@ class ControlQueryAdapter:
             specs = sorted(self._config.registry.list(), key=lambda item: item.key)
             if key is not None:
                 specs = [item for item in specs if item.key > key]
-            window = specs[: request.limit + 1]
+            total = len(specs)
+            start = (request.number - 1) * request.limit if request.number else 0
+            window = specs[start : start + request.limit + 1]
             more = len(window) == request.limit + 1
             if more:
                 window = window[:-1]
@@ -1719,6 +1860,8 @@ class ControlQueryAdapter:
             phase=QueryCursorPhase.CANONICAL,
             next_key=scope_key + window[-1].key if more else None,
             snapshot_at=snapshot_at,
+            total=total,
+            number=request.number,
         )
 
     async def list_config_overrides(
@@ -1738,7 +1881,21 @@ class ControlQueryAdapter:
             if after:
                 stmt = stmt.where(RuntimeConfigOverrideModel.id > after)
             stmt = stmt.order_by(RuntimeConfigOverrideModel.id.asc()).limit(request.limit + 1)
-            rows = list(await session.scalars(stmt))
+            rows = list(
+                await session.scalars(
+                    (
+                        sql_window := await numbered_statement(
+                            session,
+                            stmt,
+                            request,
+                            order=(
+                                RuntimeConfigOverrideModel.updated_at.desc(),
+                                RuntimeConfigOverrideModel.id.desc(),
+                            ),
+                        )
+                    ).statement
+                )
+            )
             more = len(rows) == request.limit + 1
             if more:
                 rows = rows[:-1]
@@ -1758,6 +1915,8 @@ class ControlQueryAdapter:
                 phase=QueryCursorPhase.CANONICAL,
                 next_key=next_key,
                 snapshot_at=snapshot_at,
+                total=sql_window.total,
+                number=request.number,
             )
 
     async def read_self_reflection_health(self) -> ActivityView:
@@ -1818,7 +1977,18 @@ class ControlQueryAdapter:
             if after:
                 stmt = stmt.where(MemoryJobModel.id > after)
             stmt = stmt.order_by(MemoryJobModel.id.asc()).limit(request.limit + 1)
-            rows = list(await session.scalars(stmt))
+            rows = list(
+                await session.scalars(
+                    (
+                        sql_window := await numbered_statement(
+                            session,
+                            stmt,
+                            request,
+                            order=(MemoryJobModel.created_at.desc(), MemoryJobModel.id.desc()),
+                        )
+                    ).statement
+                )
+            )
             more = len(rows) == request.limit + 1
             if more:
                 rows = rows[:-1]
@@ -1829,6 +1999,8 @@ class ControlQueryAdapter:
                 phase=QueryCursorPhase.CANONICAL,
                 next_key=str(rows[-1].id) if more else None,
                 snapshot_at=snapshot_at,
+                total=sql_window.total,
+                number=request.number,
             )
 
     async def read_memory_health(self) -> MemoryHealthView:
@@ -1876,7 +2048,18 @@ class ControlQueryAdapter:
             if after:
                 stmt = stmt.where(AutomationModel.id > after)
             stmt = stmt.order_by(AutomationModel.id.asc()).limit(request.limit + 1)
-            rows = list(await session.scalars(stmt))
+            rows = list(
+                await session.scalars(
+                    (
+                        sql_window := await numbered_statement(
+                            session,
+                            stmt,
+                            request,
+                            order=(AutomationModel.updated_at.desc(), AutomationModel.id.desc()),
+                        )
+                    ).statement
+                )
+            )
             more = len(rows) == request.limit + 1
             if more:
                 rows = rows[:-1]
@@ -1940,6 +2123,8 @@ class ControlQueryAdapter:
                 phase=QueryCursorPhase.CANONICAL,
                 next_key=str(rows[-1].id) if more else None,
                 snapshot_at=snapshot_at,
+                total=sql_window.total,
+                number=request.number,
             )
 
     async def list_plugins(self, request: PageRequest) -> Page[PluginView]:
@@ -1951,7 +2136,21 @@ class ControlQueryAdapter:
             if key is not None:
                 stmt = stmt.where(PluginInstallationModel.plugin_id > key)
             stmt = stmt.order_by(PluginInstallationModel.plugin_id.asc()).limit(request.limit + 1)
-            rows = list(await session.scalars(stmt))
+            rows = list(
+                await session.scalars(
+                    (
+                        sql_window := await numbered_statement(
+                            session,
+                            stmt,
+                            request,
+                            order=(
+                                PluginInstallationModel.updated_at.desc(),
+                                PluginInstallationModel.plugin_id.desc(),
+                            ),
+                        )
+                    ).statement
+                )
+            )
             more = len(rows) == request.limit + 1
             if more:
                 rows = rows[:-1]
@@ -1972,6 +2171,8 @@ class ControlQueryAdapter:
                 phase=QueryCursorPhase.CANONICAL,
                 next_key=rows[-1].plugin_id if more else None,
                 snapshot_at=snapshot_at,
+                total=sql_window.total,
+                number=request.number,
             )
 
     async def read_plugin_approval(self, plugin_id: str) -> ActivityView:
@@ -2087,7 +2288,9 @@ class ControlQueryAdapter:
         items = sorted(items, key=lambda item: item.server_id)
         if key is not None:
             items = [item for item in items if item.server_id > key]
-        window = items[: request.limit + 1]
+        total = len(items)
+        start = (request.number - 1) * request.limit if request.number else 0
+        window = items[start : start + request.limit + 1]
         more = len(window) == request.limit + 1
         if more:
             window = window[:-1]
@@ -2097,6 +2300,8 @@ class ControlQueryAdapter:
             phase=QueryCursorPhase.CANONICAL,
             next_key=window[-1].server_id if more else None,
             snapshot_at=snapshot_at,
+            total=total,
+            number=request.number,
         )
 
     async def list_emoji_assets(
@@ -2114,7 +2319,18 @@ class ControlQueryAdapter:
             if key is not None:
                 stmt = stmt.where(EmojiAssetModel.id > key)
             stmt = stmt.order_by(EmojiAssetModel.id.asc()).limit(request.limit + 1)
-            rows = list(await session.scalars(stmt))
+            rows = list(
+                await session.scalars(
+                    (
+                        sql_window := await numbered_statement(
+                            session,
+                            stmt,
+                            request,
+                            order=(EmojiAssetModel.updated_at.desc(), EmojiAssetModel.id.desc()),
+                        )
+                    ).statement
+                )
+            )
             more = len(rows) == request.limit + 1
             if more:
                 rows = rows[:-1]
@@ -2147,6 +2363,8 @@ class ControlQueryAdapter:
                 phase=QueryCursorPhase.CANONICAL,
                 next_key=rows[-1].id if more else None,
                 snapshot_at=snapshot_at,
+                total=sql_window.total,
+                number=request.number,
             )
 
     async def list_speech_profiles(self, request: PageRequest) -> Page[SpeechProfileView]:
@@ -2158,7 +2376,21 @@ class ControlQueryAdapter:
             if key is not None:
                 stmt = stmt.where(SpeechVoiceProfileModel.profile_id > key)
             stmt = stmt.order_by(SpeechVoiceProfileModel.profile_id.asc()).limit(request.limit + 1)
-            rows = list(await session.scalars(stmt))
+            rows = list(
+                await session.scalars(
+                    (
+                        sql_window := await numbered_statement(
+                            session,
+                            stmt,
+                            request,
+                            order=(
+                                SpeechVoiceProfileModel.updated_at.desc(),
+                                SpeechVoiceProfileModel.profile_id.desc(),
+                            ),
+                        )
+                    ).statement
+                )
+            )
             more = len(rows) == request.limit + 1
             if more:
                 rows = rows[:-1]
@@ -2177,4 +2409,6 @@ class ControlQueryAdapter:
                 phase=QueryCursorPhase.CANONICAL,
                 next_key=rows[-1].profile_id if more else None,
                 snapshot_at=snapshot_at,
+                total=sql_window.total,
+                number=request.number,
             )

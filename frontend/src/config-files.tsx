@@ -8,8 +8,8 @@ import { Badge, Empty, ErrorNote, Section } from "./components";
 
 const names: Record<string, string> = {
   model_profiles: "模型 Profile 与任务路由",
-  system_prompt: "System Prompt 模板",
-  bot_persona: "共享人格原文",
+  system_prompt: "主人格提示词（System Prompt）",
+  bot_persona: "共享人格提示词（当前参与组装）",
   autonomous_model: "自主机会 · 热更新参数",
   provider: "供应商",
   protocol: "协议",

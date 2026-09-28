@@ -31,6 +31,9 @@ class ControlSurfaceView:
 _METHODS: tuple[tuple[Literal["query", "command"], str, str], ...] = (
     ("query", "download_workspace", "control.workspace.content.read"),
     ("query", "download_chat_media", "control.chat.content.read"),
+    ("query", "download_emoji", "control.emoji.read"),
+    ("query", "download_avatar", "control.system.read"),
+    ("query", "download_environment_file", "control.workspace.content.read"),
     ("query", "read_config_file", "control.config.file.content.read"),
     ("command", "save_config_file", "control.config.file.mutate"),
     ("query", "read_model_catalog", "control.config.read"),
@@ -63,6 +66,7 @@ _METHODS: tuple[tuple[Literal["query", "command"], str, str], ...] = (
     ("query", "list_social_receipts", "control.execution.metadata.read"),
     ("query", "read_system", "control.system.read"),
     ("query", "read_yuki", "control.system.read"),
+    ("query", "read_display_names", "control.system.read"),
     ("query", "read_health", "control.health.read"),
     ("query", "list_persons", "identity.person.read"),
     ("query", "list_identity_bindings", "identity.binding.read"),

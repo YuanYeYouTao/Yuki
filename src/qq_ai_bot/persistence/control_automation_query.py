@@ -14,6 +14,7 @@ from qq_ai_bot.control_plane.paging import Page, PageRequest
 from qq_ai_bot.control_plane.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_types import ActivityView, ControlQueryError, QueryResourceKind
 from qq_ai_bot.persistence.control_execution_query import _key, _page
+from qq_ai_bot.persistence.control_paging import numbered_statement
 from qq_ai_bot.persistence.models import AutomationModel, AutomationRunModel, AutomationStepRunModel
 from qq_ai_bot.persistence.unit_of_work import state_revision
 
@@ -68,7 +69,18 @@ class ControlAutomationQueryAdapter:
             ):
                 raise ControlQueryError(Problem(ProblemCode.NOT_FOUND))
             rows = (
-                (await session.execute(stmt.order_by(model.id.desc()).limit(request.limit + 1)))
+                (
+                    await session.execute(
+                        (
+                            sql_window := await numbered_statement(
+                                session,
+                                stmt.order_by(model.id.desc()).limit(request.limit + 1),
+                                request,
+                                order=(model.created_at.desc(), model.id.desc()),
+                            )
+                        ).statement
+                    )
+                )
                 .mappings()
                 .all()
             )
@@ -89,6 +101,8 @@ class ControlAutomationQueryAdapter:
             kind,
             scope,
             str(rows[request.limit - 1]["id"]) if len(rows) >= request.limit else None,
+            total=sql_window.total,
+            number=request.number,
         )
 
     async def list_automation_steps(
@@ -139,7 +153,18 @@ class ControlAutomationQueryAdapter:
             ):
                 raise ControlQueryError(Problem(ProblemCode.NOT_FOUND))
             rows = (
-                (await session.execute(stmt.order_by(model.id.desc()).limit(request.limit + 1)))
+                (
+                    await session.execute(
+                        (
+                            sql_window := await numbered_statement(
+                                session,
+                                stmt.order_by(model.id.desc()).limit(request.limit + 1),
+                                request,
+                                order=(model.started_at.desc(), model.id.desc()),
+                            )
+                        ).statement
+                    )
+                )
                 .mappings()
                 .all()
             )
@@ -160,6 +185,8 @@ class ControlAutomationQueryAdapter:
             kind,
             scope,
             str(rows[request.limit - 1]["id"]) if len(rows) >= request.limit else None,
+            total=sql_window.total,
+            number=request.number,
         )
 
     @staticmethod

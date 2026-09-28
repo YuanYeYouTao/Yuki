@@ -4,6 +4,8 @@
 [Control Plane 合同](control-plane-foundation.md)。这是当前源码的实现边界，
 描述当前完整管理界面的源码边界；发布、部署和线上验收分别记录。
 
+本轮可用性要求逐项记录在 [WebUI 验收清单](webui-usability-acceptance.md)。
+
 ## 装配与前端
 
 React + TypeScript + Vite 的正式前端位于 `frontend/`，构建产物进入
@@ -51,9 +53,14 @@ React + TypeScript + Vite 的正式前端位于 `frontend/`，构建产物进入
 聊天附件通过原 `ConversationMediaService` 核验会话、generation、starts_after 和
 24 小时有效期；读取后再次核验。单次最多 32 MiB、验证摘要、安全打开文件，
 不暴露宿主路径或网关 URL。PNG/JPEG/GIF/WebP 按内容识别；其余内容强制附件下载。
-长期工作区复用原共享 `WorkspaceStore`：预览最多读取 1 MiB，显示最多 32 KiB
-UTF-8；完整下载最多 32 MiB，校验原摘要。大文件与不存在/过期文件明确拒绝。
-浏览器没有主 Agent、SELF 或插件执行身份；管理下载权限由 operator 单独声明。
+出站图片从已入账事件的 `segments_json` 提取原 `artifact_id` 或 `emoji_id`，仅接受
+内部 UUID；不将网关 URL 当成浏览器图片来源。聊天附件、出站媒体、表情与工作文件
+共用预览组件，缩略图可展开为窗口，过期或读取失败显示具体提示。
+共享 artifact 仍走原 `WorkspaceStore`：其快照版本和真实 Linux 工作文件分别展示，
+删除 artifact 不代表删除工作文件。文件管理器直接列出 Manager 的持久
+`/home/yuki/workspace`；Bot 只读挂载用于预览，写入、移动、删除及交互终端沿原
+Manager 控制链执行。二进制预览最多 32 MiB，按内容识别图片，其他类型作为附件下载。
+管理后台沿用现有登录与命令回执，不为文件操作增加逐文件审批或新的权限状态。
 
 ## 已接入的业务页面
 
@@ -70,7 +77,11 @@ UTF-8；完整下载最多 32 MiB，校验原摘要。大文件与不存在/过�
 | 工作区/素材 | 共享 artifact 上传/版本编辑/删除、文本预览、授权下载、原 Linux 文件与终端；表情与语音目录及原管理动作 |
 | 审计 | 执行诊断、Control/rebuild/dream 原状态与回执、管理审计、Social 投递确定性 |
 
-列表有界分页；“筛选本页”只过滤已读取的一页，不冒充全库搜索。
+人、群、会话优先展示已入账的可读名称；原内部 ID 保留在详情中供复制与排错，
+不把名字或平台号码用于执行所有权判断。QQ 头像由后端根据 canonical 绑定代理固定
+QQ 图像来源，同源返回有界图片；失败时显示名称首字。
+信息列表以真实时间降序、相同时间以原 ID 稳定排序。编号分页由后端对相同查询范围
+计算总条数，支持直接跳页；“筛选本页”只过滤已读取的一页，不冒充全库搜索。
 页面刷新不触发 Agent 唤醒、自动化执行或模型健康调用。run_now 为显式新调度。
 自动化安排/步骤/原能力参数、Memory 维护范围和插件批准使用原 schema 表单；
 步骤支持原内置变量与前一步结果模板。能力的 permitted_levels 来自原 Registry.permits，
@@ -224,6 +235,18 @@ Dream 重试复用原失败/过期簇恢复，并保留原成功簇与 attempt b
 不读取宿主路径；`control.terminal.mutate` 复用原 SandboxClient 的同一 Manager/socket/Linux
 环境。页面命令来自固定 exec/write/control 方法，不提供任意工具 RPC。文件/终端内容有
 独立读取权限，查询不执行命令；输出按原 run UUID/byte cursor 读取并标明截断或已丢失内容。
+
+文件管理器的主目录是原环境中的 `/workspace`，不是已发布 artifact 列表。目录层级、分页、
+打开、文本编辑、重命名/移动、空目录或文件删除都作用于原工作文件；更新和删除文件核对原
+SHA。浏览器上传二进制文件使用有限的 `workspace_upload` Manager 动作，最多 4 MiB，
+当前目录同名文件返回版本冲突；不会先建 artifact 或通过 checkout 猜测导入路径。
+Bot 必须将 Manager 实际的 `home/workspace` 只读挂载到本容器，并把
+`WEBUI_WORKSPACE_DIRECTORY` 指向该挂载点，供编号目录和媒体预览读取。原
+`./workspace` artifact 目录与 Manager 工作区不同，不能拿它替代。写操作仍走同一个
+Manager，无额外逐文件审批或权限状态。
+仅这一路 WebUI 命令和 socket 请求允许 6 MiB 帧，其他请求继续使用原限额。已发布
+artifact 作为独立快照只读展示，删除快照不再冒充删除工作文件。终端页面连接原 tty，
+击键使用原 Control 请求回执顺序发送；断线按原 run 和请求查询，未知结果不自动重输。
 
 终端 request token 为 `control:<authenticated principal UUID>:<original request UUID>`，
 Manager 的原持久启动标记和 run UUID 保留。操作先提交短 Control intent，再在 SQLite

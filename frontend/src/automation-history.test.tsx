@@ -14,14 +14,16 @@ it("pages original runs and scopes steps to the selected execution", async () =>
           ? {
               items: [
                 {
-                  resource_id: args.page.cursor ? "41" : "42",
+                  resource_id: args.page.number === 2 ? "41" : "42",
                   fields: {
-                    id: args.page.cursor ? 41 : 42,
+                    id: args.page.number === 2 ? 41 : 42,
                     status: "succeeded",
                   },
                 },
               ],
-              next_cursor: args.page.cursor ? null : "run-cursor",
+              total: 31,
+              number: args.page.number,
+              next_cursor: null,
             }
           : {
               items: [

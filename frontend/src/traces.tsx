@@ -1,4 +1,5 @@
 import { stamp, text } from "./format";
+import { useDisplayNames } from "./names";
 import { useQuery } from "./hooks";
 import { useState } from "react";
 import {
@@ -165,6 +166,9 @@ export function TraceReader({ id }: { id: number }) {
   const { data, error, loading } = useQuery<Row>("read_execution_trace", {
     entry_id: id,
   });
+  const names = useDisplayNames({
+    conversation: [String(data?.conversation_id || "")],
+  });
   return (
     <Section title={`记录 #${id}`}>
       {loading && <Empty>正在读取…</Empty>}
@@ -178,9 +182,13 @@ export function TraceReader({ id }: { id: number }) {
               {text(data.payload_status)} · 有效至 {stamp(data.expires_at)}
             </p>
             <p className="small">
-              轮次 {text(data.turn_id)} · 原会话 {text(data.conversation_id)} ·
-              执行 {text(data.execution_id)}
+              原会话 {names[String(data.conversation_id)] || "未命名会话"}
             </p>
+            <details className="reference-id">
+              <summary>内部执行编号</summary>
+              轮次 {text(data.turn_id)} · 会话 {text(data.conversation_id)} ·
+              执行 {text(data.execution_id)}
+            </details>
             <TraceContent row={data} />
           </>
         )
@@ -260,7 +268,7 @@ function TraceList({
             [
               "turn_id",
               "轮次",
-              (v) => (
+              (v, row) => (
                 <button
                   className="file-open"
                   onClick={() => {
@@ -269,7 +277,7 @@ function TraceList({
                     setSelected(null);
                   }}
                 >
-                  {text(v)}
+                  查看 {stamp(row.created_at)} 的轮次
                 </button>
               ),
             ],

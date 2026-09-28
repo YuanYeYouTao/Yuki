@@ -77,6 +77,9 @@ _SIMPLE_QUERIES = frozenset(name for kind, name, _ in _METHODS if kind == "query
     "list_work",
     "download_workspace",
     "download_chat_media",
+    "download_emoji",
+    "download_environment_file",
+    "read_display_names",
     "list_participation_runs",
 }
 _COMMANDS = frozenset(name for kind, name, _ in _METHODS if kind == "command")
@@ -121,12 +124,12 @@ def attach_webui(
             sessions = BrowserSessions(control().access, lifetime=settings.webui_session_seconds)
         return sessions
 
-    async def body(request: Request) -> dict[str, Any]:
+    async def body(request: Request, *, max_bytes: int | None = None) -> dict[str, Any]:
         if request.headers.get("content-type", "").split(";")[0] != "application/json":
             raise ValueError("JSON required")
         data = bytearray()
         async for chunk in request.stream():
-            if len(data) + len(chunk) > settings.webui_max_body_bytes:
+            if len(data) + len(chunk) > (max_bytes or settings.webui_max_body_bytes):
                 raise ValueError("request too large")
             data.extend(chunk)
         parsed = json.loads(data)
@@ -172,18 +175,27 @@ def attach_webui(
             response = JSONResponse(
                 control_response(request_id, Problem(ProblemCode.VALIDATION_ERROR)), status_code=400
             )
+        avatar_cache = (
+            path.startswith("/api/control/files/avatar/")
+            and response.status_code == 200
+            and response.headers.get("Cache-Control", "").startswith("private,")
+        )
         response.headers.update(
             {
-                "Cache-Control": "no-store",
+                "Cache-Control": (
+                    response.headers["Cache-Control"] if avatar_cache else "no-store"
+                ),
                 "X-Content-Type-Options": "nosniff",
                 "Referrer-Policy": "no-referrer",
                 "Content-Security-Policy": (
                     "default-src 'self'; script-src 'self'; "
-                    "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                    "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
                     "object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
                 ),
             }
         )
+        if avatar_cache:
+            response.headers["Vary"] = "Cookie"
         return response
 
     def context(
@@ -247,7 +259,13 @@ def attach_webui(
         ctx = context(request)
         queries = control().queries
         result: object
-        if method in _SIMPLE_QUERIES:
+        if method == "read_display_names":
+            if set(data) != {"references"}:
+                raise ValueError("read_display_names requires references only")
+            result = await queries.read_display_names(
+                ctx, freeze_json_object(data.get("references", {}))
+            )
+        elif method in _SIMPLE_QUERIES:
             if set(data) - {"page"}:
                 raise ValueError("unknown query fields")
             result = (
@@ -468,7 +486,14 @@ def attach_webui(
     async def command(method: str, request: Request) -> JSONResponse:
         if method not in _COMMANDS:
             raise ControlQueryError(Problem(ProblemCode.NOT_FOUND))
-        data = await body(request)
+        from qq_ai_bot.sandbox.client import MAX_CONTROL_UPLOAD_WIRE
+
+        data = await body(
+            request,
+            max_bytes=max(settings.webui_max_body_bytes, MAX_CONTROL_UPLOAD_WIRE)
+            if method == "mutate_environment_file"
+            else None,
+        )
         raw_target = data.pop("target", {"kind": "yuki"})
         if type(raw_target) is not dict:
             raise ValueError("invalid target")
@@ -511,6 +536,24 @@ def attach_webui(
     async def workspace_file(artifact_id: str, request: Request) -> Response:
         return file_response(
             await control().queries.download_workspace(context(request), artifact_id)
+        )
+
+    @router.get("/files/emoji/{asset_id}")
+    async def emoji_file(asset_id: str, request: Request) -> Response:
+        return file_response(await control().queries.download_emoji(context(request), asset_id))
+
+    @router.get("/files/avatar/{kind}/{owner_id}")
+    async def avatar_file(kind: str, owner_id: str, request: Request) -> Response:
+        result = file_response(
+            await control().queries.download_avatar(context(request), kind, owner_id)
+        )
+        result.headers["Cache-Control"] = "private, max-age=3600"
+        return result
+
+    @router.get("/files/environment")
+    async def environment_file(path: str, request: Request) -> Response:
+        return file_response(
+            await control().queries.download_environment_file(context(request), path)
         )
 
     @router.get("/files/chat/{conversation_id}/{event_id}/{attachment_index}")

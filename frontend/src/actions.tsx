@@ -160,10 +160,17 @@ export function ActionSheet({
         </label>
       )}
       {!intent.edit && !result && (
-        <p>
-          {intent.label}：
-          {String(intent.payload.resource_id || intent.target?.id || "Yuki")}
-        </p>
+        <div>
+          <p>{intent.label}</p>
+          <details className="small">
+            <summary>内部目标编号</summary>
+            <code>
+              {String(
+                intent.payload.resource_id || intent.target?.id || "Yuki",
+              )}
+            </code>
+          </details>
+        </div>
       )}
       {error != null && <ErrorNote error={error} />}
       {result && <JsonNote title="持久回执" value={result} />}

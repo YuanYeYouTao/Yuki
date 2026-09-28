@@ -5,6 +5,7 @@ import { useQuery } from "./hooks";
 import { Empty, ErrorNote, Section } from "./components";
 import { SchemaFields } from "./schema-fields";
 import { initialSchemaValue } from "./schema-values";
+import { OwnerPicker } from "./owner-picker";
 
 const labels = {
   name: "任务名称",
@@ -114,27 +115,29 @@ function Editor({
           </label>
           {ownerKind === "person" && (
             <label className="form-group">
-              创建者 Person UUID
-              <input
-                className="form-control"
+              创建者
+              <OwnerPicker
+                kind="person"
+                label="创建者"
                 required
                 value={owner}
-                onChange={(e) => setOwner(e.target.value)}
-                placeholder="canonical UUID"
+                change={setOwner}
+                refresh={props.refresh}
+                empty="选择人物"
               />
             </label>
           )}
           <label className="form-group">
-            场景 Conversation UUID
-            <input
-              className="form-control"
+            场景会话
+            <OwnerPicker
+              kind="conversation"
+              label="场景会话"
               required={ownerKind === "self"}
               value={conversation}
-              onChange={(e) => setConversation(e.target.value)}
-              placeholder={
-                ownerKind === "self"
-                  ? "填写现有群聊 Conversation UUID"
-                  : "留空使用该人物私聊场景"
+              change={setConversation}
+              refresh={props.refresh}
+              empty={
+                ownerKind === "self" ? "选择群聊场景" : "留空使用该人物私聊场景"
               }
             />
           </label>

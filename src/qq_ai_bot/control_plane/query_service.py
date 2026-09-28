@@ -81,6 +81,33 @@ def _reveal_external(context: DecisionContext[ControlPrincipal, object, object])
 class ControlQueryService:
     """Authorize then project. Does not invent principals or actors."""
 
+    async def read_display_names(self, context: object, references: JsonObject) -> ActivityView:
+        from qq_ai_bot.persistence.control_names import NAME_CAPABILITIES
+
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_display_names"))
+        allowed = frozenset(
+            kind
+            for kind, capability in NAME_CAPABILITIES.items()
+            if authorized.principal.allows(capability)
+        )
+        return await self._port.read_display_names(references, allowed)
+
+    async def download_emoji(self, context: object, asset_id: str) -> DownloadView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("download_emoji"))
+        return await self._port.download_emoji(asset_id)
+
+    async def download_avatar(self, context: object, kind: str, owner_id: str) -> DownloadView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("download_avatar"))
+        return await self._port.download_avatar(kind, owner_id)
+
+    async def download_environment_file(self, context: object, path: str) -> DownloadView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("download_environment_file"))
+        return await self._port.download_environment_file(path)
+
     async def list_plugin_background_turns(
         self, context: object, request: PageRequest, *, plugin_id: str
     ) -> Page[ActivityView]:

@@ -116,7 +116,9 @@ TaskSpec、Social 路由、run/step/投递回执和 source_key 使用原服务�
 
 `control_plane.wire` 提供纯协议转换：`control.v1`、原 request_id、data/problem、canonical UUID、
 UTC 时间、opaque cursor、真实状态和 null 进度。命令只接受 request_id/expected_revision/payload，
-拒绝客户端主体、布尔 revision、平台编号及未知 envelope 字段；分页有界且无 offset。
+拒绝客户端主体、布尔 revision、平台编号及未知 envelope 字段；分页有界。
+旧游标查询保持 keyset 连续翻页；显式编号页对同一授权筛选执行 SQL COUNT 与
+LIMIT/OFFSET，可直接跳页，不把页码当内部事件身份或恢复位置。
 输出仅接受公开 DTO，raw dict、ORM、异常、Principal 和 Settings 不能直接成为响应。
 HTTP handler 应调用这些转换和共享服务，不能把数据库方法直接暴露为通用 RPC。
 

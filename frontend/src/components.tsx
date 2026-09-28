@@ -1,9 +1,11 @@
 import { useQuery } from "./hooks";
-import { stamp, text } from "./format";
+import { text } from "./format";
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { ApiError } from "./api";
 import type { Page, Row } from "./api";
+import { Avatar, useDisplayNames } from "./names";
+import type { NameReferences } from "./names";
 export function Icon({ name }: { name: string }) {
   return (
     <img
@@ -70,6 +72,44 @@ export type Column = [
   string,
   ((value: unknown, row: Row) => ReactNode)?,
 ];
+function Cell({ value }: { value: unknown }) {
+  const content = text(value);
+  const [expanded, setExpanded] = useState(false);
+  if (content.length <= 180)
+    return <span className="cell-text">{content}</span>;
+  return (
+    <div className="long-cell">
+      <span className="cell-text">
+        {expanded ? content : content.slice(0, 180) + "…"}
+      </span>
+      <button
+        type="button"
+        className="file-open"
+        onClick={() => setExpanded(!expanded)}
+      >
+        {expanded ? "收起" : "展开全文"}
+      </button>
+    </div>
+  );
+}
+const kindFor = (key: string, row?: Row) =>
+  key === "target_id" && row?.target_kind === "person"
+    ? "person"
+    : key === "target_id" && row?.target_kind === "space"
+      ? "space"
+      : key.includes("person")
+        ? "person"
+        : key.includes("space_binding")
+          ? "space_binding"
+          : key.includes("space")
+            ? "space"
+            : key.includes("conversation")
+              ? "conversation"
+              : key.includes("presence")
+                ? "presence"
+                : key.includes("binding")
+                  ? "binding"
+                  : "";
 export function Table({
   rows,
   columns,
@@ -79,6 +119,19 @@ export function Table({
   columns: Column[];
   actions?: (row: Row) => ReactNode;
 }) {
+  const refs: NameReferences = {};
+  for (const row of rows)
+    for (const [key] of columns) {
+      const kind = kindFor(key, row) as keyof NameReferences,
+        value = row[key];
+      if (
+        kind &&
+        typeof value === "string" &&
+        /^[0-9a-f]{8}-[0-9a-f-]{27,}$/.test(value)
+      )
+        (refs[kind] ||= []).push(value);
+    }
+  const names = useDisplayNames(refs);
   if (!rows.length) return <Empty />;
   return (
     <div className="table-wrap">
@@ -105,7 +158,46 @@ export function Table({
             >
               {columns.map(([key, , render]) => (
                 <td key={key}>
-                  {render ? render(row[key], row) : text(row[key])}
+                  {render ? (
+                    render(row[key], row)
+                  ) : kindFor(key, row) &&
+                    typeof row[key] === "string" &&
+                    /^[0-9a-f]{8}-[0-9a-f-]{27,}$/.test(String(row[key])) ? (
+                    <span className="named-reference">
+                      {["person", "space", "presence", "conversation"].includes(
+                        kindFor(key, row),
+                      ) && (
+                        <span className="reference-avatar">
+                          <Avatar
+                            kind={
+                              kindFor(key, row) as
+                                "person" | "space" | "presence" | "conversation"
+                            }
+                            id={row[key]}
+                            label={names[String(row[key])] || "头像"}
+                            fallback={
+                              names[String(row[key])] ||
+                              (kindFor(key, row) === "space" ? "群" : "人")
+                            }
+                          />
+                        </span>
+                      )}
+                      <span>
+                        {names[String(row[key])] ||
+                          (kindFor(key, row) === "space"
+                            ? "未命名群"
+                            : kindFor(key, row) === "person"
+                              ? "未命名人物"
+                              : "未命名对象")}
+                        <details className="reference-id">
+                          <summary>内部编号</summary>
+                          {String(row[key])}
+                        </details>
+                      </span>
+                    </span>
+                  ) : (
+                    <Cell value={row[key]} />
+                  )}
                 </td>
               ))}
               {actions && (
@@ -135,20 +227,20 @@ export function QueryList({
   actions?: (row: Row) => ReactNode;
   onRow?: (row: Row) => Row;
 }) {
-  const [cursor, setCursor] = useState<string | null>(null),
-    [stack, setStack] = useState<(string | null)[]>([]),
+  const [number, setNumber] = useState(1),
+    [jump, setJump] = useState("1"),
     [search, setSearch] = useState("");
   const { data, error, loading } = useQuery<Page>(
     method,
-    { ...args, page: { limit: 30, cursor } },
+    { ...args, page: { limit: 30, number } },
     refresh,
   );
   const key = JSON.stringify(args);
   const [pageKey, setPageKey] = useState(`${method}:${refresh}:${key}`);
   if (pageKey !== `${method}:${refresh}:${key}`) {
     setPageKey(`${method}:${refresh}:${key}`);
-    setCursor(null);
-    setStack([]);
+    setNumber(1);
+    setJump("1");
   }
   const rows = (data?.items || [])
     .map((row) => (onRow ? onRow(row) : row))
@@ -178,28 +270,57 @@ export function QueryList({
       <div className="pagination">
         <button
           className="btn-secondary"
-          disabled={!stack.length || loading}
+          disabled={number <= 1 || loading}
           onClick={() => {
-            setCursor(stack.at(-1) ?? null);
-            setStack(stack.slice(0, -1));
+            setNumber(number - 1);
+            setJump(String(number - 1));
           }}
         >
           上一页
         </button>
         <span className="small">
-          第 {stack.length + 1} 页 ·{" "}
-          {data?.snapshot_at ? stamp(data.snapshot_at) : ""}
+          第 {number} 页 / 共 {Math.max(1, Math.ceil((data?.total || 0) / 30))}{" "}
+          页 · 共 {data?.total ?? "?"} 条
         </span>
         <button
           className="btn-secondary"
-          disabled={!data?.next_cursor || loading}
+          disabled={
+            data?.total == null ||
+            number >= Math.max(1, Math.ceil(data.total / 30)) ||
+            loading
+          }
           onClick={() => {
-            setStack([...stack, cursor]);
-            setCursor(data!.next_cursor);
+            setNumber(number + 1);
+            setJump(String(number + 1));
           }}
         >
           下一页
         </button>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            const target = Number(jump);
+            if (
+              Number.isInteger(target) &&
+              target >= 1 &&
+              target <= Math.max(1, Math.ceil((data?.total || 0) / 30))
+            )
+              setNumber(target);
+          }}
+        >
+          <label>
+            跳至{" "}
+            <input
+              aria-label="页码"
+              type="number"
+              min="1"
+              max={Math.max(1, Math.ceil((data?.total || 0) / 30))}
+              value={jump}
+              onChange={(event) => setJump(event.target.value)}
+            />
+          </label>
+          <button className="btn-secondary">跳转</button>
+        </form>
       </div>
     </>
   );

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { command, login, query } from "./api";
 import { TraceContent } from "./traces";
@@ -472,7 +472,7 @@ it("keeps the selected default conversation and notebook section across refresh"
   );
   await userEvent.click(screen.getByRole("tab", { name: "人格" }));
   expect(
-    await screen.findByRole("heading", { name: "当前加载的人格提示词" }),
+    await screen.findByText("当前加载的完整人格提示词"),
   ).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "刷新数据" }));
   await waitFor(() =>
@@ -482,4 +482,90 @@ it("keeps the selected default conversation and notebook section across refresh"
     "aria-selected",
     "true",
   );
+});
+
+it("browses recent conversations by numbered page and retains the chosen conversation", async () => {
+  const { default: App } = await import("./App");
+  window.history.replaceState({}, "", "/#overview");
+  const visited: number[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
+    const method = String(url).split("/").pop()!;
+    let data: unknown = { items: [], next_cursor: null, total: 0, number: 1 };
+    if (method === "session")
+      data = {
+        csrf: "fixture",
+        content_access: { chat: true },
+        surface: {
+          protocol_version: "1",
+          methods: [
+            "read_system",
+            "read_health",
+            "list_conversations",
+            "list_chat_events",
+          ].map((name) => ({ name, authorized: true, kind: "query" })),
+        },
+      };
+    if (method === "list_conversations") {
+      const number = Number(
+        (
+          JSON.parse(String(options?.body || "{}")) as {
+            page: { number: number };
+          }
+        ).page.number,
+      );
+      visited.push(number);
+      data = {
+        items:
+          number === 1
+            ? [
+                { conversation_id: "recent-chat", kind: "space" },
+                ...Array.from({ length: 99 }, (_, index) => ({
+                  conversation_id: `filler-${index}`,
+                  kind: "space",
+                })),
+              ]
+            : [{ conversation_id: "older-chat", kind: "space" }],
+        total: 101,
+        number,
+        next_cursor: null,
+      };
+    }
+    if (method === "read_system") data = { version: "fixture" };
+    if (method === "read_health") data = { components: [] };
+    return new Response(JSON.stringify({ data }), { status: 200 });
+  });
+  render(<App />);
+  const selected = await screen.findByRole("combobox", { name: "会话" });
+  await waitFor(() => expect(selected).toHaveValue("recent-chat"));
+  const pagination = screen.getByLabelText("会话分页");
+  expect(
+    within(pagination).getByText(/共 2 页 · 共 101 个会话/),
+  ).toBeInTheDocument();
+  await userEvent.click(
+    within(pagination).getByRole("button", { name: "下一页" }),
+  );
+  await waitFor(() => expect(visited).toContain(2));
+  await waitFor(() =>
+    expect(
+      [...(selected as HTMLSelectElement).options].some(
+        (option) => option.value === "older-chat",
+      ),
+    ).toBe(true),
+  );
+  await userEvent.selectOptions(selected, "older-chat");
+  expect(selected).toHaveValue("older-chat");
+  await userEvent.click(
+    within(pagination).getByRole("button", { name: "上一页" }),
+  );
+  await waitFor(() => expect(visited.at(-1)).toBe(1));
+  expect(selected).toHaveValue("older-chat");
+  const pageInput = within(pagination).getByRole("spinbutton", {
+    name: "会话页码",
+  });
+  await userEvent.clear(pageInput);
+  await userEvent.type(pageInput, "2");
+  await userEvent.click(
+    within(pagination).getByRole("button", { name: "跳转" }),
+  );
+  await waitFor(() => expect(visited.at(-1)).toBe(2));
 });

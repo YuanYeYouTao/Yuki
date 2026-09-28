@@ -12,6 +12,7 @@ import {
 } from "./components";
 import type { Column } from "./components";
 import { stamp } from "./format";
+import { OwnerPicker } from "./owner-picker";
 
 const flatten = (row: Row): Row => ({ ...row, ...((row.fields as Row) || {}) });
 const columns: Record<string, Column[]> = {
@@ -199,19 +200,22 @@ export function Reflection(props: PageProps) {
             >
               <option value="">全部</option>
               {section !== "receipt_cursors" && (
-                <option value="person_id">Person</option>
+                <option value="person_id">人物</option>
               )}
-              <option value="space_id">Space</option>
+              <option value="space_id">群</option>
             </select>
           </label>
           {ownerType && (
             <label className="form-group">
-              内部主体 UUID
-              <input
-                className="form-control"
+              {ownerType === "person_id" ? "人物" : "群"}
+              <OwnerPicker
+                kind={ownerType === "person_id" ? "person" : "space"}
+                label={ownerType === "person_id" ? "人物" : "群"}
                 required
                 value={owner}
-                onChange={(e) => setOwner(e.target.value)}
+                change={setOwner}
+                refresh={props.refresh}
+                empty={ownerType === "person_id" ? "选择人物" : "选择群"}
               />
             </label>
           )}

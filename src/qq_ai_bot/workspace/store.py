@@ -357,16 +357,41 @@ class WorkspaceStore:
             "external_untrusted": True,
         }
 
-    def list(self, *, cursor: str = "", limit: int = 20) -> dict[str, Any]:
+    def list(
+        self, *, cursor: str = "", limit: int = 20, number: int | None = None
+    ) -> dict[str, Any]:
         if cursor:
             self._id(cursor)
         if not 1 <= limit <= 100:
             raise WorkspaceError("invalid_limit")
+        if number is not None and (
+            type(number) is not int or not 1 <= number <= 1_000_000 or cursor
+        ):
+            raise WorkspaceError("invalid_page_number")
         with self._transaction() as db:
+            now = time.time()
+            if number is not None:
+                total = int(
+                    db.execute(
+                        "SELECT count(*) FROM artifacts WHERE expires_at>?", (now,)
+                    ).fetchone()[0]
+                )
+                rows = db.execute(
+                    "SELECT *, EXISTS(SELECT 1 FROM artifact_snapshots s WHERE s.id=artifacts.id) "
+                    "AS immutable FROM artifacts WHERE expires_at>? "
+                    "ORDER BY modified_at DESC, id DESC LIMIT ? OFFSET ?",
+                    (now, limit, (number - 1) * limit),
+                ).fetchall()
+                return {
+                    "items": [self._metadata(row) for row in rows],
+                    "next_cursor": None,
+                    "total": total,
+                    "number": number,
+                }
             rows = db.execute(
                 "SELECT *, EXISTS(SELECT 1 FROM artifact_snapshots s WHERE s.id=artifacts.id) "
                 "AS immutable FROM artifacts WHERE expires_at>? AND id>? ORDER BY id LIMIT ?",
-                (time.time(), cursor, limit + 1),
+                (now, cursor, limit + 1),
             ).fetchall()
             return {
                 "items": [self._metadata(row) for row in rows[:limit]],
