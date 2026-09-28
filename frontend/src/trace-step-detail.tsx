@@ -79,7 +79,7 @@ function RecordedOperation({ kind, data }: { kind: string; data: Row }) {
         用途 {text(data.task)} · Provider {text(data.provider)} · 模型{" "}
         {text(data.model)}
         <br />
-        配置档 {text(data.profile_id)} · 协议 {text(data.protocol)}
+        内部连接编号 {text(data.profile_id)} · 协议 {text(data.protocol)}
       </p>
     );
   if (kind === "model_start") {
