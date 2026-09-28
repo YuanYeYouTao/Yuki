@@ -74,8 +74,25 @@ doctor 是只读检查，不发送消息、不调用私有 action，也不输出
 
 ## 模型配置
 
-配置入口是引导式 `qq-ai-bot-cli setup`。模型 Provider 使用 OpenAI-compatible Chat Completions
-或 Responses；是否支持 thinking、native web、缓存和具体参数由对应 Provider 决定。
+模型可在 WebUI 的「模型与用量」中配置，也可用 `qq-ai-bot-cli setup` 完成初始引导。
+WebUI 选择供应商和协议，直接填写 API Base URL、模型 ID 与 API Key，然后按用途选择模型连接。
+新输入的密钥保存在服务器私有文件，不会在页面回显；保存后重启 Bot 才会加载新连接。
+支持 Chat Completions、Responses、Claude Messages 和原生 Gemini GenerateContent；
+具体思考、工具、图片、结构化输出与缓存能力取决于供应商和模型。
+
+测试 Gemini 3.8 Flash：
+
+1. 在「模型与用量」选择「添加模型连接」，供应商选「Google Gemini」。页面预填
+   `gemini-3.8-flash`、`https://generativelanguage.googleapis.com/v1beta` 和原生 Gemini 协议。
+2. 在 API Key 输入框粘贴 Google 提供的密钥。先仅把「主对话」指向新连接，其他用途沿用现有模型。
+3. 点击「检查并保存」，确认页面提示磁盘配置有效，再重启 Bot；确认健康状态和已加载路由。
+4. 用明确授权的测试会话发一条文字消息，按需再测图片及工具。到「轨迹与审计」查看该轮的请求、响应、
+   工具与投递步骤；到「模型与用量」查看 Gemini 调用次数、输入/输出 Token 及缓存命中报告。
+5. 测试后若要恢复原路由，在 WebUI 将「主对话」选回原连接，保存并重启 Bot。
+
+这套配置不会在保存时发出模型请求；真实模型效果、密钥有效性和上游可用性需第 4 步验证。
+Gemini 的 Google 内置搜索、Interactions、Live 和 TTS 尚未接入。用量是 Yuki 入账的调用，
+不是供应商账单；没有可靠单价时页面不估算费用。
 
 通用原则：
 
