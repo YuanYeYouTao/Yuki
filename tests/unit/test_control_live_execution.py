@@ -8,6 +8,7 @@ from tests.support.social_identity_cases import social_env
 from tests.unit.test_control_plane_foundation import context
 
 from qq_ai_bot.control_plane import ControlQueryError, ControlQueryService, PageRequest
+from qq_ai_bot.control_plane.query_types import ExecutionTraceFilter
 from qq_ai_bot.domain.identity import ConversationId
 from qq_ai_bot.execution_trace.db_models import ExecutionTraceEntryModel as Trace
 from qq_ai_bot.execution_trace.recorder import TraceRecorder, trace_span
@@ -114,13 +115,13 @@ async def test_inbound_event_links_only_real_runner_turns_and_can_have_multiple(
     env = await social_env(database, tmp_path)
     conversation = ConversationId.parse(env.context.conversation_id)
     async with database.sessions() as session:
-        event = await session.scalar(
+        chat_event = await session.scalar(
             select(ChatEventModel).where(
                 ChatEventModel.canonical_conversation_id == conversation.text
             )
         )
-        assert event is not None
-        event_id = event.id
+        assert chat_event is not None
+        event_id = chat_event.id
     recorder = TraceRecorder(database)
 
     no_turn = await list_event_turns(
@@ -159,16 +160,51 @@ async def test_inbound_event_links_only_real_runner_turns_and_can_have_multiple(
         ):
             async with trace_span("turn", {}):
                 pass
-    linked = await list_event_turns(
-        database.sessions,
-        PageRequest(),
-        conversation_id=conversation,
-        event_id=event_id,
-        direction="inbound",
-    )
+    statements: list[tuple[str, object]] = []
+
+    def capture(_connection, _cursor, statement, parameters, *_args):
+        statements.append((statement, parameters))
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
+    try:
+        linked = await list_event_turns(
+            database.sessions,
+            PageRequest(),
+            conversation_id=conversation,
+            event_id=event_id,
+            direction="inbound",
+        )
+        turns = await ControlQueryService(ControlQueryAdapter(database)).list_execution_trace(
+            context("control.execution.metadata.read"),
+            PageRequest(limit=20, number=1),
+            scope=ExecutionTraceFilter(
+                conversation_id=conversation,
+                turn_id=linked.items[0].fields["turn_id"],
+                descending=False,
+            ),
+        )
+    finally:
+        event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
     assert linked.total == 2
     assert len({item.fields["turn_id"] for item in linked.items}) == 2
     assert all(item.fields["trace_status"] == "completed" for item in linked.items)
+    assert turns.total == 4
+    assert [item.id for item in turns.items] == sorted(item.id for item in turns.items)
+    assert all(
+        item.turn_id == linked.items[0].fields["turn_id"] and item.conversation_id == conversation
+        for item in turns.items
+    )
+    indexed_sql = [
+        (sql, params)
+        for sql, params in statements
+        if "INDEXED BY ix_execution_trace_turn_id" in sql
+    ]
+    assert len(indexed_sql) >= 3
+    assert any("count(" in sql.lower() for sql, _ in indexed_sql)
+    async with database.engine.connect() as connection:
+        for sql, params in indexed_sql:
+            plan = (await connection.exec_driver_sql("EXPLAIN QUERY PLAN " + sql, params)).all()
+            assert any("USING INDEX ix_execution_trace_turn_id" in row[3] for row in plan)
 
 
 @pytest.mark.asyncio

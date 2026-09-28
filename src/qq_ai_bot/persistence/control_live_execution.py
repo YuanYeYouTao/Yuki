@@ -297,18 +297,30 @@ async def list_event_turns(
         )
         items = []
         for row in selected:
-            turn_first = (
-                await session.execute(
-                    select(Trace.created_at, Trace.origin)
-                    .where(
-                        Trace.turn_id == row["turn_id"],
-                        Trace.conversation_id == row["conversation_id"],
-                        Trace.expires_at > observed_at,
-                    )
-                    .order_by(Trace.id.asc())
-                    .limit(1)
+            first_statement = (
+                text(
+                    "SELECT created_at, origin FROM execution_trace_entries "
+                    "INDEXED BY ix_execution_trace_turn_id "
+                    "WHERE turn_id = :turn_id AND conversation_id = :conversation_id "
+                    "AND expires_at > :observed_at ORDER BY id ASC LIMIT 1"
                 )
-            ).first()
+                .bindparams(bindparam("observed_at", type_=DateTime(timezone=True)))
+                .columns(created_at=DateTime(timezone=True), origin=String)
+            )
+            turn_first = (
+                (
+                    await session.execute(
+                        first_statement,
+                        {
+                            "turn_id": row["turn_id"],
+                            "conversation_id": row["conversation_id"],
+                            "observed_at": observed_at,
+                        },
+                    )
+                )
+                .mappings()
+                .first()
+            )
             terminal = await _terminal_kind(
                 session,
                 conversation_id=row["conversation_id"],
@@ -320,9 +332,9 @@ async def list_event_turns(
                     row["turn_id"],
                     {
                         "turn_id": row["turn_id"],
-                        "origin": turn_first.origin if turn_first else None,
+                        "origin": turn_first["origin"] if turn_first else None,
                         "created_at": _stamp(
-                            turn_first.created_at if turn_first else row["created_at"]
+                            turn_first["created_at"] if turn_first else row["created_at"]
                         ),
                         "original_conversation_id": row["conversation_id"],
                         "trace_status": _completion(terminal),
