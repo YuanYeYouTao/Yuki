@@ -54,6 +54,7 @@ _SIMPLE_QUERIES = frozenset(name for kind, name, _ in _METHODS if kind == "query
     "read_work",
     "list_work_history",
     "read_config_file",
+    "read_model_usage_summary",
     "read_execution_trace",
     "list_execution_trace",
     "list_chat_events",
@@ -301,11 +302,21 @@ def attach_webui(
                 else await queries.list_social_receipts(ctx, page, conversation_id=conversation)
             )
         elif method == "read_conversation_execution":
-            if set(data) != {"conversation_id"}:
+            if set(data) - {"conversation_id", "include_content"} or "conversation_id" not in data:
                 raise ValueError("invalid conversation execution query")
             result = await queries.read_conversation_execution(
-                ctx, ConversationId.parse(data["conversation_id"])
+                ctx,
+                ConversationId.parse(data["conversation_id"]),
+                include_content=data.get("include_content", False),
             )
+        elif method == "read_model_usage_summary":
+            if (
+                set(data) != {"window"}
+                or type(data["window"]) is not str
+                or data["window"] not in {"24h", "7d", "30d"}
+            ):
+                raise ValueError("invalid model usage window")
+            result = await queries.read_model_usage_summary(ctx, data["window"])
         elif method == "list_event_turns":
             if set(data) - {"conversation_id", "event_id", "direction", "page"} or not {
                 "conversation_id",

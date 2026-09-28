@@ -223,6 +223,23 @@ pre {
   padding: 6px 3px;
   font-size: 11px;
 }
+.chat-direction {
+  margin-left: auto;
+  align-self: center;
+  font-size: 11px;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 99px;
+  padding: 3px 8px;
+}
+.chat-direction.outbound {
+  color: var(--accent-hover);
+}
+.chat-connection {
+  margin: 4px 0 7px 46px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
 .message {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -257,11 +274,146 @@ pre {
   display: grid;
   gap: 12px;
 }
+.usage-range {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.usage-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(125px, 1fr));
+  gap: 10px;
+}
+.usage-cards > div {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-card);
+}
+.usage-cards span {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.usage-cards strong {
+  font-size: 1.2rem;
+  font-variant-numeric: tabular-nums;
+}
+.usage-warning {
+  color: var(--accent-hover);
+}
+.provider-intro {
+  display: grid;
+  gap: 4px;
+  margin: 18px 0 10px;
+}
+.provider-intro:first-child {
+  margin-top: 0;
+}
+.provider-intro span {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.provider-profile-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 8px;
+}
+.provider-profile {
+  display: grid;
+  gap: 3px;
+  padding: 11px;
+  text-align: left;
+  color: var(--text-primary);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+.provider-profile.selected {
+  border-color: var(--accent);
+}
+.provider-profile span,
+.provider-profile small {
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.provider-routes {
+  display: grid;
+  border-top: 1px solid var(--border);
+}
+.provider-route {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) minmax(
+      180px,
+      1.5fr
+    );
+  gap: 8px 14px;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.provider-route > span:first-child {
+  display: grid;
+  gap: 2px;
+}
+.provider-route small {
+  color: var(--text-secondary);
+}
+.provider-route > .small {
+  grid-column: 2 / 4;
+}
+@media (max-width: 600px) {
+  .provider-route {
+    grid-template-columns: 1fr;
+  }
+  .provider-route > .small {
+    grid-column: 1;
+  }
+}
 .live-status {
   margin: 0;
   font-size: 1.1rem;
   font-weight: 700;
   color: var(--accent-hover);
+}
+.live-phase {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+.turn-messages {
+  display: grid;
+  gap: 8px;
+}
+.turn-message {
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border-left: 3px solid var(--border);
+  background: var(--bg-card);
+  border-radius: 5px;
+  overflow-wrap: anywhere;
+}
+.turn-message.sent {
+  border-left-color: var(--accent);
+}
+.turn-message strong {
+  font-size: 11px;
+}
+.turn-message span {
+  white-space: pre-wrap;
+  font-size: 12px;
+}
+.turn-message small {
+  color: var(--text-secondary);
+}
+.turn-usage {
+  margin: 9px 0;
 }
 .live-turn {
   padding: 12px 14px;

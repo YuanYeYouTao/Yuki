@@ -56,6 +56,7 @@ _METHODS: tuple[tuple[Literal["query", "command"], str, str], ...] = (
     ("query", "list_automation_runs", "control.automation.read"),
     ("query", "list_automation_steps", "control.automation.read"),
     ("query", "list_model_usage", "control.execution.metadata.read"),
+    ("query", "read_model_usage_summary", "control.execution.metadata.read"),
     ("query", "read_terminal_submission", "control.terminal.content.read"),
     ("query", "read_environment", "control.workspace.metadata.read"),
     ("query", "list_workspace", "control.workspace.metadata.read"),

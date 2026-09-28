@@ -7,7 +7,8 @@ from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 from typing import TypedDict, cast
 
-from sqlalchemy import DateTime, Integer, String, bindparam, func, select, text
+from sqlalchemy import DateTime, Integer, String, bindparam, func, literal, select, text
+from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.control_plane.paging import Page, PageRequest
@@ -16,6 +17,7 @@ from qq_ai_bot.control_plane.query_types import ActivityView, ControlQueryError
 from qq_ai_bot.domain.identity import ConversationId
 from qq_ai_bot.execution_trace.db_models import ExecutionTraceEntryModel as Trace
 from qq_ai_bot.execution_trace.recorder import LiveTraceSpan, TraceRecorder
+from qq_ai_bot.model_runtime.db_models import ModelInvocationModel
 from qq_ai_bot.persistence.models import ChatEventModel
 
 
@@ -30,6 +32,8 @@ class _StepRow(TypedDict):
     kind: str
     created_at: str | None
     payload_status: str
+    source_event_id: int | None
+    delivered_event_id: int | None
 
 
 async def _steps(
@@ -39,7 +43,8 @@ async def _steps(
     # turns in a busy group. Keep both the turn and conversation checks.
     statement = (
         text(
-            "SELECT id, kind, created_at, payload_status, origin "
+            "SELECT id, kind, created_at, payload_status, origin, "
+            "source_event_id, delivered_event_id "
             "FROM execution_trace_entries INDEXED BY ix_execution_trace_turn_id "
             "WHERE conversation_id = :conversation_id AND turn_id = :turn_id "
             "AND expires_at > :observed_at ORDER BY id DESC LIMIT 33"
@@ -51,6 +56,8 @@ async def _steps(
             created_at=DateTime(timezone=True),
             payload_status=String,
             origin=String,
+            source_event_id=Integer,
+            delivered_event_id=Integer,
         )
     )
     result = await session.execute(
@@ -70,6 +77,8 @@ async def _steps(
             "kind": row["kind"],
             "created_at": _stamp(row["created_at"]),
             "payload_status": row["payload_status"],
+            "source_event_id": row["source_event_id"],
+            "delivered_event_id": row["delivered_event_id"],
         }
         for row in reversed(rows[:32])
     ]
@@ -111,6 +120,8 @@ async def read_conversation_execution(
     reader: Callable[[], AbstractAsyncContextManager[AsyncSession]],
     conversation_id: ConversationId,
     recorder: TraceRecorder | None,
+    *,
+    include_content: bool = False,
 ) -> ActivityView:
     """Active means an actual process-local Runner span, never an unmatched old start."""
     observed_at = datetime.now(UTC)
@@ -203,6 +214,103 @@ async def read_conversation_execution(
             reverse=True,
         )
         recent = recent[:2]
+        turns = [*active, *recent]
+        linked_ids = {
+            event_id
+            for turn in turns
+            for step in cast(list[_StepRow], turn["steps"])
+            for event_id in (step["source_event_id"], step["delivered_event_id"])
+            if event_id is not None
+        }
+        event_rows: dict[int, RowMapping] = {}
+        if linked_ids:
+            content = (
+                func.substr(ChatEventModel.content, 1, 501) if include_content else literal(None)
+            )
+            event_rows = {
+                row["id"]: row
+                for row in (
+                    await session.execute(
+                        select(
+                            ChatEventModel.id.label("id"),
+                            ChatEventModel.direction.label("direction"),
+                            ChatEventModel.author_kind.label("author_kind"),
+                            ChatEventModel.suppression_status.label("suppression_status"),
+                            ChatEventModel.canonical_conversation_id.label("conversation_id"),
+                            ChatEventModel.occurred_at.label("occurred_at"),
+                            content.label("content"),
+                        ).where(ChatEventModel.id.in_(linked_ids))
+                    )
+                ).mappings()
+            }
+        for turn in turns:
+            steps = cast(list[_StepRow], turn["steps"])
+            source_ids = {step["source_event_id"] for step in steps}
+            delivered_ids = {step["delivered_event_id"] for step in steps}
+            messages = []
+            for event_id in sorted(linked_ids & (source_ids | delivered_ids)):
+                row = event_rows.get(event_id)
+                if row is None:
+                    continue
+                received = (
+                    event_id in source_ids
+                    and row["direction"] == "inbound"
+                    and row["conversation_id"] == conversation_id.text
+                )
+                sent = (
+                    event_id in delivered_ids
+                    and row["direction"] == "outbound"
+                    and row["author_kind"] == "yuki"
+                    and row["suppression_status"] == "keeper"
+                )
+                if not received and not sent:
+                    continue
+                snippet = row["content"]
+                messages.append(
+                    {
+                        "event_id": event_id,
+                        "direction": "received" if received else "sent",
+                        "conversation_id": row["conversation_id"],
+                        "occurred_at": _stamp(row["occurred_at"]),
+                        "content": f"{snippet[:500]}…"
+                        if snippet and len(snippet) > 500
+                        else snippet,
+                    }
+                )
+            turn["messages"] = messages
+            turn["messages_truncated"] = turn["steps_truncated"]
+        if turns:
+            model = ModelInvocationModel
+            usage_rows = (
+                await session.execute(
+                    select(
+                        model.runtime_turn_id,
+                        func.count(model.id),
+                        func.coalesce(func.sum(model.prompt_tokens), 0),
+                        func.coalesce(func.sum(model.completion_tokens), 0),
+                        func.coalesce(func.sum(model.total_tokens), 0),
+                        func.coalesce(func.sum(model.cached_prompt_tokens), 0),
+                        func.count(model.id).filter(model.total_tokens.is_(None)),
+                    )
+                    .where(model.runtime_turn_id.in_([str(turn["turn_id"]) for turn in turns]))
+                    .group_by(model.runtime_turn_id)
+                )
+            ).all()
+            usage_by_turn = {row[0]: row for row in usage_rows}
+            for turn in turns:
+                usage = usage_by_turn.get(turn["turn_id"])
+                turn["usage"] = (
+                    {
+                        "calls": int(usage[1]),
+                        "input_tokens": int(usage[2]),
+                        "output_tokens": int(usage[3]),
+                        "total_tokens": int(usage[4]),
+                        "cached_input_tokens": int(usage[5]),
+                        "missing_usage_calls": int(usage[6]),
+                    }
+                    if usage
+                    else None
+                )
     state = (
         "active"
         if active

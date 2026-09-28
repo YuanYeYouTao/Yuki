@@ -126,6 +126,42 @@ it("edits schema fields and routes without discarding server environment referen
   expect(screen.queryByText("headers")).not.toBeInTheDocument();
 });
 
+it("chooses a Provider and model through the existing Profile route", async () => {
+  file({
+    file_id: "model_profiles",
+    revision: 4,
+    valid: true,
+    profile_schema: {
+      properties: { provider: { type: "string" }, model: { type: "string" } },
+    },
+    tasks: ["chat_agent"],
+    document: {
+      schema_version: 3,
+      profiles: {
+        primary: { provider: "openai", model: "one" },
+        backup: { provider: "deepseek", model: "two" },
+      },
+      routes: { chat_agent: "primary" },
+    },
+  });
+  const act = vi.fn();
+  render(<ConfigFile fileId="model_profiles" props={{ ...props, act }} />);
+  const user = userEvent.setup();
+  await user.selectOptions(
+    await screen.findByRole("combobox", { name: "chat_agent Provider" }),
+    "deepseek",
+  );
+  expect(screen.getByRole("combobox", { name: "chat_agent" })).toHaveValue(
+    "backup",
+  );
+  await user.click(screen.getByRole("button", { name: "检查并保存" }));
+  const intent = act.mock.calls[0][0] as Intent;
+  expect(
+    (intent.payload.spec as { document: { routes: Record<string, string> } })
+      .document.routes.chat_agent,
+  ).toBe("backup");
+});
+
 it("does not request file contents without the separate content grant", async () => {
   const fetch = vi.spyOn(globalThis, "fetch");
   render(

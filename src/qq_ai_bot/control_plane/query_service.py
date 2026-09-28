@@ -82,11 +82,17 @@ class ControlQueryService:
     """Authorize then project. Does not invent principals or actors."""
 
     async def read_conversation_execution(
-        self, context: object, conversation_id: ConversationId
+        self, context: object, conversation_id: ConversationId, *, include_content: bool = False
     ) -> ActivityView:
         authorized = _require_context(context)
         _require_capability(authorized, method_capability("read_conversation_execution"))
-        return await self._port.read_conversation_execution(conversation_id)
+        if type(include_content) is not bool:
+            raise TypeError("include_content must be bool")
+        if include_content:
+            _require_capability(authorized, "control.chat.content.read")
+        return await self._port.read_conversation_execution(
+            conversation_id, include_content=include_content
+        )
 
     async def list_event_turns(
         self,
@@ -327,6 +333,11 @@ class ControlQueryService:
         authorized = _require_context(context)
         _require_capability(authorized, method_capability("list_model_usage"))
         return await self._port.list_model_usage(request)
+
+    async def read_model_usage_summary(self, context: object, window: str) -> ActivityView:
+        authorized = _require_context(context)
+        _require_capability(authorized, method_capability("read_model_usage_summary"))
+        return await self._port.read_model_usage_summary(window)
 
     async def list_workspace(self, context: object, request: PageRequest) -> Page[ActivityView]:
         authorized = _require_context(context)

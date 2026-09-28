@@ -30,6 +30,21 @@ const names: Record<string, string> = {
   wire_options: "协议参数覆盖",
   thinking_mode: "旧版思考选项",
 };
+const taskNames: Record<string, string> = {
+  chat_agent: "主对话",
+  memory_extraction: "记忆提取",
+  memory_self_reflection: "自省",
+  memory_consolidation: "记忆整理",
+  memory_dream: "记忆归纳",
+  memory_attribution: "记忆归属",
+  relationship_evaluation: "关系评估",
+  emoji_replacement: "表情替换",
+  automation_text_generation: "自动化文案",
+  automation_agent: "自动化执行",
+  plugin_agent_session: "插件会话",
+  utility_structured: "结构化任务",
+  conversation_compaction: "会话压缩",
+};
 
 function ModelDocument({
   fields,
@@ -75,11 +90,43 @@ function ModelDocument({
     setError("");
   }
   const profile = profiles[selected];
+  const providers = [
+    ...new Set(
+      Object.values(profiles).map((item) => String(item.provider || "")),
+    ),
+  ].filter(Boolean);
   return (
     <>
+      <div className="provider-intro">
+        <strong>1. 管理 Provider 配置档</strong>
+        <span>
+          每档定义接入类型、协议、服务地址、密钥环境变量和模型；密钥原值只在服务器环境中保存。
+        </span>
+      </div>
+      <div className="provider-profile-list" aria-label="Provider 配置档">
+        {Object.entries(profiles).map(([id, item]) => (
+          <button
+            type="button"
+            key={id}
+            className={`provider-profile ${selected === id ? "selected" : ""}`}
+            aria-pressed={selected === id}
+            onClick={() => select(id)}
+          >
+            <strong>{id}</strong>
+            <span>
+              {String(item.provider || "未选 Provider")} ·{" "}
+              {String(item.model || item.model_env || "未选模型")}
+            </span>
+            <small>
+              {Object.values(routes).filter((route) => route === id).length}{" "}
+              个用途
+            </small>
+          </button>
+        ))}
+      </div>
       <div className="settings-actions">
         <label className="form-group">
-          编辑 Profile
+          当前配置档
           <select
             className="form-control"
             value={selected}
@@ -110,7 +157,7 @@ function ModelDocument({
       )}
       {profile && (
         <>
-          <h3>{selected}</h3>
+          <h3>编辑 {selected}</h3>
           <SchemaFields
             values={profile}
             labels={names}
@@ -169,13 +216,44 @@ function ModelDocument({
           )}
         </>
       )}
-      <h3>所有任务的路由</h3>
-      <div className="config-fields">
+      <div className="provider-intro">
+        <strong>2. 按用途选择配置档</strong>
+        <span>
+          每个用途选择一档已定义的 Provider
+          和模型；保存后需重启才能在新请求中生效。
+        </span>
+      </div>
+      <div className="provider-routes">
         {(fields.tasks as string[]).map((task) => (
-          <label className="form-group" key={task}>
-            {task}
+          <label className="provider-route" key={task}>
+            <span>
+              <strong>{taskNames[task] || task}</strong>
+              <small>{task}</small>
+            </span>
             <select
               className="form-control"
+              aria-label={`${task} Provider`}
+              value={String(profiles[routes[task]]?.provider || "")}
+              onChange={(e) => {
+                const next = Object.keys(profiles).find(
+                  (id) => profiles[id].provider === e.target.value,
+                );
+                change({
+                  ...document,
+                  routes: { ...routes, [task]: next || "" },
+                });
+              }}
+            >
+              <option value="">选择 Provider</option>
+              {providers.map((provider) => (
+                <option key={provider} value={provider}>
+                  {provider}
+                </option>
+              ))}
+            </select>
+            <select
+              className="form-control"
+              aria-label={task}
               value={routes[task] || ""}
               onChange={(e) =>
                 change({
@@ -185,10 +263,29 @@ function ModelDocument({
               }
             >
               <option value="">请选择 Profile</option>
-              {Object.keys(profiles).map((id) => (
-                <option key={id}>{id}</option>
-              ))}
+              {Object.keys(profiles)
+                .filter(
+                  (id) =>
+                    !routes[task] ||
+                    profiles[id].provider === profiles[routes[task]]?.provider,
+                )
+                .map((id) => (
+                  <option key={id} value={id}>
+                    {String(
+                      profiles[id].model ||
+                        profiles[id].model_env ||
+                        "模型未选",
+                    )}{" "}
+                    · {id}
+                  </option>
+                ))}
             </select>
+            <span className="small">
+              当前保存值：
+              {routes[task]
+                ? `${routes[task]} · ${String(profiles[routes[task]]?.provider || "档案缺失")} / ${String(profiles[routes[task]]?.model || profiles[routes[task]]?.model_env || "模型未选")}`
+                : "未选择"}
+            </span>
           </label>
         ))}
       </div>

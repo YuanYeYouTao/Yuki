@@ -10,7 +10,7 @@ import os
 import stat
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -630,6 +630,62 @@ class ControlActivityQueryAdapter:
                 total=sql_window.total,
                 number=request.number,
             )
+
+    async def read_model_usage_summary(self, window: str) -> ActivityView:
+        if type(window) is not str:
+            raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
+        duration = {
+            "24h": timedelta(hours=24),
+            "7d": timedelta(days=7),
+            "30d": timedelta(days=30),
+        }.get(window)
+        if duration is None:
+            raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
+        until = datetime.now(UTC)
+        since = until - duration
+        model = ModelInvocationModel
+        measures = (
+            func.count(model.id),
+            func.coalesce(func.sum(model.prompt_tokens), 0),
+            func.coalesce(func.sum(model.completion_tokens), 0),
+            func.coalesce(func.sum(model.total_tokens), 0),
+            func.coalesce(func.sum(model.cached_prompt_tokens), 0),
+            func.count(model.id).filter(model.total_tokens.is_(None)),
+        )
+        period = (model.created_at >= since, model.created_at < until)
+        async with self._reader() as session:
+            totals = (await session.execute(select(*measures).where(*period))).one()
+            groups = (
+                await session.execute(
+                    select(model.provider, model.model, *measures)
+                    .where(*period)
+                    .group_by(model.provider, model.model)
+                    .order_by(func.sum(model.total_tokens).desc())
+                )
+            ).all()
+
+        def usage(values: Any) -> dict[str, int]:
+            return {
+                "calls": int(values[0] or 0),
+                "input_tokens": int(values[1] or 0),
+                "output_tokens": int(values[2] or 0),
+                "total_tokens": int(values[3] or 0),
+                "cached_input_tokens": int(values[4] or 0),
+                "missing_usage_calls": int(values[5] or 0),
+            }
+
+        return ActivityView(
+            window,
+            {
+                "window": window,
+                "since": since.isoformat(),
+                "until": until.isoformat(),
+                **usage(totals),
+                "models": [
+                    {"provider": row[0], "model": row[1], **usage(row[2:])} for row in groups
+                ],
+            },
+        )
 
     def _store(self) -> WorkspaceStore:
         if self._workspace is None:
