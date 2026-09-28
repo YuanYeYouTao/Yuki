@@ -23,7 +23,10 @@ def _copy(value: Any, redactions: list[str], path: str = "$") -> Any:
         return value.value
     if isinstance(value, dict):
         result: dict[str, Any] = {}
-        block_type = value.get("type")
+        # JSON Schema allows an array in `type`; only provider media blocks
+        # use string type tags for the redaction rules below.
+        raw_type = value.get("type")
+        block_type = raw_type if isinstance(raw_type, str) else None
         for key, item in value.items():
             child = f"{path}.{key}"
             opaque = key in OPAQUE_KEYS or (

@@ -89,6 +89,19 @@ def test_media_and_opaque_state_are_copied_without_mutating_recovery():
         decode_payload(encoded.compressed, size=encoded.size - 1, digest=encoded.sha256)
 
 
+def test_trace_payload_preserves_json_schema_union_types():
+    value = {
+        "tools": [{"parameters": {"properties": {"target": {"type": ["string", "null"]}}}}],
+        "result": {"type": {"variant": "optional"}, "content": "kept"},
+    }
+    encoded = encode_payload(value, 4096)
+    assert encoded.status == "recorded"
+    assert (
+        decode_payload(encoded.compressed, size=encoded.size, digest=encoded.sha256)["data"]
+        == value
+    )
+
+
 @pytest.mark.parametrize(
     "kind",
     [OpenAICompatibleProvider, OpenAIResponsesProvider, AnthropicMessagesProvider, GeminiProvider],
