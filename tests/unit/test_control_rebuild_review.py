@@ -43,7 +43,6 @@ async def test_proposal_pages_content_grants_cas_and_original_commit(database):
         ctx, PageRequest(limit=2), run_id=run.public_id, include_content=True
     )
     assert len(rows.items) == 2 and rows.next_cursor is not None
-    assert rows.items[0].fields["content"] == "我住在杭州0"
     last = await queries.list_memory_rebuild_proposals(
         ctx,
         PageRequest(limit=2, cursor=rows.next_cursor),
@@ -51,6 +50,11 @@ async def test_proposal_pages_content_grants_cas_and_original_commit(database):
         include_content=True,
     )
     assert len(last.items) == 1 and last.next_cursor is None
+    assert {row.fields["content"] for row in (*rows.items, *last.items)} == {
+        "我住在杭州0",
+        "我住在杭州1",
+        "我住在杭州2",
+    }
     with pytest.raises(ControlQueryError):
         await queries.list_memory_rebuild_proposals(
             context("control.memory.metadata.read"),
