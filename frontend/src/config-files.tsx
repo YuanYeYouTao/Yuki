@@ -109,8 +109,12 @@ const providerPresets = [
     url: "",
   },
 ] as const;
-const connectionLabel = (profile: Row) =>
-  `${String(profile.provider || "未选供应商")} · ${String(profile.model || "未选模型")}`;
+const connectionLabel = (profile: Row) => {
+  const provider = String(profile.provider || "");
+  const name =
+    providerPresets.find((item) => item.id === provider)?.label || provider;
+  return `${name || "未选供应商"} · ${String(profile.model || "未选模型")}`;
+};
 const protocolLabels: Record<string, string> = {
   chat_completions: "Chat Completions",
   responses: "Responses",
@@ -125,6 +129,21 @@ const protocolsFor = (provider: unknown) =>
       : ["deepseek", "openai", "openai_compatible"].includes(String(provider))
         ? ["chat_completions", "responses"]
         : ["chat_completions"];
+const presetValues = (provider: string): Row => {
+  const preset = providerPresets.find((item) => item.id === provider);
+  const gemini = provider === "gemini";
+  return {
+    provider,
+    protocol: preset?.protocol || "chat_completions",
+    base_url: preset?.url || "",
+    model: gemini ? "gemini-3.8-flash" : "",
+    api_key_env: "",
+    reasoning_effort: gemini ? "medium" : "low",
+    capabilities: gemini
+      ? ["reasoning", "tools", "structured_output", "image_input", "long_context"]
+      : ["reasoning", "tools", "structured_output"],
+  };
+};
 
 function ModelDocument({
   fields,
@@ -145,17 +164,27 @@ function ModelDocument({
     string,
     Row
   >;
-  const labelOf = (id: string) =>
-    connectionLabel({
+  const labelOf = (id: string) => {
+    const label = connectionLabel({
       ...(resolvedProfiles[id] || {}),
       ...(profiles[id] || {}),
     });
+    const uses = Object.entries(routes)
+      .filter(([, connection]) => connection === id)
+      .map(([task]) => taskNames[task] || task);
+    const purpose = uses.length
+      ? `${uses[0]}${uses.length > 1 ? `等 ${uses.length} 项` : ""}`
+      : "未分配用途";
+    return `${label}（${purpose}）`;
+  };
   const [selected, select] = useState(Object.keys(profiles)[0] || "");
+  const [newProvider, setNewProvider] = useState("");
   const schema = fields.profile_schema as Row;
   function update(profile: Row) {
     change({ ...document, profiles: { ...profiles, [selected]: profile } });
   }
   function add() {
+    if (!newProvider) return;
     const id = `connection_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
     change({
       ...document,
@@ -168,19 +197,16 @@ function ModelDocument({
       profiles: {
         ...profiles,
         [id]: {
-          provider: "deepseek",
-          protocol: "responses",
-          base_url: "https://api.deepseek.com",
-          model: "",
           timeout_seconds: 120,
           max_retries: 2,
           default_temperature: 0.7,
           default_max_output_tokens: 8192,
-          capabilities: ["reasoning", "tools", "structured_output"],
+          ...presetValues(newProvider),
         },
       },
     });
     select(id);
+    setNewProvider("");
   }
   const profile = profiles[selected];
   const resolved = resolvedProfiles[selected];
@@ -223,6 +249,21 @@ function ModelDocument({
       </div>
       <div className="settings-actions">
         <label className="form-group">
+          新连接供应商
+          <select
+            className="form-control"
+            value={newProvider}
+            onChange={(event) => setNewProvider(event.target.value)}
+          >
+            <option value="">先选择供应商</option>
+            {providerPresets.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="form-group">
           当前模型连接
           <select
             className="form-control"
@@ -236,7 +277,12 @@ function ModelDocument({
             ))}
           </select>
         </label>
-        <button type="button" className="btn-secondary" onClick={add}>
+        <button
+          type="button"
+          className="btn-secondary"
+          disabled={!newProvider}
+          onClick={add}
+        >
           添加模型连接
         </button>
       </div>
@@ -250,29 +296,9 @@ function ModelDocument({
                 className="form-control"
                 value={String(profile.provider || "")}
                 onChange={(event) => {
-                  const preset = providerPresets.find(
-                    (item) => item.id === event.target.value,
-                  );
                   const next: Row = {
                     ...profile,
-                    provider: event.target.value,
-                    protocol: preset?.protocol || "chat_completions",
-                    base_url: preset?.url || "",
-                    model:
-                      event.target.value === "gemini" ? "gemini-3.8-flash" : "",
-                    api_key_env: "",
-                    reasoning_effort:
-                      event.target.value === "gemini" ? "medium" : "low",
-                    capabilities:
-                      event.target.value === "gemini"
-                        ? [
-                            "reasoning",
-                            "tools",
-                            "structured_output",
-                            "image_input",
-                            "long_context",
-                          ]
-                        : ["reasoning", "tools", "structured_output"],
+                    ...presetValues(event.target.value),
                   };
                   delete next.base_url_env;
                   delete next.model_env;
@@ -451,6 +477,29 @@ function ModelDocument({
         <strong>2. 为任务选择模型</strong>
         <span>每个用途直接选择上面配置的模型；保存后重启才会用于新请求。</span>
       </div>
+      {profile && (
+        <div className="settings-actions">
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() =>
+              change({
+                ...document,
+                routes: Object.fromEntries(
+                  (fields.tasks as string[]).map((task) => [task, selected]),
+                ),
+              })
+            }
+          >
+            全部用途使用当前模型连接
+          </button>
+          <span className="small">
+            将下方全部 {(fields.tasks as string[]).length} 个用途指向{" "}
+            {connectionLabel({ ...(resolved || {}), ...profile })}
+            ；保存后重启生效。
+          </span>
+        </div>
+      )}
       <div className="provider-routes">
         {(fields.tasks as string[]).map((task) => (
           <label className="provider-route" key={task}>
