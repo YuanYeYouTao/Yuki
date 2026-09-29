@@ -59,6 +59,8 @@ def _confirmed_sequence(parent: SocialOperationModel, rows: list[SocialOperation
         is not None
         and child.action == "send_message"
         and child.status == "succeeded"
+        and child.source_turn_id == parent.source_turn_id
+        and child.source_conversation_id == parent.source_conversation_id
         and child.target_kind == parent.target_kind
         and child.target_id == parent.target_id
         for index in range(count)

@@ -283,6 +283,19 @@ async def test_missing_sequence_aggregate_rejects_wrong_target_child(database, t
 
 
 @pytest.mark.asyncio
+async def test_missing_sequence_aggregate_rejects_other_source_child(database, tmp_path):
+    import hashlib
+
+    case = await setup_case(database, tmp_path)
+    call = "other-source-sequence"
+    await social(case, call, action="send_message_sequence", status="prepared", planned_parts=2)
+    prefix = hashlib.sha256(call.encode()).hexdigest()[:24]
+    await social(case, f"seq:{prefix}:0")
+    await social(case, f"seq:{prefix}:1", source=f"{case.source}:other-work")
+    assert (await inspect(case)).state == "uncertain"
+
+
+@pytest.mark.asyncio
 async def test_interrupted_work_effect_does_not_hide_confirmed_sequence(database, tmp_path):
     import hashlib
 
