@@ -62,10 +62,10 @@ last_confirmed_at 不改变文档正文，不会重复向量化。Embedding 故�
 
 ## 配置
 
-默认保持关闭：
+新部署默认请求启用；旧部署显式设置 `false` 时继续关闭：
 
 ```dotenv
-MEMORY_EMBEDDING_ENABLED=false
+MEMORY_EMBEDDING_ENABLED=true
 MEMORY_EMBEDDING_PROVIDER=qwen_dashscope
 MEMORY_EMBEDDING_BASE_URL=
 MEMORY_EMBEDDING_API_KEY=
@@ -97,8 +97,10 @@ MEMORY_HYBRID_SEMANTIC_WEIGHT=1.0
 MEMORY_HYBRID_RRF_K=60
 ```
 
-只有 `MEMORY_EMBEDDING_ENABLED=true` 时才要求 base URL 和 API Key。当前实现只接受
-`qwen_dashscope`、dense 与 1024 维，避免 profile 声明和真实向量不一致。
+启用但缺少 base URL 或 API Key 时，Bot 仍可启动，向量状态为 `not_configured`，
+查询继续使用 FTS，结果标记为非穷尽。只有实际配置了两项凭据才创建 Embedding Provider。
+管理页可保存全局开关，重启 Bot 后生效；旧部署显式关闭的配置优先于新默认值。
+当前实现只接受 `qwen_dashscope`、dense 与 1024 维，避免 profile 声明和真实向量不一致。
 查询缓存只存在于 Bot 进程内，重启即清空；TTL 和容量是启动配置，不影响数据库 schema。
 
 ## 运维命令
