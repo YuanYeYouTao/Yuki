@@ -28,6 +28,7 @@ from qq_ai_bot.llm.base import (
     LLMUnavailableError,
 )
 from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
+from qq_ai_bot.llm.openai_responses import OpenAIResponsesProvider
 from qq_ai_bot.model_runtime.executor import TaskModelExecutor
 from qq_ai_bot.model_runtime.models import ModelCapability, ModelProfile, ModelRoute, ModelTask
 from qq_ai_bot.model_runtime.pool import ModelClientPool
@@ -55,6 +56,36 @@ def _request(**overrides: object) -> ChatRequest:
     }
     values.update(overrides)
     return ChatRequest(**values)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("choice", "wire_choice"),
+    [
+        ("auto", "auto"),
+        ("none", "none"),
+        ("required", "required"),
+        ("inspect", {"type": "function", "name": "inspect"}),
+    ],
+)
+async def test_openai_responses_tool_choice_does_not_change_deepseek(
+    choice: str, wire_choice: str | dict[str, str]
+) -> None:
+    request = _request(
+        tools=(ChatTool("inspect", "Read evidence", {"type": "object"}),),
+        tool_choice=choice,
+    )
+    async with httpx.AsyncClient() as client:
+        options = dict(
+            base_url="https://wire.invalid/v1",
+            api_key="synthetic-key",
+            timeout_seconds=1,
+            max_retries=0,
+            client=client,
+        )
+        assert OpenAIResponsesProvider(**options)._build_payload(request)["tool_choice"] == (
+            wire_choice
+        )
+        assert "tool_choice" not in DeepSeekResponsesProvider(**options)._build_payload(request)
 
 
 @pytest.mark.asyncio
