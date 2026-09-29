@@ -3512,6 +3512,24 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     assert global_search["ok"], global_search
     assert global_search["data"]["result_scope"] == "authorized_maximum"
     assert global_search["data"]["partial_reason"] == "semantic_not_configured"
+    explicit_missing = json.loads(
+        await tools.execute(
+            "search_memory",
+            json.dumps(
+                {
+                    "query": "zzzznonexistentmemoryzzzz",
+                    "target": {"scope": "person", "subject_ref": "current_speaker"},
+                }
+            ),
+            runtime,
+        )
+    )
+    assert explicit_missing["ok"]
+    assert explicit_missing["data"]["result_scope"] == "explicit_targets"
+    assert explicit_missing["data"]["returned_count"] == 0
+    assert explicit_missing["data"]["truncated"] is False
+    assert explicit_missing["data"]["exhaustive"] is False
+    assert explicit_missing["data"]["partial_reason"] == "semantic_not_configured"
     assert projected_fact.id in {row["fact_id"] for row in global_search["data"]["memories"]}
     top_one = json.loads(
         await tools.execute(

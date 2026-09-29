@@ -177,11 +177,13 @@ def apply_total_hit_limit(result: MemoryRetrievalResult, total_limit: int) -> Me
         for block in result.blocks
     )
     final_hits = tuple(selected)
+    output_truncated = len(final_hits) < len(result.hits)
     return result.model_copy(
         update={
             "blocks": blocks,
             "hits": final_hits,
             "selected_count": len(final_hits),
+            "truncated": result.truncated or output_truncated,
         }
     )
 
