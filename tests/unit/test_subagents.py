@@ -5,11 +5,11 @@ import json
 from itertools import pairwise
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import event, insert, select, update
 from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-from qq_ai_bot.runtime.subagent_schema import budgets, children
+from qq_ai_bot.runtime.subagent_schema import budgets, children, media, media_refs
 from qq_ai_bot.runtime.work_budget import WorkBudgetExceeded
 from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import work
@@ -500,4 +500,92 @@ async def test_finish_repair_root_resume_and_seven_day_archive(database, tmp_pat
     assert (await workers.related(parent["id"], identity))["archived_at"] is not None
     with pytest.raises(ValueError, match="archived"):
         await workers.reopen_parent(lease, identity, models=1)
+    await repo.release(lease)
+
+
+@pytest.mark.asyncio
+async def test_idle_worker_maintenance_never_reserves_writer(database, tmp_path):
+    _repo, workers, lease, _parent, _identity = await stack(database, tmp_path)
+    writes = []
+
+    def record(_connection, _cursor, statement, _parameters, _context, _many):
+        if statement.strip().upper() == "BEGIN IMMEDIATE":
+            writes.append(statement)
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", record)
+    try:
+        await workers.maintain()
+    finally:
+        event.remove(database.engine.sync_engine, "before_cursor_execute", record)
+        await workers.repository.release(lease)
+    assert writes == []
+
+
+@pytest.mark.asyncio
+async def test_worker_archive_rechecks_lease_after_read_candidate(database, tmp_path, monkeypatch):
+    import time
+    from contextlib import asynccontextmanager
+
+    repo, workers, lease, parent, identity = await stack(database, tmp_path)
+    async with database.immediate_session() as session:
+        await session.execute(
+            update(work)
+            .where(work.c.id == parent["id"])
+            .values(state="completed", updated=time.time() - 8 * 86400)
+        )
+    original_immediate_session = database.immediate_session
+
+    @asynccontextmanager
+    async def renew_before_archive():
+        async with original_immediate_session() as session:
+            await session.execute(
+                update(children)
+                .where(children.c.work_id == identity)
+                .values(lease_until=time.time() + 60)
+            )
+        async with original_immediate_session() as session:
+            yield session
+
+    monkeypatch.setattr(database, "immediate_session", renew_before_archive)
+    await workers.maintain()
+    assert (await workers.related(parent["id"], identity))["archived_at"] is None
+    await repo.release(lease)
+
+
+@pytest.mark.asyncio
+async def test_worker_archive_keeps_media_referenced_by_another_child(database, tmp_path):
+    import time
+
+    repo, workers, lease, parent, identity = await stack(database, tmp_path)
+    other = await workers.start(
+        lease, parent["id"], "other", {"goal": "continue", "output_kind": "answer"}
+    )
+    async with database.immediate_session() as session:
+        await session.execute(
+            update(work)
+            .where(work.c.id == parent["id"])
+            .values(state="completed", updated=time.time() - 8 * 86400)
+        )
+        await session.execute(
+            update(children).where(children.c.work_id == other).values(lease_until=time.time() + 60)
+        )
+        await session.execute(insert(media).values(sha256="a" * 64, content=b"shared"))
+        await session.execute(
+            insert(media_refs),
+            [
+                {"work_id": identity, "sha256": "a" * 64},
+                {"work_id": other, "sha256": "a" * 64},
+            ],
+        )
+    await workers.maintain()
+    async with database.sessions() as session:
+        assert (await session.scalar(select(media.c.content))) == b"shared"
+        assert (await session.scalars(select(media_refs.c.work_id))).all() == [other]
+    async with database.immediate_session() as session:
+        await session.execute(
+            update(children).where(children.c.work_id == other).values(lease_until=0)
+        )
+    await workers.maintain()
+    async with database.sessions() as session:
+        assert (await session.scalars(select(media.c.sha256))).all() == []
     await repo.release(lease)
