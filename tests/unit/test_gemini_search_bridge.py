@@ -254,6 +254,53 @@ async def test_bridge_fallback_is_explicit_and_not_cached(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_bridge_retries_partial_extraction_instead_of_caching_failure(tmp_path):
+    calls = 0
+
+    def respond(_request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=grounded_response())
+
+    client = httpx.AsyncClient(
+        base_url="https://example.com/v1beta/", transport=httpx.MockTransport(respond)
+    )
+    gemini = GeminiProvider(
+        base_url="https://example.com/v1beta/",
+        api_key="secret",
+        timeout_seconds=20,
+        max_retries=0,
+        client=client,
+    )
+    fallback = FakeWebSearchProvider(response=FALLBACK)
+    bridge = GeminiSearchBridge(
+        profile=profile(),
+        credential="secret",
+        provider=gemini,
+        state=BridgeState(tmp_path / "cache.db"),
+        fallback=fallback,
+    )
+    request = WebSearchRequest("query", extract_max_results=1)
+    try:
+        first = await bridge.search(request)
+        assert first.partial_failure
+        fallback.extracted[URL] = WebSearchSource(
+            "page", "Page", URL, "example.com", "snippet", "body"
+        )
+        recovered = await bridge.search(request)
+        cached = await bridge.search(request)
+    finally:
+        await bridge.close()
+        await client.aclose()
+
+    assert calls == 2
+    assert len(fallback.extract_requests) == 2
+    assert not recovered.partial_failure
+    assert recovered.sources[0].relevant_content == "body"
+    assert cached == recovered
+
+
+@pytest.mark.asyncio
 async def test_bridge_hot_switch_follows_chat_connection_without_native_main_tool(tmp_path):
     settings = Settings(
         _env_file=None,

@@ -92,7 +92,10 @@ class GeminiSearchBridge:
                 logger.info("gemini_search_fallback category=%s", exc.code)
                 # A fallback receipt is never cached under the primary search key.
                 return await self.fallback.search(request)
-            await asyncio.to_thread(self.state.access, key, result)
+            # A failed extraction or incomplete native response may recover on
+            # the next request; do not pin that partial receipt for ten minutes.
+            if not result.partial_failure:
+                await asyncio.to_thread(self.state.access, key, result)
             return result
 
     async def _search(self, request: WebSearchRequest) -> WebSearchResponse:
