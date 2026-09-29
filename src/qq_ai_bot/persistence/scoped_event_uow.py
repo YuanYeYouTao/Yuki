@@ -462,14 +462,9 @@ class ScopedEventLedgerUnitOfWork:
                 external_event_key=external_event_key,
                 external_target_id=external_target_id,
             ), None
-        existing = await session.scalar(
-            select(ChatEventModel).where(
-                ChatEventModel.bot_user_id == scope.bot_user_id,
-                ChatEventModel.platform_message_id == platform_message_id,
-                ChatEventModel.canonical_event_id.is_(None),
-            )
-        )
-        return existing, None
+        # Canonical-only schemas require a non-null event ID for every ledger
+        # row. A receipt miss cannot be rescued by a legacy NULL row.
+        return None, None
 
     async def _find_existing_plugin_external(
         self,
