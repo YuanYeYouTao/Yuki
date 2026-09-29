@@ -391,6 +391,9 @@ class ChatResponse:
     completion_tokens: int | None = None
     total_tokens: int | None = None
     cached_prompt_tokens: int | None = None
+    cache_creation_input_tokens: int | None = None
+    cache_creation_5m_input_tokens: int | None = None
+    cache_creation_1h_input_tokens: int | None = None
     status: ModelResponseStatus = ModelResponseStatus.COMPLETED
     native_tool_events: tuple[NativeToolEvent, ...] = ()
     citations: tuple[ResponseCitation, ...] = ()

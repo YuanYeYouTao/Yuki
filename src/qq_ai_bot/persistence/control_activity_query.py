@@ -610,6 +610,9 @@ class ControlActivityQueryAdapter:
                         "prompt_tokens": row.prompt_tokens,
                         "completion_tokens": row.completion_tokens,
                         "cached_prompt_tokens": row.cached_prompt_tokens,
+                        "cache_creation_input_tokens": row.cache_creation_input_tokens,
+                        "cache_creation_5m_input_tokens": row.cache_creation_5m_input_tokens,
+                        "cache_creation_1h_input_tokens": row.cache_creation_1h_input_tokens,
                         "total_tokens": row.total_tokens,
                         "physical_request_count": row.physical_request_count,
                         "unknown_usage_request_count": row.unknown_usage_request_count,
@@ -670,6 +673,58 @@ class ControlActivityQueryAdapter:
             func.coalesce(func.sum(model.unknown_usage_request_count), 0),
             func.count(model.id).filter(model.native_search_requested.is_(True)),
             func.count(model.id).filter(model.native_search_requested.is_(None)),
+            func.coalesce(
+                func.sum(model.cache_creation_input_tokens).filter(
+                    func.lower(model.provider) == "anthropic"
+                ),
+                0,
+            ),
+            func.count(model.id).filter(
+                func.lower(model.provider) == "anthropic",
+                or_(
+                    model.prompt_tokens.is_(None),
+                    model.cached_prompt_tokens.is_(None),
+                    model.cache_creation_input_tokens.is_(None),
+                ),
+            ),
+            func.coalesce(
+                func.sum(model.cache_creation_input_tokens).filter(
+                    func.lower(model.provider) == "anthropic",
+                    model.prompt_tokens.is_not(None),
+                    model.cached_prompt_tokens.is_not(None),
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(model.cache_creation_5m_input_tokens).filter(
+                    func.lower(model.provider) == "anthropic"
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(model.cache_creation_1h_input_tokens).filter(
+                    func.lower(model.provider) == "anthropic"
+                ),
+                0,
+            ),
+            func.count(model.id).filter(
+                func.lower(model.provider) == "anthropic",
+                model.cache_creation_input_tokens > 0,
+                or_(
+                    model.cache_creation_5m_input_tokens.is_(None),
+                    model.cache_creation_1h_input_tokens.is_(None),
+                    model.cache_creation_input_tokens
+                    != model.cache_creation_5m_input_tokens + model.cache_creation_1h_input_tokens,
+                ),
+            ),
+            func.count(model.id).filter(
+                func.lower(model.provider) == "anthropic",
+                model.cache_creation_5m_input_tokens.is_not(None),
+            ),
+            func.count(model.id).filter(
+                func.lower(model.provider) == "anthropic",
+                model.cache_creation_1h_input_tokens.is_not(None),
+            ),
         )
         period = (model.created_at >= since, model.created_at < until)
         bucket = func.strftime(
@@ -745,6 +800,15 @@ class ControlActivityQueryAdapter:
                 "cache_reported_cached_tokens": reported_cached,
                 "cache_reported_uncached_tokens": max(0, reported_input - reported_cached),
                 "cache_hit_rate": reported_cached / reported_input if reported_input else None,
+                "cache_write_input_tokens": int(values[14] or 0),
+                "cache_write_unreported_calls": int(values[15] or 0),
+                # This subset can be split from the chart's reported non-read input.
+                "cache_write_classified_input_tokens": int(values[16] or 0),
+                "cache_write_5m_input_tokens": int(values[17] or 0),
+                "cache_write_1h_input_tokens": int(values[18] or 0),
+                "cache_write_ttl_unreported_calls": int(values[19] or 0),
+                "cache_write_5m_reported_calls": int(values[20] or 0),
+                "cache_write_1h_reported_calls": int(values[21] or 0),
             }
 
         return ActivityView(

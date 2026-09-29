@@ -44,6 +44,9 @@ class ModelInvocationModel(Base):
     completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cached_prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cache_creation_input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cache_creation_5m_input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cache_creation_1h_input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # NULL marks historical/uninstrumented rows; zero means no HTTP dispatch.
     physical_request_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     unknown_usage_request_count: Mapped[int | None] = mapped_column(Integer, nullable=True)

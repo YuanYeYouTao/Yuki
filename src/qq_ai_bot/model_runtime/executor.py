@@ -636,6 +636,13 @@ class TaskModelExecutor:
                     completion_tokens=reported_tokens("completion_tokens"),
                     total_tokens=reported_tokens("total_tokens"),
                     cached_prompt_tokens=reported_tokens("cached_prompt_tokens"),
+                    cache_creation_input_tokens=reported_tokens("cache_creation_input_tokens"),
+                    cache_creation_5m_input_tokens=reported_tokens(
+                        "cache_creation_5m_input_tokens"
+                    ),
+                    cache_creation_1h_input_tokens=reported_tokens(
+                        "cache_creation_1h_input_tokens"
+                    ),
                     latency_seconds=time.perf_counter() - started,
                     error_category=type(exc).__name__,
                     physical_request_count=attempts.requests,
@@ -679,6 +686,9 @@ class TaskModelExecutor:
                 completion_tokens=response.completion_tokens,
                 total_tokens=response.total_tokens,
                 cached_prompt_tokens=response.cached_prompt_tokens,
+                cache_creation_input_tokens=response.cache_creation_input_tokens,
+                cache_creation_5m_input_tokens=response.cache_creation_5m_input_tokens,
+                cache_creation_1h_input_tokens=response.cache_creation_1h_input_tokens,
                 latency_seconds=response.latency_seconds,
                 error_category=None,
                 physical_request_count=attempts.requests,

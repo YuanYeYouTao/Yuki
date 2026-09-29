@@ -87,6 +87,9 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
                     "completion_tokens": response.completion_tokens,
                     "total_tokens": response.total_tokens,
                     "cached_prompt_tokens": response.cached_prompt_tokens,
+                    "cache_creation_input_tokens": response.cache_creation_input_tokens,
+                    "cache_creation_5m_input_tokens": response.cache_creation_5m_input_tokens,
+                    "cache_creation_1h_input_tokens": response.cache_creation_1h_input_tokens,
                 }
                 usage = {
                     key: self._sum_known_usage(previous[key], later.get(key)) for key in previous
@@ -101,6 +104,9 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
                     completion_tokens=usage["completion_tokens"],
                     total_tokens=usage["total_tokens"],
                     cached_prompt_tokens=usage["cached_prompt_tokens"],
+                    cache_creation_input_tokens=usage["cache_creation_input_tokens"],
+                    cache_creation_5m_input_tokens=usage["cache_creation_5m_input_tokens"],
+                    cache_creation_1h_input_tokens=usage["cache_creation_1h_input_tokens"],
                 )
             response = replace(
                 followup,
@@ -113,6 +119,18 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
                 total_tokens=self._add_usage(response.total_tokens, followup.total_tokens),
                 cached_prompt_tokens=self._add_usage(
                     response.cached_prompt_tokens, followup.cached_prompt_tokens
+                ),
+                cache_creation_input_tokens=self._add_usage(
+                    response.cache_creation_input_tokens,
+                    followup.cache_creation_input_tokens,
+                ),
+                cache_creation_5m_input_tokens=self._add_usage(
+                    response.cache_creation_5m_input_tokens,
+                    followup.cache_creation_5m_input_tokens,
+                ),
+                cache_creation_1h_input_tokens=self._add_usage(
+                    response.cache_creation_1h_input_tokens,
+                    followup.cache_creation_1h_input_tokens,
                 ),
                 native_tool_events=response.native_tool_events + followup.native_tool_events,
                 citations=response.citations + followup.citations,
@@ -141,12 +159,22 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
         return sum(values) if values else None
 
     @staticmethod
+    def _cache_creation_breakdown(usage: dict[str, Any]) -> tuple[int | None, int | None]:
+        breakdown = usage.get("cache_creation")
+        breakdown = breakdown if isinstance(breakdown, dict) else {}
+        return (
+            integer(breakdown.get("ephemeral_5m_input_tokens")),
+            integer(breakdown.get("ephemeral_1h_input_tokens")),
+        )
+
+    @staticmethod
     def _usage_diagnostics(payload: dict[str, Any]) -> dict[str, object]:
         usage = payload.get("usage")
         usage = usage if isinstance(usage, dict) else {}
         incoming = integer(usage.get("input_tokens"))
         cached = integer(usage.get("cache_read_input_tokens"))
         creation = integer(usage.get("cache_creation_input_tokens"))
+        creation_5m, creation_1h = AnthropicMessagesProvider._cache_creation_breakdown(usage)
         output = integer(usage.get("output_tokens"))
         total_input = incoming + (cached or 0) + (creation or 0) if incoming is not None else None
         return {
@@ -157,6 +185,9 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
                 if total_input is not None and output is not None
                 else None,
                 "cached_prompt_tokens": cached,
+                "cache_creation_input_tokens": creation,
+                "cache_creation_5m_input_tokens": creation_5m,
+                "cache_creation_1h_input_tokens": creation_1h,
             }
         }
 
@@ -459,6 +490,14 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
         incoming = integer(usage.get("input_tokens"))
         cached = integer(usage.get("cache_read_input_tokens"))
         creation = integer(usage.get("cache_creation_input_tokens"))
+        creation_5m, creation_1h = self._cache_creation_breakdown(usage)
+        if (
+            creation is not None
+            and creation_5m is not None
+            and creation_1h is not None
+            and creation != creation_5m + creation_1h
+        ):
+            logger.warning("claude_cache_creation_breakdown_mismatch")
         output = integer(usage.get("output_tokens"))
         total_input = incoming + (cached or 0) + (creation or 0) if incoming is not None else None
         return ChatResponse(
@@ -470,6 +509,9 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
             prompt_tokens=total_input,
             completion_tokens=output,
             cached_prompt_tokens=cached,
+            cache_creation_input_tokens=creation,
+            cache_creation_5m_input_tokens=creation_5m,
+            cache_creation_1h_input_tokens=creation_1h,
             native_tool_events=tuple(native_events),
             citations=tuple(citations),
             total_tokens=total_input + output

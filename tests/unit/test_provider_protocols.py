@@ -144,6 +144,10 @@ async def test_signed_tool_result_and_redirect_survive_journal(kind):
                     "input_tokens": 10,
                     "cache_read_input_tokens": 3,
                     "cache_creation_input_tokens": 2,
+                    "cache_creation": {
+                        "ephemeral_5m_input_tokens": 2,
+                        "ephemeral_1h_input_tokens": 0,
+                    },
                     "output_tokens": 4,
                 },
             }
@@ -245,6 +249,10 @@ async def test_signed_tool_result_and_redirect_survive_journal(kind):
         assert wires[1]["tools"] == wires[0]["tools"]
         if kind is AnthropicMessagesProvider:
             assert answer.prompt_tokens == 15 and answer.total_tokens == 19
+            assert answer.cached_prompt_tokens == 3
+            assert answer.cache_creation_input_tokens == 2
+            assert answer.cache_creation_5m_input_tokens == 2
+            assert answer.cache_creation_1h_input_tokens == 0
         elif kind is GeminiProvider:
             assert answer.completion_tokens == 6 and answer.reasoning_tokens == 2
 
@@ -978,6 +986,69 @@ async def test_claude_conversation_cache_moves_after_tool_receipt_without_touchi
 
 
 @pytest.mark.parametrize(
+    ("usage_extra", "expected"),
+    [
+        ({}, None),
+        (
+            {
+                "cache_creation_input_tokens": 0,
+                "cache_creation": {
+                    "ephemeral_5m_input_tokens": 0,
+                    "ephemeral_1h_input_tokens": 0,
+                },
+            },
+            0,
+        ),
+    ],
+)
+async def test_claude_cache_creation_usage_keeps_missing_distinct_from_zero(usage_extra, expected):
+    async with httpx.AsyncClient() as client:
+        adapter = provider(AnthropicMessagesProvider, client)
+        body = {
+            "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": "done"}],
+            "usage": {
+                "input_tokens": 10,
+                "cache_read_input_tokens": 0,
+                "output_tokens": 2,
+                **usage_extra,
+            },
+        }
+        answer = adapter._parse(httpx.Response(200, json=body), request())
+        assert answer.cache_creation_input_tokens is expected
+        assert adapter._usage_diagnostics(body)["usage"]["cache_creation_input_tokens"] is expected
+        assert answer.cache_creation_5m_input_tokens is expected
+        assert answer.cache_creation_1h_input_tokens is expected
+        assert (
+            adapter._usage_diagnostics(body)["usage"]["cache_creation_5m_input_tokens"] is expected
+        )
+
+
+async def test_claude_cache_creation_mismatch_is_reported_without_losing_usage(caplog):
+    async with httpx.AsyncClient() as client:
+        adapter = provider(AnthropicMessagesProvider, client)
+        body = {
+            "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": "done"}],
+            "usage": {
+                "input_tokens": 10,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 5,
+                "cache_creation": {
+                    "ephemeral_5m_input_tokens": 2,
+                    "ephemeral_1h_input_tokens": 1,
+                },
+                "output_tokens": 2,
+            },
+        }
+        answer = adapter._parse(httpx.Response(200, json=body), request())
+        assert answer.cache_creation_input_tokens == 5
+        assert answer.cache_creation_5m_input_tokens == 2
+        assert answer.cache_creation_1h_input_tokens == 1
+        assert "claude_cache_creation_breakdown_mismatch" in caplog.text
+
+
+@pytest.mark.parametrize(
     "protocol,mode,expected",
     [
         (ModelProtocol.GEMINI, WebMode.NATIVE, True),
@@ -1114,6 +1185,10 @@ async def test_claude_native_search_pause_preserves_encrypted_result_and_aggrega
                         "input_tokens": 10,
                         "cache_read_input_tokens": 3,
                         "cache_creation_input_tokens": 2,
+                        "cache_creation": {
+                            "ephemeral_5m_input_tokens": 2,
+                            "ephemeral_1h_input_tokens": 0,
+                        },
                         "output_tokens": 1,
                     },
                 },
@@ -1153,6 +1228,10 @@ async def test_claude_native_search_pause_preserves_encrypted_result_and_aggrega
                     "input_tokens": 2,
                     "cache_read_input_tokens": 5,
                     "cache_creation_input_tokens": 0,
+                    "cache_creation": {
+                        "ephemeral_5m_input_tokens": 0,
+                        "ephemeral_1h_input_tokens": 0,
+                    },
                     "output_tokens": 4,
                 },
             },
@@ -1189,6 +1268,9 @@ async def test_claude_native_search_pause_preserves_encrypted_result_and_aggrega
         assert answer.content == "Launched today."
         assert answer.prompt_tokens == 22
         assert answer.cached_prompt_tokens == 8
+        assert answer.cache_creation_input_tokens == 2
+        assert answer.cache_creation_5m_input_tokens == 2
+        assert answer.cache_creation_1h_input_tokens == 0
         assert answer.completion_tokens == 5
         assert answer.total_tokens == 27
         assert answer.native_tool_events[0].call_id == "srvtoolu_1"
@@ -1278,6 +1360,10 @@ async def test_rejected_provider_response_keeps_only_numeric_usage_diagnostics()
                             "input_tokens": 7,
                             "cache_read_input_tokens": 3,
                             "cache_creation_input_tokens": 1,
+                            "cache_creation": {
+                                "ephemeral_5m_input_tokens": 0,
+                                "ephemeral_1h_input_tokens": 1,
+                            },
                             "output_tokens": 2,
                         },
                     },
@@ -1290,6 +1376,9 @@ async def test_rejected_provider_response_keeps_only_numeric_usage_diagnostics()
                 "completion_tokens": 2,
                 "total_tokens": 13,
                 "cached_prompt_tokens": 3,
+                "cache_creation_input_tokens": 1,
+                "cache_creation_5m_input_tokens": 0,
+                "cache_creation_1h_input_tokens": 1,
             }
         }
 
