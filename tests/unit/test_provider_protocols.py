@@ -220,7 +220,25 @@ async def test_signed_tool_result_and_redirect_survive_journal(kind):
             )
         )
         sequence_key = "contents" if kind is GeminiProvider else "messages"
-        assert wires[1][sequence_key][: len(wires[0][sequence_key])] == wires[0][sequence_key]
+        old_prefix = wires[0][sequence_key]
+        replay_prefix = wires[1][sequence_key][: len(old_prefix)]
+        if kind is AnthropicMessagesProvider:
+            # A moving cache breakpoint changes metadata, not the replayed
+            # content or signed thinking/tool blocks.
+            def without_cache_control(value):
+                if isinstance(value, list):
+                    return [without_cache_control(item) for item in value]
+                if isinstance(value, dict):
+                    return {
+                        key: without_cache_control(item)
+                        for key, item in value.items()
+                        if key != "cache_control"
+                    }
+                return value
+
+            assert without_cache_control(replay_prefix) == without_cache_control(old_prefix)
+        else:
+            assert replay_prefix == old_prefix
         tail_text = json.dumps(wires[1][sequence_key], ensure_ascii=False)
         assert tail_text.index('"signed"') < tail_text.index("ok") < tail_text.index("redirect")
         assert "_call_ids" not in tail_text
@@ -916,6 +934,47 @@ async def test_claude_cache_breakpoint_follows_final_native_tool(has_functions):
         assert payload["tools"][-1]["type"] == "web_search_20250305"
         assert payload["tools"][-1]["cache_control"] == {"type": "ephemeral"}
         assert all("cache_control" not in tool for tool in payload["tools"][:-1])
+        assert payload["messages"][-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+        assert "cache_control" not in payload
+
+
+async def test_claude_conversation_cache_moves_after_tool_receipt_without_touching_checkpoint():
+    async with httpx.AsyncClient() as client:
+        adapter = provider(AnthropicMessagesProvider, client)
+        original = request()
+        first = adapter._build_payload(original)
+        checkpoint = ProviderContinuation(
+            provider="anthropic",
+            protocol="anthropic_messages",
+            payload=(
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "private", "signature": "signed"},
+                        {"type": "tool_use", "id": "call-1", "name": "inspect", "input": {}},
+                    ],
+                },
+            ),
+        )
+        later = adapter._build_payload(
+            replace(
+                original,
+                continuation=checkpoint,
+                function_outputs=(FunctionCallOutput("call-1", "result"),),
+            )
+        )
+        assert first["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+        assert "cache_control" not in later["messages"][0]["content"][0]
+        assert later["messages"][1]["content"] == list(checkpoint.payload[0]["content"])
+        assert later["messages"][-1]["content"] == [
+            {
+                "type": "tool_result",
+                "tool_use_id": "call-1",
+                "content": "result",
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+        assert "cache_control" not in later
 
 
 @pytest.mark.parametrize(
