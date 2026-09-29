@@ -14,6 +14,7 @@ services:
       APP_HOST: 0.0.0.0
       APP_PORT: 8080
       DATABASE_URL: sqlite+aiosqlite:////app/data/qq_ai_bot.db
+      MODEL_PROFILES_FILE: /app/webui-config/model_profiles.toml
       WORKSPACE_DIRECTORY: /app/workspace
       CONVERSATION_MEDIA_CACHE_DIRECTORY: /app/data/conversation-media-cache
       SOCIAL_TRANSFER_DIRECTORY: /app/social-transfer
@@ -38,6 +39,7 @@ services:
       - ./napcat-config:/app/napcat-config
       - ./snowluma-data:/app/snowluma-data
       - ./config:/app/config:ro
+      - ./webui-config:/app/webui-config:ro
       - ./plugins:/app/plugins:ro
       - ./.mcp.json:/app/.mcp.json:ro
     networks:

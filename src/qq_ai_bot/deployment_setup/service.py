@@ -76,6 +76,10 @@ class SetupPaths:
 
     @property
     def model_profiles(self) -> Path:
+        return self.root / "webui-config/model_profiles.toml"
+
+    @property
+    def legacy_model_profiles(self) -> Path:
         return self.root / "config/model_profiles.toml"
 
     @property
@@ -111,6 +115,16 @@ class SetupConfiguration:
     pending_plugins: tuple[str, ...] | None
     write_model_profiles: bool = True
     write_mcp: bool = True
+
+
+def require_migrated_model_profiles(paths: SetupPaths) -> None:
+    """Never regenerate a fresh catalog over an existing legacy deployment."""
+    if paths.model_profiles.is_file() or not paths.legacy_model_profiles.is_file():
+        return
+    raise SetupValidationError(
+        "发现旧 config/model_profiles.toml，但新 webui-config/model_profiles.toml 不存在；"
+        "先按 Model-Profile-Path-Migration.md 核对并迁移模型文件及同目录 secrets，再运行 setup。"
+    )
 
 
 @dataclass(frozen=True, slots=True)

@@ -32,6 +32,7 @@ from qq_ai_bot.deployment_setup.service import (
     load_plugin_setup_states,
     missing_mcp_environment,
     model_profiles_use_flash,
+    require_migrated_model_profiles,
     sanitize_mcp_document,
     selected_gateway_providers,
     validate_configuration,
@@ -62,6 +63,7 @@ _PERSISTENT_DIRECTORIES = (
     "data/speech/voices",
     "data/speech/japanese_frontend/models",
     "config",
+    "webui-config",
     "plugins",
     "napcat-data",
     "napcat-config",
@@ -161,6 +163,7 @@ def _configure(paths: SetupPaths, ui: TerminalUI) -> int:
         raise SetupValidationError("部署目录不是完整的 Yuki Release 部署包")
     if not os.access(paths.root, os.W_OK):
         raise SetupValidationError("部署目录不可写")
+    require_migrated_model_profiles(paths)
     ui.success("部署目录可写，配置模板存在")
 
     document = EnvironmentDocument.load(paths)
@@ -174,7 +177,7 @@ def _configure(paths: SetupPaths, ui: TerminalUI) -> int:
         mcp_document=mcp_document,
     )
     draft.environment["YUKI_VERSION"] = __version__
-    draft.environment["MODEL_PROFILES_FILE"] = "config/model_profiles.toml"
+    draft.environment["MODEL_PROFILES_FILE"] = "webui-config/model_profiles.toml"
     draft.environment["MCP_CONFIG_PATH"] = ".mcp.json"
     draft.environment["ONEBOT_ACCESS_TOKEN"] = _token_or_existing(
         draft.environment.get("ONEBOT_ACCESS_TOKEN", "")
@@ -875,14 +878,23 @@ def _select_plugins(
 def _load_current_configuration(
     paths: SetupPaths,
 ) -> tuple[SetupConfiguration, EnvironmentDocument]:
+    require_migrated_model_profiles(paths)
     document = EnvironmentDocument.load(paths)
     environment = document.values()
     if not paths.env.is_file():
         raise SetupValidationError("尚未生成 .env，请先运行 qq-ai-bot-cli setup")
+    configured_model_file = environment.get("MODEL_PROFILES_FILE", "")
+    if configured_model_file not in {
+        "webui-config/model_profiles.toml",
+        str(paths.model_profiles.resolve()),
+    }:
+        raise SetupValidationError(
+            ".env 的 MODEL_PROFILES_FILE 仍指向旧路径；先改为 webui-config/model_profiles.toml。"
+        )
     try:
         profiles = paths.model_profiles.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
-        raise SetupValidationError("无法读取 config/model_profiles.toml") from exc
+        raise SetupValidationError("无法读取 webui-config/model_profiles.toml") from exc
     mcp_document, mcp_error = _read_mcp_for_setup(paths.mcp)
     if mcp_error is not None and _as_bool(environment.get("MCP_ENABLED", "false")):
         raise SetupValidationError(mcp_error)

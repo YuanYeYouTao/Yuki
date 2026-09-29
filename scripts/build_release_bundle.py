@@ -30,6 +30,7 @@ _CONFIG_FILES = frozenset(
 )
 _EMPTY_DIRECTORIES = (
     "data",
+    "webui-config",
     "data/speech/cache",
     "data/speech/genie_data",
     "data/speech/voices",
@@ -69,15 +70,30 @@ def select_bundle_files(files: Iterable[str], version: str) -> dict[str, str]:
     release_note = f"docs/releases/v{version}.md"
     upgrade_guide = f"docs/upgrade-{version}.md"
     snowluma_guide = "docs/deployment/snowluma.md"
-    required = _ROOT_FILES | _CONFIG_FILES | {release_note, upgrade_guide, snowluma_guide}
+    model_profile_migration = "docs/operations/model-profile-path-migration.md"
+    required = (
+        _ROOT_FILES
+        | _CONFIG_FILES
+        | {
+            release_note,
+            upgrade_guide,
+            snowluma_guide,
+            model_profile_migration,
+        }
+    )
     missing = sorted(required - tracked)
     if missing:
         raise BundleBuildError(f"required tracked deployment files are missing: {missing}")
 
-    selected = {path: path for path in required - {release_note, upgrade_guide, snowluma_guide}}
+    selected = {
+        path: path
+        for path in required
+        - {release_note, upgrade_guide, snowluma_guide, model_profile_migration}
+    }
     selected[release_note] = f"Yuki-{version}-Release-Notes.md"
     selected[upgrade_guide] = f"Yuki-{version}-Upgrade.md"
     selected[snowluma_guide] = "SnowLuma.md"
+    selected[model_profile_migration] = "Model-Profile-Path-Migration.md"
     for path in sorted(tracked):
         pure = PurePosixPath(path)
         if pure.parts[:1] == ("plugins",):

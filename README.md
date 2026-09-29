@@ -102,6 +102,10 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 **向导只负责配置。** 在空目录中下载并校验部署包，在已有部署中保留 Compose、插件和数据；确认后备份并写入配置。它不会停服、迁移数据库、启动服务或切换网关。
 
+模型连接统一保存在 `webui-config/model_profiles.toml`。旧部署若只有
+`config/model_profiles.toml`，先按[模型配置路径迁移](docs/operations/model-profile-path-migration.md)
+核对并迁移；向导不会自动覆盖当前 WebUI 的模型连接。选定文件缺失时启动会明确失败。
+
 首次部署在配置完成后，进入部署目录执行：
 
 ```bash

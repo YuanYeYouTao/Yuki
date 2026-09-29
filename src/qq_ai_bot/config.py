@@ -151,7 +151,8 @@ class Settings(BaseSettings):
     llm_flash_base_url: str = ""
     llm_flash_api_key: str = Field(default="", repr=False)
     llm_flash_model: str = ""
-    model_profiles_file: Path = Path("config/model_profiles.toml")
+    model_profiles_file: Path = Path("webui-config/model_profiles.toml")
+    model_profiles_legacy_compatibility: bool = False
     model_stats_recent_error_limit: int = 5
     system_prompt: str = (
         "你是一个运行在 QQ 中的 AI 助手。请只输出给用户的最终回答，不要输出隐藏的推理过程。"
