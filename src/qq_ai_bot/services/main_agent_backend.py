@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import time
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -328,6 +329,10 @@ class MainAgentBackend(AgentToolBackend):
         """Expose a provider-metadata-derived effect to the shared Agent loop."""
 
         return self._web_was_used
+
+    def pin_web_provider(self) -> AbstractContextManager[None]:
+        tools = self._service._tools
+        return tools.pin_web_provider() if tools is not None else nullcontext()
 
     async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str:
         if name != "send_message" and self._runtime.before_model_request is not None:

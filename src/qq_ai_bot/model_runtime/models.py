@@ -70,6 +70,7 @@ class ModelSearchMode(StrEnum):
     EXTERNAL = "external"
     NATIVE = "native"
     BOTH = "both"
+    BRIDGE = "bridge"
 
 
 class StructuredOutputMode(StrEnum):
@@ -199,6 +200,8 @@ class ModelProfile(_FrozenModel):
             ModelProtocol.RESPONSES,
         }:
             raise ValueError("this protocol cannot combine native and external search")
+        if self.search_mode is ModelSearchMode.BRIDGE and self.protocol is not ModelProtocol.GEMINI:
+            raise ValueError("the separate native search bridge requires Gemini protocol")
         return self
 
 

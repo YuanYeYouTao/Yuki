@@ -65,3 +65,6 @@ class WebSearchResponse:
     latency_seconds: float
     partial_failure: bool = False
     provider: str = "tavily"
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    cached_prompt_tokens: int | None = None

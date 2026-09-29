@@ -28,7 +28,7 @@ class NativeToolBinder:
         web_approved = bool({"web", "web_search"}.intersection(allowed_capabilities))
         if not web_approved or web_mode is WebMode.DISABLED:
             return ()
-        if search_mode is ModelSearchMode.EXTERNAL:
+        if search_mode in {ModelSearchMode.EXTERNAL, ModelSearchMode.BRIDGE}:
             return ()
         if search_mode is None and (
             web_mode is WebMode.TAVILY
