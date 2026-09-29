@@ -230,6 +230,17 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
             )
         return system, self._coalesce(messages)
 
+    @staticmethod
+    def _cache_conversation_prefix(messages: list[dict[str, Any]]) -> None:
+        # Keep the existing system/tool breakpoints, then write one moving
+        # conversation breakpoint. Block-level controls also work with native
+        # Messages-compatible endpoints that reject top-level cache_control.
+        for message in reversed(messages):
+            for block in reversed(message["content"]):
+                if block.get("type") in {"text", "tool_result"}:
+                    block["cache_control"] = {"type": "ephemeral"}
+                    return
+
     def _build_payload(self, request: ChatRequest) -> dict[str, Any]:
         if any(tool.type is not NativeToolType.WEB_SEARCH for tool in request.native_tools):
             raise LLMUnsupportedFeatureError("unsupported Claude native tool")
@@ -288,6 +299,7 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
             # Claude caches tool definitions in order. The breakpoint must land
             # after native tools too, or a native-only request has no tool cache.
             payload["tools"][-1]["cache_control"] = {"type": "ephemeral"}
+        self._cache_conversation_prefix(messages)
         if request.response_format is not None:
             nested = request.response_format.get("json_schema")
             if request.response_format.get("type") != "json_schema" or not isinstance(nested, dict):
