@@ -352,6 +352,181 @@ async def test_work_changes_from_deepseek_to_gemini_without_replaying_old_effect
 
 
 @pytest.mark.asyncio
+async def test_runner_resumes_gemini_work_on_deepseek_without_old_send_or_native_tool(
+    database, tmp_path
+):
+    control = await _control(database, tmp_path)
+    old_id = control.current["id"]
+    task = ChatMessage("user", "Finish the original task after checking sources")
+    first = WorkSession(control, "gemini-contract")
+    transcript = await first.restore(
+        TurnTranscript((ChatMessage("system", "old Gemini contract"), task)),
+        compaction_brief=task,
+    )
+    transcript.accept(
+        ProviderContinuation(
+            "gemini",
+            "gemini",
+            ({"role": "model", "parts": [{"text": "private", "thoughtSignature": "opaque"}]},),
+            "gemini-old",
+        )
+    )
+    sent = 0
+
+    async def confirmed_send():
+        nonlocal sent
+        sent += 1
+        return '{"ok":true,"data":{"status":"succeeded","target":"original"}}'
+
+    receipt = await first.execute(
+        ToolCall("sent-before-cutover", ToolFunction("send_message", '{"text":"delivered"}')),
+        confirmed_send,
+    )
+    control.observe_result("send_message", receipt, True, arguments='{"text":"delivered"}')
+    assert control.known_effects[-1]["delivered_message"] is True
+    first.record_search_sources(
+        [
+            ("https://example.org/public", "Verified public source", "Public excerpt"),
+            ("http://localhost/private", "Never migrate"),
+        ]
+    )
+    await control.repository.checkpoint(control.lease, old_id, None, models=2)
+    control.current = await control.repository.get(old_id)
+    await first.save("paired")
+
+    captured = []
+
+    def transport(request):
+        captured.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "id": "response-new",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "function_call",
+                        "id": "call-new",
+                        "call_id": "call-new",
+                        "name": "workspace_read",
+                        "arguments": "{}",
+                        "status": "completed",
+                    }
+                ],
+            },
+        )
+
+    async with httpx.AsyncClient(
+        base_url="https://deepseek.invalid", transport=httpx.MockTransport(transport)
+    ) as client:
+        deepseek = DeepSeekResponsesProvider(
+            base_url="https://deepseek.invalid",
+            api_key="synthetic",
+            timeout_seconds=2,
+            max_retries=0,
+            client=client,
+        )
+        profile = ModelProfile(
+            id="deepseek-new",
+            provider="deepseek",
+            protocol=ModelProtocol.RESPONSES,
+            base_url="https://deepseek.invalid",
+            api_key_env="SYNTHETIC_KEY",
+            model="deepseek-flash",
+            timeout_seconds=2,
+            max_retries=0,
+            default_temperature=0.5,
+            default_max_output_tokens=1024,
+            capabilities=frozenset({ModelCapability.REASONING, ModelCapability.TOOLS}),
+            search_mode=ModelSearchMode.EXTERNAL,
+        )
+        catalog = ModelProfileCatalog(
+            profiles={profile.id: profile},
+            routes={task: ModelRoute(task=task, profile_id=profile.id) for task in ModelTask},
+        )
+        models = TaskModelExecutor(
+            router=ModelRouter(catalog),
+            pool=ModelClientPool(injected_profiles={profile.id: deepseek}),
+        )
+        harness = build_harness(
+            database,
+            make_settings(
+                database.url,
+                web_enabled=True,
+                web_mode=WebMode.BOTH,
+                tavily_api_key="synthetic",
+            ),
+            FakeLLMProvider(),
+        )
+        chat = harness.processor._chat
+        chat._agent_runner._models = models
+        resumed = WorkControl(
+            control.repository, control.lease, control.source_key, control.source, control.validate
+        )
+        resumed.current = await control.repository.get(old_id)
+        common_tools = (
+            ChatTool("workspace_read", "Read workspace", {"type": "object"}),
+            ChatTool("web_search", "Search externally", {"type": "object"}),
+        )
+        reads = 0
+
+        class Backend:
+            def definitions(self, runtime, **kwargs):
+                return common_tools
+
+            def begin_batch(self, *args):
+                pass
+
+            def parallel_safe(self, *args):
+                return False
+
+            def is_side_effecting(self, *args):
+                return False
+
+            async def execute(self, *args):
+                nonlocal reads
+                reads += 1
+                return '{"ok":true,"data":{"read":"current"}}'
+
+        runtime = AgentRuntime(
+            origin=TurnOrigin.USER_MESSAGE,
+            actor_user_id="1001",
+            actor_is_superuser=False,
+            delegated_authority=None,
+            conversation_key="cutover-runner",
+            current_group_id=None,
+            bot_user_id="9999",
+            gateway=None,
+            runtime_config=await chat._runtime_config.snapshot(),
+            current_time=chat._time.current_default(),
+            allowed_capabilities=frozenset({"web"}),
+            max_tool_calls=8,
+            max_model_requests=1,
+            fixed_tools=common_tools,
+            work_control=resumed,
+            compaction_brief=task,
+        )
+        result = await chat._agent_runner.run(
+            (ChatMessage("system", "new DeepSeek contract"), ChatMessage("user", "wakeup")),
+            runtime,
+            Backend(),
+        )
+
+    assert result.work_state == "queued" and result.suppress_delivery
+    assert sent == 1 and reads == 1 and len(captured) == 1
+    assert resumed.current["id"] == old_id
+    payload = captured[0]
+    assert [tool["name"] for tool in payload["tools"]] == ["workspace_read", "web_search"]
+    assert "opaque" not in json.dumps(payload)
+    assert "https://example.org/public" in json.dumps(payload)
+    assert "localhost" not in json.dumps(payload)
+    assert "delivered_message" in json.dumps(payload)
+    row = await control.repository.get(old_id)
+    assert (row["model_requests"], row["tool_calls"]) == (3, 2)
+    await control.repository.release(control.lease)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("last_part", ["succeeded", "missing", "uncertain"])
 @pytest.mark.parametrize("boundary", ["contract_changed", "source_changed"])
 async def test_provider_change_keeps_prepared_sequence_unknown_despite_delivered_parts(

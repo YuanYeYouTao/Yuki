@@ -366,7 +366,7 @@ describe("management transport and evidence", () => {
       first.request_id,
     );
   });
-  it.each(["inbound", "outbound"])(
+  it.each(["inbound", "outbound", "external"])(
     "uses internal %s event ids to find linked execution turns",
     async (direction) => {
       const fetch = vi
@@ -383,7 +383,8 @@ describe("management transport and evidence", () => {
                     direction,
                     content: "fixture hello",
                     occurred_at: "2026-09-27T08:00:00Z",
-                    origin: "qq",
+                    origin:
+                      direction === "external" ? "plugin_background" : "qq",
                     sender_display_name: "fixture",
                   },
                 ],

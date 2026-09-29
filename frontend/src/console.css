@@ -302,7 +302,9 @@ pre {
   font-variant-numeric: tabular-nums;
 }
 .usage-warning {
-  color: var(--accent-hover);
+  border-left: 2px solid var(--accent);
+  padding-left: 8px;
+  color: var(--text-primary);
 }
 .settings-container:has(.usage-plot-grid) {
   max-width: 1440px;

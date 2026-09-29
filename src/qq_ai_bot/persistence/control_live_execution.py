@@ -414,7 +414,16 @@ async def list_event_turns(
     direction: str,
 ) -> Page[ActivityView]:
     """Only trusted ledger/source/delivery IDs can associate an event with turns."""
-    if type(event_id) is not int or event_id < 1 or direction not in {"inbound", "outbound"}:
+    if (
+        type(event_id) is not int
+        or event_id < 1
+        or direction
+        not in {
+            "inbound",
+            "outbound",
+            "external",
+        }
+    ):
         raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
     if request.cursor is not None or request.limit > 20:
         raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
@@ -429,7 +438,7 @@ async def list_event_turns(
             event.author_kind != "yuki" or event.suppression_status != "keeper"
         ):
             return Page((), snapshot_at=observed_at, total=0, number=request.number or 1)
-        if direction == "inbound":
+        if direction in {"inbound", "external"}:
             candidate_statement = (
                 text(
                     "SELECT turn_id, conversation_id, MIN(created_at) AS created_at, "

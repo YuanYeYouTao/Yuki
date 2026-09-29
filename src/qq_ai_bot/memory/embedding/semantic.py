@@ -53,14 +53,15 @@ class MemorySemanticIndex:
         kinds: tuple[MemoryKind, ...],
         min_similarity: float,
         temporal: MemoryTemporalIntent | None = None,
-    ) -> tuple[tuple[AuthorizedSemanticCandidate, ...], bool]:
-        rows, scan_truncated = await self._repository.load_authorized_vectors(
+    ) -> tuple[tuple[AuthorizedSemanticCandidate, ...], bool, bool]:
+        rows, scan_truncated, active_count = await self._repository.load_authorized_vectors(
             scope=scope,
             profile_id=profile_id,
             kinds=tuple(kind.value for kind in kinds),
             temporal=temporal,
         )
         scored: list[tuple[int, float]] = []
+        stale_count = 0
         for row in rows:
             current_hash = self._documents.content_hash_fields(
                 kind=row.kind,
@@ -69,6 +70,7 @@ class MemorySemanticIndex:
                 content=row.content,
             )
             if row.content_hash != current_hash:
+                stale_count += 1
                 continue
             vector = self._codec.decode(row.vector_blob, dimensions=profile.dimensions)
             similarity = self._codec.dot(query_vector, vector)
@@ -76,12 +78,14 @@ class MemorySemanticIndex:
                 scored.append((row.fact_id, similarity))
         scored.sort(key=lambda item: (-item[1], item[0]))
         truncated = scan_truncated or len(scored) > candidate_limit
+        coverage_complete = not scan_truncated and not stale_count and len(rows) == active_count
         return (
             tuple(
                 AuthorizedSemanticCandidate(fact_id, similarity, rank)
                 for rank, (fact_id, similarity) in enumerate(scored[:candidate_limit], start=1)
             ),
             truncated,
+            coverage_complete,
         )
 
     async def search(

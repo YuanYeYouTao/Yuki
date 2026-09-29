@@ -59,12 +59,11 @@ class MemoryEmbeddingRepository:
         kinds: tuple[str, ...],
         temporal: MemoryTemporalIntent | None = None,
         scan_limit: int = 50000,
-    ) -> tuple[tuple[StoredTargetVector, ...], bool]:
+    ) -> tuple[tuple[StoredTargetVector, ...], bool, int]:
         """Bound the global vector scan; signal if a later owner may be omitted."""
-        conditions: list[Any] = [
+        fact_conditions: list[Any] = [
             authorized_fact_condition(scope),
             *strict_time_conditions(temporal),
-            MemoryEmbeddingModel.profile_id == profile_id,
             MemoryFactModel.status == "active",
             MemoryFactModel.review_state != "quarantined",
             or_(
@@ -73,7 +72,7 @@ class MemoryEmbeddingRepository:
             ),
         ]
         if kinds:
-            conditions.append(MemoryFactModel.kind.in_(kinds))
+            fact_conditions.append(MemoryFactModel.kind.in_(kinds))
         async with self._database.sessions() as session:
             rows = (
                 await session.execute(
@@ -87,24 +86,34 @@ class MemoryEmbeddingRepository:
                         MemoryFactModel.content,
                     )
                     .join(MemoryEmbeddingModel, MemoryEmbeddingModel.fact_id == MemoryFactModel.id)
-                    .where(*conditions)
+                    .where(*fact_conditions, MemoryEmbeddingModel.profile_id == profile_id)
                     .order_by(MemoryFactModel.id.asc())
                     .limit(scan_limit + 1)
                 )
             ).all()
-        truncated = len(rows) > scan_limit
-        return tuple(
-            StoredTargetVector(
-                fact_id=int(row.id),
-                content_hash=str(row.content_hash),
-                vector_blob=bytes(row.vector_blob),
-                kind=str(row.kind),
-                category=str(row.category),
-                memory_key=str(row.memory_key),
-                content=str(row.content),
+            active_count = int(
+                await session.scalar(
+                    select(func.count()).select_from(MemoryFactModel).where(*fact_conditions)
+                )
+                or 0
             )
-            for row in rows[:scan_limit]
-        ), truncated
+        truncated = len(rows) > scan_limit
+        return (
+            tuple(
+                StoredTargetVector(
+                    fact_id=int(row.id),
+                    content_hash=str(row.content_hash),
+                    vector_blob=bytes(row.vector_blob),
+                    kind=str(row.kind),
+                    category=str(row.category),
+                    memory_key=str(row.memory_key),
+                    content=str(row.content),
+                )
+                for row in rows[:scan_limit]
+            ),
+            truncated,
+            active_count,
+        )
 
     async def ensure_profile(
         self, profile: EmbeddingProviderProfile
