@@ -127,12 +127,21 @@ async def test_model_usage_summary_counts_every_call_without_double_counting_cac
                     completion_tokens=output,
                     cached_prompt_tokens=cached,
                     total_tokens=total,
+                    physical_request_count=2 if total == 120 else None,
+                    unknown_usage_request_count=1 if total == 120 else None,
+                    native_search_requested=True if total == 120 else None,
                 )
             )
     queries = ControlQueryService(ControlQueryAdapter(database))
     permission = context("control.execution.metadata.read")
     recent = (await queries.read_model_usage_summary(permission, "24h")).fields
     assert recent["calls"] == 2
+    assert recent["physical_requests"] == 2
+    assert recent["physical_requests_unreported_calls"] == 1
+    assert recent["unknown_usage_requests"] == 1
+    assert recent["native_search_invocations"] == 1
+    assert recent["native_search_cost"] is None
+    assert recent["native_search_cost_status"] == "not_reported"
     assert recent["input_tokens"] == 100
     assert recent["output_tokens"] == 20
     assert recent["total_tokens"] == 120
@@ -188,6 +197,7 @@ async def test_model_usage_summary_keeps_each_model_and_unknown_cache_separate(d
     ).fields
     by_model = {row["model"]: row for row in recent["model_buckets"]}
     assert len(by_model) == 2
+    assert recent["native_search_cost_status"] == "unknown_historical"
     assert by_model["model-a"]["calls"] == 3
     assert by_model["model-a"]["input_tokens"] == 150
     assert by_model["model-a"]["cache_reported_input_tokens"] == 100

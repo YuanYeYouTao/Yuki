@@ -249,6 +249,7 @@ def normalize_legacy_result(
             if provider_id == "core"
             and tool_name
             in {
+                "search_memory",
                 "get_person_memories",
                 "get_group_memories",
                 "get_self_memories",
@@ -263,6 +264,7 @@ def normalize_legacy_result(
             if provider_id == "core"
             and tool_name
             in {
+                "search_memory",
                 "get_person_memories",
                 "get_group_memories",
                 "get_self_memories",

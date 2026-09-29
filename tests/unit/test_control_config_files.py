@@ -19,7 +19,9 @@ from tests.unit.test_control_plane_foundation import context
 
 from qq_ai_bot.admin.config_files import ConfigFileError, ConfigFileService
 from qq_ai_bot.application.control_access import ControlOperatorAccess
+from qq_ai_bot.application.lifecycle import LifecycleRegistry
 from qq_ai_bot.application.modules.control_plane import ControlPlaneBundle
+from qq_ai_bot.application.modules.web import WebModule
 from qq_ai_bot.control_plane import (
     ControlCommand,
     ControlCommandError,
@@ -76,6 +78,63 @@ def files(database, tmp_path):
     return settings, ConfigFileService(settings, catalog)
 
 
+async def test_hot_model_save_keeps_explicit_deepseek_search_after_chat_switch(
+    files, database, monkeypatch, tmp_path
+):
+    original_settings, _ = files
+    monkeypatch.setenv("TEST_DEEPSEEK_SEARCH_KEY", "first-key")
+    document = tomllib.loads(original_settings.model_profiles_file.read_text(encoding="utf-8"))
+    document["profiles"]["other"] = document["profiles"]["main"].copy()
+    document["profiles"]["main"] = {
+        "provider": "deepseek",
+        "protocol": "responses",
+        "base_url": "https://api.deepseek.com",
+        "api_key_env": "TEST_DEEPSEEK_SEARCH_KEY",
+        "model": "deepseek-flash",
+        "timeout_seconds": 10,
+        "max_retries": 0,
+        "default_temperature": 1,
+        "default_max_output_tokens": 1000,
+        "capabilities": ["reasoning", "tools", "structured_output"],
+    }
+    document["search_connection"] = "main"
+    original_settings.model_profiles_file.write_text(tomlkit.dumps(document), encoding="utf-8")
+    settings = make_settings(
+        database.url,
+        model_profiles_file=original_settings.model_profiles_file,
+        web_mode="tavily",
+        web_search_backend="deepseek_anthropic",
+        web_search_bridge_state_path=tmp_path / "cache.db",
+    )
+    catalog = parse_model_profile_catalog(settings.model_profiles_file.read_text(encoding="utf-8"))
+    pool = ModelClientPool()
+    executor = TaskModelExecutor(router=ModelRouter(catalog), pool=pool)
+    lifecycle = LifecycleRegistry()
+    web = WebModule(settings.web, lifecycle=lifecycle, catalog=catalog, clients=pool)
+    stable_provider = web.build().provider
+    assert stable_provider is not None
+    service = ConfigFileService(settings, catalog, model_executor=executor, web_module=web)
+    try:
+        first = await service.read("model_profiles")
+        assert first["document"]["search_connection"] == "main"
+        draft = first["document"]
+        draft["routes"]["chat_agent"] = "other"
+        await service.save("model_profiles", first["revision"], {"document": draft})
+        assert executor.model_name(ModelTask.CHAT_AGENT) == "offline"
+        assert stable_provider._active.headers["x-api-key"] == "first-key"
+        assert (await service.read("model_profiles"))["matches_loaded"] is True
+        second = await service.read("model_profiles")
+        draft = second["document"]
+        draft["search_connection"] = None
+        with pytest.raises(ConfigFileError, match="validation_error"):
+            await service.save("model_profiles", second["revision"], {"document": draft})
+        assert stable_provider._active.headers["x-api-key"] == "first-key"
+    finally:
+        await lifecycle.start()
+        await lifecycle.close()
+        await executor.close()
+
+
 async def test_saved_and_loaded_states_headers_and_revision(files):
     settings, service = files
     first = await service.read("model_profiles")
@@ -114,6 +173,60 @@ async def test_model_save_hot_applies_new_routes_while_pinned_activation_stays_o
         await executor.close()
 
 
+async def test_gemini_effort_env_override_can_be_replaced_by_hot_saved_level(files, monkeypatch):
+    settings, _service = files
+    monkeypatch.setenv("GEMINI_KEY", "synthetic-key")
+    monkeypatch.setenv("YUKI_TEST_GEMINI_EFFORT", "medium")
+    raw = tomllib.loads(settings.model_profiles_file.read_text(encoding="utf-8"))
+    raw["profiles"]["main"].update(
+        provider="gemini",
+        protocol="gemini",
+        base_url="https://generativelanguage.googleapis.com/v1beta",
+        api_key_env="GEMINI_KEY",
+        model="gemini-3.8-flash",
+        reasoning_effort="low",
+        reasoning_effort_env="YUKI_TEST_GEMINI_EFFORT",
+    )
+    settings.model_profiles_file.write_text(tomlkit.dumps(raw), encoding="utf-8")
+    initial = parse_model_profile_catalog(settings.model_profiles_file.read_text(encoding="utf-8"))
+    executor = TaskModelExecutor(router=ModelRouter(initial), pool=ModelClientPool())
+    service = ConfigFileService(settings, initial, model_executor=executor)
+    try:
+        before = await service.read("model_profiles")
+        assert before["resolved_profiles"]["main"]["reasoning_effort"] == "medium"
+        old_revision = executor.profile_revision(ModelTask.CHAT_AGENT)
+        document = before["document"]
+        document["profiles"]["main"]["reasoning_effort"] = "high"
+        del document["profiles"]["main"]["reasoning_effort_env"]
+        with executor.pin():
+            await service.save("model_profiles", before["revision"], {"document": document})
+            assert executor.profile_revision(ModelTask.CHAT_AGENT) == old_revision
+        assert executor.profile_revision(ModelTask.CHAT_AGENT) != old_revision
+        after = await service.read("model_profiles")
+        assert after["matches_loaded"] is True
+        assert after["resolved_profiles"]["main"]["reasoning_effort"] == "high"
+    finally:
+        await executor.close()
+
+
+async def test_gemini_38_budget_mode_is_rejected_without_changing_saved_file(files):
+    settings, service = files
+    before = settings.model_profiles_file.read_bytes()
+    view = await service.read("model_profiles")
+    document = view["document"]
+    document["profiles"]["main"].update(
+        provider="gemini",
+        protocol="gemini",
+        base_url="https://generativelanguage.googleapis.com/v1beta",
+        api_key_env="GEMINI_KEY",
+        model="gemini-3.8-flash",
+        wire_options={"reasoning": "budget", "thinking_budget_tokens": 4096},
+    )
+    with pytest.raises(ConfigFileError, match="validation_error"):
+        await service.save("model_profiles", view["revision"], {"document": document})
+    assert settings.model_profiles_file.read_bytes() == before
+
+
 async def test_invalid_hot_connection_does_not_write_or_switch(files):
     settings, legacy_service = files
     initial = legacy_service.loaded_catalog
@@ -133,6 +246,143 @@ async def test_invalid_hot_connection_does_not_write_or_switch(files):
         with pytest.raises(ConfigFileError, match="validation_error"):
             await service.save("model_profiles", first["revision"], {"document": document})
         assert settings.model_profiles_file.read_bytes() == before
+        assert executor.model_name(ModelTask.CHAT_AGENT) == "offline"
+    finally:
+        await executor.close()
+
+
+async def test_oversized_model_document_rejects_before_client_preparation(files, monkeypatch):
+    import qq_ai_bot.admin.config_files as config_module
+
+    settings, legacy_service = files
+    initial = legacy_service.loaded_catalog
+    assert initial is not None
+    executor = TaskModelExecutor(router=ModelRouter(initial), pool=ModelClientPool())
+    service = ConfigFileService(settings, initial, model_executor=executor)
+    before = settings.model_profiles_file.read_bytes()
+    view = await service.read("model_profiles")
+    draft = view["document"]
+    draft["profiles"]["main"]["model"] = "x" * 200
+    monkeypatch.setattr(config_module, "MAX_CONFIG_BYTES", len(before) + 10)
+
+    def unexpected_pool(**_kwargs):
+        raise AssertionError("oversized draft must not prepare model clients")
+
+    monkeypatch.setattr(config_module, "ModelClientPool", unexpected_pool)
+    try:
+        with pytest.raises(ConfigFileError, match="validation_error"):
+            await service.save("model_profiles", view["revision"], {"document": draft})
+        assert settings.model_profiles_file.read_bytes() == before
+        assert executor.model_name(ModelTask.CHAT_AGENT) == "offline"
+    finally:
+        await executor.close()
+
+
+@pytest.mark.parametrize("failure", ["write", "search_activation"])
+async def test_hot_model_save_failure_closes_prepared_resources_and_keeps_loaded_route(
+    files, monkeypatch, failure
+):
+    import qq_ai_bot.admin.config_files as config_module
+
+    settings, legacy_service = files
+    initial = legacy_service.loaded_catalog
+    assert initial is not None
+    executor = TaskModelExecutor(router=ModelRouter(initial), pool=ModelClientPool())
+    prepared_pools = []
+    prepared_search = []
+
+    class Pool:
+        def __init__(self, **_kwargs):
+            self.closed = False
+            prepared_pools.append(self)
+
+        def get(self, _profile):
+            return object()
+
+        async def close(self):
+            self.closed = True
+
+    class Search:
+        def __init__(self):
+            self.closed = False
+            prepared_search.append(self)
+
+        async def close(self):
+            self.closed = True
+
+    class Web:
+        def prepare(self, _catalog, _pool, *, require_explicit):
+            assert require_explicit
+            return Search()
+
+        def activate(self, _provider):
+            if failure == "search_activation":
+                raise RuntimeError("search activation rejected")
+
+    monkeypatch.setattr(config_module, "ModelClientPool", Pool)
+    service = ConfigFileService(settings, initial, model_executor=executor, web_module=Web())
+    before = settings.model_profiles_file.read_bytes()
+    view = await service.read("model_profiles")
+    draft = view["document"]
+    draft["profiles"]["main"]["model"] = "new-model"
+    if failure == "write":
+
+        def reject_write(*_args):
+            raise ConfigFileError("version_conflict")
+
+        monkeypatch.setattr(service, "_replace_model_bundle", reject_write)
+    try:
+        with pytest.raises(ConfigFileError if failure == "write" else RuntimeError):
+            await service.save("model_profiles", view["revision"], {"document": draft})
+        assert executor.model_name(ModelTask.CHAT_AGENT) == "offline"
+        assert service.loaded_catalog is initial
+        assert len(prepared_pools) == len(prepared_search) == 1
+        assert prepared_pools[0].closed
+        assert prepared_search[0].closed
+        assert settings.model_profiles_file.read_bytes() == before
+    finally:
+        await executor.close()
+
+
+@pytest.mark.parametrize("external_edit", [False, True])
+async def test_model_file_write_failure_restores_new_secret_file(files, monkeypatch, external_edit):
+    settings, legacy_service = files
+    initial = legacy_service.loaded_catalog
+    assert initial is not None
+    executor = TaskModelExecutor(router=ModelRouter(initial), pool=ModelClientPool())
+    service = ConfigFileService(settings, initial, model_executor=executor)
+    model_path = settings.model_profiles_file
+    secret_path = model_secrets_path(model_path)
+    before = model_path.read_bytes()
+    external_content = before + b"\n# external edit\n"
+    assert not secret_path.exists()
+    view = await service.read("model_profiles")
+    draft = view["document"]
+    alias = "YUKI_WEBUI_KEY_" + "A" * 32
+    draft["profiles"]["main"]["api_key_env"] = alias
+    original_replace = service._replace
+
+    def fail_main(path, original, replacement):
+        if path == model_path:
+            if external_edit:
+                path.write_bytes(external_content)
+                raise ConfigFileError("version_conflict")
+            raise ConfigFileError("operation_unavailable")
+        return original_replace(path, original, replacement)
+
+    monkeypatch.setattr(service, "_replace", fail_main)
+    try:
+        with pytest.raises(
+            ConfigFileError,
+            match="version_conflict" if external_edit else "operation_unavailable",
+        ):
+            await service.save(
+                "model_profiles",
+                view["revision"],
+                {"document": draft, "api_keys": {alias: "synthetic-secret"}},
+            )
+        assert model_path.read_bytes() == (external_content if external_edit else before)
+        assert not secret_path.exists()
         assert executor.model_name(ModelTask.CHAT_AGENT) == "offline"
     finally:
         await executor.close()

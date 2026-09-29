@@ -871,7 +871,12 @@ class ControlQueryAdapter:
         )
 
     async def read_conversation_execution(
-        self, conversation_id: ConversationId, *, include_content: bool = False
+        self,
+        conversation_id: ConversationId,
+        *,
+        include_content: bool = False,
+        turn_id: str | None = None,
+        before_step_id: int | None = None,
     ) -> ActivityView:
         from qq_ai_bot.persistence.control_live_execution import read_conversation_execution
 
@@ -880,6 +885,8 @@ class ControlQueryAdapter:
             conversation_id,
             self._trace_recorder,
             include_content=include_content,
+            turn_id=turn_id,
+            before_step_id=before_step_id,
         )
 
     async def list_event_turns(

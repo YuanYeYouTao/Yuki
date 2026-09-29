@@ -13,9 +13,13 @@ from tempfile import TemporaryDirectory
 from urllib.parse import urlsplit
 
 from qq_ai_bot.admin.models import VisionRuntimeConfig
-from qq_ai_bot.domain.messages import AttachmentKind, ChatImage, InboundMessage
-from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
-from qq_ai_bot.services.media_resolver import MediaResolver, OneBotMediaGateway
+from qq_ai_bot.domain.messages import AttachmentKind, ChatImage, InboundMessage, MessageAttachment
+from qq_ai_bot.services.image_preprocessor import ImagePreprocessingError, ImagePreprocessor
+from qq_ai_bot.services.media_resolver import (
+    MediaResolutionError,
+    MediaResolver,
+    OneBotMediaGateway,
+)
 from qq_ai_bot.services.video_frames import _run as run_parser
 from qq_ai_bot.services.video_frames import sample_video
 from qq_ai_bot.services.vision_rate_limit import VisionRateLimiter
@@ -91,7 +95,7 @@ class AttachmentInputService:
                 }
                 current = tuple(a for a in message.attachments if a.kind in kinds)
                 replied = tuple(a for a in message.reply_attachments if a.kind in kinds)
-                selected = current or replied
+                selected = current + replied
                 if any(a.kind is AttachmentKind.FORWARD for a in selected):
                     from qq_ai_bot.services.forwarded_inputs import expand_forwarded
 
@@ -99,7 +103,9 @@ class AttachmentInputService:
                     if forward_text:
                         documents.append(forward_text)
                         text_remaining -= len(forward_text)
-                for attachment in selected[: runtime.max_images_per_turn]:
+
+                async def consume(attachment: MessageAttachment, index: int) -> None:
+                    nonlocal text_remaining, size
                     reference = MediaReference(
                         file=attachment.file,
                         url=attachment.url,
@@ -174,7 +180,7 @@ class AttachmentInputService:
                             else:
                                 if text_remaining <= 0:
                                     documents.append("[后续附件未读取：本轮文本预算已用完]")
-                                    continue
+                                    return
                                 async with self._document_semaphore:
                                     raw = await run_parser(
                                         sys.executable,
@@ -208,16 +214,16 @@ class AttachmentInputService:
                                 }
                                 metadata["name"] = Path(attachment.filename or "").name[:120]
                                 documents.append(
-                                    f"[附件{len(documents) + 1} source={reference.source} "
+                                    f"[附件{index} source={reference.source} "
                                     f"{json.dumps(metadata)}]\n{text}"
                                 )
                         size = sum(len(f.data_url) for f in images)
                         if size > self._max_bytes:
                             raise VisionProcessingError("too_large", "附件帧超过本轮预算")
-                        continue
+                        return
                     if remaining <= 0:
                         documents.append("[视觉附件未读取：本轮帧预算已用完]")
-                        continue
+                        return
                     if attachment.kind is AttachmentKind.VIDEO:
                         if not self.images_enabled:
                             raise VisionProcessingError(
@@ -243,10 +249,10 @@ class AttachmentInputService:
                         if size > self._max_bytes:
                             raise VisionProcessingError("too_large", "视频帧超过本轮预算")
                         images.extend(video_frames)
-                        continue
+                        return
                     if not self.images_enabled:
                         documents.append("[图片未读取：当前主模型不支持图片输入]")
-                        continue
+                        return
                     downloaded = await self._resolver.resolve(reference, gateway)
                     prepared = await asyncio.to_thread(
                         self._preprocessor.prepare,
@@ -259,6 +265,47 @@ class AttachmentInputService:
                         if size > self._max_bytes:
                             raise VisionProcessingError("too_large", "处理后图片超过本轮预算")
                         images.append(ChatImage(data_url=frame.data_url, source=reference.source))
+
+                first_failure: (
+                    VisionProcessingError | MediaResolutionError | ImagePreprocessingError | None
+                ) = None
+                had_readable_output = bool(documents)
+                fatal_codes = {
+                    "too_large",
+                    "frame_budget",
+                    "video_limit",
+                    "private_url",
+                    "decompression_bomb",
+                    "archive_expansion_limit",
+                    "unsafe_archive",
+                    "prepared_too_large",
+                }
+                for index, attachment in enumerate(
+                    selected[: runtime.max_images_per_turn], start=1
+                ):
+                    prior_images, prior_documents = len(images), len(documents)
+                    try:
+                        await consume(attachment, index)
+                    except (
+                        VisionProcessingError,
+                        MediaResolutionError,
+                        ImagePreprocessingError,
+                    ) as exc:
+                        if exc.code in fatal_codes:
+                            raise
+                        if first_failure is None:
+                            first_failure = exc
+                        source = "reply" if attachment.source == "reply" else "current"
+                        documents.append(
+                            f"[附件{index} source={source} kind={attachment.kind.value} "
+                            f"未读取：{exc.code}；不要推断其内容]"
+                        )
+                    else:
+                        had_readable_output |= (
+                            len(images) > prior_images or len(documents) > prior_documents
+                        )
+                if first_failure is not None and not had_readable_output:
+                    raise first_failure
                 if len(selected) > runtime.max_images_per_turn:
                     documents.append("[其余附件未读取：超过本轮附件数量上限]")
                 if not images and not documents:

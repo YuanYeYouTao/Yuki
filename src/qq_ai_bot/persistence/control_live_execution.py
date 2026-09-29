@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from qq_ai_bot.control_plane.paging import Page, PageRequest
 from qq_ai_bot.control_plane.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_types import ActivityView, ControlQueryError
+from qq_ai_bot.control_plane.tokens import require_opaque_token
 from qq_ai_bot.domain.identity import ConversationId
 from qq_ai_bot.execution_trace.db_models import ExecutionTraceEntryModel as Trace
 from qq_ai_bot.execution_trace.recorder import LiveTraceSpan, TraceRecorder
@@ -38,17 +39,23 @@ class _StepRow(TypedDict):
 
 
 async def _steps(
-    session: AsyncSession, *, conversation_id: str, turn_id: str, observed_at: datetime
+    session: AsyncSession,
+    *,
+    conversation_id: str,
+    turn_id: str,
+    observed_at: datetime,
+    before_step_id: int | None = None,
 ) -> tuple[list[_StepRow], bool, str | None, str | None]:
     # SQLite otherwise chooses the conversation index and scans unrelated
     # turns in a busy group. Keep both the turn and conversation checks.
+    before_clause = "AND id < :before_step_id " if before_step_id is not None else ""
     statement = (
         text(
             "SELECT id, operation_id, kind, created_at, payload_status, origin, "
             "source_event_id, delivered_event_id "
             "FROM execution_trace_entries INDEXED BY ix_execution_trace_turn_id "
             "WHERE conversation_id = :conversation_id AND turn_id = :turn_id "
-            "AND expires_at > :observed_at ORDER BY id DESC LIMIT 33"
+            "AND expires_at > :observed_at " + before_clause + "ORDER BY id DESC LIMIT 33"
         )
         .bindparams(bindparam("observed_at", type_=DateTime(timezone=True)))
         .columns(
@@ -68,6 +75,7 @@ async def _steps(
             "conversation_id": conversation_id,
             "turn_id": turn_id,
             "observed_at": observed_at,
+            **({"before_step_id": before_step_id} if before_step_id is not None else {}),
         },
     )
     rows = result.mappings().all()
@@ -119,15 +127,105 @@ async def _terminal_kind(
     )
 
 
+async def _attach_messages(
+    session: AsyncSession,
+    turns: list[dict[str, object]],
+    conversation_id: str,
+    include_content: bool,
+) -> None:
+    linked_ids = {
+        event_id
+        for turn in turns
+        for step in cast(list[_StepRow], turn["steps"])
+        for event_id in (
+            step["source_event_id"],
+            step["delivered_event_id"] if step["kind"] == "social_delivery" else None,
+        )
+        if event_id is not None
+    }
+    event_rows: dict[int, RowMapping] = {}
+    if linked_ids:
+        content = func.substr(ChatEventModel.content, 1, 501) if include_content else literal(None)
+        event_rows = {
+            row["id"]: row
+            for row in (
+                await session.execute(
+                    select(
+                        ChatEventModel.id.label("id"),
+                        ChatEventModel.direction.label("direction"),
+                        ChatEventModel.author_kind.label("author_kind"),
+                        ChatEventModel.suppression_status.label("suppression_status"),
+                        ChatEventModel.sender_group_card.label("sender_group_card"),
+                        ChatEventModel.sender_nickname.label("sender_nickname"),
+                        ChatEventModel.canonical_conversation_id.label("conversation_id"),
+                        ChatEventModel.occurred_at.label("occurred_at"),
+                        content.label("content"),
+                    ).where(ChatEventModel.id.in_(linked_ids))
+                )
+            ).mappings()
+        }
+    for turn in turns:
+        steps = cast(list[_StepRow], turn["steps"])
+        source_ids = {step["source_event_id"] for step in steps}
+        delivered_ids = {
+            step["delivered_event_id"] for step in steps if step["kind"] == "social_delivery"
+        }
+        messages = []
+        for event_id in sorted(linked_ids & (source_ids | delivered_ids)):
+            row = event_rows.get(event_id)
+            if row is None:
+                continue
+            received = (
+                event_id in source_ids
+                and row["direction"] == "inbound"
+                and row["conversation_id"] == conversation_id
+            )
+            sent = (
+                event_id in delivered_ids
+                and row["direction"] == "outbound"
+                and row["author_kind"] == "yuki"
+                and row["suppression_status"] == "keeper"
+            )
+            if not received and not sent:
+                continue
+            snippet = row["content"]
+            messages.append(
+                {
+                    "event_id": event_id,
+                    "direction": "received" if received else "sent",
+                    "sender_display_name": (
+                        row["sender_group_card"] or row["sender_nickname"] or None
+                    )
+                    if received
+                    else "Yuki",
+                    "delivery_status": "confirmed" if sent else None,
+                    "conversation_id": row["conversation_id"],
+                    "occurred_at": _stamp(row["occurred_at"]),
+                    "content_truncated": bool(include_content and snippet and len(snippet) > 500),
+                    "content": f"{snippet[:500]}…" if snippet and len(snippet) > 500 else snippet,
+                }
+            )
+        turn["messages"] = messages
+        turn["messages_truncated"] = turn["steps_truncated"]
+
+
 async def read_conversation_execution(
     reader: Callable[[], AbstractAsyncContextManager[AsyncSession]],
     conversation_id: ConversationId,
     recorder: TraceRecorder | None,
     *,
     include_content: bool = False,
+    turn_id: str | None = None,
+    before_step_id: int | None = None,
 ) -> ActivityView:
     """Active means an actual process-local Runner span, never an unmatched old start."""
     observed_at = datetime.now(UTC)
+    if (turn_id is None) != (before_step_id is None):
+        raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
+    if turn_id is not None:
+        require_opaque_token(turn_id, name="turn_id", max_length=128)
+        if type(before_step_id) is not int or not 1 <= before_step_id <= 2**63 - 1:
+            raise ControlQueryError(Problem(ProblemCode.VALIDATION_ERROR))
     live = recorder.live_spans(conversation_id.text) if recorder else ()
     active_by_turn: dict[str, list[LiveTraceSpan]] = {}
     for span in live:
@@ -137,6 +235,37 @@ async def read_conversation_execution(
 
         if await session.get(CanonicalConversationModel, conversation_id.text) is None:
             raise ControlQueryError(Problem(ProblemCode.NOT_FOUND))
+        if turn_id is not None:
+            root = await session.scalar(
+                text(
+                    "SELECT id FROM execution_trace_entries INDEXED BY ix_execution_trace_turn_id "
+                    "WHERE turn_id = :turn_id AND conversation_id = :conversation_id "
+                    "AND expires_at > :observed_at "
+                    "AND kind IN ('chat_processing_start', 'turn_start') LIMIT 1"
+                ).bindparams(bindparam("observed_at", type_=DateTime(timezone=True))),
+                {
+                    "turn_id": turn_id,
+                    "conversation_id": conversation_id.text,
+                    "observed_at": observed_at,
+                },
+            )
+            if root is None:
+                raise ControlQueryError(Problem(ProblemCode.NOT_FOUND))
+            steps, truncated, _, _ = await _steps(
+                session,
+                conversation_id=conversation_id.text,
+                turn_id=turn_id,
+                observed_at=observed_at,
+                before_step_id=before_step_id,
+            )
+            turn: dict[str, object] = {
+                "turn_id": turn_id,
+                "original_conversation_id": conversation_id.text,
+                "steps": steps,
+                "steps_truncated": truncated,
+            }
+            await _attach_messages(session, [turn], conversation_id.text, include_content)
+            return ActivityView(turn_id, turn)
         # Ordinary tool/model steps far outnumber roots in a busy group.
         # Keep the predicate literal so SQLite can select the partial index.
         root_statement = (
@@ -218,88 +347,7 @@ async def read_conversation_execution(
         )
         recent = recent[:2]
         turns = [*active, *recent]
-        linked_ids = {
-            event_id
-            for turn in turns
-            for step in cast(list[_StepRow], turn["steps"])
-            for event_id in (
-                step["source_event_id"],
-                step["delivered_event_id"] if step["kind"] == "social_delivery" else None,
-            )
-            if event_id is not None
-        }
-        event_rows: dict[int, RowMapping] = {}
-        if linked_ids:
-            content = (
-                func.substr(ChatEventModel.content, 1, 501) if include_content else literal(None)
-            )
-            event_rows = {
-                row["id"]: row
-                for row in (
-                    await session.execute(
-                        select(
-                            ChatEventModel.id.label("id"),
-                            ChatEventModel.direction.label("direction"),
-                            ChatEventModel.author_kind.label("author_kind"),
-                            ChatEventModel.suppression_status.label("suppression_status"),
-                            ChatEventModel.sender_group_card.label("sender_group_card"),
-                            ChatEventModel.sender_nickname.label("sender_nickname"),
-                            ChatEventModel.canonical_conversation_id.label("conversation_id"),
-                            ChatEventModel.occurred_at.label("occurred_at"),
-                            content.label("content"),
-                        ).where(ChatEventModel.id.in_(linked_ids))
-                    )
-                ).mappings()
-            }
-        for turn in turns:
-            steps = cast(list[_StepRow], turn["steps"])
-            source_ids = {step["source_event_id"] for step in steps}
-            delivered_ids = {
-                step["delivered_event_id"]
-                for step in steps
-                if step["kind"] == "social_delivery"
-            }
-            messages = []
-            for event_id in sorted(linked_ids & (source_ids | delivered_ids)):
-                row = event_rows.get(event_id)
-                if row is None:
-                    continue
-                received = (
-                    event_id in source_ids
-                    and row["direction"] == "inbound"
-                    and row["conversation_id"] == conversation_id.text
-                )
-                sent = (
-                    event_id in delivered_ids
-                    and row["direction"] == "outbound"
-                    and row["author_kind"] == "yuki"
-                    and row["suppression_status"] == "keeper"
-                )
-                if not received and not sent:
-                    continue
-                snippet = row["content"]
-                messages.append(
-                    {
-                        "event_id": event_id,
-                        "direction": "received" if received else "sent",
-                        "sender_display_name": (
-                            row["sender_group_card"] or row["sender_nickname"] or None
-                        )
-                        if received
-                        else "Yuki",
-                        "delivery_status": "confirmed" if sent else None,
-                        "conversation_id": row["conversation_id"],
-                        "occurred_at": _stamp(row["occurred_at"]),
-                        "content_truncated": bool(
-                            include_content and snippet and len(snippet) > 500
-                        ),
-                        "content": f"{snippet[:500]}…"
-                        if snippet and len(snippet) > 500
-                        else snippet,
-                    }
-                )
-            turn["messages"] = messages
-            turn["messages_truncated"] = turn["steps_truncated"]
+        await _attach_messages(session, turns, conversation_id.text, include_content)
         if turns:
             model = ModelInvocationModel
             usage_rows = (

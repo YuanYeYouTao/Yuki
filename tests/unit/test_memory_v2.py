@@ -1268,7 +1268,7 @@ async def test_worker_isolates_job_completion_failure(
 
 
 @pytest.mark.asyncio
-async def test_context_keeps_facts_in_current_entity_blocks_only(database: Database) -> None:
+async def test_context_does_not_automatically_inject_facts(database: Database) -> None:
     memories = MemoryFactService(MemoryFactRepository(database))
     await memories.remember(_fact(content="只属于当前人物", memory_key="context:exact"))
     await memories.remember(
@@ -1330,23 +1330,28 @@ async def test_context_keeps_facts_in_current_entity_blocks_only(database: Datab
     context = next(item["data"] for item in items if item["id"] == "context.people_and_scene")
     blocks = {item["id"]: item["data"] for item in context["items"]}
 
-    assert [item["content"] for item in blocks["current_person"]["facts"]] == ["只属于当前人物"]
-    assert [item["content"] for item in blocks["current_person_in_group"]["facts"]] == [
-        "当前群内称呼"
-    ]
-    assert [item["content"] for item in blocks["current_group"]["facts"]] == ["只属于当前群"]
-    assert "另一个人的秘密" not in envelope
+    assert "current_person" in blocks
+    assert "current_group" in blocks
+    assert all("facts" not in block for block in blocks.values())
+    for fact_content in (
+        "只属于当前人物",
+        "只属于当前群",
+        "当前群内称呼",
+        "另一个群的秘密",
+        "另一个人的秘密",
+    ):
+        assert fact_content not in envelope
 
 
 @pytest.mark.asyncio
-async def test_context_includes_authorized_person_facts_without_scanning_other_groups(
+async def test_context_keeps_mentioned_person_facts_for_on_demand_search(
     database: Database,
 ) -> None:
     memories = MemoryFactService(MemoryFactRepository(database))
-    person_fact = await memories.remember(
+    await memories.remember(
         _fact(content="小李喜欢水彩绘画", memory_key="shared:exact", user_id="1002")
     )
-    group_fact = await memories.remember(
+    await memories.remember(
         _fact(
             content="小李在本群负责美术",
             memory_key="shared:exact",
@@ -1391,17 +1396,10 @@ async def test_context_includes_authorized_person_facts_without_scanning_other_g
     items, _ = json.JSONDecoder().raw_decode(envelope[envelope.index("[") :])
     context = next(item["data"] for item in items if item["id"] == "context.people_and_scene")
     blocks = {item["id"]: item["data"] for item in context["items"]}
-    referenced = blocks["referenced_person.0"]
-
-    assert referenced["user_id"] == "1002"
-    assert [fact["fact_id"] for fact in referenced["person_facts"]] == [person_fact.id]
-    assert [fact["fact_id"] for fact in referenced["group_facts"]] == [group_fact.id]
-    assert person_fact.id in {
-        fact["fact_id"]
-        for values in (referenced["person_facts"], referenced["group_facts"])
-        for fact in values
-    }
-    assert blocks["current_person"]["facts"] == []
+    assert "current_person" in blocks
+    assert "referenced_person.0" not in blocks
+    assert "小李喜欢水彩绘画" not in envelope
+    assert "小李在本群负责美术" not in envelope
     assert "另一个群的秘密" not in envelope
 
 

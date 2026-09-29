@@ -97,7 +97,9 @@ WebUI 查询不会回传密钥；客户端不跨供应商或密钥来源共享�
 新增供应商示例见 [多供应商配置](../../config/model_profiles.providers.example.toml)。
 Gemini 3.8 Flash 的官方模型 ID 是 `gemini-3.8-flash`。WebUI 的 Google Gemini 预设使用
 `https://generativelanguage.googleapis.com/v1beta` 与原生 GenerateContent，预填该 ID、
-`medium` 思考强度及文字、图片、工具、结构化输出能力。适配器保留工具回合的 thought signature，
+`low` 思考强度及文字、图片、工具、结构化输出能力。Gemini 3.8 的 Yuki 连接使用
+`thinkingLevel`，拒绝该型号的固定 `thinkingBudget` 配置；代理转发仍需另行核对，不能把
+代理改写误认为 Yuki 请求。适配器保留工具回合的 thought signature，
 按上游 `cachedContentTokenCount` 统计缓存。Google 原生搜索须在此连接明确选择；默认仍走
 部署配置的外部搜索。此连接不实现 Interactions API 或 Live/TTS；这些能力不能因为模型
 本身支持就标成已接入。
@@ -123,6 +125,17 @@ Gemini 3.8 Flash 的官方模型 ID 是 `gemini-3.8-flash`。WebUI 的 Google Ge
 - [执行诊断](execution-trace.md) 单独保存实际返回的可读思考和工具结果；正文权限查询，按期清理。
   不透明签名/加密状态只留摘要，原恢复 journal 继续按协议私有合同保存。
 - 请求原生服务端工具时，传输结果不明不自动重试；普通有界传输重试仍计入 Work 请求预算。
+
+## 用量与 HTTP 请求口径
+
+`model_invocations` 一行表示一次逻辑模型调用，`calls` 继续按该行计数。`physical_request_count`
+只统计实际进入 HTTP 客户端的请求尝试，包括传输重试和 Claude 原生搜索暂停后的续发；
+路由、配置或本地校验失败不计入。`unknown_usage_request_count` 统计其中未获得上游总 Token
+报告的尝试，不能按零 Token 或零费用处理。历史调用的两个字段为 NULL，无法从原逻辑记录
+反推出真实 HTTP 次数。缓存率只使用上游明确报告缓存量的输入作分母，并同时保留未报告计数。
+
+原生搜索是否启用以当次请求合同记录；Google/Claude 的原生搜索可能另有工具费用，当前账本
+没有供应商账单或可靠的原生工具价格，费用显示为未知，不从 Token 用量推算为零。
 
 ## 验证边界与协议来源
 

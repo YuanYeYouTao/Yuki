@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.dialects.sqlite import insert
 
+from qq_ai_bot.memory.authorized_scope import AuthorizedMemoryScope, authorized_fact_condition
 from qq_ai_bot.memory.embedding.models import (
     EmbeddingProviderProfile,
     MemoryEmbeddingProfileRecord,
@@ -49,6 +50,61 @@ class MemoryEmbeddingRepository:
     @property
     def database(self) -> Database:
         return self._database
+
+    async def load_authorized_vectors(
+        self,
+        *,
+        scope: AuthorizedMemoryScope,
+        profile_id: int,
+        kinds: tuple[str, ...],
+        temporal: MemoryTemporalIntent | None = None,
+        scan_limit: int = 50000,
+    ) -> tuple[tuple[StoredTargetVector, ...], bool]:
+        """Bound the global vector scan; signal if a later owner may be omitted."""
+        conditions: list[Any] = [
+            authorized_fact_condition(scope),
+            *strict_time_conditions(temporal),
+            MemoryEmbeddingModel.profile_id == profile_id,
+            MemoryFactModel.status == "active",
+            MemoryFactModel.review_state != "quarantined",
+            or_(
+                MemoryFactModel.valid_until.is_(None),
+                MemoryFactModel.valid_until > datetime.now(UTC),
+            ),
+        ]
+        if kinds:
+            conditions.append(MemoryFactModel.kind.in_(kinds))
+        async with self._database.sessions() as session:
+            rows = (
+                await session.execute(
+                    select(
+                        MemoryFactModel.id,
+                        MemoryEmbeddingModel.content_hash,
+                        MemoryEmbeddingModel.vector_blob,
+                        MemoryFactModel.kind,
+                        MemoryFactModel.category,
+                        MemoryFactModel.memory_key,
+                        MemoryFactModel.content,
+                    )
+                    .join(MemoryEmbeddingModel, MemoryEmbeddingModel.fact_id == MemoryFactModel.id)
+                    .where(*conditions)
+                    .order_by(MemoryFactModel.id.asc())
+                    .limit(scan_limit + 1)
+                )
+            ).all()
+        truncated = len(rows) > scan_limit
+        return tuple(
+            StoredTargetVector(
+                fact_id=int(row.id),
+                content_hash=str(row.content_hash),
+                vector_blob=bytes(row.vector_blob),
+                kind=str(row.kind),
+                category=str(row.category),
+                memory_key=str(row.memory_key),
+                content=str(row.content),
+            )
+            for row in rows[:scan_limit]
+        ), truncated
 
     async def ensure_profile(
         self, profile: EmbeddingProviderProfile

@@ -611,6 +611,9 @@ class ControlActivityQueryAdapter:
                         "completion_tokens": row.completion_tokens,
                         "cached_prompt_tokens": row.cached_prompt_tokens,
                         "total_tokens": row.total_tokens,
+                        "physical_request_count": row.physical_request_count,
+                        "unknown_usage_request_count": row.unknown_usage_request_count,
+                        "native_search_requested": row.native_search_requested,
                         "latency_seconds": row.latency_seconds,
                         "error_category": row.error_category,
                         "created_at": _stamp(row.created_at),
@@ -662,6 +665,11 @@ class ControlActivityQueryAdapter:
                 func.sum(model.cached_prompt_tokens).filter(model.prompt_tokens.is_not(None)),
                 0,
             ),
+            func.coalesce(func.sum(model.physical_request_count), 0),
+            func.count(model.id).filter(model.physical_request_count.is_(None)),
+            func.coalesce(func.sum(model.unknown_usage_request_count), 0),
+            func.count(model.id).filter(model.native_search_requested.is_(True)),
+            func.count(model.id).filter(model.native_search_requested.is_(None)),
         )
         period = (model.created_at >= since, model.created_at < until)
         bucket = func.strftime(
@@ -708,11 +716,25 @@ class ControlActivityQueryAdapter:
                 )
             ).all()
 
-        def usage(values: Any) -> dict[str, int | float | None]:
+        def usage(values: Any) -> dict[str, int | float | str | None]:
             reported_input = int(values[6] or 0)
             reported_cached = int(values[8] or 0)
+            native_search_invocations = int(values[12] or 0)
             return {
                 "calls": int(values[0] or 0),
+                "physical_requests": int(values[9] or 0),
+                "physical_requests_unreported_calls": int(values[10] or 0),
+                "unknown_usage_requests": int(values[11] or 0),
+                "native_search_invocations": native_search_invocations,
+                "native_search_unreported_calls": int(values[13] or 0),
+                "native_search_cost": None,
+                "native_search_cost_status": (
+                    "not_reported"
+                    if native_search_invocations
+                    else "unknown_historical"
+                    if values[13]
+                    else "not_applicable"
+                ),
                 "input_tokens": int(values[1] or 0),
                 "output_tokens": int(values[2] or 0),
                 "total_tokens": int(values[3] or 0),

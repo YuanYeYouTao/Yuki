@@ -83,6 +83,7 @@ _TERMINAL_MUTATIONS = frozenset(
 _MEMORY_WRITE_TOOLS = frozenset({"memory_change"})
 _MEMORY_READ_TOOLS = frozenset(
     {
+        "search_memory",
         "get_person_memories",
         "get_group_memories",
         "get_self_memories",

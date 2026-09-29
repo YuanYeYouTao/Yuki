@@ -82,7 +82,13 @@ class ControlQueryService:
     """Authorize then project. Does not invent principals or actors."""
 
     async def read_conversation_execution(
-        self, context: object, conversation_id: ConversationId, *, include_content: bool = False
+        self,
+        context: object,
+        conversation_id: ConversationId,
+        *,
+        include_content: bool = False,
+        turn_id: str | None = None,
+        before_step_id: int | None = None,
     ) -> ActivityView:
         authorized = _require_context(context)
         _require_capability(authorized, method_capability("read_conversation_execution"))
@@ -90,8 +96,15 @@ class ControlQueryService:
             raise TypeError("include_content must be bool")
         if include_content:
             _require_capability(authorized, "control.chat.content.read")
+        if turn_id is None and before_step_id is None:
+            return await self._port.read_conversation_execution(
+                conversation_id, include_content=include_content
+            )
         return await self._port.read_conversation_execution(
-            conversation_id, include_content=include_content
+            conversation_id,
+            include_content=include_content,
+            turn_id=turn_id,
+            before_step_id=before_step_id,
         )
 
     async def list_event_turns(

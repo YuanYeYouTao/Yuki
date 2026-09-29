@@ -873,11 +873,16 @@ class AgentRunner:
                     if isinstance(sources, list):
                         runtime.work_control.session.record_search_sources(
                             [
-                                (source["url"], source.get("title", ""))
+                                (
+                                    source["url"],
+                                    source.get("title", ""),
+                                    source.get("snippet", ""),
+                                )
                                 for source in sources
                                 if isinstance(source, dict)
                                 and isinstance(source.get("url"), str)
                                 and isinstance(source.get("title", ""), str)
+                                and isinstance(source.get("snippet", ""), str)
                             ]
                         )
                 if call.function.name in EVIDENCE_TOOLS:

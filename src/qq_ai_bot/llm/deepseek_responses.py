@@ -38,6 +38,7 @@ from qq_ai_bot.execution_trace.recorder import record_http_response, trace_span
 from qq_ai_bot.llm.base import (
     LLMConfigurationError,
     LLMEmptyResponseError,
+    LLMError,
     LLMInvalidRequestError,
     LLMInvalidResponseError,
     LLMNativeToolError,
@@ -48,6 +49,7 @@ from qq_ai_bot.llm.base import (
 )
 from qq_ai_bot.llm.http_errors import check_provider_response
 from qq_ai_bot.llm.wire_diagnostics import WireRequestObserver
+from qq_ai_bot.model_runtime.request_accounting import current_provider_attempts
 
 logger = logging.getLogger(__name__)
 
@@ -160,13 +162,22 @@ class DeepSeekResponsesProvider(LLMProvider):
             ) from exc
 
         latency = time.perf_counter() - started
-        parsed = self._parse_response(
-            response,
-            self._request_continuation(request),
-            function_outputs=(),
-            allowed_tool_names=frozenset(tool.name for tool in request.tools),
-            latency=latency,
-        )
+        counter = current_provider_attempts.get()
+        reported_usage = self._reported_usage(response)
+        if counter is not None:
+            counter.reported_usage(reported_usage.get("total_tokens"))
+        try:
+            parsed = self._parse_response(
+                response,
+                self._request_continuation(request),
+                function_outputs=(),
+                allowed_tool_names=frozenset(tool.name for tool in request.tools),
+                latency=latency,
+            )
+        except LLMError as exc:
+            if reported_usage:
+                exc.diagnostics = {**exc.diagnostics, "usage": reported_usage}
+            raise
         completed = sum(
             event.status is NativeToolStatus.COMPLETED for event in parsed.native_tool_events
         )
@@ -360,6 +371,9 @@ class DeepSeekResponsesProvider(LLMProvider):
             "provider", {"protocol": "responses", "body": payload, "dispatch": "prepared"}
         ):
             await check_model_dispatch()
+            counter = current_provider_attempts.get()
+            if counter is not None:
+                counter.dispatched()
             response = await self._client.post(
                 "/responses",
                 headers={**self._headers, "Authorization": f"Bearer {self._api_key}"},
@@ -367,8 +381,50 @@ class DeepSeekResponsesProvider(LLMProvider):
                 timeout=self._timeout,
             )
             await record_http_response(response)
-            check_provider_response(response)
+            try:
+                check_provider_response(response)
+            except LLMError as exc:
+                reported_usage = self._reported_usage(response)
+                counter = current_provider_attempts.get()
+                if counter is not None:
+                    counter.reported_usage(reported_usage.get("total_tokens"))
+                if reported_usage:
+                    exc.diagnostics = {**exc.diagnostics, "usage": reported_usage}
+                raise
         return response
+
+    @classmethod
+    def _reported_usage(cls, response: httpx.Response) -> dict[str, int]:
+        """Only numeric usage crosses the diagnostic boundary, even on failure."""
+        try:
+            payload = response.json()
+        except ValueError:
+            return {}
+        usage = payload.get("usage") if isinstance(payload, dict) else None
+        if not isinstance(usage, dict):
+            return {}
+
+        def nonnegative(value: object) -> int | None:
+            parsed = cls._integer(value)
+            return parsed if parsed is not None and parsed >= 0 else None
+
+        input_tokens = nonnegative(usage.get("input_tokens"))
+        output_tokens = nonnegative(usage.get("output_tokens"))
+        total_tokens = nonnegative(usage.get("total_tokens"))
+        if total_tokens is None and input_tokens is not None and output_tokens is not None:
+            total_tokens = input_tokens + output_tokens
+        input_details = usage.get("input_tokens_details")
+        input_details = input_details if isinstance(input_details, dict) else {}
+        return {
+            name: value
+            for name, value in (
+                ("prompt_tokens", input_tokens),
+                ("completion_tokens", output_tokens),
+                ("total_tokens", total_tokens),
+                ("cached_prompt_tokens", nonnegative(input_details.get("cached_tokens"))),
+            )
+            if value is not None
+        }
 
     @classmethod
     def _parse_response(

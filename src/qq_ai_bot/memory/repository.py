@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.domain.identity import AuthorKind
+from qq_ai_bot.memory.authorized_scope import AuthorizedMemoryScope, authorized_fact_condition
 from qq_ai_bot.memory.eligibility import MemoryEventEligibilityPolicy
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
@@ -228,6 +229,32 @@ class MemoryFactRepository:
     @property
     def database(self) -> Database:
         return self._database
+
+    async def get_active_authorized(
+        self, scope: AuthorizedMemoryScope, fact_ids: tuple[int, ...]
+    ) -> tuple[MemoryFact, ...]:
+        """Hydrate globally selected candidates under the same SQL ACL."""
+        unique_ids = tuple(dict.fromkeys(fact_ids))
+        if not unique_ids:
+            return ()
+        async with self._database.sessions() as session:
+            rows = await self._execute_facts_with_count(
+                session,
+                [
+                    MemoryFactModel.id.in_(unique_ids),
+                    authorized_fact_condition(scope),
+                    MemoryFactModel.status == MemoryStatus.ACTIVE.value,
+                    MemoryFactModel.review_state != "quarantined",
+                    or_(
+                        MemoryFactModel.valid_until.is_(None),
+                        MemoryFactModel.valid_until > datetime.now(UTC),
+                    ),
+                ],
+                order_by=(),
+            )
+            projected_rows = await project_memory_fact_rows(session, rows)
+        projected = {fact.id: fact for fact in projected_rows}
+        return tuple(projected[fact_id] for fact_id in unique_ids if fact_id in projected)
 
     async def repair_missing_activation(self, *, limit: int, session: AsyncSession) -> int:
         """Initialize missing states only; retain original age and no invented usage."""

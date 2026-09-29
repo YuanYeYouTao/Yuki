@@ -162,7 +162,7 @@ def test_conditional_mutation_result_preserves_explicit_commit_state() -> None:
 def test_mutation_commit_resolution_uses_explicit_result_then_descriptor_effect() -> None:
     descriptors = ChatToolCapabilityProvider(
         (
-            _tool("get_person_memories"),
+            _tool("search_memory"),
             _tool("get_my_capabilities"),
             _tool("read_tool_artifact"),
         ),

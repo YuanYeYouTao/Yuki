@@ -57,6 +57,8 @@ async def run_short_state_cases(database, tmp_path, context):
     with state.store._transaction() as db:
         db.execute("UPDATE short_state SET expires_at=0")
     assert state.snapshot()[0]["text"] == ""
+    assert state.envelope(state.snapshot())["data"] == []
+    assert await state.inject(initial) == initial
     assert not state.update({"slot": 1, "text": "stale", "expected_revision": 1})["ok"]
 
     provider = FakeLLMProvider()

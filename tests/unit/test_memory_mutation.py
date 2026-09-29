@@ -24,7 +24,8 @@ from qq_ai_bot.conversation.hydrate import bump_canonical_generation
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.memory_config import MemoryConfigScope
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.identity.canonical_repository import active_space_id_for
+from qq_ai_bot.domain.tool_actor import ToolActor
+from qq_ai_bot.identity.canonical_repository import active_space_id_for, ensure_person, ensure_space
 from qq_ai_bot.identity.db_models import CanonicalSpaceModel
 from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.llm.fake import FakeLLMProvider
@@ -2613,10 +2614,8 @@ async def test_user_message_turn_can_create_self_memory_from_current_event(
     assert fact.visibility_type is SelfMemoryVisibility.GROUP
     assert fact.visibility_group_id == "3001"
 
-    self_tool = next(
-        tool for tool in tools.definitions(runtime) if tool.name == "get_self_memories"
-    )
-    assert "Yuki 自己" in self_tool.description
+    self_tool = next(tool for tool in tools.definitions(runtime) if tool.name == "search_memory")
+    assert "SELF" in self_tool.description
     listed = json.loads(
         await tools.execute(
             "get_self_memories",
@@ -3422,6 +3421,57 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
             excerpt="我喜欢围棋",
         ),
     )
+    # An old shared group outside the current scene still participates, while
+    # an unrelated person cannot enter the no-target search.
+    async with database.sessions() as session, session.begin():
+        await ensure_space(session, "3003")
+        await ensure_space(session, "3004")
+        await ensure_person(session, "4004")
+        await ensure_person(session, "5005")
+    await people.observe(user_id="1001", nickname="请求者", group_id="3003")
+    await people.observe(user_id="4004", nickname="旧群友", group_id="3003")
+    await people.observe(user_id="5005", nickname="陌生人", group_id="3004")
+    historical_fact = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="4004",
+            memory_key="hobby:specimens",
+            category="hobby",
+            content="喜欢昆虫标本",
+            source_type=MemorySourceType.AUTOMATIC,
+        )
+    )
+    late_high_rank_fact = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="4004",
+            memory_key="hobby:astronomy",
+            category="hobby",
+            content="旧群友喜欢天文",
+            importance=5,
+            source_type=MemorySourceType.AUTOMATIC,
+        )
+    )
+    inaccessible_fact = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="5005",
+            memory_key="hobby:specimens",
+            category="hobby",
+            content="喜欢昆虫标本",
+            source_type=MemorySourceType.AUTOMATIC,
+        )
+    )
+    group_only_fact = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.GROUP,
+            group_id="3001",
+            memory_key="event:hike",
+            category="event",
+            content="群活动远足",
+            source_type=MemorySourceType.AUTOMATIC,
+        )
+    )
     inbound = InboundMessage(
         message_id="member-read",
         event_type="message:group:normal",
@@ -3446,13 +3496,170 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
         current_group_id="3001",
         mentioned_user_ids=("2002",),
     )
-    definition = next(
-        tool for tool in tools.definitions(runtime) if tool.name == "get_person_memories"
-    )
+    definitions = tools.definitions(runtime)
+    assert not {"get_person_memories", "get_group_memories", "get_self_memories"} & {
+        tool.name for tool in definitions
+    }
+    definition = next(tool for tool in definitions if tool.name == "search_memory")
     properties = definition.parameters["properties"]
-    assert definition.parameters["required"] == []
-    assert set(properties) >= {"subject_ref", "display_name", "user_id"}  # type: ignore[arg-type]
-    assert "mentioned_user_1" in properties["subject_ref"]["enum"]  # type: ignore[index]
+    assert definition.parameters["required"] == ["query"]
+    assert set(properties) >= {"query", "target", "purpose", "entities"}  # type: ignore[arg-type]
+    assert "mentioned_user_1" in properties["target"]["properties"]["subject_ref"]["enum"]  # type: ignore[index]
+
+    global_search = json.loads(
+        await tools.execute("search_memory", json.dumps({"query": "喜欢天文"}), runtime)
+    )
+    assert global_search["ok"], global_search
+    assert global_search["data"]["result_scope"] == "authorized_maximum"
+    assert global_search["data"]["partial_reason"] == "semantic_not_configured"
+    assert projected_fact.id in {row["fact_id"] for row in global_search["data"]["memories"]}
+    top_one = json.loads(
+        await tools.execute(
+            "search_memory", json.dumps({"query": "旧群友喜欢天文", "limit": 1}), runtime
+        )
+    )
+    assert [row["fact_id"] for row in top_one["data"]["memories"]] == [late_high_rank_fact.id]
+    historical_search = json.loads(
+        await tools.execute("search_memory", json.dumps({"query": "昆虫标本"}), runtime)
+    )
+    historical_ids = {row["fact_id"] for row in historical_search["data"]["memories"]}
+    assert historical_fact.id in historical_ids
+    assert inaccessible_fact.id not in historical_ids
+    # A historical canonical owner remains searchable after its transport Binding ends.
+    from qq_ai_bot.identity.db_models import IdentityBindingModel
+
+    async with database.sessions() as session, session.begin():
+        await session.execute(
+            update(IdentityBindingModel)
+            .where(IdentityBindingModel.external_account_id == "4004")
+            .values(status="disabled")
+        )
+    unbound_search = json.loads(
+        await tools.execute("search_memory", json.dumps({"query": "昆虫标本"}), runtime)
+    )
+    assert unbound_search["ok"], unbound_search
+    assert historical_fact.id in {row["fact_id"] for row in unbound_search["data"]["memories"]}
+    person_only = replace(
+        runtime,
+        origin=TurnOrigin.PLUGIN_SESSION,
+        memory_allowed_scopes=(MemoryScopeType.PERSON, MemoryScopeType.PERSON_GROUP),
+    )
+    group_only = replace(
+        runtime,
+        origin=TurnOrigin.PLUGIN_SESSION,
+        memory_allowed_scopes=(MemoryScopeType.GROUP,),
+    )
+    person_result = json.loads(
+        await tools.execute("search_memory", json.dumps({"query": "喜欢天文"}), person_only)
+    )
+    assert projected_fact.id in {row["fact_id"] for row in person_result["data"]["memories"]}
+    assert group_only_fact.id not in {row["fact_id"] for row in person_result["data"]["memories"]}
+    group_result = json.loads(
+        await tools.execute("search_memory", json.dumps({"query": "群活动远足"}), group_only)
+    )
+    assert group_only_fact.id in {row["fact_id"] for row in group_result["data"]["memories"]}
+    assert (
+        json.loads(
+            await tools.execute(
+                "get_memory_fact", json.dumps({"fact_id": group_fact.id}), group_only
+            )
+        )["error"]
+        == "memory_not_found"
+    )
+    assert json.loads(
+        await tools.execute(
+            "get_memory_fact", json.dumps({"fact_id": group_only_fact.id}), group_only
+        )
+    )["ok"]
+    strict_person_only = replace(person_only, memory_allowed_scopes=(MemoryScopeType.PERSON,))
+    strict_person_result = json.loads(
+        await tools.execute(
+            "search_memory", json.dumps({"query": "在本群负责摄影"}), strict_person_only
+        )
+    )
+    assert group_fact.id not in {row["fact_id"] for row in strict_person_result["data"]["memories"]}
+    self_actor = ToolActor(
+        user_id="",
+        bot_user_id="8000",
+        group_id="3001",
+        origin=TurnOrigin.SELF_INITIATIVE,
+        instruction="检查群记忆",
+        execution_id="self-memory-audit",
+        conversation_id="self-memory-conversation",
+        presence_id="self-memory-presence",
+        principal_kind="self",
+        initiative_run_id="self-memory-run",
+    )
+    self_runtime = replace(
+        runtime,
+        inbound=None,
+        actor_user_id="",
+        actor_context=self_actor,
+        origin=TurnOrigin.SELF_INITIATIVE,
+        execution_id=self_actor.execution_id,
+        initiative_run_id=self_actor.initiative_run_id,
+        conversation_id=self_actor.conversation_id,
+        presence_id=self_actor.presence_id,
+        scope_type=ScopeType.GROUP,
+        bot_user_id=self_actor.bot_user_id,
+    )
+    self_search = json.loads(
+        await tools.execute("search_memory", json.dumps({"query": "在本群负责摄影"}), self_runtime)
+    )
+    assert group_fact.id not in {row["fact_id"] for row in self_search["data"]["memories"]}
+    assert (
+        json.loads(
+            await tools.execute(
+                "get_memory_fact", json.dumps({"fact_id": group_fact.id}), self_runtime
+            )
+        )["error"]
+        == "memory_not_found"
+    )
+    assert (
+        json.loads(
+            await tools.execute(
+                "get_memory_fact", json.dumps({"fact_id": global_fact.id}), self_runtime
+            )
+        )["error"]
+        == "memory_not_found"
+    )
+    assert json.loads(
+        await tools.execute(
+            "get_memory_fact", json.dumps({"fact_id": group_only_fact.id}), self_runtime
+        )
+    )["ok"]
+    assert (
+        json.loads(
+            await tools.execute(
+                "search_memory",
+                json.dumps({"query": "喜欢天文", "target": {"scope": "person", "user_id": "2002"}}),
+                group_only,
+            )
+        )["error"]
+        == "permission_denied"
+    )
+    scoped_search = json.loads(
+        await tools.execute(
+            "search_memory",
+            json.dumps(
+                {
+                    "query": "喜欢天文",
+                    "target": {"scope": "person", "subject_ref": "mentioned_user_1"},
+                }
+            ),
+            runtime,
+        )
+    )
+    assert scoped_search["ok"]
+    assert scoped_search["data"]["result_scope"] == "explicit_targets"
+    denied_search = json.loads(
+        await tools.execute(
+            "search_memory",
+            json.dumps({"query": "喜欢围棋", "target": {"scope": "group", "group_id": "3002"}}),
+            runtime,
+        )
+    )
+    assert denied_search["error"] == "permission_denied"
 
     by_reference = json.loads(
         await tools.execute(
@@ -3555,7 +3762,8 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     historical_group = json.loads(
         await tools.execute("get_group_memories", json.dumps({"group_id": "3001"}), private_runtime)
     )
-    assert historical_group["ok"] and historical_group["data"]["memories"] == []
+    assert historical_group["ok"]
+    assert {row["fact_id"] for row in historical_group["data"]["memories"]} == {group_only_fact.id}
     from qq_ai_bot.identity.db_models import CanonicalSpaceModel
 
     async with database.sessions() as session, session.begin():
@@ -3565,6 +3773,11 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
             .where(CanonicalSpaceModel.id == old_space)
             .values(enabled=False)
         )
+    complete_search = json.loads(
+        await tools.execute("search_memory", json.dumps({"query": "昆虫标本"}), private_runtime)
+    )
+    assert complete_search["data"]["partial_reason"] == "semantic_not_configured"
+    assert complete_search["data"]["partial_reason"] != "owner_projection_unavailable"
     cross_group = replace(
         runtime, inbound=replace(inbound, group_id="3002"), current_group_id="3002"
     )

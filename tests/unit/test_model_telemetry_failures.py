@@ -4,6 +4,7 @@ import asyncio
 import sqlite3
 from dataclasses import replace
 
+import httpx
 import pytest
 from sqlalchemy import event
 from sqlalchemy.exc import OperationalError
@@ -23,11 +24,15 @@ from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.identity.routing import RouteSendError
 from qq_ai_bot.llm.base import (
     LLMAuthenticationError,
+    LLMEmptyResponseError,
     LLMInvalidRequestError,
     LLMInvalidResponseError,
     LLMTimeoutError,
+    LLMUnavailableError,
 )
+from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
+from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
 from qq_ai_bot.model_runtime.executor import TaskModelExecutor
 from qq_ai_bot.model_runtime.models import (
     ModelCapability,
@@ -107,6 +112,124 @@ def executor(provider, telemetry, protocol=ModelProtocol.CHAT_COMPLETIONS):
         pool=ModelClientPool(injected_profiles={"test": provider}),
         invocations=telemetry,
     )
+
+
+async def test_telemetry_counts_dispatched_retry_and_unknown_usage_separately():
+    requests = 0
+
+    def transport(_request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        if requests == 1:
+            return httpx.Response(503, json={"error": {"type": "overloaded"}})
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
+                ],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+            },
+        )
+
+    class Telemetry:
+        def __init__(self):
+            self.records = []
+
+        async def record(self, **values):
+            self.records.append(values)
+
+    async with httpx.AsyncClient(
+        base_url="https://wire.invalid/v1/", transport=httpx.MockTransport(transport)
+    ) as client:
+        provider = OpenAICompatibleProvider(
+            base_url="https://wire.invalid/v1/",
+            api_key="test",
+            timeout_seconds=2,
+            max_retries=1,
+            client=client,
+            provider_name="openai",
+        )
+        telemetry = Telemetry()
+        models = executor(provider, telemetry)
+        try:
+            response = await models.execute(
+                ModelTask.CHAT_AGENT,
+                ChatRequest(messages=(ChatMessage(role="user", content="hello"),)),
+            )
+        finally:
+            await models.close()
+
+    assert response.total_tokens == 8
+    assert requests == 2
+    assert len(telemetry.records) == 1  # One logical invocation.
+    assert telemetry.records[0]["physical_request_count"] == 2
+    assert telemetry.records[0]["unknown_usage_request_count"] == 1
+    assert telemetry.records[0]["total_tokens"] == 8
+
+
+@pytest.mark.parametrize(
+    ("status_code", "body", "error_type"),
+    [
+        (200, {"status": "failed", "output": []}, LLMUnavailableError),
+        (200, {"status": "completed", "output": []}, LLMEmptyResponseError),
+        (400, {"error": {"type": "bad_request"}}, LLMInvalidRequestError),
+    ],
+)
+async def test_deepseek_responses_failed_body_keeps_known_usage_and_request_count(
+    status_code, body, error_type
+):
+    class Telemetry:
+        def __init__(self):
+            self.records = []
+
+        async def record(self, **values):
+            self.records.append(values)
+
+    response_body = {
+        **body,
+        "usage": {
+            "input_tokens": 13,
+            "output_tokens": 2,
+            "input_tokens_details": {"cached_tokens": 4},
+            "private_extra": "must not enter diagnostics",
+        },
+    }
+
+    async with httpx.AsyncClient(
+        base_url="https://api.deepseek.com/",
+        transport=httpx.MockTransport(lambda _: httpx.Response(status_code, json=response_body)),
+    ) as client:
+        provider = DeepSeekResponsesProvider(
+            base_url="https://api.deepseek.com",
+            api_key="test",
+            timeout_seconds=2,
+            max_retries=0,
+            client=client,
+        )
+        telemetry = Telemetry()
+        models = executor(provider, telemetry, ModelProtocol.RESPONSES)
+        try:
+            with pytest.raises(error_type) as caught:
+                await models.execute(
+                    ModelTask.CHAT_AGENT,
+                    ChatRequest(messages=(ChatMessage(role="user", content="hello"),)),
+                )
+        finally:
+            await models.close()
+
+    assert caught.value.diagnostics["usage"] == {
+        "prompt_tokens": 13,
+        "completion_tokens": 2,
+        "total_tokens": 15,
+        "cached_prompt_tokens": 4,
+    }
+    assert len(telemetry.records) == 1
+    record = telemetry.records[0]
+    assert record["success"] is False
+    assert record["total_tokens"] == 15
+    assert record["physical_request_count"] == 1
+    assert record["unknown_usage_request_count"] == 0
 
 
 @pytest.mark.parametrize("protocol", list(ModelProtocol))

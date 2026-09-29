@@ -59,6 +59,7 @@ class DeepSeekSearchBridge:
     ) -> None:
         if not api_key:
             raise ValueError("DeepSeek search credentials are required")
+        self._cache_namespace = hashlib.sha256(api_key.encode()).digest()
         self.client = client or httpx.AsyncClient(timeout=timeout_seconds)
         self.headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
         self.media = media or MediaResolver(
@@ -77,7 +78,8 @@ class DeepSeekSearchBridge:
         if not 1 <= len(query) <= 400:
             raise WebSearchError("invalid_query", "搜索词须为 1–400 字符")
         key = hashlib.sha256(
-            json.dumps(asdict(request), sort_keys=True, default=str).encode()
+            self._cache_namespace
+            + json.dumps(asdict(request), sort_keys=True, default=str).encode()
         ).hexdigest()
         async with self.slot:
             cached = await asyncio.to_thread(self.state.access, key)

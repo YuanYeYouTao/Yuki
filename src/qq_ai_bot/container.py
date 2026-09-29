@@ -192,14 +192,13 @@ class ApplicationContainer:
         self.model_router = model_runtime.router
         self.models = model_runtime.executor
         self.provider = model_runtime.chat_provider
-        _, search_profile = self.model_router.route(ModelTask.CHAT_AGENT)
-        search_key = self.model_clients.api_key_for(search_profile)
-        self.web_bundle = WebModule(
+        self.web_module = WebModule(
             settings.web,
             lifecycle=self.lifecycle,
-            search_profile=search_profile,
-            search_api_key=search_key,
-        ).build()
+            catalog=self.model_profiles,
+            clients=self.model_clients,
+        )
+        self.web_bundle = self.web_module.build()
         self.web_provider = self.web_bundle.provider
         media = MediaModule(
             settings=settings.vision,
@@ -527,6 +526,7 @@ class ApplicationContainer:
             conversation_media=self.conversation_media,
             model_catalog=self.model_profiles,
             model_executor=self.models,
+            web_module=self.web_module,
             participation_snapshot=lambda: self.semantic_participation.control_snapshot(),
             autonomy_parameters=lambda: self.semantic_participation.control_model_parameters(),
             runtime_health=lambda: control_runtime_health(self),
@@ -722,10 +722,11 @@ class ApplicationContainer:
                     "find_contacts",
                 }
             )
-        if PluginPermission.MEMORY_PERSON_READ in permissions:
-            agent_capabilities.add("get_person_memories")
-        if PluginPermission.MEMORY_GROUP_READ in permissions:
-            agent_capabilities.add("get_group_memories")
+        if (
+            PluginPermission.MEMORY_PERSON_READ in permissions
+            or PluginPermission.MEMORY_GROUP_READ in permissions
+        ):
+            agent_capabilities.add("search_memory")
         if PluginPermission.WEB_SEARCH in permissions:
             agent_capabilities.add("web_search")
         if PluginPermission.WEB_READ in permissions:

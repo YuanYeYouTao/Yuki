@@ -15,6 +15,7 @@ import { stamp } from "./format";
 const flatten = (row: Row): Row => ({ ...row, ...((row.fields as Row) || {}) });
 const status = (value: unknown) => <Badge value={value} />;
 const count = (value: unknown) => Number(value || 0).toLocaleString("zh-CN");
+const knownCount = (value: unknown) => (value == null ? "—" : count(value));
 const amount = (row: Row, key: string) => Math.max(0, Number(row[key] || 0));
 const cacheRate = (usage: Row) => {
   const input = Number(usage.cache_reported_input_tokens || 0);
@@ -315,10 +316,29 @@ function UsageSummary({ refresh }: { refresh: number }) {
               <strong>{count(usage.output_tokens)}</strong>
             </div>
             <div>
-              <span>模型调用</span>
+              <span>逻辑调用</span>
               <strong>{count(usage.calls)}</strong>
             </div>
           </div>
+          <p className="small">
+            已记录 HTTP 请求尝试 {knownCount(usage.physical_requests)} 次
+            {Number(usage.physical_requests_unreported_calls) > 0 &&
+              ` · ${count(usage.physical_requests_unreported_calls)} 次历史调用无请求次数记录`}
+            {Number(usage.unknown_usage_requests) > 0 &&
+              ` · ${count(usage.unknown_usage_requests)} 次请求尝试未确认 Token 用量`}
+            。逻辑调用可能包含重试或供应商原生工具的续发请求。
+          </p>
+          {(Number(usage.native_search_invocations) > 0 ||
+            Number(usage.native_search_unreported_calls) > 0) && (
+            <p className="small usage-warning">
+              原生搜索若被供应商执行，额外费用未知；已标记{" "}
+              {count(usage.native_search_invocations)}
+              次启用原生搜索的逻辑调用
+              {Number(usage.native_search_unreported_calls) > 0 &&
+                `，另有 ${count(usage.native_search_unreported_calls)} 次历史调用无法判定是否启用原生搜索`}
+              。Token 用量不能代替供应商账单。
+            </p>
+          )}
           <p className="small">
             <CacheReport usage={usage} />
             。缓存状态未知的输入按已记录输入计入；若输入均已报告，确认占比是命中率下界。缓存
@@ -370,9 +390,21 @@ function UsageSummary({ refresh }: { refresh: number }) {
                     {String(model.provider)} · {String(model.model)}
                   </h3>
                   <p>
-                    {count(model.calls)} 次调用 · {count(model.total_tokens)}{" "}
-                    Token
+                    {count(model.calls)} 次逻辑调用 · 已记录 HTTP 请求尝试{" "}
+                    {knownCount(model.physical_requests)} 次 ·{" "}
+                    {count(model.total_tokens)} Token
                   </p>
+                  {Number(model.physical_requests_unreported_calls) > 0 && (
+                    <p className="small">
+                      {count(model.physical_requests_unreported_calls)}{" "}
+                      次历史调用无请求次数记录
+                    </p>
+                  )}
+                  {Number(model.native_search_invocations) > 0 && (
+                    <p className="small usage-warning">
+                      原生搜索若被执行，额外费用未知
+                    </p>
+                  )}
                   <p className="small">
                     <CacheReport usage={model} />
                   </p>
@@ -408,7 +440,9 @@ function UsageSummary({ refresh }: { refresh: number }) {
               columns={[
                 ["provider", "Provider"],
                 ["model", "模型"],
-                ["calls", "调用"],
+                ["calls", "逻辑调用", count],
+                ["physical_requests", "已知 HTTP 请求尝试", knownCount],
+                ["unknown_usage_requests", "未确认用量请求", count],
                 ["total_tokens", "Token", count],
                 ["input_tokens", "输入", count],
                 ["cached_input_tokens", "其中缓存", count],
@@ -433,7 +467,8 @@ function UsageSummary({ refresh }: { refresh: number }) {
               rows={tasks}
               columns={[
                 ["task", "用途"],
-                ["calls", "调用", count],
+                ["calls", "逻辑调用", count],
+                ["physical_requests", "已知 HTTP 请求尝试", knownCount],
                 ["total_tokens", "Token", count],
                 [
                   "cache_reported_uncached_tokens",
@@ -455,7 +490,8 @@ function UsageSummary({ refresh }: { refresh: number }) {
                 ["profile_id", "内部连接编号"],
                 ["provider", "供应商"],
                 ["model", "模型"],
-                ["calls", "调用", count],
+                ["calls", "逻辑调用", count],
+                ["physical_requests", "已知 HTTP 请求尝试", knownCount],
                 ["total_tokens", "Token", count],
                 [
                   "cache_reported_uncached_tokens",
@@ -543,6 +579,8 @@ export function Models(props: PageProps) {
             ["cached_prompt_tokens", "缓存命中"],
             ["completion_tokens", "输出"],
             ["total_tokens", "合计"],
+            ["physical_request_count", "HTTP 请求尝试", knownCount],
+            ["unknown_usage_request_count", "请求用量未知", knownCount],
             ["latency_seconds", "耗时（秒）"],
             ["error_category", "问题"],
           ]}

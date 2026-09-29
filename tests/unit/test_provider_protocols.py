@@ -635,6 +635,39 @@ def test_responses_revision_ignores_empty_new_defaults_and_canonicalizes_sets():
     assert alternate.profile_revision(ModelTask.CHAT_AGENT) != expected
 
 
+@pytest.mark.parametrize(
+    "image_location", ["messages", "continuation_messages", "continuation_items"]
+)
+async def test_image_input_capability_covers_continuation_delta(image_location):
+    profile = ModelProfile(
+        id="text-only",
+        provider="fake",
+        protocol=ModelProtocol.RESPONSES,
+        model="text-only",
+        timeout_seconds=1,
+        max_retries=0,
+        default_temperature=0,
+        default_max_output_tokens=100,
+        capabilities={ModelCapability.REASONING, ModelCapability.TOOLS},
+    )
+    executor = TaskModelExecutor(
+        router=ModelRouter(
+            ModelProfileCatalog(
+                profiles={profile.id: profile},
+                routes={task: ModelRoute(task=task, profile_id=profile.id) for task in ModelTask},
+            )
+        ),
+        pool=ModelClientPool(),
+    )
+    image = ChatMessage("user", "look", images=(ChatImage("data:image/png;base64,aW1hZ2U="),))
+    payload = {"messages": (ChatMessage("user", "hello"),), image_location: (image,)}
+    with pytest.raises(ValueError, match="does not support: image_input"):
+        await executor.execute(
+            ModelTask.CHAT_AGENT,
+            ChatRequest(**payload),
+        )
+
+
 async def test_gemini_parallel_receipts_keep_signature_and_call_order():
     async with httpx.AsyncClient() as client:
         adapter = provider(GeminiProvider, client)
@@ -668,6 +701,43 @@ async def test_gemini_parallel_receipts_keep_signature_and_call_order():
         assert all("_call_ids" not in item for item in payload["contents"])
 
 
+@pytest.mark.parametrize(
+    "effort", [ReasoningEffort.LOW, ReasoningEffort.MEDIUM, ReasoningEffort.HIGH]
+)
+async def test_gemini_38_sends_selected_thinking_level_without_fixed_budget(effort):
+    async with httpx.AsyncClient() as client:
+        adapter = provider(GeminiProvider, client)
+        payload = adapter._build_payload(
+            replace(request(), model="gemini-3.8-flash", reasoning_effort=effort)
+        )
+        assert payload["generationConfig"]["thinkingConfig"] == {"thinkingLevel": effort.value}
+        budget_adapter = provider(
+            GeminiProvider, client, options=ChatWireOptions(reasoning="budget")
+        )
+        with pytest.raises(LLMUnsupportedFeatureError, match="thinkingLevel"):
+            budget_adapter._build_payload(
+                replace(request(), model="gemini-3.8-flash", reasoning_effort=effort)
+            )
+
+
+def test_gemini_38_profile_rejects_fixed_budget_mode_before_save():
+    with pytest.raises(ValidationError, match="thinkingLevel"):
+        ModelProfile(
+            id="gemini",
+            provider="gemini",
+            protocol=ModelProtocol.GEMINI,
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            api_key_env="GEMINI_KEY",
+            model="gemini-3.8-flash",
+            timeout_seconds=120,
+            max_retries=0,
+            default_temperature=0.7,
+            default_max_output_tokens=8192,
+            capabilities=frozenset({ModelCapability.REASONING}),
+            wire_options=ChatWireOptions(reasoning="budget"),
+        )
+
+
 async def test_gemini_38_flash_native_wire_and_usage_without_paid_call():
     async with httpx.AsyncClient() as client:
         adapter = provider(GeminiProvider, client)
@@ -678,6 +748,7 @@ async def test_gemini_38_flash_native_wire_and_usage_without_paid_call():
         assert adapter._path(original) == "models/gemini-3.8-flash:generateContent"
         assert adapter._request_headers()["x-goog-api-key"] == "synthetic-key"
         assert payload["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "medium"}
+        assert "thinkingBudget" not in payload["generationConfig"]["thinkingConfig"]
         assert "temperature" not in payload["generationConfig"]
         assert payload["tools"][0]["functionDeclarations"][0]["name"] == "inspect"
         answer = adapter._parse(
@@ -1031,12 +1102,24 @@ async def test_claude_native_search_pause_preserves_encrypted_result_and_aggrega
     async with httpx.AsyncClient(
         base_url="https://wire.invalid/v1/", transport=httpx.MockTransport(transport)
     ) as client:
+        from qq_ai_bot.model_runtime.request_accounting import (
+            ProviderAttemptCounter,
+            current_provider_attempts,
+        )
+
         adapter = provider(AnthropicMessagesProvider, client)
         original = replace(
             request(), native_tools=(NativeToolDefinition(NativeToolType.WEB_SEARCH),)
         )
-        answer = await adapter.complete(original)
+        attempts = ProviderAttemptCounter()
+        token = current_provider_attempts.set(attempts)
+        try:
+            answer = await adapter.complete(original)
+        finally:
+            current_provider_attempts.reset(token)
         assert len(wires) == 2
+        assert attempts.requests == 2
+        assert attempts.unknown_usage_requests == 0
         assert wires[0]["tools"][-1] == {
             "type": "web_search_20250305",
             "name": "web_search",

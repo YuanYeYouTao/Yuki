@@ -42,6 +42,7 @@ from qq_ai_bot.memory.context import (
 )
 from qq_ai_bot.memory.enums import (
     MemoryContextMode,
+    MemoryRetrievalMode,
     MemoryScopeType,
     MemoryTargetRole,
     SelfMemoryVisibility,
@@ -72,6 +73,19 @@ from qq_ai_bot.time.models import TimeContext
 from qq_ai_bot.time.service import TimeContextService
 
 logger = logging.getLogger(__name__)
+
+
+def _empty_automatic_retrieval() -> MemoryRetrievalResult:
+    """Automatic context no longer recalls facts; the agent uses a memory tool."""
+
+    return MemoryRetrievalResult(
+        blocks=(),
+        hits=(),
+        candidate_count=0,
+        selected_count=0,
+        query_hash="",
+        mode=MemoryRetrievalMode.RELEVANT,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,26 +213,10 @@ class ContextAssembler:
             event_limit=runtime.context.local_event_limit,
         )
         snapshot = await self._load_history_snapshot(identity, turn=turn, before_event_id=None)
-        retrieval = memory_retrieval or await self._memory_context.retrieve_for_targets(
-            content=trigger.instruction,
-            targets=(
-                MemoryEntityTarget(
-                    role=MemoryTargetRole.CURRENT_GROUP,
-                    scope_type=MemoryScopeType.GROUP,
-                    group_id=trigger.group_id,
-                    block_id="current_group",
-                ),
-                MemoryEntityTarget(
-                    role=MemoryTargetRole.CURRENT_SELF,
-                    scope_type=MemoryScopeType.SELF,
-                    visibility_type=SelfMemoryVisibility.GROUP,
-                    visibility_group_id=trigger.group_id,
-                    block_id="current_self",
-                ),
-            ),
-            runtime=runtime,
-            memory_mode=MemoryContextMode.LEXICAL,
-        )
+        # The provided result belongs to the retired automatic recall path.
+        # Keep the argument for callers while preventing old facts entering a new prompt.
+        del memory_retrieval
+        retrieval = _empty_automatic_retrieval()
         data: dict[str, Any] = {
             "scene": {
                 "type": "group",
@@ -261,10 +259,7 @@ class ContextAssembler:
             ),
         )
         remaining = max(
-            0,
-            self._settings.max_context_characters
-            - len(json.dumps(metadata, ensure_ascii=False))
-            - self._external_digest_reserve(snapshot.recent),
+            0, self._settings.max_context_characters - len(json.dumps(metadata, ensure_ascii=False))
         )
         snapshot, recent, rollup, shifted = await self._ensure_uncovered_fits_budget(
             snapshot=snapshot,
@@ -278,8 +273,6 @@ class ContextAssembler:
             identity=identity,
             turn=turn,
         )
-        external = self._external_event_context(recent)
-        metadata = self._with_external_digest(metadata, external)
         bounded = self._bounded_history(
             recent,
             current_event_id=None,
@@ -314,7 +307,7 @@ class ContextAssembler:
                 covered_to=snapshot.coverage_end or None,
             ),
             visible_event_ids=bounded.visible_event_ids,
-            external_events=external,
+            external_events=(),
             injected_memory_ids=selected,
             history_anchor_event_id=bounded.history_anchor_event_id,
             memory_exposures=self._memory_exposures(retrieval, selected),
@@ -588,18 +581,10 @@ class ContextAssembler:
             before_event_id=None if rollup_wakeup_history.get() else current_event.id,
         )
         recent = snapshot.recent
-        if memory_retrieval is not None:
-            retrieval = memory_retrieval
-        else:
-            retrieval = await self._memory_context.retrieve_for_turn(
-                inbound=inbound,
-                content=content,
-                runtime=runtime,
-                memory_mode=memory_mode,
-                self_recall=self_recall,
-                memory_intent=memory_intent,
-                requested_limit=requested_limit,
-            )
+        # Ordinary turns never prefill old facts; only an explicit model tool read
+        # may expose them. Historical prefetch arguments are intentionally ignored.
+        del memory_retrieval, memory_mode, self_recall, requested_limit
+        retrieval = _empty_automatic_retrieval()
         hits_by_role = {
             block.target.role: block.hits
             for block in retrieval.blocks
@@ -756,8 +741,7 @@ class ContextAssembler:
             separators=(",", ":"),
             default=str,
         )
-        digest_reserve = self._external_digest_reserve(recent, exclude_event_id=current_event.id)
-        remainder = max(0, total_budget - len(metadata_json) - digest_reserve)
+        remainder = max(0, total_budget - len(metadata_json))
         snapshot, recent, rollup_text, shifted = await self._ensure_uncovered_fits_budget(
             snapshot=snapshot,
             recent=recent,
@@ -771,11 +755,6 @@ class ContextAssembler:
             current_event=current_event,
             turn=turn,
         )
-        external_events = self._external_event_context(
-            recent,
-            exclude_event_id=current_event.id,
-        )
-        metadata_payload = self._with_external_digest(metadata_payload, external_events)
         metadata_json = json.dumps(
             metadata_payload,
             ensure_ascii=False,
@@ -842,7 +821,7 @@ class ContextAssembler:
             current_relationship=current_relationship,
             metrics=metrics,
             visible_event_ids=bounded_messages.visible_event_ids,
-            external_events=external_events,
+            external_events=(),
             memory_turn_id=recall_turn.turn_id if recall_turn is not None else "",
             injected_memory_ids=selected_fact_ids,
             memory_exposures=memory_exposures,
@@ -903,12 +882,7 @@ class ContextAssembler:
         ) or event.id <= snapshot.starts_after_event_id:
             raise ConversationCoverageError("external trigger is already covered")
         recent = snapshot.recent
-        retrieval = await self._memory_context.retrieve_for_targets(
-            content=event.content,
-            targets=self._actorless_memory_targets(event, trigger),
-            runtime=runtime,
-            memory_mode=MemoryContextMode.LEXICAL,
-        )
+        retrieval = _empty_automatic_retrieval()
         hits_by_role = {
             block.target.role: block.hits
             for block in retrieval.blocks
@@ -994,10 +968,7 @@ class ContextAssembler:
             ),
         )
         metadata_json = json.dumps(metadata_payload, ensure_ascii=False, separators=(",", ":"))
-        digest_reserve = self._external_digest_reserve(recent, exclude_event_id=event.id)
-        remainder = max(
-            0, self._settings.max_context_characters - len(metadata_json) - digest_reserve
-        )
+        remainder = max(0, self._settings.max_context_characters - len(metadata_json))
         snapshot, recent, rollup_text, shifted = await self._ensure_uncovered_fits_budget(
             snapshot=snapshot,
             recent=recent,
@@ -1011,8 +982,6 @@ class ContextAssembler:
             current_event=event,
             turn=turn,
         )
-        external_events = self._external_event_context(recent, exclude_event_id=event.id)
-        metadata_payload = self._with_external_digest(metadata_payload, external_events)
         metadata_json = json.dumps(metadata_payload, ensure_ascii=False, separators=(",", ":"))
         bounded_messages = self._bounded_history(
             recent,
@@ -1051,7 +1020,7 @@ class ContextAssembler:
                 covered_to=snapshot.coverage_end or None,
             ),
             visible_event_ids=bounded_messages.visible_event_ids,
-            external_events=external_events,
+            external_events=(),
             history_anchor_event_id=bounded_messages.history_anchor_event_id,
             rollup_text=rollup_text,
             prompt_scope_id=turn.scope_id,
@@ -1360,23 +1329,19 @@ class ContextAssembler:
                 continue
             payload = item.payload
             if item.id == "current_person" and isinstance(payload, dict):
-                payload = {
-                    **payload,
-                    "facts": [
-                        value for key, value in selected.items() if key.startswith("person_memory.")
-                    ],
-                }
+                facts = [
+                    value for key, value in selected.items() if key.startswith("person_memory.")
+                ]
+                if facts:
+                    payload = {**payload, "facts": facts}
             elif item.id in {"current_group", "current_person_in_group"} and isinstance(
                 payload, dict
             ):
-                payload = {
-                    **payload,
-                    "facts": [
-                        value
-                        for key, value in selected.items()
-                        if key.startswith(f"{item.id}.fact.")
-                    ],
-                }
+                facts = [
+                    value for key, value in selected.items() if key.startswith(f"{item.id}.fact.")
+                ]
+                if facts:
+                    payload = {**payload, "facts": facts}
             items.append({"id": item.id, "data": payload})
         self_facts = [
             value for key, value in selected.items() if key.startswith("current_self.fact.")

@@ -200,3 +200,73 @@ async def test_image_and_video_follow_current_model_capability(monkeypatch):
         await service.prepare(replace(video, message_id="disabled-video"), _runtime(), None)
     assert denied_again.value.code == "image_capability_unavailable"
     await resolver.close()
+
+
+@pytest.mark.asyncio
+async def test_current_and_replied_attachments_share_order_and_budget():
+    resolver = MediaResolver()
+    service = AttachmentInputService(
+        resolver,
+        ImagePreprocessor(),
+        concurrency=1,
+        pending_limit=2,
+        timeout=5,
+        max_bytes=100_000,
+    )
+    stream = io.BytesIO()
+    Image.new("RGB", (32, 32), "red").save(stream, format="PNG")
+    payload = "base64://" + base64.b64encode(stream.getvalue()).decode()
+    current = MessageAttachment(AttachmentKind.IMAGE, "image", file=payload)
+    replied = replace(current, source="reply")
+    message = replace(_message(current), reply_attachments=(replied,))
+    try:
+        prepared = await service.prepare(message, _runtime(), None)
+        assert [image.source for image in prepared.images] == ["current", "reply"]
+        limited = await service.prepare(
+            replace(message, message_id="mixed-limited"),
+            replace(_runtime(), max_images_per_turn=1),
+            None,
+        )
+        assert [image.source for image in limited.images] == ["current"]
+        assert "其余附件未读取" in limited.documents
+    finally:
+        await resolver.close()
+
+
+@pytest.mark.asyncio
+async def test_bad_attachment_reports_failure_without_discarding_valid_image():
+    resolver = MediaResolver()
+    service = AttachmentInputService(
+        resolver,
+        ImagePreprocessor(),
+        concurrency=1,
+        pending_limit=2,
+        timeout=5,
+        max_bytes=100_000,
+    )
+    stream = io.BytesIO()
+    Image.new("RGB", (32, 32), "red").save(stream, format="PNG")
+    image = MessageAttachment(
+        AttachmentKind.IMAGE,
+        "image",
+        file="base64://" + base64.b64encode(stream.getvalue()).decode(),
+    )
+    bad_file = MessageAttachment(
+        AttachmentKind.FILE,
+        "file",
+        filename="bad.zip",
+        file="base64://" + base64.b64encode(b"not an archive").decode(),
+    )
+    try:
+        prepared = await service.prepare(
+            replace(_message(image), attachments=(image, bad_file)), _runtime(), None
+        )
+        assert len(prepared.images) == 1
+        assert "附件2 source=current kind=file 未读取：unsupported_document" in prepared.documents
+        with pytest.raises(VisionProcessingError) as only_bad:
+            await service.prepare(
+                replace(_message(bad_file), message_id="only-bad"), _runtime(), None
+            )
+        assert only_bad.value.code == "unsupported_document"
+    finally:
+        await resolver.close()

@@ -356,7 +356,7 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
     from qq_ai_bot.runtime.subagent_tools import WORKER_REQUIRED_NAMES
 
     assert names == WORKER_REQUIRED_NAMES
-    assert "subagent_message" in names and "get_person_memories" in names
+    assert "subagent_message" in names and "search_memory" in names
     assert not names & {"send_group_message", "memory_change", "subagent_start", "report_progress"}
     await workers.message(lease, parent["id"], identity, "continue", "Check again")
     await scheduler.run(identity)

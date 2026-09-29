@@ -11,7 +11,7 @@ import tempfile
 import tomllib
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import tomlkit
 from pydantic import TypeAdapter, ValidationError
@@ -33,6 +33,10 @@ from qq_ai_bot.model_runtime.secrets import (
     model_secrets_path,
     read_model_secrets,
 )
+from qq_ai_bot.web.base import WebSearchProvider
+
+if TYPE_CHECKING:
+    from qq_ai_bot.application.modules.web import WebModule
 
 MAX_CONFIG_BYTES = 256 * 1024
 CONFIG_FILE_IDS = frozenset({"model_profiles", "system_prompt", "bot_persona", "autonomous_model"})
@@ -94,11 +98,13 @@ class ConfigFileService:
         *,
         autonomy_parameters: Callable[[], AutonomyParameters] | None = None,
         model_executor: TaskModelExecutor | None = None,
+        web_module: WebModule | None = None,
     ) -> None:
         self._settings = settings
         self._catalog = catalog
         self._autonomy_parameters = autonomy_parameters
         self._model_executor = model_executor
+        self._web_module = web_module
         self._lock = asyncio.Lock()
 
     @property
@@ -162,6 +168,7 @@ class ConfigFileService:
                 result["document"] = parameters.model_dump(mode="json")
                 result["matches_loaded"] = parameters == loaded if loaded else None
             elif file_id == "model_profiles":
+                result["search_backend"] = self._settings.web_search_backend
                 _secret_bytes, saved_keys = await asyncio.to_thread(read_model_secrets, path)
                 # Headers are kept server-side even for content-authorized readers.
                 raw: dict[str, Any] = (
@@ -206,6 +213,7 @@ class ConfigFileService:
                     if type(raw.get("schema_version", 3)) is int
                     else 3,
                     "profiles": profiles,
+                    "search_connection": raw.get("search_connection"),
                     "routes": {
                         task.value: routes.get(task.value)
                         for task in ModelTask
@@ -223,7 +231,15 @@ class ConfigFileService:
                     saved = self._catalog_from(text)
                     result["matches_loaded"] = saved == self._catalog if self._catalog else None
                     result["resolved_profiles"] = {
-                        name: {"base_url": profile.base_url, "model": profile.model}
+                        name: {
+                            "base_url": profile.base_url,
+                            "model": profile.model,
+                            "reasoning_effort": (
+                                profile.reasoning_effort.value
+                                if profile.reasoning_effort is not None
+                                else None
+                            ),
+                        }
                         for name, profile in saved.profiles.items()
                     }
             else:
@@ -258,6 +274,7 @@ class ConfigFileService:
             secret_write: tuple[Path, bytes | None, bytes] | None = None
             pending_catalog: ModelProfileCatalog | None = None
             pending_pool: ModelClientPool | None = None
+            pending_search: WebSearchProvider | None = None
             try:
                 if file_id == "autonomous_model":
                     if set(spec) != {"document"} or not isinstance(spec["document"], Mapping):
@@ -270,6 +287,8 @@ class ConfigFileService:
                     ):
                         raise ValueError("invalid document")
                     document = _plain(spec["document"])
+                    if document.get("search_connection") is None:
+                        document.pop("search_connection", None)
                     profiles = document.get("profiles")
                     if not isinstance(profiles, dict):
                         raise ValueError("invalid profiles")
@@ -312,6 +331,9 @@ class ConfigFileService:
                             profile["headers"] = previous["headers"]
                     text = tomlkit.dumps(document)
                     pending_catalog = self._catalog_from(text)
+                    content = text.encode("utf-8")
+                    if len(content) > MAX_CONFIG_BYTES:
+                        raise ValueError("file too large")
                     if self._model_executor is not None:
                         pending_pool = ModelClientPool(
                             secret_overrides={
@@ -327,6 +349,15 @@ class ConfigFileService:
                             await pending_pool.close()
                             pending_pool = None
                             raise ValueError("model connection unavailable") from None
+                        if self._web_module is not None:
+                            try:
+                                pending_search = self._web_module.prepare(
+                                    pending_catalog, pending_pool, require_explicit=True
+                                )
+                            except Exception:
+                                await pending_pool.close()
+                                pending_pool = None
+                                raise
                 else:
                     if set(spec) != {"content"} or type(spec["content"]) is not str:
                         raise ValueError("invalid content")
@@ -336,8 +367,20 @@ class ConfigFileService:
                 content = text.encode("utf-8")
                 if len(content) > MAX_CONFIG_BYTES:
                     raise ValueError("file too large")
-            except (TypeError, ValueError, UnicodeError, tomlkit.exceptions.TOMLKitError) as exc:
-                raise ConfigFileError("validation_error") from exc
+            except BaseException as exc:
+                await asyncio.gather(
+                    *(
+                        resource.close()
+                        for resource in (pending_search, pending_pool)
+                        if resource is not None
+                    ),
+                    return_exceptions=True,
+                )
+                if isinstance(
+                    exc, (TypeError, ValueError, UnicodeError, tomlkit.exceptions.TOMLKitError)
+                ):
+                    raise ConfigFileError("validation_error") from exc
+                raise
 
             async def persist_and_activate() -> int:
                 try:
@@ -346,12 +389,33 @@ class ConfigFileService:
                     )
                     if pending_catalog is not None and pending_pool is not None:
                         assert self._model_executor is not None
+                        # Search activation can reject a concurrent shutdown. Do
+                        # that before switching the model router, whose validated
+                        # catalog swap is synchronous and has no external I/O.
+                        if self._web_module is not None:
+                            self._web_module.activate(pending_search)
                         self._model_executor.apply_catalog(pending_catalog, pending_pool)
                         self._catalog = pending_catalog
                     return revision
                 except BaseException:
-                    if pending_pool is not None and self._catalog is not pending_catalog:
-                        await pending_pool.close()
+                    if pending_catalog is not None and self._catalog is not pending_catalog:
+                        try:
+                            await asyncio.to_thread(
+                                self._restore_model_bundle,
+                                path,
+                                original,
+                                content,
+                                secret_write,
+                            )
+                        finally:
+                            await asyncio.gather(
+                                *(
+                                    resource.close()
+                                    for resource in (pending_search, pending_pool)
+                                    if resource is not None
+                                ),
+                                return_exceptions=True,
+                            )
                     raise
 
             writing = asyncio.create_task(persist_and_activate())
@@ -382,6 +446,39 @@ class ConfigFileService:
             secret_path, previous, replacement = secret_write
             self._replace(secret_path, previous, replacement)
         return self._replace(path, original, content)
+
+    def _restore_model_bundle(
+        self,
+        path: Path,
+        original: bytes | None,
+        replacement: bytes,
+        secret_write: tuple[Path, bytes | None, bytes] | None,
+    ) -> None:
+        """Undo only our exact bytes; never overwrite a concurrent external edit."""
+        restore_errors: list[BaseException] = []
+        try:
+            self._restore_file(path, original, replacement)
+        except BaseException as exc:
+            restore_errors.append(exc)
+        if secret_write is not None:
+            secret_path, previous, secret_replacement = secret_write
+            try:
+                self._restore_file(secret_path, previous, secret_replacement)
+            except BaseException as exc:
+                restore_errors.append(exc)
+        if restore_errors:
+            raise restore_errors[0]
+
+    def _restore_file(self, path: Path, original: bytes | None, replacement: bytes) -> None:
+        current = _read(path)
+        if current == original:
+            return
+        if current != replacement:
+            raise ConfigFileError("version_conflict")
+        if original is None:
+            path.unlink()
+        else:
+            self._replace(path, replacement, original)
 
     @staticmethod
     def _replace(path: Path, original: bytes | None, content: bytes) -> int:

@@ -343,6 +343,18 @@ def test_episode_recompose_enforces_cluster_wide_output_and_compression_limits()
     )
     service._validate_output(payload, output)
     assert "软目标" in service._instruction(self_memory=False, payload=payload)
+    shorter = payload.model_copy(
+        update={
+            "memories": tuple(
+                memory.model_copy(update={"content": "甲" * 100}) for memory in memories
+            )
+        }
+    )
+    assert service._instruction(self_memory=False, payload=payload) == service._instruction(
+        self_memory=False, payload=shorter
+    )
+    assert service._structured_input(payload)["episode_compression"]["source_characters"] == 1000
+    assert service._structured_input(shorter)["episode_compression"]["source_characters"] == 200
 
 
 @pytest.mark.asyncio

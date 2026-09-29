@@ -406,6 +406,12 @@ async def test_derived_audio_updates_revision_and_survives_migration_rollback(
         )
         await connection.execute(text("DROP TABLE execution_trace_entries"))
         await connection.execute(text("DROP TABLE execution_trace_state"))
+        for column in (
+            "native_search_requested",
+            "unknown_usage_request_count",
+            "physical_request_count",
+        ):
+            await connection.execute(text(f"ALTER TABLE model_invocations DROP COLUMN {column}"))
     await asyncio.to_thread(command.upgrade, config, "head")
     await require_canonical_schema(database.url)
     assert any(r.id == saved.id for r in await harness.ledger.search(keyword="迁移之后"))

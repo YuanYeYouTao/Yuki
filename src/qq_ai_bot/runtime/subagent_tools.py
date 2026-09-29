@@ -40,11 +40,9 @@ WORKER_NAMES = (
             "search_chat_history",
             "get_chat_history_around",
             "find_contacts",
-            "get_person_memories",
-            "get_group_memories",
+            "search_memory",
             "get_memory_fact",
             "get_memory_evidence",
-            "get_self_memories",
             "get_relationship",
         }
     )

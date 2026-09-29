@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import time
+import weakref
 from collections import OrderedDict
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -16,7 +17,13 @@ from typing import Any, Protocol
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from qq_ai_bot.domain.messages import ChatRequest, ChatResponse, minimum_reasoning_effort
+from qq_ai_bot.domain.messages import (
+    ChatMessage,
+    ChatRequest,
+    ChatResponse,
+    NativeToolType,
+    minimum_reasoning_effort,
+)
 from qq_ai_bot.execution_trace.recorder import TraceRecorder, record_trace, trace_span
 from qq_ai_bot.llm.base import LLMError, LLMUnsupportedFeatureError
 from qq_ai_bot.model_runtime.dispatch_guard import check_model_dispatch
@@ -31,9 +38,19 @@ from qq_ai_bot.model_runtime.models import (
 from qq_ai_bot.model_runtime.pool import ModelClientPool
 from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
 from qq_ai_bot.model_runtime.repository import ModelInvocationRepository
+from qq_ai_bot.model_runtime.request_accounting import (
+    ProviderAttemptCounter,
+    current_provider_attempts,
+)
 from qq_ai_bot.model_runtime.routes import ModelRouter
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True, weakref_slot=True)
+class _PinnedModelRuntime:
+    router: ModelRouter
+    pool: ModelClientPool
 
 
 def _json_hash(value: object) -> str:
@@ -297,10 +314,13 @@ class TaskModelExecutor:
         self._router = router
         self._pool = pool
         self._active_runtime = (router, pool)
-        self._pinned_runtime: ContextVar[tuple[ModelRouter, ModelClientPool] | None] = ContextVar(
+        self._pinned_runtime: ContextVar[_PinnedModelRuntime | None] = ContextVar(
             "pinned_model_runtime", default=None
         )
-        self._retired_pools: list[ModelClientPool] = []
+        self._retired_pools: dict[int, ModelClientPool] = {}
+        self._pool_lease_counts: dict[int, int] = {}
+        self._pool_close_tasks: set[asyncio.Task[None]] = set()
+        self._closing = False
         self._compaction_timeout_seconds = compaction_timeout_seconds
         self._self_reflection_timeout_seconds = self_reflection_timeout_seconds
         self._invocations = invocations
@@ -328,23 +348,90 @@ class TaskModelExecutor:
         return self._router
 
     def _runtime(self) -> tuple[ModelRouter, ModelClientPool]:
-        return self._pinned_runtime.get() or self._active_runtime
+        pinned = self._pinned_runtime.get()
+        return (pinned.router, pinned.pool) if pinned is not None else self._active_runtime
 
     @contextmanager
     def pin(self) -> Iterator[None]:
         """Keep one Agent activation on one provider catalog across its requests."""
-        token = self._pinned_runtime.set(self._runtime())
+        if self._pinned_runtime.get() is not None:
+            yield
+            return
+        router, pool = self._active_runtime
+        lease = _PinnedModelRuntime(router, pool)
+        pool_id = id(pool)
+        self._pool_lease_counts[pool_id] = self._pool_lease_counts.get(pool_id, 0) + 1
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        weakref.finalize(lease, self._release_pool_lease, weakref.ref(self), pool_id, loop)
+        token = self._pinned_runtime.set(lease)
         try:
             yield
         finally:
             self._pinned_runtime.reset(token)
+            # A child Task may still hold the inherited ContextVar value. Its
+            # strong reference keeps the lease (and old pool) alive until safe.
+            del lease
+
+    @staticmethod
+    def _release_pool_lease(
+        owner_ref: weakref.ReferenceType[TaskModelExecutor],
+        pool_id: int,
+        loop: asyncio.AbstractEventLoop | None,
+    ) -> None:
+        owner = owner_ref()
+        if owner is None:
+            return
+        remaining = owner._pool_lease_counts[pool_id] - 1
+        if remaining:
+            owner._pool_lease_counts[pool_id] = remaining
+        else:
+            del owner._pool_lease_counts[pool_id]
+        if loop is not None and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(owner._retire_idle_pool, pool_id)
+            except RuntimeError:
+                pass
+
+    def _retire_idle_pool(self, pool_id: int) -> None:
+        if (
+            self._closing
+            or self._pool_lease_counts.get(pool_id)
+            or pool_id == id(self._active_runtime[1])
+        ):
+            return
+        pool = self._retired_pools.get(pool_id)
+        if pool is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(pool.close(), name="retired-model-pool-close")
+        del self._retired_pools[pool_id]
+        self._pool_close_tasks.add(task)
+
+        def finished(done: asyncio.Task[None]) -> None:
+            self._pool_close_tasks.discard(done)
+            try:
+                done.result()
+            except Exception:
+                logger.exception("retired model client pool close failed")
+
+        task.add_done_callback(finished)
 
     def apply_catalog(self, catalog: ModelProfileCatalog, pool: ModelClientPool) -> None:
         """Switch new requests atomically; pinned work retains its old clients."""
         router = ModelRouter(catalog)
-        self._retired_pools.append(self._active_runtime[1])
+        old_pool = self._active_runtime[1]
+        if old_pool is not pool:
+            self._retired_pools[id(old_pool)] = old_pool
         self._active_runtime = (router, pool)
         self._router, self._pool = router, pool
+        if old_pool is not pool:
+            self._retire_idle_pool(id(old_pool))
 
     async def execute(
         self,
@@ -354,20 +441,21 @@ class TaskModelExecutor:
         priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
         canonical_conversation_id: str | None = None,
     ) -> ChatResponse:
-        async with trace_span(
-            "model",
-            {"task": task.value, "request": asdict(request)},
-            recorder=self.traces,
-            conversation_id=canonical_conversation_id,
-        ) as span:
-            response = await self._execute(
-                task,
-                request,
-                priority=priority,
-                canonical_conversation_id=canonical_conversation_id,
-            )
-            span.result = asdict(response)
-            return response
+        with self.pin():
+            async with trace_span(
+                "model",
+                {"task": task.value, "request": asdict(request)},
+                recorder=self.traces,
+                conversation_id=canonical_conversation_id,
+            ) as span:
+                response = await self._execute(
+                    task,
+                    request,
+                    priority=priority,
+                    canonical_conversation_id=canonical_conversation_id,
+                )
+                span.result = asdict(response)
+                return response
 
     async def _execute(
         self,
@@ -388,7 +476,14 @@ class TaskModelExecutor:
                     "native web search is unavailable in the effective model contract"
                 )
             required.add(ModelCapability.NATIVE_WEB_SEARCH)
-        if any(message.images for message in request.messages):
+        if any(
+            message.images
+            for message in (
+                *request.messages,
+                *request.continuation_messages,
+                *(item for item in request.continuation_items if isinstance(item, ChatMessage)),
+            )
+        ):
             required.add(ModelCapability.IMAGE_INPUT)
         router, pool = self._runtime()
         _route, profile = router.route(task, required_capabilities=frozenset(required))
@@ -507,6 +602,11 @@ class TaskModelExecutor:
             )
 
         started = time.perf_counter()
+        native_search_requested = any(
+            tool.type is NativeToolType.WEB_SEARCH for tool in normalized.native_tools
+        )
+        attempts = ProviderAttemptCounter()
+        attempt_token = current_provider_attempts.set(attempts)
         try:
             response = await self._execute_provider(
                 provider,
@@ -538,9 +638,14 @@ class TaskModelExecutor:
                     cached_prompt_tokens=reported_tokens("cached_prompt_tokens"),
                     latency_seconds=time.perf_counter() - started,
                     error_category=type(exc).__name__,
+                    physical_request_count=attempts.requests,
+                    unknown_usage_request_count=attempts.unknown_usage_requests,
+                    native_search_requested=native_search_requested,
                     canonical_conversation_id=canonical_conversation_id,
                 )
             raise
+        finally:
+            current_provider_attempts.reset(attempt_token)
         if response.continuation is not None:
             response = replace(
                 response,
@@ -576,6 +681,9 @@ class TaskModelExecutor:
                 cached_prompt_tokens=response.cached_prompt_tokens,
                 latency_seconds=response.latency_seconds,
                 error_category=None,
+                physical_request_count=attempts.requests,
+                unknown_usage_request_count=attempts.unknown_usage_requests,
+                native_search_requested=native_search_requested,
                 canonical_conversation_id=canonical_conversation_id,
             )
         return response
@@ -855,6 +963,7 @@ class TaskModelExecutor:
         return profile.capabilities
 
     async def close(self) -> None:
+        self._closing = True
         async with self._priority_condition:
             background = self._background_provider_task
             if background is not None and not background.done():
@@ -866,5 +975,9 @@ class TaskModelExecutor:
             await asyncio.gather(background, return_exceptions=True)
         if maintenance is not None:
             await asyncio.gather(maintenance, return_exceptions=True)
-        for pool in (*self._retired_pools, self._active_runtime[1]):
+        if self._pool_close_tasks:
+            await asyncio.gather(*self._pool_close_tasks)
+        pools = (*self._retired_pools.values(), self._active_runtime[1])
+        self._retired_pools.clear()
+        for pool in pools:
             await pool.close()

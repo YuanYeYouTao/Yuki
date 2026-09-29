@@ -1,18 +1,18 @@
 # Memory 当前检索合同
 
-主动列表的每条候选包含固定 `match` 投影：`lexical_match`、`semantic_candidate`、
+主动搜索的每条候选包含固定 `match` 投影：`lexical_match`、`semantic_candidate`、
 `topic_admission=passed|not_passed|unknown`。准入采用该请求有效的已校准 profile 与主题阈值；
 未校准/故障为 unknown，overview 不套主题门槛。字段只解释候选，不过滤主动结果，
 passed 也不是语义真实性保证。尚未完成真实样本校准，不应以默认阈值替代验收。
 
-人物工具的群选择器只用于明确限定目标群，不用于提交权限证明；后端自行解析历史关系。
+`search_memory.target` 的群选择器只用于明确限定目标群，不用于提交权限证明；后端自行解析历史关系。
 事件 mention/reply 优先使用 subject_ref，姓名使用名称入口，兼容账号仍可使用。
 多个人物选择器一律返回 invalid_person_selector，不静默覆盖目标。
 空结果仅代表当前查询无匹配，截断/N 条结果不代表全库；拒绝和故障也不能解释成无记录。
 严格日期不自动放宽；宽语义候选不是认证过的相关事实，模型须结合内容判断。
 
-适用于 canonical 3.8.1 / schema 0051。总合同见 [Memory 架构](memory-v2.md)；
-P1 不以降低注入数或保证固定缓存命中率为验收目标。
+总合同见 [Memory 架构](memory-v2.md)；本分支检索改造进度见
+[search_memory 任务书](Yuki-search-memory-taskbook-2026-09-29.md)。
 
 ## 授权先于检索
 
@@ -32,8 +32,9 @@ SELF 维持 global/current-private/current-group 可见性。
 
 ## 目标与意图
 
-Person、Group、SELF 工具共用严格参数解析：非空 query 默认 hybrid，空 query 默认
-overview，purpose 默认 recall。非法枚举和无效区间返回 invalid_arguments，不能静默丢弃。
+主 Agent 只声明 `search_memory`，必填非空 query 默认 hybrid，purpose 默认 recall。
+原有三个 `get_*_memories` 仅保留执行层兼容旧回执，不进入新工具声明。
+非法枚举和无效区间返回 invalid_arguments，不能静默丢弃。
 工具的 effective_query 摘要说明实际模式和时间约束，不包含未授权目标。
 
 指定日期默认 temporal_constraint=strict，范围为 `[start_at, end_at)`，严格边界必须带
@@ -41,24 +42,28 @@ overview，purpose 默认 recall。非法枚举和无效区间返回 invalid_arg
 宽泛偏好。时间使用 valid_from，不将创建时间或临时解析的正文日期冒充事件发生时间。
 关键词、向量和总览均在候选截断前筛选；无日期的总览与详情权限保持不变。
 
-自动预取为空不证明没有记忆；Main Agent 根据完整 History/Rollup 理解指代并主动补查，
-不另建短上下文或意图识别 Agent。姓名使用人物查询，SELF 不代替姓名解析；权限拒绝不
+主 Agent 不再每轮自动注入长期事实；模型根据完整 History/Rollup 判断何时调用
+`search_memory`，不另建短上下文或意图识别 Agent。姓名须通过显式目标解析，SELF 不代替姓名解析；权限拒绝不
 重试，歧义先澄清，空结果只允许有实质区别的补查。生产只记录脱敏参数形状，不存完整入参。
 
-自动预取从当前人物、当前群、真实提及/引用出发，不遍历所有历史群和群友；
-维持 background/continuation 契约，默认总预算四条，单目标可占四条，不新增前置模型调用。
+旧自动预取内核仍是内部能力，不再决定正常主请求的长期事实注入。
 主动工具由正常完整 Main Agent 提供 purpose、entities、preferred kinds、绝对时间范围；
 后端仅为主动查询明确目标补缺省重点，不覆盖已提供 subjects；自动查询没有明确重点时留空，
 不能将所有有权读取目标或当前发言者自动当成主题。意图不能充当权限凭证。
 
-人物、群与 SELF 的无 query 总览使用 overview；有 query 使用 relevant/lexical/hybrid。
+内部领域读取仍可使用无 query 总览；`search_memory` 必须提供非空 query。
 主体分类不迁移、不复制事实。返回数量有界，空结果是正常成功，不是权限错误。
 上下文 `event_bound_memory_refs` 仅描述当前消息已绑定的 `subject_ref`，不是读取范围或
 人物白名单；未列出的姓名仍通过 `display_name` 交给后端解析、鉴权。此列表不扩展到
-全部历史群友，不改变自动预取目标，也不根据姓名动态改工具 schema。
-三个列表工具始终标注 `result_scope=bounded_query`、`exhaustive=false` 和本次
-`returned_count`；没有发生字符裁剪也不代表数据库只有这些事实。`truncated` 只说明
-已知的结果裁剪，不能把 false 当作穷尽证明。核心记忆工具的固定 grounding 规则必须
+全部历史群友，也不根据姓名动态改工具 schema。
+统一搜索工具标注 `result_scope=authorized_maximum|explicit_targets`、如实计算的
+`exhaustive` 和本次 `returned_count`。无目标时通过 canonical 历史关系的 SQL 授权过滤
+全部获准 owner，不依赖 owner 是否仍有活跃 QQ Binding，也不先取前 N 个目标。
+全局词法候选、语义候选或向量扫描达到工作预算时返回 `truncated=true`、
+`exhaustive=false` 和 `partial_reason=global_candidate_budget`，不把预算截断说成没有记忆。
+启用语义但 embedding 未配置或调用失败时也返回 `exhaustive=false` 和明确的语义状态，
+表示词法降级的结果不能证明语义空间没有更好事实。
+核心记忆工具的固定 grounding 规则必须
 穿过统一工具结果转换和正常结果预算器到达模型；插件不能以同名字段声明可信规则。
 记忆列表超过原有工具字符预算时只保留排序靠前的完整事实，并返回 `truncated=true`、
 `returned_count`、`truncation_reason=response_character_budget`，不裁剪事实正文。
@@ -78,15 +83,14 @@ overview 没有执行主题匹配，因此候选投影的 `lexical_match` 与 `s
 
 ### 读取工具与选择器
 
-- get_person_memories：subject_ref（真实 mention/reply 优先）、display_name 或兼容 user_id
-  三选一；无群选择器时返回获准 Person 与相关 PersonGroup。可用 group_id 或 group_name
-  限定共同群；这些参数不代替后端授权。
-- get_group_memories：group_name 或 group_id；群聊省略目标默认当前群，私聊要求指定目标。
-- get_self_memories：只查现有 global/current-private/current-group，不能指定他人的私聊。
+- search_memory：无 target 时按本次真实主体的最大可读范围搜索；`target.scope=person` 时用
+  subject_ref（真实 mention/reply 优先）、display_name 或兼容 user_id 三选一，可再用
+  group_id/group_name 缩小范围；`target.scope=group` 要明确指定 group_id/group_name；
+  `target.scope=self` 只查 global/current-private/current-group，不能指定他人的私聊。
 - get_memory_fact：同一结构读取政策；get_memory_evidence 仍是更严格的证据接口。
 - 名称须在获准历史关系内精确唯一；歧义最多返回五个候选和 has_more，retryable=false。
   不用全社会关系图作为每轮预取目标。
-- 主 Agent 的固定工具声明包含 Person、Group、SELF 读取工具；实际调用仍由后端按当前主体和目标核验权限。
+- 主 Agent 的固定声明只包含统一搜索和事实/证据详情工具；实际调用仍按本次主体和目标核验权限。
 - 同轮相同已授权查询复用检索结果，减少数据库/embedding 工作；每次入口仍重验权限，
   不缓存永久许可。记忆修改清除本轮读缓存；权限拒绝不做自动重试，不新增读取次数配额。
 
@@ -100,19 +104,18 @@ overview 没有执行主题匹配，因此候选投影的 `lexical_match` 与 `s
   embedding 与现有 rerank。
 - 非空且启用语义检索时生成 query embedding；overview、lexical 不调用 embedding。
 - 词法/语义候选都先按 canonical scope、active、有效期、kind/profile 做 SQL 筛选。
-- 各目标给出有界候选，按 fact ID 合并去重后重算全局 lexical/semantic rank，再做 RRF；
-  不能先各取两条，也不能把每个目标的第一名当成同等相关。hits 的全局顺序不被分组展示打乱。
+- 无目标主动搜索在同一个 SQL 授权条件下取全局词法候选、全局当前 profile 向量，
+  再合并去重与全局排序；不因某个 owner 的先取数量而漏掉后续 owner。词法候选和
+  向量扫描仍有全局工作预算；触及预算时结果是部分结果，不能把 `candidate_count`
+  当成全范围穷尽证明。显式目标保留原目标内检索路径。
 - 原始语义相似度提供相关性档位；意图实体、时间、种类参与排序。活跃度/重要性不能让弱相关
   越过强主题。RRF/rank 不是相关性概率。
 - preferred kinds、软时间和主体是排序信号，不能靠它们授予权限；strict 时间是候选准入条件。
 - active + contested conflict 可以带争议标记返回；superseded、invalidated、未采用的
   contested claim 不作为普通 active 事实。争议关系不跨 scope。
-- 主动查询在 embedding 故障时仍可退回词法；自动注入优先保留 memory_key/content 精确匹配。
-  未校准或 embedding 故障且无精确匹配时，最多提供一个现有FTS候选，按词法分数选择，
-  标为 `lexical_fallback_uncalibrated`，不能把它当作已经校准的主题或补入人物背景。
-  无词法候选仍返回零条；Main Agent须判断与当前问题的关系，不相关则忽略/主动补查。
-  这是可用性降级，不是强相关验收通过；替代早期任务中的“未校准自动只允许精确匹配”。
-  日志只记脱敏类别，
+- 主动查询在 embedding 故障时仍可退回词法，须把真实语义状态返回模型。无词法候选
+  允许零条；Main Agent须判断返回事实与问题的关系，不相关则忽略或实质性补查。
+  这是可用性降级，不是强相关验收通过。日志只记脱敏类别，
   不记录查询、事实、QQ、群号、向量或 provider 原始错误。
 
 ## 暴露、回执与统计
@@ -121,17 +124,15 @@ overview 没有执行主题匹配，因此候选投影的 `lexical_match` 与 `s
 工具暴露会清除初始 `no_memory` 原因；聊天退出时统一关闭Memory Session，即使被取消、
 发送围栏拒绝或其他异常打断，也记录 `interrupted`，不绕过发送围栏做强化。
 Plugin API 2.0 / 管理查询不写普通用户 recall 或 activation。
-零注入的正常预取轮仍记 receipt，且不触发 attribution。
+不发生自动注入的普通轮不应伪造长期事实暴露；若旧内核在其他受控入口运行，
+零注入仍有独立 receipt，且不触发 attribution。
 完成评估但未使用、尚未评估、失败、禁用、抢占/取消和队列满分别记录。
 历史 used=false 不回填为确认无用。
 
-Main Agent 使用现有 History、Rollup、Memory 和工具协议，不另建短上下文。
-固定前缀与工具结构保持稳定；尾部召回内容仍可能变化，不能承诺固定缓存命中率。
-自动主题须过已校准的强相关门槛；不足四条且有主题时，可补最多一条通过独立门槛的当前
-人物背景。SELF Episode 和显式偏好没有旁路。主动 overview/list/detail 不套自动门槛。
-预取为空不等于长期记忆不存在，Main Agent 可以利用完整前文发起意图补查。
-不新增冷却，也不强迫回复引用记忆。旧 P1“不新增阈值”阶段约束已被
-[强相关召回任务书](Yuki-记忆可靠性与强相关召回任务书.md)取代。
+Main Agent 使用现有 History、Rollup 和固定工具合同，不另建短上下文。
+主请求不再把旧自动召回事实拼入尾部；`search_memory` 返回的事实只有实际进入后续模型
+请求才计暴露。固定前缀与工具结构保持稳定，不承诺固定缓存命中率。
+缺证据可以按完整前文实质性补查，不强迫每轮调用或回复引用记忆。
 
 指标与排障见 [指标口径](memory-v2-quality-metrics.md)、
 [质量运维](../operations/memory-quality.md)。旧 phase/Adaptive 文档不是当前权限合同。

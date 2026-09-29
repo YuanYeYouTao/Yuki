@@ -1284,18 +1284,10 @@ class ChatService:
         ConversationReadVersion | None,
         Callable[[], Awaitable[None]] | None,
     ]:
-        retrieval = None
+        retrieval = empty_retrieval()
         persist_exposure = True
         memory_mode = MemoryContextMode.LEXICAL
         memory_intent: MemoryQueryIntent | None = None
-        if memory_session is not None:
-            retrieval = await memory_session.prefetch()
-            if retrieval is None:
-                retrieval = empty_retrieval()
-            persist_exposure = False
-            memory_intent = memory_session.prefetch_intent
-            if memory_intent is not None:
-                memory_mode = memory_intent.mode
         if turn_snapshot is None:
             raise ConversationCoverageError("chat turn requires a conversation snapshot")
         context = await self._context_assembler.assemble(
@@ -1592,12 +1584,11 @@ class ChatService:
         async with AsyncExitStack() as cleanup:
             if memory is not None:
                 cleanup.push_async_callback(memory.close)
-            retrieval = await memory.prefetch() if memory is not None else empty_retrieval()
             context = await self._context_assembler.assemble_self_initiative(
                 trigger=trigger,
                 runtime=runtime,
                 turn=turn_snapshot,
-                memory_retrieval=retrieval or empty_retrieval(),
+                memory_retrieval=empty_retrieval(),
             )
             if memory is not None and not control.current["model_requests"]:
                 # A resumed journal retains its old projected memory verbatim. Do

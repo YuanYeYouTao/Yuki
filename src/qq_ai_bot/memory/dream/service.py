@@ -7,6 +7,7 @@ import logging
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -855,14 +856,10 @@ class DreamService:
     def _instruction(self, *, self_memory: bool, payload: DreamInput) -> str:
         instruction = f"{_INSTRUCTION}\n{_RECOMPOSE_QUALITY_INSTRUCTION}"
         if payload.kind == MemoryKind.EPISODE.value:
-            source_characters = sum(len(item.content) for item in payload.memories)
-            target = self._episode_compression_limit(
-                source_characters,
-                ratio=self._settings.memory_dream_episode_compression_ratio,
-            )
             instruction += (
-                f"\n本簇 Episode 原文共 {source_characters} 字。若全部 recompose，所有 output "
-                f"正文合计软目标为 {target} 字以内；意义完整优先，不达软目标不会拒绝或重试。"
+                "\n本簇 Episode 原文字数与合计软目标见输入的 episode_compression；"
+                "若全部 recompose，所有 output 正文合计应尽量在软目标以内；"
+                "意义完整优先，不达软目标不会拒绝或重试。"
                 "所有新正文合计最多 1600 字，单条最多 800 字。不要为了压缩而混合或损坏经历。"
                 "来源彼此独立且已经清楚时可 keep；总硬上限不会随来源长度缩小。"
             )
@@ -882,6 +879,21 @@ class DreamService:
                 "且不得超过上述总预算。"
             )
         return instruction
+
+    def _structured_input(self, payload: DreamInput) -> dict[str, Any]:
+        """Keep cluster-specific sizes in the user input, after the reusable instruction."""
+
+        data = payload.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
+        if payload.kind == MemoryKind.EPISODE.value:
+            source_characters = sum(len(item.content) for item in payload.memories)
+            data["episode_compression"] = {
+                "source_characters": source_characters,
+                "soft_target_characters": self._episode_compression_limit(
+                    source_characters,
+                    ratio=self._settings.memory_dream_episode_compression_ratio,
+                ),
+            }
+        return data
 
     def _episode_compression_limit(self, source_characters: int, *, ratio: float) -> int:
         return episode_compression_limit(
@@ -923,7 +935,7 @@ class DreamService:
             lambda: self._structured.run(
                 task=ModelTask.MEMORY_DREAM,
                 instruction=instruction,
-                structured_input=payload,
+                structured_input=self._structured_input(payload),
                 output_model=DreamOutput,
                 temperature=0.1,
                 max_output_tokens=self._settings.memory_dream_max_output_tokens,

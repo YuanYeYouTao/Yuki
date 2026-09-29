@@ -153,6 +153,12 @@ class ModelProfile(_FrozenModel):
                 raise ValueError("wire option is not supported by the selected protocol")
             if "reasoning" in options.model_fields_set and options.reasoning not in modes:
                 raise ValueError("reasoning wire dialect does not match the selected protocol")
+            if (
+                self.protocol is ModelProtocol.GEMINI
+                and self.model.removeprefix("models/").startswith("gemini-3.8-")
+                and options.reasoning == "budget"
+            ):
+                raise ValueError("Gemini 3.8 requires thinkingLevel, not a fixed thinkingBudget")
         reserved = {
             "authorization",
             "api-key",
@@ -217,6 +223,9 @@ class ModelInvocationRecord(_FrozenModel):
     completion_tokens: int | None = None
     total_tokens: int | None = None
     cached_prompt_tokens: int | None = None
+    physical_request_count: int | None = None
+    unknown_usage_request_count: int | None = None
+    native_search_requested: bool | None = None
     latency_seconds: float
     error_category: str | None = None
     created_at: datetime

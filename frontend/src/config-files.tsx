@@ -138,7 +138,7 @@ const presetValues = (provider: string): Row => {
     base_url: preset?.url || "",
     model: gemini ? "gemini-3.8-flash" : "",
     api_key_env: "",
-    reasoning_effort: gemini ? "medium" : "low",
+    reasoning_effort: "low",
     search_mode: "external",
     capabilities: gemini
       ? [
@@ -179,6 +179,12 @@ function ModelDocument({
     const uses = Object.entries(routes)
       .filter(([, connection]) => connection === id)
       .map(([task]) => taskNames[task] || task);
+    if (document.search_connection === id)
+      uses.push(
+        fields.search_backend === "deepseek_anthropic"
+          ? "联网搜索"
+          : "预选搜索连接",
+      );
     const purpose = uses.length
       ? `${uses[0]}${uses.length > 1 ? `等 ${uses.length} 项` : ""}`
       : "未分配用途";
@@ -217,6 +223,26 @@ function ModelDocument({
   }
   const profile = profiles[selected];
   const resolved = resolvedProfiles[selected];
+  const legacyGeminiBudget =
+    profile?.protocol === "gemini" &&
+    String(profile.model) === "gemini-3.8-flash" &&
+    (profile.wire_options as Row | undefined)?.reasoning === "budget";
+  const displayedEffort = String(
+    profile?.reasoning_effort_env
+      ? resolved?.reasoning_effort || profile.reasoning_effort || "low"
+      : profile?.reasoning_effort || "low",
+  );
+  function setEffort(value: string) {
+    const next: Row = { ...profile, reasoning_effort: value };
+    delete next.reasoning_effort_env;
+    if (legacyGeminiBudget) {
+      const options = { ...(profile.wire_options as Row) };
+      options.reasoning = "gemini";
+      delete options.thinking_budget_tokens;
+      next.wire_options = options;
+    }
+    update(next);
+  }
   const savedKeyProfiles = (fields.saved_api_key_profiles || []) as string[];
   return (
     <>
@@ -249,7 +275,12 @@ function ModelDocument({
             </span>
             <small>
               {Object.values(routes).filter((route) => route === id).length}{" "}
-              个用途
+              个任务用途
+              {document.search_connection === id
+                ? fields.search_backend === "deepseek_anthropic"
+                  ? " · 联网搜索"
+                  : " · 预选搜索连接"
+                : ""}
             </small>
           </button>
         ))}
@@ -309,6 +340,8 @@ function ModelDocument({
                   };
                   delete next.base_url_env;
                   delete next.model_env;
+                  delete next.reasoning_effort_env;
+                  delete next.wire_options;
                   update(next);
                   changeKey(selected, "");
                 }}
@@ -390,6 +423,38 @@ function ModelDocument({
               <small>只在保存时提交新输入；页面不会取回原密钥。</small>
             </label>
           </div>
+          {profile.protocol === "gemini" && (
+            <label className="form-group">
+              思考强度
+              <select
+                className="form-control"
+                aria-label="思考强度"
+                value={displayedEffort}
+                onChange={(event) => setEffort(event.target.value)}
+              >
+                <option value="low">低</option>
+                <option value="medium">中</option>
+                <option value="high">高</option>
+              </select>
+              <small>
+                {profile.reasoning_effort_env
+                  ? `当前由服务器环境变量 ${String(profile.reasoning_effort_env)} 覆盖；在这里改档会解除覆盖。`
+                  : "保存后新模型请求使用所选档位；进行中的请求保持原档位。"}
+                {legacyGeminiBudget &&
+                  " 当前旧连接使用固定预算；改档会切换为 thinkingLevel。"}
+              </small>
+            </label>
+          )}
+          {profile.protocol === "gemini" &&
+            (profile.reasoning_effort_env || legacyGeminiBudget) && (
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => setEffort(displayedEffort)}
+              >
+                使用当前档位并移除旧覆盖
+              </button>
+            )}
           <label className="form-group">
             此连接的联网搜索
             <select
@@ -456,6 +521,7 @@ function ModelDocument({
                 "model",
                 "api_key_env",
                 "search_mode",
+                ...(profile.protocol === "gemini" ? ["reasoning_effort"] : []),
               ]}
               choices={(name, values) => {
                 if (!["reasoning_effort", "effort_levels"].includes(name))
@@ -514,7 +580,10 @@ function ModelDocument({
           <button
             className="btn-secondary"
             type="button"
-            disabled={Object.values(routes).includes(selected)}
+            disabled={
+              Object.values(routes).includes(selected) ||
+              document.search_connection === selected
+            }
             onClick={() => {
               const next = { ...profiles };
               delete next[selected];
@@ -524,16 +593,52 @@ function ModelDocument({
           >
             删除此模型连接
           </button>
-          {Object.values(routes).includes(selected) && (
+          {(Object.values(routes).includes(selected) ||
+            document.search_connection === selected) && (
             <p className="small">
-              仍有任务使用此连接；先调整下面的用途再删除。
+              仍有任务或联网搜索使用此连接；先调整下面的用途再删除。
             </p>
           )}
         </>
       )}
       <div className="provider-intro">
-        <strong>2. 为任务选择模型</strong>
-        <span>每个用途直接选择上面配置的模型；保存后重启才会用于新请求。</span>
+        <strong>2. 联网搜索使用的模型连接</strong>
+        <span>
+          若部署使用 DeepSeek 搜索桥，请独立选择一条官方 DeepSeek
+          连接；切换主对话模型不会改动此选择。
+        </span>
+      </div>
+      <label className="form-group">
+        搜索连接
+        <select
+          className="form-control"
+          aria-label="搜索连接"
+          value={String(document.search_connection || "")}
+          onChange={(event) =>
+            change({
+              ...document,
+              search_connection: event.target.value || null,
+            })
+          }
+        >
+          <option value="">未选择</option>
+          {Object.entries(profiles)
+            .filter(([, item]) => item.provider === "deepseek")
+            .map(([id]) => (
+              <option key={id} value={id}>
+                {labelOf(id)}
+              </option>
+            ))}
+        </select>
+        <small>
+          {fields.search_backend === "deepseek_anthropic"
+            ? "当前部署使用 DeepSeek 搜索桥，保存时必须选一条官方 DeepSeek 连接。搜索桥固定调用 deepseek-flash；此处取用连接的 API Key。"
+            : "当前部署使用其他搜索后端；此选择会保留，供以后切换搜索后端使用。"}
+        </small>
+      </label>
+      <div className="provider-intro">
+        <strong>3. 为任务选择模型</strong>
+        <span>每个用途直接选择上面配置的模型；保存后立即用于新任务。</span>
       </div>
       {profile && (
         <div className="settings-actions">
@@ -554,7 +659,7 @@ function ModelDocument({
           <span className="small">
             将下方全部 {(fields.tasks as string[]).length} 个用途指向{" "}
             {connectionLabel({ ...(resolved || {}), ...profile })}
-            ；保存后重启生效。
+            ；保存后用于新任务。
           </span>
         </div>
       )}
@@ -605,6 +710,26 @@ function Draft({ fields, props }: { fields: Row; props: PageProps }) {
   function saveModelDocument() {
     const next = structuredClone(document);
     const profiles = next.profiles as Record<string, Row>;
+    if (fields.search_backend === "deepseek_anthropic") {
+      const searchId = String(next.search_connection || "");
+      if (!searchId)
+        throw new Error("当前使用 DeepSeek 搜索桥，请先选择独立的搜索连接。");
+      const searchProfile = profiles[searchId];
+      const resolved = (fields.resolved_profiles || {}) as Record<string, Row>;
+      let official = false;
+      try {
+        const endpoint = new URL(
+          String(searchProfile?.base_url || resolved[searchId]?.base_url || ""),
+        );
+        official =
+          endpoint.protocol === "https:" &&
+          endpoint.hostname === "api.deepseek.com";
+      } catch {
+        official = false;
+      }
+      if (searchProfile?.provider !== "deepseek" || !official)
+        throw new Error("搜索连接必须是官方 DeepSeek 连接。");
+    }
     const apiKeys: Record<string, string> = {};
     for (const [id, profile] of Object.entries(profiles)) {
       if (!profile.model && !profile.model_env)

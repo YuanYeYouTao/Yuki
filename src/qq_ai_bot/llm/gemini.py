@@ -175,6 +175,10 @@ class GeminiProvider(JSONHTTPProvider):
             config["maxOutputTokens"] = request.max_output_tokens
         if request.thinking_enabled:
             if self.options.reasoning == "budget":
+                if request.model.removeprefix("models/").startswith("gemini-3.8-"):
+                    raise LLMUnsupportedFeatureError(
+                        "Gemini 3.8 requires thinkingLevel, not a fixed thinkingBudget"
+                    )
                 config["thinkingConfig"] = {
                     "thinkingBudget": thinking_budget(self.options, request.reasoning_effort)
                 }

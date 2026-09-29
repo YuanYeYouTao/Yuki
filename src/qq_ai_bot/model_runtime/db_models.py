@@ -44,6 +44,10 @@ class ModelInvocationModel(Base):
     completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cached_prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # NULL marks historical/uninstrumented rows; zero means no HTTP dispatch.
+    physical_request_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    unknown_usage_request_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    native_search_requested: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     latency_seconds: Mapped[float] = mapped_column(Float, nullable=False)
     error_category: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

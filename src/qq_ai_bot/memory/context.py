@@ -10,6 +10,7 @@ from typing import Any
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.memory.activation import MemoryActivationRepository
+from qq_ai_bot.memory.authorized_scope import AuthorizedMemoryScope
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
     MemoryConflictState,
@@ -131,6 +132,8 @@ _ENTITY_MEMORY_RULE_TEMPLATE = (
 )
 
 MEMORY_GROUNDING_RULE = (
+    "当前请求不自动附带旧记忆。需要回忆人物、群或自己的既往事实时，先按当前意图调用"
+    "search_memory；没有明确目标就不填 target，以搜索当前主体有权读取的完整范围。"
     "长期记忆的 content 只支持其中明确写出的主张：不得由偏好 X 推断排斥非 X，不得在没有证据时"
     "补充提及次数、最新状态或相反偏好。只有 occurred_at 才是可用于正文的事件时间；updated_at 是"
     "存储更新时间，不能据此声称‘昨天’‘刚才’或事件发生日期。用户限制输出 N 条时至多输出 N 条；"
@@ -414,6 +417,25 @@ class MemoryContextService:
             }
         )
 
+    async def search_authorized(
+        self,
+        *,
+        text: str,
+        scope: AuthorizedMemoryScope,
+        runtime: RuntimeConfigSnapshot,
+        limit: int,
+        intent: MemoryQueryIntent | None = None,
+    ) -> MemoryRetrievalResult:
+        query = self._queries.for_targets(
+            text=text,
+            mode=MemoryRetrievalMode.RELEVANT,
+            targets=(),
+            runtime=runtime,
+            limit=limit,
+            intent=intent,
+        ).model_copy(update={"always_on_explicit_preference_limit": 0})
+        return await self._retriever.retrieve_authorized(query, scope, limit=limit)
+
     async def search(
         self,
         *,
@@ -436,6 +458,9 @@ class MemoryContextService:
             intent=intent,
         )
         if not automatic:
+            if intent is not None:
+                # An active search must not prepend unrelated personal preferences.
+                query = query.model_copy(update={"always_on_explicit_preference_limit": 0})
             return await self._retriever.retrieve(query)
         if neutral_ordering:
             query = query.model_copy(update={"semantic_enabled": False})

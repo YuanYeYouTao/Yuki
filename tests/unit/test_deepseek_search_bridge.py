@@ -1,5 +1,6 @@
 """Real search evidence, restart cache, unrestricted fallback and wiring contracts."""
 
+import asyncio
 import hashlib
 import json
 import sqlite3
@@ -13,8 +14,9 @@ import pytest
 from tests.fakes import FakeWebSearchProvider
 
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
-from qq_ai_bot.application.modules.web import WebModule
+from qq_ai_bot.application.modules.web import HotWebSearchProvider, WebModule
 from qq_ai_bot.config import Settings
+from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.runtime.work_activation import current_work_control
 from qq_ai_bot.services.media_resolver import MediaResolver
 from qq_ai_bot.web.base import WebSearchError
@@ -91,6 +93,26 @@ async def test_bridge_real_evidence_restart_cache_and_request_budget(tmp_path):
         control.reserve_request.assert_awaited_once_with(auxiliary=True)
     finally:
         current_work_control.reset(token)
+
+
+async def test_bridge_does_not_reuse_search_cache_across_api_keys(tmp_path):
+    calls: list[str] = []
+
+    def respond(request):
+        calls.append(request.headers["x-api-key"])
+        return httpx.Response(200, json=evidence())
+
+    for api_key in ("first", "second"):
+        bridge = DeepSeekSearchBridge(
+            api_key=api_key,
+            state_path=tmp_path / "cache.db",
+            client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+        )
+        try:
+            await bridge.search(WebSearchRequest("same query", extract_max_results=0))
+        finally:
+            await bridge.close()
+    assert calls == ["first", "second"]
 
 
 async def test_bridge_fallback_has_no_daily_cap_and_rejects_fake_evidence(tmp_path):
@@ -225,32 +247,192 @@ async def test_bridge_module_opt_in_profile_validation_and_tavily_compatibility(
     )
     assert settings.web_configured
     for profile in (
-        None,
         SimpleNamespace(provider="other", base_url="https://example.com"),
         SimpleNamespace(provider="deepseek", base_url="https://proxy.example.com"),
     ):
+        catalog = SimpleNamespace(
+            search_connection="search",
+            profiles={"search": profile},
+            routes={ModelTask.CHAT_AGENT: SimpleNamespace(profile_id="search")},
+        )
         with pytest.raises(ValueError, match="official DeepSeek"):
             WebModule(
                 settings.web,
                 lifecycle=LifecycleRegistry(),
-                search_profile=profile,
-                search_api_key="test",
+                catalog=catalog,
+                clients=SimpleNamespace(api_key_for=lambda _profile: "test"),
             ).build()
     profile = SimpleNamespace(provider="deepseek", base_url="https://api.deepseek.com")
+    catalog = SimpleNamespace(
+        search_connection="search",
+        profiles={"search": profile},
+        routes={ModelTask.CHAT_AGENT: SimpleNamespace(profile_id="chat")},
+    )
     lifecycle = LifecycleRegistry()
     bundle = WebModule(
-        settings.web, lifecycle=lifecycle, search_profile=profile, search_api_key="test"
+        settings.web,
+        lifecycle=lifecycle,
+        catalog=catalog,
+        clients=SimpleNamespace(api_key_for=lambda _profile: "test"),
     ).build()
-    assert isinstance(bundle.provider, DeepSeekSearchBridge)
-    assert bundle.provider.fallback is None
+    assert isinstance(bundle.provider._active, DeepSeekSearchBridge)
+    assert bundle.provider._active.fallback is None
     await lifecycle.start()
     await lifecycle.close()
     legacy = Settings(_env_file=None, web_mode="tavily", tavily_api_key="test")
     lifecycle = LifecycleRegistry()
     provider = WebModule(legacy.web, lifecycle=lifecycle).build().provider
-    assert provider.__class__.__name__ == "TavilyWebSearchProvider"
+    assert provider._active.__class__.__name__ == "TavilyWebSearchProvider"
     await lifecycle.start()
     await lifecycle.close()
+
+
+async def test_bridge_search_connection_survives_chat_switch_and_hot_key_change(tmp_path):
+    settings = Settings(
+        _env_file=None,
+        web_mode="tavily",
+        web_search_backend="deepseek_anthropic",
+        web_search_bridge_state_path=tmp_path / "cache.db",
+    )
+    search = SimpleNamespace(provider="deepseek", base_url="https://api.deepseek.com")
+    gemini = SimpleNamespace(
+        provider="gemini", base_url="https://generativelanguage.googleapis.com/v1beta"
+    )
+    catalog = SimpleNamespace(
+        search_connection="search",
+        profiles={"search": search, "chat": gemini},
+        routes={ModelTask.CHAT_AGENT: SimpleNamespace(profile_id="chat")},
+    )
+    lifecycle = LifecycleRegistry()
+    module = WebModule(
+        settings.web,
+        lifecycle=lifecycle,
+        catalog=catalog,
+        clients=SimpleNamespace(api_key_for=lambda _profile: "old-key"),
+    )
+    provider = module.build().provider
+    assert provider is not None
+    old = provider._active
+    assert old.headers["x-api-key"] == "old-key"
+    replacement = module.prepare(
+        catalog,
+        SimpleNamespace(api_key_for=lambda _profile: "new-key"),
+        require_explicit=True,
+    )
+    assert replacement is not None
+    module.activate(replacement)
+    assert provider._active.headers["x-api-key"] == "new-key"
+    assert old.headers["x-api-key"] == "old-key"
+    await asyncio.sleep(0)
+    assert old.client.is_closed
+    missing = SimpleNamespace(
+        search_connection=None, profiles=catalog.profiles, routes=catalog.routes
+    )
+    with pytest.raises(ValueError, match="Select a DeepSeek search connection"):
+        module.prepare(
+            missing, SimpleNamespace(api_key_for=lambda _: "test"), require_explicit=True
+        )
+    with pytest.raises(ValueError, match="requires restart before disabling"):
+        module.activate(None)
+    await lifecycle.start()
+    await lifecycle.close()
+
+
+async def test_hot_web_search_retires_only_after_inflight_calls_finish():
+    class GatedProvider:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.closed = asyncio.Event()
+            self.running = 0
+
+        async def search(self, request):
+            self.running += 1
+            self.started.set()
+            try:
+                await self.release.wait()
+                assert not self.closed.is_set()
+                return RESPONSE
+            finally:
+                self.running -= 1
+
+        async def extract(self, url, query):
+            self.running += 1
+            self.started.set()
+            try:
+                await self.release.wait()
+                assert not self.closed.is_set()
+                return SOURCE
+            finally:
+                self.running -= 1
+
+        async def close(self):
+            assert self.running == 0
+            self.closed.set()
+
+    first, second, third = (GatedProvider(name) for name in ("first", "second", "third"))
+    hot = HotWebSearchProvider(first)
+    first_call = asyncio.create_task(hot.search(WebSearchRequest("first query")))
+    await first.started.wait()
+    hot.activate(second)
+    second_call = asyncio.create_task(hot.extract(URL, "second query"))
+    await second.started.wait()
+    hot.activate(third)
+    assert not first.closed.is_set() and not second.closed.is_set()
+    assert len(hot._retired) == 2
+    third.release.set()
+    assert await hot.search(WebSearchRequest("third query")) == RESPONSE
+    second.release.set()
+    assert await second_call == SOURCE
+    await asyncio.wait_for(second.closed.wait(), 1)
+    assert not first.closed.is_set()
+    first.release.set()
+    assert await first_call == RESPONSE
+    await asyncio.wait_for(first.closed.wait(), 1)
+    assert not hot._retired
+    previous = third
+    for index in range(12):
+        replacement = GatedProvider(f"replacement-{index}")
+        replacement.release.set()
+        hot.activate(replacement)
+        await asyncio.wait_for(previous.closed.wait(), 1)
+        assert not hot._retired
+        previous = replacement
+    await hot.close()
+    assert previous.closed.is_set()
+    with pytest.raises(WebSearchError, match="联网搜索已停止"):
+        await hot.search(WebSearchRequest("too late"))
+
+
+async def test_hot_web_search_shutdown_waits_for_active_extract():
+    started = asyncio.Event()
+    release = asyncio.Event()
+    closed = asyncio.Event()
+
+    class Provider:
+        async def search(self, request):
+            return RESPONSE
+
+        async def extract(self, url, query):
+            started.set()
+            await release.wait()
+            assert not closed.is_set()
+            return SOURCE
+
+        async def close(self):
+            closed.set()
+
+    hot = HotWebSearchProvider(Provider())
+    read = asyncio.create_task(hot.extract(URL, "query"))
+    await started.wait()
+    stopping = asyncio.create_task(hot.close())
+    await asyncio.sleep(0)
+    assert not stopping.done() and not closed.is_set()
+    release.set()
+    assert await read == SOURCE
+    await stopping
+    assert closed.is_set()
 
 
 @pytest.mark.parametrize("protocol", ["chat_completions", "responses"])

@@ -10,6 +10,7 @@ from yuki_participation.autonomy_parameters import AutonomyParameters
 from qq_ai_bot.admin.config_files import ConfigFileService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.application.control_access import ControlOperatorAccess
+from qq_ai_bot.application.modules.web import WebModule
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.config import Settings
 from qq_ai_bot.control_plane.command_service import ControlCommandService
@@ -61,6 +62,7 @@ class ControlPlaneModule:
         conversation_media: ConversationMediaService | None = None,
         model_catalog: ModelProfileCatalog | None = None,
         model_executor: TaskModelExecutor | None = None,
+        web_module: WebModule | None = None,
         participation_snapshot: Callable[[], Awaitable[dict[str, object]]] | None = None,
         autonomy_parameters: Callable[[], AutonomyParameters] | None = None,
         runtime_health: Callable[[], Awaitable[tuple[ComponentHealthView, ...]]] | None = None,
@@ -71,6 +73,7 @@ class ControlPlaneModule:
             model_catalog,
             autonomy_parameters=autonomy_parameters,
             model_executor=model_executor,
+            web_module=web_module,
         )
         writer = ControlCommandAdapter(
             database,

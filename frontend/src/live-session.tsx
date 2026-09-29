@@ -92,25 +92,46 @@ function TurnCard({
   const [showSteps, setShowSteps] = useState(false);
   const [showOperations, setShowOperations] = useState(false);
   const [selectedStepId, setSelectedStepId] = useState<number | null>(null);
-  const visibleSteps = showSteps ? turn.steps : turn.steps.slice(-3);
-  const operations = turn.steps.filter(
+  const [olderSteps, setOlderSteps] = useState<Step[]>([]);
+  const [olderMessages, setOlderMessages] = useState<TurnMessage[]>([]);
+  const [hasOlder, setHasOlder] = useState<boolean | null>(null);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [olderError, setOlderError] = useState<unknown>(null);
+  const steps = [
+    ...new Map(
+      [...olderSteps, ...turn.steps].map((step) => [step.id, step]),
+    ).values(),
+  ].sort((a, b) => a.id - b.id);
+  const messages = [
+    ...new Map(
+      [...olderMessages, ...(turn.messages || [])].map((message) => [
+        message.event_id,
+        message,
+      ]),
+    ).values(),
+  ].sort((a, b) => a.event_id - b.event_id);
+  const visibleSteps = showSteps ? steps : steps.slice(-3);
+  const operations = steps.filter(
     (step) =>
       ["recorded", "redacted"].includes(step.payload_status) &&
       ([
         "tool_start",
         "tool_end",
         "model_route",
+        "model_start",
         "model_end",
+        "provider_start",
+        "provider_response",
         "social_delivery",
       ].includes(step.kind) ||
         step.kind.endsWith("_error")),
   );
   const recentOperations = operations.slice(-8);
-  const selectedStep = turn.steps.find((step) => step.id === selectedStepId);
+  const selectedStep = steps.find((step) => step.id === selectedStepId);
   const family = selectedStep?.kind.replace(/_(start|end|error)$/, "");
   const pairedStep =
     selectedStep?.operation_id && family
-      ? turn.steps.find(
+      ? steps.find(
           (step) =>
             step.id !== selectedStep.id &&
             step.operation_id === selectedStep.operation_id &&
@@ -124,7 +145,7 @@ function TurnCard({
       )
     : [];
   const operationStart = new Map<string, Step>(
-    turn.steps
+    steps
       .filter((step) => step.kind.endsWith("_start") && step.operation_id)
       .map((step) => [step.operation_id!, step]),
   );
@@ -147,6 +168,33 @@ function TurnCard({
     tool_batch_start: "正在执行工具",
     turn_start: "本轮已开始",
   };
+  async function loadOlder() {
+    const beforeStepId = steps[0]?.id;
+    if (beforeStepId == null || loadingOlder) return;
+    setLoadingOlder(true);
+    setOlderError(null);
+    try {
+      const response = await query<Row>("read_conversation_execution", {
+        conversation_id: turn.original_conversation_id,
+        turn_id: turn.turn_id,
+        before_step_id: beforeStepId,
+        include_content: content,
+      });
+      const page = (response.fields || response) as Turn;
+      if (
+        page.turn_id !== turn.turn_id ||
+        page.original_conversation_id !== turn.original_conversation_id
+      )
+        throw new Error("较早执行记录的轮次不匹配");
+      setOlderSteps((current) => [...current, ...page.steps]);
+      setOlderMessages((current) => [...current, ...(page.messages || [])]);
+      setHasOlder(page.steps_truncated === true && page.steps.length > 0);
+    } catch (error) {
+      setOlderError(error);
+    } finally {
+      setLoadingOlder(false);
+    }
+  }
   return (
     <article className="live-turn">
       <header>
@@ -171,9 +219,9 @@ function TurnCard({
             `运行中 · ${stepName[turn.latest_kind] || text(turn.latest_kind)}`
           : stepName[turn.latest_kind] || text(turn.latest_kind)}
       </p>
-      {!!turn.messages?.length && (
+      {!!messages.length && (
         <div className="turn-messages" aria-label="本轮收发消息">
-          {turn.messages.map((message) => (
+          {messages.map((message) => (
             <div
               key={message.event_id}
               className={`turn-message ${message.direction}`}
@@ -204,16 +252,27 @@ function TurnCard({
           ))}
         </div>
       )}
-      {!turn.messages?.length && (
+      {!messages.length && (
         <p className="small">
           这段诊断没有可核验的收发事件，不能据此判断本轮没有收到或发出消息。
         </p>
       )}
-      {turn.messages_truncated && (
+      {(hasOlder ?? turn.messages_truncated) && (
         <p className="small">
-          这里只显示最近执行记录关联的消息；较早消息请在聊天时间线查看。
+          这里只显示已加载执行记录关联的消息；可继续加载更早记录。
         </p>
       )}
+      {(hasOlder ?? turn.steps_truncated) && (
+        <button
+          type="button"
+          className="file-open"
+          disabled={loadingOlder}
+          onClick={() => void loadOlder()}
+        >
+          {loadingOlder ? "正在加载更早记录…" : "加载更早的状态和收发消息"}
+        </button>
+      )}
+      {olderError != null && <ErrorNote error={olderError} />}
       {turn.usage && (
         <p className="small turn-usage">
           本轮 Token {turn.usage.total_tokens.toLocaleString("zh-CN")} · 输入{" "}
@@ -298,7 +357,7 @@ function TurnCard({
           ))}
         </div>
       )}
-      {turn.steps.length > 3 && (
+      {steps.length > 3 && (
         <button
           type="button"
           className="file-open"
@@ -306,13 +365,11 @@ function TurnCard({
         >
           {showSteps
             ? "收起状态记录"
-            : `查看全部 ${turn.steps.length} 条状态记录`}
+            : `查看全部已加载的 ${steps.length} 条状态记录`}
         </button>
       )}
-      {turn.steps_truncated && (
-        <p className="small">
-          此处只显示最近 {turn.steps.length} 步；展开后可查看其余记录。
-        </p>
+      {(hasOlder ?? turn.steps_truncated) && (
+        <p className="small">本轮还有更早的步骤，使用上方按钮继续加载。</p>
       )}
       <button
         type="button"

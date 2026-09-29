@@ -16,6 +16,9 @@ Tool Kernel 分开管理工具目录、固定声明与执行授权。主 Agent �
 `get_chat_history_around` 只以必填的内部 `event_id` 定位当前会话账本；缺少编号或传入
 平台消息号会收到错误回执。声明变更随部署生成新的合同 revision，不沿用旧请求链。
 Provider 原生工具还有独立的协议和配置合同，不能只检查函数工具就声称整个请求相同。
+长期记忆的主 Agent 声明是统一 `search_memory`，事实和证据详情仍为独立工具；旧三个
+`get_*_memories` 列表名只在执行层兼容历史回执。插件只获 Person 或 Group 读权限时
+仍可使用 `search_memory`，后端按该次批准的 scope 限制候选和显式目标。
 
 主 Agent 直接收到启动时冻结的完整工具声明；目录元数据用于装配和运维，
 不再向模型提供额外的目录查询工具。Capability Runtime 的执行集合不是模型声明的真源，

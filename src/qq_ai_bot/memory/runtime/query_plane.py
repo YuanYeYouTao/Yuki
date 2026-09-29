@@ -13,6 +13,7 @@ from typing import Protocol, TypedDict
 from pydantic import BaseModel, ConfigDict, Field
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
+from qq_ai_bot.memory.authorized_scope import AuthorizedMemoryScope
 from qq_ai_bot.memory.enums import (
     MemoryContextMode,
     MemoryRecallPurpose,
@@ -50,6 +51,7 @@ class ResolvedReadScope(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     targets: tuple[MemoryEntityTarget, ...]
+    complete: bool = True
 
 
 class MemoryReadRequest(BaseModel):
@@ -61,6 +63,7 @@ class MemoryReadRequest(BaseModel):
     intent: MemoryQueryIntent | None = None
     requested_limit: int | None = Field(default=None, ge=1, le=100)
     resolved_scope: ResolvedReadScope
+    authorized_scope: AuthorizedMemoryScope | None = None
     # Backend-only automatic projection options, never exposed in a tool schema.
     automatic_self_target: MemoryEntityTarget | None = None
     neutral_ordering: bool = False
@@ -93,6 +96,16 @@ class MemoryQueryKernel(Protocol):
         result: MemoryRetrievalResult,
         fact_ids: tuple[int, ...],
     ) -> int: ...
+
+    async def search_authorized(
+        self,
+        *,
+        text: str,
+        scope: AuthorizedMemoryScope,
+        runtime: RuntimeConfigSnapshot,
+        limit: int,
+        intent: MemoryQueryIntent | None = None,
+    ) -> MemoryRetrievalResult: ...
 
     async def record_recall(
         self,
@@ -203,6 +216,14 @@ class MemoryQueryPlane:
                 )
             )
             intent = intent.model_copy(update={"subjects": subjects})
+        if request.authorized_scope is not None:
+            return await self._kernel.search_authorized(
+                text=request.text,
+                scope=request.authorized_scope,
+                runtime=runtime,
+                limit=resolve_read_limit(consumer, request, runtime),
+                intent=intent,
+            )
         automatic = consumer is MemoryReadConsumer.AUTOMATIC_CONTEXT
         options: _AutomaticSearchOptions = {}
         if automatic:
