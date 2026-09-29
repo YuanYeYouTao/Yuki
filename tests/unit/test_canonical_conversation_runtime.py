@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from tests.support.gateway import napcat_registry
 
 from qq_ai_bot.automation.models import TurnOrigin
@@ -676,6 +676,38 @@ async def _v2_private_ledger(database: Database):
         ScopedEventLedgerUnitOfWork(database, config=RollupPolicyConfig()),
         ConversationScope.private("8000", "1001"),
     )
+
+
+@pytest.mark.asyncio
+async def test_outbound_receipt_replay_avoids_impossible_legacy_lookup(database: Database) -> None:
+    uow, scope = await _v2_private_ledger(database)
+    statements: list[str] = []
+
+    def capture(_conn, _cursor, statement, _parameters, _context, _executemany) -> None:
+        statements.append(statement)
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
+    try:
+        arguments = dict(
+            scope=scope,
+            platform_message_id="outbound-receipt-1",
+            sender_user_id="8000",
+            sender_is_bot=True,
+            direction="outbound",
+            content="hello",
+            occurred_at=_NOW,
+        )
+        first = await uow.append(**arguments)
+        replay = await uow.append(**arguments)
+    finally:
+        event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
+
+    assert first.created is True
+    assert replay.created is False
+    assert replay.event.id == first.event.id
+    assert ChatEventModel.__table__.c.canonical_event_id.nullable is False
+    assert any("canonical_event_receipts" in sql for sql in statements)
+    assert all("canonical_event_id IS NULL" not in sql for sql in statements)
 
 
 async def _v2_ledger_snapshot(database: Database) -> tuple[object, object, object]:
