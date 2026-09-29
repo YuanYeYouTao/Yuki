@@ -91,8 +91,21 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
                     "cache_creation_5m_input_tokens": response.cache_creation_5m_input_tokens,
                     "cache_creation_1h_input_tokens": response.cache_creation_1h_input_tokens,
                 }
+                # A partial input sum cannot serve as the denominator for a
+                # cache-read/write total spanning both physical requests.
+                complete_input = (
+                    previous["prompt_tokens"] is not None
+                    and integer(later.get("prompt_tokens")) is not None
+                )
                 usage = {
-                    key: self._sum_known_usage(previous[key], later.get(key)) for key in previous
+                    key: (
+                        self._sum_known_usage(previous[key], later.get(key))
+                        if key in {"prompt_tokens", "completion_tokens", "total_tokens"}
+                        else self._add_usage(previous[key], integer(later.get(key)))
+                        if complete_input
+                        else None
+                    )
+                    for key in previous
                 }
                 logger.warning(
                     "claude_search_pause_followup_failed category=%s",

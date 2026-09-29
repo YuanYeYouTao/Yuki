@@ -25,6 +25,7 @@ from qq_ai_bot.llm.base import (
     RetryableProviderError,
 )
 from qq_ai_bot.llm.http_errors import check_provider_response
+from qq_ai_bot.llm.protocol_state import integer
 from qq_ai_bot.llm.wire_diagnostics import WireRequestObserver
 from qq_ai_bot.model_runtime.request_accounting import current_provider_attempts
 
@@ -63,6 +64,32 @@ class JSONHTTPProvider(LLMProvider):
     def _request_headers(self) -> dict[str, str]:
         return {**self._headers, "Authorization": f"Bearer {self._api_key}"}
 
+    @staticmethod
+    def _usage_diagnostics(payload: dict[str, Any]) -> dict[str, object]:
+        """OpenAI-style Chat usage; native adapters override their wire mapping."""
+        usage = payload.get("usage")
+        usage = usage if isinstance(usage, dict) else {}
+        details = usage.get("prompt_tokens_details")
+        details = details if isinstance(details, dict) else {}
+        output_details = usage.get("completion_tokens_details")
+        output_details = output_details if isinstance(output_details, dict) else {}
+        incoming = integer(usage.get("prompt_tokens"))
+        output = integer(usage.get("completion_tokens"))
+        total = integer(usage.get("total_tokens"))
+        if total is None and incoming is not None and output is not None:
+            total = incoming + output
+        return {
+            "usage": {
+                "prompt_tokens": incoming,
+                "completion_tokens": output,
+                "total_tokens": total,
+                "cached_prompt_tokens": integer(
+                    details.get("cached_tokens", usage.get("prompt_cache_hit_tokens"))
+                ),
+                "reasoning_tokens": integer(output_details.get("reasoning_tokens")),
+            }
+        }
+
     async def _post(self, request: ChatRequest) -> httpx.Response:
         from qq_ai_bot.model_runtime.dispatch_guard import check_model_dispatch
 
@@ -88,7 +115,22 @@ class JSONHTTPProvider(LLMProvider):
                 timeout=self._timeout,
             )
             await record_http_response(response)
-            check_provider_response(response)
+            try:
+                check_provider_response(response)
+            except LLMError as exc:
+                try:
+                    payload = response.json()
+                except ValueError:
+                    payload = {}
+                diagnostics = self._usage_diagnostics(payload) if isinstance(payload, dict) else {}
+                usage = diagnostics.get("usage")
+                if isinstance(usage, dict) and any(
+                    type(value) is int and value >= 0 for value in usage.values()
+                ):
+                    if attempts is not None:
+                        attempts.reported_usage(usage.get("total_tokens"))
+                    exc.diagnostics = {**exc.diagnostics, "usage": usage}
+                raise
         return response
 
     async def complete(self, request: ChatRequest) -> ChatResponse:

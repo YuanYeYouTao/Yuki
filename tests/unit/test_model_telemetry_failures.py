@@ -22,6 +22,7 @@ from qq_ai_bot.domain.messages import (
 from qq_ai_bot.gateway.registry import RegistryClosed
 from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.identity.routing import RouteSendError
+from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
 from qq_ai_bot.llm.base import (
     LLMAuthenticationError,
     LLMEmptyResponseError,
@@ -32,6 +33,7 @@ from qq_ai_bot.llm.base import (
 )
 from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
+from qq_ai_bot.llm.gemini import GeminiProvider
 from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
 from qq_ai_bot.model_runtime.executor import TaskModelExecutor
 from qq_ai_bot.model_runtime.models import (
@@ -44,6 +46,10 @@ from qq_ai_bot.model_runtime.models import (
 from qq_ai_bot.model_runtime.pool import ModelClientPool
 from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
 from qq_ai_bot.model_runtime.repository import ModelInvocationRepository
+from qq_ai_bot.model_runtime.request_accounting import (
+    ProviderAttemptCounter,
+    current_provider_attempts,
+)
 from qq_ai_bot.model_runtime.routes import ModelRouter
 from qq_ai_bot.runtime.activation_outcome import classify_failure, failure_status_text
 from qq_ai_bot.runtime.work_repository import WorkConflict
@@ -166,6 +172,99 @@ async def test_telemetry_counts_dispatched_retry_and_unknown_usage_separately():
     assert telemetry.records[0]["physical_request_count"] == 2
     assert telemetry.records[0]["unknown_usage_request_count"] == 1
     assert telemetry.records[0]["total_tokens"] == 8
+
+
+@pytest.mark.parametrize(
+    ("provider_type", "reported", "expected"),
+    [
+        (
+            GeminiProvider,
+            {
+                "usageMetadata": {
+                    "promptTokenCount": 9,
+                    "candidatesTokenCount": 2,
+                    "totalTokenCount": 11,
+                    "cachedContentTokenCount": 3,
+                }
+            },
+            {
+                "prompt_tokens": 9,
+                "completion_tokens": 2,
+                "total_tokens": 11,
+                "cached_prompt_tokens": 3,
+            },
+        ),
+        (
+            AnthropicMessagesProvider,
+            {
+                "usage": {
+                    "input_tokens": 2,
+                    "cache_read_input_tokens": 3,
+                    "cache_creation_input_tokens": 4,
+                    "output_tokens": 2,
+                }
+            },
+            {
+                "prompt_tokens": 9,
+                "completion_tokens": 2,
+                "total_tokens": 11,
+                "cached_prompt_tokens": 3,
+                "cache_creation_input_tokens": 4,
+                "cache_creation_5m_input_tokens": None,
+                "cache_creation_1h_input_tokens": None,
+            },
+        ),
+        (
+            OpenAICompatibleProvider,
+            {
+                "usage": {
+                    "prompt_tokens": 9,
+                    "completion_tokens": 2,
+                    "prompt_tokens_details": {"cached_tokens": 3},
+                }
+            },
+            {
+                "prompt_tokens": 9,
+                "completion_tokens": 2,
+                "total_tokens": 11,
+                "cached_prompt_tokens": 3,
+                "reasoning_tokens": None,
+            },
+        ),
+    ],
+)
+@pytest.mark.parametrize("has_usage", [True, False])
+async def test_chat_http_error_preserves_only_reported_numeric_usage(
+    provider_type, reported, expected, has_usage
+):
+    body = {"error": {"type": "bad_request"}, "private_extra": "do not record"}
+    if has_usage:
+        body.update(reported)
+    async with httpx.AsyncClient(
+        base_url="https://wire.invalid/v1/",
+        transport=httpx.MockTransport(lambda _: httpx.Response(400, json=body)),
+    ) as client:
+        provider = provider_type(
+            base_url="https://wire.invalid/v1/",
+            api_key="test",
+            timeout_seconds=2,
+            max_retries=0,
+            client=client,
+        )
+        attempts = ProviderAttemptCounter()
+        token = current_provider_attempts.set(attempts)
+        try:
+            with pytest.raises(LLMInvalidRequestError) as caught:
+                await provider.complete(
+                    ChatRequest(messages=(ChatMessage(role="user", content="hello"),), model="test")
+                )
+        finally:
+            current_provider_attempts.reset(token)
+        assert caught.value.diagnostics["http_status"] == 400
+        assert caught.value.diagnostics.get("usage") == (expected if has_usage else None)
+        assert "private_extra" not in repr(caught.value.diagnostics)
+        assert attempts.requests == 1
+        assert attempts.unknown_usage_requests == (0 if has_usage else 1)
 
 
 @pytest.mark.parametrize(
