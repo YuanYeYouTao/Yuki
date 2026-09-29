@@ -161,6 +161,43 @@ it("shows window totals, keeps cached input inside input, and marks missing usag
   expect(calls).toEqual(["24h", "7d"]);
 });
 
+it("explains a provider total that has no complete input/output breakdown", async () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+    const method = String(url).split("/").pop();
+    return new Response(
+      JSON.stringify({
+        data: {
+          fields:
+            method === "read_model_usage_summary"
+              ? {
+                  window: "24h",
+                  since: "2026-09-28T11:31:00Z",
+                  until: "2026-09-29T11:31:00Z",
+                  calls: 3,
+                  input_tokens: 100,
+                  output_tokens: 20,
+                  total_tokens: 187,
+                  models: [],
+                  profiles: [],
+                  tasks: [],
+                  buckets: [],
+                  model_buckets: [],
+                }
+              : { profiles: [], routes: [] },
+        },
+        problem: null,
+      }),
+    );
+  });
+  render(
+    <Models allowed={() => true} act={() => {}} refresh={0} conversation="" />,
+  );
+  expect(
+    await screen.findByText(/上游总 Token 比已报告输入、输出之和多 67 Token/),
+  ).toBeInTheDocument();
+  expect(screen.getByText(/缺失的分项不能按差额推算/)).toBeInTheDocument();
+});
+
 it("explains loaded task routes with their provider and model", async () => {
   vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
     const method = String(url).split("/").pop();
