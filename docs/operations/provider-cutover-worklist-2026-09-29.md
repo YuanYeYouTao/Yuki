@@ -4,7 +4,7 @@
 
 ## 当前事实
 
-- PR [#170](https://github.com/YuanYeYouTao/Yuki/pull/170) 已通过 Linux CI 并 squash 合并至 `main`（`a330ee6fd37e8813aecee54d8981f10bbeea52a5`）。Bot 镜像 `ops-7f42b26` 已单独部署，容器健康，数据库升级到 `0079`；这不代表代理或真实 QQ 场景全部验收。
+- PR [#170](https://github.com/YuanYeYouTao/Yuki/pull/170) 已通过 Linux CI 并 squash 合并至 `main`（`a330ee6fd37e8813aecee54d8981f10bbeea52a5`）。上一 Bot 镜像 `ops-7f42b26` 曾单独部署，数据库升级到 `0079`；当前运行镜像见下条。
 - 跟进 PR [#171](https://github.com/YuanYeYouTao/Yuki/pull/171) 最新 Linux CI 全绿并 squash 合并到 `main`（`b5c51b3994028412a327392855a6350ed1c71857`）。代码相同的 Bot 镜像 `ops-c30f220` 已在 `/opt/yuki-qqbot/backups/pre-ops-c30f220-20260929T024221Z` 做 SQLite 在线备份与配置备份后单服务部署；新容器 `dcd3577bc837…` healthy，数据库仍为 `0079`，SnowLuma 与 mihomo 未重建。
 - 生产 WebUI 已将 Gemini 3.8 Flash 的 13 个任务用途保留，并热保存 `reasoning_effort=low`；回执 `applied`，磁盘版本与已加载版本一致。保存前后的 Bot 容器 ID 相同，随后新模型请求的 Yuki 出站为 `thinkingLevel: low`，旧请求为 `medium`。
 - 生产 WebUI 曾将该 Gemini 连接热保存为 `search_mode=native`、`native_web_search=true`，回执 `applied`；随后无 QQ 完整主链探针发现当前 Cloud Code 路径不能把固定函数与 `googleSearch` 放在同一请求。已立即按原文件版本通过控制面热保存回退到沿用 Tavily，回执 `applied`（版本 `2444569520056773`），再读 `matches_loaded=true`；Bot 容器 ID 未变且健康，`reasoning_effort=low` 保留。中间直接恢复磁盘文件只用于准备回退，最终控制面保存才使内存态生效。
@@ -14,7 +14,7 @@
 
 ## 本轮状态快照
 
-| 编号 | 本地状态 | 还不能打总勾的原因 |
+| 编号 | 当前证据与状态 | 还不能打总勾的原因 |
 | --- | --- | --- |
 | 1 搜索与工具 | DeepSeek 官方搜索桥真实调用返回服务端搜索事件；Gemini 非流式 SSE collector 已修补并单服务部署，单独搜索回包有可信 grounding；混合主链失败后已热回退到 Tavily | 当前 Cloud Code 路径的固定函数与 `googleSearch` 混用返回 400；需独立搜索请求方案及验收，Claude 真实代理、费用与无来源回退也未验收 |
 | 2 多模态 | 附件路由与预算通过；当前 Gemini/DeepSeek 两连接的图片、双视频帧和函数工具经真实 API 成功，Gemini 结构化及 DeepSeek 函数式结构化探针成功 | 真实 QQ 附件、长上下文、未配置 Provider 和原生音视频尚未验收 |
@@ -25,10 +25,10 @@
 | 7 旧配置 | 6 项无效选择配置已删除；`flash`、`self_reflection` 已备份并热移除 | 5 条 suspended Work 精确引用旧 `pro`，其中 3 条有未知发送或待核效果；须证据对账后才能删 `pro` |
 | 8 上线验收 | 后端全量 1,654 通过/7 个 Windows 跳过，前端 85 通过；PR #171 最新 Linux CI 全绿并合并，新 Bot 单服务部署 healthy，生产配置与运行态一致 | 原生 Gemini 搜索桥、跨供应商自然切换、真实 QQ 多模态与账单等验收未完 |
 | 9 状态与收发消息 | 新镜像上线后，生产外部事件 #72188 经控制面查到 3 个可信执行轮次，原先方向误拒已修；本地长轮分页与授权详情通过测试 | 生产长轮页面、授权正文和交互仍待目视复核 |
-| 10 高危：跨供应商缓存 | Gemini 67 条 Yuki/代理调用逐条匹配；新版同链两次明确命中 40,268/42,551 与 40,323/43,834，旧 Dream 动态 system 已修；代理 `countTokens` 400 已最小修补并在生产返回 200 | 该 Cloud Code 计数接口只覆盖 `contents`，不能当作完整前缀计数；长期命中、账单、其他 Provider 与新版 Dream 批次仍待验收 |
+| 10 高危：跨供应商缓存 | Gemini 67 条 Yuki/代理调用逐条匹配；`ops-c30f220` 上线后同一会话连续 3 次已报缓存 40,298/45,489、40,291/45,640、40,291/46,233，system/tools/low 均稳定；旧 Dream 动态 system 已修 | 同期另 1 次主聊缺缓存回执，且仅有一个会话两轮样本；完整前缀计数、长期命中、账单、其他 Provider 与新版 Dream 批次仍待验收 |
 | 11 高危：Gemini 代理抓包 | 用户确认是清理前旧请求；已核对结构、线上 Base URL，以及代理入站/转发/响应三栏 | 需确认最终发往 Google 的请求；当前字段顺序是否影响缓存不能凭单次抓包判断 |
 | 12 高危：Gemini 思考档位与代理改写 | Yuki 生产热保存 low 后连续请求确实发送 low；当前生产代理的合成 low/medium/high 请求均保留对应档位且无固定预算，尾段旧报文重放 200 | 仍需自然 Yuki 尾段与配置热改档的全链验收 |
-| 13 高危：本轮运行资料夹杂弱相关内容 | 本地不再自动附旧事实/事件摘要；统一 `search_memory` 有全局授权候选；Person 7+7 探针未复现编造；紧凑历史合成 A/B 输入 Token 在 Gemini/DeepSeek 降 33–36% | 记忆缺人工金标/完整 Agent 补查；DeepSeek 缓存也减半，尚不能证明紧凑历史真实费用与工具轮次净收益 |
+| 13 高危：本轮运行资料夹杂弱相关内容 | 不自动附旧事实/事件摘要及统一 `search_memory` 已随当前镜像上线；Person 7+7 探针未复现编造；紧凑历史合成 A/B 输入 Token 在 Gemini/DeepSeek 降 33–36% | 记忆缺人工金标/完整 Agent 补查；DeepSeek 缓存也减半，尚不能证明紧凑历史真实费用与工具轮次净收益 |
 | 14 记忆向量服务启用与降级 | 生产记忆页显示启用、配置齐全、1,158/1,158 活跃事实覆盖；隔离探针中缺凭据、超时与 503 均保留词法结果并标记非穷尽 | 生产断网/重启后的开关生效与人工金标精度仍未验收 |
 | 15 高危：末尾工具回执后模型请求 400 | 14/14 历史同类 400 均发生在末尾函数回执；代理补丁同报文重放 200。随后两条自然 QQ 轮次各一次 `send_message` 后 Gemini 最终请求成功并 `turn_end`，合计 5 个不同的已记录投递事件，无重复发送工具执行 | 已覆盖所报末尾路径的自然样本；继续观察其他未出现的对话形态 |
 
@@ -37,7 +37,7 @@
 - [ ] **1. 供应商搜索与工具清单**：按连接/协议明确选择原生搜索或外部搜索；Gemini、OpenAI Responses、DeepSeek、Anthropic 的请求格式与能力声明一致；当前供应商不可用的工具不得出现在请求的 tools 中；搜索事件、失败和来源可追踪。当前：各连接模式、声明过滤已通过定向验证；DeepSeek 官方搜索桥真实调用有 `server_tool_use` 与 `web_search_tool_result`。Gemini 单独原生搜索可返回可信 grounding，但当前 Cloud Code 路径混合固定函数会 400，生产已恢复 Tavily，独立搜索请求尚待实现。
   - [x] Gemini 原生 Google Search 与 Claude server-side web search 的协议适配和离线回放已实现；Gemini/Claude 续接保留服务端片段。
   - [x] 每连接搜索策略、协议能力校验和当前 wire tool 声明过滤已实现；Provider 定向测试 94 项通过。
-  - [x] 删除 `request_tools` 声明、执行路径、检索状态和插件事件；能力运行时改为完整稳定声明，权限只在执行处收窄。联网集成 12 项、能力/社交/跨轮定向 34 项通过；全量回归继续进行。
+  - [x] 删除 `request_tools` 声明、执行路径、检索状态和插件事件；能力运行时改为完整稳定声明，权限只在执行处收窄。联网集成 12 项、能力/社交/跨轮定向 34 项通过；随后全量回归及 PR #171 Linux CI 已通过。
   - [x] DeepSeek 搜索桥使用单独选择的官方 DeepSeek 连接，不再从 `chat_agent` 路由偷取密钥；新保存显式校验连接和密钥并预建后热激活，缓存按密钥隔离。在途搜索完成后才关闭旧后端，多次热切不会累积 HTTP 客户端。后端 38 项、前端 14 项定向及构建通过；旧配置仅在聊天路由本身是 DeepSeek 时兼容启动。
   - [x] 修补前的 Gemini 3.8/2.5 Flash 强制搜索探针：Forwarded 均保留 `googleSearch`、HTTP 200/STOP，却无 `groundingMetadata`；不能把文本或其中 URL 当作原生搜索成功。隔离直连同一 Cloud Code 账号与模型时，上游 SSE 真正返回查询、来源块及支持关系，证明上游路径可用。
   - [x] 根因是 AGM 对客户端非流式请求强制走 SSE 后由 collector 合并 JSON，而旧 collector 丢弃 candidate 的 `groundingMetadata`。最小修补按事件顺序保留查询、来源块和支持关系，Rust 3 项回归通过；修补版 canary 和当前生产代理的合成搜索均返回 1 query/1 chunk/4 supports，Yuki `GeminiProvider._parse` + `recover_native_web_response` 得 1 个受信来源且 `partial_failure=false`。尾段签名、LOW 无固定预算、`countTokens` 200 回归通过；代理只更新 AGM 服务并保留回退。来源来自 Google 元数据而非正文 URL。
@@ -89,40 +89,41 @@
   - [x] 长轮可逐页加载更早的状态与收发消息，`turn_id + before_step_id` 成对校验原会话和真实 root，按轮次索引每页最多 32 步；正文权限独立。后端定向 7 项、WebUI HTTP 1 项、前端 12 项以及 TS/Ruff/Prettier 通过。
   - [x] 对生产内源事件 #72154 和外部事件 #72188 只读核对：前者仅有 3 条语义观察、没有 Runner 根，因此“无执行轮次”正确；后者有 `turn_start`、模型和工具等 60 条轨迹。修复查询对 `direction=external` 的误拒，后端定向 8 项、含 external 的前端 18 项通过。
   - [x] 跟进镜像上线后，生产控制面以外部事件 #72188 的原 conversation ID 和 `direction=external` 返回总数 3、当前页 3 个可信执行轮次；配置、数据库版本和容器健康也已核对。真实长轮的页面交互与正文授权呈现仍待目视复核，不能把 API 成功当作完整视觉验收。
-- [ ] **10. 高危：其他 Provider 的缓存命中与前缀稳定性**：以实际供应商账单/原始 usage 对齐总输入、缓存读写和缺失字段；逐一审计 Gemini、Anthropic、OpenAI 等请求的固定 system/tool 前缀、消息顺序、动态时间/上下文插入位置、工具声明和切换续接；按供应商官方缓存语义优化，并以重复请求的真实命中和成本验收。当前：Gemini 外部图曾约 21.2%、最新约 14.0% 的已报告缓存占总输入，与 Yuki 线上 71.5% 的“已报告子集命中”分母不同；先修统计展示并定位请求前缀，不能把显示比例当成优化成效。
+- [ ] **10. 高危：其他 Provider 的缓存命中与前缀稳定性**：以实际供应商账单/原始 usage 对齐总输入、缓存读写和缺失字段；逐一审计 Gemini、Anthropic、OpenAI 等请求的固定 system/tool 前缀、消息顺序、动态时间/上下文插入位置、工具声明和切换续接；按供应商官方缓存语义优化，并以重复请求的真实命中和成本验收。Gemini 早期外部图约 21.2%、随后 07:47 快照约 14.0% 的已报告缓存占总输入，与 Yuki 旧页面 71.5% 的“已报告子集命中”分母不同；新镜像自然链结果见下，不能把单一会话样本当作长期或跨供应商优化成效。
   - [x] 代理管理页 2026-09-29 约 07:47 的只读汇总显示 38 次 `gemini-3.8-flash` 请求、约 809.6K 输入与 113.3K 已报告缓存，已报告缓存约占总输入 14.0%；比先前 16 次调用的 21.2% 快照更低。该页面聚合值经过取整，且未知缓存回执仍需单列，不能把余量自动解释为明确未命中或由 Yuki 前缀造成。
   - [x] 修复 Claude 原生搜索追加到工具列表后缓存断点未落在最终工具上的问题；协议定向 7 项、Ruff 通过。
   - [x] Gemini 适配器的静态系统说明、动态用户上下文位置和 `cachedContentTokenCount` 映射已审计；未发现有证据的序列化错误。官方文档指出 Gemini 3.8 Flash 隐式缓存最低 4,096 Token，依赖相同的大前缀和短时间重用，不保证命中。
   - [x] 对旧抓包与现行 PromptCompiler 核对：固定系统说明独立于消息历史；`contents` 按旧到新排列，运行时间等逐轮资料附在当前用户消息中，因而不会每轮改写系统说明。会话摘要位于历史最前端；为控制上下文长度而重写摘要或裁剪历史时，共同前缀变化属于必要代价，应在分析命中率时单独标记，不能为了缓存阻止正确的摘要更新。工具声明虽在 JSON 对象中列于 `contents` 后，不能据此推断模型按该文本顺序读取或缓存。
-  - [x] 只读生产 trace 12076→12086→12091 属于同一轮/事件 72110，间隔约 38 秒、20 秒；系统说明、114 项工具声明和 generationConfig 的哈希均不变，旧 `contents` 前缀依次完整保留 60/62 项。三个响应的 `cachedContentTokenCount` 依次缺失、36,384、缺失；第三次无缓存回执不能归因于已证明稳定的 Yuki 前缀，也不能把缺失当作零。旧连接仍为 medium；代理不在 Yuki 宿主，尚未读到最终 Forwarded。
+  - [x] 旧版只读生产 trace 12076→12086→12091 属于同一轮/事件 72110，间隔约 38 秒、20 秒；系统说明、114 项工具声明和 generationConfig 的哈希均不变，旧 `contents` 前缀依次完整保留 60/62 项。三个响应的 `cachedContentTokenCount` 依次缺失、36,384、缺失；第三次无缓存回执不能归因于已证明稳定的 Yuki 前缀，也不能把缺失当作零。当时连接仍为 medium，后续已热改 low 并修补代理；该组旧 trace 没有最终 Forwarded 证据。
   - [x] 用户切回代理“官方自适应”后的只读生产 trace 12099→12112→12123→12136→12147 中，Yuki 出站的 system、tools、generationConfig 哈希一直相同；相邻历史 `contents` 的完整共同前缀分别为 60/60、59/62、62/62、61/64 项。后两次差异发生在历史尾部，前五项保持相同；另一个新轮次 trace 12169 的历史首项不同，不能把跨轮摘要/裁剪差异误认成同轮序列化抖动。这些真实调用的缓存 usage 多数缺失，不能证明命中为零，也不能证明代理已保留 low。
-  - [x] 只读生产还发现 `memory_dream` 的系统说明逐簇变化；本地已将 Episode 每簇原文字数/软压缩目标移到当前输入，系统说明在同类簇间固定。压缩判定定向 2 项与 Ruff 通过；实际缓存增益待上线验证。
-  - [x] 部署后只读对齐 Yuki 与代理 67 条 Gemini 调用。旧版 62 次中 50 次成功，成功输入 1,304,888 Token、明确报告缓存 366,830（占 28.1%），其余缺回执不能算零。新版同一聊天链连续三次请求的 system、tools、generationConfig 哈希相同；后两次明确命中 40,268/42,551 和 40,323/43,834 Token。旧版 12 次 Dream 指令在逐簇数字处变化，已部署修复移到动态输入；新 Dream 批次还未出现。
-  - [ ] 按单次真实请求核对前缀长度、前缀 hash、时间间隔和服务端缓存回执；区分必要的摘要重写/历史裁剪与摘要未变时的非预期前缀变化。旧自我反思固定说明以**普通 user 内容**送入当前代理 `countTokens` 约 2,542 Token；完整旧请求在该接口是 18,383，而同一成功 `generateContent` 实际 input_tokens 为 20,927、cache 为 16,355。Cloud Code v1internal 对直接 `request.systemInstruction` 计数不变，对公共 REST `generateContentRequest` 则报 400 unknown field；因此当前代理计数只能标为 `contents-only`，不能以相加近似冒充完整前缀、工具或系统说明的精确 Token 数。测量依据已记录于代理服务器 `COUNT_TOKENS_SCOPE.md`，布局决策须看真实调用 usage 与稳定前缀。
+  - [x] 只读生产还发现旧版 `memory_dream` 的系统说明逐簇变化；已部署代码将 Episode 每簇原文字数/软压缩目标移到当前输入，系统说明在同类簇间固定。压缩判定定向 2 项与 Ruff 通过；新版 Dream 批次尚未出现，实际缓存增益待验收。
+  - [x] `ops-7f42b26` 部署后只读对齐 Yuki 与代理 67 条 Gemini 调用。此前 62 次中 50 次成功，成功输入 1,304,888 Token、明确报告缓存 366,830（占 28.1%），其余缺回执不能算零。该镜像同一聊天链连续三次请求的 system、tools、generationConfig 哈希相同；后两次明确命中 40,268/42,551 和 40,323/43,834 Token。旧版 12 次 Dream 指令在逐簇数字处变化，已部署修复移到动态输入；新 Dream 批次还未出现。
+  - [x] `ops-c30f220` 上线后的只读自然样本：同一会话两轮主聊天共 4 次，输入 182,458 Token、明确缓存读 120,880；首轮 45,096 Token 缺缓存回执，后 3 次分别命中 40,298/45,489、40,291/45,640、40,291/46,233，已报子集缓存率 88.0%，已确认缓存占全部输入 66.3%。跨轮保留 90/91 条 `contents` 前缀，同轮续接保留 93/93 与 95/95，system、tools、low 均稳定；新镜像首轮与旧镜像 system 哈希不同，不应期望跨部署命中。另有两条小于门槛的短任务未报缓存；跨不同会话样本不足。
+  - [ ] 将逐请求前缀 hash、时间间隔和缓存回执核对扩展至多会话、Dream 批次及其他供应商，并区分必要的摘要重写/历史裁剪与摘要未变时的非预期前缀变化。旧自我反思固定说明以**普通 user 内容**送入当前代理 `countTokens` 约 2,542 Token；完整旧请求在该接口是 18,383，而同一成功 `generateContent` 实际 input_tokens 为 20,927、cache 为 16,355。Cloud Code v1internal 对直接 `request.systemInstruction` 计数不变，对公共 REST `generateContentRequest` 则报 400 unknown field；因此当前代理计数只能标为 `contents-only`，不能以相加近似冒充完整前缀、工具或系统说明的精确 Token 数。测量依据已记录于代理服务器 `COUNT_TOKENS_SCOPE.md`，布局决策须看真实调用 usage 与稳定前缀。
   - [ ] 对比逐供应商的真实费用与命中，再决定是否引入有存储费用、需维护 TTL/模型/工具版本的 Gemini 显式缓存；逐供应商验收优化后的命中率。
-- [ ] **11. 高危：Gemini 代理请求格式与顺序**：用户确认这份抓包是删除 `request_tools` 前的旧请求。顶层为 `_session_thinking_id`、`thinkingConfig`、`systemInstruction`、`contents`、`tools`，缺少仓库适配器对函数请求会构造的 `generationConfig` 和 `toolConfig`；共有 56 条历史 `contents`、114 项函数声明。线上连接的 Base URL 指向抓包 Host 的 `/v1beta`；仓库 HEAD 和本地新适配器均把思考参数放在官方 `generationConfig.thinkingConfig`，没有 `_session_thinking_id`。JSON 属性排列本身不改变协议语义，但 Google 未承诺隐式缓存如何按原始 JSON 字节计算；需识别抓包是在旧部署出站、代理入口还是代理改写后，并核对最终上游请求的字段和值。
+- [ ] **11. 高危：Gemini 代理请求格式与顺序**：用户确认这份抓包是删除 `request_tools` 前的旧请求。顶层为 `_session_thinking_id`、`thinkingConfig`、`systemInstruction`、`contents`、`tools`，缺少仓库适配器对函数请求会构造的 `generationConfig` 和 `toolConfig`；共有 56 条历史 `contents`、114 项函数声明。线上连接的 Base URL 指向抓包 Host 的 `/v1beta`；当前已部署 Yuki 适配器把思考参数放在官方 `generationConfig.thinkingConfig`，没有 `_session_thinking_id`。JSON 属性排列本身不改变协议语义，但 Google 未承诺隐式缓存如何按原始 JSON 字节计算；需核对代理最终发往上游的字段和值。
   - [x] 仅元数据方式检查抓包：历史按旧到新放在 `contents`，本轮运行资料放最后一个 user 消息尾部；未见仅因消息数组顺序就颠倒新旧上下文的证据。当前配置和本地代码与抓包差异已定位，不把代理差异误记为本地已修复。
   - [x] 代理截图明确区分入站 Request、转发 Forwarded 与 Response：该次请求返回 200，代理把模型名映射到 `gemini-3.8-flash-tiered`，并把 `thinkingLevel: medium` 改为 `includeThoughts: true`、`thinkingBudget: 4096`；该次显示约 46.9% 缓存命中。这说明代理可处理此请求，不证明转发页所示 JSON 原样到达 Google，也不证明其他请求的缓存表现。
   - [x] 对 2026-09-29 07:47 左右的生产 `provider_start` 12169 仅核对字段名：Yuki 记录的出站 body 顶层是 `contents`、`generationConfig`（含 `thinkingConfig`）、`systemInstruction`、`toolConfig`、`tools`，没有顶层 `_session_thinking_id` 或 `thinkingConfig`；同时间代理 Request 页面却展示后两者。两侧可见格式不一致，代理的 Request 展示不能直接当成 Yuki 原始 HTTP 字节；须在部署后以稳定请求关联进一步定位展示/转换层。
-  - [ ] 用相同执行 ID 对照 Yuki 出站、代理入站/出站和 Google 回执；确认是否真的发送了非官方顶层字段，以及旧工具声明是由哪个已部署版本注入。新版本部署后再抓包验收。
+  - [ ] 用相同执行 ID 对照当前 Yuki 出站、代理入站/出站和 Google 回执；确认最终是否发送非官方顶层字段。现行镜像已部署，须用其自然请求抓包验收，不能沿用清理前旧请求推断。
 - [ ] **12. 高危：Gemini 3.8 默认使用 low，且不得被固定预算覆盖**：用户要求 Gemini 3.8 默认以 `thinkingLevel: low` 思考，而不是 `medium`；代理把档位改成固定 `thinkingBudget` 也不可接受。WebUI 预设及现有生产连接均已改为 low，生产 Bot 新请求出站为 low；代理最小补丁已部署，合成 low/medium/high 请求均保留对应档位且无固定预算。旧连接环境覆盖、保存失败与在途隔离有定向测试；自然 Yuki 尾段和真实热改档全链仍待验收。`thinkingBudget: 4096` 是输出思考预算，**不是** Gemini 隐式缓存的 4,096 输入 Token 门槛。
   - [x] 新连接默认 `low`；WebUI 可直接调整思考档位并解除旧环境变量覆盖；Yuki 保存和发请求时拒绝 Gemini 3.8 固定预算方言。后端 7 项、前端 13 项及类型/Ruff 检查通过。
   - [x] 只读生产确认现有 `connection_2d4ba9aad301` 仍为 `gemini-3.8-flash` + `reasoning_effort=medium`，没有 `reasoning_effort_env` 覆盖；因此仅改新建预设不足以完成现有连接切换，部署时还要热保存为 low。
   - [x] 用户最新代理截图曾显示“自定义思考预算模式”，Flash Low/Medium 为 32,768、High 为 65,536；用户随后确认已改回“官方自适应”，并要求 Yuki 仍显式发送 `low`。此处只记录用户设置反馈，不当作代理 Forwarded 已验收。
   - [x] 只读查看代理最新 2026-09-29 07:47:57 的同一请求详情：入站仍是旧部署的 `thinkingLevel: medium`，Forwarded 仍把它变成 `thinkingBudget: 32768`。可确认现有请求没有达到目标；尚不能从 medium 推断部署后 low 的代理行为，须按同一请求三段链路复核。
-  - [x] 为排除 medium 旧配置因素，使用服务器当前 Gemini 连接凭据发送一条无 QQ 副作用的合成 `thinkingLevel: low` 小请求，代理 07:58:53 返回 200，入站显示 low，Forwarded **仍是 `thinkingBudget: 32768`**。代理设置页同时显示 Flash“默认模式（官方自适应）”已选且文案称不注入预算；实际转发与设置文案矛盾。Yuki 侧 low 修复仍须上线，但代理固定预算是独立未解的阻断，不能勾整项或推断 Google 实际收到 low。
+  - [x] 修补前为排除 medium 旧配置因素，使用服务器当时的 Gemini 连接凭据发送一条无 QQ 副作用的合成 `thinkingLevel: low` 小请求，代理 07:58:53 返回 200，入站显示 low，Forwarded **仍是 `thinkingBudget: 32768`**。代理设置页虽显示“官方自适应”，实际转发与文案矛盾；随后 Yuki low 和代理最小补丁均已上线，此条只记录旧版复现证据。
   - [x] 生产 WebUI 热保存现有 Gemini 连接为 low，回执 `applied` 且 Bot 容器未重启；后续 Yuki 出站 trace 均为 `thinkingLevel: low`。Antigravity Manager v4.8.4 最小补丁已单服务部署并通过健康检查；把同一条旧失败请求直接重放到生产代理得到 HTTP 200，Forwarded 保留 LOW 且没有 `thinkingBudget`，`functionCall` 保留原签名。该重放不执行 QQ 工具，不代替自然消息验收。
   - [x] 当前生产代理的合成 medium/high 小请求分别 HTTP 200，Forwarded 保留 MEDIUM/HIGH、均无固定 `thinkingBudget`；low 的同报文生产重放也已通过。未修改 Yuki 当前 low 配置。
   - [ ] 以自然 Yuki 请求核对代理入站/Forwarded 继续保留 low；验证显式改为 medium/high 后的热配置边界与原有在途请求隔离。
-- [ ] **13. 高危：取消自动注入旧外部事件和记忆事实**：用户提供的一条外部 GitHub 事件唤醒输入共约 7,561 字符，其中动态资料约 7,161 字符；`context.people_and_scene` 约 6,207 字符，包含 4 条群记忆、4 条自我记忆和 10 条外部事件；8 条记忆均标为 `lexical_match`，部分与当前分支创建事件明显弱相关；`runtime.short_state` 还带了 3 个空文本槽。用户决定将自动附加的旧外部事件摘要和自动召回记忆事实全部移出本轮运行资料，记忆仅在 Agent 判断当前问题依赖过去事实时按意图调用记忆检索工具；已知事实 ID 可用 `get_memory_fact`；`search_chat_history` 查询聊天账本，不等于长期记忆检索。保留当前触发事件、必要的当前场景身份、已确认交付回执及非空短期状态；不删除持久记忆或历史账本。实施时核对所有正常聊天、SELF、外部唤醒和 Work 入口，确保工具仍可读且权限/回执不退化；比较模型是否主动补查、错误率、输入 Token 与缓存。当前本地已切断自动召回与旧外部事件追加；真实请求对比未做。
+- [ ] **13. 高危：取消自动注入旧外部事件和记忆事实**：用户提供的一条外部 GitHub 事件唤醒输入共约 7,561 字符，其中动态资料约 7,161 字符；`context.people_and_scene` 约 6,207 字符，包含 4 条群记忆、4 条自我记忆和 10 条外部事件；8 条记忆均标为 `lexical_match`，部分与当前分支创建事件明显弱相关；`runtime.short_state` 还带了 3 个空文本槽。用户决定将自动附加的旧外部事件摘要和自动召回记忆事实全部移出本轮运行资料，记忆仅在 Agent 判断当前问题依赖过去事实时按意图调用记忆检索工具；已知事实 ID 可用 `get_memory_fact`；`search_chat_history` 查询聊天账本，不等于长期记忆检索。保留当前触发事件、必要的当前场景身份、已确认交付回执及非空短期状态；不删除持久记忆或历史账本。代码已随当前镜像上线，正常聊天、SELF、外部唤醒和 Work 的模型主动补查、错误率、输入 Token 与缓存仍待完整真实链路对比。
   - [x] 正常聊天、SELF、外部唤醒和 Work 共用的上下文组装不再预取旧事实，也不追加旧外部事件摘要；`short_state` 只向模型注入非空槽。外部唤醒定向测试及短期状态测试通过。
-  - [ ] 研究并实现模型侧单一 `search_memory` 检索入口，收拢现有 Person/Group/SELF 三个列表工具；无目标提示时搜索调用者当下全部有权读取的长期记忆，不额外限制在当前人、群或最近场景。按需检索和多次补查由主 Agent 发起，后端完成授权范围过滤、消歧与全局排序；资源截断必须明示，不能静默缩小范围。保留按 fact ID 精确读取和证据读取的独立语义；词法与向量保留独立候选通道，以中文真实样本校准高精度筛选。旧工具引用、稳定工具合同、子任务、观测与回执需一起迁移。具体工作包、默认授权范围、降级与验收见 [search_memory 按需检索任务书](../architecture/Yuki-search-memory-taskbook-2026-09-29.md)。本地实现已覆盖 canonical 全局候选和插件权限，仍待中文真实标注集精度、模型回放与上线验收，不能勾整项。
+  - [ ] 研究并实现模型侧单一 `search_memory` 检索入口，收拢现有 Person/Group/SELF 三个列表工具；无目标提示时搜索调用者当下全部有权读取的长期记忆，不额外限制在当前人、群或最近场景。按需检索和多次补查由主 Agent 发起，后端完成授权范围过滤、消歧与全局排序；资源截断必须明示，不能静默缩小范围。保留按 fact ID 精确读取和证据读取的独立语义；词法与向量保留独立候选通道，以中文真实样本校准高精度筛选。旧工具引用、稳定工具合同、子任务、观测与回执需一起迁移。具体工作包、默认授权范围、降级与验收见 [search_memory 按需检索任务书](../architecture/Yuki-search-memory-taskbook-2026-09-29.md)。canonical 全局候选和插件权限代码已上线，仍待中文人工金标精度与完整 Agent 主动检索回放，不能勾整项。
     - [x] 本地新声明只暴露 `search_memory`，旧三个工具仅留历史执行兼容；无目标枚举所有可解析的获准历史人物/群和当前可见 SELF，不做前 N 目标截断。跨历史群与陌生人拒绝定向测试、Ruff/mypy 通过；当前回执明确 `truncated=true`、`exhaustive=false`。
     - [x] 无目标查询改为 canonical SQL 授权与全局 FTS/向量候选池，不按 owner 截断；覆盖无活跃 QQ Binding 的历史 owner；Person-only/Group-only 插件可用同一工具且由后端限制 scope。跨 owner Top-1、无 Binding、disabled space、无关 owner 与插件授权的定向 4 项及 Ruff/mypy 通过；候选预算截断会报告 `truncated=true`、`exhaustive=false`。
-    - [x] 详情工具 `get_memory_fact` 现与无目标搜索共用当前 `AuthorizedMemoryScope` 的 SQL 授权，修复 SELF 用已知 fact ID 读取同群个人 PersonGroup、group-only 插件扩大 PersonGroup 的边界；SELF 当前群 Group 仍可读。授权负例与 Ruff 通过，生产未改。
+    - [x] 详情工具 `get_memory_fact` 现与无目标搜索共用当前 `AuthorizedMemoryScope` 的 SQL 授权，修复 SELF 用已知 fact ID 读取同群个人 PersonGroup、group-only 插件扩大 PersonGroup 的边界；SELF 当前群 Group 仍可读。授权负例与 Ruff 通过，代码已上线；生产真实授权场景未单独验收。
     - [x] 对上一轮 SELF 6+2 以外的生产 Person 事实做只读独立探针：固定种子抽 8 个主体，剔除不合格生成后保留 7 个有答案、7 个无答案问句；有答案直接证据 Top1/Top10 均 7/7，无答案也全有候选。单轮模型看前 5 候选时有答案 7/7 回答、无答案 7/7 弃答，未复现编造。问题生成、全主体事实支持校验与回答均用同一 DeepSeek 模型，非人工独立金标；只覆盖 Person-only 小事实集和检索核，不算完整主 Agent 回放。
     - [ ] 用独立人工中文金标校准高精度，并回放模型能否主动检索、补查、正确处理歧义和资源截断。
-  - [ ] 核对并改进历史聊天成本：同一发送者相邻事件在本地投影中可合并文本，但 Gemini 适配器把相邻 `user` 消息合为一个 `contents` 条目时只是延长 `parts` 数组，没有合成一段逐行紧凑文本。用户旧抓包有 56 个 `contents`（25 user、31 model），user 内共 202 个 `text` part、文本约 25,938 字符；其中一个 user 条目有 64 个 part。DeepSeek Responses 把每条投影后的消息写成独立 `input` 项，DeepSeek Chat Completions 把每条写成独立 `messages` 项。系统说明约 6,218 字符，114 项工具声明的 JSON 约 61,993 字符，不能把高输入量全归咎于历史。当前同一发送者/五分钟的历史已逐行合成一条模型消息并保留内部事件 ID；100 条同人合成样本的 Gemini JSON 4,954→1,786 字符，DeepSeek Responses 6,636→1,785；交替发送者不合并以保留轮次语义。尚需真实 `countTokens`/usage、模型理解和缓存对比，不能以 JSON 字符节省当作 Token 节省。Gemini 连续 user 合并会改变末尾 Content 对象，需在缓存审计中核对；DeepSeek 线上逐字请求尚无本轮抓包。
+  - [ ] 核对并改进历史聊天成本：同一发送者相邻事件在本地投影中可合并文本，但 Gemini 适配器把相邻 `user` 消息合为一个 `contents` 条目时只是延长 `parts` 数组，没有合成一段逐行紧凑文本。用户旧抓包有 56 个 `contents`（25 user、31 model），user 内共 202 个 `text` part、文本约 25,938 字符；其中一个 user 条目有 64 个 part。DeepSeek Responses 把每条投影后的消息写成独立 `input` 项，DeepSeek Chat Completions 把每条写成独立 `messages` 项。系统说明约 6,218 字符，114 项工具声明的 JSON 约 61,993 字符，不能把高输入量全归咎于历史。当前同一发送者/五分钟的历史已逐行合成一条模型消息并保留内部事件 ID；100 条同人合成样本的 Gemini JSON 4,954→1,786 字符，DeepSeek Responses 6,636→1,785；交替发送者不合并以保留轮次语义。无 QQ 合成同结构真实 API A/B 已核对 Token 与四项目标事实；完整生产工具合同、重复链缓存、工具轮次和费用仍待对比，不能以单次 Token 节省当作净成本下降。Gemini 连续 user 合并会改变末尾 Content 对象，需在缓存审计中核对；DeepSeek 线上逐字请求尚无本轮抓包。
   - [x] 用 18 条同发送者、保留内部事件 ID 与发送者的合成同结构样本，经生产连接做无 QQ 副作用 A/B：Gemini GenerateContent 输入 901→578 Token（−35.8%），DeepSeek Responses 与 Chat Completions 均 722→484（−33.0%）；四项目标事实在三种协议的新旧格式均被正确识别。DeepSeek 已报告缓存同时 512→256，未命中输入由 210 增至 228；单次输出 Token 有波动，不足以证明净费用降低。该试验未改代码或开发约束。
   - [ ] 跨 Provider 完整验收与约束：以真实生产工具合同和重复会话链核对 Token、缓存、工具轮次/回复关系、输出质量及实际费用；确认紧凑逐行投影有净收益且不损坏内部 ID、发送者和工具语义后，才把通过验证的历史投影与 Provider 适配责任写入 `docs/architecture/development-contract.md`。
 
@@ -135,7 +136,7 @@
 
 - [x] **15. 高危：近期对话末尾工具回执后出现“模型请求或功能配置不兼容”**：旧生产 14/14 条 Gemini 3.8 Flash `thought_signature` HTTP 400 的入站最后一个 `contents` 均为 `functionResponse`，倒数第二个均为带签名的 `functionCall`，其余位置为 0，与用户观察一致。AGM v4.8.4 把签名移到前面的普通 text part 并在错误重试时清除，导致上游 400；最小代理补丁保留当前轮首个函数调用的签名和客户端 low 档。旧失败报文在修补版生产代理重放 200；补丁部署后两条自然 QQ 轮次各一次 `send_message`，随后 Gemini 最终模型请求成功并 `turn_end`，没有通用不兼容错误或重复工具执行。该验收覆盖已观察到的末尾路径，未来不同形态仍按失败回执继续追踪。
   - [x] 用生产日志和代理 `proxy_logs.db` 仅提取状态、结构与签名存在性，未输出凭据、签名、聊天正文；同一请求核对 Yuki 400、代理入站、最终 Forwarded 和上游错误。Google 官方要求当前轮首个 `functionCall` 的签名在原位置回放，代理 v4.8.4 自称有签名修复仍不能替代本机实测。[官方签名规则](https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures)、[代理版本变更](https://github.com/lbjlaq/Antigravity-Manager/blob/main/CHANGELOG_EN.md)。
-  - [x] 对照 Antigravity Manager v4.8.4 源码和 v4.8.5-beta.10 源码：新版已改为 Gemini 有 `functionCall` 时以首个调用为签名锚点，说明 v4.8.4 的“首个非思考 part”规则过宽。升级新版同时涉及模型映射、思考预算和所有协议出口，不能未回归就替换生产；优先在隔离构建中只修 Gemini 签名锚点，并用生产报文的**脱敏结构**回放。
+  - [x] 对照 Antigravity Manager v4.8.4 源码和 v4.8.5-beta.10 源码：新版已改为 Gemini 有 `functionCall` 时以首个调用为签名锚点，说明 v4.8.4 的“首个非思考 part”规则过宽。升级新版同时涉及模型映射、思考预算和所有协议出口，因此已在隔离构建中只修 Gemini 签名锚点，并用生产报文的**脱敏结构**回放；修补版已部署。
   - [x] v4.8.4 的最小补丁将有 `functionCall` 的轮次以首个调用为签名锚点，并保留客户端指定的 low 档；4 项定向 Rust 测试和隔离 canary 均通过。原生产失败报文在旧代理 canary 复现 HTTP 400，在修补版 canary 和生产代理重放均为 HTTP 200；生产只更新 Antigravity Manager 一个服务，健康检查通过，账号与模型映射数未变。首次旧版上游请求的完整字节并未持久化，根因由源代码转换规则、代理错误与同报文 A/B 重放共同支持。
   - [x] 无 QQ 副作用地把同一末尾失败报文重放到当前生产代理，再用 Yuki 当前 `GeminiProvider._parse` 离线解析原始 HTTP 响应，得到 completed、正文和可保留续接状态，未触发本地工具调用；临时响应已删除。这验证 Yuki 适配器能消费修复后的回包，不等于真实 QQ 完整轮次成功。
   - [x] 自然 QQ 验收：2026-09-29 02:14 与 02:28 UTC 两轮各只有一次成功的 `send_message` 工具执行，分别记录 3 个与 2 个不同的投递事件；工具结束后第二次 Gemini 调用均成功，轮次分别以 `turn_end` 完成，未出现 `turn_error` 或模型不兼容状态。两轮发生在代理补丁部署之后，且无主动测试 QQ 消息；中间轮与跨 Provider 换链继续由定向回归覆盖。
