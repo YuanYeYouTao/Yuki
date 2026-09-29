@@ -176,7 +176,11 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
         creation = integer(usage.get("cache_creation_input_tokens"))
         creation_5m, creation_1h = AnthropicMessagesProvider._cache_creation_breakdown(usage)
         output = integer(usage.get("output_tokens"))
-        total_input = incoming + (cached or 0) + (creation or 0) if incoming is not None else None
+        total_input = (
+            incoming + cached + creation
+            if incoming is not None and cached is not None and creation is not None
+            else None
+        )
         return {
             "usage": {
                 "prompt_tokens": total_input,
@@ -499,7 +503,11 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
         ):
             logger.warning("claude_cache_creation_breakdown_mismatch")
         output = integer(usage.get("output_tokens"))
-        total_input = incoming + (cached or 0) + (creation or 0) if incoming is not None else None
+        total_input = (
+            incoming + cached + creation
+            if incoming is not None and cached is not None and creation is not None
+            else None
+        )
         return ChatResponse(
             content=content,
             latency_seconds=0,

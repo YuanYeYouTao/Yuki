@@ -126,7 +126,7 @@
   - [x] 修复 Claude 原生搜索追加到工具列表后缓存断点未落在最终工具上的问题；协议定向 7 项、Ruff 通过。
   - [x] 生产 `model_invocations` 只读对照：2026-09-27 至 09-28 UTC 的 DeepSeek `chat_agent` 共 1,124 次、记录输入 43,068,451 Token、明确缓存读取 41,831,936 Token；已确认读取占已记录输入 97.1%，其中 2 次缓存字段缺失而不是显式零。这是该时间窗和任务用途的已确认占比，不代表其他任务、供应商或实际账单。
   - [x] Claude 原生 Messages 在固定 system/最终工具断点之外，给当前可缓存的对话末端 text/tool_result 块设置随轮次前移的显式断点；保留签名、工具回执正文和顺序。只在比较内容的测试中剥离 `cache_control` 元数据。协议与集成定向回归通过；尚无真实 Claude 凭据和重复请求样本，不能声称已提高线上命中率。
-  - [x] Claude 原始 `cache_creation_input_tokens` 及 `cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens` 贯通调用记录、可空迁移、管理 API 和用量图表；历史缺失保持 NULL，显式零保持 0，完整分项与总写入不一致时标记明细问题。写入时长对应不同计费档，但实际货币金额依赖模型价格和供应商账单，页面不推算；定向后端、前端及历史迁移检查通过，真实 Claude 账单尚未验收。
+  - [x] Claude 原始 `cache_creation_input_tokens` 及 `cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens` 贯通调用记录、可空迁移、管理 API 和用量图表；历史缺失保持 NULL，显式零保持 0，完整分项与总写入不一致时标记明细问题。`input_tokens`、缓存读取与写入三项全部已知才计算总输入，缺失项不补零。写入时长对应不同计费档，但实际货币金额依赖模型价格和供应商账单，页面不推算；定向后端、前端及历史迁移检查通过，真实 Claude 账单尚未验收。
   - [ ] Anthropic 与原生 OpenAI 没有可用的生产真实调用样本或凭据；旧 `openai_compatible` 8,780 条记录实际为 DeepSeek 模型，不得用其推断 OpenAI 的命中。补齐两者的真实重复链、缺失回执和账单后再评估跨供应商成效。
   - [x] Gemini 适配器的静态系统说明、动态用户上下文位置和 `cachedContentTokenCount` 映射已审计；未发现有证据的序列化错误。官方文档指出 Gemini 3.8 Flash 隐式缓存最低 4,096 Token，依赖相同的大前缀和短时间重用，不保证命中。
   - [x] 对旧抓包与现行 PromptCompiler 核对：固定系统说明独立于消息历史；`contents` 按旧到新排列，运行时间等逐轮资料附在当前用户消息中，因而不会每轮改写系统说明。会话摘要位于历史最前端；为控制上下文长度而重写摘要或裁剪历史时，共同前缀变化属于必要代价，应在分析命中率时单独标记，不能为了缓存阻止正确的摘要更新。工具声明虽在 JSON 对象中列于 `contents` 后，不能据此推断模型按该文本顺序读取或缓存。

@@ -328,6 +328,44 @@ async def test_failed_provider_response_keeps_reported_usage_without_trusting_pa
         await models.close()
 
 
+async def test_missing_cache_read_keeps_model_invocation_total_unknown():
+    failure = LLMInvalidResponseError(
+        "blocked",
+        diagnostics={
+            "usage": {
+                "prompt_tokens": None,
+                "completion_tokens": 2,
+                "total_tokens": None,
+                "cached_prompt_tokens": None,
+                "cache_creation_input_tokens": 5,
+            }
+        },
+    )
+
+    class Telemetry:
+        def __init__(self):
+            self.records = []
+
+        async def record(self, **values):
+            self.records.append(values)
+
+    def reject(_request):
+        raise failure
+
+    telemetry = Telemetry()
+    models = executor(FakeLLMProvider(reject), telemetry)
+    try:
+        with pytest.raises(LLMInvalidResponseError):
+            await models.execute(ModelTask.CHAT_AGENT, ChatRequest(messages=()))
+        recorded = telemetry.records[0]
+        assert recorded["prompt_tokens"] is None
+        assert recorded["total_tokens"] is None
+        assert recorded["cached_prompt_tokens"] is None
+        assert recorded["cache_creation_input_tokens"] == 5
+    finally:
+        await models.close()
+
+
 @pytest.mark.parametrize("failed", [False, True])
 async def test_telemetry_does_not_hide_identity_errors_or_cancellation(failed, caplog):
     original = LLMTimeoutError("provider detail")
