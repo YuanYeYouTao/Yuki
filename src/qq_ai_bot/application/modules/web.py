@@ -1,20 +1,28 @@
-"""Controlled web search, independent from the active chat-model route."""
+"""Controlled web search with an explicit per-task Gemini bridge option."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
-from qq_ai_bot.model_runtime.models import ModelTask
+from qq_ai_bot.llm.gemini import GeminiProvider
+from qq_ai_bot.model_runtime.models import ModelProfile, ModelProtocol, ModelSearchMode, ModelTask
 from qq_ai_bot.model_runtime.pool import ModelClientPool
 from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
+from qq_ai_bot.model_runtime.repository import ModelInvocationRepository
 from qq_ai_bot.settings_domains import WebSettings
 from qq_ai_bot.web.base import WebSearchError, WebSearchProvider
+from qq_ai_bot.web.bridge_state import BridgeState
 from qq_ai_bot.web.deepseek_bridge import DeepSeekSearchBridge
+from qq_ai_bot.web.gemini_bridge import GeminiSearchBridge
 from qq_ai_bot.web.models import WebMode, WebSearchRequest, WebSearchResponse, WebSearchSource
+from qq_ai_bot.web.route_context import current_web_model_task
 from qq_ai_bot.web.tavily import TavilyWebSearchProvider
 
 logger = logging.getLogger(__name__)
@@ -31,6 +39,20 @@ class HotWebSearchProvider:
         self._idle = asyncio.Event()
         self._idle.set()
         self._closing = False
+        self._pinned: ContextVar[WebSearchProvider | None] = ContextVar(
+            f"web_provider_pin_{id(self)}", default=None
+        )
+
+    @contextmanager
+    def pin(self) -> Iterator[None]:
+        """Keep the selected provider alive for the full model/tool Runner."""
+        provider = self._borrow()
+        token = self._pinned.set(provider)
+        try:
+            yield
+        finally:
+            self._pinned.reset(token)
+            self._release(provider)
 
     def activate(self, provider: WebSearchProvider) -> None:
         if self._closing:
@@ -80,6 +102,9 @@ class HotWebSearchProvider:
             self._idle.set()
 
     async def search(self, request: WebSearchRequest) -> WebSearchResponse:
+        pinned = self._pinned.get()
+        if pinned is not None:
+            return await pinned.search(request)
         provider = self._borrow()
         try:
             return await provider.search(request)
@@ -87,6 +112,9 @@ class HotWebSearchProvider:
             self._release(provider)
 
     async def extract(self, url: str, query: str) -> WebSearchSource:
+        pinned = self._pinned.get()
+        if pinned is not None:
+            return await pinned.extract(url, query)
         provider = self._borrow()
         try:
             return await provider.extract(url, query)
@@ -111,6 +139,37 @@ class HotWebSearchProvider:
                 raise error
 
 
+class TaskRoutedWebSearchProvider:
+    """Choose a declared bridge by the invoking model task, never by query text."""
+
+    def __init__(
+        self,
+        default: WebSearchProvider,
+        bridges: Mapping[ModelTask, WebSearchProvider],
+    ) -> None:
+        self.default = default
+        self.bridges = bridges
+
+    def _selected(self) -> WebSearchProvider:
+        task = current_web_model_task.get()
+        return self.bridges.get(task, self.default) if task is not None else self.default
+
+    async def search(self, request: WebSearchRequest) -> WebSearchResponse:
+        return await self._selected().search(request)
+
+    async def extract(self, url: str, query: str) -> WebSearchSource:
+        return await self._selected().extract(url, query)
+
+    async def close(self) -> None:
+        unique = {id(item): item for item in (self.default, *self.bridges.values())}
+        errors = await asyncio.gather(
+            *(provider.close() for provider in unique.values()), return_exceptions=True
+        )
+        for error in errors:
+            if isinstance(error, BaseException):
+                raise error
+
+
 @dataclass(frozen=True, slots=True)
 class WebBundle:
     provider: HotWebSearchProvider | None
@@ -124,11 +183,13 @@ class WebModule:
         lifecycle: LifecycleRegistry,
         catalog: ModelProfileCatalog | None = None,
         clients: ModelClientPool | None = None,
+        invocations: ModelInvocationRepository | None = None,
     ) -> None:
         self._settings = settings
         self._lifecycle = lifecycle
         self._catalog = catalog
         self._clients = clients
+        self._invocations = invocations
         self._provider: HotWebSearchProvider | None = None
 
     def prepare(
@@ -139,8 +200,76 @@ class WebModule:
         require_explicit: bool,
     ) -> WebSearchProvider | None:
         settings = self._settings
+        bridge_profiles: dict[ModelTask, ModelProfile] = {}
+        if catalog is not None:
+            for task, route in catalog.routes.items():
+                profile = catalog.profiles.get(route.profile_id)
+                if (
+                    profile is not None
+                    and getattr(profile, "search_mode", None) is ModelSearchMode.BRIDGE
+                ):
+                    bridge_profiles[task] = profile
+        if bridge_profiles and settings.mode not in {WebMode.TAVILY, WebMode.BOTH}:
+            raise ValueError("Gemini bridge requires an external web mode")
         if settings.mode not in {WebMode.TAVILY, WebMode.BOTH}:
             return None
+        if bridge_profiles:
+            if clients is None:
+                raise ValueError("Gemini bridge requires a configured model connection")
+            for profile in bridge_profiles.values():
+                if profile.protocol is not ModelProtocol.GEMINI:
+                    raise ValueError("the separate native search bridge requires Gemini protocol")
+                if not settings.tavily_api_key:
+                    raise ValueError("Gemini bridge requires Tavily for page reading and fallback")
+                if not clients.api_key_for(profile):
+                    raise ValueError("Selected Gemini connection has no API key")
+        default = self._default_provider(catalog, clients, require_explicit=require_explicit)
+        if default is None or not bridge_profiles:
+            return default
+        assert clients is not None
+        by_profile: dict[str, GeminiSearchBridge] = {}
+        bridges: dict[ModelTask, GeminiSearchBridge] = {}
+        for task, profile in bridge_profiles.items():
+            bridge = by_profile.get(profile.id)
+            if bridge is None:
+                bridge = self._gemini_bridge(profile, clients)
+                by_profile[profile.id] = bridge
+            bridges[task] = bridge
+        return TaskRoutedWebSearchProvider(default, bridges)
+
+    def _gemini_bridge(self, profile: ModelProfile, clients: ModelClientPool) -> GeminiSearchBridge:
+        settings = self._settings
+        if profile.protocol is not ModelProtocol.GEMINI:
+            raise ValueError("the separate native search bridge requires Gemini protocol")
+        if not settings.tavily_api_key:
+            raise ValueError("Gemini bridge requires Tavily for page reading and fallback")
+        key = clients.api_key_for(profile)
+        if not key:
+            raise ValueError("Selected Gemini connection has no API key")
+        return GeminiSearchBridge(
+            profile=profile,
+            credential=key,
+            provider=GeminiProvider(
+                base_url=profile.base_url,
+                api_key=key,
+                timeout_seconds=min(profile.timeout_seconds, settings.web_timeout_seconds),
+                max_retries=0,
+                options=profile.wire_options,
+                headers=profile.headers,
+            ),
+            state=BridgeState(settings.web_search_bridge_state_path),
+            fallback=self._tavily(),
+            invocations=self._invocations,
+        )
+
+    def _default_provider(
+        self,
+        catalog: ModelProfileCatalog | None,
+        clients: ModelClientPool | None,
+        *,
+        require_explicit: bool,
+    ) -> WebSearchProvider | None:
+        settings = self._settings
         if settings.web_search_backend == "tavily":
             if not settings.tavily_api_key:
                 raise ValueError("Tavily search credentials are required")

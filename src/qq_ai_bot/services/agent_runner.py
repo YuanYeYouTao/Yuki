@@ -52,6 +52,7 @@ from qq_ai_bot.services.native_tool_binder import NativeToolBinder
 from qq_ai_bot.services.turn_transcript import TranscriptRequest, TurnTranscript, validating_request
 from qq_ai_bot.time.models import TimeContext
 from qq_ai_bot.web.models import WebMode
+from qq_ai_bot.web.route_context import web_model_task
 
 if TYPE_CHECKING:
     from qq_ai_bot.services.main_agent_contract import MainAgentContract
@@ -175,7 +176,12 @@ class AgentRunner:
         tools: AgentToolBackend | None,
     ) -> AgentRunResult:
         pin = getattr(self._models, "pin", None)
-        with pin() if callable(pin) else nullcontext():
+        pin_web = getattr(tools, "pin_web_provider", None)
+        with (
+            web_model_task(self._task),
+            pin() if callable(pin) else nullcontext(),
+            pin_web() if callable(pin_web) else nullcontext(),
+        ):
             async with trace_span(
                 "turn",
                 {"messages": [asdict(message) for message in initial_messages]},

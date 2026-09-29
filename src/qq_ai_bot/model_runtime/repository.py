@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import func, select
 
@@ -19,7 +19,7 @@ def project_model_task(value: str) -> str:
     """Project a persisted task string without requiring a live ``ModelTask``.
 
     Historical ``planner`` / ``tool_selection`` rows stay readable after those
-    enum members are deleted.  Writes still accept only live ``ModelTask``.
+    enum members are deleted. The separate search bridge records web_search.
     """
 
     return str(value)
@@ -34,7 +34,7 @@ class ModelInvocationRepository:
     async def record(
         self,
         *,
-        task: ModelTask,
+        task: ModelTask | Literal["web_search"],
         profile_id: str,
         provider: str,
         model: str,
@@ -52,7 +52,7 @@ class ModelInvocationRepository:
     ) -> ModelInvocationRecord:
         row = ModelInvocationModel(
             runtime_turn_id=claim_runtime_turn_id(),
-            task=task.value,
+            task=task.value if isinstance(task, ModelTask) else task,
             profile_id=profile_id,
             provider=provider,
             model=model,

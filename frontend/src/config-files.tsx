@@ -484,21 +484,30 @@ function ModelDocument({
                 <option value="inherit">沿用部署搜索设置（旧连接）</option>
               )}
               <option value="external">仅外部搜索</option>
-              {(profile.protocol === "gemini" ||
-                profile.protocol === "anthropic_messages" ||
+              {profile.protocol === "gemini" && (
+                <option value="bridge">Gemini 独立原生搜索桥（推荐）</option>
+              )}
+              {profile.protocol === "gemini" &&
+                profile.search_mode === "native" && (
+                  <option value="native">旧直接原生模式（可能不兼容）</option>
+                )}
+              {profile.protocol === "gemini" &&
+                profile.search_mode === "both" && (
+                  <option value="both">旧组合模式（可能不兼容）</option>
+                )}
+              {(profile.protocol === "anthropic_messages" ||
                 (profile.protocol === "responses" &&
                   profile.provider !== "deepseek")) && (
                 <option value="native">仅供应商原生搜索</option>
               )}
-              {(profile.protocol === "gemini" ||
-                (profile.protocol === "responses" &&
-                  profile.provider !== "deepseek")) && (
-                <option value="both">原生搜索与外部搜索</option>
-              )}
+              {profile.protocol === "responses" &&
+                profile.provider !== "deepseek" && (
+                  <option value="both">原生搜索与外部搜索</option>
+                )}
             </select>
             <small>
               {profile.protocol === "gemini"
-                ? "Gemini 3 的 Google 搜索可与外部搜索并用。"
+                ? "独立搜索桥会让主模型保留稳定的 web_search/read_webpage 函数，仅在调用 web_search 时另发只含 Google 搜索的 Gemini 请求；需要部署配置 Tavily 用于网页读取和失败降级。原有直接原生模式可能与函数声明不兼容。"
                 : profile.protocol === "anthropic_messages"
                   ? "Claude 原生搜索与外部 web_search 同名，因此只能二选一。"
                   : "外部搜索需在部署中配置；原生搜索需供应商和模型实际支持。"}

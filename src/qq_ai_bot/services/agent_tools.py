@@ -7,6 +7,7 @@ import logging
 import re
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractContextManager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
@@ -2929,6 +2930,11 @@ class AgentToolService:
         )
         await self._persist_web_response(response, runtime, sources)
         return self._web_result(data=self._web_response_json(response))
+
+    def pin_web_provider(self) -> AbstractContextManager[None]:
+        """Hold the web backend chosen when a model/tool Runner starts."""
+        pin = getattr(self._web_provider, "pin", None)
+        return pin() if callable(pin) else nullcontext()
 
     def _web_catalog_enabled(self) -> bool:
         """Put web tools in the requestable catalog without choosing a provider.

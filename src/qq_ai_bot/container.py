@@ -197,6 +197,7 @@ class ApplicationContainer:
             lifecycle=self.lifecycle,
             catalog=self.model_profiles,
             clients=self.model_clients,
+            invocations=self.model_invocations,
         )
         self.web_bundle = self.web_module.build()
         self.web_provider = self.web_bundle.provider

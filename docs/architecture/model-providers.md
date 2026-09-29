@@ -24,11 +24,17 @@ WebUI 成功保存模型连接与任务路由后，新任务立即使用新配�
 也不代表各家服务已完成真实 API 或 QQ 验收。Profile 的能力声明必须符合实际模型。
 原生搜索不能假装为客户端函数；Claude 搜索结果以 server tool 回执和引用记录，Gemini
 Google Search 的工具调用、结果和 thought signature 按原样保存在私有续跑状态中。
-Gemini 的 Google Search 与函数工具组合仅有 Gemini 3 官方支持，并启用 server tool
-context circulation；接入其他型号时必须核对该型号实际能力。
-这些路径目前仅有离线协议回放，没有进行真实付费 API 或 QQ 验收。
-每个模型连接的 `search_mode` 可选 `external`、`native` 或在协议允许时选 `both`；
-旧文件未填写时沿用部署搜索模式。选择原生搜索须同时声明 `native_web_search` 能力；
+Gemini 的 Google Search 与函数工具同请求在当前 Cloud Code 代理路由上返回 400，
+因此 Gemini 主 Agent 应选 `search_mode="bridge"`：保留固定 `web_search` 与
+`read_webpage` 函数声明，只有执行 `web_search` 时另发一条只含 `googleSearch`
+的 Gemini 请求。桥只采纳上游 `groundingMetadata.groundingChunks[].web` 来源；
+模型正文里的 URL 不算来源。无可信来源或请求失败时显式退到已配置的 Tavily，
+回退结果不进桥缓存。此模式要求部署的 WebMode 为 tavily/both 且 Tavily 凭据可用，
+以便读网页与降级；模型配置保存时按发起工具调用的任务连接热切换桥。
+已开始的 Runner 将搜索后端与模型连接一起固定至该轮结束；热保存只影响后续 Runner。
+每个模型连接的 `search_mode` 可选 `external`、`bridge`（Gemini）、`native` 或在协议允许时选 `both`；
+旧文件未填写时沿用部署搜索模式。直接 `native/both` 须声明 `native_web_search` 能力；
+`bridge` 在独立请求中使用 Google Search，不向主请求声明该能力或内联原生工具。
 Claude 原生工具与本地 `web_search` 同名，原生模式不向 Claude 声明外部搜索函数。
 全局搜索禁用仍会关闭所有联网工具；外部模式还需要部署中确实配置外部搜索后端。
 主 Agent 使用完整函数合同，Chat 搜索专用模型不能混用该合同；它们也不能通过 `tool_choice=none`
@@ -100,7 +106,7 @@ Gemini 3.8 Flash 的官方模型 ID 是 `gemini-3.8-flash`。WebUI 的 Google Ge
 `low` 思考强度及文字、图片、工具、结构化输出能力。Gemini 3.8 的 Yuki 连接使用
 `thinkingLevel`，拒绝该型号的固定 `thinkingBudget` 配置；代理转发仍需另行核对，不能把
 代理改写误认为 Yuki 请求。适配器保留工具回合的 thought signature，
-按上游 `cachedContentTokenCount` 统计缓存。Google 原生搜索须在此连接明确选择；默认仍走
+按上游 `cachedContentTokenCount` 统计缓存。Google 搜索桥须在此连接明确选择；默认仍走
 部署配置的外部搜索。此连接不实现 Interactions API 或 Live/TTS；这些能力不能因为模型
 本身支持就标成已接入。
 无 TOML 的兼容配置也使用同一个客户端池；显式 `LLM_PROVIDER=anthropic/gemini`
@@ -136,12 +142,17 @@ Gemini 3.8 Flash 的官方模型 ID 是 `gemini-3.8-flash`。WebUI 的 Google Ge
 
 原生搜索是否启用以当次请求合同记录；Google/Claude 的原生搜索可能另有工具费用，当前账本
 没有供应商账单或可靠的原生工具价格，费用显示为未知，不从 Token 用量推算为零。
+Gemini 独立搜索桥另记一条 `model_invocations.task=web_search`，归入当前连接与模型，
+记录上游返回的输入、输出、缓存 Token 和实际 HTTP 请求数；无可信 grounding 记失败，
+随后 Tavily 降级不伪装成 Gemini 命中。
 
 ## 验证边界与协议来源
 
 定向测试覆盖参数、图片/schema、截断、私有签名、工具结果顺序、SQLite 重启后的 HTTP 字节一致性，
-以及真实 Runner/隔离数据库/假网关中的可见输出边界。没有进行付费 API 或真实 QQ 消息测试。
-模型效果、供应商实时可用性、长上下文缓存和计费需独立验收。
+以及真实 Runner/隔离数据库/假网关中的可见输出边界。Gemini 独立桥已用现有连接凭据
+在无 QQ/Work 的合成请求中得到上游可信 grounding 与用量；Bot 容器用现有连接地址的
+搜索专用请求也返回可信来源。生产主 Agent 尚未启用桥，因此桥的真实 QQ 工具回合仍待验收。
+模型效果、长上下文缓存和实际账单计费需独立验收。
 
 - [OpenAI Chat 参考](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)
 - [DeepSeek 思考模式](https://api-docs.deepseek.com/guides/thinking_mode/)

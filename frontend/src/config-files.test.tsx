@@ -351,7 +351,7 @@ it("starts a new configuration with an opaque connection ID and all task routes"
   expect(screen.getByText(`内部连接编号：${connectionId}`)).toBeInTheDocument();
 });
 
-it("offers a Gemini 3.8 Flash native connection with its verified input capabilities", async () => {
+it("offers a Gemini 3.8 Flash separate search bridge with its verified input capabilities", async () => {
   file({
     file_id: "model_profiles",
     revision: 0,
@@ -389,8 +389,11 @@ it("offers a Gemini 3.8 Flash native connection with its verified input capabili
   );
   const search = screen.getByRole("combobox", { name: "此连接的联网搜索" });
   expect(search).toHaveValue("external");
-  await userEvent.selectOptions(search, "both");
-  expect(search).toHaveValue("both");
+  await userEvent.selectOptions(search, "bridge");
+  expect(search).toHaveValue("bridge");
+  expect(
+    screen.queryByRole("option", { name: "原生搜索与外部搜索" }),
+  ).not.toBeInTheDocument();
   await userEvent.click(screen.getByText("高级参数与能力声明"));
   expect(screen.getByRole("combobox", { name: "思考强度" })).toHaveValue("low");
   expect(screen.queryByRole("option", { name: "max" })).not.toBeInTheDocument();
