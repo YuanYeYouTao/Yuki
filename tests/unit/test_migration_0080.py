@@ -30,6 +30,7 @@ def test_sequence_plan_migration_keeps_old_parent_unknown(monkeypatch):
             "('new', 'send_message_sequence', 'new-hash', 2)"
         )
         migration.downgrade()
+        migration.upgrade()
         assert connection.exec_driver_sql(
             "SELECT id, planned_parts FROM social_operation_receipts ORDER BY id"
         ).all() == [("historical", None), ("new", 2)]
