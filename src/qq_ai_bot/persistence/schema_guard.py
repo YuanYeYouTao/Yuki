@@ -116,6 +116,7 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "source_turn_id",
             "tool_call_id",
             "payload_hash",
+            "planned_parts",
             "status",
             "target_id",
             "presence_id",

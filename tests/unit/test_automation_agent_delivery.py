@@ -14,7 +14,8 @@ from qq_ai_bot.automation.agent_delivery import inspect_agent_delivery
 from qq_ai_bot.runtime.work_recovery_schema import deliveries
 from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import effects, journal, work
-from qq_ai_bot.social.models import OperationStatus, SocialTarget
+from qq_ai_bot.social.db_models import SocialOperationModel
+from qq_ai_bot.social.models import OperationStatus, SocialError, SocialTarget
 
 
 async def setup_case(database, tmp_path):
@@ -47,7 +48,9 @@ async def inspect(case, **kwargs):
     )
 
 
-async def social(case, call, *, status="succeeded", action="send_message", source=None):
+async def social(
+    case, call, *, status="succeeded", action="send_message", source=None, planned_parts=None
+):
     receipt = await case.env.service.receipts.prepare(
         source_turn_id=source or case.source,
         tool_call_id=call,
@@ -55,6 +58,7 @@ async def social(case, call, *, status="succeeded", action="send_message", sourc
         action=action,
         target=SocialTarget(kind="space", id=case.env.space),
         payload={"text": call},
+        planned_parts=planned_parts,
     )
     if status != "prepared":
         await case.env.service.receipts.claim(receipt.operation_id, presence_id=case.env.presence)
@@ -217,6 +221,131 @@ async def test_split_send_requires_complete_aggregate_not_a_successful_part(
     }
     await aggregate(case, call, body, ok=complete)
     assert (await inspect(case)).state == ("succeeded" if complete else "failed")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "plan,children,expected",
+    [
+        (2, ("succeeded", "succeeded"), "succeeded"),
+        (None, ("succeeded", "succeeded"), "uncertain"),
+        (3, ("succeeded", "succeeded"), "uncertain"),
+        (2, ("succeeded", "failed"), "uncertain"),
+        (2, ("succeeded", "uncertain"), "uncertain"),
+        (2, ("succeeded", "succeeded", "succeeded"), "uncertain"),
+    ],
+)
+async def test_missing_sequence_aggregate_uses_only_persisted_complete_plan(
+    database, tmp_path, plan, children, expected
+):
+    import hashlib
+
+    case = await setup_case(database, tmp_path)
+    call = "split-without-final-result"
+    await social(
+        case,
+        call,
+        action="send_message_sequence",
+        status="prepared",
+        planned_parts=plan,
+    )
+    prefix = hashlib.sha256(call.encode()).hexdigest()[:24]
+    for index, status in enumerate(children):
+        await social(case, f"seq:{prefix}:{index}", status=status)
+    outcome = await inspect(case)
+    assert outcome.state == expected
+    assert outcome.reason == (
+        "send_confirmed"
+        if expected == "succeeded"
+        else "send_outcome_unknown"
+        if "uncertain" in children
+        else "send_aggregate_unavailable"
+    )
+
+
+@pytest.mark.asyncio
+async def test_missing_sequence_aggregate_rejects_wrong_target_child(database, tmp_path):
+    import hashlib
+
+    case = await setup_case(database, tmp_path)
+    call = "wrong-target-sequence"
+    await social(case, call, action="send_message_sequence", status="prepared", planned_parts=2)
+    prefix = hashlib.sha256(call.encode()).hexdigest()[:24]
+    await social(case, f"seq:{prefix}:0")
+    child = await social(case, f"seq:{prefix}:1")
+    async with database.sessions() as session, session.begin():
+        await session.execute(
+            update(SocialOperationModel)
+            .where(SocialOperationModel.id == child["operation_id"])
+            .values(target_id=case.env.person)
+        )
+    assert (await inspect(case)).state == "uncertain"
+
+
+@pytest.mark.asyncio
+async def test_interrupted_work_effect_does_not_hide_confirmed_sequence(database, tmp_path):
+    import hashlib
+
+    case = await setup_case(database, tmp_path)
+    call = "interrupted-sequence"
+    await social(case, call, action="send_message_sequence", status="prepared", planned_parts=2)
+    prefix = hashlib.sha256(call.encode()).hexdigest()[:24]
+    await social(case, f"seq:{prefix}:0")
+    await social(case, f"seq:{prefix}:1")
+    async with database.sessions() as session, session.begin():
+        await session.execute(
+            insert(effects).values(
+                effect_key=f"chain:0:{call}",
+                work_id=case.row["id"],
+                kind="tool",
+                state="unknown",
+                receipt_json='{"error":"execution_interrupted"}',
+                created=1,
+                updated=1,
+            )
+        )
+        await session.execute(
+            insert(journal).values(
+                work_id=case.row["id"],
+                chain_id="chain",
+                contract="contract",
+                source_revision=0,
+                phase="response",
+                updated=1,
+                payload_json=json.dumps(
+                    {
+                        "transcript": {"chain_id": "chain"},
+                        "metadata": {"sequence": 0},
+                        "pending": [{"id": call, "name": "send_message", "arguments": "{}"}],
+                    }
+                ),
+            )
+        )
+    assert (await inspect(case)).state == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_sequence_plan_is_immutable_at_prepare(database, tmp_path):
+    case = await setup_case(database, tmp_path)
+    await social(
+        case, "immutable-plan", action="send_message_sequence", status="prepared", planned_parts=2
+    )
+    with pytest.raises(SocialError, match="idempotency_conflict"):
+        await social(
+            case,
+            "immutable-plan",
+            action="send_message_sequence",
+            status="prepared",
+            planned_parts=3,
+        )
+    with pytest.raises(SocialError, match="invalid_operation"):
+        await social(
+            case,
+            "invalid-plan",
+            action="send_message_sequence",
+            status="prepared",
+            planned_parts=1,
+        )
 
 
 @pytest.mark.asyncio

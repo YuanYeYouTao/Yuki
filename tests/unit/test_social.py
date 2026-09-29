@@ -667,9 +667,11 @@ async def test_send_message_reuses_automatic_reply_splitting(
     from dataclasses import replace
     from types import SimpleNamespace
 
+    from sqlalchemy import select
     from tests.support.social_identity_cases import social_env
 
     from qq_ai_bot.admin.models import ReplyRuntimeConfig
+    from qq_ai_bot.social.db_models import SocialOperationModel
 
     env = await social_env(database, tmp_path)
     snapshot = SimpleNamespace(reply=ReplyRuntimeConfig(0, 0, 1800, 10))
@@ -678,6 +680,11 @@ async def test_send_message_reuses_automatic_reply_splitting(
     result = await env.service.execute("send_message", args, context)
     assert result["status"] == "succeeded"
     assert result["planned_messages"] == result["sent_messages"] == 3
+    async with database.sessions() as session:
+        parent = await session.scalar(
+            select(SocialOperationModel).where(SocialOperationModel.tool_call_id == context.call_id)
+        )
+    assert parent is not None and parent.planned_parts == 3
     assert [
         params["message"][0]["data"]["text"]
         for action, params in env.bot.calls
