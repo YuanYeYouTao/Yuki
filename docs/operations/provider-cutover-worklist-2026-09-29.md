@@ -6,6 +6,7 @@
 
 - PR [#170](https://github.com/YuanYeYouTao/Yuki/pull/170) 已通过 Linux CI 并 squash 合并至 `main`（`a330ee6fd37e8813aecee54d8981f10bbeea52a5`）。Bot 镜像 `ops-7f42b26` 已单独部署，容器健康，数据库升级到 `0079`；这不代表代理或真实 QQ 场景全部验收。
 - 生产 WebUI 已将 Gemini 3.8 Flash 的 13 个任务用途保留，并热保存 `reasoning_effort=low`；回执 `applied`，磁盘版本与已加载版本一致。保存前后的 Bot 容器 ID 相同，随后新模型请求的 Yuki 出站为 `thinkingLevel: low`，旧请求为 `medium`。
+- 生产 WebUI 曾将该 Gemini 连接热保存为 `search_mode=native`、`native_web_search=true`，回执 `applied`；随后无 QQ 完整主链探针发现当前 Cloud Code 路径不能把固定函数与 `googleSearch` 放在同一请求。已立即按原文件版本通过控制面热保存回退到沿用 Tavily，回执 `applied`（版本 `2444569520056773`），再读 `matches_loaded=true`；Bot 容器 ID 未变且健康，`reasoning_effort=low` 保留。中间直接恢复磁盘文件只用于准备回退，最终控制面保存才使内存态生效。
 - 已备份配置及数据库后，经 WebUI 热保存移除无新路由、无活动 Work 精确引用的 `flash` 和 `self_reflection`；旧 `pro` 仍被 5 个暂停 Work 的 journal 引用，其中 3 个有未知或待核效果，暂须保留。删除前后的 Bot 容器 ID 相同且健康。
 - 另一台 `antigravity-server` 的 Gemini 代理已按最小补丁仅更新 Antigravity Manager 服务：当前镜像 `antigravity-manager:gemini-grounding-v4.8.4`（`sha256:d5b9abad…cab781`），容器健康；保留旧镜像、切换前备份及 `/opt/antigravity-manager/patches/v4.8.4-gemini-fixes-20260929/ROLLBACK.md`。旧末尾失败报文在当前代理重放 200，签名与 low 保留；原生搜索合成请求返回可信 grounding，但自然 QQ 续接和生产主链原生搜索尚未验收。
 - **高危缓存观察**：只读核对线上 16 条 Gemini 调用明细后，输入合计 **362,512**、已报告缓存命中 **76,926**（占已记录输入 **21.2%**），与用户供应商截图的约 362.5K / 76.9K 相符。旧 Yuki 页面所报 **71.5%** 仅以报告缓存量的 3 次调用为分母，其余 13 次未报缓存量，不能代表总体。主对话 5 次输入 210,408、命中 60,571；自我反思 8 次输入 142,986、命中 16,355；另 3 次记忆任务输入共 9,118、没有缓存回执。16 次中仅 3 次低于 Gemini 3.8 Flash 官方 4,096 Token 隐式缓存门槛，其他未命中须逐调用核对前缀与服务端回执。
@@ -14,14 +15,14 @@
 
 | 编号 | 本地状态 | 还不能打总勾的原因 |
 | --- | --- | --- |
-| 1 搜索与工具 | DeepSeek 官方搜索桥真实调用返回服务端搜索事件；Gemini 非流式 SSE collector 已修补并单服务部署，合成搜索回包有可信 grounding 且 Yuki 解析出 1 个来源 | 当前生产 Gemini 路由仍走 Tavily，原生搜索主链、Claude 真实代理、费用与无来源回退未验收 |
+| 1 搜索与工具 | DeepSeek 官方搜索桥真实调用返回服务端搜索事件；Gemini 非流式 SSE collector 已修补并单服务部署，单独搜索回包有可信 grounding；混合主链失败后已热回退到 Tavily | 当前 Cloud Code 路径的固定函数与 `googleSearch` 混用返回 400；需独立搜索请求方案及验收，Claude 真实代理、费用与无来源回退也未验收 |
 | 2 多模态 | 附件路由与预算通过；当前 Gemini/DeepSeek 两连接的图片、双视频帧和函数工具经真实 API 成功，Gemini 结构化及 DeepSeek 函数式结构化探针成功 | 真实 QQ 附件、长上下文、未配置 Provider 和原生音视频尚未验收 |
 | 3 热配置 | 生产 WebUI 两次保存均回执 `applied`，已加载版本立即一致；后续 Gemini 请求由 medium 变 low，Bot 未重启 | 在途请求隔离、保存失败回滚由定向测试覆盖；排队旧纯文本媒体仍需重新引用 |
 | 4 Work 接续 | 双向 Gemini/DeepSeek 的 SQLite + Runner 隔离回放通过，同一 Work ID/预算/确认回执保留、工具过滤与来源迁移有效，40 项回归通过 | 生产真实暂停 Work 的未知效果须原 ID 对账，不能靠模拟恢复；自然热切换仍待验收 |
 | 5 用量口径 | 分层缓存率、失败响应用量、HTTP 请求尝试数及未知用量已实现 | 原生搜索额外费用和真实账单未核对 |
 | 6 用量页面 | 生产真实 24 小时数据下，宽幅双图在浅色/深色主题均无图内横向滚动；本地三主题 hover 已验证 | 已发现深色提示字对比偏低，本轮跟进修正，待后续镜像复核 |
 | 7 旧配置 | 6 项无效选择配置已删除；`flash`、`self_reflection` 已备份并热移除 | 5 条 suspended Work 精确引用旧 `pro`，其中 3 条有未知发送或待核效果；须证据对账后才能删 `pro` |
-| 8 上线验收 | 跟进分支后端全量 1,654 通过/7 个 Windows 跳过，前端 85 通过，构建与 Ruff 全绿；PR #170 Linux CI 全绿并合并，Bot 与代理补丁各自已部署 | 跟进分支尚待提交/最新 Linux CI/新 Bot 镜像；自然 QQ 尾段与跨供应商验收未完 |
+| 8 上线验收 | 跟进分支后端全量 1,654 通过/7 个 Windows 跳过，前端 85 通过，构建与 Ruff 全绿；PR #171 已提交，Docker、speech-worker、memory-quality CI 通过，Python CI 进行中；新 Bot 镜像已构建并加载但未运行 | 待 PR #171 最新 Linux CI、合并、Bot 单服务部署；自然 QQ 尾段与跨供应商验收未完 |
 | 9 状态与收发消息 | 生产真实聊天按内部事件显示收发方向和源事件；本地长轮分页与授权详情通过测试 | 生产插件外部事件 #72188 有 60 条轨迹却被查询拒绝；本轮已修复并加回归，待上线复核 |
 | 10 高危：跨供应商缓存 | Gemini 67 条 Yuki/代理调用逐条匹配；新版同链两次明确命中 40,268/42,551 与 40,323/43,834，旧 Dream 动态 system 已修；代理 `countTokens` 400 已最小修补并在生产返回 200 | 该 Cloud Code 计数接口只覆盖 `contents`，不能当作完整前缀计数；长期命中、账单、其他 Provider 与新版 Dream 批次仍待验收 |
 | 11 高危：Gemini 代理抓包 | 用户确认是清理前旧请求；已核对结构、线上 Base URL，以及代理入站/转发/响应三栏 | 需确认最终发往 Google 的请求；当前字段顺序是否影响缓存不能凭单次抓包判断 |
@@ -32,14 +33,14 @@
 
 ## 任务与完成标准
 
-- [ ] **1. 供应商搜索与工具清单**：按连接/协议明确选择原生搜索或外部搜索；Gemini、OpenAI Responses、DeepSeek、Anthropic 的请求格式与能力声明一致；当前供应商不可用的工具不得出现在请求的 tools 中；搜索事件、失败和来源可追踪。当前：各连接模式、Gemini/Claude 原生搜索、声明过滤已实现并通过定向验证；DeepSeek 官方搜索桥真实调用有 `server_tool_use` 与 `web_search_tool_result`，Gemini 代理接受声明但未证实返回原生来源。
+- [ ] **1. 供应商搜索与工具清单**：按连接/协议明确选择原生搜索或外部搜索；Gemini、OpenAI Responses、DeepSeek、Anthropic 的请求格式与能力声明一致；当前供应商不可用的工具不得出现在请求的 tools 中；搜索事件、失败和来源可追踪。当前：各连接模式、声明过滤已通过定向验证；DeepSeek 官方搜索桥真实调用有 `server_tool_use` 与 `web_search_tool_result`。Gemini 单独原生搜索可返回可信 grounding，但当前 Cloud Code 路径混合固定函数会 400，生产已恢复 Tavily，独立搜索请求尚待实现。
   - [x] Gemini 原生 Google Search 与 Claude server-side web search 的协议适配和离线回放已实现；Gemini/Claude 续接保留服务端片段。
   - [x] 每连接搜索策略、协议能力校验和当前 wire tool 声明过滤已实现；Provider 定向测试 94 项通过。
   - [x] 删除 `request_tools` 声明、执行路径、检索状态和插件事件；能力运行时改为完整稳定声明，权限只在执行处收窄。联网集成 12 项、能力/社交/跨轮定向 34 项通过；全量回归继续进行。
   - [x] DeepSeek 搜索桥使用单独选择的官方 DeepSeek 连接，不再从 `chat_agent` 路由偷取密钥；新保存显式校验连接和密钥并预建后热激活，缓存按密钥隔离。在途搜索完成后才关闭旧后端，多次热切不会累积 HTTP 客户端。后端 38 项、前端 14 项定向及构建通过；旧配置仅在聊天路由本身是 DeepSeek 时兼容启动。
   - [x] 修补前的 Gemini 3.8/2.5 Flash 强制搜索探针：Forwarded 均保留 `googleSearch`、HTTP 200/STOP，却无 `groundingMetadata`；不能把文本或其中 URL 当作原生搜索成功。隔离直连同一 Cloud Code 账号与模型时，上游 SSE 真正返回查询、来源块及支持关系，证明上游路径可用。
   - [x] 根因是 AGM 对客户端非流式请求强制走 SSE 后由 collector 合并 JSON，而旧 collector 丢弃 candidate 的 `groundingMetadata`。最小修补按事件顺序保留查询、来源块和支持关系，Rust 3 项回归通过；修补版 canary 和当前生产代理的合成搜索均返回 1 query/1 chunk/4 supports，Yuki `GeminiProvider._parse` + `recover_native_web_response` 得 1 个受信来源且 `partial_failure=false`。尾段签名、LOW 无固定预算、`countTokens` 200 回归通过；代理只更新 AGM 服务并保留回退。来源来自 Google 元数据而非正文 URL。
-  - [x] 当前生产 Gemini 连接尚未启用 native 搜索，13 项任务仍按外部 Tavily 路由；合成 `googleSearch` 成功不代表生产主链已切换。切换前需明确每连接策略及无来源的处理，不能把无证据答案当作搜索来源。
+  - [x] 生产 Gemini 曾短时热保存 `search_mode=native`、`native_web_search=true`，无 QQ 合成主链确认 Yuki 正确排除了外部 `web_search`/`read_webpage`，却在 109 个固定函数加 `googleSearch` 的混合请求上从 AGM/Cloud Code 收到 HTTP 400；缩到 1 个函数、尝试透传 camel/snake `includeServerSideToolInvocations` 仍 400。已通过控制面热保存回退沿用 Tavily，回执 `applied`、有效文件与内存态 `matches_loaded=true`，Bot 未重建。不可据单独 `googleSearch` 成功宣称主链可用；需要独立搜索调用或其他已验路由。
   - [x] 使用生产 DeepSeek 官方搜索连接作不经 QQ 的真实 API 探针，HTTP 200，回包有服务端搜索调用与搜索结果事件；额外费用仍须账单核对。原生来源解析不再把模型正文中的任意 URL 当作搜索来源；无受信来源时回执明确为部分失败，新增 3 项回归。
   - [ ] 在生产 Gemini 主链按连接策略验收原生搜索、工具声明与来源；Claude 真实代理、无来源回退和额外服务端费用/账单仍待核对。
 - [ ] **2. 多模态与协议能力**：核对图片、视频帧、语音、文档从入口到各 Provider 的传递；不支持的能力在保存或执行前明确拒绝；工具调用、结构化输出、思考状态的协议回放分别验证。当前两条生效连接的图片、双视频帧、函数工具和函数式结构化输出已有无 QQ 真实 API 证据；长上下文、真实 QQ 附件、未配置供应商及原生音视频尚未验收。
