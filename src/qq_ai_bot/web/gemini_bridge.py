@@ -127,6 +127,7 @@ class GeminiSearchBridge:
                     attempts,
                     started=started,
                     error_category=type(exc).__name__,
+                    failure=exc,
                 )
                 raise WebSearchError("search_failed", "Gemini 搜索请求失败") from exc
             except Exception as exc:
@@ -215,9 +216,17 @@ class GeminiSearchBridge:
         *,
         started: float,
         error_category: str | None = None,
+        failure: LLMError | None = None,
     ) -> None:
         if self.invocations is None:
             return
+        diagnostic_usage = failure.diagnostics.get("usage") if failure is not None else None
+        diagnostic_usage = diagnostic_usage if isinstance(diagnostic_usage, dict) else {}
+
+        def reported_tokens(name: str) -> int | None:
+            value = diagnostic_usage.get(name)
+            return value if type(value) is int and value >= 0 else None
+
         try:
             await self.invocations.record(
                 task="web_search",
@@ -225,10 +234,18 @@ class GeminiSearchBridge:
                 provider=self.profile.provider,
                 model=self.profile.model,
                 success=error_category is None,
-                prompt_tokens=response.prompt_tokens if response else None,
-                completion_tokens=response.completion_tokens if response else None,
-                total_tokens=response.total_tokens if response else None,
-                cached_prompt_tokens=response.cached_prompt_tokens if response else None,
+                prompt_tokens=response.prompt_tokens
+                if response
+                else reported_tokens("prompt_tokens"),
+                completion_tokens=(
+                    response.completion_tokens if response else reported_tokens("completion_tokens")
+                ),
+                total_tokens=response.total_tokens if response else reported_tokens("total_tokens"),
+                cached_prompt_tokens=(
+                    response.cached_prompt_tokens
+                    if response
+                    else reported_tokens("cached_prompt_tokens")
+                ),
                 latency_seconds=time.perf_counter() - started,
                 error_category=error_category,
                 physical_request_count=attempts.requests,

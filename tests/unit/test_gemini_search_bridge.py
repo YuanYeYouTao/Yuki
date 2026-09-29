@@ -166,6 +166,53 @@ async def test_bridge_request_is_search_only_and_accepts_only_grounding(tmp_path
     assert invocations.record.await_args.kwargs["native_search_requested"] is True
 
 
+@pytest.mark.parametrize("has_usage", [True, False])
+async def test_bridge_failed_physical_search_keeps_reported_usage_or_unknown(tmp_path, has_usage):
+    body = {"error": {"type": "bad_request"}}
+    if has_usage:
+        body["usageMetadata"] = {
+            "promptTokenCount": 120,
+            "candidatesTokenCount": 20,
+            "cachedContentTokenCount": 40,
+            "totalTokenCount": 140,
+        }
+    client = httpx.AsyncClient(
+        base_url="https://example.com/v1beta/",
+        transport=httpx.MockTransport(lambda _: httpx.Response(400, json=body)),
+    )
+    gemini = GeminiProvider(
+        base_url="https://example.com/v1beta/",
+        api_key="secret",
+        timeout_seconds=20,
+        max_retries=0,
+        client=client,
+    )
+    invocations = SimpleNamespace(record=AsyncMock())
+    bridge = GeminiSearchBridge(
+        profile=profile(),
+        credential="secret",
+        provider=gemini,
+        state=BridgeState(tmp_path / "cache.db"),
+        invocations=invocations,
+    )
+    try:
+        with pytest.raises(WebSearchError, match="失败"):
+            await bridge.search(WebSearchRequest("query"))
+    finally:
+        await bridge.close()
+        await client.aclose()
+    record = invocations.record.await_args.kwargs
+    assert record["task"] == "web_search"
+    assert record["success"] is False
+    assert record["physical_request_count"] == 1
+    assert record["unknown_usage_request_count"] == (0 if has_usage else 1)
+    assert record["prompt_tokens"] == (120 if has_usage else None)
+    assert record["completion_tokens"] == (20 if has_usage else None)
+    assert record["total_tokens"] == (140 if has_usage else None)
+    assert record["cached_prompt_tokens"] == (40 if has_usage else None)
+    assert record["native_search_requested"] is True
+
+
 @pytest.mark.asyncio
 async def test_bridge_fallback_is_explicit_and_not_cached(tmp_path):
     calls = 0
