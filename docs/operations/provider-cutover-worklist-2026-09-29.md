@@ -33,7 +33,7 @@
 | 编号 | 当前证据与状态 | 还不能打总勾的原因 |
 | --- | --- | --- |
 | 1 搜索与工具 | DeepSeek 官方搜索桥真实调用返回服务端搜索事件；Gemini 独立搜索桥已合并、部署并热生效，容器内真实 `googleSearch` + Tavily 提取返回可信来源；当前连接的无 QQ 合成主模型→搜索桥→最终模型续接成功 | 自然主 Agent `web_search` 生产样本、Claude 真实代理、费用与无来源回退仍未验收 |
-| 2 多模态 | 附件路由与预算通过；Gemini/DeepSeek 两种连接的图片、双视频帧和函数工具经真实 API 成功，Gemini 结构化及 DeepSeek 函数式结构化探针成功；当前生产 Gemini 另有 239,019 输入 Token 长上下文真实 API 成功 | 真实 QQ 附件、DeepSeek 长上下文、未配置 Provider 和原生音视频尚未验收 |
+| 2 多模态 | 附件路由与预算通过；Gemini/DeepSeek 两种连接的图片、双视频帧和函数工具经真实 API 成功，Gemini 结构化及 DeepSeek 函数式结构化探针成功；当前生产 Gemini 有 239,019 输入 Token 长上下文成功样本，并用真实 QQ 缓存图片和文本文件字节完成两次无 QQ API 请求 | 自然 QQ 主链附件、真实视频帧/语音、DeepSeek 长上下文和未配置 Provider 尚未验收；QQ 图片原链接已失效，回放使用校验过的缓存字节 |
 | 3 热配置 | 生产模型保存均回执 `applied`、加载版本立即一致；Gemini medium→low 及外部搜索→桥均未重启 Bot；在途 Runner 固定原模型和搜索后端的回归已过 | 排队旧纯文本媒体仍需重新引用；自然在途跨切换样本未出现 |
 | 4 Work 接续 | 双向 Gemini/DeepSeek 的 SQLite + Runner 隔离回放通过；线上 7 条 suspended Work 的 ID/预算/journal/effects/recovery 摘要与备份一致，未重放未决效果；#182 的未来拆分计划数已合并但未部署 | 2 条 unknown 无送达证据，旧 prepared 父效果仍缺原计划数/父结果，均不得重放或结算；自然热切换仍待验收 |
 | 5 用量口径 | 分层缓存率、失败响应用量、HTTP 请求尝试数及未知用量已实现；线上 AGM 已修正思考 Token 总量。缓存缺失/显式零分辨修复 `ed47b91` 已上线，3 次无 QQ 请求均在 Google 缺缓存字段时保留未知 | 正数和显式零仅经单测；原生搜索额外费用和真实账单未核对 |
@@ -63,14 +63,15 @@
   - [x] 2026-09-29 生产只读审计：`tool_invocations` 中最近一条 `web_search` 为 2026-09-28 12:28:55 UTC（ID 5588），早于 Gemini 桥热生效；桥生效后的查询截至 2026-09-29 06:03 UTC 为 0 条。逐条解码同期 `execution_trace_entries.kind=tool_start` 的工具名，共 22 条，均为 `send_message`；同期 `model_invocations.task=web_search` 为 0 条。因此没有可按源事件、执行 ID 和工具回执关联的自然主 Agent 搜索样本，不得把独立桥测试当作自然验收。
   - [x] 无 QQ 替代探针在运行中的 `ops-93dd761` Bot 容器读取当前 Gemini `chat_agent` 连接（配置为 `bridge`/`low`），用私有临时 SQLite 搜索缓存且不写 Yuki 生产业务库。合成主模型请求只声明 `web_search` 本地函数，首轮返回 1 个该函数调用；按其调用 ID 执行独立 Gemini 搜索桥，得到 3 个 Google grounding annotation 来源、`partial_failure=false`；将来源作为同一调用 ID 的函数回执送回模型后，最终响应 `completed`、无后续工具调用且正文非空。三次模型请求的输入 Token 分别为 85、84、704。此探针未发 QQ，也未经过自然 Agent 的权限和执行轨迹写入路径；本次没有 Tavily 正文提取或无来源降级，代理可照常记录请求用量。它只证明当前连接的合成模型→桥→模型协议续接，不能勾自然主链或整项 #1。
   - [ ] 在生产 Gemini 主链按连接策略验收原生搜索、工具声明与来源；Claude 真实代理、无来源回退和额外服务端费用/账单仍待核对。
-- [ ] **2. 多模态与协议能力**：核对图片、视频帧、语音、文档从入口到各 Provider 的传递；不支持的能力在保存或执行前明确拒绝；工具调用、结构化输出、思考状态的协议回放分别验证。Gemini/DeepSeek 两种连接的图片、双视频帧、函数工具和函数式结构化输出已有无 QQ 真实 API 证据；当前生产 Gemini 另有 239,019 输入 Token 长上下文真实 API 成功。真实 QQ 附件、DeepSeek 长上下文、未配置供应商及原生音视频尚未验收。
+- [ ] **2. 多模态与协议能力**：核对图片、视频帧、语音、文档从入口到各 Provider 的传递；不支持的能力在保存或执行前明确拒绝；工具调用、结构化输出、思考状态的协议回放分别验证。Gemini/DeepSeek 两种连接的图片、双视频帧、函数工具和函数式结构化输出已有无 QQ 真实 API 证据；当前生产 Gemini 另有 239,019 输入 Token 长上下文真实 API 成功。真实 QQ 缓存图片与文本文件已完成无 QQ API 探针；自然 QQ 主链附件、DeepSeek 长上下文、未配置供应商及原生音视频尚未验收。
   - [x] 图片与视频帧输入能力改为读取当前模型路由；动态开关回归 1 项通过。语音仍由独立 ASR 转文字；没有原生音频/视频输入，不能宣称已接入。
   - [x] 续跑消息和续跑条目的图片现同样经过 `image_input` 能力检查，纯文本连接无法绕过；协议、媒体定向 9 项及 Ruff 通过。文件仍解析为文本，视频仍采样为图片帧。
-  - [x] 当前消息与引用消息的附件按顺序共用同一件数、视频帧数及字节预算；混合附件中可恢复的单件读取失败保留前面已读图片/帧，给出附件序号、来源与失败原因，而不抹掉整个媒体输入。附件定向 5 项及 Ruff check/format 通过。真实 QQ 附件仍未验收；语音仍依赖独立 Qwen ASR。
-  - [x] 使用生产 Gemini 代理对合成 PNG 与两帧图片请求进行无 QQ 副作用的真实 API 探针，均为 HTTP 200 且返回与图像相符的描述；文档仍按文本解析，语音走 Qwen ASR，视频走抽帧图片。21 项协议/媒体/ASR/文档定向验证通过；真实 QQ 附件与其他 Provider 仍待验收。
+  - [x] 当前消息与引用消息的附件按顺序共用同一件数、视频帧数及字节预算；混合附件中可恢复的单件读取失败保留前面已读图片/帧，给出附件序号、来源与失败原因，而不抹掉整个媒体输入。附件定向 5 项及 Ruff check/format 通过。自然 QQ 主链附件仍未验收；语音仍依赖独立 Qwen ASR。
+  - [x] 使用生产 Gemini 代理对合成 PNG 与两帧图片请求进行无 QQ 副作用的真实 API 探针，均为 HTTP 200 且返回与图像相符的描述；文档仍按文本解析，语音走 Qwen ASR，视频走抽帧图片。21 项协议/媒体/ASR/文档定向验证通过；自然 QQ 主链附件与其他 Provider 仍待验收。
   - [x] 清理前只读核对当时真正加载的 `webui-config/model_profiles.toml`，有旧 `pro` DeepSeek Responses `deepseek-flash` 与 Gemini 3.8 Flash 两条连接；服务器旧 `config/model_profiles.toml` 不是当前有效文件。用现有 DeepSeek 密钥发送合成 32×32 红色 PNG 至官方 Responses，HTTP 200 且正确识别红色，因此当时 `deepseek-flash` 的 `image_input` 声明有真实依据，不能按旧印象强制拒绝。
   - [x] 生产连接无 QQ 合成探针：DeepSeek Responses 经 Yuki 适配器识别红/蓝双帧、发起一次 `lookup_code` 工具调用，low reasoning 有响应，`emit_result` 函数返回 `value=7`；Gemini 适配器同样发起工具并返回结构化 `value=7`，此前图片/双帧也成功。当时 DeepSeek 未声明 `structured_output`，故路由不会把需要该能力的任务交给它；两连接的 tools/image_input 声明与已测一致。文档与语音仍为 Yuki 文本解析/独立 ASR，其他供应商未配置。[DeepSeek Vision](https://api-docs.deepseek.com/guides/vision/)、[Responses](https://api-docs.deepseek.com/guides/responses_api/)。
-  - [x] 当前生产 Gemini 连接经部署 Bot 容器内 Yuki `GeminiProvider.complete` 发送无 QQ 合成长输入，单 user 消息、空工具、`low`、最大输出 128：10,000 条确定性列表共 290,123 字符，真实响应 `prompt_tokens=239,019`、输出 102 Token、状态 completed，正确返回分处列表约 20% 与 80% 的两个目标 `CORAL|JADE`。未写生产 DB 或发送 QQ；缓存字段缺失，不能据此评价缓存。DeepSeek 长上下文和真实 QQ 附件仍待验收。
+  - [x] 当前生产 Gemini 连接经部署 Bot 容器内 Yuki `GeminiProvider.complete` 发送无 QQ 合成长输入，单 user 消息、空工具、`low`、最大输出 128：10,000 条确定性列表共 290,123 字符，真实响应 `prompt_tokens=239,019`、输出 102 Token、状态 completed，正确返回分处列表约 20% 与 80% 的两个目标 `CORAL|JADE`。未写生产 DB 或发送 QQ；缓存字段缺失，不能据此评价缓存。DeepSeek 长上下文和自然 QQ 主链附件仍待验收。
+  - [x] 生产只读真实 QQ 附件探针：内部事件 #72322 的图片缓存 32,608 字节经 SHA-256 校验，原字节重放 `AttachmentInputService.prepare` 得 1 张 JPEG、Gemini `inlineData`；同一缓存字节经部署 Bot 的当前 `gemini-3.8-flash` 连接调用 `GeminiProvider.complete`，返回 completed、非空正文、输入 1,095/输出 115 Token。事件 #72078 的文本文件缓存 2,954 字节经校验，`document_reader` 提取 1,134 字、无截断；同连接无 QQ 请求返回 completed、非空正文、输入 825/输出 40 Token。两次响应均未报告缓存 Token，不能当作零命中。原 QQ 图片 URL 在回放时返回 HTTP 400，因此使用已缓存的真实字节，而非成功重取原 URL。关闭 `image_input` 后，真实图片被明确标记未读取、零图片输入，历史真实视频在下载前以 `image_capability_unavailable` 拒绝。探针未发 QQ、未写生产业务 DB；真实视频和语音载荷已失效，且未经过自然主 Agent 轮次，均不能算验收通过。
 - [x] **3. 热配置**：WebUI 保存连接和路由后，运行中立即、原子地用于新任务/新请求；失败不切换；已开始的模型请求保持原连接；WebUI 明确显示当前已加载版本。生产 medium→low 与外部搜索→独立桥保存均为 `applied`、加载版本立即一致，Bot 容器 ID 未变；在途 Runner 固定原模型和搜索后端、失败回滚由定向测试覆盖。自然在途跨切换样本尚未出现。
   - [x] 本地保存入口预构建新连接，成功写盘后切换执行器；同一 Agent 激活固定旧版本；保存失败保持旧路由。对应定向测试通过。
   - [x] 管理查询读取已加载目录，保存回执标记为已生效，WebUI 文案说明新激活立即切换。对应定向测试通过。
