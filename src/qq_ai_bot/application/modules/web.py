@@ -237,9 +237,7 @@ class WebModule:
             bridges[task] = bridge
         return TaskRoutedWebSearchProvider(default, bridges)
 
-    def _gemini_bridge(
-        self, profile: ModelProfile, clients: ModelClientPool
-    ) -> GeminiSearchBridge:
+    def _gemini_bridge(self, profile: ModelProfile, clients: ModelClientPool) -> GeminiSearchBridge:
         settings = self._settings
         if profile.protocol is not ModelProtocol.GEMINI:
             raise ValueError("the separate native search bridge requires Gemini protocol")

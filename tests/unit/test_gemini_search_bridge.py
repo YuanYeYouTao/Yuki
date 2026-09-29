@@ -90,9 +90,7 @@ def grounded_response(*, with_source=True):
                 "groundingMetadata": {
                     "webSearchQueries": ["public source"],
                     "groundingChunks": (
-                        [{"web": {"uri": URL, "title": "Verified source"}}]
-                        if with_source
-                        else []
+                        [{"web": {"uri": URL, "title": "Verified source"}}] if with_source else []
                     ),
                 },
             }
@@ -238,14 +236,17 @@ async def test_bridge_hot_switch_follows_chat_connection_without_native_main_too
         assert provider._active._selected().profile.id == "gemini-connection"
     with web_model_task(ModelTask.AUTOMATION_AGENT):
         assert provider._active._selected().profile.id == "automation-connection"
-    assert NativeToolBinder().bind(
-        protocol=ModelProtocol.GEMINI,
-        capabilities=frozenset(),
-        allowed_capabilities=frozenset({"web_search"}),
-        web_mode=WebMode.TAVILY,
-        web_was_used=False,
-        search_mode=ModelSearchMode.BRIDGE,
-    ) == ()
+    assert (
+        NativeToolBinder().bind(
+            protocol=ModelProtocol.GEMINI,
+            capabilities=frozenset(),
+            allowed_capabilities=frozenset({"web_search"}),
+            web_mode=WebMode.TAVILY,
+            web_was_used=False,
+            search_mode=ModelSearchMode.BRIDGE,
+        )
+        == ()
+    )
     assert not NativeToolBinder().excluded_function_names(
         protocol=ModelProtocol.GEMINI,
         capabilities=frozenset(),

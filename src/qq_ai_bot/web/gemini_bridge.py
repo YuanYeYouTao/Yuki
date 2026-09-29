@@ -195,8 +195,7 @@ class GeminiSearchBridge:
             partial_failure=(
                 response.status is not ModelResponseStatus.COMPLETED
                 or any(
-                    event.status is NativeToolStatus.FAILED
-                    for event in response.native_tool_events
+                    event.status is NativeToolStatus.FAILED for event in response.native_tool_events
                 )
                 or request.start_date is not None
                 or request.end_date is not None
