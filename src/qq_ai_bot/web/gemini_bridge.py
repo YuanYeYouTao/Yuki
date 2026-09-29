@@ -77,22 +77,31 @@ class GeminiSearchBridge:
         query = " ".join(request.query.split())
         if not 1 <= len(query) <= 400:
             raise WebSearchError("invalid_query", "搜索词须为 1–400 字符")
+        normalized_request = replace(request, query=query)
         key = hashlib.sha256(
-            self._namespace + json.dumps(asdict(request), sort_keys=True, default=str).encode()
+            self._namespace
+            + json.dumps(asdict(normalized_request), sort_keys=True, default=str).encode()
         ).hexdigest()
         async with self.slot:
             cached = await asyncio.to_thread(self.state.access, key)
-            if isinstance(cached, WebSearchResponse) and cached.provider == self.name:
+            if (
+                isinstance(cached, WebSearchResponse)
+                and cached.provider == self.name
+                and not cached.partial_failure
+            ):
                 return cached
             try:
-                result = await self._search(replace(request, query=query))
+                result = await self._search(normalized_request)
             except WebSearchError as exc:
                 if self.fallback is None:
                     raise
                 logger.info("gemini_search_fallback category=%s", exc.code)
                 # A fallback receipt is never cached under the primary search key.
                 return await self.fallback.search(request)
-            await asyncio.to_thread(self.state.access, key, result)
+            # A failed extraction or incomplete native response may recover on
+            # the next request; do not pin that partial receipt for ten minutes.
+            if not result.partial_failure:
+                await asyncio.to_thread(self.state.access, key, result)
             return result
 
     async def _search(self, request: WebSearchRequest) -> WebSearchResponse:
