@@ -259,6 +259,16 @@ async def test_search_memory_labeled_chinese_precision_probe(database: Database)
         limit=10,
     )
     assert bounded.truncated and not bounded.exhaustive
+    bounded_without_embedding = await retriever.retrieve_authorized(
+        queries["读书会哪天讨论科幻小说"].model_copy(
+            update={"candidate_limit": 1, "semantic_enabled": True}
+        ),
+        scope,
+        limit=10,
+    )
+    assert bounded_without_embedding.semantic_status == "not_configured"
+    assert bounded_without_embedding.truncated and not bounded_without_embedding.exhaustive
+    assert bounded_without_embedding.partial_reason == "global_candidate_budget"
     output_bounded = await retriever.retrieve_authorized(
         queries["小雨喜欢吃什么蛋糕"].model_copy(
             update={"text": "小雨", "normalized_text": "小雨"}
@@ -315,6 +325,16 @@ async def test_search_memory_labeled_chinese_precision_probe(database: Database)
     assert degraded.hits == ()
     assert degraded.semantic_status == "test_outage"
     assert degraded.semantic_degraded and not degraded.exhaustive
+    bounded_degraded = await retriever.retrieve_authorized(
+        cat_query.model_copy(
+            update={"text": "小雨", "normalized_text": "小雨", "candidate_limit": 1}
+        ),
+        scope,
+        limit=10,
+    )
+    assert bounded_degraded.semantic_status == "test_outage"
+    assert bounded_degraded.truncated and not bounded_degraded.exhaustive
+    assert bounded_degraded.partial_reason == "global_candidate_budget"
 
 
 @pytest.mark.asyncio
