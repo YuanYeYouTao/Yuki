@@ -37,8 +37,6 @@ class SocialOperationModel(Base):
     )
     action: Mapped[str] = mapped_column(String(32), nullable=False)
     payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    # Only new split-send parents record a plan. Historical NULL is unknowable.
-    planned_parts: Mapped[int | None] = mapped_column(Integer, nullable=True)
     target_kind: Mapped[str] = mapped_column(String(16), nullable=False)
     target_id: Mapped[str] = mapped_column(String(36), nullable=False)
     presence_id: Mapped[str | None] = mapped_column(
@@ -52,3 +50,5 @@ class SocialOperationModel(Base):
     event_id: Mapped[int | None] = mapped_column(
         ForeignKey("chat_events.id", onupdate="RESTRICT", ondelete="SET NULL"), nullable=True
     )
+    # Only new split-send parents record a plan. Historical NULL is unknowable.
+    planned_parts: Mapped[int | None] = mapped_column(Integer, nullable=True)
