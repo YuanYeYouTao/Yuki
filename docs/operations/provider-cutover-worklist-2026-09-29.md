@@ -13,7 +13,10 @@
 - 新桥代码上线后经同一 WebUI 控制面热保存现有 Gemini 连接为 `search_mode=bridge`，回执 `applied`（版本 `2294856724640907`）、`matches_loaded=true`，Bot 容器 ID 未变、仍 healthy，`low` 保留。部署容器内以当前连接进行无 QQ 真实桥调用：独立 `googleSearch` 得 3 个可信 grounding 来源，其中两项经 Tavily 提取正文，`partial_failure=false`、未回退。自然主 Agent 调用 `web_search` 的生产样本仍待出现。
 - 已备份配置及数据库后，经 WebUI 热保存移除无新路由、无活动 Work 精确引用的 `flash` 和 `self_reflection`。旧 `pro` 虽仍被 5 个暂停 Work 的历史 journal 引用，但离线回放证实只移除其**当前连接配置**会在原 Work ID、预算和未决效果不变的前提下按现行连接合同恢复或拒绝危险重放。再备份当前模型配置到 `/opt/yuki-qqbot/backups/model_profiles-pre-remove-pro-20260929T033453Z.toml` 后，控制面热保存移除 `pro`，回执 `applied`（版本 `488634675304481`）、`matches_loaded=true`；仅剩 Gemini 连接和 13 个路由，`bridge`/`low` 保留，Bot 容器不变且 healthy。5 个暂停 Work 及其未知效果未作结算或清除。
 - 服务器另有未加载的旧 `/opt/yuki-qqbot/config/model_profiles.toml`（仍含 `pro/flash/self_reflection`）。现行 WebUI Compose 明确使用 `/app/webui-config/model_profiles.toml`；但漏掉覆盖时，旧 `.env` 仍会指向这个路径。已把旧文件备份到 `/opt/yuki-qqbot/backups/model_profiles-legacy-retired-20260929T034339Z.toml`，原路径原子替换为 `schema_version = 0` 退役标记，令错误部署明确失败而非悄悄恢复旧 DeepSeek 路由。现行 Bot ID 不变且 healthy；guided setup 与缺文件兼容回退仍需源代码收口。
-- 另一台 `antigravity-server` 的 Gemini 代理已按最小补丁仅更新 Antigravity Manager 服务：当前镜像 `antigravity-manager:gemini-grounding-v4.8.4`（`sha256:d5b9abad…cab781`），容器健康；保留旧镜像、切换前备份及 `/opt/antigravity-manager/patches/v4.8.4-gemini-fixes-20260929/ROLLBACK.md`。旧末尾失败报文在当前代理重放 200，签名与 low 保留；原生搜索合成请求返回可信 grounding，但自然 QQ 续接和生产主链原生搜索尚未验收。
+- 另一台 `antigravity-server` 的 Gemini 代理曾按最小补丁仅更新 Antigravity Manager 服务：当时镜像 `antigravity-manager:gemini-grounding-v4.8.4`（`sha256:d5b9abad…cab781`），容器健康；保留旧镜像、切换前备份及 `/opt/antigravity-manager/patches/v4.8.4-gemini-fixes-20260929/ROLLBACK.md`。旧末尾失败报文在补丁代理重放 200，签名与 low 保留；原生搜索合成请求返回可信 grounding。
+- 上条是首个代理补丁部署时的历史快照。现行 AGM 镜像为 `antigravity-manager:gemini-final-audit-v4.8.4`，已补齐思考 Token 总量与最终请求结构审计，容器健康；回滚说明在 `/opt/antigravity-manager/backups/pre-final-audit-20260929T040806Z/ROLLBACK.md`。此前末尾工具回执路径已有两条自然 QQ 续接成功样本；同链前缀与实际 Google 账单仍待核对。
+- PR [#175](https://github.com/YuanYeYouTao/Yuki/pull/175) 已合并 `main`（`441f13379ed8a783f92984a14401ac1c69dcdd72`），统一模型配置正式路径并阻止显式文件缺失时回落到旧连接。服务器 `.env` 与基础 Compose 已备份迁移，当前 Bot 容器未变；新代码部署状态见后续更新。
+- PR [#176](https://github.com/YuanYeYouTao/Yuki/pull/176) 最新 Linux CI 全绿并 squash 合并至 `main`（`1a00c98982f30f165f732872c6576c1c1ab7b847`），修复 `search_memory` 零结果误报截断及实际裁切时的非穷尽回执。最终 `ops-1a00c98` 镜像从该合并提交构建并写入 revision 标签，已载入服务器但**未部署**；先前按 PR 分支 `c8c0f3f` 构建的镜像不含 #175，禁止用于部署。当前生产 Bot 仍为 `ops-5f539c6`，近期出现间歇性健康检查超时及主机 I/O/SQLite 拥塞，部署须待健康稳定。04:32–04:41 UTC 的 `sqlite_write_contended.holders[].held_seconds` 只读诊断记录子任务调度持写锁最长 4.618 秒、通知投递持写锁最长 12.308 秒，主机 I/O 等待 54–83%；另有 `sqlite_slow_write BEGIN IMMEDIATE` 等锁记录，两者不可混同。记忆压缩只见锁失败，未证实为持锁源。
 - **高危缓存观察**：只读核对线上 16 条 Gemini 调用明细后，输入合计 **362,512**、已报告缓存命中 **76,926**（占已记录输入 **21.2%**），与用户供应商截图的约 362.5K / 76.9K 相符。旧 Yuki 页面所报 **71.5%** 仅以报告缓存量的 3 次调用为分母，其余 13 次未报缓存量，不能代表总体。主对话 5 次输入 210,408、命中 60,571；自我反思 8 次输入 142,986、命中 16,355；另 3 次记忆任务输入共 9,118、没有缓存回执。16 次中仅 3 次低于 Gemini 3.8 Flash 官方 4,096 Token 隐式缓存门槛，其他未命中须逐调用核对前缀与服务端回执。
 
 ## 本轮状态快照
@@ -24,10 +27,10 @@
 | 2 多模态 | 附件路由与预算通过；Gemini/DeepSeek 两种连接的图片、双视频帧和函数工具经真实 API 成功，Gemini 结构化及 DeepSeek 函数式结构化探针成功；当前生产 Gemini 另有 239,019 输入 Token 长上下文真实 API 成功 | 真实 QQ 附件、DeepSeek 长上下文、未配置 Provider 和原生音视频尚未验收 |
 | 3 热配置 | 生产模型保存均回执 `applied`、加载版本立即一致；Gemini medium→low 及外部搜索→桥均未重启 Bot；在途 Runner 固定原模型和搜索后端的回归已过 | 排队旧纯文本媒体仍需重新引用；自然在途跨切换样本未出现 |
 | 4 Work 接续 | 双向 Gemini/DeepSeek 的 SQLite + Runner 隔离回放通过，同一 Work ID/预算/确认回执保留、工具过滤与来源迁移有效，40 项回归通过 | 生产真实暂停 Work 的未知效果须原 ID 对账，不能靠模拟恢复；自然热切换仍待验收 |
-| 5 用量口径 | 分层缓存率、失败响应用量、HTTP 请求尝试数及未知用量已实现；真实 Gemini 样本核对 Yuki 输出含思考 Token，AGM 展示的 total 漏计思考 | AGM 聚合口径待修，原生搜索额外费用和真实账单未核对 |
+| 5 用量口径 | 分层缓存率、失败响应用量、HTTP 请求尝试数及未知用量已实现；AGM 已修正思考 Token 总量并以真实代理响应核对 | 原生搜索额外费用和真实账单未核对 |
 | 6 用量页面 | 生产真实 24 小时数据下，宽幅双图在浅色/深色主题均无图内横向滚动；本地三主题 hover 已验证，深色提示字对比修正代码已随新镜像上线 | 深色提示字尚待新镜像页面目视复核 |
-| 7 旧配置 | 6 项无效选择配置已删除；`flash`、`self_reflection`、`pro` 已备份并热移除当前配置，未加载旧文件已备份并设为失败标记，5 条暂停 Work 的未知效果保留；PR #173 CI/合并/部署完成，当前连接默认选中与历史连接折叠已上线 | guided setup/缺文件回退需源代码收口、页面目视复核；5 条暂停 Work 的结算属 #4 |
-| 8 上线验收 | 后端本地全量 1,654 通过/7 个 Windows 跳过，前端 85 通过；PR #173 最新 Linux CI 全绿并合并，`ops-5f539c6` 单服务部署 healthy，Gemini 桥/low/唯一连接运行态一致且容器内真实纯搜索成功 | 自然主链搜索、跨供应商自然切换、真实 QQ 多模态、页面目视与账单等验收未完 |
+| 7 旧配置 | 6 项无效选择配置已删除；`flash`、`self_reflection`、`pro` 已备份并热移除当前配置，未加载旧文件已备份并设为失败标记；PR #175 的 guided setup/缺文件回退修复已合并，服务器配置路径已迁移；5 条暂停 Work 的未知效果保留 | #175 代码待 Bot 部署、页面目视复核；5 条暂停 Work 的结算属 #4 |
+| 8 上线验收 | 后端本地全量 1,654 通过/7 个 Windows 跳过，前端 85 通过；PR #175/#176 最新 Linux CI 全绿并合并；生产仍运行 `ops-5f539c6`，Gemini 桥/low/唯一连接已生效 | 主机 I/O/SQLite 拥塞导致健康检查间歇失败，暂缓最终镜像部署；自然主链搜索、跨供应商切换、真实 QQ 多模态、页面目视与账单等验收未完 |
 | 9 状态与收发消息 | 新镜像上线后，生产外部事件 #72188 经控制面查到 3 个可信执行轮次，原先方向误拒已修；本地长轮分页与授权详情通过测试 | 生产长轮页面、授权正文和交互仍待目视复核 |
 | 10 高危：跨供应商缓存 | Gemini 67 条 Yuki/代理调用逐条匹配；`ops-c30f220` 上线后同一会话连续 3 次已报缓存 40,298/45,489、40,291/45,640、40,291/46,233，system/tools/low 均稳定；另一个会话也已报 20,118/39,579；旧 Dream 动态 system 已修 | 跨会话仅新增一个明确命中样本；完整前缀计数、长期命中、账单、其他 Provider 与新版 Dream 批次仍待验收 |
 | 11 高危：Gemini 代理抓包 | 用户确认是清理前旧请求；自然调用中 Yuki 与代理入站的 system/tools/config 哈希及 contents 长度对齐，low 保留、无顶层旧字段；代理转发栏是最终转换前的简化预览，源码已追到 Cloud Code 发送路径 | 最终发送字节仍无独立抓包，不能把转发栏或字段排列直接当作 Google 缓存依据 |
@@ -74,15 +77,15 @@
   - [x] 适配器提供失败响应已知 usage，执行器将非负已知数字写入失败调用账本；定向测试通过。
   - [x] 用量页把“已确认缓存占已记录输入”和“仅已报缓存量调用的样本命中率”分开，避免把 Gemini 的 71.5% 误当全部输入的命中率；前端 78 项通过并构建通过。
   - [x] 逻辑调用与实际 HTTP 请求尝试分开记录；重试和 Claude 原生搜索续发分别计数，未收到上游 Token 用量的请求标未知，历史行不推算请求次数。新增 0079 迁移和 WebUI 口径，后端定向 32 项、前端 1 项、TS/Ruff/Prettier 通过。
-  - [x] 真实 Gemini 同请求只读对账：Yuki 输入 39,579、缓存 20,118、输出合计 426、总计 40,005；AGM 归一化分为候选输出 97 与思考 329，但其总计显示 39,676，恰好漏加 329。另一无 QQ 长请求 AGM 输出 5 + 思考 97 = Yuki 输出 102。Yuki 未重复计 Token；不可直接用 AGM 当前总计估账单。
-  - [ ] 修正并验收 AGM 仪表盘/归一化总计对思考 Token 的口径，同时保留候选输出和思考分项；以真实响应及供应商账单对齐。
+  - [x] 修补前真实 Gemini 同请求只读对账：Yuki 输入 39,579、缓存 20,118、输出合计 426、总计 40,005；旧 AGM 归一化分为候选输出 97 与思考 329，但旧总计显示 39,676，恰好漏加 329。另一无 QQ 长请求 AGM 输出 5 + 思考 97 = Yuki 输出 102。Yuki 未重复计 Token；旧 AGM 总计不能用来估账单。
+  - [x] AGM v4.8.4 定向补丁 `82741bb` + `359e475` 已单服务部署，容器健康，旧镜像和 `/opt/antigravity-manager/backups/pre-final-audit-20260929T040806Z/ROLLBACK.md` 保留。真实代理合成推理响应输入 44、候选输出 2、思考 163；AGM 记录输出 165、总量 209，候选与思考分项保留。最终 Cloud Code 内层请求用脱敏、允许列表字段和进程内盐化 hash 记录；两条自然请求均为 LOW、无固定预算或异常字段，固定配置 hash 一致。实际供应商账单仍待核对，不能由此完成费用验收。
   - [ ] 按供应商账单核对原生搜索额外费用和物理请求计数；Token 回包不能推算原生搜索费用。
 - [ ] **6. 用量页面重做**：按参考图制作宽幅双图、24 小时趋势、输入命中缓存/未命中/输出的分段量、悬浮明细；图表在正常桌面宽度不出现内部横向滚动，小屏有明确响应布局。生产真实数据下浅色/深色宽幅双图与无内滚动已验收；深色统计说明的对比度补丁已随 `ops-c30f220` 上线，待新镜像目视复核。
   - [x] 本地完成加宽响应布局、无图内横向滚动、每模型双图、缓存命中/明确未命中/未知/输出分段与键盘可用明细；前端构建、定向测试与格式检查通过。
   - [x] 浏览器预览在 649px、1280px 未出现图内横向滚动；浅色、深色、月夜主题的柱位悬浮背景和提示框实际显示，颜色均随主题变量变化。
   - [x] 部署后以真实 24 小时用量在完整 WebUI 核对浅色和深色主题：双图在正常桌面宽度均完整显示，无图内横向滚动；统计区显示缓存已确认比例、样本比例与未知调用数。柱位悬浮明细已在本地三主题浏览器测试覆盖；深色说明文字对比度另作跟进。
 - [ ] **7. 旧连接清理与配置解释**：核查存量 Work 对旧连接 ID 的引用；安全迁移或明确归档闲置连接；生效配置按供应商/模型名称和新任务用途展示，不让历史调用记录误导为当前路由。生产 `flash`、`self_reflection` 和 `pro` 的当前配置均已备份并热删除；5 条 suspended Work 的 journal 及未决效果原样保留，恢复和结算另见 #4。PR #173 的 UI 改进已通过 CI、合并、部署，页面目视仍待复核；guided setup/缺文件回退尚待源代码收口。
-  - [x] PR #173 默认选中当前 `chat_agent` 连接，未分配用途的历史连接折叠展示，保存仍保留其数据；前端定向 15 项、TypeScript、Ruff 与最新 Linux CI 全绿。`ops-5f539c6` 已单服务部署 healthy；当前仅 Gemini 连接，生产页面还未能目视复核。
+  - [x] PR #173 默认选中当前 `chat_agent` 连接，未分配用途的历史连接折叠展示，保存仍保留其数据；前端定向 15 项、TypeScript、Ruff 与最新 Linux CI 全绿。`ops-5f539c6` 已单服务部署 healthy，生产 `/ui/` 返回 200 且静态 JS 含新“历史/备用连接”文案；当前仅 Gemini 连接，生产页面还未能目视复核。
   - [x] 本地删除 4 项已失效的工具首轮选择设置和 2 项已失效的 MCP 选择预算；管理配置入口同步删除，配置定向测试 47 项通过。
   - [x] WebUI 已有“全部用途使用当前模型连接”的一次性路由操作；新增前端定向测试确认保存请求中的全部任务都改到选中连接。
   - [x] 只读生产核对模型配置与 5 条未终结 Work journal：Gemini 连接承担 13 个新任务路由；旧 `pro` 承担 0 个新路由但被 5 条 suspended Work 以 `profile_id` 引用；旧 `flash`、`self_reflection` 既无新路由也无活动 journal 的精确引用。历史用量记录不作为删除阻碍或当前路由证明。
@@ -93,9 +96,9 @@
   - [x] 使用私有生产备份的隔离 SQLite 回放 5 条旧 `pro` 暂停 Work：只删除当前连接配置后，原 Work ID/预算/效果状态不变；旧合同恢复到新连接时 1 条 `contract_changed`、4 条 `source_changed`，未决发送被拒绝重放。生产当前 `pro` 无任务路由且非搜索连接；备份当前配置后经控制面热删除，仅余 Gemini 13 路由，`applied`、`matches_loaded=true`、容器不变且 healthy。此项只清理当前连接配置，不结算或删除历史 Work。
   - [x] 删除后逐条对照备份：5 条暂停 Work 的 ID、generation、revision、预算、checkpoint、journal 与全部 52 条效果记录摘要不变（51 accepted、1 prepared、3 条 uncertain 证据）。历史 journal 和 18,705 条 `pro` 调用统计作为审计记录保留。
   - [x] 非活跃旧 `config/model_profiles.toml` 原有三条错误连接及路由，且 `.env` 指向该路径；备份后把原路径原子替换为无效 schema 退役标记。即使未来漏掉 WebUI Compose 覆盖，也会启动失败而非重新加载旧 DeepSeek 路由；当前 Bot 容器未重建且 healthy。
-  - [ ] 源代码中的 guided setup 仍会写旧路径，缺失配置文件会回退到 legacy env（当前服务器为 DeepSeek）；须迁移到唯一 WebUI 配置路径并在显式文件缺失时 fail closed，避免新部署再次产生旧连接。
+  - [x] PR #175 将 guided setup 和默认部署路径统一到 `webui-config/model_profiles.toml`，显式配置文件缺失时 fail closed，旧 env 自动回退仅作为显式 opt-in；112 项定向测试和最新 Linux CI 全绿，已合并 `main`（`441f13379ed8a783f92984a14401ac1c69dcdd72`）。服务器 `.env` 与基础 Compose 已备份到 `/opt/yuki-qqbot/backups/pre-canonical-host-path-20260929T041755Z` 并迁至同一路径；Compose 生效配置检查通过，当前 Bot 容器 ID 未变且 healthy。新代码尚未部署，见 #8。
   - [ ] 5 条历史暂停 Work 的效果和原错误仍须按 #4 处理：两条 UNKNOWN 需要传输层确证或保留未知状态的归档，一条 PREPARED 需按原 effect key 审定结算，另两条需处理原暂停错误。不得猜测未发送或重发。
-- [ ] **8. 集成、上线与真实验收**：完成定向测试、最新提交 CI、PR/合并；Bot 单独部署并验证健康、路由、WebUI 状态、Gemini/其他供应商实际调用和缓存统计。PR #170–#173 最新 Linux CI 均全绿并合并；当前 `ops-5f539c6` Bot 单服务部署 healthy，`/healthz=200`，数据库 `0079`，生产配置 `matches_loaded=true`、Gemini low/独立搜索桥/唯一连接生效。本地此前后端全量 **1,654 通过、7 个 Windows 平台跳过**，前端 **85 项通过**；PR #173 Python 全量、Docker、memory-quality 等最新 CI 全绿。自然 QQ 末尾工具续接已有两条成功样本，容器内独立搜索桥真实请求成功；自然主链搜索、跨供应商自然切换、真实 QQ 多模态、页面目视与账单仍待完成。
+- [ ] **8. 集成、上线与真实验收**：完成定向测试、最新提交 CI、PR/合并；Bot 单独部署并验证健康、路由、WebUI 状态、Gemini/其他供应商实际调用和缓存统计。PR #170–#176 最新 Linux CI 均全绿并合并；生产当前仍为 `ops-5f539c6`，数据库 `0079`、Gemini low/独立搜索桥/唯一连接生效，健康检查近期因主机 I/O 和 SQLite 锁竞争间歇失败，故暂缓 `ops-1a00c98` 切换。本地此前后端全量 **1,654 通过、7 个 Windows 平台跳过**，前端 **85 项通过**；PR #176 最新 Python 全量、Docker、memory-quality 等 CI 全绿。自然 QQ 末尾工具续接已有两条成功样本，容器内独立搜索桥真实请求成功；最终镜像健康、自然主链搜索、跨供应商切换、真实 QQ 多模态、页面目视与账单仍待完成。
 - [ ] **9. 本轮状态、收到和发出的消息**：按内部事件与执行 ID 关联真实收发消息；每个状态可展开具体动作、工具参数或结果的授权摘要、失败原因和时间；正文只在相应权限下读取，不能以 `redacted` 或阶段标签代替可核查的操作。生产聊天页已按真实事件显示收发方向、昵称和源事件；执行详情测试覆盖长轮分页。`ops-c30f220` 上线后，控制面按 `direction=external` 查询事件 #72188 返回 3 个可信轮次，原先方向误拒已消除；新镜像页面的长轮交互和授权正文仍待目视复核。
   - [x] 状态页在原权限边界内显示发送者昵称或群名片、内部事件、跨会话目标、确认投递、正文截断标记和同一操作的耗时；参数与结果按需授权读取。后端 6 项、前端 10 项定向通过；前端全量 78 项与构建通过。
   - [x] “本轮具体操作”汇总现包含 `model_start`、`provider_start`、`provider_response`，能按现有权限展开实际输入、发给 Provider 的请求和响应；前端定向 11 项与格式检查通过。
@@ -138,6 +141,7 @@
     - [x] 无目标查询改为 canonical SQL 授权与全局 FTS/向量候选池，不按 owner 截断；覆盖无活跃 QQ Binding 的历史 owner；Person-only/Group-only 插件可用同一工具且由后端限制 scope。跨 owner Top-1、无 Binding、disabled space、无关 owner 与插件授权的定向 4 项及 Ruff/mypy 通过；候选预算截断会报告 `truncated=true`、`exhaustive=false`。
     - [x] 详情工具 `get_memory_fact` 现与无目标搜索共用当前 `AuthorizedMemoryScope` 的 SQL 授权，修复 SELF 用已知 fact ID 读取同群个人 PersonGroup、group-only 插件扩大 PersonGroup 的边界；SELF 当前群 Group 仍可读。授权负例与 Ruff 通过，代码已上线；生产真实授权场景未单独验收。
     - [x] 对上一轮 SELF 6+2 以外的生产 Person 事实做只读独立探针：固定种子抽 8 个主体，剔除不合格生成后保留 7 个有答案、7 个无答案问句；有答案直接证据 Top1/Top10 均 7/7，无答案也全有候选。单轮模型看前 5 候选时有答案 7/7 回答、无答案 7/7 弃答，未复现编造。问题生成、全主体事实支持校验与回答均用同一 DeepSeek 模型，非人工独立金标；只覆盖 Person-only 小事实集和检索核，不算完整主 Agent 回放。
+    - [x] 生产历史问题的隔离回放显示，模型在需要旧事实的两例中主动调用 `search_memory`，首次零命中后又改写查询补查；普通群聊对照未调用。回放只使用生产 SQLite 副本，无 QQ 发送或生产库写入。PR #176 修复显式目标零结果误报 `truncated=true`，并在候选、每目标、总条数和最终字符预算真实裁切时统一标记非穷尽及原因；51 项定向测试通过，最新 Linux CI/合并/部署状态见当前事实。该回放尚非完整主 Agent 入口及独立人工金标。
     - [ ] 用独立人工中文金标校准高精度，并回放模型能否主动检索、补查、正确处理歧义和资源截断。
   - [ ] 核对并改进历史聊天成本：同一发送者相邻事件在本地投影中可合并文本，但 Gemini 适配器把相邻 `user` 消息合为一个 `contents` 条目时只是延长 `parts` 数组，没有合成一段逐行紧凑文本。用户旧抓包有 56 个 `contents`（25 user、31 model），user 内共 202 个 `text` part、文本约 25,938 字符；其中一个 user 条目有 64 个 part。DeepSeek Responses 把每条投影后的消息写成独立 `input` 项，DeepSeek Chat Completions 把每条写成独立 `messages` 项。系统说明约 6,218 字符，114 项工具声明的 JSON 约 61,993 字符，不能把高输入量全归咎于历史。当前同一发送者/五分钟的历史已逐行合成一条模型消息并保留内部事件 ID；100 条同人合成样本的 Gemini JSON 4,954→1,786 字符，DeepSeek Responses 6,636→1,785；交替发送者不合并以保留轮次语义。无 QQ 合成同结构真实 API A/B 已核对 Token 与四项目标事实；完整生产工具合同、重复链缓存、工具轮次和费用仍待对比，不能以单次 Token 节省当作净成本下降。Gemini 连续 user 合并会改变末尾 Content 对象，需在缓存审计中核对；DeepSeek 线上逐字请求尚无本轮抓包。
   - [x] 用 18 条同发送者、保留内部事件 ID 与发送者的合成同结构样本，经生产连接做无 QQ 副作用 A/B：Gemini GenerateContent 输入 901→578 Token（−35.8%），DeepSeek Responses 与 Chat Completions 均 722→484（−33.0%）；四项目标事实在三种协议的新旧格式均被正确识别。DeepSeek 已报告缓存同时 512→256，未命中输入由 210 增至 228；单次输出 Token 有波动，不足以证明净费用降低。该试验未改代码或开发约束。
