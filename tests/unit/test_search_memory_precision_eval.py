@@ -25,12 +25,14 @@ from qq_ai_bot.memory.enums import (
     MemoryRetrievalMode,
     MemoryScopeType,
     MemorySourceType,
+    MemoryTargetRole,
     SelfMemoryVisibility,
 )
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
-from qq_ai_bot.memory.models import MemoryFactCreate, MemoryQuery
+from qq_ai_bot.memory.models import MemoryEntityTarget, MemoryFactCreate, MemoryQuery
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.retrieval import MemoryRetriever
+from qq_ai_bot.memory.runtime.query_plane import apply_total_hit_limit
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import MemoryEmbeddingModel
@@ -145,6 +147,75 @@ async def test_search_memory_labeled_chinese_precision_probe(database: Database)
         repository=service.repository,
         lexical_index=SQLiteMemoryFTSIndex(database),
     )
+    current_person = MemoryEntityTarget(
+        scope_type=MemoryScopeType.PERSON,
+        subject_user_id="1001",
+        role=MemoryTargetRole.CURRENT_PERSON,
+        block_id="current_person",
+    )
+    explicit_query = MemoryQuery(
+        text="zzzznonexistentmemoryzzzz",
+        normalized_text="zzzznonexistentmemoryzzzz",
+        mode=MemoryRetrievalMode.RELEVANT,
+        targets=(current_person,),
+        candidate_limit=10,
+        limit_per_target=10,
+        always_on_explicit_preference_limit=0,
+        query_term_limit=12,
+        semantic_enabled=True,
+    )
+    missing = await retriever.retrieve(explicit_query)
+    assert not missing.hits
+    assert not missing.truncated
+    assert not missing.exhaustive
+    assert missing.partial_reason == "semantic_not_configured"
+    bounded_explicit = await retriever.retrieve(
+        explicit_query.model_copy(
+            update={
+                "text": "小雨",
+                "normalized_text": "小雨",
+                "candidate_limit": 1,
+                "semantic_enabled": False,
+            }
+        )
+    )
+    assert bounded_explicit.candidate_count == 1
+    assert bounded_explicit.truncated and not bounded_explicit.exhaustive
+    assert bounded_explicit.partial_reason == "explicit_candidate_budget"
+    exact_budget = await retriever.retrieve(
+        explicit_query.model_copy(
+            update={
+                "text": "蛋糕",
+                "normalized_text": "蛋糕",
+                "candidate_limit": 1,
+                "semantic_enabled": False,
+            }
+        )
+    )
+    assert len(exact_budget.hits) == 1
+    assert not exact_budget.truncated and exact_budget.exhaustive
+    limited_output = await retriever.retrieve(
+        explicit_query.model_copy(
+            update={
+                "text": "小雨",
+                "normalized_text": "小雨",
+                "semantic_enabled": False,
+                "limit_per_target": 1,
+            }
+        )
+    )
+    assert len(limited_output.hits) == 1
+    assert limited_output.truncated and not limited_output.exhaustive
+    assert limited_output.partial_reason == "explicit_result_limit"
+    full_output = await retriever.retrieve(
+        explicit_query.model_copy(
+            update={"text": "小雨", "normalized_text": "小雨", "semantic_enabled": False}
+        )
+    )
+    total_limited = apply_total_hit_limit(full_output, 1)
+    assert len(total_limited.hits) == 1
+    assert total_limited.truncated and not total_limited.exhaustive
+    assert total_limited.partial_reason == "result_limit"
     results: dict[str, tuple[str, ...]] = {}
     queries: dict[str, MemoryQuery] = {}
     for case in CASES:
@@ -188,6 +259,16 @@ async def test_search_memory_labeled_chinese_precision_probe(database: Database)
         limit=10,
     )
     assert bounded.truncated and not bounded.exhaustive
+    output_bounded = await retriever.retrieve_authorized(
+        queries["小雨喜欢吃什么蛋糕"].model_copy(
+            update={"text": "小雨", "normalized_text": "小雨"}
+        ),
+        scope,
+        limit=1,
+    )
+    assert output_bounded.ranked_count > 1
+    assert output_bounded.truncated and not output_bounded.exhaustive
+    assert output_bounded.partial_reason == "global_result_limit"
 
     # A deterministic semantic candidate can recover a word-order miss;
     # this checks merge/fallback mechanics, not the quality of real vectors.

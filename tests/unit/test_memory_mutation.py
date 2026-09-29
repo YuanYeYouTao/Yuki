@@ -3512,6 +3512,24 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     assert global_search["ok"], global_search
     assert global_search["data"]["result_scope"] == "authorized_maximum"
     assert global_search["data"]["partial_reason"] == "semantic_not_configured"
+    explicit_missing = json.loads(
+        await tools.execute(
+            "search_memory",
+            json.dumps(
+                {
+                    "query": "zzzznonexistentmemoryzzzz",
+                    "target": {"scope": "person", "subject_ref": "current_speaker"},
+                }
+            ),
+            runtime,
+        )
+    )
+    assert explicit_missing["ok"]
+    assert explicit_missing["data"]["result_scope"] == "explicit_targets"
+    assert explicit_missing["data"]["returned_count"] == 0
+    assert explicit_missing["data"]["truncated"] is False
+    assert explicit_missing["data"]["exhaustive"] is False
+    assert explicit_missing["data"]["partial_reason"] == "semantic_not_configured"
     assert projected_fact.id in {row["fact_id"] for row in global_search["data"]["memories"]}
     top_one = json.loads(
         await tools.execute(
@@ -4037,10 +4055,12 @@ async def test_memory_tool_selectors_share_intent_reads_and_cache_with_historica
     snapshot = await tools._runtime_config.snapshot(user_id="1001", group_id="3001")
     bounded = replace(snapshot, agent=replace(snapshot.agent, tool_result_max_characters=2000))
     rows = [{"memory_ref": f"M{index}", "content": "x" * 500} for index in range(1, 11)]
-    source = {"effective_query": {"mode": "overview"}, "memories": rows}
+    source = {"effective_query": {"mode": "overview"}, "memories": rows, "exhaustive": True}
     with patch.object(tools, "_runtime", return_value=bounded):
         rendered = json.loads(tools._memory_list_result(data=source))
         assert rendered["ok"] and rendered["data"]["truncated"]
+        assert rendered["data"]["exhaustive"] is False
+        assert rendered["data"]["partial_reason"] == "response_character_budget"
         count = rendered["data"]["returned_count"]
         assert 0 < count < len(rows)
         assert rendered["data"]["memories"] == rows[:count]

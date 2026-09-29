@@ -1655,12 +1655,10 @@ class AgentToolService:
                 "candidate_count": result.candidate_count,
                 "target_count": len({hit.target.block_id for hit in result.hits}),
                 "result_scope": "authorized_maximum" if target is None else "explicit_targets",
-                "exhaustive": result.exhaustive if target is None else False,
-                "truncated": result.truncated if target is None else bool(scope.targets),
-                "partial_failure": not result.exhaustive if target is None else False,
-                "partial_reason": (
-                    result.partial_reason if target is None else "explicit_target_search"
-                ),
+                "exhaustive": result.exhaustive,
+                "truncated": result.truncated,
+                "partial_failure": not result.exhaustive,
+                "partial_reason": result.partial_reason,
                 "memories": [
                     {
                         **(
@@ -2254,6 +2252,9 @@ class AgentToolService:
                 )
             remaining.pop()
             payload["truncated"] = True
+            payload["exhaustive"] = False
+            payload["partial_failure"] = True
+            payload["partial_reason"] = "response_character_budget"
             payload["returned_count"] = len(remaining)
             payload["truncation_reason"] = "response_character_budget"
 

@@ -266,6 +266,7 @@ class MemoryRetriever:
             for target in targets.values()
         )
         candidate_truncated = lexical_truncated or semantic_truncated
+        output_truncated = len(ranked) > limit
         semantic_unavailable = query.semantic_enabled and semantic_status == "not_configured"
         partial_reason = "global_candidate_budget" if candidate_truncated else None
         if semantic_unavailable:
@@ -274,6 +275,8 @@ class MemoryRetriever:
             partial_reason = "semantic_degraded"
         if not semantic_coverage_complete:
             partial_reason = "semantic_index_incomplete"
+        if output_truncated and partial_reason is None:
+            partial_reason = "global_result_limit"
         return MemoryRetrievalResult(
             blocks=blocks,
             hits=selected,
@@ -292,8 +295,9 @@ class MemoryRetriever:
             exhaustive=not candidate_truncated
             and not semantic_degraded
             and not semantic_unavailable
-            and semantic_coverage_complete,
-            truncated=candidate_truncated or len(ranked) > limit,
+            and semantic_coverage_complete
+            and not output_truncated,
+            truncated=candidate_truncated or output_truncated,
             partial_reason=partial_reason,
             ranked_count=len(ranked),
         )
@@ -312,6 +316,7 @@ class MemoryRetriever:
         rerank_latency = 0.0
         candidate_count = 0
         semantic_candidate_count = 0
+        candidate_truncated = False
         blocks: list[MemoryRetrievalBlock] = []
         all_hits: list[MemoryRetrievalHit] = []
         trace_hits: list[MemoryRetrievalHit] = []
@@ -400,9 +405,11 @@ class MemoryRetriever:
                 )
                 facts = await self._repository.list_overview(
                     target,
-                    limit=overview_pool_limit,
+                    limit=overview_pool_limit + 1,
                     temporal=query.intent.temporal if query.intent is not None else None,
                 )
+                candidate_truncated = candidate_truncated or len(facts) > overview_pool_limit
+                facts = facts[:overview_pool_limit]
                 candidate_count += len(facts)
                 hits = self._ranker.rank_overview(
                     facts,
@@ -431,12 +438,14 @@ class MemoryRetriever:
                 candidates = await self._index.search(
                     target,
                     safe,
-                    candidate_limit=query.candidate_limit,
+                    candidate_limit=query.candidate_limit + 1,
                     kinds=query.kinds,
                     short_query_fallback_enabled=query.short_query_fallback_enabled,
                     temporal=query.intent.temporal if query.intent is not None else None,
                 )
                 fts_latency += time.perf_counter() - search_started
+                candidate_truncated = candidate_truncated or len(candidates) > query.candidate_limit
+                candidates = candidates[: query.candidate_limit]
                 short_fallback_used = short_fallback_used or bool(
                     safe.short_term and query.short_query_fallback_enabled
                 )
@@ -451,7 +460,7 @@ class MemoryRetriever:
                             query_vector=query_vector,
                             profile=self._embedding_profile.profile,
                             profile_id=self._embedding_profile.id,
-                            candidate_limit=query.semantic_candidate_limit,
+                            candidate_limit=query.semantic_candidate_limit + 1,
                             kinds=query.kinds,
                             min_similarity=query.semantic_min_similarity,
                             temporal=query.intent.temporal if query.intent is not None else None,
@@ -464,6 +473,11 @@ class MemoryRetriever:
                             semantic_status,
                         )
                     semantic_latency += time.perf_counter() - semantic_started
+                    candidate_truncated = (
+                        candidate_truncated
+                        or len(semantic_candidates) > query.semantic_candidate_limit
+                    )
+                    semantic_candidates = semantic_candidates[: query.semantic_candidate_limit]
                 candidate_ids = tuple(
                     dict.fromkeys(
                         [item.fact_id for item in candidates]
@@ -550,9 +564,11 @@ class MemoryRetriever:
         trace_hits = list(ranked[: query.recall_trace_candidate_limit])
         all_hits = []
         per_target: dict[str, int] = {}
+        output_truncated = False
         for hit in ranked:
             key = hit.target.block_id
             if per_target.get(key, 0) >= query.limit_per_target:
+                output_truncated = True
                 continue
             per_target[key] = per_target.get(key, 0) + 1
             all_hits.append(hit.model_copy(update={"rank": len(all_hits) + 1}))
@@ -564,6 +580,20 @@ class MemoryRetriever:
         ]
 
         query_hash = hashlib.sha256(query.normalized_text.encode("utf-8")).hexdigest()
+        semantic_unavailable = query.semantic_enabled and semantic_status == "not_configured"
+        partial_reason = (
+            "explicit_candidate_budget"
+            if candidate_truncated
+            else "semantic_degraded"
+            if semantic_degraded
+            else "semantic_not_configured"
+            if semantic_unavailable
+            else "explicit_result_limit"
+            if output_truncated
+            else "explicit_semantic_coverage_unknown"
+            if query.semantic_enabled
+            else None
+        )
         result = MemoryRetrievalResult(
             blocks=tuple(blocks),
             hits=tuple(all_hits),
@@ -579,6 +609,12 @@ class MemoryRetriever:
                 else None
             ),
             trace_hits=tuple(trace_hits),
+            exhaustive=not candidate_truncated
+            and not output_truncated
+            and not query.semantic_enabled,
+            truncated=candidate_truncated or output_truncated,
+            partial_reason=partial_reason,
+            ranked_count=len(ranked),
         )
         referenced = {
             target.subject_user_id
