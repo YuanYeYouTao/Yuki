@@ -28,7 +28,7 @@
 
 | 编号 | 当前证据与状态 | 还不能打总勾的原因 |
 | --- | --- | --- |
-| 1 搜索与工具 | DeepSeek 官方搜索桥真实调用返回服务端搜索事件；Gemini 独立搜索桥已合并、部署并热生效，容器内真实 `googleSearch` + Tavily 提取返回可信来源；主模型仍保留稳定本地函数 | 自然主 Agent `web_search` 生产样本、Claude 真实代理、费用与无来源回退仍未验收 |
+| 1 搜索与工具 | DeepSeek 官方搜索桥真实调用返回服务端搜索事件；Gemini 独立搜索桥已合并、部署并热生效，容器内真实 `googleSearch` + Tavily 提取返回可信来源；当前连接的无 QQ 合成主模型→搜索桥→最终模型续接成功 | 自然主 Agent `web_search` 生产样本、Claude 真实代理、费用与无来源回退仍未验收 |
 | 2 多模态 | 附件路由与预算通过；Gemini/DeepSeek 两种连接的图片、双视频帧和函数工具经真实 API 成功，Gemini 结构化及 DeepSeek 函数式结构化探针成功；当前生产 Gemini 另有 239,019 输入 Token 长上下文真实 API 成功 | 真实 QQ 附件、DeepSeek 长上下文、未配置 Provider 和原生音视频尚未验收 |
 | 3 热配置 | 生产模型保存均回执 `applied`、加载版本立即一致；Gemini medium→low 及外部搜索→桥均未重启 Bot；在途 Runner 固定原模型和搜索后端的回归已过 | 排队旧纯文本媒体仍需重新引用；自然在途跨切换样本未出现 |
 | 4 Work 接续 | 双向 Gemini/DeepSeek 的 SQLite + Runner 隔离回放通过；新 Bot 上线后全部 7 条 suspended Work 的 ID/预算/journal/effects/recovery 摘要与备份一致，未重放未决效果；原 ID 对账定位 2 条 unknown 投递与 1 条 prepared 父效果 | 2 条 unknown 无送达证据，prepared 父效果缺原计划数/父结果，均不得重放或结算；自然热切换仍待验收 |
@@ -56,6 +56,8 @@
   - [x] 生产 Gemini 曾短时热保存 `search_mode=native`、`native_web_search=true`，无 QQ 合成主链确认 Yuki 正确排除了外部 `web_search`/`read_webpage`，却在 109 个固定函数加 `googleSearch` 的混合请求上从 AGM/Cloud Code 收到 HTTP 400；缩到 1 个函数、尝试透传 camel/snake `includeServerSideToolInvocations` 仍 400。已通过控制面热保存回退沿用 Tavily，回执 `applied`、有效文件与内存态 `matches_loaded=true`，Bot 未重建。不可据单独 `googleSearch` 成功宣称主链可用；需要独立搜索调用或其他已验路由。
   - [x] 使用生产 DeepSeek 官方搜索连接作不经 QQ 的真实 API 探针，HTTP 200，回包有服务端搜索调用与搜索结果事件；额外费用仍须账单核对。原生来源解析不再把模型正文中的任意 URL 当作搜索来源；无受信来源时回执明确为部分失败，新增 3 项回归。
   - [x] PR #172 将 Gemini 的搜索选项收为按连接配置的 `bridge`：在途 Runner 同时固定模型和搜索后端；主请求保留 `web_search`/`read_webpage` 稳定函数，只在执行搜索时另发只含 `googleSearch`、零函数声明的请求；仅接受 Google grounding 来源，无可信来源时显式降级 Tavily，辅助模型请求独立记 Token、物理请求和未知用量。145 项 Python 定向、14 项前端定向与最新 Linux CI 全绿。`ops-1b06e8f` 上线后通过控制面热保存，回执 `applied`、`matches_loaded=true`、容器 ID 不变；部署容器内当前连接的无 QQ 桥请求得到 3 个可信来源，两项 Tavily 正文提取成功、`partial_failure=false`、无降级。自然主 Agent 工具回合尚待验收。
+  - [x] 2026-09-29 生产只读审计：`tool_invocations` 中最近一条 `web_search` 为 2026-09-28 12:28:55 UTC（ID 5588），早于 Gemini 桥热生效；桥生效后的查询截至 2026-09-29 06:03 UTC 为 0 条。逐条解码同期 `execution_trace_entries.kind=tool_start` 的工具名，共 22 条，均为 `send_message`；同期 `model_invocations.task=web_search` 为 0 条。因此没有可按源事件、执行 ID 和工具回执关联的自然主 Agent 搜索样本，不得把独立桥测试当作自然验收。
+  - [x] 无 QQ 替代探针在运行中的 `ops-93dd761` Bot 容器读取当前 Gemini `chat_agent` 连接（配置为 `bridge`/`low`），用私有临时 SQLite 搜索缓存且不写 Yuki 生产业务库。合成主模型请求只声明 `web_search` 本地函数，首轮返回 1 个该函数调用；按其调用 ID 执行独立 Gemini 搜索桥，得到 3 个 Google grounding annotation 来源、`partial_failure=false`；将来源作为同一调用 ID 的函数回执送回模型后，最终响应 `completed`、无后续工具调用且正文非空。三次模型请求的输入 Token 分别为 85、84、704。此探针未发 QQ，也未经过自然 Agent 的权限和执行轨迹写入路径；本次没有 Tavily 正文提取或无来源降级，代理可照常记录请求用量。它只证明当前连接的合成模型→桥→模型协议续接，不能勾自然主链或整项 #1。
   - [ ] 在生产 Gemini 主链按连接策略验收原生搜索、工具声明与来源；Claude 真实代理、无来源回退和额外服务端费用/账单仍待核对。
 - [ ] **2. 多模态与协议能力**：核对图片、视频帧、语音、文档从入口到各 Provider 的传递；不支持的能力在保存或执行前明确拒绝；工具调用、结构化输出、思考状态的协议回放分别验证。Gemini/DeepSeek 两种连接的图片、双视频帧、函数工具和函数式结构化输出已有无 QQ 真实 API 证据；当前生产 Gemini 另有 239,019 输入 Token 长上下文真实 API 成功。真实 QQ 附件、DeepSeek 长上下文、未配置供应商及原生音视频尚未验收。
   - [x] 图片与视频帧输入能力改为读取当前模型路由；动态开关回归 1 项通过。语音仍由独立 ASR 转文字；没有原生音频/视频输入，不能宣称已接入。
