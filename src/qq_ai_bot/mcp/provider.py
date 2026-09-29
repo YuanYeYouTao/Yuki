@@ -47,7 +47,11 @@ class MCPToolProvider:
         runtime = getattr(context, "runtime_config", None)
         mcp = getattr(runtime, "mcp", None)
         gateway_enabled = mcp.gateway_enabled if mcp is not None else self._gateway_enabled
-        cached = self._manager.cached_tools
+        cached = tuple(
+            item
+            for item in self._manager.cached_tools
+            if self._manager.server_enabled(item.server_id)
+        )
         cached_servers = {item.server_id for item in cached}
         descriptors: list[CapabilityDescriptor] = []
         descriptors.extend(self._descriptor(item) for item in cached)
@@ -57,7 +61,10 @@ class MCPToolProvider:
             if server_id in cached_servers:
                 continue
             descriptors.append(self._synthetic_descriptor(server_id))
-        if gateway_enabled and self._manager.configured_server_ids:
+        if gateway_enabled and any(
+            self._manager.server_enabled(server_id)
+            for server_id in self._manager.configured_server_ids
+        ):
             descriptors.append(self._gateway_descriptor())
         return tuple(descriptors)
 
@@ -71,6 +78,8 @@ class MCPToolProvider:
         gateway_enabled = mcp.gateway_enabled if mcp is not None else self._gateway_enabled
         summaries: list[ToolScopeSummary] = []
         for server_id in self._manager.configured_server_ids:
+            if not self._manager.server_enabled(server_id):
+                continue
             config = self._manager.server_config(server_id)
             assert config is not None
             scope = mcp_capability_namespace(server_id, config)

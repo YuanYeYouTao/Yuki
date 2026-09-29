@@ -132,7 +132,8 @@ class MCPManager:
         return bool(
             self._enabled
             and config is not None
-            and self._enabled_servers.get(server_id, not config.disabled)
+            and not config.disabled
+            and self._enabled_servers.get(server_id, True)
         )
 
     def add_tools_changed_listener(self, listener: MCPToolsChangedListener) -> None:
@@ -148,7 +149,7 @@ class MCPManager:
         self._config = load_mcp_config(self._config_path)
         for server_id, config in self._config.servers.items():
             previous = await self._repository.state(server_id)
-            enabled = previous.enabled if previous is not None else not config.disabled
+            enabled = not config.disabled and (previous.enabled if previous is not None else True)
             self._enabled_servers[server_id] = enabled
             valid_hash = (
                 previous is not None and previous.config_hash == self._config.hashes[server_id]
@@ -469,6 +470,8 @@ class MCPManager:
         self, server_id: str, enabled: bool, *, session: AsyncSession | None = None
     ) -> None:
         config = self._require_server(server_id)
+        if enabled and config.disabled:
+            raise ValueError("MCP server is disabled by configuration")
         self._enabled_servers[server_id] = enabled
         await self._repository.save_state(
             server_id,
@@ -524,7 +527,7 @@ class MCPManager:
         return MCPServerStatus(
             server_id=server_id,
             transport=config.transport,
-            enabled=self._enabled_servers.get(server_id, not config.disabled),
+            enabled=not config.disabled and self._enabled_servers.get(server_id, True),
             lifecycle=config.lifecycle,
             status=state.status if state is not None else "uninitialized",
             configured_tools=len(self._tools.get(server_id, ())),
@@ -701,7 +704,7 @@ class MCPManager:
         if not self._enabled:
             raise RuntimeError("MCP is disabled")
         config = self._require_server(server_id)
-        if not self._enabled_servers.get(server_id, not config.disabled):
+        if not self.server_enabled(server_id):
             raise RuntimeError("MCP server is disabled")
         return config
 

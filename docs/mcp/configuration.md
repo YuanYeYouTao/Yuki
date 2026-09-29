@@ -14,7 +14,8 @@ Yuki 只读取 `MCP_CONFIG_PATH` 指定的 UTF-8 JSON，不扫描或导入其他
 不再关闭 Agent 工具或强制最终回复。操作结果进入原循环；是否继续由 Agent 根据目标和回执决定，
 授权和未知效果重放限制仍在执行层核验。
 这些提示只影响 Tool Kernel 的调度元数据，不会改写远端 Schema 或绕过工具本身的鉴权。配置变化会
-使旧工具缓存失效。
+使旧工具缓存失效。`disabled: true` 是 Server 的配置上限，数据库中此前保存的启用状态不能覆盖它；
+该 Server 的缓存工具也不会进入新冻结的主 Agent 声明。修改配置后须重启 Bot 形成新工具合同。
 
 Secret 只能写成 `${ENV_NAME}` 并放在 `.env` 或宿主环境中。Yuki 不把解析后的 Header、Cookie、
 环境变量值写入日志、数据库、Prompt 或状态接口。Server 的 URL 和鉴权方式以对应服务提供者为准。
