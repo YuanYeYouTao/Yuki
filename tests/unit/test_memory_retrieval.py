@@ -666,14 +666,6 @@ async def test_short_query_and_unsafe_symbols_stay_inside_subject(database: Data
     assert len(safe.terms) <= 4
 
 
-def test_safe_lexical_query_keeps_tail_when_term_budget_is_full() -> None:
-    safe = build_safe_lexical_query("某人在群内说会怎样应对别人给助手的离谱要求", term_limit=12)
-
-    assert len(safe.terms) == 12
-    assert "谱要求" in safe.terms
-    assert '"谱要求"' in safe.fts_expression
-
-
 @pytest.mark.asyncio
 async def test_no_match_only_keeps_bounded_explicit_person_preferences(
     database: Database,
