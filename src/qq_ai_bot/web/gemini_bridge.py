@@ -77,15 +77,21 @@ class GeminiSearchBridge:
         query = " ".join(request.query.split())
         if not 1 <= len(query) <= 400:
             raise WebSearchError("invalid_query", "搜索词须为 1–400 字符")
+        normalized_request = replace(request, query=query)
         key = hashlib.sha256(
-            self._namespace + json.dumps(asdict(request), sort_keys=True, default=str).encode()
+            self._namespace
+            + json.dumps(asdict(normalized_request), sort_keys=True, default=str).encode()
         ).hexdigest()
         async with self.slot:
             cached = await asyncio.to_thread(self.state.access, key)
-            if isinstance(cached, WebSearchResponse) and cached.provider == self.name:
+            if (
+                isinstance(cached, WebSearchResponse)
+                and cached.provider == self.name
+                and not cached.partial_failure
+            ):
                 return cached
             try:
-                result = await self._search(replace(request, query=query))
+                result = await self._search(normalized_request)
             except WebSearchError as exc:
                 if self.fallback is None:
                     raise

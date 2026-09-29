@@ -1,7 +1,9 @@
 """Gemini search is a separate grounded request behind stable function tools."""
 
 import asyncio
+import hashlib
 import json
+from dataclasses import asdict
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -166,6 +168,42 @@ async def test_bridge_request_is_search_only_and_accepts_only_grounding(tmp_path
     assert invocations.record.await_args.kwargs["native_search_requested"] is True
 
 
+@pytest.mark.asyncio
+async def test_bridge_cache_reuses_normalized_query_across_whitespace_variants(tmp_path):
+    wires = []
+
+    def respond(request):
+        wires.append(json.loads(request.content))
+        return httpx.Response(200, json=grounded_response())
+
+    client = httpx.AsyncClient(
+        base_url="https://example.com/v1beta/", transport=httpx.MockTransport(respond)
+    )
+    gemini = GeminiProvider(
+        base_url="https://example.com/v1beta/",
+        api_key="secret",
+        timeout_seconds=20,
+        max_retries=0,
+        client=client,
+    )
+    bridge = GeminiSearchBridge(
+        profile=profile(),
+        credential="secret",
+        provider=gemini,
+        state=BridgeState(tmp_path / "cache.db"),
+    )
+    try:
+        first = await bridge.search(WebSearchRequest("public  \n source"))
+        second = await bridge.search(WebSearchRequest("public source"))
+    finally:
+        await bridge.close()
+        await client.aclose()
+
+    assert first == second
+    assert first.query == "public source"
+    assert len(wires) == 1
+
+
 @pytest.mark.parametrize("has_usage", [True, False])
 async def test_bridge_failed_physical_search_keeps_reported_usage_or_unknown(tmp_path, has_usage):
     body = {"error": {"type": "bad_request"}}
@@ -254,7 +292,7 @@ async def test_bridge_fallback_is_explicit_and_not_cached(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_bridge_retries_partial_extraction_instead_of_caching_failure(tmp_path):
+async def test_bridge_retries_partial_extraction_including_legacy_cached_failure(tmp_path):
     calls = 0
 
     def respond(_request):
@@ -284,6 +322,12 @@ async def test_bridge_retries_partial_extraction_instead_of_caching_failure(tmp_
     try:
         first = await bridge.search(request)
         assert first.partial_failure
+        # Simulate a partial receipt left by an older Bot before this fix.
+        key = hashlib.sha256(
+            bridge._namespace + json.dumps(asdict(request), sort_keys=True).encode()
+        ).hexdigest()
+        assert bridge.state.access(key) is None
+        bridge.state.access(key, first)
         fallback.extracted[URL] = WebSearchSource(
             "page", "Page", URL, "example.com", "snippet", "body"
         )
