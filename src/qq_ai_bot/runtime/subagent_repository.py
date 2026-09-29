@@ -241,22 +241,31 @@ class SubagentRepository:
                     )
                 finally:
                     await self.repository.release(lease)
-        cutoff = time.time() - 7 * 86400
+        now = time.time()
+        cutoff = now - 7 * 86400
+
+        def expired_query():
+            return (
+                select(children.c.work_id)
+                .where(
+                    children.c.archived_at.is_(None),
+                    children.c.lease_until <= now,
+                    children.c.root_id.in_(
+                        select(work.c.id).where(work.c.state.in_(TERMINAL), work.c.updated < cutoff)
+                    ),
+                )
+                .limit(16)
+            )
+
+        # Most passes have nothing to archive. Scan before reserving SQLite's
+        # single writer, then check eligibility again after acquiring it.
+        async with self.database.sessions() as session:
+            candidates = list(await session.scalars(expired_query()))
+        if not candidates:
+            return
         async with self.database.immediate_session() as session:
             expired = list(
-                await session.scalars(
-                    select(children.c.work_id)
-                    .where(
-                        children.c.archived_at.is_(None),
-                        children.c.lease_until <= time.time(),
-                        children.c.root_id.in_(
-                            select(work.c.id).where(
-                                work.c.state.in_(TERMINAL), work.c.updated < cutoff
-                            )
-                        ),
-                    )
-                    .limit(16)
-                )
+                await session.scalars(expired_query().where(children.c.work_id.in_(candidates)))
             )
             if not expired:
                 return
@@ -290,13 +299,23 @@ class SubagentRepository:
                     )
                 )
             )
-            for table in (journal, effects, inputs, media_refs):
-                await session.execute(
-                    delete(table).where(table.c.work_id.in_([*expired, *expired_roots]))
+            archived_work_ids = [*expired, *expired_roots]
+            media_hashes = list(
+                await session.scalars(
+                    select(media_refs.c.sha256)
+                    .where(media_refs.c.work_id.in_(archived_work_ids))
+                    .distinct()
                 )
-            await session.execute(
-                delete(media).where(media.c.sha256.not_in(select(media_refs.c.sha256)))
             )
+            for table in (journal, effects, inputs, media_refs):
+                await session.execute(delete(table).where(table.c.work_id.in_(archived_work_ids)))
+            if media_hashes:
+                await session.execute(
+                    delete(media).where(
+                        media.c.sha256.in_(media_hashes),
+                        media.c.sha256.not_in(select(media_refs.c.sha256)),
+                    )
+                )
 
     async def related(self, root_id: str, identity: str) -> dict[str, Any]:
         async with self.database.sessions() as session:
