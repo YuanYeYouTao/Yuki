@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 import nonebot
+from fastapi import FastAPI
 from nonebot.adapters.onebot.v11 import Bot
 from nonebot.drivers.fastapi import Driver as FastAPIDriver
 
@@ -37,6 +38,21 @@ def _nonebot_superusers_environment(superusers: frozenset[str]) -> Iterator[None
             os.environ.pop("SUPERUSERS", None)
         else:
             os.environ["SUPERUSERS"] = previous
+
+
+def register_health_routes(app: FastAPI) -> None:
+    """Keep process liveness separate from the database-backed diagnostic snapshot."""
+
+    async def livez() -> dict[str, str]:
+        # Docker only needs to know that the ASGI event loop can serve requests.
+        # Dependency and worker diagnostics remain available at /healthz.
+        return {"status": "alive"}
+
+    async def healthz() -> HealthPayload:
+        return await build_health_payload(get_container())
+
+    app.add_api_route("/livez", livez, methods=["GET"])
+    app.add_api_route("/healthz", healthz, methods=["GET"])
 
 
 def bootstrap(settings: Settings | None = None) -> None:
@@ -118,12 +134,9 @@ def bootstrap(settings: Settings | None = None) -> None:
         finally:
             application_lock.release()
 
-    async def healthz() -> HealthPayload:
-        return await build_health_payload(get_container())
-
     if not isinstance(driver, FastAPIDriver):
         raise RuntimeError("FastAPI driver is required")
-    driver.server_app.add_api_route("/healthz", healthz, methods=["GET"])
+    register_health_routes(driver.server_app)
     from qq_ai_bot.webui.http import attach_webui
 
     attach_webui(driver.server_app, app_settings, lambda: get_container().control_plane)
