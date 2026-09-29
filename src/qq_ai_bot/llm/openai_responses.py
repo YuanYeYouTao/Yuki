@@ -17,7 +17,11 @@ class OpenAIResponsesProvider(DeepSeekResponsesProvider):
     def _build_payload(self, request: ChatRequest) -> dict[str, Any]:
         payload = super()._build_payload(request)
         if request.tool_choice is not None:
-            payload["tool_choice"] = request.tool_choice
+            payload["tool_choice"] = (
+                request.tool_choice
+                if request.tool_choice in {"auto", "none", "required"}
+                else {"type": "function", "name": request.tool_choice}
+            )
         # Yuki replays its own ordered transcript, rather than a remote stored thread.
         payload["store"] = False
         payload["include"] = ["reasoning.encrypted_content"]
