@@ -302,6 +302,10 @@ function UsageSummary({ refresh }: { refresh: number }) {
   const tasks = (usage?.tasks || []) as Row[];
   const buckets = (usage?.buckets || []) as Row[];
   const modelBuckets = (usage?.model_buckets || []) as Row[];
+  const tokenDifference =
+    Number(usage?.total_tokens || 0) -
+    Number(usage?.input_tokens || 0) -
+    Number(usage?.output_tokens || 0);
   return (
     <Section title="Token 用量">
       <div className="usage-range" role="group" aria-label="用量时间范围">
@@ -345,6 +349,14 @@ function UsageSummary({ refresh }: { refresh: number }) {
               <strong>{count(usage.calls)}</strong>
             </div>
           </div>
+          {tokenDifference !== 0 && (
+            <p className="small usage-warning">
+              上游总 Token 比已报告输入、输出之和
+              {tokenDifference > 0 ? "多" : "少"}{" "}
+              {count(Math.abs(tokenDifference))}{" "}
+              Token。总量与分项分别按上游已报告值统计；缺失的分项不能按差额推算。
+            </p>
+          )}
           <p className="small">
             已记录 HTTP 请求尝试 {knownCount(usage.physical_requests)} 次
             {Number(usage.physical_requests_unreported_calls) > 0 &&
