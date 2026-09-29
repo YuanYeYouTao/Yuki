@@ -886,6 +886,103 @@ async def test_mcp_disabled_keeps_catalog_empty_without_connecting(
 
 
 @pytest.mark.asyncio
+async def test_mcp_config_disabled_overrides_persisted_enabled_state(
+    database: Database,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "mcp.json"
+    path.write_text(
+        json.dumps({"mcpServers": {"rss": {"command": "fake"}}}),
+        encoding="utf-8",
+    )
+    repository = MCPRepository(database)
+    manager = MCPManager(
+        enabled=True,
+        config_path=path,
+        cache_enabled=True,
+        metadata_cache_ttl_seconds=60,
+        connect_timeout_seconds=1,
+        request_timeout_seconds=1,
+        max_parallel_calls=1,
+        repository=repository,
+        connection_factory=lambda *_args, **_kwargs: FakeMCPConnection(),
+    )
+    await manager.start()
+    assert manager.server_enabled("rss")
+    await manager.close()
+
+    path.write_text(
+        json.dumps({"mcpServers": {"rss": {"command": "fake", "disabled": True}}}),
+        encoding="utf-8",
+    )
+    disabled = MCPManager(
+        enabled=True,
+        config_path=path,
+        cache_enabled=True,
+        metadata_cache_ttl_seconds=60,
+        connect_timeout_seconds=1,
+        request_timeout_seconds=1,
+        max_parallel_calls=1,
+        repository=repository,
+        connection_factory=lambda *_args, **_kwargs: FakeMCPConnection(fail_connect=True),
+    )
+    await disabled.start()
+    provider = MCPToolProvider(disabled, gateway_enabled=True)
+    assert not disabled.server_enabled("rss")
+    assert not (await disabled.status("rss")).enabled
+    await provider.prepare_manifest(SimpleNamespace(runtime_config=None))
+    assert provider.descriptors(SimpleNamespace(runtime_config=None)) == ()
+    assert provider.scope_summaries() == ()
+    with pytest.raises(ValueError, match="disabled by configuration"):
+        await disabled.set_enabled("rss", True)
+    with pytest.raises(RuntimeError, match="disabled"):
+        await disabled.resolve_tool("rss", "read")
+    await disabled.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_disabled_server_cached_tools_are_not_declared(
+    database: Database,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "mcp.json"
+    path.write_text(
+        json.dumps({"mcpServers": {"rss": {"command": "fake"}}}),
+        encoding="utf-8",
+    )
+    tool = SimpleNamespace(
+        name="read",
+        description="read RSS",
+        inputSchema={"type": "object", "properties": {}},
+        outputSchema=None,
+        annotations=None,
+    )
+    connection = FakeMCPConnection(tools=(tool,))
+    manager = MCPManager(
+        enabled=True,
+        config_path=path,
+        cache_enabled=True,
+        metadata_cache_ttl_seconds=60,
+        connect_timeout_seconds=1,
+        request_timeout_seconds=1,
+        max_parallel_calls=1,
+        repository=MCPRepository(database),
+        connection_factory=lambda *_args, **_kwargs: connection,
+    )
+    await manager.start()
+    provider = MCPToolProvider(manager, gateway_enabled=True)
+    await provider.prepare_manifest(SimpleNamespace(runtime_config=None))
+    assert any(item.server_id == "rss" for item in manager.cached_tools)
+    assert any(item.model_name == "mcp__rss__read" for item in provider.descriptors(None))
+
+    await manager.set_enabled("rss", False)
+    assert manager.cached_tools  # Keep the stale metadata to exercise declaration filtering.
+    assert provider.descriptors(None) == ()
+    assert provider.scope_summaries() == ()
+    await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_official_sdk_stdio_transport_initializes_lists_calls_and_closes() -> None:
     server = Path(__file__).parents[1] / "fixtures" / "fake_mcp_server.py"
     connection = SDKMCPConnection(
