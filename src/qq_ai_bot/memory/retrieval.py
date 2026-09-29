@@ -11,6 +11,10 @@ from qq_ai_bot.memory.activation import (
     MemoryIntentRanker,
     apply_strict_temporal_constraint,
 )
+from qq_ai_bot.memory.authorized_scope import (
+    AuthorizedMemoryScope,
+    target_for_authorized_fact,
+)
 from qq_ai_bot.memory.embedding.codec import Float32VectorCodec
 from qq_ai_bot.memory.embedding.metrics import MemoryEmbeddingMetrics
 from qq_ai_bot.memory.embedding.models import (
@@ -21,17 +25,25 @@ from qq_ai_bot.memory.embedding.models import (
 )
 from qq_ai_bot.memory.embedding.provider import EmbeddingProvider, EmbeddingProviderError
 from qq_ai_bot.memory.embedding.query_cache import QueryEmbeddingCache
-from qq_ai_bot.memory.embedding.semantic import MemorySemanticIndex
+from qq_ai_bot.memory.embedding.semantic import AuthorizedSemanticCandidate, MemorySemanticIndex
 from qq_ai_bot.memory.embedding.text import EmbeddingQueryBuilder
 from qq_ai_bot.memory.enums import (
     MemoryRetrievalMode,
     MemoryScopeType,
     MemoryTargetRole,
 )
-from qq_ai_bot.memory.fts import MemoryLexicalIndex, build_safe_lexical_query
+from qq_ai_bot.memory.fts import (
+    AuthorizedLexicalCandidate,
+    MemoryLexicalIndex,
+    SQLiteMemoryFTSIndex,
+    build_safe_lexical_query,
+)
 from qq_ai_bot.memory.metrics import MemoryRetrievalMetric, MemoryRetrievalMetrics
 from qq_ai_bot.memory.models import (
     MemoryActivationState,
+    MemoryEntityTarget,
+    MemoryFact,
+    MemoryLexicalCandidate,
     MemoryQuery,
     MemoryRetrievalBlock,
     MemoryRetrievalHit,
@@ -102,6 +114,179 @@ class MemoryRetriever:
         self._embedding_queries = queries
         self._embedding_metrics = metrics
         self._query_embedding_cache = query_cache
+
+    async def retrieve_authorized(
+        self,
+        query: MemoryQuery,
+        scope: AuthorizedMemoryScope,
+        *,
+        limit: int,
+    ) -> MemoryRetrievalResult:
+        """One authorization-filtered global candidate pool, including unbound owners."""
+        if not isinstance(self._index, SQLiteMemoryFTSIndex):
+            raise RuntimeError("global memory search requires SQLite FTS index")
+        query_hash = hashlib.sha256(query.normalized_text.encode("utf-8")).hexdigest()
+        safe = build_safe_lexical_query(query.normalized_text, term_limit=query.query_term_limit)
+        lexical, lexical_truncated = await self._index.search_authorized(
+            scope,
+            safe,
+            candidate_limit=query.candidate_limit,
+            kinds=query.kinds,
+            temporal=query.intent.temporal if query.intent else None,
+        )
+        semantic: tuple[AuthorizedSemanticCandidate, ...] = ()
+        semantic_truncated = False
+        semantic_status = "disabled"
+        semantic_degraded = False
+        if query.semantic_enabled:
+            if (
+                self._semantic_index is None
+                or self._embedding_provider is None
+                or self._embedding_profile is None
+                or self._embedding_queries is None
+            ):
+                semantic_status = "not_configured"
+            else:
+                try:
+                    query_text = self._embedding_queries.build(query)
+                    if query_text:
+                        provider = self._embedding_provider
+                        profile = self._embedding_profile
+
+                        async def embed_once() -> EmbeddingBatchResult:
+                            embedded = await provider.embed_query(query_text)
+                            if len(embedded.vectors) != 1:
+                                raise EmbeddingProviderError(
+                                    "embedding_invalid_response",
+                                    "Embedding provider returned an invalid response.",
+                                    retryable=False,
+                                )
+                            return embedded
+
+                        if self._query_embedding_cache is not None:
+                            embedded, _ = await self._query_embedding_cache.get_or_create(
+                                profile_fingerprint=profile.profile.fingerprint,
+                                query_text=query_text,
+                                factory=embed_once,
+                            )
+                        else:
+                            embedded = await embed_once()
+                        semantic, semantic_truncated = await self._semantic_index.search_authorized(
+                            scope=scope,
+                            query_vector=embedded.vectors[0],
+                            profile=profile.profile,
+                            profile_id=profile.id,
+                            candidate_limit=query.semantic_candidate_limit,
+                            kinds=query.kinds,
+                            min_similarity=query.semantic_min_similarity,
+                            temporal=query.intent.temporal if query.intent else None,
+                        )
+                        semantic_status = "ready"
+                    else:
+                        semantic_status = "empty_query"
+                except (EmbeddingProviderError, ValueError) as exc:
+                    semantic_status = (
+                        exc.code
+                        if isinstance(exc, EmbeddingProviderError)
+                        else "embedding_index_invalid"
+                    )
+                    semantic_degraded = True
+                    logger.warning("memory_semantic_degraded error_category=%s", semantic_status)
+        candidate_ids = tuple(
+            dict.fromkeys([item.fact_id for item in lexical] + [item.fact_id for item in semantic])
+        )
+        facts = await self._repository.get_active_authorized(scope, candidate_ids)
+        lexical_by_id: dict[int, AuthorizedLexicalCandidate] = {
+            item.fact_id: item for item in lexical
+        }
+        semantic_by_id: dict[int, AuthorizedSemanticCandidate] = {
+            item.fact_id: item for item in semantic
+        }
+        by_target: dict[str, list[MemoryFact]] = {}
+        targets: dict[str, MemoryEntityTarget] = {}
+        for fact in facts:
+            target = target_for_authorized_fact(fact, scope)
+            targets[target.block_id] = target
+            by_target.setdefault(target.block_id, []).append(fact)
+        pooled: list[MemoryRetrievalHit] = []
+        for block_id, target_facts in by_target.items():
+            target = targets[block_id]
+            target_lexical = tuple(
+                MemoryLexicalCandidate(
+                    fact_id=fact.id,
+                    target=target,
+                    fts_rank=lexical_by_id[fact.id].fts_rank,
+                    exact_match=lexical_by_id[fact.id].exact_match,
+                    matched_terms=lexical_by_id[fact.id].matched_terms,
+                )
+                for fact in target_facts
+                if fact.id in lexical_by_id
+            )
+            target_semantic = tuple(
+                MemorySemanticCandidate(
+                    fact_id=fact.id,
+                    target=target,
+                    cosine_similarity=semantic_by_id[fact.id].cosine_similarity,
+                    semantic_rank=semantic_by_id[fact.id].semantic_rank,
+                )
+                for fact in target_facts
+                if fact.id in semantic_by_id
+            )
+            pooled.extend(
+                self._ranker.rank_hybrid(
+                    facts=tuple(target_facts),
+                    lexical_candidates=target_lexical,
+                    semantic_candidates=target_semantic,
+                    target=target,
+                    normalized_query=query.normalized_text,
+                    lexical_weight=query.hybrid_lexical_weight,
+                    semantic_weight=query.hybrid_semantic_weight,
+                    rrf_k=query.hybrid_rrf_k,
+                    limit=len(target_facts),
+                )
+            )
+        ranked = self._ranker.rank_global(tuple(pooled), query)
+        if query.intent is not None and query.intent_rerank_enabled:
+            ranked = self._intent_ranker.rerank(
+                ranked, query=query, states=await self._load_activation_states(ranked)
+            )
+        selected = ranked[:limit]
+        blocks = tuple(
+            MemoryRetrievalBlock(
+                target=target,
+                hits=tuple(hit for hit in selected if hit.target == target),
+            )
+            for target in targets.values()
+        )
+        candidate_truncated = lexical_truncated or semantic_truncated
+        semantic_unavailable = query.semantic_enabled and semantic_status == "not_configured"
+        partial_reason = "global_candidate_budget" if candidate_truncated else None
+        if semantic_unavailable:
+            partial_reason = "semantic_not_configured"
+        if semantic_degraded:
+            partial_reason = "semantic_degraded"
+        return MemoryRetrievalResult(
+            blocks=blocks,
+            hits=selected,
+            candidate_count=len(candidate_ids),
+            selected_count=len(selected),
+            query_hash=query_hash,
+            mode=query.mode,
+            semantic_status=semantic_status,
+            semantic_degraded=semantic_degraded,
+            embedding_profile=(
+                self._embedding_profile.profile.fingerprint
+                if semantic and self._embedding_profile is not None
+                else None
+            ),
+            trace_hits=ranked[: query.recall_trace_candidate_limit],
+            exhaustive=not candidate_truncated
+            and not semantic_degraded
+            and not semantic_unavailable,
+            truncated=candidate_truncated or len(ranked) > limit,
+            partial_reason=partial_reason,
+            ranked_count=len(ranked),
+        )
 
     async def retrieve(
         self,

@@ -15,59 +15,251 @@ import { stamp } from "./format";
 const flatten = (row: Row): Row => ({ ...row, ...((row.fields as Row) || {}) });
 const status = (value: unknown) => <Badge value={value} />;
 const count = (value: unknown) => Number(value || 0).toLocaleString("zh-CN");
+const knownCount = (value: unknown) => (value == null ? "—" : count(value));
+const amount = (row: Row, key: string) => Math.max(0, Number(row[key] || 0));
 const cacheRate = (usage: Row) => {
   const input = Number(usage.cache_reported_input_tokens || 0);
   const cached = Number(usage.cache_reported_cached_tokens || 0);
   return input > 0 ? `${((cached / input) * 100).toFixed(1)}%` : "—";
 };
+const confirmedCacheShare = (usage: Row) => {
+  const input = Number(usage.input_tokens || 0);
+  const cached = Number(usage.cached_input_tokens || 0);
+  return input > 0 ? `${((cached / input) * 100).toFixed(1)}%` : "—";
+};
 function CacheReport({ usage }: { usage: Row }) {
+  const missing = Number(usage.cache_unreported_calls || 0);
   return (
     <span>
-      缓存命中率 {cacheRate(usage)} · 命中 {count(usage.cached_input_tokens)}{" "}
-      Token
-      {Number(usage.cache_unreported_calls || 0) > 0 &&
-        ` · ${count(usage.cache_unreported_calls)} 次调用未报告缓存量`}
+      {missing > 0 ? "已确认缓存占已记录输入" : "缓存命中率"}{" "}
+      {missing > 0 ? confirmedCacheShare(usage) : cacheRate(usage)} · 命中{" "}
+      {count(usage.cached_input_tokens)} Token
+      {missing > 0 &&
+        ` · 已报告子集命中率 ${cacheRate(usage)}（分母 ${count(usage.cache_reported_input_tokens)} 输入 Token） · ${count(missing)} 次调用未报告缓存量`}
     </span>
   );
 }
-function UsageBars({
+function tokenParts(row: Row) {
+  const input = amount(row, "input_tokens");
+  const reported = Math.min(input, amount(row, "cache_reported_input_tokens"));
+  const cached = Math.min(
+    reported,
+    amount(row, "cache_reported_cached_tokens"),
+  );
+  return {
+    cached,
+    uncached: reported - cached,
+    unknown: input - reported,
+    output: amount(row, "output_tokens"),
+  };
+}
+function timeBuckets(
+  rows: Row[],
+  since: unknown,
+  until: unknown,
+  window: string,
+) {
+  const start = new Date(String(since));
+  const end = new Date(String(until));
+  if (!Number.isFinite(start.valueOf()) || !Number.isFinite(end.valueOf())) {
+    return rows;
+  }
+  const hourly = window === "24h";
+  if (hourly) start.setUTCMinutes(0, 0, 0);
+  else start.setUTCHours(0, 0, 0, 0);
+  const source = new Map(rows.map((row) => [String(row.at), row]));
+  const result: Row[] = [];
+  for (let at = start; at < end && result.length < 32;) {
+    const key = hourly
+      ? `${at.toISOString().slice(0, 13)}:00:00Z`
+      : at.toISOString().slice(0, 10);
+    result.push(source.get(key) || { at: key });
+    at = new Date(at.valueOf() + (hourly ? 3_600_000 : 86_400_000));
+  }
+  return result;
+}
+const bucketLabel = (at: unknown) => {
+  const value = String(at || "");
+  return value.includes("T") ? value.slice(11, 16) : value.slice(5);
+};
+function UsageChart({
   rows,
   metric,
   title,
+  since,
+  until,
+  window,
 }: {
   rows: Row[];
   metric: "calls" | "total_tokens";
   title: string;
+  since: unknown;
+  until: unknown;
+  window: string;
 }) {
   if (!rows.length) return <Empty>这个时间范围没有可绘制的调用记录。</Empty>;
-  const maximum = Math.max(1, ...rows.map((row) => Number(row[metric] || 0)));
+  const buckets = timeBuckets(rows, since, until, window);
+  if (!buckets.length) return <Empty>这个时间范围没有可绘制的调用记录。</Empty>;
+  const tokenTotal = (row: Row) => {
+    const parts = tokenParts(row);
+    return parts.cached + parts.uncached + parts.unknown + parts.output;
+  };
+  const maximum = Math.max(
+    1,
+    ...buckets.map((row) =>
+      metric === "calls"
+        ? amount(row, "calls")
+        : Math.max(amount(row, "total_tokens"), tokenTotal(row)),
+    ),
+  );
+  const points = buckets.map((row, index) => ({
+    x: ((index + 0.5) / buckets.length) * 1000,
+    y: 174 - (amount(row, "calls") / maximum) * 160,
+  }));
+  const areaLine = points.reduce(
+    (path, point, index) =>
+      index === 0
+        ? `M ${point.x} ${point.y}`
+        : `${path} C ${(points[index - 1].x + point.x) / 2} ${points[index - 1].y}, ${(points[index - 1].x + point.x) / 2} ${point.y}, ${point.x} ${point.y}`,
+    "",
+  );
+  const axisStep = Math.max(1, Math.ceil(buckets.length / 6));
   return (
     <div className="usage-plot">
-      <h3>{title}</h3>
-      <div className="usage-bars" role="list" aria-label={title}>
-        {rows.map((row) => {
-          const at = String(row.at || "");
-          const label = at.includes("T") ? at.slice(11, 16) : at.slice(5);
-          const value = Number(row[metric] || 0);
-          const cache = `缓存命中率 ${cacheRate(row)}；${count(row.cache_unreported_calls)} 次调用未报告缓存量`;
-          return (
-            <div
-              className="usage-bar-item"
-              role="listitem"
-              key={at}
-              aria-label={`${at} UTC：${count(value)}${metric === "calls" ? " 次调用" : " Token"}；${cache}`}
-              title={`${at} UTC · ${cache}`}
-            >
-              <span className="usage-bar-value">{count(value)}</span>
-              <div
-                className="usage-bar"
-                style={{ height: `${Math.max(4, (value / maximum) * 100)}%` }}
-              />
-              <small>{label}</small>
-            </div>
-          );
-        })}
+      <header>
+        <h3>{title}</h3>
+        <strong>
+          {count(rows.reduce((sum, row) => sum + amount(row, metric), 0))}
+        </strong>
+      </header>
+      <div className="usage-chart">
+        <div className="usage-chart-scale" aria-hidden="true">
+          <span>{count(maximum)}</span>
+          <span>{count(Math.round(maximum / 2))}</span>
+          <span>0</span>
+        </div>
+        <div className="usage-chart-body">
+          <div className="usage-chart-plot" role="list" aria-label={title}>
+            {metric === "calls" && (
+              <svg
+                className="usage-area"
+                viewBox="0 0 1000 180"
+                preserveAspectRatio="none"
+                aria-hidden="true"
+              >
+                <path
+                  className="usage-area-fill"
+                  d={`${areaLine} L ${points.at(-1)?.x} 174 L ${points[0].x} 174 Z`}
+                />
+                <path className="usage-area-stroke" d={areaLine} />
+              </svg>
+            )}
+            {buckets.map((row, index) => {
+              const at = String(row.at || "");
+              const value = amount(row, metric);
+              const parts = tokenParts(row);
+              const stackHeight = (tokenTotal(row) / maximum) * 100;
+              const cache = `已确认缓存占已记录输入 ${confirmedCacheShare(row)}；已报告子集命中率 ${cacheRate(row)}；${count(row.cache_unreported_calls)} 次调用未报告缓存量`;
+              const detail =
+                metric === "calls"
+                  ? `${count(value)} 次调用`
+                  : `${count(row.total_tokens)} Token；缓存输入 ${count(parts.cached)}；明确未命中输入 ${count(parts.uncached)}；缓存状态未知输入 ${count(parts.unknown)}；输出 ${count(parts.output)}`;
+              return (
+                <div
+                  className={`usage-chart-slot ${index > buckets.length / 2 ? "tooltip-left" : ""}`}
+                  role="listitem"
+                  key={at}
+                  tabIndex={0}
+                  aria-label={`${at} UTC：${detail}；${cache}`}
+                >
+                  {metric === "total_tokens" && (
+                    <div
+                      className="usage-token-stack"
+                      style={{ height: `${stackHeight}%` }}
+                      aria-hidden="true"
+                    >
+                      {(
+                        ["cached", "uncached", "unknown", "output"] as const
+                      ).map(
+                        (part) =>
+                          parts[part] > 0 && (
+                            <span
+                              key={part}
+                              className={`usage-token-${part}`}
+                              style={{
+                                height: `${(parts[part] / tokenTotal(row)) * 100}%`,
+                              }}
+                            />
+                          ),
+                      )}
+                    </div>
+                  )}
+                  <div className="usage-chart-tooltip" aria-hidden="true">
+                    <strong>{at} UTC</strong>
+                    <b>
+                      {metric === "calls"
+                        ? `${count(value)} 次调用`
+                        : `${count(row.total_tokens)} Token`}
+                    </b>
+                    {metric === "total_tokens" && (
+                      <>
+                        <span>
+                          <i className="usage-token-cached" />
+                          缓存输入 {count(parts.cached)}
+                        </span>
+                        <span>
+                          <i className="usage-token-uncached" />
+                          明确未命中 {count(parts.uncached)}
+                        </span>
+                        {parts.unknown > 0 && (
+                          <span>
+                            <i className="usage-token-unknown" />
+                            缓存状态未知 {count(parts.unknown)}
+                          </span>
+                        )}
+                        <span>
+                          <i className="usage-token-output" />
+                          输出 {count(parts.output)}
+                        </span>
+                      </>
+                    )}
+                    <small>{cache}</small>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="usage-chart-axis" aria-hidden="true">
+            {buckets.map((row, index) => (
+              <span key={String(row.at)}>
+                {index % axisStep === 0 || index === buckets.length - 1
+                  ? bucketLabel(row.at)
+                  : ""}
+              </span>
+            ))}
+          </div>
+        </div>
       </div>
+      {metric === "total_tokens" && (
+        <div className="usage-legend" aria-label="Token 图例">
+          <span>
+            <i className="usage-token-cached" />
+            缓存输入
+          </span>
+          <span>
+            <i className="usage-token-uncached" />
+            明确未命中
+          </span>
+          <span>
+            <i className="usage-token-unknown" />
+            缓存状态未知
+          </span>
+          <span>
+            <i className="usage-token-output" />
+            输出
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -84,6 +276,7 @@ function UsageSummary({ refresh }: { refresh: number }) {
   const profiles = (usage?.profiles || []) as Row[];
   const tasks = (usage?.tasks || []) as Row[];
   const buckets = (usage?.buckets || []) as Row[];
+  const modelBuckets = (usage?.model_buckets || []) as Row[];
   return (
     <Section title="Token 用量">
       <div className="usage-range" role="group" aria-label="用量时间范围">
@@ -123,13 +316,33 @@ function UsageSummary({ refresh }: { refresh: number }) {
               <strong>{count(usage.output_tokens)}</strong>
             </div>
             <div>
-              <span>模型调用</span>
+              <span>逻辑调用</span>
               <strong>{count(usage.calls)}</strong>
             </div>
           </div>
           <p className="small">
+            已记录 HTTP 请求尝试 {knownCount(usage.physical_requests)} 次
+            {Number(usage.physical_requests_unreported_calls) > 0 &&
+              ` · ${count(usage.physical_requests_unreported_calls)} 次历史调用无请求次数记录`}
+            {Number(usage.unknown_usage_requests) > 0 &&
+              ` · ${count(usage.unknown_usage_requests)} 次请求尝试未确认 Token 用量`}
+            。逻辑调用可能包含重试或供应商原生工具的续发请求。
+          </p>
+          {(Number(usage.native_search_invocations) > 0 ||
+            Number(usage.native_search_unreported_calls) > 0) && (
+            <p className="small usage-warning">
+              原生搜索若被供应商执行，额外费用未知；已标记{" "}
+              {count(usage.native_search_invocations)}
+              次启用原生搜索的逻辑调用
+              {Number(usage.native_search_unreported_calls) > 0 &&
+                `，另有 ${count(usage.native_search_unreported_calls)} 次历史调用无法判定是否启用原生搜索`}
+              。Token 用量不能代替供应商账单。
+            </p>
+          )}
+          <p className="small">
             <CacheReport usage={usage} />
-            。缓存 Token 已包含在输入中，不重复计入总量。
+            。缓存状态未知的输入按已记录输入计入；若输入均已报告，确认占比是命中率下界。缓存
+            Token 已包含在输入中，不重复计入总量。
           </p>
           {Number(usage.missing_usage_calls) > 0 && (
             <p className="small usage-warning">
@@ -145,31 +358,79 @@ function UsageSummary({ refresh }: { refresh: number }) {
             按 UTC 时段聚合；尚无可靠单价配置，因此不显示推算费用。
           </p>
           <div className="usage-plot-grid">
-            <UsageBars rows={buckets} metric="calls" title="API 调用次数" />
-            <UsageBars
+            <UsageChart
+              rows={buckets}
+              metric="calls"
+              title="模型调用次数"
+              since={usage.since}
+              until={usage.until}
+              window={window}
+            />
+            <UsageChart
               rows={buckets}
               metric="total_tokens"
               title="Token 用量"
+              since={usage.since}
+              until={usage.until}
+              window={window}
             />
           </div>
           <div className="usage-model-grid">
-            {models.map((model) => (
-              <article
-                className="usage-model-card"
-                key={`${model.provider}:${model.model}`}
-              >
-                <h3>
-                  {String(model.provider)} · {String(model.model)}
-                </h3>
-                <p>
-                  {count(model.calls)} 次调用 · {count(model.total_tokens)}{" "}
-                  Token
-                </p>
-                <p className="small">
-                  <CacheReport usage={model} />
-                </p>
-              </article>
-            ))}
+            {models.map((model) => {
+              const hourly = modelBuckets.filter(
+                (row) =>
+                  row.provider === model.provider && row.model === model.model,
+              );
+              return (
+                <article
+                  className="usage-model-card"
+                  key={`${model.provider}:${model.model}`}
+                >
+                  <h3>
+                    {String(model.provider)} · {String(model.model)}
+                  </h3>
+                  <p>
+                    {count(model.calls)} 次逻辑调用 · 已记录 HTTP 请求尝试{" "}
+                    {knownCount(model.physical_requests)} 次 ·{" "}
+                    {count(model.total_tokens)} Token
+                  </p>
+                  {Number(model.physical_requests_unreported_calls) > 0 && (
+                    <p className="small">
+                      {count(model.physical_requests_unreported_calls)}{" "}
+                      次历史调用无请求次数记录
+                    </p>
+                  )}
+                  {Number(model.native_search_invocations) > 0 && (
+                    <p className="small usage-warning">
+                      原生搜索若被执行，额外费用未知
+                    </p>
+                  )}
+                  <p className="small">
+                    <CacheReport usage={model} />
+                  </p>
+                  {hourly.length > 0 && (
+                    <div className="usage-plot-grid">
+                      <UsageChart
+                        rows={hourly}
+                        metric="calls"
+                        title="模型调用次数"
+                        since={usage.since}
+                        until={usage.until}
+                        window={window}
+                      />
+                      <UsageChart
+                        rows={hourly}
+                        metric="total_tokens"
+                        title="Token 用量"
+                        since={usage.since}
+                        until={usage.until}
+                        window={window}
+                      />
+                    </div>
+                  )}
+                </article>
+              );
+            })}
           </div>
           <details>
             <summary>按模型、用途和连接查看明细</summary>
@@ -179,15 +440,22 @@ function UsageSummary({ refresh }: { refresh: number }) {
               columns={[
                 ["provider", "Provider"],
                 ["model", "模型"],
-                ["calls", "调用"],
+                ["calls", "逻辑调用", count],
+                ["physical_requests", "已知 HTTP 请求尝试", knownCount],
+                ["unknown_usage_requests", "未确认用量请求", count],
                 ["total_tokens", "Token", count],
                 ["input_tokens", "输入", count],
                 ["cached_input_tokens", "其中缓存", count],
+                [
+                  "cache_reported_uncached_tokens",
+                  "确认缓存占已记录输入",
+                  (_, row) => confirmedCacheShare(row),
+                ],
                 ["cache_reported_input_tokens", "缓存率分母", count],
                 ["cache_unreported_calls", "未报缓存", count],
                 [
                   "cache_reported_cached_tokens",
-                  "缓存率",
+                  "已报子集命中率",
                   (_, row) => cacheRate(row),
                 ],
                 ["output_tokens", "输出", count],
@@ -199,11 +467,17 @@ function UsageSummary({ refresh }: { refresh: number }) {
               rows={tasks}
               columns={[
                 ["task", "用途"],
-                ["calls", "调用", count],
+                ["calls", "逻辑调用", count],
+                ["physical_requests", "已知 HTTP 请求尝试", knownCount],
                 ["total_tokens", "Token", count],
                 [
+                  "cache_reported_uncached_tokens",
+                  "确认缓存占已记录输入",
+                  (_, row) => confirmedCacheShare(row),
+                ],
+                [
                   "cache_reported_cached_tokens",
-                  "缓存命中率",
+                  "已报子集命中率",
                   (_, row) => cacheRate(row),
                 ],
                 ["cache_unreported_calls", "未报缓存", count],
@@ -216,11 +490,17 @@ function UsageSummary({ refresh }: { refresh: number }) {
                 ["profile_id", "内部连接编号"],
                 ["provider", "供应商"],
                 ["model", "模型"],
-                ["calls", "调用", count],
+                ["calls", "逻辑调用", count],
+                ["physical_requests", "已知 HTTP 请求尝试", knownCount],
                 ["total_tokens", "Token", count],
                 [
+                  "cache_reported_uncached_tokens",
+                  "确认缓存占已记录输入",
+                  (_, row) => confirmedCacheShare(row),
+                ],
+                [
                   "cache_reported_cached_tokens",
-                  "缓存命中率",
+                  "已报子集命中率",
                   (_, row) => cacheRate(row),
                 ],
                 ["cache_unreported_calls", "未报缓存", count],
@@ -270,7 +550,10 @@ export function Models(props: PageProps) {
               ]}
             />
             <p className="small">
-              模型连接配置变更于重启生效。凭据与请求头不显示。
+              {fields.apply_mode === "hot_reload"
+                ? "新连接与任务路由保存后用于后续请求；正在运行的 Agent 保持本轮原连接。"
+                : "模型连接配置变更于重启生效。"}
+              凭据与请求头不显示。
             </p>
           </details>
         ) : (
@@ -296,6 +579,8 @@ export function Models(props: PageProps) {
             ["cached_prompt_tokens", "缓存命中"],
             ["completion_tokens", "输出"],
             ["total_tokens", "合计"],
+            ["physical_request_count", "HTTP 请求尝试", knownCount],
+            ["unknown_usage_request_count", "请求用量未知", knownCount],
             ["latency_seconds", "耗时（秒）"],
             ["error_category", "问题"],
           ]}

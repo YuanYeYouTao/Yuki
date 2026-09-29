@@ -4,6 +4,9 @@
 主 Agent、插件、自动化、记忆、媒体与 Work 共用原执行层，不按消息内容自动选择模型。
 部署向导可选择主模型供应商和协议；多个 Profile 可分别配置 endpoint、密钥环境变量和任务路由。
 默认示例仍是 DeepSeek，不会自动覆盖部署中的 `.env`、模型路由或人格提示词。
+WebUI 成功保存模型连接与任务路由后，新任务立即使用新配置；已经开始的模型请求固定原连接，
+持久 Work 的下次激活因 Profile revision 变化显式开启新链，保留原 Work ID、预算和执行证据，
+不重跑已完成的工具效果。
 
 ## 协议与能力
 
@@ -15,11 +18,19 @@
 | 截断判定、同 Work 续跑与预算 | 支持 | 支持 | 支持 | 支持 |
 | 独立思考通道与协议状态 | reasoning_content / reasoning_details / encrypted_content | reasoning items | 签名 thinking blocks | thoughtSignature parts |
 | 外部搜索、MCP、插件、终端等本地工具 | 支持 | 支持 | 支持 | 支持 |
-| 上游原生搜索 | 显式配置的搜索专用 Profile | 依 Provider 能力；DeepSeek 主调用关闭 | 暂不声明 | 暂不声明 |
+| 上游原生搜索 | 显式配置的搜索专用 Profile | 依 Provider 能力；DeepSeek 主调用关闭 | Claude `web_search_20250305`，需 Profile 声明且部署搜索模式为 native | Gemini 3 GenerateContent 的 Google Search，需 Profile 声明 |
 
 这里的支持指适配器与 Yuki 执行合同通过离线协议回放，不代表任意同名模型都支持这些功能，
 也不代表各家服务已完成真实 API 或 QQ 验收。Profile 的能力声明必须符合实际模型。
-原生搜索不能假装为客户端函数；Claude server tools 和 Gemini grounding 当前明确拒绝。
+原生搜索不能假装为客户端函数；Claude 搜索结果以 server tool 回执和引用记录，Gemini
+Google Search 的工具调用、结果和 thought signature 按原样保存在私有续跑状态中。
+Gemini 的 Google Search 与函数工具组合仅有 Gemini 3 官方支持，并启用 server tool
+context circulation；接入其他型号时必须核对该型号实际能力。
+这些路径目前仅有离线协议回放，没有进行真实付费 API 或 QQ 验收。
+每个模型连接的 `search_mode` 可选 `external`、`native` 或在协议允许时选 `both`；
+旧文件未填写时沿用部署搜索模式。选择原生搜索须同时声明 `native_web_search` 能力；
+Claude 原生工具与本地 `web_search` 同名，原生模式不向 Claude 声明外部搜索函数。
+全局搜索禁用仍会关闭所有联网工具；外部模式还需要部署中确实配置外部搜索后端。
 主 Agent 使用完整函数合同，Chat 搜索专用模型不能混用该合同；它们也不能通过 `tool_choice=none`
 保证禁用服务端搜索。需要联网的主 Agent 可配置现有外部搜索工具。
 
@@ -86,9 +97,12 @@ WebUI 查询不会回传密钥；客户端不跨供应商或密钥来源共享�
 新增供应商示例见 [多供应商配置](../../config/model_profiles.providers.example.toml)。
 Gemini 3.8 Flash 的官方模型 ID 是 `gemini-3.8-flash`。WebUI 的 Google Gemini 预设使用
 `https://generativelanguage.googleapis.com/v1beta` 与原生 GenerateContent，预填该 ID、
-`medium` 思考强度及文字、图片、工具、结构化输出能力。适配器保留工具回合的 thought signature，
-按上游 `cachedContentTokenCount` 统计缓存。此连接不实现 Interactions API、Live/TTS 或
-Google 内置搜索工具；这些能力不能因为模型本身支持就标成已接入。
+`low` 思考强度及文字、图片、工具、结构化输出能力。Gemini 3.8 的 Yuki 连接使用
+`thinkingLevel`，拒绝该型号的固定 `thinkingBudget` 配置；代理转发仍需另行核对，不能把
+代理改写误认为 Yuki 请求。适配器保留工具回合的 thought signature，
+按上游 `cachedContentTokenCount` 统计缓存。Google 原生搜索须在此连接明确选择；默认仍走
+部署配置的外部搜索。此连接不实现 Interactions API 或 Live/TTS；这些能力不能因为模型
+本身支持就标成已接入。
 无 TOML 的兼容配置也使用同一个客户端池；显式 `LLM_PROVIDER=anthropic/gemini`
 分别采用对应原生协议，其他兼容供应商保持 Chat。额外命名的 endpoint/model/key 变量需要
 存在于进程环境；Docker Compose 的 env_file 会加载 `.env`。本地 CLI 若只使用 Settings
@@ -111,6 +125,17 @@ Google 内置搜索工具；这些能力不能因为模型本身支持就标成�
 - [执行诊断](execution-trace.md) 单独保存实际返回的可读思考和工具结果；正文权限查询，按期清理。
   不透明签名/加密状态只留摘要，原恢复 journal 继续按协议私有合同保存。
 - 请求原生服务端工具时，传输结果不明不自动重试；普通有界传输重试仍计入 Work 请求预算。
+
+## 用量与 HTTP 请求口径
+
+`model_invocations` 一行表示一次逻辑模型调用，`calls` 继续按该行计数。`physical_request_count`
+只统计实际进入 HTTP 客户端的请求尝试，包括传输重试和 Claude 原生搜索暂停后的续发；
+路由、配置或本地校验失败不计入。`unknown_usage_request_count` 统计其中未获得上游总 Token
+报告的尝试，不能按零 Token 或零费用处理。历史调用的两个字段为 NULL，无法从原逻辑记录
+反推出真实 HTTP 次数。缓存率只使用上游明确报告缓存量的输入作分母，并同时保留未报告计数。
+
+原生搜索是否启用以当次请求合同记录；Google/Claude 的原生搜索可能另有工具费用，当前账本
+没有供应商账单或可靠的原生工具价格，费用显示为未知，不从 Token 用量推算为零。
 
 ## 验证边界与协议来源
 

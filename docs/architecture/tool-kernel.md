@@ -16,12 +16,13 @@ Tool Kernel 分开管理工具目录、固定声明与执行授权。主 Agent �
 `get_chat_history_around` 只以必填的内部 `event_id` 定位当前会话账本；缺少编号或传入
 平台消息号会收到错误回执。声明变更随部署生成新的合同 revision，不沿用旧请求链。
 Provider 原生工具还有独立的协议和配置合同，不能只检查函数工具就声称整个请求相同。
+长期记忆的主 Agent 声明是统一 `search_memory`，事实和证据详情仍为独立工具；旧三个
+`get_*_memories` 列表名只在执行层兼容历史回执。插件只获 Person 或 Group 读权限时
+仍可使用 `search_memory`，后端按该次批准的 scope 限制候选和显式目标。
 
-`request_tools` 经 `MainAgentBackend._request_tools()` 调用
-`TurnCapabilityRuntime.discover_declared()`，只搜索已声明目录、返回用法。
-它不加载 schema、不重排声明、不授予权限，也不重建已有 Provider continuation。
-Capability Runtime 中的局部 exposure、FTS 检索与执行集合不是主 Agent 模型声明的真源。
-目录查询不再保留动态加载 schema 或增长工具声明的执行路径。
+主 Agent 直接收到启动时冻结的完整工具声明；目录元数据用于装配和运维，
+不再向模型提供额外的目录查询工具。Capability Runtime 的执行集合不是模型声明的真源，
+也不能在请求链中添加 schema 或扩大权限。
 
 ## 调用与效果
 
@@ -34,7 +35,6 @@ flowchart LR
   P[Core / Plugin / MCP Provider] --> D[UnifiedToolCatalog]
   D --> F[MainAgentContract 固定声明]
   F --> A[AgentRunner]
-  D --> Q[request_tools 目录查询]
   A --> E[MainAgentBackend 执行授权]
   E --> I[ToolInvocationCoordinator]
   I --> B[ToolBinding]
@@ -54,6 +54,6 @@ flowchart LR
 
 - `services/main_agent_contract.py`：冻结主 Agent 声明与合同 revision。
 - `services/agent_runner.py`：真实请求历史、预算、工具循环与 continuation。
-- `services/main_agent_backend.py`：目录查询、执行授权、工具回执与业务效果围栏。
+- `services/main_agent_backend.py`：执行授权、工具回执与业务效果围栏。
 - `capabilities/`：descriptor、catalog、policy、binding、协调器和结果预算。
 - `mcp/`、`plugin_host/`：各来源的注册和执行适配；不建立第二套 Yuki 主循环。

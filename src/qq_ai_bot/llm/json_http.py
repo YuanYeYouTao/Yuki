@@ -18,6 +18,7 @@ from qq_ai_bot.domain.messages import ChatRequest, ChatResponse
 from qq_ai_bot.execution_trace.recorder import record_http_response, trace_span
 from qq_ai_bot.llm.base import (
     LLMConfigurationError,
+    LLMError,
     LLMProvider,
     LLMTimeoutError,
     LLMUnavailableError,
@@ -25,6 +26,7 @@ from qq_ai_bot.llm.base import (
 )
 from qq_ai_bot.llm.http_errors import check_provider_response
 from qq_ai_bot.llm.wire_diagnostics import WireRequestObserver
+from qq_ai_bot.model_runtime.request_accounting import current_provider_attempts
 
 
 class JSONHTTPProvider(LLMProvider):
@@ -76,6 +78,9 @@ class JSONHTTPProvider(LLMProvider):
         ):
             # Keep the real permission/budget fence immediately before HTTP dispatch.
             await check_model_dispatch()
+            attempts = current_provider_attempts.get()
+            if attempts is not None:
+                attempts.dispatched()
             response = await self._client.post(
                 self._path(request),
                 headers=self._request_headers(),
@@ -115,9 +120,17 @@ class JSONHTTPProvider(LLMProvider):
                 "LLM is temporarily unavailable",
                 diagnostics=getattr(exc, "diagnostics", {}),
             ) from exc
-        return replace(
-            self._parse(response, request), latency_seconds=time.perf_counter() - started
-        )
+        counter = current_provider_attempts.get()
+        try:
+            parsed = self._parse(response, request)
+        except LLMError as exc:
+            usage = exc.diagnostics.get("usage")
+            if counter is not None and isinstance(usage, dict):
+                counter.reported_usage(usage.get("total_tokens"))
+            raise
+        if counter is not None:
+            counter.reported_usage(parsed.total_tokens)
+        return replace(parsed, latency_seconds=time.perf_counter() - started)
 
     async def close(self) -> None:
         if self._owns_client:

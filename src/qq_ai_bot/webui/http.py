@@ -302,12 +302,17 @@ def attach_webui(
                 else await queries.list_social_receipts(ctx, page, conversation_id=conversation)
             )
         elif method == "read_conversation_execution":
-            if set(data) - {"conversation_id", "include_content"} or "conversation_id" not in data:
+            if (
+                set(data) - {"conversation_id", "include_content", "turn_id", "before_step_id"}
+                or "conversation_id" not in data
+            ):
                 raise ValueError("invalid conversation execution query")
             result = await queries.read_conversation_execution(
                 ctx,
                 ConversationId.parse(data["conversation_id"]),
                 include_content=data.get("include_content", False),
+                turn_id=data.get("turn_id"),
+                before_step_id=data.get("before_step_id"),
             )
         elif method == "read_model_usage_summary":
             if (

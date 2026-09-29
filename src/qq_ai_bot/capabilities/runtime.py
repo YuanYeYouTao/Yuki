@@ -1,39 +1,26 @@
-"""Per-turn authorized catalog, local exposure, search and call validation.
+"""Per-turn authorized catalog, local exposure and call validation.
 
 MainAgentContract owns the fixed model declaration. This runtime projects
-local authority and searches the catalog without growing that declaration.
+local authority without growing that declaration.
 """
 
 from __future__ import annotations
 
-import time
-from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import replace
 
 from qq_ai_bot.capabilities.catalog import (
     AuthorizedCatalogSnapshot,
     DescriptorRegistrySnapshot,
     UnifiedToolCatalog,
-    UnifiedToolCatalogEntry,
 )
 from qq_ai_bot.capabilities.exposure import (
-    DEFAULT_FIRST_ROUND_HARD_CAP,
     NO_LONGER_AUTHORIZED,
-    AuthorityFirstExposurePlanner,
     DeclaredSchemaLedger,
     ExposurePlan,
-    is_prefix_declarable,
+    stable_exposure_plan,
 )
 from qq_ai_bot.capabilities.models import CapabilityDescriptor
-from qq_ai_bot.capabilities.namespace import is_valid_namespace_id, lookup_namespace
 from qq_ai_bot.capabilities.policy import CapabilityPolicyContext, CapabilityPolicyEngine
-from qq_ai_bot.capabilities.request import REQUEST_TOOLS_NAME, request_tools_definition
-from qq_ai_bot.capabilities.search_aliases import merge_search_terms
-from qq_ai_bot.capabilities.search_document import (
-    SEARCH_DOCUMENT_BODY_MAX,
-    CapabilitySearchDocument,
-)
-from qq_ai_bot.capabilities.search_index import CapabilitySearchHit, FtsCapabilitySearchIndex
 from qq_ai_bot.capabilities.validation import (
     TOOL_INPUT_VALIDATION_FAILED,
     JsonSchemaCapabilityValidator,
@@ -41,48 +28,6 @@ from qq_ai_bot.capabilities.validation import (
 from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.runtime.authority import TurnAuthority, TurnSceneFacts
 from qq_ai_bot.runtime.contracts import CapabilityExposureSnapshot, MemoryCapabilityView
-from qq_ai_bot.runtime.origin import TurnOrigin
-
-
-@dataclass(frozen=True, slots=True)
-class CapabilitySearchReport:
-    """Content-free local search outcome for host observability."""
-
-    origin: str
-    hit_count: int
-    latency_ms: int
-    capability_ids: tuple[str, ...]
-
-
-OnCapabilitySearched = Callable[[CapabilitySearchReport], None]
-
-
-@dataclass(frozen=True, slots=True)
-class CapabilityQuery:
-    """One retrieval request (from ``request_tools`` or host heuristics)."""
-
-    text: str
-    origin: TurnOrigin
-    limit: int = 5
-    reply_excerpt: str = ""
-    affinity_namespace_ids: tuple[str, ...] = ()
-    priority_capability_ids: tuple[str, ...] = ()
-
-
-class CapabilityIndexCache:
-    """Reuse one FTS index per registry content hash."""
-
-    def __init__(self) -> None:
-        self._revision: str | None = None
-        self._index = FtsCapabilitySearchIndex()
-
-    def index_for(self, snapshot: DescriptorRegistrySnapshot) -> FtsCapabilitySearchIndex:
-        if self._revision == snapshot.revision:
-            return self._index
-        documents = tuple(_document_from_entry(entry) for entry in snapshot.catalog.entries)
-        self._index.rebuild(revision=snapshot.revision, documents=documents)
-        self._revision = snapshot.revision
-        return self._index
 
 
 class TurnCapabilityRuntime:
@@ -92,37 +37,20 @@ class TurnCapabilityRuntime:
         self,
         *,
         registry: DescriptorRegistrySnapshot,
-        index: FtsCapabilitySearchIndex,
         authority: TurnAuthority,
         scene: TurnSceneFacts,
         memory_view: MemoryCapabilityView | None,
         policy_context: CapabilityPolicyContext,
         append_only: bool,
-        schema_token_budget: int | None = None,
-        mcp_schema_token_budget: int | None = None,
-        mcp_tool_limit: int | None = None,
-        first_round_hard_cap: int | None = None,
-        on_searched: OnCapabilitySearched | None = None,
     ) -> None:
         self._registry = registry
-        self._index = index
         self._authority = authority
         self._scene = scene
         self._memory_view = memory_view
         self._policy_context = policy_context
         self._policy = CapabilityPolicyEngine()
-        self._planner = AuthorityFirstExposurePlanner(
-            first_round_hard_cap=(
-                first_round_hard_cap
-                if first_round_hard_cap is not None
-                else DEFAULT_FIRST_ROUND_HARD_CAP
-            ),
-            schema_token_budget=schema_token_budget,
-            mcp_schema_token_budget=mcp_schema_token_budget,
-            mcp_tool_limit=mcp_tool_limit,
-        )
         self._validator = JsonSchemaCapabilityValidator()
-        self._on_searched = on_searched
+        self._quarantined: frozenset[str] = frozenset()
         self._authorized = self._project_authorized()
         self._ledger = DeclaredSchemaLedger(
             registry_revision=registry.revision,
@@ -130,14 +58,13 @@ class TurnCapabilityRuntime:
         )
         self._plan: ExposurePlan | None = None
         self._restart_provider_chain = False
-        self._affinity: tuple[str, ...] = ()
         self._exclusive_write = bool(memory_view and memory_view.exclusive_namespace)
-        quarantined = self._validator.admit(self._authorized.catalog.entries)
-        if quarantined:
-            requestable = frozenset(
-                item for item in self._authorized.requestable_ids if item not in set(quarantined)
+        self._quarantined = frozenset(self._validator.admit(self._authorized.catalog.entries))
+        if self._quarantined:
+            self._authorized = replace(
+                self._authorized,
+                requestable_ids=self._authorized.requestable_ids - self._quarantined,
             )
-            self._authorized = replace(self._authorized, requestable_ids=requestable)
 
     @property
     def registry_revision(self) -> str:
@@ -151,8 +78,8 @@ class TurnCapabilityRuntime:
         """Re-project authority when the memory contract revision changes.
 
         Exclusive write and locator-read escalations increment
-        ``transition_revision``.  Chat Completions rebuild the exposed set;
-        Responses keep declared schemas and only shrink the callable set.
+        ``transition_revision``. The declaration stays fixed and only the
+        callable set changes.
         """
 
         current_revision = (
@@ -165,24 +92,11 @@ class TurnCapabilityRuntime:
         self._exclusive_write = bool(view is not None and view.exclusive_namespace)
         self._policy_context = replace(self._policy_context, memory_view=view)
         self._authorized = self._project_authorized()
-        kernel = (request_tools_definition(),) if not self._policy_context.tools_closed else ()
-        plan = self._planner.plan_initial(
+        plan = stable_exposure_plan(
             catalog=self._authorized.catalog,
             requestable_ids=self._authorized.requestable_ids,
-            hits=(),
             memory_view=self._memory_view,
-            kernel_tools=kernel,
-            query="",
-            artifact_available=self._policy_context.artifact_available,
         )
-        if self._ledger.append_only:
-            conflict = self._apply_plan(plan)
-            if conflict is None:
-                self._ledger.callable_ids = set(plan.callable_ids)
-                if REQUEST_TOOLS_NAME in {tool.name for tool in kernel}:
-                    self._ledger.callable_ids.add(REQUEST_TOOLS_NAME)
-            self._plan = plan
-            return
         self._plan = plan
         self._apply_plan(plan)
 
@@ -193,72 +107,23 @@ class TurnCapabilityRuntime:
         return frozenset(self._ledger.callable_ids)
 
     def definitions(self) -> tuple[ChatTool, ...]:
-        tools = list(self._ledger.declared_tools())
-        if self._append_request_tools(tools) and REQUEST_TOOLS_NAME not in {
-            tool.name for tool in tools
-        }:
-            tools.append(request_tools_definition())
-        unique: dict[str, ChatTool] = {}
-        for tool in tools:
-            unique.setdefault(tool.name, tool)
-        return tuple(sorted(unique.values(), key=lambda item: item.name))
+        return tuple(sorted(self._ledger.declared_tools(), key=lambda item: item.name))
 
-    def initial_exposure(self, query: CapabilityQuery) -> CapabilityExposureSnapshot:
-        kernel = (request_tools_definition(),) if not self._policy_context.tools_closed else ()
-        self._plan = self._planner.plan_initial(
+    def initial_exposure(self) -> CapabilityExposureSnapshot:
+        self._plan = stable_exposure_plan(
             catalog=self._authorized.catalog,
             requestable_ids=self._authorized.requestable_ids,
-            hits=(),
             memory_view=self._memory_view,
-            kernel_tools=kernel,
-            query="",
-            artifact_available=self._policy_context.artifact_available,
-            priority_ids=query.priority_capability_ids,
         )
         self._apply_plan(self._plan)
-        self._affinity = ()
         return self._ledger.snapshot()
 
-    async def prepare_initial_exposure(self, query: CapabilityQuery) -> CapabilityExposureSnapshot:
-        """Declare the stable first-round set without message-dependent MCP hydration."""
+    async def prepare_initial_exposure(self) -> CapabilityExposureSnapshot:
+        """Declare the complete stable catalog before the first model request."""
 
-        return self.initial_exposure(query)
-
-    def discover_declared(
-        self,
-        query: CapabilityQuery,
-        declared_names: frozenset[str],
-    ) -> dict[str, object]:
-        """Read the frozen directory without loading schemas or changing grants."""
-        started = time.perf_counter()
-        hits = tuple(
-            hit
-            for hit in self._search_local(query, limit=query.limit)
-            if hit.capability_id in declared_names
-        )
-        self._notify_searched(query, hits, started)
-        entries = [self._authorized.catalog.by_model_name(hit.capability_id) for hit in hits]
-        available = [
-            {
-                "name": entry.descriptor.model_name,
-                "namespace": entry.descriptor.namespace_id,
-                "description": entry.compact_description,
-            }
-            for entry in entries
-            if entry is not None
-        ]
-        return {
-            "ok": bool(available),
-            "data": {
-                "available_tools": available,
-                "instruction": "这些工具已在固定清单中；查询不会加载 Schema 或扩大执行权限。",
-            },
-            **({} if available else {"error": "capability_not_found"}),
-        }
+        return self.initial_exposure()
 
     def validate_call(self, name: str, arguments_json: str) -> tuple[bool, str | None]:
-        if name == REQUEST_TOOLS_NAME:
-            return True, None
         if name not in self._ledger.declared:
             return False, "undeclared_tool"
         if name not in self._ledger.callable_ids:
@@ -298,149 +163,35 @@ class TurnCapabilityRuntime:
     def requested_exclusive_write(self) -> bool:
         return self._exclusive_write
 
-    @property
-    def affinity_namespace_ids(self) -> tuple[str, ...]:
-        return self._affinity
-
     def _apply_plan(self, plan: ExposurePlan) -> str | None:
-        extra = plan.kernel_tools
-        if self._append_request_tools(extra) and REQUEST_TOOLS_NAME not in {
-            tool.name for tool in extra
-        }:
-            extra = (*extra, request_tools_definition())
         return self._ledger.declare(
             plan.entries,
-            extra_tools=extra,
             callable_ids=plan.callable_ids,
         )
 
-    def _append_request_tools(self, tools: list[ChatTool] | tuple[ChatTool, ...]) -> bool:
-        if self._policy_context.tools_closed or self._exclusive_write:
-            return False
-        exposed = {tool.name for tool in tools} | set(self._ledger.declared)
-        return any(
-            entry.descriptor.model_name not in exposed
-            for entry in self._authorized.catalog.entries
-            if entry.descriptor.model_name in self._authorized.requestable_ids
-        )
-
-    def _notify_searched(
-        self,
-        query: CapabilityQuery,
-        hits: tuple[CapabilitySearchHit, ...],
-        started: float,
-    ) -> None:
-        if self._on_searched is None:
-            return
-        self._on_searched(
-            CapabilitySearchReport(
-                origin=query.origin.value,
-                hit_count=len(hits),
-                latency_ms=int((time.perf_counter() - started) * 1000),
-                capability_ids=tuple(hit.capability_id for hit in hits),
-            )
-        )
-
-    def _search_local(
-        self, query: CapabilityQuery, *, limit: int
-    ) -> tuple[CapabilitySearchHit, ...]:
-        text = query.text.strip()
-        if query.reply_excerpt:
-            text = f"{text} {query.reply_excerpt[:500]}"
-        hits = self._index.search(
-            text,
-            limit=max(limit, 10),
-            affinity_namespace_ids=query.affinity_namespace_ids or self._affinity,
-        )
-        return tuple(hit for hit in hits if hit.capability_id in self._authorized.requestable_ids)[
-            :limit
-        ]
-
     def _project_authorized(self) -> AuthorizedCatalogSnapshot:
+        entries = tuple(
+            entry
+            for entry in self._registry.catalog.entries
+            if not (entry.descriptor.provider_metadata or {}).get("synthetic")
+        )
         visible = self._policy.visible(
-            tuple(entry.descriptor for entry in self._registry.catalog.entries),
+            tuple(entry.descriptor for entry in entries),
             self._policy_context,
         )
-        visible_names = {item.model_name for item in visible}
+        visible_names = frozenset(item.model_name for item in visible) - self._quarantined
         catalog = UnifiedToolCatalog(
-            entries=tuple(
-                entry
-                for entry in self._registry.catalog.entries
-                if entry.descriptor.model_name in visible_names or is_prefix_declarable(entry)
-            ),
+            entries=entries,
             scopes=self._registry.catalog.scopes,
             revision=self._registry.revision,
         )
         return AuthorizedCatalogSnapshot(
             registry_revision=self._registry.revision,
             catalog=catalog,
-            requestable_ids=frozenset(visible_names),
+            requestable_ids=visible_names,
         )
-
-
-def _bounded_text(value: str, maximum: int) -> str:
-    text = value.strip()
-    if len(text) <= maximum:
-        return text
-    return text[:maximum].rstrip()
-
-
-def _document_from_entry(entry: UnifiedToolCatalogEntry) -> CapabilitySearchDocument:
-    descriptor = entry.descriptor
-    namespace_id = descriptor.namespace_id
-    if not is_valid_namespace_id(namespace_id):
-        namespace_id = "plugin.unnamed"
-    namespace = lookup_namespace(namespace_id)
-    properties = descriptor.input_schema.get("properties")
-    parameter_names: tuple[str, ...] = ()
-    parameter_descriptions: tuple[str, ...] = ()
-    if isinstance(properties, dict):
-        parameter_names = tuple(str(name) for name in properties)
-        descriptions: list[str] = []
-        for spec in properties.values():
-            if isinstance(spec, dict):
-                descriptions.append(str(spec.get("description") or ""))
-        parameter_descriptions = tuple(item for item in descriptions if item)
-    synthetic = bool((descriptor.provider_metadata or {}).get("synthetic"))
-    model_name = _bounded_text(descriptor.model_name, 64) or "tool"
-    aliases, use_when = merge_search_terms(
-        aliases=descriptor.aliases,
-        use_when=descriptor.use_when,
-        tool_name=descriptor.model_name,
-    )
-    return CapabilitySearchDocument(
-        capability_id=_bounded_text(descriptor.model_name, 128) or model_name,
-        model_name=model_name,
-        canonical_name=_bounded_text(descriptor.canonical_name, 256) or model_name,
-        namespace_id=namespace_id,
-        namespace_description=_bounded_text(
-            "" if namespace is None else namespace.description,
-            500,
-        ),
-        description=_bounded_text(
-            entry.compact_description or descriptor.compact_description or descriptor.description,
-            SEARCH_DOCUMENT_BODY_MAX,
-        )
-        or model_name,
-        aliases=aliases,
-        tags=descriptor.tags,
-        use_when=use_when,
-        parameter_names=parameter_names,
-        parameter_descriptions=tuple(
-            _bounded_text(item, 80) for item in parameter_descriptions[:12]
-        ),
-        provider_id=_bounded_text(entry.provider_id, 128),
-        trust_source=descriptor.trust_source,
-        effect=descriptor.effect,
-        risk=descriptor.risk,
-        estimated_schema_tokens=max(1, entry.estimated_schema_tokens),
-        synthetic=synthetic,
-    )
 
 
 __all__ = [
-    "CapabilityIndexCache",
-    "CapabilityQuery",
-    "CapabilitySearchReport",
     "TurnCapabilityRuntime",
 ]

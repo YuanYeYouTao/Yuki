@@ -19,7 +19,9 @@ SQLite BUSY/LOCKED 触发有界原链重排，保留执行回执、检查点和�
 ## 工具与授权
 
 工作者使用代码管理的固定合同和工作工具集合（以 `runtime/subagent_tools.py` 的
-`WORKER_NAMES` 为准），复用主 Agent 的执行器，不在文档中另维护容易过期的工具数量。
+`WORKER_NAMES` 为上限），复用主 Agent 的执行器，不在文档中另维护容易过期的工具数量。
+外部联网工具仅在当前部署声明了对应能力时纳入工作者合同；仅原生搜索的连接不会暴露
+`web_search` 或 `read_webpage`。
 初始资料包包含目标、验收要求、参考文件和建议目录 `/workspace/tasks/<child_id>`。
 目录用于组织文件，不限制共享工作环境。终端修改仍需协商，只有结构化文件编辑有版本检查。
 `workspace_inspect` 通过现有视觉 Provider 检查不可变图片 artifact，输入最多 20 MiB，

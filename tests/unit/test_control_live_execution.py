@@ -133,6 +133,7 @@ async def test_live_turn_links_received_message_and_requires_content_grant(datab
         assert inbound is not None
         event_id = inbound.id
         saved_content = inbound.content
+        saved_sender = inbound.sender_group_card or inbound.sender_nickname or None
     recorder = TraceRecorder(database)
     async with trace_span(
         "chat_processing",
@@ -171,7 +172,10 @@ async def test_live_turn_links_received_message_and_requires_content_grant(datab
     ).fields["recent"][0]["messages"]
     assert metadata[0]["event_id"] == event_id
     assert metadata[0]["direction"] == "received"
+    assert metadata[0]["sender_display_name"] == saved_sender
+    assert metadata[0]["delivery_status"] is None
     assert metadata[0]["content"] is None
+    assert metadata[0]["content_truncated"] is False
     usage = (
         await queries.read_conversation_execution(
             context("control.execution.metadata.read"), conversation
@@ -193,6 +197,85 @@ async def test_live_turn_links_received_message_and_requires_content_grant(datab
         )
     ).fields["recent"][0]["messages"]
     assert contents[0]["content"] == saved_content
+
+
+@pytest.mark.asyncio
+async def test_live_turn_loads_older_steps_and_messages_by_internal_turn(database, tmp_path):
+    env = await social_env(database, tmp_path)
+    conversation = ConversationId.parse(env.context.conversation_id)
+    async with database.sessions() as session:
+        inbound = await session.scalar(
+            select(ChatEventModel).where(
+                ChatEventModel.canonical_conversation_id == conversation.text,
+                ChatEventModel.direction == "inbound",
+            )
+        )
+        assert inbound is not None
+    recorder = TraceRecorder(database)
+    async with trace_span(
+        "chat_processing", {}, recorder=recorder, conversation_id=conversation.text
+    ):
+        async with trace_span("tool", {}, source_event_id=inbound.id):
+            pass
+        for _ in range(40):
+            async with trace_span("tool", {}):
+                pass
+    queries = ControlQueryService(ControlQueryAdapter(database, trace_recorder=recorder))
+    current = (
+        await queries.read_conversation_execution(
+            context("control.execution.metadata.read"), conversation
+        )
+    ).fields["recent"][0]
+    assert current["steps_truncated"] is True
+    assert not current["messages"]
+    turn_id = current["turn_id"]
+    before_id = current["steps"][0]["id"]
+    older_ids = []
+    older_messages = []
+    for _ in range(3):
+        page = (
+            await queries.read_conversation_execution(
+                context("control.execution.metadata.read"),
+                conversation,
+                turn_id=turn_id,
+                before_step_id=before_id,
+            )
+        ).fields
+        assert all(step["id"] < before_id for step in page["steps"])
+        assert len(page["steps"]) <= 32
+        older_ids.extend(step["id"] for step in page["steps"])
+        older_messages.extend(page["messages"])
+        if not page["steps_truncated"]:
+            break
+        before_id = page["steps"][0]["id"]
+    assert older_ids == sorted(older_ids[:32]) + sorted(older_ids[32:64]) + sorted(older_ids[64:])
+    assert any(message["event_id"] == inbound.id for message in older_messages)
+    assert all(message["content"] is None for message in older_messages)
+    with pytest.raises(ControlQueryError):
+        await queries.read_conversation_execution(
+            context("control.execution.metadata.read"),
+            conversation,
+            turn_id=turn_id,
+            before_step_id=current["steps"][0]["id"],
+            include_content=True,
+        )
+    content_page = (
+        await queries.read_conversation_execution(
+            context("control.execution.metadata.read", "control.chat.content.read"),
+            conversation,
+            turn_id=turn_id,
+            before_step_id=older_ids[-1] + 1,
+            include_content=True,
+        )
+    ).fields
+    assert any(message["content"] == inbound.content for message in content_page["messages"])
+    with pytest.raises(ControlQueryError):
+        await queries.read_conversation_execution(
+            context("control.execution.metadata.read"),
+            conversation,
+            turn_id="unrelated-turn",
+            before_step_id=current["steps"][0]["id"],
+        )
 
 
 @pytest.mark.asyncio
@@ -332,6 +415,8 @@ async def test_outbound_event_links_to_original_conversation_turn(database, tmp_
         and item["direction"] == "sent"
         and item["conversation_id"] == target.text
         and item["content"] == "private delivery"
+        and item["sender_display_name"] == "Yuki"
+        and item["delivery_status"] == "confirmed"
         for item in sent_messages
     )
 

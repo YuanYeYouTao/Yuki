@@ -54,7 +54,7 @@ class MemoryEmbeddingRuntime:
 
     @staticmethod
     def _build_provider(settings: Settings) -> EmbeddingProvider | None:
-        if not settings.memory_embedding_enabled:
+        if not settings.memory_embedding_configured:
             return None
         return QwenDashScopeEmbeddingProvider(
             base_url=settings.memory_embedding_base_url,

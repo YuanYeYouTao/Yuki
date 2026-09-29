@@ -129,23 +129,13 @@ _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
         CapabilityEffect.READ_STATE,
         CapabilityRisk.READ,
     ),
-    "get_person_memories": (
-        "memory.person.read",
+    "search_memory": (
+        "memory.search",
         CapabilityEffect.READ_STATE,
         CapabilityRisk.READ,
     ),
     "get_relationship": (
         "relationship.read",
-        CapabilityEffect.READ_STATE,
-        CapabilityRisk.READ,
-    ),
-    "get_self_memories": (
-        "memory.self.read",
-        CapabilityEffect.READ_STATE,
-        CapabilityRisk.READ,
-    ),
-    "get_group_memories": (
-        "memory.group.read",
         CapabilityEffect.READ_STATE,
         CapabilityRisk.READ,
     ),
@@ -183,9 +173,7 @@ _CORE_USE_WHEN: dict[str, tuple[str, ...]] = {
     "get_recent_chat_history": ("刚才说了什么", "最近消息", "当前对话历史"),
     "search_chat_history": ("以前聊过", "查记录", "历史消息"),
     "get_chat_history_around": ("这条前后", "附近消息", "对齐原话"),
-    "get_person_memories": ("记得他", "人物记忆", "关于她"),
-    "get_self_memories": ("你记得", "你的经历", "自我记忆"),
-    "get_group_memories": ("群记忆", "这个群", "群里的情况"),
+    "search_memory": ("记得他", "人物记忆", "群记忆", "自我记忆", "你的经历"),
     "memory_change": ("记住", "忘记", "纠正记忆", "保存记忆"),
     "get_relationship": ("好感度", "信任度", "关系阶段"),
     "web_search": ("搜索", "联网", "查资料", "最新新闻", "搜下", "上网"),
@@ -252,7 +240,7 @@ _CORE_SEARCH_TAGS: dict[str, tuple[str, ...]] = {
         "原文",
         "前后几条",
     ),
-    "get_person_memories": (
+    "search_memory": (
         "人物记忆",
         "群友记忆",
         "某人",
@@ -260,6 +248,12 @@ _CORE_SEARCH_TAGS: dict[str, tuple[str, ...]] = {
         "关于她",
         "偏好",
         "记得",
+        "自我记忆",
+        "你的经历",
+        "你的偏好",
+        "群记忆",
+        "群整体",
+        "群里的情况",
     ),
     "get_relationship": (
         "好感度",
@@ -268,13 +262,6 @@ _CORE_SEARCH_TAGS: dict[str, tuple[str, ...]] = {
         "亲密度",
         "关系数据",
     ),
-    "get_self_memories": (
-        "自我记忆",
-        "你的经历",
-        "你的偏好",
-        "你记得",
-    ),
-    "get_group_memories": ("群记忆", "群整体", "这个群", "群信息", "群里的情况"),
     "memory_change": (
         "记住",
         "保存记忆",
@@ -476,7 +463,7 @@ class InProcessToolProvider:
             if self._source is CapabilityTrustSource.CORE
             else tool.tags
         )
-        if tool.name == "get_self_memories":
+        if tool.name == "search_memory":
             search_tags = (
                 *search_tags,
                 *(f"{alias}记忆" for alias in self._bot_aliases if alias.strip()),

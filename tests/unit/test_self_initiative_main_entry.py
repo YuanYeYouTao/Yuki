@@ -254,9 +254,9 @@ async def test_self_worker_returns_internal_result_without_group_delivery(
             runtime_config=chat._runtime_config,
         )
     )
-    from qq_ai_bot.runtime.subagent_tools import WORKER_NAMES
+    from qq_ai_bot.runtime.subagent_tools import WORKER_REQUIRED_NAMES
 
-    assert WORKER_NAMES <= {tool.name for tool in await contract.definitions()}
+    assert WORKER_REQUIRED_NAMES <= {tool.name for tool in await contract.definitions()}
     await scheduler.run(child_id)
     child = await repo.get(child_id)
     assert child["state"] == "completed", failures or (child, scheduler.last_error)

@@ -373,17 +373,41 @@ class MemoryEntityTarget(_MemoryModel):
     visibility_type: SelfMemoryVisibility | None = None
     visibility_user_id: str | None = None
     visibility_group_id: str | None = None
+    canonical_subject_person_id: str | None = None
+    canonical_subject_space_id: str | None = None
+    canonical_visibility_person_id: str | None = None
+    canonical_visibility_space_id: str | None = None
     block_id: str
 
     @model_validator(mode="after")
     def _validate_scope(self) -> MemoryEntityTarget:
-        MemoryFactQuery(
+        if any(
+            (
+                self.canonical_subject_person_id,
+                self.canonical_subject_space_id,
+                self.canonical_visibility_person_id,
+                self.canonical_visibility_space_id,
+            )
+        ) and any(
+            (
+                self.subject_user_id,
+                self.group_id,
+                self.visibility_user_id,
+                self.visibility_group_id,
+            )
+        ):
+            raise ValueError("memory target cannot mix canonical and transport IDs")
+        _validate_fact_identity(
             scope_type=self.scope_type,
             subject_user_id=self.subject_user_id,
             group_id=self.group_id,
             visibility_type=self.visibility_type,
             visibility_user_id=self.visibility_user_id,
             visibility_group_id=self.visibility_group_id,
+            canonical_subject_person_id=self.canonical_subject_person_id,
+            canonical_subject_space_id=self.canonical_subject_space_id,
+            canonical_visibility_person_id=self.canonical_visibility_person_id,
+            canonical_visibility_space_id=self.canonical_visibility_space_id,
         )
         expected = {
             MemoryTargetRole.CURRENT_SELF: MemoryScopeType.SELF,
@@ -532,6 +556,10 @@ class MemoryRetrievalResult(_MemoryModel):
     semantic_degraded: bool = False
     embedding_profile: str | None = None
     trace_hits: tuple[MemoryRetrievalHit, ...] = ()
+    exhaustive: bool = True
+    truncated: bool = False
+    partial_reason: str | None = None
+    ranked_count: int = 0
 
 
 class MemoryActivationState(_MemoryModel):

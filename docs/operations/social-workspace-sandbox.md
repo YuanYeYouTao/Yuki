@@ -7,7 +7,7 @@ schemas, including retry/finalization requests. Core, installed plugin and MCP d
 work control and short-state definitions are added by the same Main Agent contract. Execution still
 checks the real origin, target, current permission and delegated grant. Scheduled Main Agent calls use the ordinary social/workspace/sandbox tool names;
 explicit DSL capability names are not appended to that manifest.
-`request_tools` discovers current availability; it never changes the frozen manifest.
+The model receives the complete frozen manifest; execution checks current availability.
 Restart Bot after changing installed tool definitions to start a new manifest.
 
 ## Global short-term state

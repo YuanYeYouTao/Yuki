@@ -29,7 +29,7 @@ registrar.register_event_hook(
 
 需要 `event.subscribe`。
 
-3.6.0 删除 `planner.*` 事件。准入、自主拒绝、本地能力搜索和回合结束分别是 `turn.admitted`、`turn.rejected`、`turn.autonomous_declined`、`capability.searched`、`turn.closed`。`agent.*` 与 `reply.*` 继续复用。映射表见 [API 2.0 迁移](api-2.0-migration.md)。这些 payload 只有 origin、scope、hash、分数、原因码、工具 id 和延迟，不含聊天正文。
+3.6.0 删除 `planner.*` 事件。当前准入、自主拒绝和回合结束使用 `turn.admitted`、`turn.rejected`、`turn.autonomous_declined`、`turn.closed`。旧本地能力搜索事件随目录查询入口删除；`agent.*` 与 `reply.*` 继续复用。映射表见 [API 2.0 迁移](api-2.0-migration.md)。这些 payload 只有 origin、scope、hash、分数、原因码、工具 id 和延迟，不含聊天正文。
 
 ## 执行语义
 

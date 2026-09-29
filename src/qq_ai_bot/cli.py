@@ -414,19 +414,18 @@ def _prompt_diagnostic(settings: Settings, scenario: str) -> dict[str, object]:
 
 def _scenario_tools(scenario: str) -> tuple[tuple[ChatTool, ...], dict[str, str]]:
     selected = {
-        "direct-text": ("get_person_memories",),
-        "group-mention": ("get_group_memories", "get_person_memories"),
+        "direct-text": ("search_memory",),
+        "group-mention": ("search_memory",),
         "autonomous-group": (),
         "admin": ("admin_execute_action", "admin_set_config", "call_onebot_api"),
         "web": ("web_search", "read_webpage"),
-        "vision": ("get_person_memories",),
+        "vision": ("search_memory",),
         "emoji": (),
         "speech": ("send_voice",),
         "plugin": ("plugin_example",),
     }[scenario]
     group_by_name = {
-        "get_person_memories": "memory",
-        "get_group_memories": "memory",
+        "search_memory": "memory",
         "admin_execute_action": "admin",
         "admin_set_config": "config",
         "call_onebot_api": "onebot",

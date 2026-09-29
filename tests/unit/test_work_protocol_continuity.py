@@ -1,5 +1,6 @@
 """Explicit compaction task anchors and exact persisted provider request replay."""
 
+import hashlib
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -11,6 +12,7 @@ from tests.conftest import build_harness, make_settings
 from tests.support.runtime_wire import install_wire
 from tests.support.social_identity_cases import social_env
 
+from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.domain.messages import (
     ChatImage,
     ChatMessage,
@@ -18,15 +20,29 @@ from qq_ai_bot.domain.messages import (
     ChatResponse,
     ChatTool,
     ProviderContinuation,
+    ReasoningEffort,
     ToolCall,
     ToolFunction,
 )
+from qq_ai_bot.identity.db_models import PresenceModel
 from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
 from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.llm.gemini import GeminiProvider
 from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
 from qq_ai_bot.llm.openai_responses import OpenAIResponsesProvider
+from qq_ai_bot.model_runtime.executor import TaskModelExecutor
+from qq_ai_bot.model_runtime.models import (
+    ModelCapability,
+    ModelProfile,
+    ModelProtocol,
+    ModelRoute,
+    ModelSearchMode,
+    ModelTask,
+)
+from qq_ai_bot.model_runtime.pool import ModelClientPool
+from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
+from qq_ai_bot.model_runtime.routes import ModelRouter
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_journal import JournalUnavailable, encode_transcript
@@ -35,7 +51,11 @@ from qq_ai_bot.runtime.work_schema_v1 import journal
 from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.services.agent_runner import AgentRuntime
 from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
+from qq_ai_bot.services.native_tool_binder import NativeToolBinder
 from qq_ai_bot.services.turn_transcript import TurnTranscript
+from qq_ai_bot.social.models import OperationStatus, SocialTarget
+from qq_ai_bot.social.repository import SocialOperationRepository
+from qq_ai_bot.web.models import WebMode
 
 
 async def _control(database, tmp_path):
@@ -76,6 +96,16 @@ async def test_compaction_keeps_explicit_task_after_restart(database, tmp_path, 
     )
     control.current = await control.repository.get(control.current["id"])
     control.known_effects = [{"run_id": "original-execution", "pending": True}]
+    first.record_search_sources(
+        [
+            (
+                "https://example.org/verified-source",
+                "Earlier public source",
+                "Public search excerpt from the earlier investigation",
+            ),
+            ("file:///private/secret", "must not migrate"),
+        ]
+    )
     await first.save("paired")
     control.current = await control.repository.get(control.current["id"])
     fresh_task = ChatMessage("user", "new wakeup and refreshed runtime data")
@@ -94,6 +124,11 @@ async def test_compaction_keeps_explicit_task_after_restart(database, tmp_path, 
         assert "不代表当前权限" in carried.content
         assert carried.images == task.images
         assert restored.request().messages[:2] == (fresh_system, fresh_task)
+        source_message = restored.request().messages[3].content
+        assert "https://example.org/verified-source" in source_message
+        assert "Public search excerpt from the earlier investigation" in source_message
+        assert '"truncated": false' in source_message
+        assert "file:///private/secret" not in source_message
     compacted = await resumed.compact("Completed checks, pending execution remains")
     assert compacted.chain_id != restored.chain_id
     assert compacted.request().messages[:2] == (fresh_system, task)
@@ -106,6 +141,328 @@ async def test_compaction_keeps_explicit_task_after_restart(database, tmp_path, 
     await again.restore(TurnTranscript((fresh_task,)), compaction_brief=fresh_task)
     twice = await again.compact("A second bounded summary")
     assert twice.request().messages[:2] == (fresh_system, task)
+    await control.repository.release(control.lease)
+
+
+@pytest.mark.asyncio
+async def test_work_changes_from_deepseek_to_gemini_without_replaying_old_effect(
+    database, tmp_path
+):
+    control = await _control(database, tmp_path)
+    capabilities = frozenset({ModelCapability.REASONING, ModelCapability.TOOLS})
+
+    def catalog(profile):
+        return ModelProfileCatalog(
+            profiles={profile.id: profile},
+            routes={task: ModelRoute(task=task, profile_id=profile.id) for task in ModelTask},
+        )
+
+    old_profile = ModelProfile(
+        id="pro",
+        provider="deepseek",
+        protocol=ModelProtocol.RESPONSES,
+        base_url="https://deepseek.invalid",
+        api_key_env="TEST_KEY",
+        model="deepseek-chat",
+        timeout_seconds=2,
+        max_retries=0,
+        default_temperature=0.5,
+        default_max_output_tokens=8192,
+        capabilities=capabilities,
+    )
+    models = TaskModelExecutor(router=ModelRouter(catalog(old_profile)), pool=ModelClientPool())
+    first_contract = models.profile_revision(ModelTask.CHAT_AGENT)
+    task = ChatMessage("user", "Finish the original Work")
+    first = WorkSession(control, first_contract)
+    previous = await first.restore(
+        TurnTranscript((ChatMessage("system", "Old DeepSeek contract"), task)),
+        compaction_brief=task,
+    )
+    previous.accept(
+        ProviderContinuation("deepseek", "responses", ({"id": "opaque-old-provider"},), "pro")
+    )
+    await control.repository.checkpoint(control.lease, control.current["id"], None, models=3)
+    control.current = await control.repository.get(control.current["id"])
+    old_call = ToolCall("already-done", ToolFunction("workspace_read", "{}"))
+    executions = 0
+
+    async def execute_once():
+        nonlocal executions
+        executions += 1
+        return '{"ok":true,"data":{"run_id":"run-fixed","status":"succeeded"}}'
+
+    receipt = await first.execute(old_call, execute_once, side_effecting=False)
+    control.observe_result("workspace_read", receipt, True, side_effecting=False)
+    first.record_search_sources(
+        [
+            (
+                "https://example.org/source",
+                "Public source",
+                "Published public excerpt " + "a" * 530,
+            ),
+            ("http://localhost/private", "Internal source"),
+            ("file:///private/data", "Local file"),
+        ]
+    )
+    # Simulate a crash after the effect was accepted, before its result was paired.
+    await first.save("response", (old_call,))
+    old_id = control.current["id"]
+
+    captured = []
+
+    def transport(request):
+        captured.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "finishReason": "STOP",
+                        "content": {"role": "model", "parts": [{"text": "continuing"}]},
+                    }
+                ]
+            },
+        )
+
+    async with httpx.AsyncClient(
+        base_url="https://gemini.invalid", transport=httpx.MockTransport(transport)
+    ) as client:
+        gemini = GeminiProvider(
+            base_url="https://gemini.invalid",
+            api_key="synthetic",
+            timeout_seconds=2,
+            max_retries=0,
+            client=client,
+        )
+        new_profile = ModelProfile(
+            id="gemini",
+            provider="gemini",
+            protocol=ModelProtocol.GEMINI,
+            base_url="https://gemini.invalid",
+            api_key_env="TEST_KEY",
+            model="gemini-3.8-flash",
+            timeout_seconds=2,
+            max_retries=0,
+            default_temperature=0.5,
+            default_max_output_tokens=8192,
+            search_mode=ModelSearchMode.NATIVE,
+            capabilities=capabilities | {ModelCapability.NATIVE_WEB_SEARCH},
+        )
+        models.apply_catalog(
+            catalog(new_profile), ModelClientPool(injected_profiles={"gemini": gemini})
+        )
+        next_contract = models.profile_revision(ModelTask.CHAT_AGENT)
+        assert next_contract != first_contract
+        resumed_control = WorkControl(
+            control.repository,
+            control.lease,
+            control.source_key,
+            control.source,
+            control.validate,
+        )
+        resumed_control.current = await control.repository.get(old_id)
+        resumed = WorkSession(resumed_control, next_contract)
+        resumed_control.session = resumed
+        fresh_task = ChatMessage("user", "Fresh wakeup")
+        restored = await resumed.restore(
+            TurnTranscript((ChatMessage("system", "New Gemini contract"), fresh_task)),
+            compaction_brief=fresh_task,
+        )
+        sequence = restored.request()
+        assert sequence.continuation is None and not sequence.items
+        assert all(message.response_item is None for message in sequence.messages)
+        assert sequence.messages[0].content == "New Gemini contract"
+        assert any(task.content in (message.content or "") for message in sequence.messages)
+        assert any("run-fixed" in (message.content or "") for message in sequence.messages)
+        assert any(
+            "https://example.org/source" in (message.content or "") for message in sequence.messages
+        )
+        assert any(
+            '"truncated": true' in (message.content or "")
+            and "Published public excerpt" in (message.content or "")
+            for message in sequence.messages
+        )
+        assert all("localhost" not in (message.content or "") for message in sequence.messages)
+        assert resumed_control.known_effects[0]["run_id"] == "run-fixed"
+        assert executions == 1
+        assert resumed_control.current["id"] == old_id
+        assert (
+            resumed_control.current["model_requests"],
+            resumed_control.current["tool_calls"],
+        ) == (3, 1)
+
+        common_tools = (
+            ChatTool("workspace_read", "Read workspace", {"type": "object"}),
+            ChatTool("web_search", "Search externally", {"type": "object"}),
+            ChatTool("read_webpage", "Read page externally", {"type": "object"}),
+        )
+        binder = NativeToolBinder()
+        excluded = binder.excluded_function_names(
+            protocol=models.protocol(ModelTask.CHAT_AGENT),
+            capabilities=models.capabilities(ModelTask.CHAT_AGENT),
+            allowed_capabilities=frozenset({"web"}),
+            web_mode=WebMode.NATIVE,
+            search_mode=models.search_mode(ModelTask.CHAT_AGENT),
+        )
+        tools = tuple(tool for tool in common_tools if tool.name not in excluded)
+        native = binder.bind(
+            protocol=models.protocol(ModelTask.CHAT_AGENT),
+            capabilities=models.capabilities(ModelTask.CHAT_AGENT),
+            allowed_capabilities=frozenset({"web"}),
+            web_mode=WebMode.NATIVE,
+            web_was_used=False,
+            search_mode=models.search_mode(ModelTask.CHAT_AGENT),
+        )
+        assert [tool.name for tool in tools] == ["workspace_read"]
+        await resumed_control.reserve_request()
+        await models.execute(
+            ModelTask.CHAT_AGENT,
+            ChatRequest(
+                messages=sequence.messages,
+                continuation=sequence.continuation,
+                continuation_items=sequence.items,
+                model="gemini-3.8-flash",
+                tools=tools,
+                native_tools=native,
+                thinking_enabled=True,
+                reasoning_effort=ReasoningEffort.LOW,
+                request_chain_id=restored.chain_id,
+            ),
+        )
+    assert executions == 1 and len(captured) == 1
+    payload = captured[0]
+    assert payload["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
+    assert payload["tools"] == [
+        {
+            "functionDeclarations": [
+                {
+                    "name": "workspace_read",
+                    "description": "Read workspace",
+                    "parametersJsonSchema": {"type": "object"},
+                }
+            ]
+        },
+        {"googleSearch": {}},
+    ]
+    assert "opaque-old-provider" not in json.dumps(payload)
+    assert "run-fixed" in json.dumps(payload)
+    current = await control.repository.get(old_id)
+    assert (current["model_requests"], current["tool_calls"]) == (4, 1)
+    await control.repository.release(control.lease)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("last_part", ["succeeded", "missing", "uncertain"])
+@pytest.mark.parametrize("boundary", ["contract_changed", "source_changed"])
+async def test_provider_change_keeps_prepared_sequence_unknown_despite_delivered_parts(
+    database, tmp_path, last_part, boundary
+):
+    control = await _control(database, tmp_path)
+    task = ChatMessage("user", "Continue this Work without sending again")
+    first = WorkSession(control, "deepseek-contract")
+    await first.restore(
+        TurnTranscript((ChatMessage("system", "DeepSeek"), task)),
+        compaction_brief=task,
+    )
+    call = ToolCall("sequence-call", ToolFunction("send_message", '{"text":"four parts"}'))
+    effect_key = first.call_key(call.id)
+    assert await control.repository.prepare_effect(
+        control.lease, control.current["id"], effect_key, "tool"
+    )
+    async with database.sessions() as session:
+        conversation = await session.get(CanonicalConversationModel, control.lease.conversation_id)
+        assert conversation is not None and conversation.space_id is not None
+        target = SocialTarget(kind="space", id=conversation.space_id)
+        presence_id = await session.scalar(select(PresenceModel.id).limit(1))
+        assert presence_id is not None
+    receipts = SocialOperationRepository(database)
+    source_turn_id = f"{control.lease.conversation_id}:event:1"
+    chunks = ("part one", "part two", "part three", "part four")
+    await receipts.prepare(
+        source_turn_id=source_turn_id,
+        tool_call_id=call.id,
+        source_conversation_id=control.lease.conversation_id,
+        action="send_message_sequence",
+        target=target,
+        payload={"original": {"text": "four parts"}, "chunks": chunks},
+    )
+    prefix = hashlib.sha256(call.id.encode()).hexdigest()[:24]
+    for index, chunk in enumerate(chunks):
+        if index == 3 and last_part == "missing":
+            continue
+        part = await receipts.prepare(
+            source_turn_id=source_turn_id,
+            tool_call_id=f"seq:{prefix}:{index}",
+            source_conversation_id=control.lease.conversation_id,
+            action="send_message",
+            target=target,
+            payload={"text": chunk},
+        )
+        assert await receipts.claim(part.operation_id, presence_id=presence_id)
+        async with database.sessions() as session, session.begin():
+            await receipts.finish(
+                part.operation_id,
+                status=OperationStatus.UNCERTAIN
+                if index == 3 and last_part == "uncertain"
+                else OperationStatus.SUCCEEDED,
+                session=session,
+            )
+    await first.save("response", (call,))
+    original = await control.repository.get(control.current["id"])
+    if boundary == "source_changed":
+        async with database.sessions() as session, session.begin():
+            conversation = await session.get(
+                CanonicalConversationModel, control.lease.conversation_id
+            )
+            conversation.prompt_source_revision += 1
+
+    async def restart():
+        restarted_control = WorkControl(
+            control.repository,
+            control.lease,
+            control.source_key,
+            control.source,
+            control.validate,
+        )
+        restarted_control.current = await control.repository.get(control.current["id"])
+        resumed = WorkSession(
+            restarted_control,
+            "gemini-contract" if boundary == "contract_changed" else "deepseek-contract",
+        )
+        transcript = await resumed.restore(
+            TurnTranscript((ChatMessage("system", "Gemini"), ChatMessage("user", "wakeup"))),
+            compaction_brief=ChatMessage("user", "wakeup"),
+        )
+        return restarted_control, resumed, transcript
+
+    invoked = 0
+
+    async def forbidden_send():
+        nonlocal invoked
+        invoked += 1
+        return '{"ok":true}'
+
+    for _ in range(2):
+        restarted_control, resumed, transcript = await restart()
+        assert transcript.request().continuation is None
+        assert any(
+            '"status": "unknown"' in (message.content or "")
+            and effect_key in (message.content or "")
+            for message in transcript.request().messages
+        )
+        assert any(effect.get("uncertain") for effect in restarted_control.known_effects)
+        blocked = await resumed.execute(
+            ToolCall("new-send", ToolFunction("send_message", "{}")),
+            forbidden_send,
+            side_effecting=True,
+        )
+        assert json.loads(blocked)["error"] == "unresolved_prior_effect"
+    assert invoked == 0
+    current = await control.repository.get(control.current["id"])
+    assert (current["model_requests"], current["tool_calls"]) == (
+        original["model_requests"],
+        original["tool_calls"],
+    )
     await control.repository.release(control.lease)
 
 

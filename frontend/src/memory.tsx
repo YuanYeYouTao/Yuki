@@ -54,6 +54,13 @@ const labels: Record<string, string> = {
   status: "状态",
   review_state: "审核状态",
 };
+const embeddingState: Record<string, string> = {
+  ok: "本地向量索引覆盖完整；此页不探测远端服务",
+  degraded: "部分记忆尚未建好向量，检索会降级",
+  not_configured: "缺少 Embedding 地址或 API Key，当前使用全文检索",
+  disabled: "已关闭，当前使用全文检索",
+  unavailable: "向量状态暂不可读取",
+};
 
 function FactDetails({ id, props }: { id: number; props: PageProps }) {
   const result = useQuery<Row>(
@@ -149,14 +156,64 @@ function MemoryFacts(props: PageProps) {
         {health.error != null && <ErrorNote error={health.error} />}
         {health.loading && <Empty>正在读取…</Empty>}
         {health.data && (
-          <Table
-            rows={[health.data]}
-            columns={[
-              ["index", "全文索引"],
-              ["embedding", "向量覆盖"],
-              ["consistency", "一致性"],
-            ]}
-          />
+          <>
+            <Table
+              rows={[health.data]}
+              columns={[
+                ["index", "全文索引"],
+                [
+                  "embedding",
+                  "向量状态",
+                  (value) => embeddingState[String(value)] || text(value),
+                ],
+                ["consistency", "一致性"],
+              ]}
+            />
+            <p className="small">
+              向量覆盖 {text(health.data.embedding_ready_count ?? "?")} /{" "}
+              {text(health.data.embedding_fact_count ?? "?")} 条有效记忆 ·
+              失败任务 {text(health.data.embedding_failed_jobs ?? "?")}
+              {health.data.embedding_last_error
+                ? ` · 最近错误 ${text(health.data.embedding_last_error)}`
+                : ""}
+            </p>
+            {health.data.embedding_pending_restart && (
+              <p className="small">向量检索开关已保存，重启 Bot 后生效。</p>
+            )}
+            {health.data.embedding === "not_configured" && (
+              <p className="small">
+                开关默认开启；需在服务器配置 MEMORY_EMBEDDING_BASE_URL 和
+                MEMORY_EMBEDDING_API_KEY，重启后才会建立向量索引。
+              </p>
+            )}
+            {health.data.embedding_saved_enabled != null && (
+              <button
+                className="btn-secondary"
+                disabled={!props.allowed("set_config")}
+                onClick={() =>
+                  props.act({
+                    method: "set_config",
+                    label: health.data?.embedding_saved_enabled
+                      ? "关闭记忆向量检索"
+                      : "启用记忆向量检索",
+                    revision: Number(
+                      health.data?.embedding_config_version || 0,
+                    ),
+                    payload: {
+                      key: "memory.embedding_enabled",
+                      scope_type: "global",
+                      scope_id: "",
+                      value: !health.data?.embedding_saved_enabled,
+                    },
+                  })
+                }
+              >
+                {health.data.embedding_saved_enabled
+                  ? "关闭向量检索"
+                  : "启用向量检索"}
+              </button>
+            )}
+          </>
         )}
       </Section>
       <Section title="长期记忆">

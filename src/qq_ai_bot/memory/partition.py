@@ -278,6 +278,29 @@ async def resolve_fact_canonical_owners(
     scope_value = getattr(scope_type, "value", scope_type)
     visibility_type = getattr(fact, "visibility_type", None)
     visibility_value = getattr(visibility_type, "value", visibility_type)
+    canonical_person = getattr(fact, "canonical_subject_person_id", None)
+    canonical_space = getattr(fact, "canonical_subject_space_id", None)
+    canonical_visibility_person = getattr(fact, "canonical_visibility_person_id", None)
+    canonical_visibility_space = getattr(fact, "canonical_visibility_space_id", None)
+    from qq_ai_bot.memory.models import MemoryEntityTarget
+
+    if isinstance(fact, MemoryEntityTarget) and any(
+        owner is not None
+        for owner in (
+            canonical_person,
+            canonical_space,
+            canonical_visibility_person,
+            canonical_visibility_space,
+        )
+    ):
+        # Only backend-created canonical targets reach here. Their shape was
+        # checked by MemoryEntityTarget; do not re-resolve through QQ Bindings.
+        return MemoryFactCanonicalOwners(
+            canonical_person,
+            canonical_space,
+            canonical_visibility_person,
+            canonical_visibility_space,
+        )
     if scope_value == "self":
         if visibility_value in {None, "global"}:
             return MemoryFactCanonicalOwners(None, None, None, None)

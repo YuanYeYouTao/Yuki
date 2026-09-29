@@ -107,7 +107,7 @@ G(X) 为数据库记录的 X 的历史 canonical membership：
 依据剩余数据库记录重新判断，不缓存永久许可。当前在群 G，也可查历史共同群 H。
 Binding ID、群号、昵称、工具参数都只是选择器，不是模型自己声明的权限。
 
-自动预取、人物/群工具的列表与搜索、fact detail 复用相同政策；旧的“只凭当前群 evidence
+内部预取、`search_memory` 和 fact detail 复用相同政策；旧的“只凭当前群 evidence
 投影 Person”授权路径已经删除。evidence 仍走本人/显式管理授权边界。
 无真实用户主体的 Plugin、Automation、System 使用既有受控目标；不能伪造 actor 自行扩权。
 Control Plane 仍要求 capability。
@@ -115,11 +115,13 @@ Control Plane 仍要求 capability。
 ## 检索与使用
 
 [检索合同](memory-v2-retrieval.md)定义 Query Plane、结构化 intent、检索与排序。
-自动预取只以当前人物、当前群、真实 mention/reply 等现有目标为起点，默认最多四条，可以零条；
-“有权查”不等于每轮扫描历史群和全部群友。当前主题优先，剩余位置最多一条相关人物背景，
-没有主题不靠背景凑数。门槛必须绑定已校准 embedding profile，未校准或故障只接受精确匹配。
-本轮不增加冷却或最低配额；旧 P1“不新增相关性门槛”的阶段约束由强相关召回任务书取代。
-更广范围主要通过完整 Main Agent 的主动查询意图进入；不增加识别/裁判 Agent 或独立短上下文。
+当前开发分支的主 Agent 不再每轮自动注入长期事实；需要过去事实时由模型调用统一
+`search_memory`。无显式目标时，后端以本次真实主体的 canonical 身份和历史成员关系，
+在数据库层筛选全部获准 Person、PersonGroup、Group 与当前可见 SELF；历史 owner 即使没有
+活跃 QQ Binding 仍可检索。词法和向量候选在授权范围内全局排序，不按 owner 截断。
+全局候选或向量扫描触及工作预算时回执标记 `truncated=true`、`exhaustive=false` 和原因；
+实际返回条数上限也另行标记。真实中文检索集校准和上线验收仍在
+[search_memory 任务书](Yuki-search-memory-taskbook-2026-09-29.md)中跟踪。
 
 候选、实际注入、完成使用评估是三件不同的事。
 零注入轮有 receipt，但不调用 attribution；旧 used=false 是未知而非确认未使用。

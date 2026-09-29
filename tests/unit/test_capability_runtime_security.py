@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities.catalog import (
@@ -14,6 +15,7 @@ from qq_ai_bot.capabilities.exposure import (
     NO_LONGER_AUTHORIZED,
     SCHEMA_REVISION_CONFLICT,
     DeclaredSchemaLedger,
+    stable_exposure_plan,
 )
 from qq_ai_bot.capabilities.models import (
     AuthorityContext,
@@ -24,18 +26,12 @@ from qq_ai_bot.capabilities.models import (
     CapabilityTrustSource,
 )
 from qq_ai_bot.capabilities.policy import CapabilityPolicyContext, CapabilityPolicyEngine
-from qq_ai_bot.capabilities.request import REQUEST_TOOLS_NAME, request_tools_definition
-from qq_ai_bot.capabilities.runtime import (
-    CapabilityIndexCache,
-    CapabilityQuery,
-    TurnCapabilityRuntime,
-)
+from qq_ai_bot.capabilities.runtime import TurnCapabilityRuntime
 from qq_ai_bot.capabilities.validation import (
     TOOL_INPUT_VALIDATION_FAILED,
     JsonSchemaCapabilityValidator,
 )
 from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.runtime.authority import TurnAuthority, TurnSceneFacts
 from qq_ai_bot.runtime.contracts import MemoryCapabilityView
 from qq_ai_bot.runtime.origin import TurnOrigin as RuntimeTurnOrigin
@@ -148,14 +144,12 @@ def test_undeclared_and_revoked_tools_are_rejected() -> None:
     )
     # Completions may shrink declared schemas; Responses keep revoked tools declared.
     ledger = DeclaredSchemaLedger(registry_revision="abc", append_only=True)
-    extra = (ChatTool(name="request_tools", description="x", parameters={}),)
     ledger.declare(
         (search, mutate),
-        extra_tools=extra,
         callable_ids=frozenset({"web_search", "memory_change"}),
     )
     assert "web_search" in ledger.callable_ids
-    ledger.declare((mutate,), extra_tools=extra, callable_ids=frozenset({"memory_change"}))
+    ledger.declare((mutate,), callable_ids=frozenset({"memory_change"}))
     assert "web_search" in ledger.declared
     assert "web_search" not in ledger.callable_ids
     validator = JsonSchemaCapabilityValidator()
@@ -183,12 +177,11 @@ def test_append_only_can_add_new_tools_without_dropping_old() -> None:
     ledger = DeclaredSchemaLedger(registry_revision="abc", append_only=True)
     ledger.declare(
         (search,),
-        extra_tools=(ChatTool(name="request_tools", description="x", parameters={}),),
         callable_ids=frozenset({"web_search"}),
     )
     ledger.declare((search, page), callable_ids=frozenset({"web_search", "read_webpage"}))
     names = {tool.name for tool in ledger.declared_tools()}
-    assert {"web_search", "read_webpage", "request_tools"} <= names
+    assert names == {"web_search", "read_webpage"}
 
 
 def test_namespace_is_not_a_permission() -> None:
@@ -348,12 +341,15 @@ def test_catalog_entry_round_trip_for_security_fixtures() -> None:
     assert catalog.by_model_name("missing") is None
 
 
-def _runtime(*entries: UnifiedToolCatalogEntry, append_only: bool = True) -> TurnCapabilityRuntime:
+def _runtime(
+    *entries: UnifiedToolCatalogEntry,
+    append_only: bool = True,
+    memory_view: MemoryCapabilityView | None = None,
+) -> TurnCapabilityRuntime:
     catalog = UnifiedToolCatalog(entries=entries, scopes=(), revision="abcd1234")
     snapshot = DescriptorRegistrySnapshot(catalog)
     return TurnCapabilityRuntime(
         registry=snapshot,
-        index=CapabilityIndexCache().index_for(snapshot),
         authority=TurnAuthority(
             actor_user_id="1001",
             bot_user_id="9999",
@@ -363,44 +359,90 @@ def _runtime(*entries: UnifiedToolCatalogEntry, append_only: bool = True) -> Tur
             authority_revision=1,
         ),
         scene=TurnSceneFacts(scope_type=ScopeType.PRIVATE, group_id=None),
-        memory_view=None,
+        memory_view=memory_view,
         policy_context=CapabilityPolicyContext(
             authority=AuthorityContext(actor_user_id="1001", is_superuser=False),
             origin=TurnOrigin.USER_MESSAGE,
+            memory_view=memory_view,
         ),
         append_only=append_only,
     )
 
 
-def test_definitions_never_duplicate_request_tools() -> None:
-    runtime = _runtime(_entry(_descriptor("web_search", namespace="web.search")))
-    runtime.initial_exposure(
-        CapabilityQuery(text="search the public web", origin=RuntimeTurnOrigin.USER_MESSAGE)
+def test_stable_declarations_are_complete_while_execution_remains_authorized() -> None:
+    runtime = _runtime(
+        _entry(_descriptor("web_search", namespace="web.search")),
+        _entry(_descriptor("memory_change", namespace="memory.state.write")),
+        _entry(
+            _descriptor(
+                "admin_set_config",
+                namespace="admin.config.write",
+                permissions=frozenset({"superuser"}),
+            )
+        ),
+        _entry(
+            replace(
+                _descriptor("synthetic_directory", namespace="tool.synthetic"),
+                provider_metadata={"synthetic": True},
+            )
+        ),
     )
+    snapshot = runtime.initial_exposure()
+    assert {tool.name for tool in runtime.definitions()} == {
+        "web_search",
+        "memory_change",
+        "admin_set_config",
+    }
+    assert set(snapshot.requestable_capability_ids) == {"web_search", "memory_change"}
+    assert runtime.validate_call("admin_set_config", '{"query":"x"}') == (
+        False,
+        NO_LONGER_AUTHORIZED,
+    )
+    assert runtime.validate_call("synthetic_directory", '{"query":"x"}') == (
+        False,
+        "undeclared_tool",
+    )
+
+
+def test_memory_exclusive_write_changes_grants_without_changing_declarations() -> None:
+    runtime = _runtime(
+        _entry(_descriptor("web_search", namespace="web.search")),
+        _entry(
+            _descriptor(
+                "memory_change",
+                namespace="memory.state.write",
+                effect=CapabilityEffect.WRITE_STATE,
+                risk=CapabilityRisk.MUTATE,
+            )
+        ),
+    )
+    runtime.initial_exposure()
     names = [tool.name for tool in runtime.definitions()]
-    assert names.count(REQUEST_TOOLS_NAME) == 1
+    view = MemoryCapabilityView(
+        eager_namespaces=(),
+        requestable_namespaces=("memory.state.write",),
+        hidden_namespaces=(),
+        exclusive_namespace="memory.state.write",
+        transition_revision=1,
+    )
+    runtime.sync_memory_view(view)
+    assert [tool.name for tool in runtime.definitions()] == names
+    assert runtime.callable_capability_ids() == frozenset({"memory_change"})
+    assert runtime.validate_call("web_search", '{"query":"x"}') == (
+        False,
+        NO_LONGER_AUTHORIZED,
+    )
 
 
 def test_schema_conflict_rebuilds_only_without_side_effects() -> None:
     first = _entry(_descriptor("web_search", namespace="web.search", revision="1"))
     runtime = _runtime(first, append_only=True)
-    runtime.initial_exposure(
-        CapabilityQuery(
-            text="search the public web",
-            origin=RuntimeTurnOrigin.USER_MESSAGE,
-            priority_capability_ids=("web_search",),
-        )
-    )
+    runtime.initial_exposure()
     second = _entry(_descriptor("web_search", namespace="web.search", revision="2"))
-    runtime._plan = runtime._planner.plan_initial(
+    runtime._plan = stable_exposure_plan(
         catalog=UnifiedToolCatalog(entries=(second,), scopes=(), revision="abcd1234"),
         requestable_ids=frozenset({"web_search"}),
-        hits=(),
         memory_view=None,
-        kernel_tools=(request_tools_definition(),),
-        query="search",
-        artifact_available=False,
-        priority_ids=("web_search",),
     )
     assert runtime._apply_plan(runtime._plan) == SCHEMA_REVISION_CONFLICT
     runtime.mark_side_effect()
@@ -408,13 +450,7 @@ def test_schema_conflict_rebuilds_only_without_side_effects() -> None:
     assert runtime.rebuild_after_schema_conflict() is False
 
     clean = _runtime(first, append_only=True)
-    clean.initial_exposure(
-        CapabilityQuery(
-            text="search the public web",
-            origin=RuntimeTurnOrigin.USER_MESSAGE,
-            priority_capability_ids=("web_search",),
-        )
-    )
+    clean.initial_exposure()
     clean._plan = runtime._plan
     assert clean._apply_plan(clean._plan) == SCHEMA_REVISION_CONFLICT
     assert clean.rebuild_after_schema_conflict() is True

@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.messages import ReasoningEffort
+from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.model_runtime.models import ModelProfile
 from qq_ai_bot.vision.models import (
     PreparedFrame,
@@ -230,7 +231,14 @@ def test_daily_chat_delay_range_must_be_ordered() -> None:
         )
 
 
-def test_memory_embedding_disabled_needs_no_secret_but_enabled_does() -> None:
+def test_memory_embedding_defaults_on_but_degrades_without_provider_credentials() -> None:
+    default = Settings.model_validate(
+        {"memory_embedding_base_url": "", "memory_embedding_api_key": ""}
+    )
+    assert default.memory_embedding_enabled is True
+    assert default.memory_embedding_configured is False
+    assert MemoryEmbeddingRuntime._build_provider(default) is None
+
     disabled = Settings.model_validate(
         {
             "memory_embedding_enabled": False,
@@ -239,15 +247,6 @@ def test_memory_embedding_disabled_needs_no_secret_but_enabled_does() -> None:
         }
     )
     assert disabled.memory_embedding_configured is False
-
-    with pytest.raises(ValidationError, match="MEMORY_EMBEDDING_BASE_URL"):
-        Settings.model_validate(
-            {
-                "memory_embedding_enabled": True,
-                "memory_embedding_base_url": "",
-                "memory_embedding_api_key": "",
-            }
-        )
 
     enabled = Settings.model_validate(
         {
@@ -299,22 +298,6 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
     assert settings.conversation_rollup_summary_max_characters == 2400
     assert settings.conversation_rollup_retry_max_seconds == 960
     assert settings.conversation_rollup_lease_heartbeat_seconds == 60
-    assert settings.tooling_selected_tool_limit == 32
-    assert settings.tooling_first_round_hard_cap == 16
-    assert settings.tooling_first_round_pin_ids == (
-        "memory_change",
-        "get_person_memories",
-        "get_group_memories",
-        "search_chat_history",
-        "get_relationship",
-        "get_self_memories",
-        "web_search",
-        "automation_create",
-        "send_message",
-    )
-    assert settings.tooling_schema_token_budget == 12000
-    assert settings.mcp_selected_tool_limit == 16
-    assert settings.mcp_schema_token_budget == 8000
     assert settings.agent_max_tool_calls == 32
     assert settings.agent_max_model_requests == 24
     assert settings.agent_tool_result_max_characters == 24000

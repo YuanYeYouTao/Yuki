@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from contextlib import AsyncExitStack
+from contextlib import AbstractContextManager, AsyncExitStack, nullcontext
 from dataclasses import dataclass, replace
 from typing import Any, Protocol, TypedDict, TypeVar, cast
 
@@ -21,9 +21,6 @@ from qq_ai_bot.capabilities import (
     ToolKernelMetrics,
     ToolProvider,
     ToolProviderRegistry,
-)
-from qq_ai_bot.capabilities.runtime import (
-    CapabilityIndexCache,
 )
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.rollup.errors import ConversationCoverageError
@@ -322,6 +319,11 @@ class _CompletedAgentRun:
 class ChatService:
     """Answer with cross-scope person memory and an event-bound Agent runtime."""
 
+    def pin_model_runtime(self) -> AbstractContextManager[None]:
+        """Keep admission media handling and its Agent run on one model catalog."""
+        pin = getattr(self._models, "pin", None)
+        return pin() if callable(pin) else nullcontext()
+
     def __init__(
         self,
         *,
@@ -376,7 +378,6 @@ class ChatService:
         self._web_sources = web_sources
         self._runtime_config = runtime_config
         self._agent_runner = AgentRunner(models, concurrency)
-        self._capability_index = CapabilityIndexCache()
         self._admin_tools: AdminToolService | None = None
         self._automation_tools: AutomationToolProvider | None = None
         self._plugin_tools: PluginToolProvider | None = None
@@ -1283,18 +1284,10 @@ class ChatService:
         ConversationReadVersion | None,
         Callable[[], Awaitable[None]] | None,
     ]:
-        retrieval = None
+        retrieval = empty_retrieval()
         persist_exposure = True
         memory_mode = MemoryContextMode.LEXICAL
         memory_intent: MemoryQueryIntent | None = None
-        if memory_session is not None:
-            retrieval = await memory_session.prefetch()
-            if retrieval is None:
-                retrieval = empty_retrieval()
-            persist_exposure = False
-            memory_intent = memory_session.prefetch_intent
-            if memory_intent is not None:
-                memory_mode = memory_intent.mode
         if turn_snapshot is None:
             raise ConversationCoverageError("chat turn requires a conversation snapshot")
         context = await self._context_assembler.assemble(
@@ -1591,12 +1584,11 @@ class ChatService:
         async with AsyncExitStack() as cleanup:
             if memory is not None:
                 cleanup.push_async_callback(memory.close)
-            retrieval = await memory.prefetch() if memory is not None else empty_retrieval()
             context = await self._context_assembler.assemble_self_initiative(
                 trigger=trigger,
                 runtime=runtime,
                 turn=turn_snapshot,
-                memory_retrieval=retrieval or empty_retrieval(),
+                memory_retrieval=empty_retrieval(),
             )
             if memory is not None and not control.current["model_requests"]:
                 # A resumed journal retains its old projected memory verbatim. Do

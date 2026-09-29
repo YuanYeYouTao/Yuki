@@ -23,7 +23,6 @@ class EventName(StrEnum):
     TURN_ADMITTED = "turn.admitted"
     TURN_REJECTED = "turn.rejected"
     AUTONOMOUS_DECLINED = "turn.autonomous_declined"
-    CAPABILITY_SEARCHED = "capability.searched"
     TURN_CLOSED = "turn.closed"
     CONTEXT_ASSEMBLED = "context.assembled"
     PROMPT_COLLECTING = "prompt.collecting"

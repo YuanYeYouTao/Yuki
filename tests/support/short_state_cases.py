@@ -57,6 +57,8 @@ async def run_short_state_cases(database, tmp_path, context):
     with state.store._transaction() as db:
         db.execute("UPDATE short_state SET expires_at=0")
     assert state.snapshot()[0]["text"] == ""
+    assert state.envelope(state.snapshot())["data"] == []
+    assert await state.inject(initial) == initial
     assert not state.update({"slot": 1, "text": "stale", "expected_revision": 1})["ok"]
 
     provider = FakeLLMProvider()
@@ -70,6 +72,7 @@ async def run_short_state_cases(database, tmp_path, context):
     chat._agent_runner.main_contract = contract
     chat._tools.short_state = state
     declared = await contract.definitions()
+    assert "request_tools" not in {tool.name for tool in declared}
     revision = contract.revision
     assert len(revision) == 64
     copied = await contract.definitions()
@@ -116,27 +119,6 @@ async def run_short_state_cases(database, tmp_path, context):
         )
         await chat._main_turns.run(await state.inject(initial), scoped, backend)
         assert provider.requests[-1].tools == declared
-        before_discovery = backend._capability_runtime.exposure_snapshot()
-        before_exclusive = backend._capability_runtime.requested_exclusive_write()
-        lookup = ToolCall(
-            id="directory",
-            function=ToolFunction(
-                name="request_tools",
-                arguments='{"query":"workspace list","max_results":4}',
-            ),
-        )
-        backend.begin_batch((lookup,), scoped)
-        discovered = json.loads(
-            await backend.execute(
-                lookup.function.name,
-                lookup.function.arguments,
-                scoped,
-            )
-        )
-        assert "available_tools" in discovered["data"]
-        assert "loaded_tools" not in discovered["data"]
-        assert backend._capability_runtime.exposure_snapshot() == before_discovery
-        assert backend._capability_runtime.requested_exclusive_write() == before_exclusive
         assert await contract.definitions() == declared
         # Global state has no person/group/origin ACL, including actorless and read-only turns.
         call = ToolCall(

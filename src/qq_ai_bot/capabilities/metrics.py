@@ -9,11 +9,7 @@ from dataclasses import dataclass, field
 @dataclass(slots=True)
 class ToolKernelMetrics:
     invocations: Counter[tuple[str, str, bool]] = field(default_factory=Counter)
-    first_round_tool_hits: Counter[bool] = field(default_factory=Counter)
     tool_enabled_turns: int = 0
-    request_tools_calls: int = 0
-    request_tools_zero_results: int = 0
-    automatic_memory_request_tools_calls: int = 0
     automatic_memory_read_tool_calls: int = 0
     mutation_locator_read_fallbacks: int = 0
 
@@ -25,25 +21,7 @@ class ToolKernelMetrics:
 
         self.tool_enabled_turns += 1
 
-    def record_request_tools(self) -> None:
-        """Track one fallback discovery call."""
-
-        self.request_tools_calls += 1
-
-    def record_request_tools_zero_result(self) -> None:
-        """Track a valid discovery attempt that returned no capability."""
-
-        self.request_tools_zero_results += 1
-
-    def record_automatic_memory_request_tools(self) -> None:
-        self.automatic_memory_request_tools_calls += 1
-
     def record_automatic_memory_read_tool_call(self, *, locator_fallback: bool) -> None:
         self.automatic_memory_read_tool_calls += 1
         if locator_fallback:
             self.mutation_locator_read_fallbacks += 1
-
-    def record_first_round_tool_hit(self, *, hit: bool) -> None:
-        """Record whether the first real tool ran without discovery fallback."""
-
-        self.first_round_tool_hits[hit] += 1

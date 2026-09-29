@@ -45,7 +45,7 @@ from qq_ai_bot.admin.models import (
     VisionRuntimeConfig,
     WebRuntimeConfig,
 )
-from qq_ai_bot.config import Settings, _csv_tuple
+from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.memory_config import MemoryConfigScope
 from qq_ai_bot.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel
 from qq_ai_bot.identity.errors import CanonicalIdentityError
@@ -499,6 +499,7 @@ class RuntimeConfigService:
         """Map activated global restart overrides back to long-lived Settings fields."""
 
         mapping = {
+            "memory.embedding_enabled": "memory_embedding_enabled",
             "execution_trace.retention_days": "execution_trace_retention_days",
             "execution_trace.max_payload_bytes": "execution_trace_max_payload_bytes",
             "llm.model": "llm_model",
@@ -1605,18 +1606,6 @@ class RuntimeConfigService:
             ),
             tooling=ToolingRuntimeConfig(
                 max_parallel_calls=int(cast(int, value("tooling.max_parallel_calls"))),
-                selected_tool_limit=(
-                    int(cast(int, value("tooling.selected_tool_limit")))
-                    if value("tooling.selected_tool_limit") is not None
-                    else None
-                ),
-                first_round_hard_cap=int(cast(int, value("tooling.first_round_hard_cap"))),
-                first_round_pin_ids=_csv_tuple(str(value("tooling.first_round_pin_ids") or "")),
-                schema_token_budget=(
-                    int(cast(int, value("tooling.schema_token_budget")))
-                    if value("tooling.schema_token_budget") is not None
-                    else None
-                ),
                 result_token_budget=(
                     int(cast(int, value("tooling.result_token_budget")))
                     if value("tooling.result_token_budget") is not None
@@ -1641,16 +1630,6 @@ class RuntimeConfigService:
                 ),
                 request_timeout_seconds=float(
                     cast(float | int, value("mcp.request_timeout_seconds"))
-                ),
-                selected_tool_limit=(
-                    int(cast(int, value("mcp.selected_tool_limit")))
-                    if value("mcp.selected_tool_limit") is not None
-                    else None
-                ),
-                schema_token_budget=(
-                    int(cast(int, value("mcp.schema_token_budget")))
-                    if value("mcp.schema_token_budget") is not None
-                    else None
                 ),
                 result_token_budget=(
                     int(cast(int, value("mcp.result_token_budget")))

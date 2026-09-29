@@ -457,6 +457,7 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
             _message(7, "ordinary Yuki history", sender="8000", direction="outbound"),
             author_kind="yuki",
         ),
+        _external(8, "old external event must not be replayed"),
     )
     snapshot = _HistoryPromptWindow(
         recent=recent,
@@ -551,6 +552,11 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     )
 
     assert wakeup_context.history_messages == ordinary_context.history_messages
+    ordinary._memory_context.retrieve_for_turn.assert_not_called()
+    wakeup._memory_context.retrieve_for_targets.assert_not_called()
+    assert ordinary_context.external_events == wakeup_context.external_events == ()
+    assert "recent_external_events" not in json.dumps(ordinary_context.metadata_payload)
+    assert "recent_external_events" not in json.dumps(wakeup_context.metadata_payload)
     assert early_marker in "\n".join(
         message.content or "" for message in wakeup_context.history_messages
     )

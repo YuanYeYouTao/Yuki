@@ -747,7 +747,8 @@ async def test_bonded_non_superuser_keeps_normal_tools_without_admin_tool(
     )
     assert provider.request is not None
     tool_names = {tool.name for tool in provider.request.tools}
-    assert "request_tools" in tool_names
+    assert "request_tools" not in tool_names
+    assert "web_search" in tool_names
     assert "call_onebot_api" not in tool_names
     assert "admin_execute_action" not in tool_names
     relationship_prompt = next(

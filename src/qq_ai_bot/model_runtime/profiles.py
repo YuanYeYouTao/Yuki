@@ -56,6 +56,7 @@ class _ProfileDocument(BaseModel):
     schema_version: Literal[3]
     profiles: dict[str, dict[str, Any]]
     routes: dict[str, str]
+    search_connection: str | None = None
 
 
 class ModelProfileCatalog(BaseModel):
@@ -65,10 +66,13 @@ class ModelProfileCatalog(BaseModel):
 
     profiles: dict[str, ModelProfile]
     routes: dict[ModelTask, ModelRoute]
+    search_connection: str | None = None
     compatibility_mode: bool = False
 
     @model_validator(mode="after")
     def _validate_routes(self) -> ModelProfileCatalog:
+        if self.search_connection is not None and self.search_connection not in self.profiles:
+            raise ValueError("search connection references an unknown model connection")
         missing = set(ModelTask).difference(self.routes)
         if missing:
             names = ", ".join(sorted(task.value for task in missing))
@@ -126,7 +130,11 @@ def load_model_profile_catalog(
             "model_profiles_compatibility_mode file=%s profile=main",
             path,
         )
-        capabilities = frozenset(ModelCapability) - {ModelCapability.IMAGE_INPUT}
+        # Legacy environment settings never opted into a provider-native tool.
+        capabilities = frozenset(ModelCapability) - {
+            ModelCapability.IMAGE_INPUT,
+            ModelCapability.NATIVE_WEB_SEARCH,
+        }
         profile = ModelProfile(
             id="main",
             provider=legacy_provider,
@@ -264,7 +272,11 @@ def parse_model_profile_catalog(
             )
             for task_name, profile_id in raw_routes.items()
         }
-        return ModelProfileCatalog(profiles=profiles, routes=routes)
+        return ModelProfileCatalog(
+            profiles=profiles,
+            routes=routes,
+            search_connection=document.search_connection,
+        )
     except ModelRuntimeConfigurationError:
         raise
     except (OSError, tomllib.TOMLDecodeError, ValidationError, KeyError, ValueError) as exc:

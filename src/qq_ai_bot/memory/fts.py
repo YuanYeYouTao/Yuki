@@ -8,10 +8,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
-from sqlalchemy import text
+from sqlalchemy import column, func, literal_column, select, table, text
 from sqlalchemy.exc import DatabaseError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.memory.authorized_scope import AuthorizedMemoryScope, authorized_fact_condition
 from qq_ai_bot.memory.enums import MemoryKind
 from qq_ai_bot.memory.errors import MemoryRetrievalError
 from qq_ai_bot.memory.models import (
@@ -27,6 +28,7 @@ from qq_ai_bot.memory.partition import (
 from qq_ai_bot.memory.query import normalize_query_text
 from qq_ai_bot.memory.temporal_filter import strict_time_sql
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.models import MemoryFactModel
 
 _WORD = re.compile(r"[^\W_]+", re.UNICODE)
 
@@ -37,6 +39,14 @@ class SafeLexicalQuery:
     terms: tuple[str, ...]
     fts_expression: str
     short_term: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorizedLexicalCandidate:
+    fact_id: int
+    fts_rank: float
+    exact_match: bool
+    matched_terms: tuple[str, ...]
 
 
 def build_safe_lexical_query(value: str, *, term_limit: int) -> SafeLexicalQuery:
@@ -93,6 +103,86 @@ class SQLiteMemoryFTSIndex:
 
     def __init__(self, database: Database) -> None:
         self._database = database
+
+    async def search_authorized(
+        self,
+        scope: AuthorizedMemoryScope,
+        query: SafeLexicalQuery,
+        *,
+        candidate_limit: int,
+        kinds: tuple[MemoryKind, ...] = (),
+        temporal: MemoryTemporalIntent | None = None,
+    ) -> tuple[tuple[AuthorizedLexicalCandidate, ...], bool]:
+        """One global FTS order over all SQL-authorized canonical owners."""
+        if not query.fts_expression and not query.short_term:
+            return (), False
+        mf = MemoryFactModel
+        conditions = [
+            authorized_fact_condition(scope),
+            mf.status == "active",
+            mf.review_state != "quarantined",
+            (mf.valid_until.is_(None) | (mf.valid_until > datetime.now(UTC))),
+        ]
+        if kinds:
+            conditions.append(mf.kind.in_(kind.value for kind in kinds))
+        from qq_ai_bot.memory.temporal_filter import strict_time_conditions
+
+        conditions.extend(strict_time_conditions(temporal))
+        fields = (mf.id, mf.memory_key, mf.category, mf.normalized_content)
+        fts = table("memory_facts_fts", column("rowid"))
+        try:
+            async with self._database.sessions() as session:
+                if query.fts_expression:
+                    statement = (
+                        select(
+                            *fields,
+                            func.bm25(literal_column("memory_facts_fts"), 1.0, 4.0, 2.0).label(
+                                "fts_rank"
+                            ),
+                        )
+                        .select_from(fts.join(mf, mf.id == fts.c.rowid))
+                        .where(*conditions, text("memory_facts_fts MATCH :fts_query"))
+                        .order_by(text("fts_rank ASC"), mf.id.asc())
+                        .limit(candidate_limit + 1)
+                    )
+                    rows = (
+                        (await session.execute(statement, {"fts_query": query.fts_expression}))
+                        .mappings()
+                        .all()
+                    )
+                else:
+                    assert query.short_term is not None
+                    pattern = f"%{self._escape_like(query.short_term)}%"
+                    statement = (
+                        select(*fields)
+                        .where(
+                            *conditions,
+                            (mf.normalized_content.like(pattern, escape="\\"))
+                            | (mf.memory_key.like(pattern, escape="\\"))
+                            | (mf.category.like(pattern, escape="\\")),
+                        )
+                        .order_by(mf.id.asc())
+                        .limit(candidate_limit + 1)
+                    )
+                    rows = (await session.execute(statement)).mappings().all()
+        except DatabaseError as exc:
+            raise MemoryRetrievalError("memory_index_unavailable") from exc
+        truncated = len(rows) > candidate_limit
+        candidates = []
+        for row in rows[:candidate_limit]:
+            key = normalize_query_text(str(row["memory_key"]))
+            category = normalize_query_text(str(row["category"]))
+            content = normalize_query_text(str(row["normalized_content"]))
+            haystack = " ".join((key, category, content))
+            candidates.append(
+                AuthorizedLexicalCandidate(
+                    fact_id=int(row["id"]),
+                    fts_rank=float(row["fts_rank"]) if query.fts_expression else 1000.0,
+                    exact_match=query.normalized_text in {key, category, content},
+                    matched_terms=tuple(term for term in query.terms if term in haystack),
+                )
+            )
+        return tuple(candidates), truncated
 
     async def search(
         self,

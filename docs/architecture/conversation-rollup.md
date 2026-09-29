@@ -102,16 +102,15 @@ CURRENT MESSAGE
 ```
 
 Rollup 永不进入 system instructions。昵称、群名片和正文来自落账时事件；当前 Actor 的关系、
-Memory、权限和动态插件资料只进入当前 envelope。
+权限和必要场景资料只进入当前 envelope。长期记忆由 Main Agent 按需调用记忆检索工具，
+不在每轮自动预取或注入。
 
-插件通知以 canonical `external_event` 落账，不作为普通 user/assistant/system history。前台完成
-history fit 后，最多追加一份有条数和字符上限的 `recent_external_events` digest；source、plugin、
-type、时间、summary 都在 `content_trust=external_untrusted` 载体内。既有稳定 `CORE_CONTRACT`
+插件通知以 canonical `external_event` 落账，不作为普通 user/assistant/system history；
+旧外部事件也不再以 `recent_external_events` 摘要自动附在本轮资料中。既有稳定 `CORE_CONTRACT`
 统一约束插件资料不得授予权限，不再存在插件专属 system policy。当前通知触发 Worker 时，Worker
 必须唤醒正常 Main Agent，而不是建立独立短上下文或特殊 Agent。它复用与普通聊天相同的
-Conversation snapshot、有效 Rollup、canonical raw history、Memory、工具 schema、模型 profile
-和 Prompt compiler；当前 external event 只在最后一条临时 user input 出现一次，不能再从 recent
-digest 重复注入，也不写回 history。
+Conversation snapshot、有效 Rollup、canonical raw history、按需记忆工具、工具 schema、模型 profile
+和 Prompt compiler；当前 external event 只在最后一条临时 user input 出现一次，不写回 history。
 
 插件主动回复以普通 outbound message 保存，并用 `caused_by_event_id` 指向来源 external event。
 历史分组键包含 origin class 与 cause ID，因此主动消息不会被并入上一条普通 Yuki 回复，不同事件

@@ -43,19 +43,6 @@ def _csv_tuple(value: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
-DEFAULT_FIRST_ROUND_PIN_IDS = (
-    "memory_change",
-    "get_person_memories",
-    "get_group_memories",
-    "search_chat_history",
-    "get_relationship",
-    "get_self_memories",
-    "web_search",
-    "automation_create",
-    "send_message",
-)
-
-
 @dataclass(frozen=True, slots=True)
 class BotIdentity:
     """Human-facing identity shared by deterministic bot subsystems."""
@@ -330,7 +317,7 @@ class Settings(BaseSettings):
     memory_stale_max_importance: int = 2
     memory_stale_max_confidence: float = 0.7
 
-    memory_embedding_enabled: bool = False
+    memory_embedding_enabled: bool = True
     memory_embedding_provider: str = "qwen_dashscope"
     memory_embedding_base_url: str = ""
     memory_embedding_api_key: str = Field(default="", repr=False)
@@ -366,16 +353,7 @@ class Settings(BaseSettings):
     agent_max_model_requests: int = 24
     agent_tool_result_max_characters: int = 24000
 
-    # Tool Kernel selection budgets do not cap the main Agent's frozen tool contract.
-    # Its request_tools directory lookup never loads schemas or changes authorization.
     tooling_max_parallel_calls: int = 8
-    tooling_selected_tool_limit: int | None = 32
-    tooling_first_round_hard_cap: int = 16
-    tooling_first_round_pin_ids_csv: str = Field(
-        default=",".join(DEFAULT_FIRST_ROUND_PIN_IDS),
-        validation_alias="TOOLING_FIRST_ROUND_PIN_IDS",
-    )
-    tooling_schema_token_budget: int | None = 12000
     tooling_result_token_budget: int | None = None
     tooling_result_item_limit: int | None = None
     tooling_result_artifact_enabled: bool = True
@@ -389,8 +367,6 @@ class Settings(BaseSettings):
     mcp_metadata_cache_ttl_seconds: int = 3600
     mcp_connect_timeout_seconds: float = 15.0
     mcp_request_timeout_seconds: float = 60.0
-    mcp_selected_tool_limit: int | None = 16
-    mcp_schema_token_budget: int | None = 8000
     mcp_result_token_budget: int | None = None
     mcp_result_item_limit: int | None = None
     mcp_max_parallel_calls: int = 8
@@ -929,13 +905,6 @@ class Settings(BaseSettings):
             raise ValueError("qwen_dashscope currently supports 1024 dimensions")
         if self.memory_embedding_document_template_version != 1:
             raise ValueError("unsupported MEMORY_EMBEDDING_DOCUMENT_TEMPLATE_VERSION")
-        if self.memory_embedding_enabled and not (
-            self.memory_embedding_base_url.strip() and self.memory_embedding_api_key
-        ):
-            raise ValueError(
-                "MEMORY_EMBEDDING_BASE_URL and MEMORY_EMBEDDING_API_KEY are required "
-                "when MEMORY_EMBEDDING_ENABLED=true"
-            )
         return self
 
     @model_validator(mode="after")
@@ -1015,10 +984,6 @@ class Settings(BaseSettings):
     @cached_property
     def tooling(self) -> ToolingSettings:
         return ToolingSettings.model_validate(self)
-
-    @cached_property
-    def tooling_first_round_pin_ids(self) -> tuple[str, ...]:
-        return _csv_tuple(self.tooling_first_round_pin_ids_csv)
 
     @cached_property
     def mcp(self) -> MCPSettings:
@@ -1104,5 +1069,5 @@ class Settings(BaseSettings):
         return bool(
             self.memory_embedding_enabled
             and self.memory_embedding_base_url.strip()
-            and self.memory_embedding_api_key
+            and self.memory_embedding_api_key.strip()
         )

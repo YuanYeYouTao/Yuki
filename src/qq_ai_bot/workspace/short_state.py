@@ -56,7 +56,7 @@ class ShortState:
             "id": "runtime.short_state",
             "channel": "runtime",
             "trust": "untrusted",
-            "data": rows,
+            "data": [row for row in rows if row["text"]],
         }
 
     def snapshot(self) -> list[dict[str, Any]]:

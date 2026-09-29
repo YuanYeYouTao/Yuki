@@ -10,6 +10,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
 from qq_ai_bot.llm.base import LLMInvalidRequestError
+from qq_ai_bot.memory.enums import MemoryScopeType
 from qq_ai_bot.runtime.activation_outcome import ContextBoundaryChanged
 from qq_ai_bot.services.agent_runner import AgentRunResult, AgentRuntime, AgentToolBackend
 from qq_ai_bot.services.agent_tools import OneBotToolGateway, ToolRuntime
@@ -280,6 +281,18 @@ async def _execute_plugin_main_turn(
             current_group_id=runtime.current_group_id,
             runtime_config=runtime.runtime_config,
             origin=runtime.origin,
+            memory_allowed_scopes=(
+                (
+                    (MemoryScopeType.PERSON, MemoryScopeType.PERSON_GROUP)
+                    if PluginPermission.MEMORY_PERSON_READ in host._approved_permissions
+                    else ()
+                )
+                + (
+                    (MemoryScopeType.GROUP,)
+                    if PluginPermission.MEMORY_GROUP_READ in host._approved_permissions
+                    else ()
+                )
+            ),
             conversation_id=inbound.conversation_id,
             presence_id=inbound.presence_id,
             person_id=inbound.person_id,
@@ -288,8 +301,7 @@ async def _execute_plugin_main_turn(
             scope_type=inbound.scope_type,
             before_model_request=validate,
         ),
-        allowed_tools=runtime.allowed_capabilities
-        | {"update_short_state", "request_tools", "read_tool_artifact"},
+        allowed_tools=runtime.allowed_capabilities | {"update_short_state", "read_tool_artifact"},
     )
     marker = _ACTIVE.set(True)
     try:

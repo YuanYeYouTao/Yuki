@@ -21,8 +21,8 @@ async def test_rollup_interrupt_reenters_main_contract(database, tmp_path, monke
 
     steps = iter(
         [
-            ("request_tools", {"query": "读取记录"}),
-            ("request_tools", {"query": "读取记录"}),
+            ("get_my_capabilities", {"mode": "summary"}),
+            ("get_my_capabilities", {"mode": "summary"}),
             ("send_message", {"text": "已经记录好了。"}),
             (None, None),
         ]
@@ -82,7 +82,7 @@ async def test_rollup_interrupt_reenters_main_contract(database, tmp_path, monke
         async def check():
             nonlocal calls
             calls += 1
-            if calls == 2:
+            if calls == 3:
                 async with database.sessions() as session, session.begin():
                     session.add(
                         CanonicalConversationRollupModel(

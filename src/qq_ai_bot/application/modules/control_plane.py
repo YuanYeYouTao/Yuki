@@ -10,6 +10,7 @@ from yuki_participation.autonomy_parameters import AutonomyParameters
 from qq_ai_bot.admin.config_files import ConfigFileService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.application.control_access import ControlOperatorAccess
+from qq_ai_bot.application.modules.web import WebModule
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.config import Settings
 from qq_ai_bot.control_plane.command_service import ControlCommandService
@@ -23,6 +24,7 @@ from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
 from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
 from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.model_runtime.executor import TaskModelExecutor
 from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
 from qq_ai_bot.persistence.control_command import ControlCommandAdapter
 from qq_ai_bot.persistence.control_query import ControlQueryAdapter
@@ -59,13 +61,19 @@ class ControlPlaneModule:
         workspace: WorkspaceStore | None = None,
         conversation_media: ConversationMediaService | None = None,
         model_catalog: ModelProfileCatalog | None = None,
+        model_executor: TaskModelExecutor | None = None,
+        web_module: WebModule | None = None,
         participation_snapshot: Callable[[], Awaitable[dict[str, object]]] | None = None,
         autonomy_parameters: Callable[[], AutonomyParameters] | None = None,
         runtime_health: Callable[[], Awaitable[tuple[ComponentHealthView, ...]]] | None = None,
         trace_recorder: TraceRecorder | None = None,
     ) -> ControlPlaneBundle:
         config_files = ConfigFileService(
-            settings, model_catalog, autonomy_parameters=autonomy_parameters
+            settings,
+            model_catalog,
+            autonomy_parameters=autonomy_parameters,
+            model_executor=model_executor,
+            web_module=web_module,
         )
         writer = ControlCommandAdapter(
             database,
@@ -89,6 +97,7 @@ class ControlPlaneModule:
                     settings=settings,
                     config_files=config_files,
                     runtime_config=runtime_config,
+                    embeddings=embeddings,
                     mcp_manager=mcp,
                     connection_registry=connections,
                     plugins=plugins,

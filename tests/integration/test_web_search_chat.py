@@ -55,25 +55,8 @@ def event(
     )
 
 
-def _request_missing_tool(request: ChatRequest, name: str) -> ChatResponse | None:
-    if name in {tool.name for tool in request.tools}:
-        return None
-    return ChatResponse(
-        content="",
-        latency_seconds=0,
-        tool_calls=(
-            ToolCall(
-                id=f"request-{name}",
-                function=ToolFunction(
-                    name="request_tools",
-                    arguments=json.dumps(
-                        {"query": name, "max_results": 2},
-                        ensure_ascii=False,
-                    ),
-                ),
-            ),
-        ),
-    )
+def _assert_declared_tool(request: ChatRequest, name: str) -> None:
+    assert name in {tool.name for tool in request.tools}
 
 
 def web_response() -> WebSearchResponse:
@@ -103,11 +86,9 @@ class WebToolLLM(LLMProvider):
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
         self.requests.append(request)
-        missing = _request_missing_tool(request, "web_search")
-        if missing is not None:
-            return missing
+        _assert_declared_tool(request, "web_search")
         last = request.messages[-1]
-        if last.role != "tool" or "loaded_tools" in (last.content or ""):
+        if last.role != "tool":
             return ChatResponse(
                 content="",
                 latency_seconds=0,
@@ -164,9 +145,7 @@ class WebThenOneBotLLM(LLMProvider):
         last = request.messages[-1]
         if last.role != "tool":
             self._web_called = False
-        missing = _request_missing_tool(request, "web_search")
-        if missing is not None:
-            return missing
+        _assert_declared_tool(request, "web_search")
         if not self._web_called:
             self._web_called = True
             return ChatResponse(
@@ -182,20 +161,7 @@ class WebThenOneBotLLM(LLMProvider):
                     ),
                 ),
             )
-        if "call_onebot_api" not in names:
-            return ChatResponse(
-                content="",
-                latency_seconds=0,
-                tool_calls=(
-                    ToolCall(
-                        id="request-onebot",
-                        function=ToolFunction(
-                            name="request_tools",
-                            arguments=json.dumps({"query": "call_onebot_api", "max_results": 1}),
-                        ),
-                    ),
-                ),
-            )
+        assert "call_onebot_api" in names
         if not self._called_onebot:
             self._called_onebot = True
             return ChatResponse(
@@ -285,11 +251,9 @@ class NativeSourceFailureThenTavilyLLM(LLMProvider):
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
         self.requests.append(request)
-        missing = _request_missing_tool(request, "web_search")
-        if missing is not None:
-            return missing
+        _assert_declared_tool(request, "web_search")
         last = request.messages[-1]
-        if last.role != "tool" or "loaded_tools" in (last.content or ""):
+        if last.role != "tool":
             assert "web_search" in {tool.name for tool in request.tools}
             assert not request.native_tools
             return ChatResponse(
@@ -318,11 +282,9 @@ class DomainRoutedTavilyLLM(LLMProvider):
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
         self.requests.append(request)
-        missing = _request_missing_tool(request, "read_webpage")
-        if missing is not None:
-            return missing
+        _assert_declared_tool(request, "read_webpage")
         last = request.messages[-1]
-        if last.role != "tool" or "loaded_tools" in (last.content or ""):
+        if last.role != "tool":
             assert not request.native_tools
             assert "read_webpage" in {tool.name for tool in request.tools}
             return ChatResponse(
@@ -355,11 +317,9 @@ class TargetMissThenTavilyLLM(LLMProvider):
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
         self.requests.append(request)
-        missing = _request_missing_tool(request, "read_webpage")
-        if missing is not None:
-            return missing
+        _assert_declared_tool(request, "read_webpage")
         last = request.messages[-1]
-        if last.role != "tool" or "loaded_tools" in (last.content or ""):
+        if last.role != "tool":
             assert not request.native_tools
             assert "read_webpage" in {tool.name for tool in request.tools}
             return ChatResponse(
@@ -428,7 +388,6 @@ async def test_chat_completions_profile_can_request_tavily_without_native(
         web_enabled=False,
         web_mode=WebMode.BOTH,
         tavily_api_key="test-placeholder",
-        tooling_first_round_pin_ids_csv="",
     )
     llm = NativeSourceFailureThenTavilyLLM()
     harness = build_harness(
@@ -472,7 +431,6 @@ async def test_domain_text_does_not_fabricate_a_deployment_route(
         web_enabled=False,
         web_mode=WebMode.BOTH,
         tavily_api_key="test-placeholder",
-        tooling_first_round_pin_ids_csv="",
     )
     llm = DomainRoutedTavilyLLM(target_url)
     web = FakeWebSearchProvider(extracted={target_url: source})
@@ -507,7 +465,6 @@ async def test_tavily_keyword_does_not_fabricate_a_deployment_route(
         web_enabled=False,
         web_mode=WebMode.BOTH,
         tavily_api_key="test-placeholder",
-        tooling_first_round_pin_ids_csv="",
     )
     llm = WebToolLLM()
     web = FakeWebSearchProvider(response=web_response())
@@ -551,7 +508,6 @@ async def test_chat_completions_url_read_uses_read_webpage(
         web_enabled=False,
         web_mode=WebMode.BOTH,
         tavily_api_key="test-placeholder",
-        tooling_first_round_pin_ids_csv="",
     )
     llm = TargetMissThenTavilyLLM(target_url)
     web = FakeWebSearchProvider(extracted={target_url: source})
@@ -687,7 +643,6 @@ def _native_first_settings(database: Database):
         web_enabled=True,
         web_mode=WebMode.BOTH,
         tavily_api_key="test-placeholder",
-        tooling_first_round_pin_ids_csv="",
     )
 
 
@@ -709,7 +664,7 @@ async def test_spoken_search_phrase_exposes_web_search_in_native_first_mode(
     assert result.reason == "agent_output_failure"
     assert llm.requests
     first = llm.requests[0]
-    assert "web_search" not in {tool.name for tool in first.tools}
+    assert "web_search" in {tool.name for tool in first.tools}
     assert not first.native_tools
 
 
@@ -767,7 +722,7 @@ async def test_mixed_tools_stay_visible_and_missing_native_sources_do_not_restar
 
 
 @pytest.mark.asyncio
-async def test_native_first_public_url_does_not_pin_read_webpage(
+async def test_public_url_keeps_stable_external_web_tools(
     database: Database,
 ) -> None:
     llm = FakeLLMProvider()
@@ -785,6 +740,6 @@ async def test_native_first_public_url_does_not_pin_read_webpage(
     assert llm.requests
     first = llm.requests[0]
     names = {tool.name for tool in first.tools}
-    assert "read_webpage" not in names
-    assert "web_search" not in names
+    assert "read_webpage" in names
+    assert "web_search" in names
     assert not first.native_tools

@@ -611,6 +611,9 @@ class ControlActivityQueryAdapter:
                         "completion_tokens": row.completion_tokens,
                         "cached_prompt_tokens": row.cached_prompt_tokens,
                         "total_tokens": row.total_tokens,
+                        "physical_request_count": row.physical_request_count,
+                        "unknown_usage_request_count": row.unknown_usage_request_count,
+                        "native_search_requested": row.native_search_requested,
                         "latency_seconds": row.latency_seconds,
                         "error_category": row.error_category,
                         "created_at": _stamp(row.created_at),
@@ -655,11 +658,18 @@ class ControlActivityQueryAdapter:
                 func.sum(model.prompt_tokens).filter(model.cached_prompt_tokens.is_not(None)),
                 0,
             ),
-            func.count(model.id).filter(model.cached_prompt_tokens.is_(None)),
+            func.count(model.id).filter(
+                or_(model.cached_prompt_tokens.is_(None), model.prompt_tokens.is_(None))
+            ),
             func.coalesce(
                 func.sum(model.cached_prompt_tokens).filter(model.prompt_tokens.is_not(None)),
                 0,
             ),
+            func.coalesce(func.sum(model.physical_request_count), 0),
+            func.count(model.id).filter(model.physical_request_count.is_(None)),
+            func.coalesce(func.sum(model.unknown_usage_request_count), 0),
+            func.count(model.id).filter(model.native_search_requested.is_(True)),
+            func.count(model.id).filter(model.native_search_requested.is_(None)),
         )
         period = (model.created_at >= since, model.created_at < until)
         bucket = func.strftime(
@@ -697,18 +707,44 @@ class ControlActivityQueryAdapter:
                     select(bucket, *measures).where(*period).group_by(bucket).order_by(bucket)
                 )
             ).all()
+            model_buckets = (
+                await session.execute(
+                    select(model.provider, model.model, bucket, *measures)
+                    .where(*period)
+                    .group_by(model.provider, model.model, bucket)
+                    .order_by(model.provider, model.model, bucket)
+                )
+            ).all()
 
-        def usage(values: Any) -> dict[str, int]:
+        def usage(values: Any) -> dict[str, int | float | str | None]:
+            reported_input = int(values[6] or 0)
+            reported_cached = int(values[8] or 0)
+            native_search_invocations = int(values[12] or 0)
             return {
                 "calls": int(values[0] or 0),
+                "physical_requests": int(values[9] or 0),
+                "physical_requests_unreported_calls": int(values[10] or 0),
+                "unknown_usage_requests": int(values[11] or 0),
+                "native_search_invocations": native_search_invocations,
+                "native_search_unreported_calls": int(values[13] or 0),
+                "native_search_cost": None,
+                "native_search_cost_status": (
+                    "not_reported"
+                    if native_search_invocations
+                    else "unknown_historical"
+                    if values[13]
+                    else "not_applicable"
+                ),
                 "input_tokens": int(values[1] or 0),
                 "output_tokens": int(values[2] or 0),
                 "total_tokens": int(values[3] or 0),
                 "cached_input_tokens": int(values[4] or 0),
                 "missing_usage_calls": int(values[5] or 0),
-                "cache_reported_input_tokens": int(values[6] or 0),
+                "cache_reported_input_tokens": reported_input,
                 "cache_unreported_calls": int(values[7] or 0),
-                "cache_reported_cached_tokens": int(values[8] or 0),
+                "cache_reported_cached_tokens": reported_cached,
+                "cache_reported_uncached_tokens": max(0, reported_input - reported_cached),
+                "cache_hit_rate": reported_cached / reported_input if reported_input else None,
             }
 
         return ActivityView(
@@ -732,6 +768,10 @@ class ControlActivityQueryAdapter:
                 ],
                 "tasks": [{"task": row[0], **usage(row[1:])} for row in tasks],
                 "buckets": [{"at": row[0], **usage(row[1:])} for row in buckets],
+                "model_buckets": [
+                    {"provider": row[0], "model": row[1], "at": row[2], **usage(row[3:])}
+                    for row in model_buckets
+                ],
             },
         )
 

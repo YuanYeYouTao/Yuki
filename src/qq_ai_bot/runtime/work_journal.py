@@ -98,6 +98,10 @@ class JournalSnapshot:
     record: dict[str, Any] | None = None
     previous_chain: str | None = None
     compaction_anchor: dict[str, Any] | None = None
+    portable_search: tuple[dict[str, str], ...] = ()
+    portable_search_truncated: bool = False
+    pending_calls: tuple[dict[str, str], ...] = ()
+    pending_sequence: int = 0
 
 
 class WorkJournal:
@@ -121,8 +125,9 @@ class WorkJournal:
                 if used:
                     raise JournalUnavailable("work_journal_missing")
                 return JournalSnapshot("fresh")
-            if not lease.work_id and row["source_revision"] != source.prompt_source_revision:
-                return JournalSnapshot("source_changed", previous_chain=row["chain_id"])
+            source_changed = bool(
+                not lease.work_id and row["source_revision"] != source.prompt_source_revision
+            )
             result = dict(row)
             try:
                 payload = json.loads(result["payload_json"])
@@ -131,8 +136,54 @@ class WorkJournal:
             if not isinstance(payload, dict) or not isinstance(payload.get("metadata", {}), dict):
                 raise JournalUnavailable("work_journal_corrupt")
             contract_changed = row["contract"] != contract
-            if contract_changed:
-                payload = payload.get("metadata", {}).get("compaction_anchor")
+            pending_calls: tuple[dict[str, str], ...] = ()
+            pending_sequence = 0
+            if contract_changed or source_changed:
+                raw_pending = payload.get("pending", [])
+                pending_sequence = payload["metadata"].get("sequence", 0)
+                if (
+                    not isinstance(raw_pending, list)
+                    or len(raw_pending) > 32
+                    or type(pending_sequence) is not int
+                    or pending_sequence < 0
+                    or any(
+                        not isinstance(call, dict)
+                        or not isinstance(call.get("id"), str)
+                        or not call["id"]
+                        or len(call["id"]) > 128
+                        or not isinstance(call.get("name"), str)
+                        or not call["name"]
+                        for call in raw_pending
+                    )
+                ):
+                    raise JournalUnavailable("work_journal_corrupt")
+                pending_calls = tuple(
+                    {"id": call["id"], "name": call["name"]} for call in raw_pending
+                )
+            progress = payload["metadata"].get("progress", {})
+            portable_search = (
+                progress.get("portable_search", []) if isinstance(progress, dict) else []
+            )
+            if not isinstance(portable_search, list):
+                portable_search = []
+            portable_search = tuple(
+                {
+                    "url": item["url"],
+                    "title": item.get("title", "")[:200],
+                    "snippet": item.get("snippet", "")[:512],
+                }
+                for item in portable_search[:16]
+                if isinstance(item, dict)
+                and isinstance(item.get("url"), str)
+                and isinstance(item.get("title", ""), str)
+                and isinstance(item.get("snippet", ""), str)
+            )
+            if contract_changed or source_changed:
+                payload = (
+                    payload.get("metadata", {}).get("compaction_anchor")
+                    if not source_changed
+                    else None
+                )
             try:
                 refs = references(payload)
                 if any(not isinstance(digest, str) for digest in refs):
@@ -151,11 +202,24 @@ class WorkJournal:
                     result["payload_json"] = json.dumps(payload, ensure_ascii=False)
                 except (ValueError, KeyError) as exc:
                     raise JournalUnavailable("work_journal_media_missing") from exc
+            if source_changed:
+                return JournalSnapshot(
+                    "source_changed",
+                    previous_chain=row["chain_id"],
+                    pending_calls=pending_calls,
+                    pending_sequence=pending_sequence,
+                )
             if contract_changed:
                 return JournalSnapshot(
                     "contract_changed",
                     previous_chain=row["chain_id"],
                     compaction_anchor=payload,
+                    portable_search=portable_search,
+                    portable_search_truncated=bool(progress.get("portable_search_truncated", False))
+                    if isinstance(progress, dict)
+                    else False,
+                    pending_calls=pending_calls,
+                    pending_sequence=pending_sequence,
                 )
             return JournalSnapshot("resume", result, row["chain_id"])
 
@@ -346,3 +410,8 @@ class WorkJournal:
             },
             ensure_ascii=False,
         )
+
+    async def effect_state(self, key: str) -> str | None:
+        """Read the original effect state without dispatching or changing it."""
+        async with self.repository.database.sessions() as session:
+            return await session.scalar(select(effects.c.state).where(effects.c.effect_key == key))

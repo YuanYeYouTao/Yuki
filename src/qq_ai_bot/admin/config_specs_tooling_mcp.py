@@ -20,29 +20,6 @@ def tooling_mcp_config_specs() -> tuple[ConfigSpec, ...]:
             minimum=1,
             scopes=_G,
         ),
-        _spec(
-            "tooling.first_round_hard_cap",
-            "内核首轮选择上限",
-            "仅作用于工具内核选择规划；不裁剪主 Agent 固定 tools[]，目录查询也不追加声明。",
-            env_alias="TOOLING_FIRST_ROUND_HARD_CAP",
-            getter=_field("tooling_first_round_hard_cap"),
-            settings_fields=("tooling_first_round_hard_cap",),
-            category="tooling",
-            value_type="integer",
-            minimum=1,
-            scopes=_G,
-        ),
-        _spec(
-            "tooling.first_round_pin_ids",
-            "首轮钉定工具",
-            "工具内核初始选择的 capability id，逗号分隔；不改变主 Agent 固定声明。",
-            env_alias="TOOLING_FIRST_ROUND_PIN_IDS",
-            getter=_field("tooling_first_round_pin_ids_csv"),
-            settings_fields=("tooling_first_round_pin_ids_csv",),
-            category="tooling",
-            value_type="string",
-            scopes=_G,
-        ),
         *(
             _spec(
                 f"tooling.{name}",
@@ -57,16 +34,6 @@ def tooling_mcp_config_specs() -> tuple[ConfigSpec, ...]:
                 scopes=_G,
             )
             for name, display, description in (
-                (
-                    "selected_tool_limit",
-                    "工具选择数量预算",
-                    "工具内核初始选择的数量预算；为空时不额外限制，不裁剪主 Agent 固定声明。",
-                ),
-                (
-                    "schema_token_budget",
-                    "工具 Schema 预算",
-                    "工具内核初始选择的 Schema Token 预算；不改变主 Agent 固定声明。",
-                ),
                 ("result_token_budget", "工具结果 Token 预算", "为空时不额外限制统一工具结果。"),
                 ("result_item_limit", "工具结果条目预算", "为空时不额外限制结构化结果条目。"),
             )
@@ -150,20 +117,6 @@ def tooling_mcp_config_specs() -> tuple[ConfigSpec, ...]:
                     "单次 MCP 请求的超时秒数。",
                     "number",
                     0.1,
-                ),
-                (
-                    "selected_tool_limit",
-                    "MCP 工具数量预算",
-                    "首批 MCP 工具的宽松数量预算；为空时不额外限制。",
-                    "integer",
-                    1,
-                ),
-                (
-                    "schema_token_budget",
-                    "MCP Schema 预算",
-                    "首批 MCP Schema 的宽松 Token 预算；为空时不额外限制。",
-                    "integer",
-                    1,
                 ),
                 (
                     "result_token_budget",

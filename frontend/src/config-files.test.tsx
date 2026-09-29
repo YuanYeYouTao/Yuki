@@ -108,6 +108,10 @@ it("edits schema fields and routes without discarding server environment referen
     screen.getByRole("combobox", { name: "接口协议" }),
     "responses",
   );
+  await user.selectOptions(
+    screen.getByRole("combobox", { name: "此连接的联网搜索" }),
+    "external",
+  );
   await user.click(screen.getByRole("button", { name: "检查并保存" }));
   const intent = act.mock.calls[0][0] as Intent;
   const document = (
@@ -126,6 +130,7 @@ it("edits schema fields and routes without discarding server environment referen
     model_env: "LLM_MODEL",
     base_url_env: "LLM_BASE_URL",
     api_key_env: "LLM_API_KEY",
+    search_mode: "external",
   });
   expect(document.routes).toEqual({
     chat_agent: "other",
@@ -180,6 +185,104 @@ it("chooses a concrete model connection for a task", async () => {
     (intent.payload.spec as { document: { routes: Record<string, string> } })
       .document.routes.chat_agent,
   ).toBe("backup");
+});
+
+it("keeps DeepSeek search on an explicit connection while chat uses another provider", async () => {
+  file({
+    file_id: "model_profiles",
+    revision: 11,
+    valid: true,
+    search_backend: "deepseek_anthropic",
+    profile_schema: { properties: { provider: { type: "string" } } },
+    tasks: ["chat_agent"],
+    document: {
+      schema_version: 3,
+      profiles: {
+        chat: {
+          provider: "gemini",
+          protocol: "gemini",
+          model: "gemini-3.8-flash",
+          base_url: "https://generativelanguage.googleapis.com/v1beta",
+          api_key_env: "GEMINI_KEY",
+        },
+        search: {
+          provider: "deepseek",
+          protocol: "responses",
+          model: "deepseek-flash",
+          base_url: "https://api.deepseek.com",
+          api_key_env: "DEEPSEEK_KEY",
+        },
+      },
+      routes: { chat_agent: "chat" },
+      search_connection: null,
+    },
+  });
+  const act = vi.fn();
+  render(<ConfigFile fileId="model_profiles" props={{ ...props, act }} />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "检查并保存" }));
+  expect(screen.getByRole("alert")).toHaveTextContent("请先选择独立的搜索连接");
+  expect(act).not.toHaveBeenCalled();
+  await user.selectOptions(
+    screen.getByRole("combobox", { name: "搜索连接" }),
+    "search",
+  );
+  await user.click(screen.getByRole("button", { name: "检查并保存" }));
+  const intent = act.mock.calls[0][0] as Intent;
+  expect(
+    (intent.payload.spec as { document: { search_connection: string } })
+      .document.search_connection,
+  ).toBe("search");
+  expect(
+    (intent.payload.spec as { document: { routes: Record<string, string> } })
+      .document.routes.chat_agent,
+  ).toBe("chat");
+});
+
+it("assigns every task to the selected connection in one action", async () => {
+  file({
+    file_id: "model_profiles",
+    revision: 5,
+    valid: true,
+    profile_schema: { properties: { provider: { type: "string" } } },
+    tasks: ["chat_agent", "memory_extraction"],
+    document: {
+      schema_version: 3,
+      profiles: {
+        first: {
+          provider: "openai",
+          model: "one",
+          protocol: "responses",
+          base_url: "https://api.example.test/v1",
+          api_key_env: "FIRST_KEY",
+        },
+        second: {
+          provider: "openai",
+          model: "two",
+          protocol: "responses",
+          base_url: "https://api.example.test/v1",
+          api_key_env: "SECOND_KEY",
+        },
+      },
+      routes: { chat_agent: "first", memory_extraction: "second" },
+    },
+  });
+  const act = vi.fn();
+  render(<ConfigFile fileId="model_profiles" props={{ ...props, act }} />);
+  const user = userEvent.setup();
+  await user.selectOptions(
+    await screen.findByRole("combobox", { name: "当前模型连接" }),
+    "second",
+  );
+  await user.click(
+    screen.getByRole("button", { name: "全部用途使用当前模型连接" }),
+  );
+  await user.click(screen.getByRole("button", { name: "检查并保存" }));
+  const intent = act.mock.calls[0][0] as Intent;
+  expect(
+    (intent.payload.spec as { document: { routes: Record<string, string> } })
+      .document.routes,
+  ).toEqual({ chat_agent: "second", memory_extraction: "second" });
 });
 
 it("accepts an API key in the connection form without showing it in the review", async () => {
@@ -284,11 +387,81 @@ it("offers a Gemini 3.8 Flash native connection with its verified input capabili
   expect(screen.getByRole("textbox", { name: "API Base URL" })).toHaveValue(
     "https://generativelanguage.googleapis.com/v1beta",
   );
+  const search = screen.getByRole("combobox", { name: "此连接的联网搜索" });
+  expect(search).toHaveValue("external");
+  await userEvent.selectOptions(search, "both");
+  expect(search).toHaveValue("both");
   await userEvent.click(screen.getByText("高级参数与能力声明"));
-  expect(screen.getByRole("combobox", { name: "思考强度" })).toHaveValue(
-    "medium",
-  );
+  expect(screen.getByRole("combobox", { name: "思考强度" })).toHaveValue("low");
   expect(screen.queryByRole("option", { name: "max" })).not.toBeInTheDocument();
+});
+
+it("replaces legacy Gemini effort and budget overrides from the visible level", async () => {
+  file({
+    file_id: "model_profiles",
+    revision: 7,
+    valid: true,
+    apply_mode: "hot_reload",
+    profile_schema: { properties: {} },
+    tasks: ["chat_agent"],
+    document: {
+      schema_version: 3,
+      profiles: {
+        main: {
+          provider: "gemini",
+          protocol: "gemini",
+          base_url: "https://generativelanguage.googleapis.com/v1beta",
+          model: "gemini-3.8-flash",
+          api_key_env: "GEMINI_KEY",
+          reasoning_effort: "low",
+          reasoning_effort_env: "LLM_REASONING_EFFORT",
+          wire_options: { reasoning: "budget", thinking_budget_tokens: 4096 },
+        },
+      },
+      routes: { chat_agent: "main" },
+    },
+  });
+  const act = vi.fn();
+  render(<ConfigFile fileId="model_profiles" props={{ ...props, act }} />);
+  const effort = await screen.findByRole("combobox", { name: "思考强度" });
+  expect(effort).toHaveValue("low");
+  await userEvent.click(
+    screen.getByRole("button", { name: "使用当前档位并移除旧覆盖" }),
+  );
+  await userEvent.click(screen.getByRole("button", { name: "检查并保存" }));
+  const intent = act.mock.calls[0][0] as Intent;
+  const saved = (
+    intent.payload.spec as {
+      document: { profiles: Record<string, Record<string, unknown>> };
+    }
+  ).document.profiles.main;
+  expect(saved.reasoning_effort).toBe("low");
+  expect(saved.reasoning_effort_env).toBeUndefined();
+  expect(saved.wire_options).toEqual({ reasoning: "gemini" });
+});
+
+it("offers Claude native search as a per-connection choice", async () => {
+  file({
+    file_id: "model_profiles",
+    revision: 0,
+    valid: true,
+    profile_schema: { properties: {} },
+    tasks: ["chat_agent"],
+    document: { schema_version: 3, profiles: {}, routes: {} },
+  });
+  render(<ConfigFile fileId="model_profiles" props={props} />);
+  await userEvent.selectOptions(
+    await screen.findByRole("combobox", { name: "新连接供应商" }),
+    "anthropic",
+  );
+  await userEvent.click(screen.getByRole("button", { name: "添加模型连接" }));
+  const search = screen.getByRole("combobox", { name: "此连接的联网搜索" });
+  expect(search).toHaveValue("external");
+  expect(
+    screen.queryByRole("option", { name: "原生搜索与外部搜索" }),
+  ).not.toBeInTheDocument();
+  await userEvent.selectOptions(search, "native");
+  expect(search).toHaveValue("native");
 });
 
 it("does not request file contents without the separate content grant", async () => {

@@ -1,9 +1,11 @@
 # DeepSeek Flash 搜索临时适配器
 
-主 Agent 保持 Flash Responses。设置 `WEB_MODE=tavily`、
-`WEB_SEARCH_BACKEND=deepseek_anthropic` 后，已有 `web_search` 工具单独请求
-官方 `/anthropic/v1/messages` 的 Flash 原生搜索；主 Agent、子 Agent 的工具
-名称、参数、顺序和历史序列均不改变。搜索请求只包含查询和检索限制，不传聊天历史。
+设置 `WEB_MODE=tavily`、`WEB_SEARCH_BACKEND=deepseek_anthropic` 后，已有
+`web_search` 工具单独请求官方 `/anthropic/v1/messages` 的 Flash 原生搜索；
+主 Agent、子 Agent 的工具名称、参数、顺序和历史序列均不改变。搜索请求只包含
+查询和检索限制，不传聊天历史。管理界面“模型接入与任务用途”中需将“搜索连接”
+明确指向一条官方 DeepSeek 模型连接。它与“主对话”任务路由独立：主对话可热切至
+Gemini 或其他供应商，而搜索仍使用这条 DeepSeek 连接的密钥。
 
 适配器仅接受服务端 `web_search_tool_result` 中关联真实调用的来源，
 不把模型自行生成的网址或回答当成搜索结果。网页正文沿用公共地址校验、DNS 固定
@@ -14,14 +16,19 @@
 未配置 Tavily 时，无法完成的操作明确报错。没有新增 Tavily 调用额度限制。
 
 检索结果缓存保存在 `WEB_SEARCH_BRIDGE_STATE_PATH`：10 分钟过期、最多
-128 条、单条最多 32 KiB。只复用首选后端的成功结果；Tavily 兜底结果不缓存，
+128 条、单条最多 32 KiB。缓存键按搜索密钥隔离；切换连接或密钥不会复用旧账号的
+检索结果。只复用首选后端的成功结果；Tavily 兜底结果不缓存，
 也不复用旧版本已缓存的 Tavily 结果，避免暂时失败变成持续绕过首选后端。
 这只是减少重复检索，与 Provider 的前缀缓存分开。
 网页文本是外部资料，继续走现有不可信工具结果边界和来源交付链路。
 实际发出的辅助模型请求计入当前任务的根预算；失败请求也计入。
 
-启动时要求主模型配置指向官方 DeepSeek，复用该配置的密钥。不会将其他 Provider
-的密钥发送到 DeepSeek。默认仍为原 Tavily 后端；开启适配器需要重启 Bot。
+旧配置未写搜索连接时，仅启动兼容原来主对话为官方 DeepSeek 的配置；新的管理界面
+保存必须选择搜索连接，避免切换主对话后搜索密钥被隐式改写。模型连接和密钥热保存
+时一并切换搜索后端；已开始的搜索继续使用旧连接，最后一个在途调用结束后关闭旧
+连接。不会将其他
+Provider 的密钥发送到 DeepSeek。默认仍为原 Tavily 后端；改变部署环境中的
+`WEB_SEARCH_BACKEND` 需要重启 Bot。
 
 待官方 Flash Responses 的原生搜索经过真实调用验证后，可切换原生联网配置，
 移除 `deepseek_bridge.py` 和 WebModule 中的适配分支。仅回退这次补丁时，

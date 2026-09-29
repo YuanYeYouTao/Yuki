@@ -18,9 +18,9 @@ it("shows window totals, keeps cached input inside input, and marks missing usag
               since: "2026-09-28T00:00:00Z",
               until: "2026-09-29T00:00:00Z",
               calls: 3,
-              input_tokens: 100,
+              input_tokens: 120,
               output_tokens: 20,
-              total_tokens: 120,
+              total_tokens: 140,
               cached_input_tokens: 60,
               cache_reported_input_tokens: 100,
               cache_reported_cached_tokens: 60,
@@ -31,8 +31,8 @@ it("shows window totals, keeps cached input inside input, and marks missing usag
                   provider: "fixture",
                   model: "m1",
                   calls: 3,
-                  total_tokens: 120,
-                  input_tokens: 100,
+                  total_tokens: 140,
+                  input_tokens: 120,
                   cached_input_tokens: 60,
                   cache_reported_input_tokens: 100,
                   cache_reported_cached_tokens: 60,
@@ -47,7 +47,8 @@ it("shows window totals, keeps cached input inside input, and marks missing usag
                   provider: "fixture",
                   model: "m1",
                   calls: 3,
-                  total_tokens: 120,
+                  total_tokens: 140,
+                  input_tokens: 120,
                   cached_input_tokens: 60,
                   cache_reported_input_tokens: 100,
                   cache_reported_cached_tokens: 60,
@@ -58,7 +59,8 @@ it("shows window totals, keeps cached input inside input, and marks missing usag
                 {
                   task: "chat_agent",
                   calls: 3,
-                  total_tokens: 120,
+                  total_tokens: 140,
+                  input_tokens: 120,
                   cached_input_tokens: 60,
                   cache_reported_input_tokens: 100,
                   cache_reported_cached_tokens: 60,
@@ -69,7 +71,25 @@ it("shows window totals, keeps cached input inside input, and marks missing usag
                 {
                   at: "2026-09-28T08:00:00Z",
                   calls: 3,
-                  total_tokens: 120,
+                  input_tokens: 120,
+                  output_tokens: 20,
+                  total_tokens: 140,
+                  cached_input_tokens: 60,
+                  cache_reported_input_tokens: 100,
+                  cache_reported_cached_tokens: 60,
+                  cache_unreported_calls: 1,
+                },
+              ],
+              model_buckets: [
+                {
+                  provider: "fixture",
+                  model: "m1",
+                  at: "2026-09-28T08:00:00Z",
+                  calls: 3,
+                  input_tokens: 120,
+                  output_tokens: 20,
+                  total_tokens: 140,
+                  cached_input_tokens: 60,
                   cache_reported_input_tokens: 100,
                   cache_reported_cached_tokens: 60,
                   cache_unreported_calls: 1,
@@ -91,16 +111,19 @@ it("shows window totals, keeps cached input inside input, and marks missing usag
   render(
     <Models allowed={() => true} act={() => {}} refresh={0} conversation="" />,
   );
-  expect(await screen.findAllByText(/缓存命中率 60.0%/)).toHaveLength(2);
   expect(
-    screen.getByRole("list", { name: "API 调用次数" }),
-  ).toBeInTheDocument();
-  expect(screen.getByRole("list", { name: "Token 用量" })).toBeInTheDocument();
+    (await screen.findAllByText(/已确认缓存占已记录输入 50.0%/)).length,
+  ).toBeGreaterThanOrEqual(2);
+  expect(screen.getAllByText(/已报告子集命中率 60.0%/).length).toBeGreaterThan(
+    0,
+  );
+  expect(screen.getAllByRole("list", { name: "模型调用次数" })).toHaveLength(2);
+  expect(screen.getAllByRole("list", { name: "Token 用量" })).toHaveLength(2);
   expect(
-    screen.getByRole("listitem", {
-      name: /08:00:00Z UTC：120 Token；缓存命中率 60.0%/,
+    screen.getAllByRole("listitem", {
+      name: /已确认缓存占已记录输入 50.0%；已报告子集命中率 60.0%/,
     }),
-  ).toBeInTheDocument();
+  ).toHaveLength(4);
   expect(screen.getByText(/1 次调用的上游未报告总 Token/)).toBeInTheDocument();
   expect(screen.getByText(/不是供应商账单/)).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "最近 7 天" }));

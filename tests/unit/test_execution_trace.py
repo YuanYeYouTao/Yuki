@@ -503,14 +503,6 @@ async def test_real_runner_records_tools_and_original_chat_delivery(
                 "",
                 0,
                 tool_calls=(
-                    ToolCall("inspect", ToolFunction("request_tools", '{"query":"send_message"}')),
-                ),
-            )
-        if count == 2 + int(work_enabled):
-            return ChatResponse(
-                "",
-                0,
-                tool_calls=(
                     ToolCall("delivery", ToolFunction("send_message", '{"text":"hello"}')),
                 ),
             )

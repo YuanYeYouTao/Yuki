@@ -38,7 +38,7 @@ def executor(pool, protocol="responses", **overrides):
         max_retries=0,
         default_temperature=0.5,
         default_max_output_tokens=4096,
-        capabilities=frozenset(ModelCapability),
+        capabilities=frozenset(ModelCapability) - {ModelCapability.NATIVE_WEB_SEARCH},
         **overrides,
     )
     return TaskModelExecutor(

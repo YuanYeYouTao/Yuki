@@ -93,6 +93,7 @@ it("shows linked received and sent messages with content only when granted", asy
               {
                 event_id: 1,
                 direction: "received",
+                sender_display_name: "阿远",
                 conversation_id: "conversation-a",
                 occurred_at: "2026-09-28T07:59:00Z",
                 content: "请查一下",
@@ -100,6 +101,8 @@ it("shows linked received and sent messages with content only when granted", asy
               {
                 event_id: 2,
                 direction: "sent",
+                sender_display_name: "Yuki",
+                delivery_status: "confirmed",
                 conversation_id: "conversation-b",
                 occurred_at: "2026-09-28T08:00:00Z",
                 content: "我去查一下",
@@ -113,8 +116,90 @@ it("shows linked received and sent messages with content only when granted", asy
   render(<LiveSession conversation="conversation-a" refresh={0} content />);
   expect(await screen.findByText("请查一下")).toBeInTheDocument();
   expect(screen.getByText("我去查一下")).toBeInTheDocument();
+  expect(screen.getByText(/收到 · 阿远/)).toBeInTheDocument();
+  expect(screen.getByText(/发出 · Yuki/)).toBeInTheDocument();
+  expect(screen.getByText(/已由投递回执确认/)).toBeInTheDocument();
   expect(screen.getByText(/发送到其他会话/)).toBeInTheDocument();
   expect(calls[0].include_content).toBe(true);
+});
+
+it("loads earlier turn steps and messages by the internal turn and step IDs", async () => {
+  const calls: Record<string, unknown>[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, options) => {
+    const body = JSON.parse(String(options?.body));
+    calls.push(body);
+    if (!body.before_step_id)
+      return answer({
+        fields: {
+          conversation_id: "conversation-a",
+          observed_at: "2026-09-28T08:00:00Z",
+          state: "idle",
+          active: [],
+          recent: [
+            {
+              turn_id: "turn-a",
+              original_conversation_id: "conversation-a",
+              started_at: "2026-09-28T07:59:00Z",
+              latest_kind: "turn_end",
+              status: "completed",
+              steps: [
+                {
+                  id: 42,
+                  kind: "turn_end",
+                  created_at: "2026-09-28T08:00:00Z",
+                  payload_status: "recorded",
+                },
+              ],
+              steps_truncated: true,
+              messages_truncated: true,
+              messages: [],
+            },
+          ],
+        },
+      });
+    return answer({
+      fields: {
+        turn_id: "turn-a",
+        original_conversation_id: "conversation-a",
+        steps_truncated: false,
+        steps: [
+          {
+            id: 10,
+            kind: "tool_start",
+            created_at: "2026-09-28T07:59:01Z",
+            payload_status: "recorded",
+          },
+        ],
+        messages: [
+          {
+            event_id: 7,
+            direction: "received",
+            conversation_id: "conversation-a",
+            occurred_at: "2026-09-28T07:59:00Z",
+            content: null,
+          },
+        ],
+      },
+    });
+  });
+  render(<LiveSession conversation="conversation-a" refresh={0} />);
+  await userEvent
+    .setup()
+    .click(await screen.findByRole("button", { name: "查看最近一次轮次" }));
+  await userEvent
+    .setup()
+    .click(screen.getByRole("button", { name: "加载更早的状态和收发消息" }));
+  expect(await screen.findByText("内部事件 #7")).toBeInTheDocument();
+  expect(screen.getByText("消息正文未授权读取")).toBeInTheDocument();
+  expect(calls[1]).toMatchObject({
+    conversation_id: "conversation-a",
+    turn_id: "turn-a",
+    before_step_id: 42,
+    include_content: false,
+  });
+  expect(
+    screen.queryByRole("button", { name: "加载更早的状态和收发消息" }),
+  ).not.toBeInTheDocument();
 });
 
 it("opens a recorded tool call with its actual arguments and paired result", async () => {
@@ -186,6 +271,7 @@ it("opens a recorded tool call with its actual arguments and paired result", asy
   await userEvent
     .setup()
     .click(await screen.findByRole("button", { name: "查看最近一次轮次" }));
+  expect(screen.getAllByText(/工具返回结果 · 1 秒/).length).toBeGreaterThan(0);
   expect(calls).not.toContain("read_execution_trace");
   await userEvent
     .setup()
@@ -206,6 +292,92 @@ it("opens a recorded tool call with its actual arguments and paired result", asy
   ).toHaveTextContent("search_web");
   expect(screen.getByRole("group", { name: "本轮具体操作" })).toHaveTextContent(
     '"count": 2',
+  );
+});
+
+it("shows actual model and Provider request steps in the turn operation summary", async () => {
+  const detailReads: number[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
+    const method = String(url).split("/").pop()!;
+    if (method === "read_conversation_execution")
+      return answer({
+        fields: {
+          conversation_id: "conversation-a",
+          observed_at: "2026-09-28T08:00:00Z",
+          state: "active",
+          active: [
+            {
+              turn_id: "turn-one",
+              original_conversation_id: "conversation-a",
+              started_at: "2026-09-28T07:59:59Z",
+              latest_kind: "provider_response",
+              status: "active",
+              steps: [
+                { id: 10, kind: "model_start", payload_status: "recorded" },
+                { id: 11, kind: "provider_start", payload_status: "recorded" },
+                {
+                  id: 12,
+                  kind: "provider_response",
+                  payload_status: "recorded",
+                },
+              ],
+            },
+          ],
+          recent: [],
+        },
+      });
+    const id = Number(JSON.parse(String(options?.body)).entry_id);
+    detailReads.push(id);
+    const payload =
+      id === 10
+        ? {
+            data: {
+              task: "chat_agent",
+              request: { messages: [{ role: "user" }], tools: [] },
+            },
+          }
+        : id === 11
+          ? {
+              data: {
+                protocol: "gemini",
+                dispatch: "sent",
+                body: { model: "gemini-flash" },
+              },
+            }
+          : {
+              data: {
+                http_status: 200,
+                body: { model: "gemini-flash", usage: {} },
+              },
+            };
+    return answer({
+      kind:
+        id === 10
+          ? "model_start"
+          : id === 11
+            ? "provider_start"
+            : "provider_response",
+      payload_status: "recorded",
+      payload,
+    });
+  });
+  render(
+    <LiveSession conversation="conversation-a" refresh={0} traceContent />,
+  );
+  await userEvent
+    .setup()
+    .click(
+      await screen.findByRole("button", { name: "查看本轮具体操作（3 条）" }),
+    );
+  await waitFor(() => expect(detailReads).toEqual([10, 11, 12]));
+  expect(screen.getByRole("group", { name: "本轮具体操作" })).toHaveTextContent(
+    "查看实际模型输入与请求参数",
+  );
+  expect(screen.getByRole("group", { name: "本轮具体操作" })).toHaveTextContent(
+    "查看实际发给 Provider 的请求",
+  );
+  expect(screen.getByRole("group", { name: "本轮具体操作" })).toHaveTextContent(
+    "HTTP 200",
   );
 });
 

@@ -9,7 +9,6 @@ import logging
 from copy import deepcopy
 from typing import Any
 
-from qq_ai_bot.capabilities.request import request_tools_definition
 from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.runtime.work_control import work_control_tools
 from qq_ai_bot.services.agent_tools import ToolRuntime
@@ -61,7 +60,7 @@ class MainAgentContract:
                 entry.descriptor.as_chat_tool(description=entry.descriptor.description)
                 for entry in registry.catalog(declaration).entries
             ]
-            tools.extend((request_tools_definition(), STATE_TOOL))
+            tools.append(STATE_TOOL)
             from qq_ai_bot.runtime.subagent_tools import subagent_tools
 
             tools.extend(work_control_tools())
@@ -73,7 +72,7 @@ class MainAgentContract:
             revision = hashlib.sha256(
                 json.dumps(
                     {
-                        "version": 6,
+                        "version": 7,
                         "tools": [
                             {
                                 "name": t.name,

@@ -176,7 +176,7 @@ async def _run_protocol(database, tmp_path, automation_context, protocol):
             max_retries=0,
             default_temperature=0.5,
             default_max_output_tokens=512,
-            capabilities=frozenset(ModelCapability),
+            capabilities=frozenset(ModelCapability) - {ModelCapability.NATIVE_WEB_SEARCH},
         )
         models = TaskModelExecutor(
             router=ModelRouter(

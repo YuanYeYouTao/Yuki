@@ -136,6 +136,11 @@ def supports_native_search(
         return False
     if protocol == "responses":
         return vendor in RESPONSES_VENDORS
+    if protocol == "gemini":
+        # Gemini GenerateContent can combine Google Search with function declarations.
+        return vendor == "gemini"
+    if protocol == "anthropic_messages":
+        return vendor == "anthropic"
     if protocol == "chat_completions":
         return wire_options(vendor, options).native_web_search and not has_functions
     return False

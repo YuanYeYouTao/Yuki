@@ -343,7 +343,12 @@ class ControlManagementGateway:
                 revision,
                 "saved_pending_reload"
                 if parsed.resource_id == "autonomous_model"
-                else "saved_pending_restart",
+                else (
+                    "applied"
+                    if parsed.resource_id == "model_profiles"
+                    and self._config_files.model_hot_reload_enabled
+                    else "saved_pending_restart"
+                ),
             )
         if operation == CommandOperation.PLUGIN_MUTATE.value:
             manager = self._plugins
