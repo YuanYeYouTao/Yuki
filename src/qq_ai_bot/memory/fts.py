@@ -52,6 +52,8 @@ class AuthorizedLexicalCandidate:
 def build_safe_lexical_query(value: str, *, term_limit: int) -> SafeLexicalQuery:
     """Generate quoted FTS terms without accepting user-provided FTS syntax."""
 
+    if term_limit <= 0:
+        raise ValueError("term_limit must be positive")
     normalized = normalize_query_text(value)
     terms: list[str] = []
     for raw in _WORD.findall(unicodedata.normalize("NFKC", normalized)):
@@ -67,10 +69,14 @@ def build_safe_lexical_query(value: str, *, term_limit: int) -> SafeLexicalQuery
         for term in generated:
             if term not in terms:
                 terms.append(term)
-            if len(terms) >= term_limit:
-                break
-        if len(terms) >= term_limit:
-            break
+    # Preserve coverage across the whole request. Taking the first N trigrams
+    # can drop the actual question after a long person/scene preamble.
+    if len(terms) > term_limit:
+        if term_limit == 1:
+            terms = [terms[len(terms) // 2]]
+        else:
+            last = len(terms) - 1
+            terms = [terms[round(index * last / (term_limit - 1))] for index in range(term_limit)]
     expression = " OR ".join(f'"{term}"' for term in terms)
     short = normalized if 0 < len(normalized) < 3 else None
     return SafeLexicalQuery(
