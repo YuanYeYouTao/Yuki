@@ -1,6 +1,6 @@
 # Yuki 3.8.4 配置与升级
 
-<!-- release-baseline: version=3.8.4 schema=0080 -->
+<!-- release-baseline: version=3.8.4 schema=0081 -->
 
 本页保留 [3.8.4 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.4)。发布不会自动更新现有服务器；实际部署版本以镜像、数据库和运行状态为准。
 

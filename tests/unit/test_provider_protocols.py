@@ -144,6 +144,10 @@ async def test_signed_tool_result_and_redirect_survive_journal(kind):
                     "input_tokens": 10,
                     "cache_read_input_tokens": 3,
                     "cache_creation_input_tokens": 2,
+                    "cache_creation": {
+                        "ephemeral_5m_input_tokens": 2,
+                        "ephemeral_1h_input_tokens": 0,
+                    },
                     "output_tokens": 4,
                 },
             }
@@ -245,6 +249,10 @@ async def test_signed_tool_result_and_redirect_survive_journal(kind):
         assert wires[1]["tools"] == wires[0]["tools"]
         if kind is AnthropicMessagesProvider:
             assert answer.prompt_tokens == 15 and answer.total_tokens == 19
+            assert answer.cached_prompt_tokens == 3
+            assert answer.cache_creation_input_tokens == 2
+            assert answer.cache_creation_5m_input_tokens == 2
+            assert answer.cache_creation_1h_input_tokens == 0
         elif kind is GeminiProvider:
             assert answer.completion_tokens == 6 and answer.reasoning_tokens == 2
 
@@ -978,6 +986,123 @@ async def test_claude_conversation_cache_moves_after_tool_receipt_without_touchi
 
 
 @pytest.mark.parametrize(
+    ("usage_extra", "expected"),
+    [
+        ({}, None),
+        (
+            {
+                "cache_creation_input_tokens": 0,
+                "cache_creation": {
+                    "ephemeral_5m_input_tokens": 0,
+                    "ephemeral_1h_input_tokens": 0,
+                },
+            },
+            0,
+        ),
+    ],
+)
+async def test_claude_cache_creation_usage_keeps_missing_distinct_from_zero(usage_extra, expected):
+    async with httpx.AsyncClient() as client:
+        adapter = provider(AnthropicMessagesProvider, client)
+        body = {
+            "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": "done"}],
+            "usage": {
+                "input_tokens": 10,
+                "cache_read_input_tokens": 0,
+                "output_tokens": 2,
+                **usage_extra,
+            },
+        }
+        answer = adapter._parse(httpx.Response(200, json=body), request())
+        expected_input = 10 if expected == 0 else None
+        expected_total = 12 if expected == 0 else None
+        assert answer.prompt_tokens == expected_input
+        assert answer.total_tokens == expected_total
+        assert adapter._usage_diagnostics(body)["usage"]["prompt_tokens"] == expected_input
+        assert adapter._usage_diagnostics(body)["usage"]["total_tokens"] == expected_total
+        assert answer.cache_creation_input_tokens is expected
+        assert adapter._usage_diagnostics(body)["usage"]["cache_creation_input_tokens"] is expected
+        assert answer.cache_creation_5m_input_tokens is expected
+        assert answer.cache_creation_1h_input_tokens is expected
+        assert (
+            adapter._usage_diagnostics(body)["usage"]["cache_creation_5m_input_tokens"] is expected
+        )
+
+
+async def test_claude_missing_cache_read_does_not_infer_total_input_or_failure_usage():
+    async with httpx.AsyncClient() as client:
+        adapter = provider(AnthropicMessagesProvider, client)
+        usage = {
+            "input_tokens": 10,
+            "cache_creation_input_tokens": 5,
+            "output_tokens": 2,
+        }
+        completed = adapter._parse(
+            httpx.Response(
+                200,
+                json={
+                    "stop_reason": "end_turn",
+                    "content": [{"type": "text", "text": "done"}],
+                    "usage": usage,
+                },
+            ),
+            request(),
+        )
+        assert completed.prompt_tokens is None
+        assert completed.total_tokens is None
+        assert completed.cached_prompt_tokens is None
+        assert completed.cache_creation_input_tokens == 5
+        with pytest.raises(LLMInvalidResponseError) as rejected:
+            adapter._parse(
+                httpx.Response(
+                    200,
+                    json={
+                        "stop_reason": "refusal",
+                        "content": [{"type": "text", "text": "private refusal"}],
+                        "usage": usage,
+                    },
+                ),
+                request(),
+            )
+        assert rejected.value.diagnostics == {
+            "usage": {
+                "prompt_tokens": None,
+                "completion_tokens": 2,
+                "total_tokens": None,
+                "cached_prompt_tokens": None,
+                "cache_creation_input_tokens": 5,
+                "cache_creation_5m_input_tokens": None,
+                "cache_creation_1h_input_tokens": None,
+            }
+        }
+
+
+async def test_claude_cache_creation_mismatch_is_reported_without_losing_usage(caplog):
+    async with httpx.AsyncClient() as client:
+        adapter = provider(AnthropicMessagesProvider, client)
+        body = {
+            "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": "done"}],
+            "usage": {
+                "input_tokens": 10,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 5,
+                "cache_creation": {
+                    "ephemeral_5m_input_tokens": 2,
+                    "ephemeral_1h_input_tokens": 1,
+                },
+                "output_tokens": 2,
+            },
+        }
+        answer = adapter._parse(httpx.Response(200, json=body), request())
+        assert answer.cache_creation_input_tokens == 5
+        assert answer.cache_creation_5m_input_tokens == 2
+        assert answer.cache_creation_1h_input_tokens == 1
+        assert "claude_cache_creation_breakdown_mismatch" in caplog.text
+
+
+@pytest.mark.parametrize(
     "protocol,mode,expected",
     [
         (ModelProtocol.GEMINI, WebMode.NATIVE, True),
@@ -1114,6 +1239,10 @@ async def test_claude_native_search_pause_preserves_encrypted_result_and_aggrega
                         "input_tokens": 10,
                         "cache_read_input_tokens": 3,
                         "cache_creation_input_tokens": 2,
+                        "cache_creation": {
+                            "ephemeral_5m_input_tokens": 2,
+                            "ephemeral_1h_input_tokens": 0,
+                        },
                         "output_tokens": 1,
                     },
                 },
@@ -1153,6 +1282,10 @@ async def test_claude_native_search_pause_preserves_encrypted_result_and_aggrega
                     "input_tokens": 2,
                     "cache_read_input_tokens": 5,
                     "cache_creation_input_tokens": 0,
+                    "cache_creation": {
+                        "ephemeral_5m_input_tokens": 0,
+                        "ephemeral_1h_input_tokens": 0,
+                    },
                     "output_tokens": 4,
                 },
             },
@@ -1189,6 +1322,9 @@ async def test_claude_native_search_pause_preserves_encrypted_result_and_aggrega
         assert answer.content == "Launched today."
         assert answer.prompt_tokens == 22
         assert answer.cached_prompt_tokens == 8
+        assert answer.cache_creation_input_tokens == 2
+        assert answer.cache_creation_5m_input_tokens == 2
+        assert answer.cache_creation_1h_input_tokens == 0
         assert answer.completion_tokens == 5
         assert answer.total_tokens == 27
         assert answer.native_tool_events[0].call_id == "srvtoolu_1"
@@ -1278,6 +1414,10 @@ async def test_rejected_provider_response_keeps_only_numeric_usage_diagnostics()
                             "input_tokens": 7,
                             "cache_read_input_tokens": 3,
                             "cache_creation_input_tokens": 1,
+                            "cache_creation": {
+                                "ephemeral_5m_input_tokens": 0,
+                                "ephemeral_1h_input_tokens": 1,
+                            },
                             "output_tokens": 2,
                         },
                     },
@@ -1290,6 +1430,9 @@ async def test_rejected_provider_response_keeps_only_numeric_usage_diagnostics()
                 "completion_tokens": 2,
                 "total_tokens": 13,
                 "cached_prompt_tokens": 3,
+                "cache_creation_input_tokens": 1,
+                "cache_creation_5m_input_tokens": 0,
+                "cache_creation_1h_input_tokens": 1,
             }
         }
 
@@ -1355,9 +1498,9 @@ async def test_claude_paused_search_failure_reports_prior_usage_without_content(
         assert paused.incomplete_reason == "pause_turn"
         assert paused.native_tool_events[0].status is NativeToolStatus.SEARCHING
         assert paused.native_tool_events[0].call_id == "srvtoolu_3"
-        assert paused.prompt_tokens == 7
+        assert paused.prompt_tokens is None
         assert paused.completion_tokens == 4
-        assert paused.total_tokens == 11
+        assert paused.total_tokens is None
         assert paused.continuation is not None
         assert "private refusal" not in str(paused.continuation)
         recovered = await claude.complete(replace(configured, continuation=paused.continuation))

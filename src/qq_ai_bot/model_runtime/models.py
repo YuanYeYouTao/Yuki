@@ -226,6 +226,9 @@ class ModelInvocationRecord(_FrozenModel):
     completion_tokens: int | None = None
     total_tokens: int | None = None
     cached_prompt_tokens: int | None = None
+    cache_creation_input_tokens: int | None = None
+    cache_creation_5m_input_tokens: int | None = None
+    cache_creation_1h_input_tokens: int | None = None
     physical_request_count: int | None = None
     unknown_usage_request_count: int | None = None
     native_search_requested: bool | None = None
@@ -244,5 +247,8 @@ class ModelStats(_FrozenModel):
     completion_tokens: int = 0
     total_tokens: int = 0
     cached_prompt_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_creation_5m_input_tokens: int = 0
+    cache_creation_1h_input_tokens: int = 0
     unknown_usage: int = 0
     average_latency_seconds: float = 0

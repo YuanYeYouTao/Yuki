@@ -22,18 +22,34 @@ it("shows window totals, keeps cached input inside input, and marks missing usag
               output_tokens: 20,
               total_tokens: 140,
               cached_input_tokens: 60,
+              cache_write_input_tokens: 30,
+              cache_write_5m_input_tokens: 15,
+              cache_write_1h_input_tokens: 5,
+              cache_write_5m_reported_calls: 2,
+              cache_write_1h_reported_calls: 2,
+              cache_write_ttl_unreported_calls: 1,
+              cache_write_classified_input_tokens: 20,
+              cache_write_unreported_calls: 1,
               cache_reported_input_tokens: 100,
               cache_reported_cached_tokens: 60,
               cache_unreported_calls: 1,
               missing_usage_calls: 1,
               models: [
                 {
-                  provider: "fixture",
+                  provider: "anthropic",
                   model: "m1",
                   calls: 3,
                   total_tokens: 140,
                   input_tokens: 120,
                   cached_input_tokens: 60,
+                  cache_write_input_tokens: 30,
+                  cache_write_5m_input_tokens: 15,
+                  cache_write_1h_input_tokens: 5,
+                  cache_write_5m_reported_calls: 2,
+                  cache_write_1h_reported_calls: 2,
+                  cache_write_ttl_unreported_calls: 1,
+                  cache_write_classified_input_tokens: 20,
+                  cache_write_unreported_calls: 1,
                   cache_reported_input_tokens: 100,
                   cache_reported_cached_tokens: 60,
                   cache_unreported_calls: 1,
@@ -44,12 +60,13 @@ it("shows window totals, keeps cached input inside input, and marks missing usag
               profiles: [
                 {
                   profile_id: "main",
-                  provider: "fixture",
+                  provider: "anthropic",
                   model: "m1",
                   calls: 3,
                   total_tokens: 140,
                   input_tokens: 120,
                   cached_input_tokens: 60,
+                  cache_write_input_tokens: 30,
                   cache_reported_input_tokens: 100,
                   cache_reported_cached_tokens: 60,
                   cache_unreported_calls: 1,
@@ -62,6 +79,7 @@ it("shows window totals, keeps cached input inside input, and marks missing usag
                   total_tokens: 140,
                   input_tokens: 120,
                   cached_input_tokens: 60,
+                  cache_write_input_tokens: 30,
                   cache_reported_input_tokens: 100,
                   cache_reported_cached_tokens: 60,
                   cache_unreported_calls: 1,
@@ -75,6 +93,8 @@ it("shows window totals, keeps cached input inside input, and marks missing usag
                   output_tokens: 20,
                   total_tokens: 140,
                   cached_input_tokens: 60,
+                  cache_write_input_tokens: 30,
+                  cache_write_classified_input_tokens: 20,
                   cache_reported_input_tokens: 100,
                   cache_reported_cached_tokens: 60,
                   cache_unreported_calls: 1,
@@ -82,7 +102,7 @@ it("shows window totals, keeps cached input inside input, and marks missing usag
               ],
               model_buckets: [
                 {
-                  provider: "fixture",
+                  provider: "anthropic",
                   model: "m1",
                   at: "2026-09-28T08:00:00Z",
                   calls: 3,
@@ -90,6 +110,8 @@ it("shows window totals, keeps cached input inside input, and marks missing usag
                   output_tokens: 20,
                   total_tokens: 140,
                   cached_input_tokens: 60,
+                  cache_write_input_tokens: 30,
+                  cache_write_classified_input_tokens: 20,
                   cache_reported_input_tokens: 100,
                   cache_reported_cached_tokens: 60,
                   cache_unreported_calls: 1,
@@ -126,6 +148,15 @@ it("shows window totals, keeps cached input inside input, and marks missing usag
   ).toHaveLength(4);
   expect(screen.getByText(/1 次调用的上游未报告总 Token/)).toBeInTheDocument();
   expect(screen.getByText(/不是供应商账单/)).toBeInTheDocument();
+  expect(
+    screen.getByText(/Claude 缓存写入已报告 30 Token/),
+  ).toBeInTheDocument();
+  expect(screen.getByText(/5 分钟写入已报告 15 Token/)).toBeInTheDocument();
+  expect(screen.getByText(/1 小时写入已报告 5 Token/)).toBeInTheDocument();
+  expect(screen.getByText(/1 次写入时长明细缺失或不一致/)).toBeInTheDocument();
+  expect(
+    screen.getAllByRole("listitem", { name: /Claude 缓存写入 30/ }),
+  ).toHaveLength(2);
   await userEvent.click(screen.getByRole("button", { name: "最近 7 天" }));
   expect(calls).toEqual(["24h", "7d"]);
 });

@@ -124,6 +124,10 @@
 - [ ] **10. 高危：其他 Provider 的缓存命中与前缀稳定性**：以实际供应商账单/原始 usage 对齐总输入、缓存读写和缺失字段；逐一审计 Gemini、Anthropic、OpenAI 等请求的固定 system/tool 前缀、消息顺序、动态时间/上下文插入位置、工具声明和切换续接；按供应商官方缓存语义优化，并以重复请求的真实命中和成本验收。Gemini 早期外部图约 21.2%、随后 07:47 快照约 14.0% 的已报告缓存占总输入，与 Yuki 旧页面 71.5% 的“已报告子集命中”分母不同；新镜像自然链结果见下，不能把单一会话样本当作长期或跨供应商优化成效。
   - [x] 代理管理页 2026-09-29 约 07:47 的只读汇总显示 38 次 `gemini-3.8-flash` 请求、约 809.6K 输入与 113.3K 已报告缓存，已报告缓存约占总输入 14.0%；比先前 16 次调用的 21.2% 快照更低。该页面聚合值经过取整，且未知缓存回执仍需单列，不能把余量自动解释为明确未命中或由 Yuki 前缀造成。
   - [x] 修复 Claude 原生搜索追加到工具列表后缓存断点未落在最终工具上的问题；协议定向 7 项、Ruff 通过。
+  - [x] 生产 `model_invocations` 只读对照：2026-09-27 至 09-28 UTC 的 DeepSeek `chat_agent` 共 1,124 次、记录输入 43,068,451 Token、明确缓存读取 41,831,936 Token；已确认读取占已记录输入 97.1%，其中 2 次缓存字段缺失而不是显式零。这是该时间窗和任务用途的已确认占比，不代表其他任务、供应商或实际账单。
+  - [x] Claude 原生 Messages 在固定 system/最终工具断点之外，给当前可缓存的对话末端 text/tool_result 块设置随轮次前移的显式断点；保留签名、工具回执正文和顺序。只在比较内容的测试中剥离 `cache_control` 元数据。协议与集成定向回归通过；尚无真实 Claude 凭据和重复请求样本，不能声称已提高线上命中率。
+  - [x] Claude 原始 `cache_creation_input_tokens` 及 `cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens` 贯通调用记录、可空迁移、管理 API 和用量图表；历史缺失保持 NULL，显式零保持 0，完整分项与总写入不一致时标记明细问题。`input_tokens`、缓存读取与写入三项全部已知才计算总输入，缺失项不补零。写入时长对应不同计费档，但实际货币金额依赖模型价格和供应商账单，页面不推算；定向后端、前端及历史迁移检查通过，真实 Claude 账单尚未验收。
+  - [ ] Anthropic 与原生 OpenAI 没有可用的生产真实调用样本或凭据；旧 `openai_compatible` 8,780 条记录实际为 DeepSeek 模型，不得用其推断 OpenAI 的命中。补齐两者的真实重复链、缺失回执和账单后再评估跨供应商成效。
   - [x] Gemini 适配器的静态系统说明、动态用户上下文位置和 `cachedContentTokenCount` 映射已审计；未发现有证据的序列化错误。官方文档指出 Gemini 3.8 Flash 隐式缓存最低 4,096 Token，依赖相同的大前缀和短时间重用，不保证命中。
   - [x] 对旧抓包与现行 PromptCompiler 核对：固定系统说明独立于消息历史；`contents` 按旧到新排列，运行时间等逐轮资料附在当前用户消息中，因而不会每轮改写系统说明。会话摘要位于历史最前端；为控制上下文长度而重写摘要或裁剪历史时，共同前缀变化属于必要代价，应在分析命中率时单独标记，不能为了缓存阻止正确的摘要更新。工具声明虽在 JSON 对象中列于 `contents` 后，不能据此推断模型按该文本顺序读取或缓存。
   - [x] 旧版只读生产 trace 12076→12086→12091 属于同一轮/事件 72110，间隔约 38 秒、20 秒；系统说明、114 项工具声明和 generationConfig 的哈希均不变，旧 `contents` 前缀依次完整保留 60/62 项。三个响应的 `cachedContentTokenCount` 依次缺失、36,384、缺失；第三次无缓存回执不能归因于已证明稳定的 Yuki 前缀，也不能把缺失当作零。当时连接仍为 medium，后续已热改 low 并修补代理；该组旧 trace 没有最终 Forwarded 证据。
@@ -134,7 +138,7 @@
   - [x] 后续另一会话有两次成功 Gemini 主聊，其中一次 Yuki 与代理输入 39,579 Token、缓存读 20,118 精确一致（已确认读占该次输入 50.8%），另一次输入 40,128 但缺缓存回执。代理抓包元数据中这两次的 system/tools/generation 哈希一致，`contents` 从 75 增至 77，旧 75 项完整保留；因此缺回执不是已证实的前缀变化，也不能算零。这只证明跨会话也出现过明确命中，不能据两个会话推断长期成本。近 100 条用量中的 Dream 12 条均在本轮修复之前，尚无新批次可验。
   - 两组更新的自然 Gemini 请求按同一 sessionId hash 分组，A 的 4 次 `contents` 103→107→109→110 且首 64 项前缀稳定，缓存仅 1 次报告 44,307/47,479；B 的 5 次 51→53→53→55→57 且首 32 项稳定，依次报告 20,039/29,020、24,049/29,614、缺失、缺失、24,035/29,602。两组 system/tools/generation hash 均稳定；旧代理监控共 5/9 次缓存字段为 NULL。AGM `CanonicalUsage` 的缺失/显式 0 混同已由 `ed47b91` 修复并于 05:24 UTC 单服务上线，3 项无 QQ 请求在 Google 缺缓存字段时均 HTTP 200、AGM 保留未知；正数/显式零只经单元测试。原生响应没有丢失 `usageMetadata`。不能把 NULL 当作零或据此断言前缀抖动，也不能仅凭稳定前缀推算账单。
   - [ ] 将逐请求前缀 hash、时间间隔和缓存回执核对扩展至多会话、Dream 批次及其他供应商，并区分必要的摘要重写/历史裁剪与摘要未变时的非预期前缀变化。旧自我反思固定说明以**普通 user 内容**送入当前代理 `countTokens` 约 2,542 Token；完整旧请求在该接口是 18,383，而同一成功 `generateContent` 实际 input_tokens 为 20,927、cache 为 16,355。Cloud Code v1internal 对直接 `request.systemInstruction` 计数不变，对公共 REST `generateContentRequest` 则报 400 unknown field；因此当前代理计数只能标为 `contents-only`，不能以相加近似冒充完整前缀、工具或系统说明的精确 Token 数。测量依据已记录于代理服务器 `COUNT_TOKENS_SCOPE.md`，布局决策须看真实调用 usage 与稳定前缀。
-  - [ ] 对比逐供应商的真实费用与命中，再决定是否引入有存储费用、需维护 TTL/模型/工具版本的 Gemini 显式缓存；逐供应商验收优化后的命中率。
+  - [ ] 对比逐供应商的真实费用与命中，再决定是否引入有存储费用、需维护 TTL/模型/工具版本的 Gemini 显式缓存；逐供应商验收优化后的命中率。Google Developer API 虽支持 `cachedContents`，现行 Yuki→AGM Cloud Code tiered 链路没有已验证的创建/管理入口、上游生命周期和账单；AGM 的 L3 `insert_prefix` 在当前生产路径不可达，不得直接向该链路注入 `cachedContent` 并宣称已启用显式缓存。
 - [ ] **11. 高危：Gemini 代理请求格式与顺序**：用户确认这份抓包是删除 `request_tools` 前的旧请求。顶层为 `_session_thinking_id`、`thinkingConfig`、`systemInstruction`、`contents`、`tools`，缺少仓库适配器对函数请求会构造的 `generationConfig` 和 `toolConfig`；共有 56 条历史 `contents`、114 项函数声明。线上连接的 Base URL 指向抓包 Host 的 `/v1beta`；当前已部署 Yuki 适配器把思考参数放在官方 `generationConfig.thinkingConfig`，没有 `_session_thinking_id`。JSON 属性排列本身不改变协议语义，但 Google 未承诺隐式缓存如何按原始 JSON 字节计算；需核对代理最终发往上游的字段和值。
   - [x] 仅元数据方式检查抓包：历史按旧到新放在 `contents`，本轮运行资料放最后一个 user 消息尾部；未见仅因消息数组顺序就颠倒新旧上下文的证据。当前配置和本地代码与抓包差异已定位，不把代理差异误记为本地已修复。
   - [x] 代理截图明确区分入站 Request、转发 Forwarded 与 Response：该次请求返回 200，代理把模型名映射到 `gemini-3.8-flash-tiered`，并把 `thinkingLevel: medium` 改为 `includeThoughts: true`、`thinkingBudget: 4096`；该次显示约 46.9% 缓存命中。这说明代理可处理此请求，不证明转发页所示 JSON 原样到达 Google，也不证明其他请求的缓存表现。
@@ -179,7 +183,7 @@
   - [x] 无 QQ 副作用地把同一末尾失败报文重放到当前生产代理，再用 Yuki 当前 `GeminiProvider._parse` 离线解析原始 HTTP 响应，得到 completed、正文和可保留续接状态，未触发本地工具调用；临时响应已删除。这验证 Yuki 适配器能消费修复后的回包，不等于真实 QQ 完整轮次成功。
   - [x] 自然 QQ 验收：2026-09-29 02:14 与 02:28 UTC 两轮各只有一次成功的 `send_message` 工具执行，分别记录 3 个与 2 个不同的投递事件；工具结束后第二次 Gemini 调用均成功，轮次分别以 `turn_end` 完成，未出现 `turn_error` 或模型不兼容状态。两轮发生在代理补丁部署之后，且无主动测试 QQ 消息；中间轮与跨 Provider 换链继续由定向回归覆盖。
 
-官方依据：[Gemini 缓存](https://ai.google.dev/gemini-api/docs/generate-content/caching)、[Claude 工具缓存断点](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-use-with-prompt-caching)、[OpenAI 前缀缓存](https://developers.openai.com/api/docs/guides/prompt-caching)、[DeepSeek 上下文缓存](https://api-docs.deepseek.com/guides/kv_cache/)。这些机制的门槛、TTL 和费用不同，不能要求相同命中率。
+官方依据：[Gemini 缓存](https://ai.google.dev/gemini-api/docs/generate-content/caching)、[Claude 工具缓存断点](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-use-with-prompt-caching)、[Claude 缓存用量与时长分档](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)、[OpenAI 前缀缓存](https://developers.openai.com/api/docs/guides/prompt-caching)、[DeepSeek 上下文缓存](https://api-docs.deepseek.com/guides/kv_cache/)。这些机制的门槛、TTL 和费用不同，不能要求相同命中率。
 
 ## 本轮分工结果
 

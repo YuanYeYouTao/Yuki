@@ -292,6 +292,9 @@ async def test_failed_provider_response_keeps_reported_usage_without_trusting_pa
                 "completion_tokens": 4,
                 "total_tokens": 124,
                 "cached_prompt_tokens": 60,
+                "cache_creation_input_tokens": 0,
+                "cache_creation_5m_input_tokens": 0,
+                "cache_creation_1h_input_tokens": 0,
                 "untrusted": "secret",
             }
         },
@@ -316,8 +319,49 @@ async def test_failed_provider_response_keeps_reported_usage_without_trusting_pa
         assert telemetry.records[0]["success"] is False
         assert telemetry.records[0]["prompt_tokens"] == 120
         assert telemetry.records[0]["cached_prompt_tokens"] == 60
+        assert telemetry.records[0]["cache_creation_input_tokens"] == 0
+        assert telemetry.records[0]["cache_creation_5m_input_tokens"] == 0
+        assert telemetry.records[0]["cache_creation_1h_input_tokens"] == 0
         assert telemetry.records[0]["total_tokens"] == 124
         assert "untrusted" not in telemetry.records[0]
+    finally:
+        await models.close()
+
+
+async def test_missing_cache_read_keeps_model_invocation_total_unknown():
+    failure = LLMInvalidResponseError(
+        "blocked",
+        diagnostics={
+            "usage": {
+                "prompt_tokens": None,
+                "completion_tokens": 2,
+                "total_tokens": None,
+                "cached_prompt_tokens": None,
+                "cache_creation_input_tokens": 5,
+            }
+        },
+    )
+
+    class Telemetry:
+        def __init__(self):
+            self.records = []
+
+        async def record(self, **values):
+            self.records.append(values)
+
+    def reject(_request):
+        raise failure
+
+    telemetry = Telemetry()
+    models = executor(FakeLLMProvider(reject), telemetry)
+    try:
+        with pytest.raises(LLMInvalidResponseError):
+            await models.execute(ModelTask.CHAT_AGENT, ChatRequest(messages=()))
+        recorded = telemetry.records[0]
+        assert recorded["prompt_tokens"] is None
+        assert recorded["total_tokens"] is None
+        assert recorded["cached_prompt_tokens"] is None
+        assert recorded["cache_creation_input_tokens"] == 5
     finally:
         await models.close()
 
@@ -387,6 +431,37 @@ async def test_telemetry_correlation_reads_finish_before_write_lock(database):
     insert = next(i for i, sql in enumerate(statements) if sql.startswith("INSERT"))
     selects = [i for i, sql in enumerate(statements) if sql.startswith("SELECT")]
     assert selects and max(selects) < insert
+
+
+async def test_claude_cache_write_tiers_persist_and_aggregate(database):
+    telemetry = ModelInvocationRepository(database)
+    saved = await telemetry.record(
+        task=ModelTask.CHAT_AGENT,
+        profile_id="claude",
+        provider="anthropic",
+        model="fixture",
+        success=True,
+        prompt_tokens=100,
+        completion_tokens=5,
+        total_tokens=105,
+        cached_prompt_tokens=60,
+        cache_creation_input_tokens=30,
+        cache_creation_5m_input_tokens=20,
+        cache_creation_1h_input_tokens=10,
+        latency_seconds=0,
+        error_category=None,
+    )
+    assert (
+        saved.cache_creation_input_tokens,
+        saved.cache_creation_5m_input_tokens,
+        saved.cache_creation_1h_input_tokens,
+    ) == (30, 20, 10)
+    stats = (await telemetry.stats_by_profile())["claude"]
+    assert (
+        stats.cache_creation_input_tokens,
+        stats.cache_creation_5m_input_tokens,
+        stats.cache_creation_1h_input_tokens,
+    ) == (30, 20, 10)
 
 
 async def test_chat_internal_database_failure_is_not_reported_as_provider_outage(database):

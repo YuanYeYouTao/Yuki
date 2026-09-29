@@ -211,6 +211,53 @@ async def test_model_usage_summary_keeps_each_model_and_unknown_cache_separate(d
 
 
 @pytest.mark.asyncio
+async def test_claude_cache_writes_are_a_separate_reported_input_subset(database):
+    at = datetime.now(UTC) - timedelta(minutes=30)
+    async with database.sessions() as session, session.begin():
+        for provider, prompt, read, write, write_5m, write_1h in (
+            ("anthropic", 100, 60, 20, 15, 5),
+            ("Anthropic", 80, 0, 0, 0, 0),
+            ("anthropic", 50, None, 10, None, None),
+            ("deepseek", 100, 40, None, None, None),
+        ):
+            session.add(
+                ModelInvocationModel(
+                    task="chat_agent",
+                    profile_id=provider,
+                    provider=provider,
+                    model="fixture",
+                    success=True,
+                    latency_seconds=1,
+                    created_at=at,
+                    prompt_tokens=prompt,
+                    completion_tokens=10,
+                    total_tokens=prompt + 10,
+                    cached_prompt_tokens=read,
+                    cache_creation_input_tokens=write,
+                    cache_creation_5m_input_tokens=write_5m,
+                    cache_creation_1h_input_tokens=write_1h,
+                )
+            )
+    queries = ControlQueryService(ControlQueryAdapter(database))
+    recent = (
+        await queries.read_model_usage_summary(context("control.execution.metadata.read"), "24h")
+    ).fields
+    by_provider = {row["provider"]: row for row in recent["models"]}
+    assert recent["cache_write_input_tokens"] == 30
+    assert recent["cache_write_classified_input_tokens"] == 20
+    assert recent["cache_write_5m_input_tokens"] == 15
+    assert recent["cache_write_1h_input_tokens"] == 5
+    assert recent["cache_write_ttl_unreported_calls"] == 1
+    assert recent["cache_write_5m_reported_calls"] == 2
+    assert recent["cache_write_1h_reported_calls"] == 2
+    assert recent["cache_write_unreported_calls"] == 1
+    assert by_provider["anthropic"]["cache_write_input_tokens"] == 30
+    assert by_provider["anthropic"]["cache_write_unreported_calls"] == 1
+    assert by_provider["deepseek"]["cache_write_input_tokens"] == 0
+    assert by_provider["deepseek"]["cache_write_unreported_calls"] == 0
+
+
+@pytest.mark.asyncio
 async def test_participation_history_reports_latest_feedback_without_replaying_decisions(database):
     from tests.unit.test_autonomy_repository import _accept, _enable, _event, _scene
 

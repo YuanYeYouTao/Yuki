@@ -45,6 +45,9 @@ class ModelInvocationRepository:
         cached_prompt_tokens: int | None,
         latency_seconds: float,
         error_category: str | None,
+        cache_creation_input_tokens: int | None = None,
+        cache_creation_5m_input_tokens: int | None = None,
+        cache_creation_1h_input_tokens: int | None = None,
         physical_request_count: int | None = None,
         unknown_usage_request_count: int | None = None,
         native_search_requested: bool | None = None,
@@ -61,6 +64,9 @@ class ModelInvocationRepository:
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
             cached_prompt_tokens=cached_prompt_tokens,
+            cache_creation_input_tokens=cache_creation_input_tokens,
+            cache_creation_5m_input_tokens=cache_creation_5m_input_tokens,
+            cache_creation_1h_input_tokens=cache_creation_1h_input_tokens,
             physical_request_count=physical_request_count,
             unknown_usage_request_count=unknown_usage_request_count,
             native_search_requested=native_search_requested,
@@ -126,6 +132,9 @@ class ModelInvocationRepository:
                 func.coalesce(func.sum(ModelInvocationModel.completion_tokens), 0),
                 func.coalesce(func.sum(ModelInvocationModel.total_tokens), 0),
                 func.coalesce(func.sum(ModelInvocationModel.cached_prompt_tokens), 0),
+                func.coalesce(func.sum(ModelInvocationModel.cache_creation_input_tokens), 0),
+                func.coalesce(func.sum(ModelInvocationModel.cache_creation_5m_input_tokens), 0),
+                func.coalesce(func.sum(ModelInvocationModel.cache_creation_1h_input_tokens), 0),
                 func.sum(
                     func.cast(
                         ModelInvocationModel.total_tokens.is_(None),
@@ -150,8 +159,11 @@ class ModelInvocationRepository:
             completion_tokens=int(values[3] or 0),
             total_tokens=int(values[4] or 0),
             cached_prompt_tokens=int(values[5] or 0),
-            unknown_usage=int(values[6] or 0),
-            average_latency_seconds=float(values[7] or 0),
+            cache_creation_input_tokens=int(values[6] or 0),
+            cache_creation_5m_input_tokens=int(values[7] or 0),
+            cache_creation_1h_input_tokens=int(values[8] or 0),
+            unknown_usage=int(values[9] or 0),
+            average_latency_seconds=float(values[10] or 0),
         )
 
     @staticmethod
@@ -167,6 +179,9 @@ class ModelInvocationRepository:
             completion_tokens=row.completion_tokens,
             total_tokens=row.total_tokens,
             cached_prompt_tokens=row.cached_prompt_tokens,
+            cache_creation_input_tokens=row.cache_creation_input_tokens,
+            cache_creation_5m_input_tokens=row.cache_creation_5m_input_tokens,
+            cache_creation_1h_input_tokens=row.cache_creation_1h_input_tokens,
             physical_request_count=row.physical_request_count,
             unknown_usage_request_count=row.unknown_usage_request_count,
             native_search_requested=row.native_search_requested,

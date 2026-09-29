@@ -46,10 +46,19 @@ function tokenParts(row: Row) {
     reported,
     amount(row, "cache_reported_cached_tokens"),
   );
+  const classifiedWrite = Math.min(
+    reported - cached,
+    amount(row, "cache_write_classified_input_tokens"),
+  );
+  const unclassifiedWrite = Math.min(
+    input - reported,
+    Math.max(0, amount(row, "cache_write_input_tokens") - classifiedWrite),
+  );
   return {
     cached,
-    uncached: reported - cached,
-    unknown: input - reported,
+    write: classifiedWrite + unclassifiedWrite,
+    uncached: reported - cached - classifiedWrite,
+    unknown: input - reported - unclassifiedWrite,
     output: amount(row, "output_tokens"),
   };
 }
@@ -102,7 +111,9 @@ function UsageChart({
   if (!buckets.length) return <Empty>这个时间范围没有可绘制的调用记录。</Empty>;
   const tokenTotal = (row: Row) => {
     const parts = tokenParts(row);
-    return parts.cached + parts.uncached + parts.unknown + parts.output;
+    return (
+      parts.cached + parts.write + parts.uncached + parts.unknown + parts.output
+    );
   };
   const maximum = Math.max(
     1,
@@ -163,7 +174,7 @@ function UsageChart({
               const detail =
                 metric === "calls"
                   ? `${count(value)} 次调用`
-                  : `${count(row.total_tokens)} Token；缓存输入 ${count(parts.cached)}；明确未命中输入 ${count(parts.uncached)}；缓存状态未知输入 ${count(parts.unknown)}；输出 ${count(parts.output)}`;
+                  : `${count(row.total_tokens)} Token；缓存读取 ${count(parts.cached)}；Claude 缓存写入 ${count(parts.write)}；其余未命中输入 ${count(parts.uncached)}；缓存状态未知输入 ${count(parts.unknown)}；输出 ${count(parts.output)}`;
               return (
                 <div
                   className={`usage-chart-slot ${index > buckets.length / 2 ? "tooltip-left" : ""}`}
@@ -179,7 +190,13 @@ function UsageChart({
                       aria-hidden="true"
                     >
                       {(
-                        ["cached", "uncached", "unknown", "output"] as const
+                        [
+                          "cached",
+                          "write",
+                          "uncached",
+                          "unknown",
+                          "output",
+                        ] as const
                       ).map(
                         (part) =>
                           parts[part] > 0 && (
@@ -205,11 +222,15 @@ function UsageChart({
                       <>
                         <span>
                           <i className="usage-token-cached" />
-                          缓存输入 {count(parts.cached)}
+                          缓存读取 {count(parts.cached)}
+                        </span>
+                        <span>
+                          <i className="usage-token-write" />
+                          Claude 缓存写入 {count(parts.write)}
                         </span>
                         <span>
                           <i className="usage-token-uncached" />
-                          明确未命中 {count(parts.uncached)}
+                          其余未命中 {count(parts.uncached)}
                         </span>
                         {parts.unknown > 0 && (
                           <span>
@@ -244,11 +265,15 @@ function UsageChart({
         <div className="usage-legend" aria-label="Token 图例">
           <span>
             <i className="usage-token-cached" />
-            缓存输入
+            缓存读取
+          </span>
+          <span>
+            <i className="usage-token-write" />
+            Claude 缓存写入
           </span>
           <span>
             <i className="usage-token-uncached" />
-            明确未命中
+            其余未命中
           </span>
           <span>
             <i className="usage-token-unknown" />
@@ -344,6 +369,22 @@ function UsageSummary({ refresh }: { refresh: number }) {
             。缓存状态未知的输入按已记录输入计入；若输入均已报告，确认占比是命中率下界。缓存
             Token 已包含在输入中，不重复计入总量。
           </p>
+          {(Number(usage.cache_write_input_tokens) > 0 ||
+            Number(usage.cache_write_unreported_calls) > 0) && (
+            <p className="small">
+              Claude 缓存写入已报告 {count(usage.cache_write_input_tokens)}{" "}
+              Token
+              {Number(usage.cache_write_5m_reported_calls) > 0 &&
+                ` · 5 分钟写入已报告 ${count(usage.cache_write_5m_input_tokens)} Token`}
+              {Number(usage.cache_write_1h_reported_calls) > 0 &&
+                ` · 1 小时写入已报告 ${count(usage.cache_write_1h_input_tokens)} Token`}
+              {Number(usage.cache_write_ttl_unreported_calls) > 0 &&
+                ` · ${count(usage.cache_write_ttl_unreported_calls)} 次写入时长明细缺失或不一致`}
+              {Number(usage.cache_write_unreported_calls) > 0 &&
+                ` · ${count(usage.cache_write_unreported_calls)} 次 Claude 调用缺少完整缓存读写用量`}
+              。写入、读取与其余输入有不同计费档位；此处不推算金额。
+            </p>
+          )}
           {Number(usage.missing_usage_calls) > 0 && (
             <p className="small usage-warning">
               {count(usage.missing_usage_calls)} 次调用的上游未报告总
@@ -408,6 +449,19 @@ function UsageSummary({ refresh }: { refresh: number }) {
                   <p className="small">
                     <CacheReport usage={model} />
                   </p>
+                  {String(model.provider).toLowerCase() === "anthropic" && (
+                    <p className="small">
+                      缓存写入 {count(model.cache_write_input_tokens)} Token
+                      {Number(model.cache_write_5m_reported_calls) > 0 &&
+                        ` · 5 分钟 ${count(model.cache_write_5m_input_tokens)}`}
+                      {Number(model.cache_write_1h_reported_calls) > 0 &&
+                        ` · 1 小时 ${count(model.cache_write_1h_input_tokens)}`}
+                      {Number(model.cache_write_ttl_unreported_calls) > 0 &&
+                        ` · ${count(model.cache_write_ttl_unreported_calls)} 次时长明细不全`}
+                      {Number(model.cache_write_unreported_calls) > 0 &&
+                        ` · ${count(model.cache_write_unreported_calls)} 次读写明细不全`}
+                    </p>
+                  )}
                   {hourly.length > 0 && (
                     <div className="usage-plot-grid">
                       <UsageChart
@@ -446,6 +500,11 @@ function UsageSummary({ refresh }: { refresh: number }) {
                 ["total_tokens", "Token", count],
                 ["input_tokens", "输入", count],
                 ["cached_input_tokens", "其中缓存", count],
+                ["cache_write_input_tokens", "Claude 缓存写入", count],
+                ["cache_write_5m_input_tokens", "其中 5 分钟写入已报告", count],
+                ["cache_write_1h_input_tokens", "其中 1 小时写入已报告", count],
+                ["cache_write_ttl_unreported_calls", "写入时长明细不全", count],
+                ["cache_write_unreported_calls", "Claude 读写未报", count],
                 [
                   "cache_reported_uncached_tokens",
                   "确认缓存占已记录输入",
@@ -470,6 +529,7 @@ function UsageSummary({ refresh }: { refresh: number }) {
                 ["calls", "逻辑调用", count],
                 ["physical_requests", "已知 HTTP 请求尝试", knownCount],
                 ["total_tokens", "Token", count],
+                ["cache_write_input_tokens", "Claude 缓存写入", count],
                 [
                   "cache_reported_uncached_tokens",
                   "确认缓存占已记录输入",
@@ -493,6 +553,7 @@ function UsageSummary({ refresh }: { refresh: number }) {
                 ["calls", "逻辑调用", count],
                 ["physical_requests", "已知 HTTP 请求尝试", knownCount],
                 ["total_tokens", "Token", count],
+                ["cache_write_input_tokens", "Claude 缓存写入", count],
                 [
                   "cache_reported_uncached_tokens",
                   "确认缓存占已记录输入",
@@ -577,6 +638,9 @@ export function Models(props: PageProps) {
             ["success", "成功", status],
             ["prompt_tokens", "输入"],
             ["cached_prompt_tokens", "缓存命中"],
+            ["cache_creation_input_tokens", "Claude 缓存写入", knownCount],
+            ["cache_creation_5m_input_tokens", "其中 5 分钟写入", knownCount],
+            ["cache_creation_1h_input_tokens", "其中 1 小时写入", knownCount],
             ["completion_tokens", "输出"],
             ["total_tokens", "合计"],
             ["physical_request_count", "HTTP 请求尝试", knownCount],

@@ -322,6 +322,11 @@ pre {
   margin: 22px 0;
 }
 .usage-plot {
+  --usage-cache: var(--tool-color);
+  --usage-write: var(--warning);
+  --usage-uncached: var(--thought-color);
+  --usage-unknown: var(--text-muted);
+  --usage-output: var(--accent);
   padding: 20px;
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -353,10 +358,6 @@ pre {
   margin: 12px 0 0;
 }
 .usage-chart {
-  --usage-cache: var(--tool-color);
-  --usage-uncached: var(--thought-color);
-  --usage-unknown: var(--text-muted);
-  --usage-output: var(--accent);
   display: grid;
   grid-template-columns: 38px minmax(0, 1fr);
   gap: 8px;
@@ -438,6 +439,9 @@ pre {
 }
 .usage-token-cached {
   background: var(--usage-cache);
+}
+.usage-token-write {
+  background: var(--usage-write);
 }
 .usage-token-uncached {
   background: var(--usage-uncached);
