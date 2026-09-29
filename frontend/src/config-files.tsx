@@ -171,6 +171,15 @@ function ModelDocument({
     string,
     Row
   >;
+  const assigned = new Set(Object.values(routes));
+  if (typeof document.search_connection === "string")
+    assigned.add(document.search_connection);
+  const activeConnections = Object.keys(profiles).filter((id) =>
+    assigned.has(id),
+  );
+  const legacyConnections = Object.keys(profiles).filter(
+    (id) => !assigned.has(id),
+  );
   const labelOf = (id: string) => {
     const label = connectionLabel({
       ...(resolvedProfiles[id] || {}),
@@ -190,9 +199,55 @@ function ModelDocument({
       : "未分配用途";
     return `${label}（${purpose}）`;
   };
-  const [selected, select] = useState(Object.keys(profiles)[0] || "");
+  const [selected, select] = useState(
+    (typeof routes.chat_agent === "string" && profiles[routes.chat_agent]
+      ? routes.chat_agent
+      : activeConnections[0]) ||
+      Object.keys(profiles)[0] ||
+      "",
+  );
+  const [showLegacy, setShowLegacy] = useState(activeConnections.length === 0);
   const [newProvider, setNewProvider] = useState("");
   const schema = fields.profile_schema as Row;
+  function choose(id: string) {
+    select(id);
+    if (legacyConnections.includes(id)) setShowLegacy(true);
+  }
+  function connectionCards(ids: string[]) {
+    return ids.map((id) => {
+      const item = profiles[id];
+      return (
+        <button
+          type="button"
+          key={id}
+          className={`provider-profile ${selected === id ? "selected" : ""}`}
+          aria-pressed={selected === id}
+          onClick={() => choose(id)}
+        >
+          <strong>{labelOf(id)}</strong>
+          <span>
+            {keyInputs[id]
+              ? "有待保存的新 API Key"
+              : savedKeyProfiles.includes(id) &&
+                  String(item.api_key_env || "").startsWith("YUKI_WEBUI_KEY_")
+                ? "API Key 已保存"
+                : item.api_key_env
+                  ? "使用服务器已有密钥"
+                  : "尚未设置密钥"}
+          </span>
+          <small>
+            {Object.values(routes).filter((route) => route === id).length}{" "}
+            个任务用途
+            {document.search_connection === id
+              ? fields.search_backend === "deepseek_anthropic"
+                ? " · 联网搜索"
+                : " · 预选搜索连接"
+              : ""}
+          </small>
+        </button>
+      );
+    });
+  }
   function update(profile: Row) {
     change({ ...document, profiles: { ...profiles, [selected]: profile } });
   }
@@ -218,7 +273,8 @@ function ModelDocument({
         },
       },
     });
-    select(id);
+    choose(id);
+    setShowLegacy(true);
     setNewProvider("");
   }
   const profile = profiles[selected];
@@ -254,37 +310,20 @@ function ModelDocument({
         </span>
       </div>
       <div className="provider-profile-list" aria-label="模型连接">
-        {Object.entries(profiles).map(([id, item]) => (
-          <button
-            type="button"
-            key={id}
-            className={`provider-profile ${selected === id ? "selected" : ""}`}
-            aria-pressed={selected === id}
-            onClick={() => select(id)}
-          >
-            <strong>{labelOf(id)}</strong>
-            <span>
-              {keyInputs[id]
-                ? "有待保存的新 API Key"
-                : savedKeyProfiles.includes(id) &&
-                    String(item.api_key_env || "").startsWith("YUKI_WEBUI_KEY_")
-                  ? "API Key 已保存"
-                  : item.api_key_env
-                    ? "使用服务器已有密钥"
-                    : "尚未设置密钥"}
-            </span>
-            <small>
-              {Object.values(routes).filter((route) => route === id).length}{" "}
-              个任务用途
-              {document.search_connection === id
-                ? fields.search_backend === "deepseek_anthropic"
-                  ? " · 联网搜索"
-                  : " · 预选搜索连接"
-                : ""}
-            </small>
-          </button>
-        ))}
+        {connectionCards(activeConnections)}
       </div>
+      {legacyConnections.length > 0 && (
+        <details
+          className="provider-legacy-connections"
+          open={showLegacy}
+          onToggle={(event) => setShowLegacy(event.currentTarget.open)}
+        >
+          <summary>历史/备用连接（{legacyConnections.length}）</summary>
+          <div className="provider-profile-list" aria-label="历史/备用连接">
+            {connectionCards(legacyConnections)}
+          </div>
+        </details>
+      )}
       <div className="settings-actions">
         <label className="form-group">
           新连接供应商
@@ -306,7 +345,7 @@ function ModelDocument({
           <select
             className="form-control"
             value={selected}
-            onChange={(e) => select(e.target.value)}
+            onChange={(e) => choose(e.target.value)}
           >
             {Object.keys(profiles).map((id) => (
               <option key={id} value={id}>
@@ -597,7 +636,13 @@ function ModelDocument({
               const next = { ...profiles };
               delete next[selected];
               change({ ...document, profiles: next });
-              select(Object.keys(next)[0] || "");
+              choose(
+                (routes.chat_agent &&
+                  next[routes.chat_agent] &&
+                  routes.chat_agent) ||
+                  Object.keys(next)[0] ||
+                  "",
+              );
             }}
           >
             删除此模型连接

@@ -569,6 +569,15 @@ pre {
   grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
   gap: 8px;
 }
+.provider-legacy-connections {
+  margin-top: 12px;
+  color: var(--text-secondary);
+}
+.provider-legacy-connections summary {
+  cursor: pointer;
+  width: fit-content;
+  margin-bottom: 8px;
+}
 .provider-profile {
   display: grid;
   gap: 3px;

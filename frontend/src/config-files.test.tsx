@@ -141,6 +141,64 @@ it("edits schema fields and routes without discarding server environment referen
   expect(screen.queryByText("headers")).not.toBeInTheDocument();
 });
 
+it("starts on the current chat connection and keeps unassigned legacy connections folded", async () => {
+  file({
+    file_id: "model_profiles",
+    revision: 9,
+    valid: true,
+    profile_schema: { properties: { provider: { type: "string" } } },
+    tasks: ["chat_agent"],
+    document: {
+      schema_version: 3,
+      profiles: {
+        pro: {
+          provider: "deepseek",
+          protocol: "responses",
+          model: "deepseek-flash",
+          base_url: "https://api.deepseek.com",
+          api_key_env: "OLD_KEY",
+        },
+        current: {
+          provider: "gemini",
+          protocol: "gemini",
+          model: "gemini-3.8-flash",
+          base_url: "https://generativelanguage.googleapis.com",
+          api_key_env: "CURRENT_KEY",
+        },
+      },
+      routes: { chat_agent: "current" },
+    },
+  });
+  const act = vi.fn();
+  render(<ConfigFile fileId="model_profiles" props={{ ...props, act }} />);
+  const user = userEvent.setup();
+  const connection = await screen.findByRole("combobox", {
+    name: "当前模型连接",
+  });
+  expect(connection).toHaveValue("current");
+  const active = document.querySelector('[aria-label="模型连接"]');
+  const legacy = document.querySelector(
+    ".provider-legacy-connections",
+  ) as HTMLDetailsElement;
+  expect(active?.textContent).toContain("Gemini");
+  expect(active?.textContent).not.toContain("DeepSeek");
+  expect(legacy.open).toBe(false);
+  await user.click(screen.getByText("历史/备用连接（1）"));
+  expect(legacy.open).toBe(true);
+  expect(legacy.textContent).toContain("DeepSeek");
+  await user.selectOptions(connection, "pro");
+  expect(connection).toHaveValue("pro");
+  expect(
+    screen.getByRole("combobox", { name: "主对话使用的模型" }),
+  ).toHaveValue("current");
+  await user.click(screen.getByRole("button", { name: "检查并保存" }));
+  const intent = act.mock.calls[0][0] as Intent;
+  const saved = (
+    intent.payload.spec as { document: { profiles: Record<string, unknown> } }
+  ).document;
+  expect(Object.keys(saved.profiles)).toEqual(["pro", "current"]);
+});
+
 it("chooses a concrete model connection for a task", async () => {
   file({
     file_id: "model_profiles",
@@ -227,6 +285,10 @@ it("keeps DeepSeek search on an explicit connection while chat uses another prov
     screen.getByRole("combobox", { name: "搜索连接" }),
     "search",
   );
+  expect(
+    document.querySelector('[aria-label="模型连接"]')?.textContent,
+  ).toContain("DeepSeek");
+  expect(document.querySelector(".provider-legacy-connections")).toBeNull();
   await user.click(screen.getByRole("button", { name: "检查并保存" }));
   const intent = act.mock.calls[0][0] as Intent;
   expect(
