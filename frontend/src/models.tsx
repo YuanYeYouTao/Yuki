@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery } from "./hooks";
 import type { Row } from "./api";
 import type { PageProps } from "./pages";
-import { ConfigFile } from "./config-files";
+import { ConfigFile, taskNames } from "./config-files";
 import {
   Badge,
   Empty,
@@ -582,6 +582,16 @@ export function Models(props: PageProps) {
     allowed("read_model_catalog"),
   );
   const fields = catalog.data?.fields as Row | undefined;
+  const loadedProfiles = (fields?.profiles || []) as Row[];
+  const loadedRoutes = ((fields?.routes || []) as Row[]).map((route) => {
+    const profile = loadedProfiles.find((item) => item.id === route.profile_id);
+    return {
+      ...route,
+      task_name: taskNames[String(route.task)] || route.task,
+      provider: profile?.provider || "连接未找到",
+      model: profile?.model || "连接未找到",
+    };
+  });
   return (
     <>
       <UsageSummary refresh={refresh} />
@@ -592,7 +602,7 @@ export function Models(props: PageProps) {
           <details>
             <summary>查看已加载的模型与任务路由</summary>
             <Table
-              rows={fields.profiles as Row[]}
+              rows={loadedProfiles}
               columns={[
                 ["id", "内部连接编号"],
                 ["provider", "供应商"],
@@ -604,10 +614,12 @@ export function Models(props: PageProps) {
             />
             <h3>任务路由</h3>
             <Table
-              rows={fields.routes as Row[]}
+              rows={loadedRoutes}
               columns={[
-                ["task", "任务"],
-                ["profile_id", "使用连接"],
+                ["task_name", "任务用途"],
+                ["provider", "供应商"],
+                ["model", "模型"],
+                ["profile_id", "内部连接编号"],
               ]}
             />
             <p className="small">

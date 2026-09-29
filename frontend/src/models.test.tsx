@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 import { Models } from "./models";
@@ -159,4 +159,50 @@ it("shows window totals, keeps cached input inside input, and marks missing usag
   ).toHaveLength(2);
   await userEvent.click(screen.getByRole("button", { name: "最近 7 天" }));
   expect(calls).toEqual(["24h", "7d"]);
+});
+
+it("explains loaded task routes with their provider and model", async () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+    const method = String(url).split("/").pop();
+    return new Response(
+      JSON.stringify({
+        data:
+          method === "read_model_catalog"
+            ? {
+                fields: {
+                  profiles: [
+                    {
+                      id: "current",
+                      provider: "gemini",
+                      model: "gemini-3.8-flash",
+                    },
+                    {
+                      id: "spare",
+                      provider: "deepseek",
+                      model: "deepseek-flash",
+                    },
+                  ],
+                  routes: [{ task: "chat_agent", profile_id: "current" }],
+                },
+              }
+            : { fields: {}, items: [] },
+        problem: null,
+      }),
+    );
+  });
+  render(
+    <Models allowed={() => true} act={() => {}} refresh={0} conversation="" />,
+  );
+  await userEvent.click(await screen.findByText("查看已加载的模型与任务路由"));
+  const routeHeading = screen.getByRole("heading", { name: "任务路由" });
+  const routeTable = routeHeading.nextElementSibling?.querySelector("table");
+  expect(routeTable).not.toBeNull();
+  await waitFor(() =>
+    expect(
+      within(routeTable!).getByRole("row", {
+        name: "主对话 gemini gemini-3.8-flash current",
+      }),
+    ).toBeInTheDocument(),
+  );
+  expect(within(routeTable!).queryByText("deepseek-flash")).toBeNull();
 });

@@ -30,7 +30,7 @@ const names: Record<string, string> = {
   wire_options: "协议参数覆盖",
   thinking_mode: "旧版思考选项",
 };
-const taskNames: Record<string, string> = {
+export const taskNames: Record<string, string> = {
   chat_agent: "主对话",
   memory_extraction: "记忆提取",
   memory_self_reflection: "自省",
