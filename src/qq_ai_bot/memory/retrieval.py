@@ -136,6 +136,7 @@ class MemoryRetriever:
         )
         semantic: tuple[AuthorizedSemanticCandidate, ...] = ()
         semantic_truncated = False
+        semantic_coverage_complete = True
         semantic_status = "disabled"
         semantic_degraded = False
         if query.semantic_enabled:
@@ -171,7 +172,11 @@ class MemoryRetriever:
                             )
                         else:
                             embedded = await embed_once()
-                        semantic, semantic_truncated = await self._semantic_index.search_authorized(
+                        (
+                            semantic,
+                            semantic_truncated,
+                            semantic_coverage_complete,
+                        ) = await self._semantic_index.search_authorized(
                             scope=scope,
                             query_vector=embedded.vectors[0],
                             profile=profile.profile,
@@ -181,7 +186,9 @@ class MemoryRetriever:
                             min_similarity=query.semantic_min_similarity,
                             temporal=query.intent.temporal if query.intent else None,
                         )
-                        semantic_status = "ready"
+                        semantic_status = (
+                            "ready" if semantic_coverage_complete else "index_incomplete"
+                        )
                     else:
                         semantic_status = "empty_query"
                 except (EmbeddingProviderError, ValueError) as exc:
@@ -265,6 +272,8 @@ class MemoryRetriever:
             partial_reason = "semantic_not_configured"
         if semantic_degraded:
             partial_reason = "semantic_degraded"
+        if not semantic_coverage_complete:
+            partial_reason = "semantic_index_incomplete"
         return MemoryRetrievalResult(
             blocks=blocks,
             hits=selected,
@@ -282,7 +291,8 @@ class MemoryRetriever:
             trace_hits=ranked[: query.recall_trace_candidate_limit],
             exhaustive=not candidate_truncated
             and not semantic_degraded
-            and not semantic_unavailable,
+            and not semantic_unavailable
+            and semantic_coverage_complete,
             truncated=candidate_truncated or len(ranked) > limit,
             partial_reason=partial_reason,
             ranked_count=len(ranked),

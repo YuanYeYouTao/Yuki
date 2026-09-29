@@ -379,6 +379,47 @@ async def test_inbound_event_links_only_real_runner_turns_and_can_have_multiple(
 
 
 @pytest.mark.asyncio
+async def test_external_event_links_to_its_runner_turn(database, tmp_path):
+    env = await social_env(database, tmp_path)
+    conversation = ConversationId.parse(env.context.conversation_id)
+    async with database.sessions() as session:
+        chat_event = await session.scalar(select(ChatEventModel))
+        assert chat_event is not None
+        chat_event.direction = "external"
+        chat_event.author_kind = "system"
+        chat_event.author_person_id = None
+        chat_event.event_kind = "external_event"
+        chat_event.origin = "plugin_background"
+        chat_event.source_plugin_id = "test-plugin"
+        chat_event.external_source = "test"
+        chat_event.external_event_key = "run-1"
+        chat_event.external_event_type = "test_event"
+        chat_event.external_payload_json = "{}"
+        chat_event.external_target_id = "test-target"
+        event_id = chat_event.id
+        await session.commit()
+
+    recorder = TraceRecorder(database)
+    async with trace_span(
+        "chat_processing",
+        {},
+        recorder=recorder,
+        conversation_id=conversation.text,
+        source_event_id=event_id,
+    ):
+        pass
+    linked = await list_event_turns(
+        database.sessions,
+        PageRequest(),
+        conversation_id=conversation,
+        event_id=event_id,
+        direction="external",
+    )
+    assert linked.total == 1
+    assert linked.items[0].fields["original_conversation_id"] == conversation.text
+
+
+@pytest.mark.asyncio
 async def test_outbound_event_links_to_original_conversation_turn(database, tmp_path):
     env = await social_env(database, tmp_path)
     assert await env.router.cas_takeover_person(env.person) == "taken"

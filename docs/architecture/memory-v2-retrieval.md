@@ -63,6 +63,10 @@ SELF 维持 global/current-private/current-group 可见性。
 `exhaustive=false` 和 `partial_reason=global_candidate_budget`，不把预算截断说成没有记忆。
 启用语义但 embedding 未配置或调用失败时也返回 `exhaustive=false` 和明确的语义状态，
 表示词法降级的结果不能证明语义空间没有更好事实。
+查询成功但当前授权范围内有未建索引或正文已变更的事实时，返回
+`semantic_status=index_incomplete`、`partial_reason=semantic_index_incomplete` 和
+`exhaustive=false`；这只表示语义索引覆盖不足，不将已返回候选判为无效，
+也不能据此断言没有相关事实。
 核心记忆工具的固定 grounding 规则必须
 穿过统一工具结果转换和正常结果预算器到达模型；插件不能以同名字段声明可信规则。
 记忆列表超过原有工具字符预算时只保留排序靠前的完整事实，并返回 `truncated=true`、
@@ -102,6 +106,9 @@ overview 没有执行主题匹配，因此候选投影的 `lexical_match` 与 `s
   旧部署显式 `MEMORY_EMBEDDING_ENABLED=false` 继续保持关闭，直到管理员修改。
 - QueryBuilder 规范化文本、有界引用和结构化 intent；保留 FTS、短词 LIKE、
   embedding 与现有 rerank。
+- FTS5 trigram 不索引两个汉字的原词。整句检索只返回泛主题候选时，模型可将该原词作为
+  两字 query 单独补查，后端继续在相同 SQL 授权范围内有界 LIKE；不自动把整句所有二字片段
+  展开为 OR 候选，也不把命中原词误称为能回答问题。
 - 非空且启用语义检索时生成 query embedding；overview、lexical 不调用 embedding。
 - 词法/语义候选都先按 canonical scope、active、有效期、kind/profile 做 SQL 筛选。
 - 无目标主动搜索在同一个 SQL 授权条件下取全局词法候选、全局当前 profile 向量，
