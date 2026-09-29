@@ -38,6 +38,18 @@ _REASONING = "Synthetic hidden reasoning; never a public message."
 _ANSWER = "我在，刚才检查好了。"
 
 
+def _without_cache_breakpoints(value):
+    if isinstance(value, dict):
+        return {
+            key: _without_cache_breakpoints(item)
+            for key, item in value.items()
+            if key != "cache_control"
+        }
+    if isinstance(value, list):
+        return [_without_cache_breakpoints(item) for item in value]
+    return value
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("protocol", list(ModelProtocol))
 @pytest.mark.parametrize("explicit_send", [False, True])
@@ -233,7 +245,12 @@ async def test_provider_text_requires_explicit_delivery(
     )
     for previous, following in pairwise(requests):
         previous_input = previous[sequence_key]
-        assert following[sequence_key][: len(previous_input)] == previous_input
+        prefix = following[sequence_key][: len(previous_input)]
+        if protocol is ModelProtocol.ANTHROPIC_MESSAGES:
+            # Claude moves the cache marker forward while preserving message content.
+            assert _without_cache_breakpoints(prefix) == _without_cache_breakpoints(previous_input)
+        else:
+            assert prefix == previous_input
         assert following["tools"] == previous["tools"]
         if protocol is ModelProtocol.RESPONSES:
             assert following["instructions"] == previous["instructions"]
