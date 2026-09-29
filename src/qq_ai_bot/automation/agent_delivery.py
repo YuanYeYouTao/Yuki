@@ -42,6 +42,31 @@ def _receipts(body: dict[str, Any]) -> list[dict[str, Any]]:
     return [body]
 
 
+def _confirmed_sequence(parent: SocialOperationModel, rows: list[SocialOperationModel]) -> bool:
+    """Reconcile only an explicitly persisted prospective plan and every child."""
+    count = parent.planned_parts
+    if (
+        parent.action != "send_message_sequence"
+        or parent.status != "prepared"
+        or count is None
+        or count <= 1
+    ):
+        return False
+    prefix = f"seq:{hashlib.sha256(parent.tool_call_id.encode()).hexdigest()[:24]}:"
+    children = [row for row in rows if row.tool_call_id.startswith(prefix)]
+    return len(children) == count and all(
+        (child := next((row for row in children if row.tool_call_id == f"{prefix}{index}"), None))
+        is not None
+        and child.action == "send_message"
+        and child.status == "succeeded"
+        and child.source_turn_id == parent.source_turn_id
+        and child.source_conversation_id == parent.source_conversation_id
+        and child.target_kind == parent.target_kind
+        and child.target_id == parent.target_id
+        for index in range(count)
+    )
+
+
 async def inspect_agent_delivery(
     database: Database,
     *,
@@ -196,9 +221,13 @@ async def inspect_agent_delivery(
         ):
             continue
         if row.action == "send_message_sequence":
-            # The parent remains PREPARED even after a complete split send. Its
-            # children do not retain the planned count; only the tool aggregate does.
-            return AgentDeliveryOutcome("uncertain", "send_aggregate_unavailable")
+            if not _confirmed_sequence(row, roots):
+                # Historical parents have no plan; partial or ambiguous new plans
+                # must never be treated as whole-call delivery.
+                return AgentDeliveryOutcome("uncertain", "send_aggregate_unavailable")
+            missing_results.discard(row.tool_call_id)
+            attempts.append((row.created_at.replace(tzinfo=UTC).timestamp(), "succeeded"))
+            continue
         if row.status in {"failed", "prepared"}:
             missing_results.discard(row.tool_call_id)
             attempts.append((row.created_at.replace(tzinfo=UTC).timestamp(), "failed"))

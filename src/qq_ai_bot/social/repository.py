@@ -41,10 +41,17 @@ class SocialOperationRepository:
         action: str,
         target: SocialTarget,
         payload: dict[str, Any],
+        planned_parts: int | None = None,
     ) -> SocialReceipt:
         if action not in _ACTIONS or not source_turn_id or not tool_call_id:
             raise SocialError("invalid_operation")
         if len(tool_call_id) > 128:
+            raise SocialError("invalid_operation")
+        if planned_parts is not None and (
+            action != "send_message_sequence"
+            or type(planned_parts) is not int
+            or planned_parts <= 1
+        ):
             raise SocialError("invalid_operation")
         source_turn_id = social_source_key(source_turn_id)
         encoded = json.dumps(
@@ -77,6 +84,7 @@ class SocialOperationRepository:
                     source_conversation_id=source_conversation_id,
                     action=action,
                     payload_hash=digest,
+                    planned_parts=planned_parts,
                     target_kind=target.kind,
                     target_id=str(target.id),
                     status=OperationStatus.PREPARED.value,
@@ -92,7 +100,7 @@ class SocialOperationRepository:
                 )
             )
             assert row is not None
-            if row.payload_hash != digest:
+            if row.payload_hash != digest or row.planned_parts != planned_parts:
                 raise SocialError("idempotency_conflict")
             return self._receipt(row)
 

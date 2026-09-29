@@ -2,7 +2,15 @@
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from qq_ai_bot.persistence.models import Base
@@ -42,3 +50,5 @@ class SocialOperationModel(Base):
     event_id: Mapped[int | None] = mapped_column(
         ForeignKey("chat_events.id", onupdate="RESTRICT", ondelete="SET NULL"), nullable=True
     )
+    # Only new split-send parents record a plan. Historical NULL is unknowable.
+    planned_parts: Mapped[int | None] = mapped_column(Integer, nullable=True)

@@ -52,13 +52,14 @@ def test_social_event_reference_preserves_history_and_survives_event_deletion(mo
 def test_social_event_migration_matches_runtime_metadata(monkeypatch):
     original = importlib.import_module("migrations.versions.0052_social_operation_receipts")
     migration = importlib.import_module("migrations.versions.0069_social_receipt_event_reference")
+    sequence_plan = importlib.import_module("migrations.versions.0080_social_sequence_plan")
     deployed, runtime = create_engine("sqlite:///:memory:"), create_engine("sqlite:///:memory:")
     with deployed.begin() as migrated, runtime.begin() as metadata:
         for connection in (migrated, metadata):
             connection.exec_driver_sql("CREATE TABLE chat_events (id INTEGER PRIMARY KEY)")
             for table in ("canonical_conversations", "presences"):
                 connection.exec_driver_sql(f"CREATE TABLE {table} (id TEXT PRIMARY KEY)")
-        for module in (original, migration):
+        for module in (original, migration, sequence_plan):
             monkeypatch.setattr(module, "op", Operations(MigrationContext.configure(migrated)))
             module.upgrade()
         SocialOperationModel.__table__.create(metadata)

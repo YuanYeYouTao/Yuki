@@ -655,6 +655,7 @@ class SocialService:
             action="send_message_sequence",
             target=target,
             payload={"original": args, "chunks": chunks},
+            planned_parts=len(chunks),
         )
         prefix = hashlib.sha256(context.call_id.encode()).hexdigest()[:24]
         planned = []
