@@ -5,10 +5,14 @@
 ## 当前事实
 
 - PR [#170](https://github.com/YuanYeYouTao/Yuki/pull/170) 已通过 Linux CI 并 squash 合并至 `main`（`a330ee6fd37e8813aecee54d8981f10bbeea52a5`）。上一 Bot 镜像 `ops-7f42b26` 曾单独部署，数据库升级到 `0079`；当前运行镜像见下条。
-- 跟进 PR [#171](https://github.com/YuanYeYouTao/Yuki/pull/171) 最新 Linux CI 全绿并 squash 合并到 `main`（`b5c51b3994028412a327392855a6350ed1c71857`）。代码相同的 Bot 镜像 `ops-c30f220` 已在 `/opt/yuki-qqbot/backups/pre-ops-c30f220-20260929T024221Z` 做 SQLite 在线备份与配置备份后单服务部署；新容器 `dcd3577bc837…` healthy，数据库仍为 `0079`，SnowLuma 与 mihomo 未重建。
+- 跟进 PR [#171](https://github.com/YuanYeYouTao/Yuki/pull/171) 最新 Linux CI 全绿并 squash 合并到 `main`（`b5c51b3994028412a327392855a6350ed1c71857`）。上一 Bot 镜像 `ops-c30f220` 已备份后单服务部署并验收健康，数据库为 `0079`；当前镜像见下条。
+- PR [#172](https://github.com/YuanYeYouTao/Yuki/pull/172) 的最新 Linux CI 全绿并 squash 合并到 `main`（`5b089883dc5b9314496d6042a64cce92cb2e4f9f`）。代码相同的 Bot 镜像 `ops-1b06e8f` 已在 `/opt/yuki-qqbot/backups/pre-ops-1b06e8f-20260929T032214Z` 做 SQLite 在线备份与配置备份后只更新 Bot；容器 `1b7e62015223…` healthy，数据库仍为 `0079`，SnowLuma 与 mihomo 未重建。
+- PR [#173](https://github.com/YuanYeYouTao/Yuki/pull/173) 的最新 Linux CI 全绿并 squash 合并到 `main`（`af47c667e209b3684ee76a17308f5fd35b81c72a`）。代码相同的 Bot 镜像 `ops-5f539c6` 已在 `/opt/yuki-qqbot/backups/pre-ops-5f539c6-20260929T034818Z` 做 SQLite 在线备份与配置备份后只更新 Bot；当前容器 `efb1c95d3bff…` healthy，`/healthz` 返回 200。配置 `matches_loaded=true`，Gemini `bridge`/`low` 与 13 路由保留；控制面外部事件 #72188 的 3 个执行轮次仍可读。生产页面目视验收另列待办。
 - 生产 WebUI 已将 Gemini 3.8 Flash 的 13 个任务用途保留，并热保存 `reasoning_effort=low`；回执 `applied`，磁盘版本与已加载版本一致。保存前后的 Bot 容器 ID 相同，随后新模型请求的 Yuki 出站为 `thinkingLevel: low`，旧请求为 `medium`。
 - 生产 WebUI 曾将该 Gemini 连接热保存为 `search_mode=native`、`native_web_search=true`，回执 `applied`；随后无 QQ 完整主链探针发现当前 Cloud Code 路径不能把固定函数与 `googleSearch` 放在同一请求。已立即按原文件版本通过控制面热保存回退到沿用 Tavily，回执 `applied`（版本 `2444569520056773`），再读 `matches_loaded=true`；Bot 容器 ID 未变且健康，`reasoning_effort=low` 保留。中间直接恢复磁盘文件只用于准备回退，最终控制面保存才使内存态生效。
-- 已备份配置及数据库后，经 WebUI 热保存移除无新路由、无活动 Work 精确引用的 `flash` 和 `self_reflection`；旧 `pro` 仍被 5 个暂停 Work 的 journal 引用，其中 3 个有未知或待核效果，暂须保留。删除前后的 Bot 容器 ID 相同且健康。
+- 新桥代码上线后经同一 WebUI 控制面热保存现有 Gemini 连接为 `search_mode=bridge`，回执 `applied`（版本 `2294856724640907`）、`matches_loaded=true`，Bot 容器 ID 未变、仍 healthy，`low` 保留。部署容器内以当前连接进行无 QQ 真实桥调用：独立 `googleSearch` 得 3 个可信 grounding 来源，其中两项经 Tavily 提取正文，`partial_failure=false`、未回退。自然主 Agent 调用 `web_search` 的生产样本仍待出现。
+- 已备份配置及数据库后，经 WebUI 热保存移除无新路由、无活动 Work 精确引用的 `flash` 和 `self_reflection`。旧 `pro` 虽仍被 5 个暂停 Work 的历史 journal 引用，但离线回放证实只移除其**当前连接配置**会在原 Work ID、预算和未决效果不变的前提下按现行连接合同恢复或拒绝危险重放。再备份当前模型配置到 `/opt/yuki-qqbot/backups/model_profiles-pre-remove-pro-20260929T033453Z.toml` 后，控制面热保存移除 `pro`，回执 `applied`（版本 `488634675304481`）、`matches_loaded=true`；仅剩 Gemini 连接和 13 个路由，`bridge`/`low` 保留，Bot 容器不变且 healthy。5 个暂停 Work 及其未知效果未作结算或清除。
+- 服务器另有未加载的旧 `/opt/yuki-qqbot/config/model_profiles.toml`（仍含 `pro/flash/self_reflection`）。现行 WebUI Compose 明确使用 `/app/webui-config/model_profiles.toml`；但漏掉覆盖时，旧 `.env` 仍会指向这个路径。已把旧文件备份到 `/opt/yuki-qqbot/backups/model_profiles-legacy-retired-20260929T034339Z.toml`，原路径原子替换为 `schema_version = 0` 退役标记，令错误部署明确失败而非悄悄恢复旧 DeepSeek 路由。现行 Bot ID 不变且 healthy；guided setup 与缺文件兼容回退仍需源代码收口。
 - 另一台 `antigravity-server` 的 Gemini 代理已按最小补丁仅更新 Antigravity Manager 服务：当前镜像 `antigravity-manager:gemini-grounding-v4.8.4`（`sha256:d5b9abad…cab781`），容器健康；保留旧镜像、切换前备份及 `/opt/antigravity-manager/patches/v4.8.4-gemini-fixes-20260929/ROLLBACK.md`。旧末尾失败报文在当前代理重放 200，签名与 low 保留；原生搜索合成请求返回可信 grounding，但自然 QQ 续接和生产主链原生搜索尚未验收。
 - **高危缓存观察**：只读核对线上 16 条 Gemini 调用明细后，输入合计 **362,512**、已报告缓存命中 **76,926**（占已记录输入 **21.2%**），与用户供应商截图的约 362.5K / 76.9K 相符。旧 Yuki 页面所报 **71.5%** 仅以报告缓存量的 3 次调用为分母，其余 13 次未报缓存量，不能代表总体。主对话 5 次输入 210,408、命中 60,571；自我反思 8 次输入 142,986、命中 16,355；另 3 次记忆任务输入共 9,118、没有缓存回执。16 次中仅 3 次低于 Gemini 3.8 Flash 官方 4,096 Token 隐式缓存门槛，其他未命中须逐调用核对前缀与服务端回执。
 
@@ -16,17 +20,17 @@
 
 | 编号 | 当前证据与状态 | 还不能打总勾的原因 |
 | --- | --- | --- |
-| 1 搜索与工具 | DeepSeek 官方搜索桥真实调用返回服务端搜索事件；Gemini 非流式 SSE collector 已修补并单服务部署，单独搜索回包有可信 grounding；混合主链失败后已热回退到 Tavily | 当前 Cloud Code 路径的固定函数与 `googleSearch` 混用返回 400；需独立搜索请求方案及验收，Claude 真实代理、费用与无来源回退也未验收 |
-| 2 多模态 | 附件路由与预算通过；当前 Gemini/DeepSeek 两连接的图片、双视频帧和函数工具经真实 API 成功，Gemini 结构化及 DeepSeek 函数式结构化探针成功 | 真实 QQ 附件、长上下文、未配置 Provider 和原生音视频尚未验收 |
-| 3 热配置 | 生产 WebUI 两次保存均回执 `applied`，已加载版本立即一致；后续 Gemini 请求由 medium 变 low，Bot 未重启 | 在途请求隔离、保存失败回滚由定向测试覆盖；排队旧纯文本媒体仍需重新引用 |
+| 1 搜索与工具 | DeepSeek 官方搜索桥真实调用返回服务端搜索事件；Gemini 独立搜索桥已合并、部署并热生效，容器内真实 `googleSearch` + Tavily 提取返回可信来源；主模型仍保留稳定本地函数 | 自然主 Agent `web_search` 生产样本、Claude 真实代理、费用与无来源回退仍未验收 |
+| 2 多模态 | 附件路由与预算通过；Gemini/DeepSeek 两种连接的图片、双视频帧和函数工具经真实 API 成功，Gemini 结构化及 DeepSeek 函数式结构化探针成功；当前生产 Gemini 另有 239,019 输入 Token 长上下文真实 API 成功 | 真实 QQ 附件、DeepSeek 长上下文、未配置 Provider 和原生音视频尚未验收 |
+| 3 热配置 | 生产模型保存均回执 `applied`、加载版本立即一致；Gemini medium→low 及外部搜索→桥均未重启 Bot；在途 Runner 固定原模型和搜索后端的回归已过 | 排队旧纯文本媒体仍需重新引用；自然在途跨切换样本未出现 |
 | 4 Work 接续 | 双向 Gemini/DeepSeek 的 SQLite + Runner 隔离回放通过，同一 Work ID/预算/确认回执保留、工具过滤与来源迁移有效，40 项回归通过 | 生产真实暂停 Work 的未知效果须原 ID 对账，不能靠模拟恢复；自然热切换仍待验收 |
-| 5 用量口径 | 分层缓存率、失败响应用量、HTTP 请求尝试数及未知用量已实现 | 原生搜索额外费用和真实账单未核对 |
+| 5 用量口径 | 分层缓存率、失败响应用量、HTTP 请求尝试数及未知用量已实现；真实 Gemini 样本核对 Yuki 输出含思考 Token，AGM 展示的 total 漏计思考 | AGM 聚合口径待修，原生搜索额外费用和真实账单未核对 |
 | 6 用量页面 | 生产真实 24 小时数据下，宽幅双图在浅色/深色主题均无图内横向滚动；本地三主题 hover 已验证，深色提示字对比修正代码已随新镜像上线 | 深色提示字尚待新镜像页面目视复核 |
-| 7 旧配置 | 6 项无效选择配置已删除；`flash`、`self_reflection` 已备份并热移除 | 5 条 suspended Work 精确引用旧 `pro`，其中 3 条有未知发送或待核效果；须证据对账后才能删 `pro` |
-| 8 上线验收 | 后端全量 1,654 通过/7 个 Windows 跳过，前端 85 通过；PR #171 最新 Linux CI 全绿并合并，新 Bot 单服务部署 healthy，生产配置与运行态一致 | 原生 Gemini 搜索桥、跨供应商自然切换、真实 QQ 多模态与账单等验收未完 |
+| 7 旧配置 | 6 项无效选择配置已删除；`flash`、`self_reflection`、`pro` 已备份并热移除当前配置，未加载旧文件已备份并设为失败标记，5 条暂停 Work 的未知效果保留；PR #173 CI/合并/部署完成，当前连接默认选中与历史连接折叠已上线 | guided setup/缺文件回退需源代码收口、页面目视复核；5 条暂停 Work 的结算属 #4 |
+| 8 上线验收 | 后端本地全量 1,654 通过/7 个 Windows 跳过，前端 85 通过；PR #173 最新 Linux CI 全绿并合并，`ops-5f539c6` 单服务部署 healthy，Gemini 桥/low/唯一连接运行态一致且容器内真实纯搜索成功 | 自然主链搜索、跨供应商自然切换、真实 QQ 多模态、页面目视与账单等验收未完 |
 | 9 状态与收发消息 | 新镜像上线后，生产外部事件 #72188 经控制面查到 3 个可信执行轮次，原先方向误拒已修；本地长轮分页与授权详情通过测试 | 生产长轮页面、授权正文和交互仍待目视复核 |
-| 10 高危：跨供应商缓存 | Gemini 67 条 Yuki/代理调用逐条匹配；`ops-c30f220` 上线后同一会话连续 3 次已报缓存 40,298/45,489、40,291/45,640、40,291/46,233，system/tools/low 均稳定；旧 Dream 动态 system 已修 | 同期另 1 次主聊缺缓存回执，且仅有一个会话两轮样本；完整前缀计数、长期命中、账单、其他 Provider 与新版 Dream 批次仍待验收 |
-| 11 高危：Gemini 代理抓包 | 用户确认是清理前旧请求；已核对结构、线上 Base URL，以及代理入站/转发/响应三栏 | 需确认最终发往 Google 的请求；当前字段顺序是否影响缓存不能凭单次抓包判断 |
+| 10 高危：跨供应商缓存 | Gemini 67 条 Yuki/代理调用逐条匹配；`ops-c30f220` 上线后同一会话连续 3 次已报缓存 40,298/45,489、40,291/45,640、40,291/46,233，system/tools/low 均稳定；另一个会话也已报 20,118/39,579；旧 Dream 动态 system 已修 | 跨会话仅新增一个明确命中样本；完整前缀计数、长期命中、账单、其他 Provider 与新版 Dream 批次仍待验收 |
+| 11 高危：Gemini 代理抓包 | 用户确认是清理前旧请求；自然调用中 Yuki 与代理入站的 system/tools/config 哈希及 contents 长度对齐，low 保留、无顶层旧字段；代理转发栏是最终转换前的简化预览，源码已追到 Cloud Code 发送路径 | 最终发送字节仍无独立抓包，不能把转发栏或字段排列直接当作 Google 缓存依据 |
 | 12 高危：Gemini 思考档位与代理改写 | Yuki 生产热保存 low 后连续请求确实发送 low；当前生产代理的合成 low/medium/high 请求均保留对应档位且无固定预算，尾段旧报文重放 200 | 仍需自然 Yuki 尾段与配置热改档的全链验收 |
 | 13 高危：本轮运行资料夹杂弱相关内容 | 不自动附旧事实/事件摘要及统一 `search_memory` 已随当前镜像上线；Person 7+7 探针未复现编造；紧凑历史合成 A/B 输入 Token 在 Gemini/DeepSeek 降 33–36% | 记忆缺人工金标/完整 Agent 补查；DeepSeek 缓存也减半，尚不能证明紧凑历史真实费用与工具轮次净收益 |
 | 14 记忆向量服务启用与降级 | 生产记忆页显示启用、配置齐全、1,158/1,158 活跃事实覆盖；隔离探针中缺凭据、超时与 503 均保留词法结果并标记非穷尽 | 生产断网/重启后的开关生效与人工金标精度仍未验收 |
@@ -34,7 +38,7 @@
 
 ## 任务与完成标准
 
-- [ ] **1. 供应商搜索与工具清单**：按连接/协议明确选择原生搜索或外部搜索；Gemini、OpenAI Responses、DeepSeek、Anthropic 的请求格式与能力声明一致；当前供应商不可用的工具不得出现在请求的 tools 中；搜索事件、失败和来源可追踪。当前：各连接模式、声明过滤已通过定向验证；DeepSeek 官方搜索桥真实调用有 `server_tool_use` 与 `web_search_tool_result`。Gemini 单独原生搜索可返回可信 grounding，但当前 Cloud Code 路径混合固定函数会 400，生产已恢复 Tavily，独立搜索请求尚待实现。
+- [ ] **1. 供应商搜索与工具清单**：按连接/协议明确选择原生搜索或外部搜索；Gemini、OpenAI Responses、DeepSeek、Anthropic 的请求格式与能力声明一致；当前供应商不可用的工具不得出现在请求的 tools 中；搜索事件、失败和来源可追踪。当前：DeepSeek 官方搜索桥真实调用有 `server_tool_use` 与 `web_search_tool_result`；Gemini 混合固定函数与 `googleSearch` 在 Cloud Code 路径返回 400，因此独立搜索桥已部署并热生效，主模型继续声明稳定本地函数，搜索时另发纯 `googleSearch`。容器内真实桥调用取得可信来源，主 Agent 自然工具回合仍待验收。
   - [x] Gemini 原生 Google Search 与 Claude server-side web search 的协议适配和离线回放已实现；Gemini/Claude 续接保留服务端片段。
   - [x] 每连接搜索策略、协议能力校验和当前 wire tool 声明过滤已实现；Provider 定向测试 94 项通过。
   - [x] 删除 `request_tools` 声明、执行路径、检索状态和插件事件；能力运行时改为完整稳定声明，权限只在执行处收窄。联网集成 12 项、能力/社交/跨轮定向 34 项通过；随后全量回归及 PR #171 Linux CI 已通过。
@@ -43,15 +47,17 @@
   - [x] 根因是 AGM 对客户端非流式请求强制走 SSE 后由 collector 合并 JSON，而旧 collector 丢弃 candidate 的 `groundingMetadata`。最小修补按事件顺序保留查询、来源块和支持关系，Rust 3 项回归通过；修补版 canary 和当前生产代理的合成搜索均返回 1 query/1 chunk/4 supports，Yuki `GeminiProvider._parse` + `recover_native_web_response` 得 1 个受信来源且 `partial_failure=false`。尾段签名、LOW 无固定预算、`countTokens` 200 回归通过；代理只更新 AGM 服务并保留回退。来源来自 Google 元数据而非正文 URL。
   - [x] 生产 Gemini 曾短时热保存 `search_mode=native`、`native_web_search=true`，无 QQ 合成主链确认 Yuki 正确排除了外部 `web_search`/`read_webpage`，却在 109 个固定函数加 `googleSearch` 的混合请求上从 AGM/Cloud Code 收到 HTTP 400；缩到 1 个函数、尝试透传 camel/snake `includeServerSideToolInvocations` 仍 400。已通过控制面热保存回退沿用 Tavily，回执 `applied`、有效文件与内存态 `matches_loaded=true`，Bot 未重建。不可据单独 `googleSearch` 成功宣称主链可用；需要独立搜索调用或其他已验路由。
   - [x] 使用生产 DeepSeek 官方搜索连接作不经 QQ 的真实 API 探针，HTTP 200，回包有服务端搜索调用与搜索结果事件；额外费用仍须账单核对。原生来源解析不再把模型正文中的任意 URL 当作搜索来源；无受信来源时回执明确为部分失败，新增 3 项回归。
+  - [x] PR #172 将 Gemini 的搜索选项收为按连接配置的 `bridge`：在途 Runner 同时固定模型和搜索后端；主请求保留 `web_search`/`read_webpage` 稳定函数，只在执行搜索时另发只含 `googleSearch`、零函数声明的请求；仅接受 Google grounding 来源，无可信来源时显式降级 Tavily，辅助模型请求独立记 Token、物理请求和未知用量。145 项 Python 定向、14 项前端定向与最新 Linux CI 全绿。`ops-1b06e8f` 上线后通过控制面热保存，回执 `applied`、`matches_loaded=true`、容器 ID 不变；部署容器内当前连接的无 QQ 桥请求得到 3 个可信来源，两项 Tavily 正文提取成功、`partial_failure=false`、无降级。自然主 Agent 工具回合尚待验收。
   - [ ] 在生产 Gemini 主链按连接策略验收原生搜索、工具声明与来源；Claude 真实代理、无来源回退和额外服务端费用/账单仍待核对。
-- [ ] **2. 多模态与协议能力**：核对图片、视频帧、语音、文档从入口到各 Provider 的传递；不支持的能力在保存或执行前明确拒绝；工具调用、结构化输出、思考状态的协议回放分别验证。当前两条生效连接的图片、双视频帧、函数工具和函数式结构化输出已有无 QQ 真实 API 证据；长上下文、真实 QQ 附件、未配置供应商及原生音视频尚未验收。
+- [ ] **2. 多模态与协议能力**：核对图片、视频帧、语音、文档从入口到各 Provider 的传递；不支持的能力在保存或执行前明确拒绝；工具调用、结构化输出、思考状态的协议回放分别验证。Gemini/DeepSeek 两种连接的图片、双视频帧、函数工具和函数式结构化输出已有无 QQ 真实 API 证据；当前生产 Gemini 另有 239,019 输入 Token 长上下文真实 API 成功。真实 QQ 附件、DeepSeek 长上下文、未配置供应商及原生音视频尚未验收。
   - [x] 图片与视频帧输入能力改为读取当前模型路由；动态开关回归 1 项通过。语音仍由独立 ASR 转文字；没有原生音频/视频输入，不能宣称已接入。
   - [x] 续跑消息和续跑条目的图片现同样经过 `image_input` 能力检查，纯文本连接无法绕过；协议、媒体定向 9 项及 Ruff 通过。文件仍解析为文本，视频仍采样为图片帧。
   - [x] 当前消息与引用消息的附件按顺序共用同一件数、视频帧数及字节预算；混合附件中可恢复的单件读取失败保留前面已读图片/帧，给出附件序号、来源与失败原因，而不抹掉整个媒体输入。附件定向 5 项及 Ruff check/format 通过。真实 QQ 附件仍未验收；语音仍依赖独立 Qwen ASR。
   - [x] 使用生产 Gemini 代理对合成 PNG 与两帧图片请求进行无 QQ 副作用的真实 API 探针，均为 HTTP 200 且返回与图像相符的描述；文档仍按文本解析，语音走 Qwen ASR，视频走抽帧图片。21 项协议/媒体/ASR/文档定向验证通过；真实 QQ 附件与其他 Provider 仍待验收。
-  - [x] 只读核对当前真正加载的 `webui-config/model_profiles.toml`，只有旧 `pro` DeepSeek Responses `deepseek-flash` 与 Gemini 3.8 Flash 两条连接；服务器旧 `config/model_profiles.toml` 不是当前有效文件。用现有 DeepSeek 密钥发送合成 32×32 红色 PNG 至官方 Responses，HTTP 200 且正确识别红色，因此当前 `deepseek-flash` 的 `image_input` 声明有真实依据，不能按旧印象强制拒绝。
-  - [x] 生产连接无 QQ 合成探针：DeepSeek Responses 经 Yuki 适配器识别红/蓝双帧、发起一次 `lookup_code` 工具调用，low reasoning 有响应，`emit_result` 函数返回 `value=7`；Gemini 适配器同样发起工具并返回结构化 `value=7`，此前图片/双帧也成功。DeepSeek 当前未声明 `structured_output`，故路由不会把需要该能力的任务交给它；两连接的 tools/image_input 声明与已测一致。long_context 未用大输入实测；文档与语音仍为 Yuki 文本解析/独立 ASR，其他供应商未配置。[DeepSeek Vision](https://api-docs.deepseek.com/guides/vision/)、[Responses](https://api-docs.deepseek.com/guides/responses_api/)。
-- [x] **3. 热配置**：WebUI 保存连接和路由后，运行中立即、原子地用于新任务/新请求；失败不切换；已开始的模型请求保持原连接；WebUI 明确显示当前已加载版本。生产两次模型配置保存均为 `applied`、加载版本立即一致，Bot 容器 ID 未变；旧请求发 medium，热保存后的新请求发 low。失败回滚与在途旧连接隔离由定向测试覆盖。
+  - [x] 清理前只读核对当时真正加载的 `webui-config/model_profiles.toml`，有旧 `pro` DeepSeek Responses `deepseek-flash` 与 Gemini 3.8 Flash 两条连接；服务器旧 `config/model_profiles.toml` 不是当前有效文件。用现有 DeepSeek 密钥发送合成 32×32 红色 PNG 至官方 Responses，HTTP 200 且正确识别红色，因此当时 `deepseek-flash` 的 `image_input` 声明有真实依据，不能按旧印象强制拒绝。
+  - [x] 生产连接无 QQ 合成探针：DeepSeek Responses 经 Yuki 适配器识别红/蓝双帧、发起一次 `lookup_code` 工具调用，low reasoning 有响应，`emit_result` 函数返回 `value=7`；Gemini 适配器同样发起工具并返回结构化 `value=7`，此前图片/双帧也成功。当时 DeepSeek 未声明 `structured_output`，故路由不会把需要该能力的任务交给它；两连接的 tools/image_input 声明与已测一致。文档与语音仍为 Yuki 文本解析/独立 ASR，其他供应商未配置。[DeepSeek Vision](https://api-docs.deepseek.com/guides/vision/)、[Responses](https://api-docs.deepseek.com/guides/responses_api/)。
+  - [x] 当前生产 Gemini 连接经部署 Bot 容器内 Yuki `GeminiProvider.complete` 发送无 QQ 合成长输入，单 user 消息、空工具、`low`、最大输出 128：10,000 条确定性列表共 290,123 字符，真实响应 `prompt_tokens=239,019`、输出 102 Token、状态 completed，正确返回分处列表约 20% 与 80% 的两个目标 `CORAL|JADE`。未写生产 DB 或发送 QQ；缓存字段缺失，不能据此评价缓存。DeepSeek 长上下文和真实 QQ 附件仍待验收。
+- [x] **3. 热配置**：WebUI 保存连接和路由后，运行中立即、原子地用于新任务/新请求；失败不切换；已开始的模型请求保持原连接；WebUI 明确显示当前已加载版本。生产 medium→low 与外部搜索→独立桥保存均为 `applied`、加载版本立即一致，Bot 容器 ID 未变；在途 Runner 固定原模型和搜索后端、失败回滚由定向测试覆盖。自然在途跨切换样本尚未出现。
   - [x] 本地保存入口预构建新连接，成功写盘后切换执行器；同一 Agent 激活固定旧版本；保存失败保持旧路由。对应定向测试通过。
   - [x] 管理查询读取已加载目录，保存回执标记为已生效，WebUI 文案说明新激活立即切换。对应定向测试通过。
   - [x] 入站媒体准备到模型请求固定同一目录；排队 Work 输入若遇旧纯文本连接，明确说明图片未读取，不向不支持的 Provider 发送。媒体及 Work 定向 32 项通过。
@@ -68,21 +74,28 @@
   - [x] 适配器提供失败响应已知 usage，执行器将非负已知数字写入失败调用账本；定向测试通过。
   - [x] 用量页把“已确认缓存占已记录输入”和“仅已报缓存量调用的样本命中率”分开，避免把 Gemini 的 71.5% 误当全部输入的命中率；前端 78 项通过并构建通过。
   - [x] 逻辑调用与实际 HTTP 请求尝试分开记录；重试和 Claude 原生搜索续发分别计数，未收到上游 Token 用量的请求标未知，历史行不推算请求次数。新增 0079 迁移和 WebUI 口径，后端定向 32 项、前端 1 项、TS/Ruff/Prettier 通过。
+  - [x] 真实 Gemini 同请求只读对账：Yuki 输入 39,579、缓存 20,118、输出合计 426、总计 40,005；AGM 归一化分为候选输出 97 与思考 329，但其总计显示 39,676，恰好漏加 329。另一无 QQ 长请求 AGM 输出 5 + 思考 97 = Yuki 输出 102。Yuki 未重复计 Token；不可直接用 AGM 当前总计估账单。
+  - [ ] 修正并验收 AGM 仪表盘/归一化总计对思考 Token 的口径，同时保留候选输出和思考分项；以真实响应及供应商账单对齐。
   - [ ] 按供应商账单核对原生搜索额外费用和物理请求计数；Token 回包不能推算原生搜索费用。
 - [ ] **6. 用量页面重做**：按参考图制作宽幅双图、24 小时趋势、输入命中缓存/未命中/输出的分段量、悬浮明细；图表在正常桌面宽度不出现内部横向滚动，小屏有明确响应布局。生产真实数据下浅色/深色宽幅双图与无内滚动已验收；深色统计说明的对比度补丁已随 `ops-c30f220` 上线，待新镜像目视复核。
   - [x] 本地完成加宽响应布局、无图内横向滚动、每模型双图、缓存命中/明确未命中/未知/输出分段与键盘可用明细；前端构建、定向测试与格式检查通过。
   - [x] 浏览器预览在 649px、1280px 未出现图内横向滚动；浅色、深色、月夜主题的柱位悬浮背景和提示框实际显示，颜色均随主题变量变化。
   - [x] 部署后以真实 24 小时用量在完整 WebUI 核对浅色和深色主题：双图在正常桌面宽度均完整显示，无图内横向滚动；统计区显示缓存已确认比例、样本比例与未知调用数。柱位悬浮明细已在本地三主题浏览器测试覆盖；深色说明文字对比度另作跟进。
-- [ ] **7. 旧连接清理与配置解释**：核查存量 Work 对旧连接 ID 的引用；安全迁移或明确归档闲置连接；生效配置按供应商/模型名称和新任务用途展示，不让历史调用记录误导为当前路由。生产 `flash` 和 `self_reflection` 已备份并热删除；5 条 suspended Work 的 journal 精确引用旧 `pro`，其中 3 条有未知发送或待核效果，不能直接删除。
+- [ ] **7. 旧连接清理与配置解释**：核查存量 Work 对旧连接 ID 的引用；安全迁移或明确归档闲置连接；生效配置按供应商/模型名称和新任务用途展示，不让历史调用记录误导为当前路由。生产 `flash`、`self_reflection` 和 `pro` 的当前配置均已备份并热删除；5 条 suspended Work 的 journal 及未决效果原样保留，恢复和结算另见 #4。PR #173 的 UI 改进已通过 CI、合并、部署，页面目视仍待复核；guided setup/缺文件回退尚待源代码收口。
+  - [x] PR #173 默认选中当前 `chat_agent` 连接，未分配用途的历史连接折叠展示，保存仍保留其数据；前端定向 15 项、TypeScript、Ruff 与最新 Linux CI 全绿。`ops-5f539c6` 已单服务部署 healthy；当前仅 Gemini 连接，生产页面还未能目视复核。
   - [x] 本地删除 4 项已失效的工具首轮选择设置和 2 项已失效的 MCP 选择预算；管理配置入口同步删除，配置定向测试 47 项通过。
   - [x] WebUI 已有“全部用途使用当前模型连接”的一次性路由操作；新增前端定向测试确认保存请求中的全部任务都改到选中连接。
   - [x] 只读生产核对模型配置与 5 条未终结 Work journal：Gemini 连接承担 13 个新任务路由；旧 `pro` 承担 0 个新路由但被 5 条 suspended Work 以 `profile_id` 引用；旧 `flash`、`self_reflection` 既无新路由也无活动 journal 的精确引用。历史用量记录不作为删除阻碍或当前路由证明。
   - [x] 只读生产列举 `runtime_config_overrides.config_key`，没有本轮移除的 6 项旧工具选择覆盖；未读取覆盖值或密钥。
   - [x] 只读核对 5 条 suspended Work：均有 compaction anchor、无待处理模型工具调用；其中 2 条各有一条 `runtime_delivery_intents.state=unknown`，另 1 条有一条 `runtime_work_effects.state=prepared`，管理恢复入口会拒绝带未知/待核效果的任务。按原 function_call 参数和旧分段算法重算，这 3 条 sequence 的 manifest 哈希均与持久父回执吻合。两条 UNKNOWN 分别卡在 seq:0 与 seq:1，缺平台回执/账本事件，后续分段无发送回执；不能由缺记录推断未发送。第三条 PREPARED 的 4 个计划分段全部有 succeeded 回执、出站事件与平台 ID 逐条匹配，但 Work effect 仍是 prepared、回执为空且 journal 明确 replay_forbidden；需按原 effect key 审定并原子补录结算，绝不能重发。
-  - [x] 两条 uncertain 发送的原 operation ID 在现存社交回执、精确账本关联及现存网关/Bot 日志中没有可证明已送达或未发送的证据；OneBot 调用没有携带该 ID，当前网关无法据此直接查询。不能按正文/时间猜测内部事件身份或改写为成功/失败。另两条无未决发送的 Work 因 `gateway_disconnected`、`ValueError` 暂停，可作配置迁移候选，但须分别处理原错误；旧 `pro` 仍须保留以维护 5 条 journal 的恢复边界。
+  - [x] 两条 uncertain 发送的原 operation ID 在现存社交回执、精确账本关联及现存网关/Bot 日志中没有可证明已送达或未发送的证据；OneBot 调用没有携带该 ID，当前网关无法据此直接查询。不能按正文/时间猜测内部事件身份或改写为成功/失败。另两条无未决发送的 Work 因 `gateway_disconnected`、`ValueError` 暂停，仍须分别处理原错误；历史 journal 与未决效果必须保留。
   - [x] 备份后通过 WebUI 热保存移除 `flash`、`self_reflection`；回执 `applied`，磁盘与运行中版本相同，Bot 容器未重启。
-  - [ ] 对两条 UNKNOWN 取得传输层确证，或在保留未知状态的前提下设计并审定归档；对一条 PREPARED 以原 effect key 设计可审计的结算；另两条处理原暂停错误。完成安全迁移/归档后才能清理旧 `pro`，不得猜测未发送或重发。
-- [ ] **8. 集成、上线与真实验收**：完成定向测试、最新提交 CI、PR/合并；Bot 单独部署并验证健康、路由、WebUI 状态、Gemini/其他供应商实际调用和缓存统计。PR #170 与 #171 均已通过最新 Linux CI 并合并；`ops-c30f220` Bot 已单服务部署 healthy，数据库 `0079`，生产配置读回 `matches_loaded=true` 且 Gemini low/外部搜索保留。本地后端全量 **1,654 通过、7 个 Windows 平台跳过**，前端 **85 项通过**、构建与 Ruff 全绿；前轮记忆质量集 **19/19**。自然 QQ 末尾工具续接已有两条成功样本；Gemini 搜索桥、跨供应商自然切换、真实 QQ 多模态与账单仍待完成。
+  - [x] 使用私有生产备份的隔离 SQLite 回放 5 条旧 `pro` 暂停 Work：只删除当前连接配置后，原 Work ID/预算/效果状态不变；旧合同恢复到新连接时 1 条 `contract_changed`、4 条 `source_changed`，未决发送被拒绝重放。生产当前 `pro` 无任务路由且非搜索连接；备份当前配置后经控制面热删除，仅余 Gemini 13 路由，`applied`、`matches_loaded=true`、容器不变且 healthy。此项只清理当前连接配置，不结算或删除历史 Work。
+  - [x] 删除后逐条对照备份：5 条暂停 Work 的 ID、generation、revision、预算、checkpoint、journal 与全部 52 条效果记录摘要不变（51 accepted、1 prepared、3 条 uncertain 证据）。历史 journal 和 18,705 条 `pro` 调用统计作为审计记录保留。
+  - [x] 非活跃旧 `config/model_profiles.toml` 原有三条错误连接及路由，且 `.env` 指向该路径；备份后把原路径原子替换为无效 schema 退役标记。即使未来漏掉 WebUI Compose 覆盖，也会启动失败而非重新加载旧 DeepSeek 路由；当前 Bot 容器未重建且 healthy。
+  - [ ] 源代码中的 guided setup 仍会写旧路径，缺失配置文件会回退到 legacy env（当前服务器为 DeepSeek）；须迁移到唯一 WebUI 配置路径并在显式文件缺失时 fail closed，避免新部署再次产生旧连接。
+  - [ ] 5 条历史暂停 Work 的效果和原错误仍须按 #4 处理：两条 UNKNOWN 需要传输层确证或保留未知状态的归档，一条 PREPARED 需按原 effect key 审定结算，另两条需处理原暂停错误。不得猜测未发送或重发。
+- [ ] **8. 集成、上线与真实验收**：完成定向测试、最新提交 CI、PR/合并；Bot 单独部署并验证健康、路由、WebUI 状态、Gemini/其他供应商实际调用和缓存统计。PR #170–#173 最新 Linux CI 均全绿并合并；当前 `ops-5f539c6` Bot 单服务部署 healthy，`/healthz=200`，数据库 `0079`，生产配置 `matches_loaded=true`、Gemini low/独立搜索桥/唯一连接生效。本地此前后端全量 **1,654 通过、7 个 Windows 平台跳过**，前端 **85 项通过**；PR #173 Python 全量、Docker、memory-quality 等最新 CI 全绿。自然 QQ 末尾工具续接已有两条成功样本，容器内独立搜索桥真实请求成功；自然主链搜索、跨供应商自然切换、真实 QQ 多模态、页面目视与账单仍待完成。
 - [ ] **9. 本轮状态、收到和发出的消息**：按内部事件与执行 ID 关联真实收发消息；每个状态可展开具体动作、工具参数或结果的授权摘要、失败原因和时间；正文只在相应权限下读取，不能以 `redacted` 或阶段标签代替可核查的操作。生产聊天页已按真实事件显示收发方向、昵称和源事件；执行详情测试覆盖长轮分页。`ops-c30f220` 上线后，控制面按 `direction=external` 查询事件 #72188 返回 3 个可信轮次，原先方向误拒已消除；新镜像页面的长轮交互和授权正文仍待目视复核。
   - [x] 状态页在原权限边界内显示发送者昵称或群名片、内部事件、跨会话目标、确认投递、正文截断标记和同一操作的耗时；参数与结果按需授权读取。后端 6 项、前端 10 项定向通过；前端全量 78 项与构建通过。
   - [x] “本轮具体操作”汇总现包含 `model_start`、`provider_start`、`provider_response`，能按现有权限展开实际输入、发给 Provider 的请求和响应；前端定向 11 项与格式检查通过。
@@ -99,13 +112,16 @@
   - [x] 只读生产还发现旧版 `memory_dream` 的系统说明逐簇变化；已部署代码将 Episode 每簇原文字数/软压缩目标移到当前输入，系统说明在同类簇间固定。压缩判定定向 2 项与 Ruff 通过；新版 Dream 批次尚未出现，实际缓存增益待验收。
   - [x] `ops-7f42b26` 部署后只读对齐 Yuki 与代理 67 条 Gemini 调用。此前 62 次中 50 次成功，成功输入 1,304,888 Token、明确报告缓存 366,830（占 28.1%），其余缺回执不能算零。该镜像同一聊天链连续三次请求的 system、tools、generationConfig 哈希相同；后两次明确命中 40,268/42,551 和 40,323/43,834 Token。旧版 12 次 Dream 指令在逐簇数字处变化，已部署修复移到动态输入；新 Dream 批次还未出现。
   - [x] `ops-c30f220` 上线后的只读自然样本：同一会话两轮主聊天共 4 次，输入 182,458 Token、明确缓存读 120,880；首轮 45,096 Token 缺缓存回执，后 3 次分别命中 40,298/45,489、40,291/45,640、40,291/46,233，已报子集缓存率 88.0%，已确认缓存占全部输入 66.3%。跨轮保留 90/91 条 `contents` 前缀，同轮续接保留 93/93 与 95/95，system、tools、low 均稳定；新镜像首轮与旧镜像 system 哈希不同，不应期望跨部署命中。另有两条小于门槛的短任务未报缓存；跨不同会话样本不足。
+  - [x] 后续另一会话有两次成功 Gemini 主聊，其中一次 Yuki 与代理输入 39,579 Token、缓存读 20,118 精确一致（已确认读占该次输入 50.8%），另一次输入 40,128 但缺缓存回执。代理抓包元数据中这两次的 system/tools/generation 哈希一致，`contents` 从 75 增至 77，旧 75 项完整保留；因此缺回执不是已证实的前缀变化，也不能算零。这只证明跨会话也出现过明确命中，不能据两个会话推断长期成本。近 100 条用量中的 Dream 12 条均在本轮修复之前，尚无新批次可验。
   - [ ] 将逐请求前缀 hash、时间间隔和缓存回执核对扩展至多会话、Dream 批次及其他供应商，并区分必要的摘要重写/历史裁剪与摘要未变时的非预期前缀变化。旧自我反思固定说明以**普通 user 内容**送入当前代理 `countTokens` 约 2,542 Token；完整旧请求在该接口是 18,383，而同一成功 `generateContent` 实际 input_tokens 为 20,927、cache 为 16,355。Cloud Code v1internal 对直接 `request.systemInstruction` 计数不变，对公共 REST `generateContentRequest` 则报 400 unknown field；因此当前代理计数只能标为 `contents-only`，不能以相加近似冒充完整前缀、工具或系统说明的精确 Token 数。测量依据已记录于代理服务器 `COUNT_TOKENS_SCOPE.md`，布局决策须看真实调用 usage 与稳定前缀。
   - [ ] 对比逐供应商的真实费用与命中，再决定是否引入有存储费用、需维护 TTL/模型/工具版本的 Gemini 显式缓存；逐供应商验收优化后的命中率。
 - [ ] **11. 高危：Gemini 代理请求格式与顺序**：用户确认这份抓包是删除 `request_tools` 前的旧请求。顶层为 `_session_thinking_id`、`thinkingConfig`、`systemInstruction`、`contents`、`tools`，缺少仓库适配器对函数请求会构造的 `generationConfig` 和 `toolConfig`；共有 56 条历史 `contents`、114 项函数声明。线上连接的 Base URL 指向抓包 Host 的 `/v1beta`；当前已部署 Yuki 适配器把思考参数放在官方 `generationConfig.thinkingConfig`，没有 `_session_thinking_id`。JSON 属性排列本身不改变协议语义，但 Google 未承诺隐式缓存如何按原始 JSON 字节计算；需核对代理最终发往上游的字段和值。
   - [x] 仅元数据方式检查抓包：历史按旧到新放在 `contents`，本轮运行资料放最后一个 user 消息尾部；未见仅因消息数组顺序就颠倒新旧上下文的证据。当前配置和本地代码与抓包差异已定位，不把代理差异误记为本地已修复。
   - [x] 代理截图明确区分入站 Request、转发 Forwarded 与 Response：该次请求返回 200，代理把模型名映射到 `gemini-3.8-flash-tiered`，并把 `thinkingLevel: medium` 改为 `includeThoughts: true`、`thinkingBudget: 4096`；该次显示约 46.9% 缓存命中。这说明代理可处理此请求，不证明转发页所示 JSON 原样到达 Google，也不证明其他请求的缓存表现。
   - [x] 对 2026-09-29 07:47 左右的生产 `provider_start` 12169 仅核对字段名：Yuki 记录的出站 body 顶层是 `contents`、`generationConfig`（含 `thinkingConfig`）、`systemInstruction`、`toolConfig`、`tools`，没有顶层 `_session_thinking_id` 或 `thinkingConfig`；同时间代理 Request 页面却展示后两者。两侧可见格式不一致，代理的 Request 展示不能直接当成 Yuki 原始 HTTP 字节；须在部署后以稳定请求关联进一步定位展示/转换层。
-  - [ ] 用相同执行 ID 对照当前 Yuki 出站、代理入站/出站和 Google 回执；确认最终是否发送非官方顶层字段。现行镜像已部署，须用其自然请求抓包验收，不能沿用清理前旧请求推断。
+  - [x] 现行自然 Yuki trace 12759/12716/12728 分别与代理 02:48:37/45/55 UTC 的 93/95/97 条 `contents` 请求按 system/tools/generationConfig 哈希对齐；Yuki 与代理入站均为 `generationConfig.thinkingConfig.low`，无顶层 `_session_thinking_id` 或 `thinkingConfig`。同链稳定前缀仍出现明确缓存读 40,298/45,489、40,291/45,640、40,291/46,233，代理每次不同的 requestId 与缓存读并存，不能把 JSON 字段排列或该动态 ID 直接判作零命中原因。
+  - [x] 代理源码发送路径是 `wrap_request_v2` → `prepare_v1_internal_payload` → `serde_json::to_vec` → Cloud Code `v1internal:streamGenerateContent?alt=sse`；非流式 Yuki 客户端请求由代理内部强制流式再聚合。代理日志的 Forwarded 栏记录在最终 prepare 之前，简化模式还会扁平/重排信封，因此不能当作最终发往 Google 的公共 `generateContent` REST 报文。当前最终内层拓扑在代码中固定为 systemInstruction → tools → generationConfig → safetySettings → sessionId → contents，外层为 Cloud Code 信封；没有插入旧 `_session_thinking_id` 的路径。
+  - [ ] 仍需最终发送字节或上游可观测回执的独立证据，并以可贯通的执行 ID 关联 Yuki、代理和 Google；当前源码路径与日志预览只能支持结构推断，不能冒充已抓到上游原始请求。
 - [ ] **12. 高危：Gemini 3.8 默认使用 low，且不得被固定预算覆盖**：用户要求 Gemini 3.8 默认以 `thinkingLevel: low` 思考，而不是 `medium`；代理把档位改成固定 `thinkingBudget` 也不可接受。WebUI 预设及现有生产连接均已改为 low，生产 Bot 新请求出站为 low；代理最小补丁已部署，合成 low/medium/high 请求均保留对应档位且无固定预算。旧连接环境覆盖、保存失败与在途隔离有定向测试；自然 Yuki 尾段和真实热改档全链仍待验收。`thinkingBudget: 4096` 是输出思考预算，**不是** Gemini 隐式缓存的 4,096 输入 Token 门槛。
   - [x] 新连接默认 `low`；WebUI 可直接调整思考档位并解除旧环境变量覆盖；Yuki 保存和发请求时拒绝 Gemini 3.8 固定预算方言。后端 7 项、前端 13 项及类型/Ruff 检查通过。
   - [x] 只读生产确认现有 `connection_2d4ba9aad301` 仍为 `gemini-3.8-flash` + `reasoning_effort=medium`，没有 `reasoning_effort_env` 覆盖；因此仅改新建预设不足以完成现有连接切换，部署时还要热保存为 low。
