@@ -1519,6 +1519,65 @@ async def test_claude_paused_search_failure_reports_prior_usage_without_content(
         )
 
 
+@pytest.mark.parametrize("missing_on_first", [True, False])
+@pytest.mark.parametrize(
+    "missing_field", ["cache_read_input_tokens", "cache_creation_input_tokens"]
+)
+async def test_claude_paused_search_failure_does_not_merge_partial_cache_as_known(
+    missing_on_first,
+    missing_field,
+):
+    count = 0
+
+    def transport(_request):
+        nonlocal count
+        count += 1
+        usage = {
+            "input_tokens": 10,
+            "cache_creation_input_tokens": 2,
+            "cache_creation": {
+                "ephemeral_5m_input_tokens": 2,
+                "ephemeral_1h_input_tokens": 0,
+            },
+            "output_tokens": 1,
+        }
+        usage["cache_read_input_tokens"] = 3
+        if missing_on_first == (count == 1):
+            usage.pop(missing_field)
+        if count == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "stop_reason": "pause_turn",
+                    "content": [
+                        {
+                            "type": "server_tool_use",
+                            "id": "srvtoolu_4",
+                            "name": "web_search",
+                            "input": {"query": "public query"},
+                        }
+                    ],
+                    "usage": usage,
+                },
+            )
+        return httpx.Response(400, json={"error": {"type": "bad_request"}, "usage": usage})
+
+    async with httpx.AsyncClient(
+        base_url="https://wire.invalid/v1/", transport=httpx.MockTransport(transport)
+    ) as client:
+        claude = provider(AnthropicMessagesProvider, client)
+        configured = replace(
+            request(), native_tools=(NativeToolDefinition(NativeToolType.WEB_SEARCH),)
+        )
+        answer = await claude.complete(configured)
+        assert count == 2
+        assert answer.incomplete_reason == "pause_turn"
+        assert answer.prompt_tokens == 15
+        assert answer.cached_prompt_tokens is None
+        assert answer.cache_creation_input_tokens is None
+        assert answer.cache_creation_5m_input_tokens is None
+
+
 def test_profile_rejects_native_search_claim_for_unsupported_protocol():
     with pytest.raises(ValidationError, match="native web search is unavailable"):
         ModelProfile(
