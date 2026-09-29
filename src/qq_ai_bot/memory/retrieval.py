@@ -269,11 +269,11 @@ class MemoryRetriever:
         output_truncated = len(ranked) > limit
         semantic_unavailable = query.semantic_enabled and semantic_status == "not_configured"
         partial_reason = "global_candidate_budget" if candidate_truncated else None
-        if semantic_unavailable:
+        if partial_reason is None and semantic_unavailable:
             partial_reason = "semantic_not_configured"
-        if semantic_degraded:
+        if partial_reason is None and semantic_degraded:
             partial_reason = "semantic_degraded"
-        if not semantic_coverage_complete:
+        if partial_reason is None and not semantic_coverage_complete:
             partial_reason = "semantic_index_incomplete"
         if output_truncated and partial_reason is None:
             partial_reason = "global_result_limit"
