@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy.sql import Select
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.runtime.subagent_schema import children, media, media_refs
@@ -244,7 +245,7 @@ class SubagentRepository:
         now = time.time()
         cutoff = now - 7 * 86400
 
-        def expired_query():
+        def expired_query() -> Select[tuple[str]]:
             return (
                 select(children.c.work_id)
                 .where(
