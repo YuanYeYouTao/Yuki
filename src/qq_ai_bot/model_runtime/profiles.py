@@ -112,6 +112,7 @@ _DEFAULT_REQUIREMENTS: dict[ModelTask, frozenset[ModelCapability]] = {
 def load_model_profile_catalog(
     path: Path,
     *,
+    allow_legacy_fallback: bool = False,
     legacy_provider: str,
     legacy_base_url: str,
     legacy_model: str,
@@ -123,11 +124,17 @@ def load_model_profile_catalog(
     legacy_reasoning_effort: ReasoningEffort | None = None,
     environment: Mapping[str, str] | None = None,
 ) -> ModelProfileCatalog:
-    """Load TOML or explicitly normalize the legacy LLM settings to ``main``."""
+    """Load the selected TOML; legacy environment routing requires explicit opt-in."""
 
     if not path.is_file():
+        if not allow_legacy_fallback:
+            raise ModelRuntimeConfigurationError(
+                f"model profile configuration is missing: {path}; "
+                "create webui-config/model_profiles.toml with guided setup, "
+                "or migrate the old config/model_profiles.toml before starting"
+            )
         logger.warning(
-            "model_profiles_compatibility_mode file=%s profile=main",
+            "model_profiles_legacy_fallback_opt_in file=%s profile=main",
             path,
         )
         # Legacy environment settings never opted into a provider-native tool.

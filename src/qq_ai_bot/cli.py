@@ -319,6 +319,7 @@ def _add_memory_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
 def _model_catalog(settings: Settings) -> ModelProfileCatalog:
     return load_model_profile_catalog(
         settings.model_profiles_file,
+        allow_legacy_fallback=settings.model_profiles_legacy_compatibility,
         legacy_provider=settings.llm_provider,
         legacy_base_url=settings.llm_base_url,
         legacy_model=settings.llm_model,

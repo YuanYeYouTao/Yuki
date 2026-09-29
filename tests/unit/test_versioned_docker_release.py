@@ -115,6 +115,7 @@ def test_bundle_contains_only_deployment_files_and_expected_assets(tmp_path: Pat
     tracked = tracked_files(ROOT) | {
         "docs/releases/v3.8.4.md",
         "docs/upgrade-3.8.4.md",
+        "docs/operations/model-profile-path-migration.md",
         "plugins/github-monitor/doctor.py",
         "plugins/github-monitor/github_monitor/doctor.py",
         "install.sh",
@@ -140,6 +141,7 @@ def test_bundle_contains_only_deployment_files_and_expected_assets(tmp_path: Pat
     assert f"{prefix}config/persona.md" in names
     assert f"{prefix}data/speech/japanese_frontend/lexicon.toml" in names
     assert f"{prefix}napcat-data/" in names
+    assert f"{prefix}webui-config/" in names
     assert f"{prefix}snowluma-data/" in names
     assert f"{prefix}snowluma-qq-config/" in names
     assert f"{prefix}snowluma-qq-data/" in names
@@ -147,6 +149,7 @@ def test_bundle_contains_only_deployment_files_and_expected_assets(tmp_path: Pat
     assert f"{prefix}SnowLuma.md" in names
     assert f"{prefix}Yuki-3.8.4-Release-Notes.md" in names
     assert f"{prefix}Yuki-3.8.4-Upgrade.md" in names
+    assert f"{prefix}Model-Profile-Path-Migration.md" in names
     assert f"{prefix}plugins/github-monitor/doctor.py" in names
     assert f"{prefix}plugins/github-monitor/github_monitor/doctor.py" in names
     assert f"{prefix}install.sh" in names
@@ -159,6 +162,7 @@ def test_bundle_contains_only_deployment_files_and_expected_assets(tmp_path: Pat
     assert f"{prefix}.mcp.json" not in names
     assert f"{prefix}config/system_prompt.md" not in names
     assert f"{prefix}config/model_profiles.toml" not in names
+    assert f"{prefix}webui-config/model_profiles.toml" not in names
     with tarfile.open(tmp_path / "yuki-3.8.4-deploy.tar.gz", "r:gz") as archive:
         assert archive.getmember(f"{prefix}install.sh").mode & 0o111
     checksum_lines = (tmp_path / "SHA256SUMS").read_text(encoding="utf-8").splitlines()

@@ -593,6 +593,7 @@ class MemoryQualityRunner:
                 "llm_provider": "fake",
                 "llm_model": "memory-quality-fake-model",
                 "model_profiles_file": Path("__memory_quality_no_profiles__.toml"),
+                "model_profiles_legacy_compatibility": True,
                 "memory_batch_max_events": 12,
                 "memory_batch_max_wait_seconds": 0,
                 "memory_consolidation_enabled": consolidation_enabled,

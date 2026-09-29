@@ -1,5 +1,5 @@
-# Optional mutable startup files. Base config and operator grants stay read-only.
-# Copy current files into ./webui-config before enabling this overlay.
+# Optional mutable startup files. The base Compose reads the same model file
+# read-only; this overlay permits audited WebUI writes to that directory.
 services:
   bot:
     environment:

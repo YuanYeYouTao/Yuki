@@ -148,8 +148,9 @@ WebUI 可输入新的 API Key，保存到与模型配置同目录的 `model_prof
 
 ### 容器中的可写启动文件
 
-基础 Compose 的 `/app/config` 为只读。可选 `docker-compose.webui.yml` 把三个启动文件
-放到 `/app/webui-config` 可写目录；启用前将当前实际使用的 Profile、System Prompt、
+基础 Compose 的 `/app/config` 与 `/app/webui-config` 为只读；模型配置始终从后者读取。
+可选 `docker-compose.webui.yml` 将同一 `/app/webui-config` 目录改为可写；启用前将当前
+实际使用的 Profile、System Prompt、
 人格原文分别复制到宿主 `./webui-config/model_profiles.toml`、`system_prompt.md`、
 `persona.md`，逐一核对存在且内容正确。不要用示例文件覆盖现有配置。
 现有自主模型挂载参数也需复制为 `./webui-config/autonomous-model.json`；没有原覆盖

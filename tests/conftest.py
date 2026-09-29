@@ -113,6 +113,7 @@ def make_settings(database_url: str, **overrides: object) -> Settings:
         "llm_provider": "fake",
         "llm_model": "fake-model",
         "model_profiles_file": Path("__test_model_profiles_not_present__.toml"),
+        "model_profiles_legacy_compatibility": True,
         "global_llm_concurrency": 4,
         "per_user_requests_per_minute": 20,
         "per_group_requests_per_minute": 50,

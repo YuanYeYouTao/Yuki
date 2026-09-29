@@ -48,6 +48,7 @@ class ModelRuntimeModule:
         settings = self._settings
         profiles = load_model_profile_catalog(
             settings.model_profiles_file,
+            allow_legacy_fallback=settings.model_profiles_legacy_compatibility,
             legacy_provider=settings.llm_provider,
             legacy_base_url=settings.llm_base_url,
             legacy_model=settings.llm_model,

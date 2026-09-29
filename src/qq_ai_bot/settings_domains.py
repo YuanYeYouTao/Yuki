@@ -92,6 +92,7 @@ class ModelRuntimeSettings(DomainSettings):
     llm_flash_api_key: str
     llm_flash_model: str
     model_profiles_file: Path
+    model_profiles_legacy_compatibility: bool = False
     global_llm_concurrency: int = Field(gt=0)
     model_stats_recent_error_limit: int = Field(gt=0)
 

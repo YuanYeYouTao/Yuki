@@ -4,6 +4,10 @@
 主 Agent、插件、自动化、记忆、媒体与 Work 共用原执行层，不按消息内容自动选择模型。
 部署向导可选择主模型供应商和协议；多个 Profile 可分别配置 endpoint、密钥环境变量和任务路由。
 默认示例仍是 DeepSeek，不会自动覆盖部署中的 `.env`、模型路由或人格提示词。
+部署文件统一为 `webui-config/model_profiles.toml`，API Key sidecar 与它同目录；旧部署
+`config/model_profiles.toml` 的迁移步骤见[运维说明](../operations/model-profile-path-migration.md)。
+指定的模型文件缺失会阻止启动；没有 TOML 的旧环境变量路由只允许显式临时开启
+`MODEL_PROFILES_LEGACY_COMPATIBILITY=true`，不能作为无声回退。
 WebUI 成功保存模型连接与任务路由后，新任务立即使用新配置；已经开始的模型请求固定原连接，
 持久 Work 的下次激活因 Profile revision 变化显式开启新链，保留原 Work ID、预算和执行证据，
 不重跑已完成的工具效果。
