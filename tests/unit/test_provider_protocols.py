@@ -220,7 +220,25 @@ async def test_signed_tool_result_and_redirect_survive_journal(kind):
             )
         )
         sequence_key = "contents" if kind is GeminiProvider else "messages"
-        assert wires[1][sequence_key][: len(wires[0][sequence_key])] == wires[0][sequence_key]
+        old_prefix = wires[0][sequence_key]
+        replay_prefix = wires[1][sequence_key][: len(old_prefix)]
+        if kind is AnthropicMessagesProvider:
+            # A moving cache breakpoint changes metadata, not the replayed
+            # content or signed thinking/tool blocks.
+            def without_cache_control(value):
+                if isinstance(value, list):
+                    return [without_cache_control(item) for item in value]
+                if isinstance(value, dict):
+                    return {
+                        key: without_cache_control(item)
+                        for key, item in value.items()
+                        if key != "cache_control"
+                    }
+                return value
+
+            assert without_cache_control(replay_prefix) == without_cache_control(old_prefix)
+        else:
+            assert replay_prefix == old_prefix
         tail_text = json.dumps(wires[1][sequence_key], ensure_ascii=False)
         assert tail_text.index('"signed"') < tail_text.index("ok") < tail_text.index("redirect")
         assert "_call_ids" not in tail_text
