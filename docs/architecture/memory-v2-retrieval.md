@@ -62,6 +62,8 @@ SELF 维持 global/current-private/current-group 可见性。
 显式目标也只在实际候选或返回预算被截断时标记 `truncated=true`；目标存在但查询返回零条
 不是截断。Embedding 未配置或故障时保留 `exhaustive=false` 及具体降级原因；显式目标的
 语义索引覆盖尚未逐事实证明时同样不宣称穷尽，模型不能由空结果断言没有这类记忆。
+候选、每目标数量、总条数或结果字符预算实际裁掉事实时，`truncated=true` 且
+`exhaustive=false`，并给出对应的预算原因。
 全局词法候选、语义候选或向量扫描达到工作预算时返回 `truncated=true`、
 `exhaustive=false` 和 `partial_reason=global_candidate_budget`，不把预算截断说成没有记忆。
 启用语义但 embedding 未配置或调用失败时也返回 `exhaustive=false` 和明确的语义状态，

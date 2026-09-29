@@ -266,6 +266,7 @@ class MemoryRetriever:
             for target in targets.values()
         )
         candidate_truncated = lexical_truncated or semantic_truncated
+        output_truncated = len(ranked) > limit
         semantic_unavailable = query.semantic_enabled and semantic_status == "not_configured"
         partial_reason = "global_candidate_budget" if candidate_truncated else None
         if semantic_unavailable:
@@ -274,6 +275,8 @@ class MemoryRetriever:
             partial_reason = "semantic_degraded"
         if not semantic_coverage_complete:
             partial_reason = "semantic_index_incomplete"
+        if output_truncated and partial_reason is None:
+            partial_reason = "global_result_limit"
         return MemoryRetrievalResult(
             blocks=blocks,
             hits=selected,
@@ -292,8 +295,9 @@ class MemoryRetriever:
             exhaustive=not candidate_truncated
             and not semantic_degraded
             and not semantic_unavailable
-            and semantic_coverage_complete,
-            truncated=candidate_truncated or len(ranked) > limit,
+            and semantic_coverage_complete
+            and not output_truncated,
+            truncated=candidate_truncated or output_truncated,
             partial_reason=partial_reason,
             ranked_count=len(ranked),
         )
@@ -584,6 +588,8 @@ class MemoryRetriever:
             if semantic_degraded
             else "semantic_not_configured"
             if semantic_unavailable
+            else "explicit_result_limit"
+            if output_truncated
             else "explicit_semantic_coverage_unknown"
             if query.semantic_enabled
             else None
@@ -603,7 +609,9 @@ class MemoryRetriever:
                 else None
             ),
             trace_hits=tuple(trace_hits),
-            exhaustive=not candidate_truncated and not query.semantic_enabled,
+            exhaustive=not candidate_truncated
+            and not output_truncated
+            and not query.semantic_enabled,
             truncated=candidate_truncated or output_truncated,
             partial_reason=partial_reason,
             ranked_count=len(ranked),

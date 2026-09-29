@@ -4055,10 +4055,12 @@ async def test_memory_tool_selectors_share_intent_reads_and_cache_with_historica
     snapshot = await tools._runtime_config.snapshot(user_id="1001", group_id="3001")
     bounded = replace(snapshot, agent=replace(snapshot.agent, tool_result_max_characters=2000))
     rows = [{"memory_ref": f"M{index}", "content": "x" * 500} for index in range(1, 11)]
-    source = {"effective_query": {"mode": "overview"}, "memories": rows}
+    source = {"effective_query": {"mode": "overview"}, "memories": rows, "exhaustive": True}
     with patch.object(tools, "_runtime", return_value=bounded):
         rendered = json.loads(tools._memory_list_result(data=source))
         assert rendered["ok"] and rendered["data"]["truncated"]
+        assert rendered["data"]["exhaustive"] is False
+        assert rendered["data"]["partial_reason"] == "response_character_budget"
         count = rendered["data"]["returned_count"]
         assert 0 < count < len(rows)
         assert rendered["data"]["memories"] == rows[:count]

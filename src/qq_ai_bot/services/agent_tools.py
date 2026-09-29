@@ -2252,6 +2252,9 @@ class AgentToolService:
                 )
             remaining.pop()
             payload["truncated"] = True
+            payload["exhaustive"] = False
+            payload["partial_failure"] = True
+            payload["partial_reason"] = "response_character_budget"
             payload["returned_count"] = len(remaining)
             payload["truncation_reason"] = "response_character_budget"
 

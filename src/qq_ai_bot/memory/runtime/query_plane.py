@@ -184,6 +184,12 @@ def apply_total_hit_limit(result: MemoryRetrievalResult, total_limit: int) -> Me
             "hits": final_hits,
             "selected_count": len(final_hits),
             "truncated": result.truncated or output_truncated,
+            "exhaustive": result.exhaustive and not output_truncated,
+            "partial_reason": (
+                "result_limit"
+                if output_truncated and not result.truncated
+                else result.partial_reason
+            ),
         }
     )
 
