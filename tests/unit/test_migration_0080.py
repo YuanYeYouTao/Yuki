@@ -22,9 +22,12 @@ def test_sequence_plan_migration_keeps_old_parent_unknown(monkeypatch):
         )
         monkeypatch.setattr(migration, "op", Operations(MigrationContext.configure(connection)))
         migration.upgrade()
-        assert connection.exec_driver_sql(
-            "SELECT planned_parts FROM social_operation_receipts WHERE id='historical'"
-        ).scalar() is None
+        assert (
+            connection.exec_driver_sql(
+                "SELECT planned_parts FROM social_operation_receipts WHERE id='historical'"
+            ).scalar()
+            is None
+        )
         connection.exec_driver_sql(
             "INSERT INTO social_operation_receipts VALUES "
             "('new', 'send_message_sequence', 'new-hash', 2)"

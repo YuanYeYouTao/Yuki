@@ -12,7 +12,8 @@ depends_on = None
 def upgrade() -> None:
     # Existing parents have only a payload hash. Leave their plan unknowable.
     if "planned_parts" not in {
-        column["name"] for column in sa.inspect(op.get_bind()).get_columns("social_operation_receipts")
+        column["name"]
+        for column in sa.inspect(op.get_bind()).get_columns("social_operation_receipts")
     }:
         op.add_column("social_operation_receipts", sa.Column("planned_parts", sa.Integer()))
 
