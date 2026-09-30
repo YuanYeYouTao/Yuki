@@ -85,6 +85,9 @@ run completed 也不表示异步向量已经生成完毕。
 明确包含 failed live jobs 时才允许接管 failed。
 来源正文和指纹也在只读阶段按候选页核验；`trusted_metadata` 继续复用既有主体补全，
 可能增加只读查询，不在 writer 内补全或解析正文。没有候选或重复收尾时不申请 writer。
+可信引用的 Person、Binding、Presence 和内部 reply 事件元数据也纳入同一页的核验，
+包括被过滤的原始引用；准备后引用状态改变时延后该 item，下一轮重新准备。
+单项主体失效只将该 item 标记为来源变化，不阻塞其他 item，也不清空引用或改写来源哈希。
 
 只有待提交和失败 proposal、以及尚未收尾的 staged/no_claims item 均为空，run 才能进入 completed。
 单轮返回值仍是处理的 proposal 数；只有回执扫尾的轮次可以返回 0 并继续保持 committing，

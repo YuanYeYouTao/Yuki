@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.identity.canonical_repository import IDENTITY_PLATFORM
 from qq_ai_bot.identity.db_models import IdentityBindingModel, SpaceBindingModel
+from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.memory.eligibility import MemoryEventEligibilityPolicy
 from qq_ai_bot.memory.enums import (
     MemoryProcessingSource,
@@ -26,6 +27,10 @@ from qq_ai_bot.memory.enums import (
 )
 from qq_ai_bot.memory.extraction import source_event_fingerprint
 from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
+from qq_ai_bot.memory.rebuild.trusted_sources import (
+    changed_trusted_sources,
+    prepare_trusted_sources,
+)
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.persistence.models import (
@@ -238,18 +243,29 @@ async def complete_receipts(
                 )
             )
         )
+        events = tuple(_event_record(source) for source in sources)
+        trusted_fences = (
+            await prepare_trusted_sources(reader, events)
+            if mode is MemoryRebuildThirdPartyMode.TRUSTED_METADATA
+            else {}
+        )
         # Fingerprints and optional subject hydration stay outside the writer.
         ledger = EventLedgerRepository(database)
         invalid_sources: dict[int, str] = {}
         eligibility = MemoryEventEligibilityPolicy()
         expected_hashes = {item.event_id: item.source_hash for item in prepared.values()}
-        for source in sources:
-            event = _event_record(source)
-            event = (
-                replace(event, mentioned_user_ids=(), reply_sender_user_id=None)
-                if mode is MemoryRebuildThirdPartyMode.DISABLED
-                else await ledger.hydrate_rebuild_subjects(event)
-            )
+        for event in events:
+            try:
+                event = (
+                    replace(event, mentioned_user_ids=(), reply_sender_user_id=None)
+                    if mode is MemoryRebuildThirdPartyMode.DISABLED
+                    else await ledger.hydrate_rebuild_subjects(event)
+                )
+            except CanonicalIdentityError:
+                # A disabled/reclassified trusted reference invalidates this
+                # item, not every otherwise-valid source in the page.
+                invalid_sources[event.id] = "source_event_changed"
+                continue
             if source_event_fingerprint(event) != expected_hashes[event.id]:
                 invalid_sources[event.id] = "source_event_changed"
             elif not eligibility.is_eligible(event):
@@ -269,6 +285,7 @@ async def complete_receipts(
         ):
             return 0
         current, receipts = await _read_batch(writer, run.id, ids)
+        changed_references = await changed_trusted_sources(writer, trusted_fences)
         for item_id, item in current.items():
             # Recheck the bounded page before its first DML. Concurrent source,
             # staging, review or privacy changes require a fresh preparation.
@@ -276,6 +293,7 @@ async def complete_receipts(
                 item != prepared.get(item_id)
                 or item.unfinished
                 or item.status not in READY_STATUSES
+                or item.event_id in changed_references
             ):
                 continue
             receipt = receipts.get(item.event_id)
