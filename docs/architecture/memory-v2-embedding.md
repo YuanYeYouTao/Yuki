@@ -126,7 +126,8 @@ updated_at 和 attempts，仅成功 CAS 的结果批量 upsert 向量。late com
 
 - `status`：查看开关、当前 profile、覆盖率和任务计数。
 - `doctor`：用固定无隐私测试文本执行一次 Provider 远程连通性与维度检查。
-- `retry`：把当前 profile 可重试的失败任务重新排队。
+- `retry`：按 128 条页把当前 profile 的失败任务重新排队，显式重置其重试预算。
+  原状态和时间戳条件写入，新的时间戳严格晚于旧值；墙上时钟停滞或回拨时不能复用旧 claim。
 - `rebuild`：为当前 active facts 建立当前 profile 的任务，不修改事实或 FTS。
 - `purge-old`：删除非当前 profile 的旧向量、任务和 profile。
 

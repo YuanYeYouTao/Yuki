@@ -499,23 +499,49 @@ class MemoryEmbeddingJobRepository:
             )
 
     async def retry_failed(self) -> int:
-        now = datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
-            result = await session.execute(
-                update(MemoryEmbeddingJobModel)
-                .where(
-                    MemoryEmbeddingJobModel.profile_id == self.profile.id,
-                    MemoryEmbeddingJobModel.status == "failed",
+        job = MemoryEmbeddingJobModel
+        changed, after_id = 0, 0
+        while True:
+            async with self._database.sessions() as reader:
+                rows = tuple(
+                    await reader.execute(
+                        select(job.id, job.updated_at, job.content_hash, job.attempts)
+                        .where(
+                            job.id > after_id,
+                            job.profile_id == self.profile.id,
+                            job.status == "failed",
+                        )
+                        .order_by(job.id)
+                        .limit(128)
+                    )
                 )
-                .values(
-                    status="pending",
-                    attempts=0,
-                    next_attempt_at=now,
-                    updated_at=now,
-                    error_category=None,
-                )
-            )
-        return int(cast(CursorResult[Any], result).rowcount or 0)
+            if not rows:
+                return changed
+            after_id = rows[-1].id
+            async with self._database.immediate_session() as writer:
+                for row in rows:
+                    # Explicit retry resets its budget, but never reuses the
+                    # previous claim identity when the wall clock stalls.
+                    stamp = next_updated_at(row.updated_at)
+                    result = await writer.execute(
+                        update(job)
+                        .where(
+                            job.id == row.id,
+                            job.profile_id == self.profile.id,
+                            job.status == "failed",
+                            job.updated_at == row.updated_at,
+                            job.content_hash == row.content_hash,
+                            job.attempts == row.attempts,
+                        )
+                        .values(
+                            status="pending",
+                            attempts=0,
+                            next_attempt_at=stamp,
+                            updated_at=stamp,
+                            error_category=None,
+                        )
+                    )
+                    changed += int(cast(CursorResult[Any], result).rowcount == 1)
 
     async def pending_count(self) -> int:
         async with self._database.sessions() as session:

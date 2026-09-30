@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import event, insert, select, update
@@ -156,6 +156,31 @@ async def test_ordinary_reconcile_preserves_failed_budget_and_content_change_req
     assert fresh.content_hash != job.content_hash and fresh.attempts == 1
     assert await jobs.complete((_write(job),)) == 0
     assert await jobs.complete((_write(fresh),)) == 1
+
+
+async def test_explicit_retry_cannot_reuse_claim_timestamp_when_clock_stalls(database, monkeypatch):
+    jobs = await _jobs(database)
+    await jobs.reconcile()
+    clock = datetime.now(UTC) + timedelta(seconds=10)
+
+    class FixedClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock
+
+    monkeypatch.setattr("qq_ai_bot.memory.embedding.jobs.datetime", FixedClock)
+    (old,) = await jobs.claim(limit=1)
+    await jobs.fail(
+        old, error_category="permanent", retryable=False, max_attempts=1, initial_delay_seconds=0
+    )
+    assert await jobs.retry_failed() == 1
+    # An explicit retry resets its policy budget but must advance claim identity.
+    assert await jobs.claim(limit=1) == ()
+    clock += timedelta(seconds=1)
+    (current,) = await jobs.claim(limit=1)
+    assert current.attempts == 1 and current.updated_at > old.updated_at
+    assert await jobs.complete((_write(old),)) == 0
+    assert await jobs.complete((_write(current),)) == 1
 
 
 async def test_input_mutation_after_prepare_requeues_original_claim_without_old_vector(
