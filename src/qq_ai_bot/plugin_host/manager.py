@@ -607,9 +607,9 @@ class PluginManager:
         record_stop_failure: bool = True,
     ) -> None:
         managed = self._running.pop(plugin_id, None)
+        self._event_bus.unsubscribe_plugin(plugin_id)
         if managed is None:
             self._deactivate_extensions(plugin_id)
-            self._event_bus.unsubscribe_plugin(plugin_id)
             self._extensions.remove_plugin(plugin_id)
             if final_status is not None:
                 await self._installations.set_status(plugin_id, status=final_status)
@@ -634,7 +634,6 @@ class PluginManager:
             except TimeoutError:
                 error_category = error_category or "background_stop_timeout"
         self._deactivate_extensions(plugin_id)
-        self._event_bus.unsubscribe_plugin(plugin_id)
         self._extensions.remove_plugin(plugin_id)
         self._loader.unload(managed.loaded)
         if error_category is not None and record_stop_failure:

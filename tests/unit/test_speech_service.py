@@ -72,9 +72,9 @@ class FakeSpeechEvents:
     def __init__(self) -> None:
         self.events: list[EventEnvelope] = []
 
-    async def publish(self, event: EventEnvelope) -> object:
+    def enqueue_notification(self, event: EventEnvelope) -> bool:
         self.events.append(event)
-        return ()
+        return True
 
 
 def _runtime(*, maximum: int | None = None) -> SpeechRuntimeConfig:

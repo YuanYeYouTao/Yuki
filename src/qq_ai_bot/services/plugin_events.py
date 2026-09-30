@@ -38,7 +38,7 @@ def content_free_turn_payload(
 class LifecycleEventPublisher(Protocol):
     """Minimal interface implemented by the host's notification EventBus."""
 
-    async def publish(self, event: EventEnvelope) -> object: ...
+    def enqueue_notification(self, event: EventEnvelope) -> bool: ...
 
 
 async def publish_notification(
@@ -46,7 +46,7 @@ async def publish_notification(
     name: EventName,
     payload: Mapping[str, JsonValue],
 ) -> None:
-    """Publish one notification without letting plugin failures affect chat.
+    """Enqueue one metadata notification without waiting for plugin handlers.
 
     Callers must provide metadata-only payloads.  Exception messages are not logged
     because a third-party publisher may include message bodies or credentials in them.
@@ -55,7 +55,7 @@ async def publish_notification(
     if publisher is None:
         return
     try:
-        await publisher.publish(EventEnvelope(name=name, payload=payload))
+        publisher.enqueue_notification(EventEnvelope(name=name, payload=payload))
     except Exception as exc:
         logger.warning(
             "plugin_lifecycle_publish_failed event=%s error_category=%s",
