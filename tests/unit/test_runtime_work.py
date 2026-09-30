@@ -480,7 +480,7 @@ async def test_work_recovery_pairs_calls_without_reexecution(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("steer", [False, True])
 async def test_real_chat_entry_progress_delivery_and_work_completion(
-    database, tmp_path, steer, monkeypatch
+    database, tmp_path, steer, monkeypatch, caplog
 ):
     from dataclasses import replace
 
@@ -557,10 +557,24 @@ async def test_real_chat_entry_progress_delivery_and_work_completion(
         return await original_complete(request)
 
     provider.complete = complete
+    release_stages = []
     if not steer:
         from sqlalchemy.exc import OperationalError
 
+        original_release = WorkRepository.release
+
         async def locked_release(self, lease):
+            async with database.sessions() as session:
+                state = await session.scalar(
+                    select(work.c.state).where(work.c.conversation_id == lease.conversation_id)
+                )
+            if state is None:
+                # FIRST prepares context without holding the empty activation.
+                release_stages.append("prepare")
+                await original_release(self, lease)
+                return
+            assert state == "completed"
+            release_stages.append("completed")
             raise OperationalError(
                 "UPDATE runtime_work_scopes", {}, Exception("database is locked")
             )
@@ -586,6 +600,71 @@ async def test_real_chat_entry_progress_delivery_and_work_completion(
         assert row["sent_messages"] == 0
     assert state.snapshot()[0]["text"] == "runtime-check"
     assert all(request.tools == provider.requests[0].tools for request in provider.requests)
+    if not steer:
+        assert release_stages == ["prepare", "completed"]
+        assert "work_cleanup_deferred stage=release category=OperationalError" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_real_chat_entry_empty_activation_release_failure_blocks_dispatch(
+    database, monkeypatch, caplog
+):
+    from dataclasses import replace
+
+    from sqlalchemy.exc import OperationalError
+    from tests.conftest import MemorySender, build_harness, make_settings
+    from tests.unit.test_commands_and_chat import inbound
+
+    from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
+    from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence
+    from qq_ai_bot.llm.fake import FakeLLMProvider
+    from qq_ai_bot.runtime.work_schema_v1 import work
+
+    provider = FakeLLMProvider(lambda request: "must not dispatch")
+    harness = build_harness(
+        database, make_settings(database.url, runtime_work_enabled=True), provider
+    )
+    async with database.sessions() as session, session.begin():
+        person = await ensure_person(session, "1001")
+        presence = await ensure_presence(session, "9999")
+        conversation = await ensure_canonical_conversation(
+            session, kind="private", primary_scope_key="private:9999:1001", person_id=person
+        )
+    message = replace(
+        inbound("记录指定短期信息", message_id="empty-release-locked"),
+        conversation_id=conversation.conversation_id,
+        legacy_conversation_key="private:9999:1001",
+        person_id=person,
+        presence_id=presence,
+    )
+    released = []
+    original_release = WorkRepository.release
+
+    async def locked_release(self, lease):
+        async with database.sessions() as session:
+            assert (await session.execute(select(work.c.id))).first() is None
+        released.append(lease)
+        raise OperationalError("UPDATE runtime_work_scopes", {}, Exception("database is locked"))
+
+    monkeypatch.setattr(WorkRepository, "release", locked_release)
+    sender = MemorySender()
+    repository = WorkRepository(database)
+    try:
+        result = await asyncio.wait_for(harness.processor.handle(message, sender), 10)
+        assert result.reason == "turn_interrupted", result
+        assert len(released) == 1
+        assert await repository.valid(released[0])
+        assert await repository.acquire(released[0].conversation_id, released[0].generation) is None
+        assert not provider.requests
+        assert sender.calls == 0
+        assert not sender.messages
+        async with database.sessions() as session:
+            assert (await session.execute(select(work.c.id))).first() is None
+            assert (await session.execute(select(effects.c.effect_key))).first() is None
+        assert "work_cleanup_deferred stage=release category=OperationalError" in caplog.text
+    finally:
+        if released:
+            await original_release(repository, released[0])
 
 
 @pytest.mark.asyncio

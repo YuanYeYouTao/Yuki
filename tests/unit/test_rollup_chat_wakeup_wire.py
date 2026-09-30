@@ -129,3 +129,62 @@ async def test_rollup_interrupt_reenters_main_contract(database, tmp_path, monke
     history_key = "input" if protocol == "responses" else "messages"
     assert captured[3][history_key][: len(captured[1][history_key])] == captured[1][history_key]
     assert len(consumed) == 1 and consumed[0][1] > 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["source_only", "mixed_failure", "owned_work"])
+async def test_parallel_source_change_preserves_retry_owner_and_other_failures(monkeypatch, case):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from qq_ai_bot.domain.conversations import ConversationScope
+    from qq_ai_bot.persistence.event_repository import ConversationReadVersion
+    from qq_ai_bot.runtime.activation_outcome import ActivationOutcome, ExitReason
+    from qq_ai_bot.services.agent_runner import AgentRunner
+    from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
+
+    source = HistorySourceChangedError(
+        ConversationReadVersion(
+            ConversationScope.group("9999", "2001"),
+            "original-conversation",
+            3,
+            17,
+            rollup_stamp=(8, 0),
+        )
+    )
+    errors = [ExceptionGroup("parallel read", [source])]
+    if case == "mixed_failure":
+        errors.append(ValueError("a separate tool failed"))
+    group = ExceptionGroup("tool batch", errors)
+    runner = object.__new__(AgentRunner)
+
+    async def fail(*_args):
+        raise group
+
+    monkeypatch.setattr(runner, "_run", fail)
+    control = (
+        SimpleNamespace(
+            current={"id": "original-work"},
+            requests_started=2,
+            tools_started=1,
+            ending="queued",
+            recover_failure=AsyncMock(return_value=ActivationOutcome(ExitReason.RETRY)),
+        )
+        if case == "owned_work"
+        else None
+    )
+    runtime = SimpleNamespace(work_control=control, max_model_requests=4)
+    if control is not None:
+        result = await runner._run_with_receipts((), runtime, None)
+        assert result.suppress_delivery
+        assert result.model_requests == 2
+        control.recover_failure.assert_awaited_once_with(group)
+    elif case == "mixed_failure":
+        with pytest.raises(ExceptionGroup) as caught:
+            await runner._run_with_receipts((), runtime, None)
+        assert caught.value is group
+    else:
+        with pytest.raises(HistorySourceChangedError) as caught:
+            await runner._run_with_receipts((), runtime, None)
+        assert caught.value is source
+        assert caught.value.version.rollup_stamp == (8, 0)

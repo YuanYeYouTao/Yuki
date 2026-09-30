@@ -223,6 +223,17 @@ class AgentRunner:
                 budget_errors, other_errors = exc.split(WorkBudgetExceeded)
                 if budget_errors is not None and other_errors is None:
                     raise WorkBudgetExceeded("work_total_budget_exhausted") from exc
+                if control is None or control.current is None:
+                    from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
+
+                    source_errors, other_errors = exc.split(HistorySourceChangedError)
+                    if source_errors is not None and other_errors is None:
+                        # Parallel read tools retain the original source version
+                        # for the caller's coalesced, uncommitted chat wakeup.
+                        original: BaseException = source_errors
+                        while isinstance(original, BaseExceptionGroup):
+                            original = original.exceptions[0]
+                        raise original from exc
                 raise
         except (WorkBudgetExceeded, WorkCapacityError) as exc:
             if control is None or control.current is None:
