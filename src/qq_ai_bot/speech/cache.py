@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
@@ -67,7 +68,7 @@ class SpeechCache:
                 continue
             path = self._paths.resolve(row.output_relative_path)
             try:
-                path.unlink(missing_ok=True)
+                await asyncio.to_thread(path.unlink, missing_ok=True)
             except OSError:
                 continue
             deleted += 1

@@ -7,13 +7,17 @@ import hashlib
 import json
 import logging
 import os
+import stat
 import sys
+import time
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select, update
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.persistence.database import Database
@@ -35,6 +39,87 @@ _LIFETIME = timedelta(hours=24)
 _MAX_FILE = 200 * 1024 * 1024
 _GLOBAL_BUDGET = 4 * 1024 * 1024 * 1024
 _CONVERSATION_BUDGET = 512 * 1024 * 1024
+_CLEANUP_PAGE = 128
+_GC_PATH_BYTES = 64 * 1024
+_GC_SECONDS = 0.1
+
+
+async def _gc_io[GCResult](call: Callable[..., GCResult], *args: Any) -> GCResult:
+    # Cancellation cannot stop a running filesystem syscall. Finish this
+    # bounded page before releasing the publication/iterator locks.
+    task = asyncio.create_task(asyncio.to_thread(call, *args))
+    cancelled = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            cancelled = exc
+        except BaseException:
+            break
+    if cancelled is not None:
+        raise cancelled
+    return task.result()
+
+
+@dataclass(frozen=True, slots=True)
+class _CacheEntry:
+    path: Path
+    token: tuple[int, int, int, int, int]
+
+
+def _file_token(info: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_size, info.st_mtime_ns)
+
+
+def _cache_entries(root: Path, depth: int = 3) -> Iterator[Path]:
+    """Stream the fixed cache layout; never follow directory symlinks."""
+    try:
+        with os.scandir(root) as entries:
+            for entry in entries:
+                path = Path(entry.path)
+                if depth > 1 and entry.is_dir(follow_symlinks=False):
+                    yield from _cache_entries(path, depth - 1)
+                yield path
+    except OSError:
+        return
+
+
+def _gc_page(iterator: Iterator[Path]) -> tuple[tuple[_CacheEntry, ...], bool]:
+    """Limit metadata/path memory and check elapsed time between filesystem calls."""
+    deadline = time.monotonic() + _GC_SECONDS
+    paths: list[_CacheEntry] = []
+    path_bytes = 0
+    for _ in range(_CLEANUP_PAGE):
+        if time.monotonic() >= deadline or path_bytes >= _GC_PATH_BYTES:
+            break
+        try:
+            path = next(iterator)
+        except StopIteration:
+            return tuple(paths), True
+        path_bytes += len(os.fsencode(path))
+        try:
+            paths.append(_CacheEntry(path, _file_token(path.lstat())))
+        except OSError:
+            continue
+    return tuple(paths), False
+
+
+def _remove_cache_entries(entries: tuple[_CacheEntry, ...]) -> tuple[_CacheEntry, ...]:
+    deadline = time.monotonic() + _GC_SECONDS
+    for index, entry in enumerate(entries):
+        if time.monotonic() >= deadline:
+            return entries[index:]
+        try:
+            info = entry.path.lstat()
+            if _file_token(info) != entry.token:
+                continue
+            if stat.S_ISDIR(info.st_mode):
+                entry.path.rmdir()
+            elif stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+                entry.path.unlink(missing_ok=True)
+        except OSError:
+            continue
+    return ()
 
 
 class ConversationMediaError(RuntimeError):
@@ -60,6 +145,9 @@ class ConversationMediaService:
         self.preprocessor = preprocessor
         self.provider = provider
         self._lock = asyncio.Lock()
+        self._cleanup_lock = asyncio.Lock()
+        self._gc_iterator: Iterator[Path] | None = None
+        self._gc_pending: tuple[_CacheEntry, ...] = ()
         self._prefetch_slots = asyncio.Semaphore(2)
         self._pending: set[asyncio.Task[None]] = set()
         self._cleaner: asyncio.Task[None] | None = None
@@ -79,6 +167,13 @@ class ConversationMediaService:
             return_exceptions=True,
         )
         self._cleaner = None
+        async with self._cleanup_lock:
+            if self._gc_iterator is not None:
+                closer = getattr(self._gc_iterator, "close", None)
+                if closer is not None:
+                    await _gc_io(closer)
+                self._gc_iterator = None
+            self._gc_pending = ()
 
     def submit(self, event_id: int, gateway: OneBotMediaGateway | None) -> None:
         if len(self._pending) >= 32:
@@ -375,65 +470,127 @@ class ConversationMediaService:
             "observation": observation.model_dump(mode="json"),
         }
 
-    async def cleanup(self) -> None:
+    async def _expire_page(self, now: datetime) -> None:
+        model = ConversationMediaItemModel
+        async with self.database.sessions() as reader:
+            rows = tuple(
+                await reader.execute(
+                    select(
+                        model.source_event_id,
+                        model.attachment_index,
+                        model.conversation_id,
+                        model.generation,
+                        model.cache_name,
+                    )
+                    .where(model.cache_status == "cached", model.expires_at <= now)
+                    .order_by(model.expires_at, model.source_event_id, model.attachment_index)
+                    .limit(_CLEANUP_PAGE)
+                )
+            )
+        if not rows:
+            return
+        # Publication uses this same lock. Recheck state/expiry and the exact
+        # published name after discovery, without loading payloads or history.
+        async with self._lock, self.database.immediate_session() as writer:
+            await writer.execute(
+                update(model)
+                .where(
+                    model.cache_status == "cached",
+                    model.expires_at <= now,
+                    or_(
+                        *(
+                            and_(
+                                model.source_event_id == row.source_event_id,
+                                model.attachment_index == row.attachment_index,
+                                model.conversation_id == row.conversation_id,
+                                model.generation == row.generation,
+                                model.cache_name == row.cache_name,
+                            )
+                            for row in rows
+                        )
+                    ),
+                )
+                .values(cache_status="expired", cache_name=None)
+            )
+
+    async def _gc_cache_page(self, now: datetime) -> None:
+        if self._gc_pending:
+            entries, self._gc_pending = self._gc_pending, ()
+        else:
+            if self._gc_iterator is None:
+                self._gc_iterator = _cache_entries(self.root)
+            entries, finished = await _gc_io(_gc_page, self._gc_iterator)
+            if finished:
+                self._gc_iterator = None
+        if not entries:
+            return
+        file_entries = tuple(
+            entry
+            for entry in entries
+            if stat.S_ISREG(entry.token[2]) or stat.S_ISLNK(entry.token[2])
+        )
+        event_ids = set()
+        for entry in file_entries:
+            try:
+                parts = entry.path.relative_to(self.root).parts
+                if len(parts) == 3:
+                    event_ids.add(int(parts[1]))
+            except ValueError:
+                continue
+        # GC does not keep a full-cache live_paths projection. Look up only
+        # exact event/name candidates; the source PK bounds this read.
         async with self._lock:
+            async with self.database.sessions() as reader:
+                live = (
+                    tuple(
+                        await reader.execute(
+                            select(
+                                ConversationMediaItemModel.conversation_id,
+                                ConversationMediaItemModel.source_event_id,
+                                ConversationMediaItemModel.cache_name,
+                            )
+                            .where(
+                                ConversationMediaItemModel.source_event_id.in_(event_ids),
+                                ConversationMediaItemModel.cache_name.in_(
+                                    tuple(entry.path.name for entry in file_entries)
+                                ),
+                                ConversationMediaItemModel.cache_status == "cached",
+                            )
+                            .distinct()
+                        )
+                    )
+                    if event_ids
+                    else ()
+                )
+            live_paths = {
+                self.root / row.conversation_id / str(row.source_event_id) / row.cache_name
+                for row in live
+            }
+            deletable = tuple(
+                entry
+                for entry in entries
+                if (
+                    stat.S_ISDIR(entry.token[2])
+                    or (
+                        entry.path not in live_paths
+                        and (
+                            entry.path.suffix != ".part"
+                            or entry.token[4] / 1_000_000_000
+                            < now.timestamp() - timedelta(hours=1).total_seconds()
+                        )
+                    )
+                )
+            )
+            # Only immutable paths/stat tokens cross the thread boundary.
+            # Re-stat before unlink, so an observed old file cannot delete a
+            # replacement. No AsyncSession or ORM object leaves this loop.
+            self._gc_pending = await _gc_io(_remove_cache_entries, deletable)
+
+    async def cleanup(self) -> None:
+        async with self._cleanup_lock:
             now = datetime.now(UTC)
-            async with self.database.sessions() as session:
-                expired = (
-                    await session.scalars(
-                        select(ConversationMediaItemModel).where(
-                            ConversationMediaItemModel.cache_status == "cached",
-                            ConversationMediaItemModel.expires_at <= now,
-                        )
-                    )
-                ).all()
-                paths = []
-                for item in expired:
-                    paths.append(self._path(item))
-                    item.cache_status = "expired"
-                    item.cache_name = None
-                await session.commit()
-            for path in paths:
-                path.unlink(missing_ok=True)
-                for parent in (path.parent, path.parent.parent):
-                    try:
-                        parent.rmdir()
-                    except OSError:
-                        break
-            async with self.database.sessions() as session:
-                cached = (
-                    await session.scalars(
-                        select(ConversationMediaItemModel).where(
-                            ConversationMediaItemModel.cache_status == "cached",
-                            ConversationMediaItemModel.cache_name.is_not(None),
-                        )
-                    )
-                ).all()
-            live_paths = {self._path(item) for item in cached}
-            # Source events may be erased by the person-forget operation. Their
-            # index rows cascade away, so discard the inaccessible bytes too.
-            for file in self.root.rglob("*"):
-                try:
-                    if not file.is_file() and not file.is_symlink():
-                        continue
-                    if file.suffix == ".part":
-                        if (
-                            datetime.fromtimestamp(file.stat().st_mtime, UTC) + timedelta(hours=1)
-                            < now
-                        ):
-                            file.unlink(missing_ok=True)
-                    elif file not in live_paths:
-                        file.unlink(missing_ok=True)
-                except OSError:
-                    continue
-            for directory in sorted(
-                self.root.rglob("*"), key=lambda value: len(value.parts), reverse=True
-            ):
-                if directory.is_dir() and not directory.is_symlink():
-                    try:
-                        directory.rmdir()
-                    except OSError:
-                        pass
+            await self._expire_page(now)
+            await self._gc_cache_page(now)
 
     async def _cleanup_loop(self) -> None:
         while True:
