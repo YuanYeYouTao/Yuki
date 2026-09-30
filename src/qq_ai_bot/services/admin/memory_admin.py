@@ -233,6 +233,7 @@ class MemoryAdminService:
                 duration_seconds=time.perf_counter() - started,
             )
             return row
+
         async def write(session: AsyncSession) -> MemoryFact:
             if (
                 await self._memories.count_person(target, session=session)
@@ -308,6 +309,7 @@ class MemoryAdminService:
                 duration_seconds=time.perf_counter() - started,
             )
             return updated
+
         async def write(session: AsyncSession) -> MemoryFact | None:
             before = next(
                 (
@@ -382,6 +384,7 @@ class MemoryAdminService:
                 duration_seconds=time.perf_counter() - started,
             )
             return deleted
+
         async def write(session: AsyncSession) -> bool:
             before = next(
                 (
