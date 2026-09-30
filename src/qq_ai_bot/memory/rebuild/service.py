@@ -706,10 +706,12 @@ class MemoryRebuildService:
             limit=self.settings.memory_rebuild_commit_batch_size,
         )
         processed = 0
+        affected_item_ids: set[int] = set()
         for proposal, item, stored_event in rows:
             current = await self._require(run.public_id)
             if current.status is not MemoryRebuildRunStatus.COMMITTING:
                 break
+            affected_item_ids.add(item.id)
             event = await self.repository.get_event(stored_event.id)
             if event is not None:
                 event = await self._adapt_event(event, run.selection.third_party_mode)
@@ -865,16 +867,28 @@ class MemoryRebuildService:
         await self.repository.complete_item_receipts(
             run.public_id,
             include_failed_live_jobs=run.selection.include_failed_live_jobs,
+            item_ids=tuple(sorted(affected_item_ids)),
+            limit=self.settings.memory_rebuild_commit_batch_size,
         )
-        if not await self.repository.remaining_commit_count(
-            run.public_id
-        ) and not await self.repository.failed_commit_count(run.public_id):
-            await self.repository.transition(
+        # Rejected proposals and no-claims items never enter next_commit_rows.
+        # Drain one bounded page each tick, without persisting another cursor.
+        await self.repository.complete_item_receipts(
+            run.public_id,
+            include_failed_live_jobs=run.selection.include_failed_live_jobs,
+            limit=self.settings.memory_rebuild_commit_batch_size,
+        )
+        if (
+            not await self.repository.remaining_commit_count(run.public_id)
+            and not await self.repository.failed_commit_count(run.public_id)
+            and not await self.repository.remaining_item_receipt_count(run.public_id)
+        ):
+            completed = await self.repository.transition(
                 run.public_id,
                 expected={MemoryRebuildRunStatus.COMMITTING},
                 status=MemoryRebuildRunStatus.COMPLETED,
             )
-            self.metrics.increment("rebuild_runs_completed")
+            if completed:
+                self.metrics.increment("rebuild_runs_completed")
         return processed
 
     async def _adapt_event(self, event: Any, mode: MemoryRebuildThirdPartyMode) -> Any:

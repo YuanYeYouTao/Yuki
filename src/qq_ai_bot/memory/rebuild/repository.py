@@ -15,10 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from qq_ai_bot.memory.enums import (
-    MemoryProcessingSource,
     MemoryRebuildCommitStatus,
     MemoryRebuildItemStatus,
-    MemoryRebuildJobOutcome,
     MemoryRebuildReviewStatus,
     MemoryRebuildRunStatus,
 )
@@ -833,128 +831,39 @@ class MemoryRebuildRepository:
         public_id: str,
         *,
         include_failed_live_jobs: bool,
+        item_ids: tuple[int, ...] | None = None,
+        limit: int = 128,
     ) -> int:
-        now = datetime.now(UTC)
-        completed = 0
-        async with self.database.sessions() as session, session.begin():
-            run_id = await session.scalar(
-                select(MemoryRebuildRunModel.id).where(MemoryRebuildRunModel.public_id == public_id)
-            )
-            if run_id is None:
-                return 0
-            items = (
-                await session.scalars(
-                    select(MemoryRebuildItemModel).where(
-                        MemoryRebuildItemModel.run_id == run_id,
-                        MemoryRebuildItemModel.status.not_in(
-                            (
-                                MemoryRebuildItemStatus.COMMITTED.value,
-                                MemoryRebuildItemStatus.SKIPPED.value,
-                            )
-                        ),
-                    )
-                )
-            ).all()
-            for item in items:
-                pending = int(
-                    await session.scalar(
-                        select(func.count())
-                        .select_from(MemoryRebuildProposalModel)
-                        .where(
-                            MemoryRebuildProposalModel.item_id == item.id,
-                            MemoryRebuildProposalModel.review_status
-                            == MemoryRebuildReviewStatus.APPROVED.value,
-                            MemoryRebuildProposalModel.commit_status.in_(
-                                (
-                                    MemoryRebuildCommitStatus.PENDING.value,
-                                    MemoryRebuildCommitStatus.FAILED.value,
-                                )
-                            ),
-                        )
-                    )
-                    or 0
-                )
-                if pending:
-                    continue
-                proposals = (
-                    await session.scalars(
-                        select(MemoryRebuildProposalModel).where(
-                            MemoryRebuildProposalModel.item_id == item.id
-                        )
-                    )
-                ).all()
-                outcome = (
-                    MemoryRebuildJobOutcome.NO_CLAIMS
-                    if not proposals
-                    else (
-                        MemoryRebuildJobOutcome.ALL_REJECTED
-                        if all(
-                            row.review_status == MemoryRebuildReviewStatus.REJECTED.value
-                            for row in proposals
-                        )
-                        else MemoryRebuildJobOutcome.CLAIMS_APPLIED
-                    )
-                )
-                receipt = await session.scalar(
-                    select(MemoryJobModel).where(MemoryJobModel.event_id == item.event_id)
-                )
-                if receipt is not None and receipt.status in {"done", "pending", "processing"}:
-                    item.status = MemoryRebuildItemStatus.SKIPPED.value
-                    item.error_category = (
-                        "already_processed" if receipt.status == "done" else "live_job_active"
-                    )
-                    item.updated_at = now
-                    continue
-                if (
-                    receipt is not None
-                    and receipt.status == "failed"
-                    and not include_failed_live_jobs
-                ):
-                    item.status = MemoryRebuildItemStatus.SKIPPED.value
-                    item.error_category = "failed_live_job_not_selected"
-                    item.updated_at = now
-                    continue
-                event = await session.get(ChatEventModel, item.event_id)
-                from qq_ai_bot.identity.ownership import optional_xor_owner_for_event
+        from qq_ai_bot.memory.rebuild.receipt_finalization import complete_receipts
 
-                person_id, space_id = await optional_xor_owner_for_event(session, event)
-                statement = insert(MemoryJobModel).values(
-                    event_id=item.event_id,
-                    conversation_key=f"rebuild:{public_id}",
-                    canonical_person_id=person_id,
-                    canonical_space_id=space_id,
-                    status="done",
-                    attempts=0,
-                    next_attempt_at=now,
-                    created_at=now,
-                    updated_at=now,
-                    error_category=None,
-                    processing_source=MemoryProcessingSource.REBUILD.value,
-                    rebuild_run_id=run_id,
-                    outcome=outcome.value,
-                    completed_at=now,
-                )
-                await session.execute(
-                    statement.on_conflict_do_update(
-                        index_elements=[MemoryJobModel.event_id],
-                        where=(MemoryJobModel.status == "failed"),
-                        set_={
-                            "status": "done",
-                            "updated_at": now,
-                            "error_category": None,
-                            "processing_source": MemoryProcessingSource.REBUILD.value,
-                            "rebuild_run_id": run_id,
-                            "outcome": outcome.value,
-                            "completed_at": now,
-                            "canonical_person_id": person_id,
-                            "canonical_space_id": space_id,
-                        },
+        return await complete_receipts(
+            self.database,
+            public_id,
+            include_failed_live_jobs=include_failed_live_jobs,
+            item_ids=item_ids,
+            limit=limit,
+        )
+
+    async def remaining_item_receipt_count(self, public_id: str) -> int:
+        """Keep the run active until all bounded receipt pages have settled."""
+        from qq_ai_bot.memory.rebuild.receipt_finalization import READY_STATUSES
+
+        async with self.database.sessions() as session:
+            return int(
+                await session.scalar(
+                    select(func.count())
+                    .select_from(MemoryRebuildItemModel)
+                    .join(
+                        MemoryRebuildRunModel,
+                        MemoryRebuildRunModel.id == MemoryRebuildItemModel.run_id,
+                    )
+                    .where(
+                        MemoryRebuildRunModel.public_id == public_id,
+                        MemoryRebuildItemModel.status.in_(READY_STATUSES),
                     )
                 )
-                item.status = MemoryRebuildItemStatus.COMMITTED.value
-                item.updated_at = now
-                completed += 1
-        return completed
+                or 0
+            )
 
     async def failed_commit_count(self, public_id: str) -> int:
         async with self.database.sessions() as session:
