@@ -25,7 +25,7 @@
 | A01（部分） | 入站明确给出的空 card 保持 known，不逐条重复查网关；可选人物和群名网络查询各自最多等待 0.25 秒。API 空值负缓存及重复 runtime snapshot 尚未改动 |
 | A02 | Profile 在 stage 前读齐 owner、关系、别名、Space 和 Membership，短 immediate 事务序列化首次观察；未变昵称和群名不增加 revision，last_seen 仍保留 |
 | A03 | metadata-only 插件通知进入有界队列，冻结 payload 与订阅身份，退出/撤权停止投递；SDK 显式 publish 仍等待结果 |
-| A04 | Social 路由和 probe 在 writer 前完成，原回执 CAS 认领发送权，writer 复核 canonical/route/SELF，并在 claim 与真实调用前复核原 connection；scheduled SELF generation 补充围栏仍在复审 |
+| A04 | Social 路由和 probe 在 writer 前完成，原回执 CAS 认领发送权，writer 复核 canonical/route/SELF，并在 claim 与真实调用前复核原 connection；scheduled SELF 按原冻结场景及 generation 核验，reset 后不发送 |
 | B01 | Dream checkpoint 批量写入且 marker 最后提交；恢复每页最多 128 个 cluster，按原已提交 operation 汇总，不重放效果 |
 | B03、B04 | SelfReflection receipt 每页最多清理 500 条，写时重核引用及未完成窗口；候选只处理当前 fingerprint 的过期状态，保留原 ID 与幂等；0083 仅增加 receipt 引用索引 |
 | D01 | 创建时在最终 writer 内重核 canonical 权限、来源和 active 上限；同 key 幂等结果先于容量拒绝。resume/run_now 保留原产品 policy |
