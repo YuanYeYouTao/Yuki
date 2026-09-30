@@ -147,6 +147,11 @@ HTTP 与文件入口在相应授权及失效测试通过前不开放。Cookie �
 
 ## 验证与交付
 
+reply delay 的 min/max 修改与审计仍在同一事务。跨作用域验证只索引一次有效 override，
+按 USER 优先于 GROUP/GLOBAL 的原继承规则计算用户单边值及群上下界极值；复杂度为
+O(N+U+G)，不枚举用户与群的笛卡尔积。重复 canonical owner 仍明确拒绝，不能以优化
+之名跳过最终 writer 当前配置验证。
+
 使用实际容器装配和真实本地 Plugin/MCP 生命周期，覆盖未授权、并发版本、幂等、等待不持写锁、
 效果后异常、取消、重启、跨资源分页、可信 operator、无 QQ operator 的 Person/SELF 自动化及迁移。
 模型 hash 使用多个独立进程验收。测试不发送真实 QQ 消息、不调用付费模型。

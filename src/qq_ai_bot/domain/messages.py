@@ -120,6 +120,7 @@ class SenderIdentity:
     group_card: str = ""
     is_bot: bool = False
     group_card_known: bool = False
+    nickname_known: bool = False
 
     @property
     def display_name(self) -> str:
