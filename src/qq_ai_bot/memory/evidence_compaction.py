@@ -159,14 +159,30 @@ class EvidenceCompactionService:
         async with self._database.immediate_session() as session:
             current_receipts = tuple(
                 (
-                    await session.scalars(
-                        select(MemoryMutationReceiptModel).where(
-                            MemoryMutationReceiptModel.id.in_(tuple(prepared))
+                    await session.execute(
+                        select(
+                            MemoryMutationReceiptModel.id,
+                            MemoryMutationReceiptModel.executed_by_bot_user_id,
+                            MemoryMutationReceiptModel.delegation_mode,
+                            MemoryMutationReceiptModel.decision_actor_type,
+                            MemoryMutationReceiptModel.new_fact_id,
+                            MemoryMutationReceiptModel.created_at,
+                        ).where(MemoryMutationReceiptModel.id.in_(tuple(prepared)))
+                    )
+                ).all()
+            )
+            current_runs = tuple(
+                (
+                    await session.execute(
+                        run_query.with_only_columns(
+                            MemorySelfReflectionRunModel.id,
+                            MemorySelfReflectionRunModel.bot_user_id,
+                            MemorySelfReflectionRunModel.first_event_id,
+                            MemorySelfReflectionRunModel.last_event_id,
                         )
                     )
                 ).all()
             )
-            current_runs = tuple((await session.scalars(run_query)).all())
             current_run_ids = {
                 key: tuple(
                     row.id
@@ -189,10 +205,10 @@ class EvidenceCompactionService:
                 )
             )
             values = []
-            for receipt in current_receipts:
-                original = original_receipts[receipt.id]
+            for current_receipt in current_receipts:
+                original = original_receipts[current_receipt.id]
                 if any(
-                    getattr(receipt, field) != getattr(original, field)
+                    getattr(current_receipt, field) != getattr(original, field)
                     for field in (
                         "executed_by_bot_user_id",
                         "delegation_mode",
@@ -202,20 +218,23 @@ class EvidenceCompactionService:
                     )
                 ):
                     continue
-                key = prepared[receipt.id]
+                key = prepared[current_receipt.id]
                 run_ids = current_run_ids[key]
                 if len(run_ids) != 1 or set(run_ids) != set(expected_runs[key]):
                     continue
-                if receipt.new_fact_id is None or receipt.new_fact_id in existing_facts:
+                if (
+                    current_receipt.new_fact_id is None
+                    or current_receipt.new_fact_id in existing_facts
+                ):
                     continue
-                existing_facts.add(receipt.new_fact_id)
+                existing_facts.add(current_receipt.new_fact_id)
                 values.append(
                     {
                         "run_id": run_ids[0],
-                        "fact_id": receipt.new_fact_id,
+                        "fact_id": current_receipt.new_fact_id,
                         "result_kind": "episode",
                         "result_index": 1,
-                        "created_at": receipt.created_at,
+                        "created_at": current_receipt.created_at,
                     }
                 )
             if values:
