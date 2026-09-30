@@ -10,6 +10,8 @@ from tests.unit.test_conversation_rollup_llm_origins import _candidate, _event
 
 from qq_ai_bot.conversation.rollup.service import ConversationRollupService
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ChatResponse
+from qq_ai_bot.llm.base import LLMError
+from qq_ai_bot.model_runtime.dispatch_guard import model_dispatch_guard
 from qq_ai_bot.model_runtime.executor import BackgroundModelPreempted, TaskModelExecutor
 from qq_ai_bot.model_runtime.models import (
     ModelCapability,
@@ -24,9 +26,10 @@ from qq_ai_bot.model_runtime.models import (
 from qq_ai_bot.model_runtime.pool import ModelClientPool
 from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
 from qq_ai_bot.model_runtime.routes import ModelRouter
+from qq_ai_bot.services.concurrency import ConcurrencyManager, RequestCancelledError
 
 
-def executor(pool, protocol="responses", **overrides):
+def executor(pool, protocol="responses", *, max_concurrency=2, **overrides):
     profile = ModelProfile(
         id="rollup-test",
         provider="deepseek",
@@ -49,8 +52,188 @@ def executor(pool, protocol="responses", **overrides):
             )
         ),
         pool=pool,
-        max_concurrency=2,
+        max_concurrency=max_concurrency,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [1, 2, 4])
+async def test_single_admission_reserves_foreground_against_durable_background_and_maintenance(
+    limit,
+):
+    entered = []
+    changed = asyncio.Condition()
+    release = asyncio.Event()
+    active = 0
+    background_active = 0
+    maxima = [0, 0]
+
+    class Provider:
+        async def complete(self, request):
+            nonlocal active, background_active
+            text = request.messages[0].content
+            background = text != "foreground"
+            async with changed:
+                entered.append(text)
+                active += 1
+                background_active += background
+                maxima[0] = max(maxima[0], active)
+                maxima[1] = max(maxima[1], background_active)
+                changed.notify_all()
+            try:
+                if background:
+                    await release.wait()
+                return ChatResponse(content="done", latency_seconds=0)
+            finally:
+                active -= 1
+                background_active -= background
+
+        async def close(self):
+            pass
+
+    models = executor(
+        ModelClientPool(injected_profiles={"rollup-test": Provider()}), max_concurrency=limit
+    )
+    cancellation = ConcurrencyManager(limit)
+
+    def request(text):
+        return ChatRequest(messages=(ChatMessage(role="user", content=text),))
+
+    tasks = []
+    try:
+        tasks.append(
+            asyncio.create_task(
+                models.execute(
+                    ModelTask.CONVERSATION_COMPACTION,
+                    request("maintenance"),
+                    priority=Priority.MAINTENANCE,
+                )
+            )
+        )
+        async with changed:
+            await asyncio.wait_for(changed.wait_for(lambda: "maintenance" in entered), 2)
+        for index in range(limit):
+            tasks.append(
+                asyncio.create_task(
+                    cancellation.run_llm(
+                        f"background-{index}",
+                        lambda index=index: models.execute(
+                            ModelTask.CHAT_AGENT,
+                            request(f"background-{index}"),
+                            priority=Priority.BACKGROUND,
+                        ),
+                    )
+                )
+            )
+        if limit > 1:
+            async with changed:
+                await asyncio.wait_for(changed.wait_for(lambda: background_active == limit - 1), 2)
+        foreground_queued = asyncio.Event()
+
+        async def foreground_operation():
+            foreground_queued.set()
+            return await models.execute(ModelTask.CHAT_AGENT, request("foreground"))
+
+        foreground = asyncio.create_task(cancellation.run_llm("foreground", foreground_operation))
+        tasks.append(foreground)
+        if limit > 1:
+            await asyncio.wait_for(foreground, 2)
+            assert all(not task.done() for task in tasks[:-1])
+        else:
+            # A single slot can only serialize; foreground wins the next admission.
+            await asyncio.wait_for(foreground_queued.wait(), 2)
+            await asyncio.sleep(0)
+            release.set()
+            await asyncio.wait_for(foreground, 2)
+            assert entered[1] == "foreground"
+        release.set()
+        await asyncio.gather(*tasks)
+        assert maxima[0] <= limit
+        assert maxima[1] <= max(1, limit - 1)
+    finally:
+        release.set()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await models.close()
+
+
+@pytest.mark.asyncio
+async def test_queued_cancellation_and_invalid_source_never_dispatch_or_leak_capacity():
+    started, release = asyncio.Event(), asyncio.Event()
+    seen = []
+
+    class Provider:
+        async def complete(self, request):
+            text = request.messages[0].content
+            seen.append(text)
+            if text == "maintenance":
+                started.set()
+                await release.wait()
+            return ChatResponse(content="done", latency_seconds=0)
+
+        async def close(self):
+            pass
+
+    models = executor(
+        ModelClientPool(injected_profiles={"rollup-test": Provider()}), max_concurrency=1
+    )
+    cancellation = ConcurrencyManager(1)
+
+    def request(text):
+        return ChatRequest(messages=(ChatMessage(role="user", content=text),))
+
+    tasks = []
+    checks = 0
+
+    async def rejected():
+        nonlocal checks
+        checks += 1
+        raise LLMError("source_expired_after_queue")
+
+    queued_started = asyncio.Event()
+
+    async def queued():
+        queued_started.set()
+        with model_dispatch_guard(rejected):
+            return await models.execute(ModelTask.CHAT_AGENT, request("stale"))
+
+    try:
+        maintenance = asyncio.create_task(
+            models.execute(
+                ModelTask.CONVERSATION_COMPACTION,
+                request("maintenance"),
+                priority=Priority.MAINTENANCE,
+            )
+        )
+        tasks.append(maintenance)
+        await asyncio.wait_for(started.wait(), 2)
+        cancelled = asyncio.create_task(cancellation.run_llm("cancelled", queued))
+        tasks.append(cancelled)
+        await asyncio.wait_for(queued_started.wait(), 2)
+        assert await cancellation.cancel("cancelled")
+        with pytest.raises(RequestCancelledError):
+            await cancelled
+        assert checks == 0
+        queued_started.clear()
+        stale = asyncio.create_task(cancellation.run_llm("stale", queued))
+        tasks.append(stale)
+        await asyncio.wait_for(queued_started.wait(), 2)
+        release.set()
+        with pytest.raises(LLMError, match="source_expired_after_queue"):
+            await stale
+        assert checks == 1
+        assert seen == ["maintenance"]
+        await models.execute(ModelTask.CHAT_AGENT, request("fresh"), priority=Priority.REQUIRED)
+        assert seen == ["maintenance", "fresh"]
+    finally:
+        release.set()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await models.close()
 
 
 @pytest.mark.asyncio

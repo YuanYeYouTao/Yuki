@@ -10,7 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-from qq_ai_bot.asr.schema import PROJECTION_TRIGGERS_0055
+from qq_ai_bot.conversation.projection_revision_schema import PROJECTION_TRIGGERS_CURRENT
 
 
 def canonical_schema_revision(root: Path | None = None) -> str:
@@ -254,7 +254,7 @@ async def require_canonical_schema(database_url: str) -> None:
             triggers = {str(row[0]): str(row[1]) for row in trigger_rows}
             from qq_ai_bot.runtime.work_recovery_schema import quota_trigger_sql
 
-            for name, expected in {**PROJECTION_TRIGGERS_0055, **quota_trigger_sql()}.items():
+            for name, expected in {**PROJECTION_TRIGGERS_CURRENT, **quota_trigger_sql()}.items():
                 actual = triggers.get(name, "").replace("IF NOT EXISTS ", "")
                 expected = expected.replace("IF NOT EXISTS ", "")
                 if " ".join(actual.split()) != " ".join(expected.split()):

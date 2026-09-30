@@ -2,16 +2,16 @@
 
 from sqlalchemy import select, update
 from tests.unit.test_semantic_participation_host import _event_and_route, _host, _item
-from yuki_participation.store import SnapshotStore
 
 from qq_ai_bot.runtime.work_schema_v1 import inputs, work
+from qq_ai_bot.services.participation_snapshot import AsyncSnapshotStore
 
 
 async def test_restart_recovers_only_committed_direct_work(database, tmp_path):
     host, _ = await _host(database, tmp_path, observer=False)
-    host._store.close()
+    await host._store.close()
     path = tmp_path / "same-host-checkpoint.db"
-    host._store = SnapshotStore(path)
+    host._store = await AsyncSnapshotStore.open(path)
     handled = await _event_and_route(database, host.app.ledger, content="已经交给主入口处理")
     pending = await _event_and_route(database, host.app.ledger, content="仅排队，未被Work接纳")
     untouched = await _event_and_route(database, host.app.ledger, content="尚未处理的新消息")
@@ -43,10 +43,10 @@ async def test_restart_recovers_only_committed_direct_work(database, tmp_path):
         event_id=pending.id,
     )
     # Hard crash before participation checkpoint commit: the Work DB survives.
-    host._store.close()
+    await host._store.close()
     restarted, _ = await _host(database, tmp_path, observer=False)
-    restarted._store.close()
-    restarted._store = SnapshotStore(path)
+    await restarted._store.close()
+    restarted._store = await AsyncSnapshotStore.open(path)
     try:
         restored = await _item(restarted, handled)
         assert restarted._dirty == {}

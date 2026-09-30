@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 from itertools import pairwise
 
 import pytest
@@ -11,6 +12,33 @@ from tests.support.social_identity_cases import social_env
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, scope
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["renew", "transition"])
+async def test_lease_expiring_during_writer_wait_is_not_revived(database, tmp_path, operation):
+    env = await social_env(database, tmp_path)
+    repository = WorkRepository(database)
+    lease = await repository.acquire(env.context.conversation_id, 1)
+    assert lease
+    item = await repository.accept(lease, source_key="expires", source={}, goal="test")
+    expiry = time.time() + 0.15
+    async with database.immediate_session() as session:
+        await session.execute(update(scope).values(lease_until=expiry))
+    async with database.immediate_session():
+        pending = asyncio.create_task(
+            repository.renew(lease)
+            if operation == "renew"
+            else repository.transition(lease, item["id"], 1, "completed")
+        )
+        await asyncio.sleep(max(0.01, expiry - time.time() + 0.1))
+        assert not pending.done()
+    if operation == "renew":
+        assert not await pending
+    else:
+        with pytest.raises(WorkConflict, match="work_activation_obsolete"):
+            await pending
+    assert (await repository.get(item["id"]))["state"] == "running"
 
 
 @pytest.mark.asyncio

@@ -844,7 +844,15 @@ class MemoryRebuildRepository:
                 return 0
             items = (
                 await session.scalars(
-                    select(MemoryRebuildItemModel).where(MemoryRebuildItemModel.run_id == run_id)
+                    select(MemoryRebuildItemModel).where(
+                        MemoryRebuildItemModel.run_id == run_id,
+                        MemoryRebuildItemModel.status.not_in(
+                            (
+                                MemoryRebuildItemStatus.COMMITTED.value,
+                                MemoryRebuildItemStatus.SKIPPED.value,
+                            )
+                        ),
+                    )
                 )
             ).all()
             for item in items:

@@ -193,43 +193,61 @@ class PromptProjectionRepository:
                 await session.execute(
                     select(
                         func.coalesce(func.sum(PromptProjectionModel.byte_size), 0),
-                        func.count(),
+                        func.count().filter(PromptProjectionModel.invalidated_reason.is_(None))
+                        if self.reclaim
+                        else func.count(),
                     ).where(PromptProjectionModel.view_key != view_key)
                 )
             ).one()
             if self.reclaim:
-                others = list(
+                # Capacity decisions need metadata, never another view's payload.
+                others = (
                     (
-                        await session.scalars(
-                            select(PromptProjectionModel)
+                        await session.execute(
+                            select(
+                                PromptProjectionModel.view_key,
+                                PromptProjectionModel.byte_size,
+                                PromptProjectionModel.invalidated_reason,
+                            )
                             .where(PromptProjectionModel.view_key != view_key)
                             .order_by(
                                 PromptProjectionModel.updated_at, PromptProjectionModel.view_key
                             )
                         )
                     ).all()
+                    if used + size > self.total_bytes or count >= self.maximum_views
+                    else []
                 )
-                count = sum(row.invalidated_reason is None for row in others)
                 for victim in others:
                     if used + size <= self.total_bytes and count < self.maximum_views:
                         break
                     if victim.invalidated_reason is not None:
                         if used + size > self.total_bytes:
                             used -= victim.byte_size
-                            await session.delete(victim)
+                            await session.execute(
+                                delete(PromptProjectionModel).where(
+                                    PromptProjectionModel.view_key == victim.view_key
+                                )
+                            )
                         continue
                     used -= victim.byte_size - 2
                     count -= 1
-                    victim.payload_json, victim.byte_size = "[]", 2
-                    victim.invalidated_reason = "capacity"
-                    victim.revision += 1
-                    # Keep the eviction boundary until marker retention expires.
-                    victim.updated_at = datetime.now(UTC)
+                    await session.execute(
+                        update(PromptProjectionModel)
+                        .where(PromptProjectionModel.view_key == victim.view_key)
+                        .values(
+                            payload_json="[]",
+                            byte_size=2,
+                            invalidated_reason="capacity",
+                            revision=PromptProjectionModel.revision + 1,
+                            updated_at=datetime.now(UTC),
+                        )
+                    )
                 await session.flush()
                 markers = list(
                     (
-                        await session.scalars(
-                            select(PromptProjectionModel)
+                        await session.execute(
+                            select(PromptProjectionModel.view_key, PromptProjectionModel.byte_size)
                             .where(
                                 PromptProjectionModel.view_key != view_key,
                                 PromptProjectionModel.invalidated_reason.is_not(None),
@@ -238,12 +256,17 @@ class PromptProjectionRepository:
                                 PromptProjectionModel.updated_at.desc(),
                                 PromptProjectionModel.view_key,
                             )
+                            .offset(self.maximum_views)
                         )
                     ).all()
                 )
-                for marker in markers[self.maximum_views :]:
+                for marker in markers:
                     used -= marker.byte_size
-                    await session.delete(marker)
+                    await session.execute(
+                        delete(PromptProjectionModel).where(
+                            PromptProjectionModel.view_key == marker.view_key
+                        )
+                    )
             if used + size > self.total_bytes or count >= self.maximum_views:
                 raise ProjectionCapacityError("projection global budget exceeded")
             row = old or PromptProjectionModel(view_key=view_key, conversation_id=conversation_id)

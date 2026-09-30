@@ -17,6 +17,7 @@ from qq_ai_bot.llm.base import LLMProvider
 from qq_ai_bot.memory.enums import (
     MemoryRebuildCommitStatus,
     MemoryRebuildExpiredClaimPolicy,
+    MemoryRebuildItemStatus,
     MemoryRebuildRunStatus,
     MemoryScopeType,
     MemorySourceType,
@@ -254,6 +255,24 @@ async def test_rebuild_requires_review_then_commits_one_receipt(database: Databa
             == 1
         )
     assert provider.requests == 1
+    # Re-entering receipt preparation after completion must preserve the
+    # original committed item/receipt instead of reporting our own job as a
+    # conflicting "already_processed" live job.
+    async with database.sessions() as session:
+        item = await session.scalar(select(MemoryRebuildItemModel))
+        identity = (item.id, item.event_id, item.updated_at, receipt.id, receipt.updated_at)
+    assert (
+        await service.repository.complete_item_receipts(
+            run.public_id, include_failed_live_jobs=False
+        )
+        == 0
+    )
+    async with database.sessions() as session:
+        item = await session.scalar(select(MemoryRebuildItemModel))
+        receipt = await session.scalar(select(MemoryJobModel))
+        assert item.status == MemoryRebuildItemStatus.COMMITTED.value
+        assert item.error_category is None
+        assert (item.id, item.event_id, item.updated_at, receipt.id, receipt.updated_at) == identity
 
 
 @pytest.mark.asyncio

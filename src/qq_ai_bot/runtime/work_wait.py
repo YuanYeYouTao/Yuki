@@ -592,107 +592,151 @@ class WorkWaitRepository:
                 return int(identity) if identity is not None else None
         return None
 
-    async def deliver_due(self, now: float | None = None) -> int:
-        """Called by the automation clock; no separate timer loop or model polling."""
+    @staticmethod
+    def _due_query() -> Any:
+        return (
+            select(
+                waits,
+                CanonicalConversationModel.generation.label("current_generation"),
+                work.c.generation.label("work_generation"),
+                work.c.state.label("work_state"),
+            )
+            .select_from(
+                waits.outerjoin(
+                    CanonicalConversationModel,
+                    CanonicalConversationModel.id == waits.c.conversation_id,
+                ).outerjoin(work, work.c.id == waits.c.work_id)
+            )
+            .where(waits.c.status == "active")
+        )
+
+    @staticmethod
+    async def _observe_due(
+        session: AsyncSession, binding: Any, now: float
+    ) -> tuple[list[dict[str, Any]], str] | None:
+        """Read current facts; this same observation is repeated under the writer."""
         from qq_ai_bot.runtime.subagent_schema import children
         from qq_ai_bot.sandbox.db_models import SandboxTaskRunModel
 
-        count, now = 0, time.time() if now is None else now
+        if (
+            binding["current_generation"] != binding["generation"]
+            or binding["work_generation"] != binding["generation"]
+            or binding["work_state"] in {None, "completed", "failed", "cancelled"}
+        ):
+            return [], "invalidated"
+        conditions = json.loads(binding["conditions_json"])
+        changed = False
+        for condition in conditions:
+            if condition["matched"] is not None:
+                continue
+            if condition["kind"] == "time_due" and condition["due"] <= now:
+                condition["matched"] = {
+                    "kind": "time_due",
+                    "due": condition["due"],
+                    "observed_at": now,
+                }
+                changed = True
+            elif condition["kind"] == "owned_run":
+                state = await session.scalar(
+                    select(work.c.state)
+                    .select_from(children.join(work, work.c.id == children.c.work_id))
+                    .where(
+                        children.c.root_id == binding["work_id"],
+                        children.c.work_id == condition["run_id"],
+                    )
+                )
+                if state is None:
+                    task = await session.scalar(
+                        select(SandboxTaskRunModel).where(
+                            SandboxTaskRunModel.run_id == condition["run_id"]
+                        )
+                    )
+                    if task and json.loads(task.source_json).get("work_id") == binding["work_id"]:
+                        state = task.status
+                if state in {"completed", "succeeded", "failed", "cancelled", "uncertain"}:
+                    condition["matched"] = {
+                        "kind": "owned_run",
+                        "run_id": condition["run_id"],
+                        "status": state,
+                    }
+                    changed = True
+        done = (
+            any(c["matched"] is not None for c in conditions)
+            if binding["mode"] == "any"
+            else all(c["matched"] is not None for c in conditions)
+        )
+        member_failed = any(
+            isinstance(c.get("matched"), dict)
+            and c["matched"].get("status") in {"failed", "cancelled", "uncertain"}
+            for c in conditions
+        )
+        expired = binding["deadline"] is not None and binding["deadline"] <= now
+        if done or expired or member_failed:
+            return conditions, (
+                "member_failed"
+                if member_failed
+                else ("deadline" if expired and not done else "signal")
+            )
+        return (conditions, "partial") if changed else None
+
+    async def deliver_due(self, now: float | None = None) -> int:
+        """Discover changed waits read-only; recheck a bounded batch before writing."""
+        observed_at = time.time() if now is None else now
+        candidates: list[str] = []
+        cursor: tuple[float, str] | None = None
+        async with self.repository.database.sessions() as discovery:
+            while len(candidates) < 128:
+                query = self._due_query().order_by(waits.c.created, waits.c.id).limit(128)
+                if cursor is not None:
+                    query = query.where(
+                        (waits.c.created > cursor[0])
+                        | ((waits.c.created == cursor[0]) & (waits.c.id > cursor[1]))
+                    )
+                rows = (await discovery.execute(query)).mappings().all()
+                if not rows:
+                    break
+                for binding in rows:
+                    if await self._observe_due(discovery, binding, observed_at) is not None:
+                        candidates.append(binding["id"])
+                        if len(candidates) == 128:
+                            break
+                cursor = rows[-1]["created"], rows[-1]["id"]
+                if len(rows) < 128:
+                    break
+        if not candidates:
+            return 0
+        count = 0
         async with self.repository.database.immediate_session() as session:
+            # Explicit timestamps support deterministic callers; real clock polls
+            # resample only after acquiring the writer reservation.
+            current = time.time() if now is None else now
             rows = (
                 (
                     await session.execute(
-                        select(waits).where(waits.c.status == "active").order_by(waits.c.created)
+                        self._due_query()
+                        .where(waits.c.id.in_(candidates))
+                        .order_by(waits.c.created, waits.c.id)
                     )
                 )
                 .mappings()
                 .all()
             )
             for binding in rows:
-                conversation = await session.get(
-                    CanonicalConversationModel, binding["conversation_id"]
-                )
-                original_state = await session.scalar(
-                    select(work.c.state).where(work.c.id == binding["work_id"])
-                )
-                if (
-                    conversation is None
-                    or conversation.generation != binding["generation"]
-                    or original_state in {None, "completed", "failed", "cancelled"}
-                ):
-                    await session.execute(
-                        update(waits)
-                        .where(waits.c.id == binding["id"], waits.c.status == "active")
-                        .values(status="invalidated", updated=now)
-                    )
+                observation = await self._observe_due(session, binding, current)
+                if observation is None:
                     continue
-                conditions = json.loads(binding["conditions_json"])
-                changed = False
-                for condition in conditions:
-                    if condition["matched"] is not None:
-                        continue
-                    if condition["kind"] == "time_due" and condition["due"] <= now:
-                        condition["matched"] = {
-                            "kind": "time_due",
-                            "due": condition["due"],
-                            "observed_at": now,
-                        }
-                        changed = True
-                    elif condition["kind"] == "owned_run":
-                        child = (
-                            await session.execute(
-                                select(children.c.state).where(
-                                    children.c.root_id == binding["work_id"],
-                                    children.c.work_id == condition["run_id"],
-                                )
-                            )
-                        ).first()
-                        state = child[0] if child else None
-                        if state is None:
-                            task = await session.scalar(
-                                select(SandboxTaskRunModel).where(
-                                    SandboxTaskRunModel.run_id == condition["run_id"]
-                                )
-                            )
-                            if (
-                                task
-                                and json.loads(task.source_json).get("work_id")
-                                == binding["work_id"]
-                            ):
-                                state = task.status
-                        if state in {"completed", "succeeded", "failed", "cancelled", "uncertain"}:
-                            condition["matched"] = {
-                                "kind": "owned_run",
-                                "run_id": condition["run_id"],
-                                "status": state,
-                            }
-                            changed = True
-                done = (
-                    any(c["matched"] is not None for c in conditions)
-                    if binding["mode"] == "any"
-                    else all(c["matched"] is not None for c in conditions)
-                )
-                member_failed = any(
-                    isinstance(c.get("matched"), dict)
-                    and c["matched"].get("status") in {"failed", "cancelled", "uncertain"}
-                    for c in conditions
-                )
-                expired = binding["deadline"] is not None and binding["deadline"] <= now
-                if done or expired or member_failed:
-                    if await self._deliver(
-                        session,
-                        dict(binding),
-                        conditions,
-                        "member_failed"
-                        if member_failed
-                        else ("deadline" if expired and not done else "signal"),
-                        now,
-                    ):
-                        count += 1
-                elif changed:
+                conditions, reason = observation
+                if reason in {"invalidated", "partial"}:
+                    values: dict[str, Any] = {"updated": current}
+                    if reason == "invalidated":
+                        values["status"] = "invalidated"
+                    else:
+                        values["conditions_json"] = bounded_json(conditions, 8192)
                     await session.execute(
                         update(waits)
                         .where(waits.c.id == binding["id"], waits.c.status == "active")
-                        .values(conditions_json=bounded_json(conditions, 8192), updated=now)
+                        .values(**values)
                     )
+                elif await self._deliver(session, dict(binding), conditions, reason, current):
+                    count += 1
         return count

@@ -6,12 +6,14 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, insert, literal, select
 
 from qq_ai_bot.conversation.correlation import stamp_conversation_correlation
+from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
 from qq_ai_bot.model_runtime.db_models import ModelInvocationModel
 from qq_ai_bot.model_runtime.models import ModelInvocationRecord, ModelStats, ModelTask
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.diagnostic_writer import DiagnosticWriter
 from qq_ai_bot.runtime.observability import claim_runtime_turn_id
 
 
@@ -28,8 +30,9 @@ def project_model_task(value: str) -> str:
 class ModelInvocationRepository:
     """Store and aggregate only task/profile/usage/latency metadata."""
 
-    def __init__(self, database: Database) -> None:
+    def __init__(self, database: Database, *, writer: DiagnosticWriter | None = None) -> None:
         self._database = database
+        self.writer = writer
 
     async def record(
         self,
@@ -52,7 +55,7 @@ class ModelInvocationRepository:
         unknown_usage_request_count: int | None = None,
         native_search_requested: bool | None = None,
         canonical_conversation_id: str | None = None,
-    ) -> ModelInvocationRecord:
+    ) -> ModelInvocationRecord | None:
         row = ModelInvocationModel(
             runtime_turn_id=claim_runtime_turn_id(),
             task=task.value if isinstance(task, ModelTask) else task,
@@ -74,11 +77,48 @@ class ModelInvocationRepository:
             error_category=error_category,
             created_at=datetime.now(UTC),
         )
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.sessions() as session:
             await stamp_conversation_correlation(session, row, canonical_conversation_id)
+            privacy_generation = (
+                await session.scalar(
+                    select(ExecutionTraceStateModel.privacy_generation).where(
+                        ExecutionTraceStateModel.id == 1
+                    )
+                )
+                if self.writer is not None
+                else None
+            )
+        if self.writer is not None:
+            frozen = tuple(
+                (column.name, getattr(row, column.name))
+                for column in row.__table__.columns
+                if column.name != "id"
+            )
+            size = 1024 + sum(
+                len(value.encode("utf-8")) for _, value in frozen if isinstance(value, str)
+            )
+            self.writer.submit(
+                "model_invocation", size, lambda: self._insert(frozen, privacy_generation or 0)
+            )
+            return None
+        async with self._database.sessions() as session, session.begin():
             session.add(row)
             await session.flush()
             return self._record(row)
+
+    async def _insert(self, frozen: tuple[tuple[str, Any], ...], privacy_generation: int) -> None:
+        values = dict(frozen)
+        table = ModelInvocationModel.__table__
+        current_generation = (
+            select(ExecutionTraceStateModel.privacy_generation)
+            .where(ExecutionTraceStateModel.id == 1)
+            .scalar_subquery()
+        )
+        guarded = select(
+            *(literal(value, type_=table.c[key].type) for key, value in values.items())
+        ).where(func.coalesce(current_generation, 0) == privacy_generation)
+        async with self._database.sessions() as session, session.begin():
+            await session.execute(insert(ModelInvocationModel).from_select(list(values), guarded))
 
     async def stats(self, *, task: ModelTask | None = None) -> ModelStats:
         statement = self._stats_statement()

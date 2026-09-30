@@ -19,6 +19,7 @@ from qq_ai_bot.model_runtime import (
 from qq_ai_bot.model_runtime.profiles import model_profile_environment
 from qq_ai_bot.model_runtime.secrets import read_model_secrets
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.diagnostic_writer import DiagnosticWriter
 from qq_ai_bot.settings_domains import ModelRuntimeSettings
 
 
@@ -67,7 +68,14 @@ class ModelRuntimeModule:
                 **read_model_secrets(settings.model_profiles_file)[1],
             },
         )
-        invocations = ModelInvocationRepository(self._database)
+        diagnostics = DiagnosticWriter()
+        self._lifecycle.register(
+            "diagnostic_writer",
+            start=diagnostics.start,
+            close=diagnostics.close,
+            health=diagnostics.health,
+        )
+        invocations = ModelInvocationRepository(self._database, writer=diagnostics)
         router = ModelRouter(profiles)
         for profile in profiles.profiles.values():
             clients.get(profile)
@@ -79,6 +87,7 @@ class ModelRuntimeModule:
                 self._database,
                 retention_days=settings.execution_trace_retention_days,
                 max_payload_bytes=settings.execution_trace_max_payload_bytes,
+                writer=diagnostics,
             ),
             max_concurrency=settings.global_llm_concurrency,
             compaction_timeout_seconds=settings.conversation_rollup_model_timeout_seconds,

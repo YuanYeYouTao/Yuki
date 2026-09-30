@@ -354,14 +354,18 @@ async def run_short_state_cases(database, tmp_path, context):
     from qq_ai_bot.services.concurrency import ConcurrencyManager
 
     queued = asyncio.Event()
+    release = asyncio.Event()
 
     class ObservedConcurrency(ConcurrencyManager):
-        async def run_llm(self, *args, **kwargs):
-            queued.set()
-            return await super().run_llm(*args, **kwargs)
+        async def run_llm(self, conversation_key, operation, **kwargs):
+            async def dispatch():
+                queued.set()
+                await release.wait()
+                return await operation()
+
+            return await super().run_llm(conversation_key, dispatch, **kwargs)
 
     gate = ObservedConcurrency(1)
-    await gate._semaphore.acquire()
     original_concurrency = chat._agent_runner._concurrency
     chat._agent_runner._concurrency = gate
     version_matches = AsyncMock(return_value=True)
@@ -384,7 +388,7 @@ async def run_short_state_cases(database, tmp_path, context):
         await asyncio.wait_for(queued.wait(), timeout=3)
         version_matches.assert_not_awaited()
         version_matches.return_value = False
-        gate._semaphore.release()
+        release.set()
         with pytest.raises(AutomationExecutionError) as caught:
             await asyncio.wait_for(waiting, timeout=3)
         assert caught.value.category == "automation_context_changed"

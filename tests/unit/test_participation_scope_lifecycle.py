@@ -1,7 +1,9 @@
 """Bounded Host scope ownership across real async tick/legacy interleaving."""
 
 import asyncio
+import time
 from dataclasses import replace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 from sqlalchemy import update
@@ -22,7 +24,7 @@ async def test_tick_pins_waiters_and_retries_capacity_dirty_without_duplicate_co
         entered.append(item)
         started.set()
         await release.wait()
-        host._save(item)
+        await host._save(item)
 
     host._advance_scene = delayed
     task = None
@@ -34,7 +36,7 @@ async def test_tick_pins_waiters_and_retries_capacity_dirty_without_duplicate_co
                 )
         for index in range(32):
             event = await _event_and_route(database, host.app.ledger, group=str(2000 + index))
-            host._session(await host._scene(event.canonical_conversation_id))
+            await host._session(await host._scene(event.canonical_conversation_id))
         originals = dict(host._sessions)
         task = asyncio.create_task(host.tick())
         await started.wait()
@@ -87,4 +89,62 @@ async def test_tick_pins_waiters_and_retries_capacity_dirty_without_duplicate_co
         release.set()
         if task is not None:
             await task
+        await host.close()
+
+
+async def test_tick_pin_batch_waits_for_in_progress_cache_eviction(database, tmp_path):
+    host, _ = await _host(database, tmp_path, observer=False)
+    saving, release_save = asyncio.Event(), asyncio.Event()
+    advancing, release_advance = asyncio.Event(), asyncio.Event()
+    original_save = host._save
+    eviction_task = tick_task = None
+    try:
+        async with database.immediate_session() as session:
+            for index in range(33):
+                await ensure_space(session, str(3000 + index), name=f"scope-{index}")
+        for index in range(32):
+            event = await _event_and_route(database, host.app.ledger, group=str(3000 + index))
+            await host._session(await host._scene(event.canonical_conversation_id))
+        oldest_key = next(iter(host._sessions))
+        oldest = host._sessions[oldest_key]
+
+        async def blocked_save(item):
+            if item is oldest:
+                saving.set()
+                await release_save.wait()
+            await original_save(item)
+
+        async def advance(item):
+            advancing.set()
+            await release_advance.wait()
+
+        host._save = blocked_save
+        host._advance_scene = advance
+        # Isolate the pin batch from the earlier retirement/discovery lock acquisitions.
+        host._retire_stale_sessions = AsyncMock()
+        host._last_discovery_at = time.time()
+        fresh = await _event_and_route(database, host.app.ledger, group="3032")
+        scene = await host._scene(fresh.canonical_conversation_id)
+        eviction_task = asyncio.create_task(host._session(scene))
+        await saving.wait()
+        tick_task = asyncio.create_task(host.tick())
+        await asyncio.sleep(0)
+        assert oldest.pins == 0
+        assert not advancing.is_set()
+        release_save.set()
+        replacement = await eviction_task
+        await advancing.wait()
+        assert oldest_key not in host._sessions
+        assert oldest.pins == 0
+        assert replacement.pins == 1
+        assert len(host._sessions) == 32
+        release_advance.set()
+        await tick_task
+        assert host._failures == 0
+    finally:
+        release_save.set()
+        release_advance.set()
+        for task in (eviction_task, tick_task):
+            if task is not None:
+                await task
         await host.close()

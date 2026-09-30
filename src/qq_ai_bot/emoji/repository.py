@@ -680,32 +680,32 @@ class EmojiRepository:
         if limit <= 0 or lease_seconds <= 0:
             raise ValueError("job limits must be positive")
         now = datetime.now(UTC)
-        lease = now + timedelta(seconds=lease_seconds)
-        async with self._database.sessions() as session, session.begin():
-            await session.execute(
-                update(EmojiJobModel)
-                .where(
-                    EmojiJobModel.status == "processing",
-                    EmojiJobModel.claimed_until < now,
-                )
-                .values(status="pending", claimed_until=None, claimed_by=None, updated_at=now)
-            )
+
+        def eligible(at: datetime) -> ColumnElement[bool]:
+            return or_(
+                EmojiJobModel.status == "pending",
+                (EmojiJobModel.status == "processing") & (EmojiJobModel.claimed_until < at),
+            ) & (EmojiJobModel.next_attempt_at <= at)
+
+        # No writer reservation for empty polls; analysis jobs can be retried after
+        # an expired lease without first rewriting every expired row in the table.
+        async with self._database.sessions() as discovery:
             ids = tuple(
-                await session.scalars(
+                await discovery.scalars(
                     select(EmojiJobModel.id)
-                    .where(
-                        EmojiJobModel.status == "pending",
-                        EmojiJobModel.next_attempt_at <= now,
-                    )
-                    .order_by(EmojiJobModel.created_at)
-                    .limit(limit)
+                    .where(eligible(now))
+                    .order_by(EmojiJobModel.created_at, EmojiJobModel.id)
+                    .limit(min(limit, 128))
                 )
             )
-            if not ids:
-                return ()
+        if not ids:
+            return ()
+        async with self._database.immediate_session() as session:
+            now = datetime.now(UTC)
+            lease = now + timedelta(seconds=lease_seconds)
             await session.execute(
                 update(EmojiJobModel)
-                .where(EmojiJobModel.id.in_(ids), EmojiJobModel.status == "pending")
+                .where(EmojiJobModel.id.in_(ids), eligible(now))
                 .values(
                     status="processing", claimed_until=lease, claimed_by=worker_id, updated_at=now
                 )
@@ -713,7 +713,9 @@ class EmojiRepository:
             rows = (
                 await session.scalars(
                     select(EmojiJobModel).where(
-                        EmojiJobModel.id.in_(ids), EmojiJobModel.claimed_by == worker_id
+                        EmojiJobModel.id.in_(ids),
+                        EmojiJobModel.claimed_by == worker_id,
+                        EmojiJobModel.claimed_until == lease,
                     )
                 )
             ).all()

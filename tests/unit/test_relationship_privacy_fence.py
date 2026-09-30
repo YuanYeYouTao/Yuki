@@ -17,7 +17,7 @@ from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
 from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
 from qq_ai_bot.llm.openai_responses import OpenAIResponsesProvider
 from qq_ai_bot.model_runtime.dispatch_guard import check_model_dispatch
-from qq_ai_bot.model_runtime.models import ModelTask, StructuredOutputMode
+from qq_ai_bot.model_runtime.models import ModelExecutionPriority, ModelTask, StructuredOutputMode
 from qq_ai_bot.model_runtime.pool import ModelClientPool
 from qq_ai_bot.persistence.models import (
     PersonRelationshipModel,
@@ -79,16 +79,21 @@ async def assert_expired(database, trigger):
 
 
 async def test_queued_relationship_cannot_dispatch_expired_evidence(database, monkeypatch):
-    # Exercise both the background priority queue and the final provider semaphore.
-    for index, (lane, kind) in enumerate((("priority", "reset"), ("semaphore", "forget_other"))):
+    # Exercise both the background priority queue and final physical admission.
+    for index, (lane, kind) in enumerate((("priority", "reset"), ("admission", "forget_other"))):
         jobs, trigger = await group_job(database, f"queued-{index}")
         other = await append_user_event(database, message_id=f"unaffected-{index}", user_id="1003")
         await jobs.enqueue(trigger_event_id=other, user_id="1003", conversation_key="private:1003")
         queued = asyncio.Event()
         calls = []
+        blocked, release = asyncio.Event(), asyncio.Event()
 
         class Provider:
-            async def complete(self, request, *, calls=calls):
+            async def complete(self, request, *, calls=calls, blocked=blocked, release=release):
+                if request.messages[0].content == "capacity-blocker":
+                    blocked.set()
+                    await release.wait()
+                    return ChatResponse(content="done", latency_seconds=0)
                 calls.append(request)
                 return ChatResponse(content='{"evaluations":[]}', latency_seconds=0)
 
@@ -98,17 +103,26 @@ async def test_queued_relationship_cannot_dispatch_expired_evidence(database, mo
         models = executor(
             ModelClientPool(injected_profiles={"rollup-test": Provider()}),
             structured_output_mode=StructuredOutputMode.JSON_SCHEMA,
+            max_concurrency=1,
         )
-        gate = models._background_slot if lane == "priority" else models._semaphore
-        await gate.acquire()
-        if lane == "semaphore":
-            await gate.acquire()
+        blocker = None
+        if lane == "priority":
+            await models._background_slot.acquire()
+        else:
+            blocker = asyncio.create_task(
+                models.execute(
+                    ModelTask.CONVERSATION_COMPACTION,
+                    ChatRequest(messages=(ChatMessage(role="user", content="capacity-blocker"),)),
+                    priority=ModelExecutionPriority.MAINTENANCE,
+                )
+            )
+            await asyncio.wait_for(blocked.wait(), 2)
         method = "_execute_background_provider" if lane == "priority" else "_complete_provider"
         original = getattr(models, method)
 
-        async def waiting(*args, original=original, queued=queued):
+        async def waiting(*args, original=original, queued=queued, **kwargs):
             queued.set()
-            return await original(*args)
+            return await original(*args, **kwargs)
 
         monkeypatch.setattr(models, method, waiting)
         settings = make_settings(database.url)
@@ -124,9 +138,10 @@ async def test_queued_relationship_cannot_dispatch_expired_evidence(database, mo
         try:
             await asyncio.wait_for(queued.wait(), 2)
             await invalidate(database, trigger, kind)
-            gate.release()
-            if lane == "semaphore":
-                gate.release()
+            if lane == "priority":
+                models._background_slot.release()
+            else:
+                release.set()
             assert await asyncio.wait_for(task, 2) == 0
             assert calls == []
             await assert_expired(database, trigger)
@@ -145,8 +160,11 @@ async def test_queued_relationship_cannot_dispatch_expired_evidence(database, mo
             )
             assert len(calls) == 1
         finally:
+            release.set()
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+            if blocker is not None:
+                await blocker
             await models.close()
 
 

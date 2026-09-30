@@ -71,7 +71,7 @@ async def test_relationship_waits_for_attribution_instead_of_preempting(database
 
     class Concurrency(ConcurrencyManager):
         async def run_llm(self, key, operation, **kwargs):
-            assert kwargs["background"] is True
+            assert "background" not in kwargs
             relationship_admitted.set()
             return await super().run_llm(key, operation, **kwargs)
 
@@ -203,8 +203,8 @@ async def test_shutdown_cancels_waiting_and_active_evaluations_without_failure(d
             models = executor(
                 ModelClientPool(injected_profiles={"rollup-test": Provider()}),
                 structured_output_mode=StructuredOutputMode.JSON_SCHEMA,
+                max_concurrency=limit,
             )
-            models._semaphore = asyncio.Semaphore(limit)
             settings = make_settings(database.url, global_llm_concurrency=limit)
             evaluator = LLMRelationshipEvaluator(
                 settings=settings, model_executor=models, concurrency=concurrency

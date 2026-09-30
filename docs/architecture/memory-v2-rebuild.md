@@ -14,6 +14,8 @@ Yuki 3.0.0rc1 可以从永久事件账本 `chat_events` 重新提取历史事实
   原始输出或完整上下文。
 - `memory_jobs.status=done` 仍是一个事件已完成记忆处理的唯一 receipt；`processing_source` 标明
   live 或 rebuild。没有第二套事实表或 receipt 表。
+- 提交准备只处理尚未终局的 item；已 committed/skipped 的 item 不重扫、不重写，
+  同一 run 的已提交 receipt 不会被再次解释为实时任务冲突。重复准备保留原状态、item/job ID 和回执。
 
 状态流为：
 

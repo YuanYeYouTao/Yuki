@@ -287,51 +287,52 @@ async def reconcile_run(service: SemanticParticipationService, run: AcceptedInit
         )
     if batches:
         durable = await _feedback_rows(service, run.run_id)
-    # Acquire the controller only after all asynchronous receipt I/O. Replay and
-    # checkpoint below are synchronous, so a newly loaded scope cannot be evicted midway.
-    item = service._sessions.get((run.conversation_id, run.generation))
-    if item is None:
-        return  # Original-generation results never wake a newer generation.
-    for row in durable:
-        payload = json.loads(row.payload_json)
-        effects = tuple(
-            actual[ref]
-            if ref in actual
-            else Effect(effect_id=ref, kind="compute", at=_timestamp(row.created_at))
-            for ref in payload.get("effects", ())
-            if ref in actual or _charged_ref(ref)
-        )
-        if run.owner is AutonomyOwner.SEMANTIC:
-            # Admission's local accepted receipt uses 1; durable Host pages start at 2.
-            item.controller.observe_run_feedback(
-                Feedback(
-                    run_ref=run.run_id,
-                    proposal_id=run.proposal_id,
-                    sequence=row.sequence + 1,
-                    outcome="accepted"
-                    if row.outcome == "running"
-                    else "interrupted"
-                    if row.outcome == "failed"
-                    else row.outcome,
-                    at=_timestamp(row.created_at),
-                    effects=effects,
-                )
+    # Receipt I/O is complete. Keep the same cached controller through replay and
+    # asynchronous checkpoint; eviction must not restore an older revision meanwhile.
+    async with service._session_lock:
+        item = service._sessions.get((run.conversation_id, run.generation))
+        if item is None:
+            return  # Original-generation results never wake a newer generation.
+        for row in durable:
+            payload = json.loads(row.payload_json)
+            effects = tuple(
+                actual[ref]
+                if ref in actual
+                else Effect(effect_id=ref, kind="compute", at=_timestamp(row.created_at))
+                for ref in payload.get("effects", ())
+                if ref in actual or _charged_ref(ref)
             )
-        else:
-            for effect in effects:
-                item.controller.observe_committed_effect(run.run_id, effect)
-    if checkpoint:
-        try:
-            progress = json.loads(checkpoint).get("metadata", {}).get("progress", {})
-            reports = progress.get("self_reports", ())
-        except (ValueError, TypeError, AttributeError):
-            reports = ()
-        if isinstance(reports, (list, tuple)):
-            for raw in reports[-32:]:
-                try:
-                    report = SelfReport.model_validate(raw)
-                except (ValidationError, TypeError):
-                    continue
-                if report.run_ref == run.run_id:
-                    item.controller.observe_self_report(report)
-    service._save(item)
+            if run.owner is AutonomyOwner.SEMANTIC:
+                # Admission's local accepted receipt uses 1; durable Host pages start at 2.
+                item.controller.observe_run_feedback(
+                    Feedback(
+                        run_ref=run.run_id,
+                        proposal_id=run.proposal_id,
+                        sequence=row.sequence + 1,
+                        outcome="accepted"
+                        if row.outcome == "running"
+                        else "interrupted"
+                        if row.outcome == "failed"
+                        else row.outcome,
+                        at=_timestamp(row.created_at),
+                        effects=effects,
+                    )
+                )
+            else:
+                for effect in effects:
+                    item.controller.observe_committed_effect(run.run_id, effect)
+        if checkpoint:
+            try:
+                progress = json.loads(checkpoint).get("metadata", {}).get("progress", {})
+                reports = progress.get("self_reports", ())
+            except (ValueError, TypeError, AttributeError):
+                reports = ()
+            if isinstance(reports, (list, tuple)):
+                for raw in reports[-32:]:
+                    try:
+                        report = SelfReport.model_validate(raw)
+                    except (ValidationError, TypeError):
+                        continue
+                    if report.run_ref == run.run_id:
+                        item.controller.observe_self_report(report)
+        await service._save(item)

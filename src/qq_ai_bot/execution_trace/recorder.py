@@ -18,6 +18,7 @@ from qq_ai_bot.conversation.correlation import require_live_conversation
 from qq_ai_bot.execution_trace.db_models import ExecutionTraceEntryModel, ExecutionTraceStateModel
 from qq_ai_bot.execution_trace.payload import encode_payload
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.diagnostic_writer import DiagnosticWriter
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.runtime.observability import current_runtime_turn_correlation
 
@@ -67,12 +68,14 @@ class TraceRecorder:
         *,
         retention_days: int = 30,
         max_payload_bytes: int = 16 * 1024 * 1024,
+        writer: DiagnosticWriter | None = None,
     ) -> None:
         if not 1 <= retention_days <= 365 or not 1024 <= max_payload_bytes <= 64 * 1024 * 1024:
             raise ValueError("invalid trace retention or payload limit")
         self.database = database
         self.retention_days = retention_days
         self.max_payload_bytes = max_payload_bytes
+        self.writer = writer
         self.record_failures = 0
         self._live_spans: dict[str, LiveTraceSpan] = {}
 
@@ -180,23 +183,17 @@ class TraceRecorder:
                 created_at=now,
                 expires_at=now + timedelta(days=self.retention_days),
             )
-            table = ExecutionTraceEntryModel.__table__
-            privacy_generation = (
-                select(ExecutionTraceStateModel.privacy_generation)
-                .where(ExecutionTraceStateModel.id == 1)
-                .scalar_subquery()
-            )
-            guarded_values = select(
-                *(literal(value, type_=table.c[key].type) for key, value in values.items())
-            ).where(func.coalesce(privacy_generation, 0) == scope.coverage.privacy_generation)
-            # The erasure fence and insert are one SQL statement; an in-flight
-            # response cannot recreate a deleted prompt after privacy erasure.
-            async with self.database.sessions() as session, session.begin():
-                result = await session.execute(
-                    insert(ExecutionTraceEntryModel).from_select(list(values), guarded_values)
-                )
-                if getattr(result, "rowcount", 0) == 0:
+            frozen = tuple(values.items())
+            if self.writer is not None:
+                if not self.writer.submit(
+                    kind,
+                    len(encoded.compressed or b"") + 1024,
+                    lambda: self._commit_queued(scope.coverage, frozen),
+                ):
                     scope.coverage.failures += 1
+                    self.record_failures += 1
+                return
+            await self._insert(scope.coverage, frozen)
         except Exception as exc:
             scope.coverage.failures += 1
             self.record_failures += 1
@@ -205,6 +202,37 @@ class TraceRecorder:
                 kind,
                 type(exc).__name__,
             )
+
+    async def _commit_queued(
+        self, coverage: TraceCoverage, frozen: tuple[tuple[str, Any], ...]
+    ) -> None:
+        try:
+            await self._insert(coverage, frozen)
+        except (Exception, asyncio.CancelledError):
+            coverage.failures += 1
+            self.record_failures += 1
+            raise
+
+    async def _insert(self, coverage: TraceCoverage, frozen: tuple[tuple[str, Any], ...]) -> None:
+        values = dict(frozen)
+        table = ExecutionTraceEntryModel.__table__
+        privacy_generation = (
+            select(ExecutionTraceStateModel.privacy_generation)
+            .where(ExecutionTraceStateModel.id == 1)
+            .scalar_subquery()
+        )
+        guarded_values = select(
+            *(literal(value, type_=table.c[key].type) for key, value in values.items())
+        ).where(func.coalesce(privacy_generation, 0) == coverage.privacy_generation)
+        # The erasure fence and insert are one SQL statement; an in-flight
+        # response cannot recreate a deleted prompt after privacy erasure.
+        async with self.database.sessions() as session, session.begin():
+            result = await session.execute(
+                insert(ExecutionTraceEntryModel).from_select(list(values), guarded_values)
+            )
+            if getattr(result, "rowcount", 0) == 0:
+                coverage.failures += 1
+                self.record_failures += 1
 
     async def cleanup_expired(self, *, now: datetime | None = None) -> int:
         cutoff = now or datetime.now(UTC)
