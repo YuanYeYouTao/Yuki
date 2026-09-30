@@ -16,10 +16,15 @@ from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.adapters.onebot.sender import parse_onebot_send_receipt
 from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.conversation.canonical_db_models import PersonActiveRouteModel, SpaceActiveRouteModel
+from qq_ai_bot.conversation.canonical_db_models import (
+    CanonicalConversationModel,
+    PersonActiveRouteModel,
+    SpaceActiveRouteModel,
+)
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.gateway.providers.napcat import NapCatProvider
 from qq_ai_bot.gateway.providers.snowluma import SnowLumaProvider
@@ -35,6 +40,7 @@ from qq_ai_bot.llm.base import LLMEmptyResponseError
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from qq_ai_bot.persistence.unit_of_work import optional_session
 from qq_ai_bot.services.message_splitter import OutboundMessageSplitter
 from qq_ai_bot.services.renderer import sanitize_model_output
 from qq_ai_bot.social.models import (
@@ -89,7 +95,6 @@ class SocialService:
         self.router = router
         self.writer = writer
         self.receipts = SocialOperationRepository(database)
-        self._lock = asyncio.Lock()
         self._directory_lock = asyncio.Lock()
         self._directory_checked_at = float("-inf")
         self.runtime_config: RuntimeConfigService | None = None
@@ -97,7 +102,9 @@ class SocialService:
         self.speech_delivery: Any = None
         self.emoji_delivery: Any = None
 
-    async def _validate_self_context(self, context: SocialContext) -> None:
+    async def _validate_self_context(
+        self, context: SocialContext, *, session: AsyncSession | None = None
+    ) -> None:
         if context.origin == "scheduled_automation" or context.automation_run_id is not None:
             if (
                 context.origin != "scheduled_automation"
@@ -115,10 +122,9 @@ class SocialService:
                 or context.actor.presence_id != context.presence_id
             ):
                 raise SocialError("invalid_self_context")
-            from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
             from qq_ai_bot.persistence.models import AutomationModel, AutomationRunModel
 
-            async with self.database.sessions() as session:
+            async with optional_session(self.database, session, write=False) as session:
                 run = await session.get(AutomationRunModel, context.automation_run_id)
                 owner = await session.get(AutomationModel, run.automation_id) if run else None
                 conversation = await session.get(
@@ -165,6 +171,7 @@ class SocialService:
                 conversation_id=context.conversation_id,
                 space_id=context.space_id,
                 presence_id=context.presence_id,
+                session=session,
             )
         except PermissionError as exc:
             raise SocialError(str(exc)) from exc
@@ -373,25 +380,33 @@ class SocialService:
         await self.check_target(target)
         return target
 
-    async def check_target(self, target: SocialTarget, *, sending: bool = False) -> None:
-        async with self.database.sessions() as session:
+    async def check_target(
+        self,
+        target: SocialTarget,
+        *,
+        sending: bool = False,
+        session: AsyncSession | None = None,
+        known_event_id: int | None = None,
+    ) -> int | None:
+        async with optional_session(self.database, session, write=False) as session:
             if target.kind == "person":
                 person = await session.get(CanonicalPersonModel, str(target.id))
-                known = await session.scalar(
-                    select(ChatEventModel.id)
-                    .where(
-                        ChatEventModel.author_person_id == str(target.id),
-                        ChatEventModel.direction == "inbound",
-                        ChatEventModel.author_kind == "person",
-                    )
-                    .limit(1)
+                known_query = select(ChatEventModel.id).where(
+                    ChatEventModel.author_person_id == str(target.id),
+                    ChatEventModel.direction == "inbound",
+                    ChatEventModel.author_kind == "person",
                 )
+                if known_event_id is not None:
+                    known_query = known_query.where(ChatEventModel.id == known_event_id)
+                known = await session.scalar(known_query.limit(1))
                 if person is None or not person.enabled or known is None:
                     raise SocialError("contact_not_allowed")
+                return int(known)
             else:
                 space = await session.get(CanonicalSpaceModel, str(target.id))
                 if space is None or not space.enabled or (sending and not space.autonomous_enabled):
                     raise SocialError("space_not_allowed")
+                return None
 
     async def route(self, target: SocialTarget) -> ResolvedSend:
         # PresenceRouter may provision a missing route; explicit social operations must not.
@@ -544,6 +559,55 @@ class SocialService:
             kind="private",
             route_generation=0,
         )
+
+    async def _validate_reply_route(
+        self,
+        session: AsyncSession,
+        context: SocialContext,
+        target: SocialTarget,
+        route: ResolvedSend,
+    ) -> None:
+        """Recheck the same internal inbound proof used during reply preparation."""
+        if route.kind not in {"private", "group"} or _self_scene(context):
+            return
+        event = (
+            await session.execute(
+                select(
+                    ChatEventModel.direction,
+                    ChatEventModel.canonical_conversation_id,
+                    ChatEventModel.ingress_presence_id,
+                    ChatEventModel.scope_type,
+                    ChatEventModel.sender_user_id,
+                    ChatEventModel.group_id,
+                    ChatEventModel.author_kind,
+                    ChatEventModel.author_person_id,
+                    CanonicalConversationModel.kind.label("conversation_kind"),
+                    CanonicalConversationModel.person_id,
+                    CanonicalConversationModel.space_id,
+                )
+                .join(
+                    CanonicalConversationModel,
+                    CanonicalConversationModel.id == ChatEventModel.canonical_conversation_id,
+                )
+                .where(ChatEventModel.id == context.trigger_event_id)
+            )
+        ).one_or_none()
+        if (
+            event is None
+            or event.direction != "inbound"
+            or event.canonical_conversation_id != context.conversation_id
+            or event.ingress_presence_id != route.presence_id
+            or event.scope_type != ("private" if target.kind == "person" else "group")
+            or event.conversation_kind != ("private" if target.kind == "person" else "space")
+            or (event.person_id if target.kind == "person" else event.space_id) != str(target.id)
+            or (event.sender_user_id if target.kind == "person" else event.group_id)
+            != route.external_target_id
+            or (
+                target.kind == "person"
+                and (event.author_kind != "person" or event.author_person_id != str(target.id))
+            )
+        ):
+            raise SocialError("invalid_reply_context")
 
     async def reply_reference(
         self, event_id: int, target: SocialTarget, route: ResolvedSend, context: SocialContext
@@ -1224,68 +1288,89 @@ class SocialService:
                 if caption or caption_segments
                 else await self._receipt_result(receipt, context)
             )
-        async with self._lock:
-            await self._validate_self_context(context)
-            current_group_grant = (
-                name in {"send_message", "send_file_caption"}
-                and target.kind == "space"
-                and str(target.id) == context.space_id
-                and (
-                    context.trigger_event_id is not None
-                    or (
-                        context.origin == "plugin_background"
-                        and context.caused_by_event_id is not None
-                    )
-                    or _self_scene(context)
+        await self._validate_self_context(context)
+        current_group_grant = (
+            name in {"send_message", "send_file_caption"}
+            and target.kind == "space"
+            and str(target.id) == context.space_id
+            and (
+                context.trigger_event_id is not None
+                or (
+                    context.origin == "plugin_background" and context.caused_by_event_id is not None
                 )
+                or _self_scene(context)
             )
+        )
+        known_event_id = await self.check_target(
+            target, sending=name.startswith("send_") and not current_group_grant
+        )
+        route_known_event_id = None
+        if route_target is not None and route_target != target:
+            route_known_event_id = await self.check_target(route_target, sending=True)
+        fresh = (
+            await self.router.resolve_presence(route.presence_id)
+            if name == "recall_own_message"
+            else await self.send_route(route_target or target, context)
+        )
+        if (
+            fresh.presence_id,
+            fresh.binding_id,
+            fresh.route_generation,
+            fresh.connection.snapshot,
+        ) != (
+            route.presence_id,
+            route.binding_id,
+            route.route_generation,
+            route.connection.snapshot,
+        ):
+            raise SocialError("route_changed")
+        from qq_ai_bot.runtime.delivery_intents import reserve
+        from qq_ai_bot.runtime.work_activation import current_work_control
+
+        work_control = current_work_control.get()
+        if work_control is not None and name.startswith("send_") and name != "send_file_caption":
+            await reserve(
+                work_control,
+                receipt.operation_id,
+                "artifact" if caption or caption_segments else "message",
+                {"target": target.model_dump(mode="json"), "arguments": args},
+                count=2 if caption or caption_segments else 1,
+            )
+        # Probes and preparation never serialize unrelated social operations.
+        # The durable prepared -> executing CAS is the sole dispatch owner.
+        async with self.database.immediate_session() as session:
+            await self._validate_self_context(context, session=session)
             await self.check_target(
-                target, sending=name.startswith("send_") and not current_group_grant
+                target,
+                sending=name.startswith("send_") and not current_group_grant,
+                session=session,
+                known_event_id=known_event_id,
             )
             if route_target is not None and route_target != target:
-                await self.check_target(route_target, sending=True)
-            fresh = (
-                await self.router.resolve_presence(route.presence_id)
-                if name == "recall_own_message"
-                else await self.send_route(route_target or target, context)
+                await self.check_target(
+                    route_target,
+                    sending=True,
+                    session=session,
+                    known_event_id=route_known_event_id,
+                )
+            await self.router.validate_prepared_send(
+                session,
+                route,
+                target_kind=(route_target or target).kind,
+                target_id=str((route_target or target).id),
             )
-            if (
-                fresh.presence_id,
-                fresh.binding_id,
-                fresh.route_generation,
-                fresh.connection.snapshot,
-            ) != (
-                route.presence_id,
-                route.binding_id,
-                route.route_generation,
-                route.connection.snapshot,
-            ):
-                raise SocialError("route_changed")
-            from qq_ai_bot.runtime.delivery_intents import reserve
-            from qq_ai_bot.runtime.work_activation import current_work_control
-
-            work_control = current_work_control.get()
-            if (
-                work_control is not None
-                and name.startswith("send_")
-                and name != "send_file_caption"
-            ):
-                await reserve(
-                    work_control,
-                    receipt.operation_id,
-                    "artifact" if caption or caption_segments else "message",
-                    {"target": target.model_dump(mode="json"), "arguments": args},
-                    count=2 if caption or caption_segments else 1,
-                )
-            await self._validate_self_context(context)
-            if not await self.receipts.claim(receipt.operation_id, presence_id=route.presence_id):
-                current = await self.receipts.get(receipt.operation_id)
-                await self._record_work_delivery(current)
-                return (
-                    await self._file_result(receipt.operation_id, context)
-                    if caption or caption_segments
-                    else await self._receipt_result(current, context)
-                )
+            await self._validate_reply_route(session, context, route_target or target, route)
+            claimed = await self.receipts.claim(
+                receipt.operation_id, presence_id=route.presence_id, session=session
+            )
+        if not claimed:
+            current = await self.receipts.get(receipt.operation_id)
+            await self._record_work_delivery(current)
+            return (
+                await self._file_result(receipt.operation_id, context)
+                if caption or caption_segments
+                else await self._receipt_result(current, context)
+            )
         try:
             result = await self._call(route, action, params)
             reference = None

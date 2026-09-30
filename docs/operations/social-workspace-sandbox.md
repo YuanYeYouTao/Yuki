@@ -103,6 +103,12 @@ Receipts use source turn/call identity and a payload hash. `uncertain` means the
 gateway may have acted: do not automatically resend. Database persistence cannot be
 atomic with a network operation. The model's final text is internal loop output and is
 not sent automatically; only an accepted `send_message` gateway receipt confirms delivery.
+Route and live membership preparation does not hold a global Social lock. A slow
+cross-group probe leaves independent current-conversation sends available. A short
+claim transaction rechecks the canonical target, active binding, exact Presence,
+route generation and live connection snapshot before the existing receipt CAS
+selects one dispatch owner. Immediate replies and recall retain their original
+Presence rules; no reachability cache or automatic resend is introduced.
 Ordinary message sends require a nonempty scalar OneBot message ID. Empty, boolean,
 or object-valued IDs after dispatch produce a durable `uncertain` receipt; replay
 reads that result instead of sending again. File uploads retain their separate
