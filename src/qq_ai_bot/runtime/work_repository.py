@@ -159,6 +159,14 @@ class WorkRepository:
                 )
             ).first() is not None
 
+    async def lease_expiry(self, lease: WorkLease) -> float | None:
+        """Read the confirmed deadline for this owner without acquiring a writer."""
+        async with self.database.sessions() as session:
+            value = await session.scalar(
+                select(self._lease_table(lease).c.lease_until).where(self._fence(lease))
+            )
+        return float(value) if value is not None else None
+
     async def release(self, lease: WorkLease) -> None:
         async with self.database.sessions() as session, session.begin():
             await session.execute(

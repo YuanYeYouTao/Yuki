@@ -443,21 +443,6 @@ class MemoryRebuildRepository:
                 or 0
             )
 
-    async def proposal_counts(self, public_id: str) -> dict[str, int]:
-        async with self.database.sessions() as session:
-            rows = (
-                await session.execute(
-                    select(MemoryRebuildProposalModel.review_status, func.count())
-                    .join(
-                        MemoryRebuildRunModel,
-                        MemoryRebuildRunModel.id == MemoryRebuildProposalModel.run_id,
-                    )
-                    .where(MemoryRebuildRunModel.public_id == public_id)
-                    .group_by(MemoryRebuildProposalModel.review_status)
-                )
-            ).all()
-        return {str(key): int(value) for key, value in rows}
-
     async def statistics(self, public_id: str) -> dict[str, Any]:
         """Return bounded, content-free execution counters derived from indexed staging rows."""
 

@@ -248,6 +248,28 @@ async def require_canonical_schema(database_url: str) -> None:
             foreign_key_rows = await connection.execute(text("PRAGMA foreign_key_check"))
             if foreign_key_rows.first() is not None:
                 raise CanonicalSchemaError("database canonical foreign-key integrity check failed")
+            index_name = "ix_memory_evidence_tool_receipt"
+            index_rows = await connection.execute(text('PRAGMA index_list("memory_evidence")'))
+            index = next((row for row in index_rows if row[1] == index_name), None)
+            index_sql = await connection.scalar(
+                text("SELECT sql FROM sqlite_master WHERE type='index' AND name=:name"),
+                {"name": index_name},
+            )
+            index_columns = tuple(
+                row[2]
+                for row in await connection.execute(text(f'PRAGMA index_info("{index_name}")'))
+            )
+            if (
+                index is None
+                or index[2] != 0
+                or index[4] != 1
+                or index_columns != ("tool_receipt_id",)
+                or " ".join(str(index_sql).lower().split()).split(" where ", 1)[-1]
+                != "tool_receipt_id is not null"
+            ):
+                raise CanonicalSchemaError(
+                    "database memory receipt reference index is missing or changed"
+                )
             trigger_rows = await connection.execute(
                 text("SELECT name, sql FROM sqlite_master WHERE type='trigger'")
             )

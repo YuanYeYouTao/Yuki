@@ -180,6 +180,11 @@ SubagentScheduler 同样启动以恢复原子任务；新子任务接纳关闭�
 
 ## 预算、等待与异常
 
+自动化创建在最终短 writer 中复核永久创建者、当前权限、SELF 场景及 active 数量上限；
+同 creation key 的原结果先于容量拒绝。普通 create/update/pause/resume/cancel/run_now
+与强制管理审计共用事务，审计失败一同回滚，before 使用写时实际版本；resume/run_now
+保留原准入 policy。读取目录不授予修改权限，修改按当前 canonical owner 或 superuser 核验。
+
 每段默认 24 次模型请求、32 次业务工具调用，单段用尽排队续跑。主任务与工作者仍共用
 120/160 总额及工作者收尾预留。一次自动化 run 内的多个主生成工作额外共用 120/160，
 同一事务预留，不能换步骤、重启或取结果获得新额度。纯 DSL 保留原声明限制。
@@ -194,6 +199,11 @@ attribution 等最佳努力任务仍可被前台抢占，`REQUIRED` 压缩按前
 接纳后复核来源、登记一次逻辑请求预算和 dispatched 检查点；HTTP 重试不重复预留
 这笔预算，额外真实请求沿原 transport accounting 计费。
 自动化 claim 使用每次唯一所有者并续期，提交时再次核验；忙任务延迟接纳，不创建新 run。
+Work、工作者与自动化的续租任务由原激活 task 监督。续租返回失效、非瞬态数据库错误
+或计量失败会停止该激活，并交回原 Work/run 的恢复；不新建执行身份、不清空预算或 journal。
+续租只对具有明确 SQLite `BUSY` 扩展错误码的错误，在最后确认的租约到期前有界重试；
+`LOCKED` 不按外部 writer 繁忙重试。renew 与 meter 分别记录失败阶段，meter 写入失败
+不在心跳中重放。等待 writer 后的自动化续租也在 SQL 执行时检查原 claim 尚未到期。
 新 run 与保存原 script_hash 的初始 ready 游标在同一事务登记；登记后重启恢复同一个 run。
 恢复当前时段的历史 running run 若缺少游标，明确记为 uncertain/missing_initial_run_cursor，
 保留已有计数、预算与结果，不补造空游标或重新执行业务步骤。旧版本已经跳过时段的历史
@@ -205,6 +215,11 @@ attribution 等最佳努力任务仍可被前台抢占，`REQUIRED` 压缩按前
 `uncertain` 回执，后续副作用受现有 WorkSession 围栏阻止。读取可按声明重试。
 自动化收到插件任务句柄后查询该 work，不重新执行产生句柄的 handler。
 未取得可核验结果的外层 dispatch 恢复为 uncertain，不猜测成功或重跑。
+DSL 外层 deadline 在权限复核后区分实际进入 handler 的 SEND/MUTATE 与纯 READ、
+尚未通过验证的步骤：前者没有终态效果证据时保留 uncertain，后两者保持 failed。
+原 cursor、run/step 请求键和 Social receipt 不重建；单效果的已确认回执可以说明
+accepted/failed，部分复合交付不充当整个步骤已完成的证据。效果已确认但步骤记账失败
+仍报告运行失败，并保留已确认投递计数；恢复只读原 dispatch，不再次调用 handler。
 
 普通回答无需先调用 task_control.answer。模型最终文字可结束内部循环，但不触发发送；
 工作完成仍由同一回执校验检查未结束执行和 artifact。发送是否成功只看显式发送回执，

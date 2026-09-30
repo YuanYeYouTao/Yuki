@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import Table, false, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,6 +39,12 @@ from qq_ai_bot.memory.dream.models import (
     DreamRunMode,
     DreamRunPage,
     DreamRunStatus,
+)
+from qq_ai_bot.memory.dream.planning import (
+    DreamClusterSpec,
+    PreparedDreamCluster,
+    PreparedDreamFact,
+    prepare_clusters_from_facts,
 )
 from qq_ai_bot.memory.embedding.codec import Float32VectorCodec
 from qq_ai_bot.memory.embedding.models import EmbeddingVector
@@ -263,14 +269,11 @@ class DreamRepository:
             existing = await session.get(MemoryDreamRuntimeModel, 1)
             if existing is not None:
                 return False
-            for fact_id, signature in fact_signatures:
-                await self._upsert_checkpoint(
-                    fact_id,
-                    signature,
-                    operation_id=None,
-                    checked_at=now,
-                    session=session,
-                )
+            await self._upsert_checkpoints(
+                tuple((fact_id, signature, None) for fact_id, signature in fact_signatures),
+                checked_at=now,
+                session=session,
+            )
             session.add(MemoryDreamRuntimeModel(id=1, initialized_at=now))
         return True
 
@@ -278,90 +281,150 @@ class DreamRepository:
         async with self.database.sessions() as session:
             return await session.get(MemoryDreamRuntimeModel, 1) is not None
 
+    @staticmethod
+    def _plan_source_query(fact_ids: tuple[int, ...]) -> Any:
+        return select(
+            MemoryFactModel.id,
+            MemoryFactModel.updated_at,
+            MemoryFactModel.scope_type,
+            MemoryFactModel.visibility_type,
+            MemoryFactModel.kind,
+            MemoryFactModel.status,
+            MemoryFactModel.review_state,
+            MemoryFactModel.canonical_subject_person_id,
+            MemoryFactModel.canonical_subject_space_id,
+            MemoryFactModel.canonical_visibility_person_id,
+            MemoryFactModel.canonical_visibility_space_id,
+        ).where(MemoryFactModel.id.in_(fact_ids))
+
+    async def prepare_clusters(
+        self, clusters: tuple[DreamClusterSpec, ...]
+    ) -> tuple[PreparedDreamCluster, ...]:
+        # No ORM DTO construction or readable-evidence work is needed for ownership.
+        identities = tuple(sorted({identity for spec in clusters for identity in spec[4]}))
+        rows: list[Any] = []
+        async with self.database.sessions() as reader:
+            for offset in range(0, len(identities), 512):
+                rows.extend(
+                    (
+                        await reader.execute(
+                            self._plan_source_query(identities[offset : offset + 512])
+                        )
+                    ).all()
+                )
+        return prepare_clusters_from_facts(clusters, tuple(rows))
+
     async def create_run(
         self,
         *,
         mode: DreamRunMode,
         statistics: DreamPlanStatistics,
-        clusters: tuple[tuple[str, str, str, str, tuple[int, ...], str], ...],
+        clusters: tuple[DreamClusterSpec, ...] | tuple[PreparedDreamCluster, ...],
         snapshot_max_fact_id: int,
         actor_user_id: str | None,
         scheduled_slot: str | None,
         session: AsyncSession | None = None,
     ) -> DreamRun:
+        if clusters and not isinstance(clusters[0], PreparedDreamCluster):
+            if session is not None:
+                raise ValueError("Dream plan must be prepared before opening a writer")
+            prepared = await self.prepare_clusters(cast(tuple[DreamClusterSpec, ...], clusters))
+        else:
+            prepared = cast(tuple[PreparedDreamCluster, ...], clusters)
+        from qq_ai_bot.identity.ownership import optional_dream_owner_from_facts
+
+        sources: dict[int, PreparedDreamFact] = {}
+        for cluster in prepared:
+            if (
+                tuple(fact.id for fact in cluster.facts) != cluster.spec[4]
+                or optional_dream_owner_from_facts(cluster.facts) != cluster.owner
+                or any(fact.kind != cluster.spec[3] for fact in cluster.facts)
+            ):
+                raise ValueError("incomplete_dream_owner")
+            for fact in cluster.facts:
+                if sources.setdefault(fact.id, fact) != fact:
+                    raise ValueError("dream_plan_source_changed")
+        identities = tuple(sorted(sources))
         now = datetime.now(UTC)
         public_id = str(uuid.uuid4())
         async with optional_session(self.database, session, write=True) as active:
-            row = MemoryDreamRunModel(
-                public_id=public_id,
-                mode=mode.value,
-                status=(
-                    DreamRunStatus.PLANNED.value
-                    if mode is DreamRunMode.FULL
-                    else DreamRunStatus.RUNNING.value
-                ),
-                scheduled_slot=scheduled_slot,
-                snapshot_max_fact_id=snapshot_max_fact_id,
-                snapshot_created_at=now,
-                created_by_user_id=actor_user_id,
-                statistics_json=statistics.model_dump_json(),
-                model_calls=0,
-                completed_clusters=0,
-                failed_clusters=0,
-                error_category=None,
-                created_at=now,
-                updated_at=now,
-                started_at=(now if mode is DreamRunMode.INCREMENTAL else None),
-                completed_at=None,
-                cancelled_at=None,
-                rolled_back_at=None,
+            # A zero-row UPDATE reserves the SQLite writer even for a caller's legacy
+            # SELECT-only transaction. No source work or pending ORM flush happens here.
+            await active.execute(
+                update(MemoryDreamRunModel)
+                .where(false())
+                .values(updated_at=MemoryDreamRunModel.updated_at)
+                .execution_options(autoflush=False)
             )
-            active.add(row)
-            await active.flush()
-            for cluster_key, partition_key, bot_user_id, kind, fact_ids, fingerprint in clusters:
-                from qq_ai_bot.identity.ownership import optional_dream_owner_from_facts
-
-                source_facts: list[MemoryFact] = []
-                for fact_id in fact_ids:
-                    fact = await self._facts.get_fact(fact_id, session=active)
-                    if fact is None:
-                        source_facts = []
-                        break
-                    source_facts.append(fact)
-                shape = optional_dream_owner_from_facts(tuple(source_facts))
-                if shape is None:
-                    raise ValueError("incomplete_dream_owner")
-                (
-                    subject_person_id,
-                    subject_space_id,
-                    visibility_person_id,
-                    visibility_space_id,
-                ) = shape
-                active.add(
-                    MemoryDreamClusterModel(
-                        run_id=row.id,
-                        cluster_key=cluster_key,
-                        partition_key=partition_key,
-                        bot_user_id=bot_user_id,
-                        canonical_subject_person_id=subject_person_id,
-                        canonical_subject_space_id=subject_space_id,
-                        canonical_visibility_person_id=visibility_person_id,
-                        canonical_visibility_space_id=visibility_space_id,
-                        kind=kind,
-                        status=DreamClusterStatus.PENDING.value,
-                        fact_ids_json=json.dumps(fact_ids),
-                        fingerprint=fingerprint,
-                        attempts=0,
-                        model_calls=0,
-                        operation_count=0,
-                        error_category=None,
-                        created_at=now,
-                        updated_at=now,
-                        completed_at=None,
-                    )
+            current = {}
+            for offset in range(0, len(identities), 512):
+                rows = (
+                    await active.execute(self._plan_source_query(identities[offset : offset + 512]))
+                ).all()
+                current.update({row.id: PreparedDreamFact.from_fact(row) for row in rows})
+            if current != sources:
+                raise ValueError("dream_plan_source_changed")
+            # Keep a failed bulk INSERT out of the caller's surrounding transaction.
+            async with active.begin_nested():
+                row = MemoryDreamRunModel(
+                    public_id=public_id,
+                    mode=mode.value,
+                    status=DreamRunStatus.PLANNED.value
+                    if mode is DreamRunMode.FULL
+                    else DreamRunStatus.RUNNING.value,
+                    scheduled_slot=scheduled_slot,
+                    snapshot_max_fact_id=snapshot_max_fact_id,
+                    snapshot_created_at=now,
+                    created_by_user_id=actor_user_id,
+                    statistics_json=statistics.model_dump_json(),
+                    model_calls=0,
+                    completed_clusters=0,
+                    failed_clusters=0,
+                    error_category=None,
+                    created_at=now,
+                    updated_at=now,
+                    started_at=now if mode is DreamRunMode.INCREMENTAL else None,
+                    completed_at=None,
+                    cancelled_at=None,
+                    rolled_back_at=None,
                 )
-            await active.flush()
-            return self._run(row)
+                active.add(row)
+                await active.flush()
+                values = []
+                for cluster in prepared:
+                    key, partition, bot, kind, fact_ids, fingerprint = cluster.spec
+                    subject_person, subject_space, visibility_person, visibility_space = (
+                        cluster.owner
+                    )
+                    values.append(
+                        dict(
+                            run_id=row.id,
+                            cluster_key=key,
+                            partition_key=partition,
+                            bot_user_id=bot,
+                            canonical_subject_person_id=subject_person,
+                            canonical_subject_space_id=subject_space,
+                            canonical_visibility_person_id=visibility_person,
+                            canonical_visibility_space_id=visibility_space,
+                            kind=kind,
+                            status=DreamClusterStatus.PENDING.value,
+                            fact_ids_json=json.dumps(fact_ids),
+                            fingerprint=fingerprint,
+                            attempts=0,
+                            model_calls=0,
+                            operation_count=0,
+                            error_category=None,
+                            created_at=now,
+                            updated_at=now,
+                            completed_at=None,
+                        )
+                    )
+                for offset in range(0, len(values), 256):
+                    await active.execute(
+                        insert(cast(Table, MemoryDreamClusterModel.__table__)),
+                        values[offset : offset + 256],
+                    )
+                return self._run(row)
 
     async def checkpoint_candidates(
         self,
@@ -377,14 +440,13 @@ class DreamRepository:
                 )
                 return
         now = datetime.now(UTC)
-        for candidate in candidates:
-            await self._upsert_checkpoint(
-                candidate.fact.id,
-                candidate.signature,
-                operation_id=operation_id,
-                checked_at=now,
-                session=session,
-            )
+        await self._upsert_checkpoints(
+            tuple(
+                (candidate.fact.id, candidate.signature, operation_id) for candidate in candidates
+            ),
+            checked_at=now,
+            session=session,
+        )
 
     async def checkpoint_fact(
         self,
@@ -393,39 +455,41 @@ class DreamRepository:
         operation_id: int | None,
         session: AsyncSession,
     ) -> None:
-        await self._upsert_checkpoint(
-            fact.id,
-            fact_signature(fact),
-            operation_id=operation_id,
+        await self._upsert_checkpoints(
+            ((fact.id, fact_signature(fact), operation_id),),
             checked_at=datetime.now(UTC),
             session=session,
         )
 
     @staticmethod
-    async def _upsert_checkpoint(
-        fact_id: int,
-        signature: str,
+    async def _upsert_checkpoints(
+        facts: tuple[tuple[int, str, int | None], ...],
         *,
-        operation_id: int | None,
         checked_at: datetime,
         session: AsyncSession,
     ) -> None:
-        statement = insert(MemoryDreamFactCheckpointModel).values(
-            fact_id=fact_id,
-            signature=signature,
-            last_operation_id=operation_id,
-            checked_at=checked_at,
+        statement = insert(cast(Table, MemoryDreamFactCheckpointModel.__table__))
+        statement = statement.on_conflict_do_update(
+            index_elements=[MemoryDreamFactCheckpointModel.fact_id],
+            set_={
+                "signature": statement.excluded.signature,
+                "last_operation_id": statement.excluded.last_operation_id,
+                "checked_at": statement.excluded.checked_at,
+            },
         )
-        await session.execute(
-            statement.on_conflict_do_update(
-                index_elements=[MemoryDreamFactCheckpointModel.fact_id],
-                set_={
-                    "signature": signature,
-                    "last_operation_id": operation_id,
-                    "checked_at": checked_at,
-                },
+        for offset in range(0, len(facts), 256):
+            await session.execute(
+                statement,
+                [
+                    dict(
+                        fact_id=identity,
+                        signature=signature,
+                        last_operation_id=operation,
+                        checked_at=checked_at,
+                    )
+                    for identity, signature, operation in facts[offset : offset + 256]
+                ],
             )
-        )
 
     async def get_run(
         self, public_id: str, *, session: AsyncSession | None = None
@@ -810,46 +874,71 @@ class DreamRepository:
         return count
 
     async def reset_processing_after_restart(self) -> int:
-        """Recover orphaned processing clusters without replaying committed mutations."""
-
-        now = datetime.now(UTC)
-        async with self.database.sessions() as session, session.begin():
-            rows = tuple(
-                (
-                    await session.scalars(
-                        select(MemoryDreamClusterModel).where(
+        """Recover bounded batches from committed operations, without replaying effects."""
+        recovered = 0
+        while True:
+            async with self.database.sessions() as reader:
+                identities = tuple(
+                    await reader.scalars(
+                        select(MemoryDreamClusterModel.id)
+                        .where(
                             MemoryDreamClusterModel.status == DreamClusterStatus.PROCESSING.value
                         )
+                        .order_by(MemoryDreamClusterModel.id)
+                        .limit(128)
                     )
-                ).all()
-            )
-            for row in rows:
-                committed = int(
-                    await session.scalar(
-                        select(func.count())
-                        .select_from(MemoryDreamOperationModel)
-                        .where(
-                            MemoryDreamOperationModel.cluster_id == row.id,
-                            MemoryDreamOperationModel.status
-                            == DreamOperationStatus.COMMITTED.value,
+                )
+            if not identities:
+                return recovered
+            now = datetime.now(UTC)
+            async with self.database.immediate_session() as session:
+                rows = tuple(
+                    await session.scalars(
+                        select(MemoryDreamClusterModel).where(
+                            MemoryDreamClusterModel.id.in_(identities),
+                            MemoryDreamClusterModel.status == DreamClusterStatus.PROCESSING.value,
                         )
                     )
-                    or 0
                 )
-                row.updated_at = now
-                run = await session.get(MemoryDreamRunModel, row.run_id)
-                if committed:
-                    row.status = DreamClusterStatus.COMPLETED.value
-                    row.operation_count = committed
-                    row.error_category = "recovered_committed_operation"
-                    row.completed_at = now
-                    if run is not None:
-                        run.completed_clusters += 1
-                        run.updated_at = now
-                    continue
-                row.status = DreamClusterStatus.PENDING.value
-                row.error_category = "process_restart"
-        return len(rows)
+                committed: dict[int, int] = {
+                    int(row[0]): int(row[1])
+                    for row in (
+                        await session.execute(
+                            select(MemoryDreamOperationModel.cluster_id, func.count())
+                            .where(
+                                MemoryDreamOperationModel.cluster_id.in_([row.id for row in rows]),
+                                MemoryDreamOperationModel.status
+                                == DreamOperationStatus.COMMITTED.value,
+                            )
+                            .group_by(MemoryDreamOperationModel.cluster_id)
+                        )
+                    ).all()
+                }
+                runs = {
+                    run.id: run
+                    for run in await session.scalars(
+                        select(MemoryDreamRunModel).where(
+                            MemoryDreamRunModel.id.in_({row.run_id for row in rows})
+                        )
+                    )
+                }
+                # All reads are complete before any row becomes dirty/autoflushable.
+                for row in rows:
+                    row.updated_at = now
+                    count = int(committed.get(row.id, 0))
+                    if count:
+                        row.status = DreamClusterStatus.COMPLETED.value
+                        row.operation_count = count
+                        row.error_category = "recovered_committed_operation"
+                        row.completed_at = now
+                        run = runs.get(row.run_id)
+                        if run is not None:
+                            run.completed_clusters += 1
+                            run.updated_at = now
+                    else:
+                        row.status = DreamClusterStatus.PENDING.value
+                        row.error_category = "process_restart"
+                recovered += len(rows)
 
     async def create_operation(
         self,

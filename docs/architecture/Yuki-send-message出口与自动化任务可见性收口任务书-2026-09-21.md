@@ -71,19 +71,14 @@
 
 其中，Yuki 曾明确声称“85、87 没真正挂上，只有 90”，但 85、87 实际均处于 active 且已有运行记录；同时，ID 61 的早八点叫醒任务也真实存在并持续运行。这证明问题不在调度器是否持久化，而在模型所看到的任务目录被当前发言人的所有权过滤了。
 
-### 2.3 当前代码把读权限和管理权限绑死
+### 2.3 现行读权限和管理权限
 
-当前模型工具合同和执行路径如下：
+`automation_list` 通过 `list_directory()` 查询安全任务目录，语义匹配通过
+`find_equivalent_directory_entries()` 查询；`automation_get` 通过 `get_visible()` 返回安全投影。
+这些读取不授予任务管理权。修改任务仍在 `require_manageable()` 中按当前永久主体和实际权限核验。
+`automation_list_history` 保留当前创建者的终态历史队列。
 
-- `automation_list` 描述为“只列出当前执行主体”的任务。
-- `AutomationToolService.execute()` 调用 `AutomationService.list_current(actor.user_id)`。
-- Service 将 QQ 用户解析成 `canonical_creator_person_id`。
-- Repository 使用 `AutomationModel.canonical_creator_person_id == creator_person_id` 过滤。
-- `automation_get` 也直接调用 `require_owned()`。
-- `find_equivalent_task()` 只在当前创建者名下搜索。
-- `automation_list_history` 同样只看当前创建者。
-
-因此，群成员 A 创建的群任务，对群成员 B 的主 Agent 轮次完全不可见。B 看到的空列表只是“B 名下为空”，却很容易被模型解释成“这个群没有任务”。
+本节已按现行调用路径更新，原先将安全读取绑定到创建者的描述不再作为开发或验收依据。
 
 ### 2.4 数据库结构已足够
 

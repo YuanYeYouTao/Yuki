@@ -110,25 +110,18 @@ class MemoryClaimCandidateRepository:
                 "content": content.casefold(),
             }
         )
-        now = datetime.now(UTC)
-        expires_at = now + timedelta(days=self._ttl_days)
         async with self._database.sessions() as session, session.begin():
             await fence_memory_job_claim(session, job)
-            await session.execute(
-                update(MemoryClaimCandidateModel)
-                .where(
-                    MemoryClaimCandidateModel.status == "pending",
-                    MemoryClaimCandidateModel.expires_at <= now,
-                )
-                .values(status="expired", updated_at=now)
-            )
+            now = datetime.now(UTC)
+            expires_at = now + timedelta(days=self._ttl_days)
             row = await session.scalar(
                 select(MemoryClaimCandidateModel).where(
                     MemoryClaimCandidateModel.fingerprint == fingerprint
                 )
             )
-            if row is not None and row.status != "pending":
-                if row.expires_at > now:
+            expired = bool(row is not None and _utc(row.expires_at) <= now)
+            if row is not None and (row.status != "pending" or expired):
+                if not expired:
                     return _candidate(row)
                 await session.execute(
                     delete(MemoryClaimCandidateEvidenceModel).where(
@@ -265,6 +258,10 @@ def _fingerprint(value: object) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
 def _candidate(row: MemoryClaimCandidateModel) -> MemoryClaimCandidate:
     return MemoryClaimCandidate(
         id=row.id,
@@ -280,5 +277,5 @@ def _candidate(row: MemoryClaimCandidateModel) -> MemoryClaimCandidate:
         confidence=row.confidence,
         status=row.status,
         evidence_count=row.evidence_count,
-        expires_at=row.expires_at,
+        expires_at=_utc(row.expires_at),
     )

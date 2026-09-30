@@ -85,6 +85,19 @@ keep 成功。显式事实、来源覆盖、scope、重复/未知引用与原子
 增量优先未尝试或指纹变化的簇，已尝试按最久未尝试优先；预算延期不当作已执行，不推进
 成功 checkpoint。输入超限、执行失败和预算延期有独立的错误类别。
 
+Dream 计划先在写事务外准备每簇的 canonical subject/visibility shape 和 fact 版本，
+服务复用已加载的事实；独立仓库调用只批量读取必要的 owner、scope、kind、状态和
+`updated_at` 列，不为 owner 解析完整 DTO 或统计可读 evidence。共享写会话必须提供
+已准备的计划。短写事务按有界主键批量复核 shape 和版本后，原子登记 run 与全部
+clusters；事实删除、owner 或版本变化时拒绝，不遗留半个 run。FULL 仍先为 PLANNED，
+完整计划确认后才 start；INCREMENTAL 仍按原 RUNNING 和持久预算执行。
+
+baseline 和 checkpoint 按 256 条批量 upsert，初始化 marker 在对应 checkpoint 全部
+可用后写入，同一事务失败整体回滚。重启恢复按 128 个 processing clusters 聚合
+committed operations 并批量读取 runs，全部读取完成后才更新状态和计数；已提交
+operation 仍是恢复事实源，不重放 mutation、不重置模型预算或原回执 ID。
+
+
 ## 历史共同群读取
 
 所有普通用户结构化读取使用后端 `MemoryReadScopeResolver`。设请求者 R，目标人物 P，
@@ -131,6 +144,12 @@ Plugin/Admin 纯查询不产生强化或使用回执。详见
 
 ## 维护与变更边界
 
+- 证据明细及 readable evidence count 共用同一 SQL 来源谓词，按 canonical event、普通
+  tool receipt 或无事件 SELF initiative 分支核验来源、owner、隐藏状态及 SELF 可见范围。
+  明细在 SQL 中过滤后排序和应用 limit，不再为每条证据逐项读取 event、receipt 和 Conversation；
+  不降低原调用的证据上限。authority/confidence 仍用原 policy 计算。
+  当前聚合仍在原原子 mutation 事务中完成；仅有 fact.updated_at 不足以覆盖证据级联删除、
+  来源隐藏及 owner 变化，不能据此把旧聚合移到锁外后无围栏写回。
 - 不用 /ai new、清空事实或重建 embedding 掩盖队列/召回问题。
 - 0051 仅增加 recall 观测列；不改事实、证据、身份、正文或路由。
 - 未来 WebUI 复用 Control Plane，不直接查询 ORM；读取、content、mutation、destructive
@@ -141,9 +160,10 @@ Plugin/Admin 纯查询不产生强化或使用回执。详见
 
 ## 后台归因与关系评估
 
-关系评估和记忆归因都使用 BEST_EFFORT_BACKGROUND，关系请求同时占用外层后台
-并发名额；它们在共享执行器后台槽中排队，不彼此伪装成前台抢占。真正的前台
-请求仍可抢占后台；总并发为 1 时外层没有可保留的前台名额，不能承诺立即抢占。
+关系评估和记忆归因都使用 BEST_EFFORT_BACKGROUND，在共享 Executor admission 中排队，
+没有额外会话层 semaphore。前台与后台由同一容量计数原子准入；并发大于 1 时，
+非前台最多占总容量减 1，排队前台优先。BEST_EFFORT 请求仍可被真正前台抢占，
+普通 durable 后台 Work 不因该预留而被抢占；总并发为 1 时不能保留额外前台名额。
 关系批次被抢占或工作者关闭时释放原 claim，立即回到 pending，30 秒后具备再次领取资格；
 实际领取仍受轮询和前台负载影响，不承诺 30 秒内恢复。这些让出不增加失败 attempts。
 关闭工作者会取消等待中或执行中的关系评估，不等待无关前台请求结束；取消原样传播，

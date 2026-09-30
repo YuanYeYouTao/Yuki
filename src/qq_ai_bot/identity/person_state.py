@@ -105,8 +105,28 @@ async def _nickname(
     return named[-1].display_name if named else ""
 
 
-async def _upsert_alias(
+async def _find_alias(
     session: AsyncSession,
+    *,
+    person_id: str,
+    space_id: str | None,
+    alias: str,
+) -> PersonAliasModel | None:
+    conditions = [
+        PersonAliasModel.canonical_person_id == person_id,
+        PersonAliasModel.alias == alias[:128],
+    ]
+    conditions.append(
+        PersonAliasModel.canonical_space_id.is_(None)
+        if space_id is None
+        else PersonAliasModel.canonical_space_id == space_id
+    )
+    return (await session.scalars(select(PersonAliasModel).where(*conditions))).first()
+
+
+def _stage_alias(
+    session: AsyncSession,
+    row: PersonAliasModel | None,
     *,
     person_id: str,
     space_id: str | None,
@@ -114,16 +134,6 @@ async def _upsert_alias(
     alias_type: str,
     now: datetime,
 ) -> None:
-    conditions = [
-        PersonAliasModel.canonical_person_id == person_id,
-        PersonAliasModel.alias == alias,
-    ]
-    conditions.append(
-        PersonAliasModel.canonical_space_id.is_(None)
-        if space_id is None
-        else PersonAliasModel.canonical_space_id == space_id
-    )
-    row = await session.scalar(select(PersonAliasModel).where(*conditions))
     if row is None:
         session.add(
             PersonAliasModel(
@@ -158,12 +168,38 @@ async def observe_canonical_person(
     if role != "human":
         return
     binding = await require_person_binding(session, user_id)
+    relationship = await session.get(PersonRelationshipModel, binding.person_id)
+    nickname_alias = (
+        await _find_alias(session, person_id=binding.person_id, space_id=None, alias=nickname)
+        if nickname
+        else None
+    )
+    space_binding = None
+    space = None
+    membership = None
+    card_alias = None
+    if group_id is not None:
+        space_binding = await require_space_binding(session, group_id, allow_disabled=True)
+        space = await session.get(CanonicalSpaceModel, space_binding.space_id)
+        if space is None:
+            raise CanonicalIdentityError("unclassified")
+        membership = await session.get(MembershipModel, (binding.person_id, space_binding.space_id))
+        if group_card:
+            card_alias = await _find_alias(
+                session,
+                person_id=binding.person_id,
+                space_id=space_binding.space_id,
+                alias=group_card,
+            )
+
+    # All owner, relation, alias and membership reads precede staged writes.
+    # The repository's short immediate transaction serializes first observation.
     binding.last_seen_at = now
-    if nickname_known and nickname:
+    if nickname_known and nickname and binding.display_name != nickname[:128]:
         binding.display_name = nickname[:128]
         binding.updated_at = now
         binding.revision += 1
-    if await session.get(PersonRelationshipModel, binding.person_id) is None:
+    if relationship is None:
         session.add(
             PersonRelationshipModel(
                 canonical_person_id=binding.person_id,
@@ -175,8 +211,9 @@ async def observe_canonical_person(
             )
         )
     if nickname:
-        await _upsert_alias(
+        _stage_alias(
             session,
+            nickname_alias,
             person_id=binding.person_id,
             space_id=None,
             alias=nickname,
@@ -185,27 +222,22 @@ async def observe_canonical_person(
         )
     if group_id is None:
         return
-    space_binding = await require_space_binding(session, group_id, allow_disabled=True)
-    space = await session.get(CanonicalSpaceModel, space_binding.space_id)
-    if space is None:
-        raise CanonicalIdentityError("unclassified")
+    assert space_binding is not None and space is not None
     space_binding.last_seen_at = now
     if group_name:
-        space.name = group_name[:128]
-        space.updated_at = now
-        space.revision += 1
-        space_binding.display_name = group_name[:128]
-        space_binding.updated_at = now
-        space_binding.revision += 1
-    membership = await session.get(
-        MembershipModel,
-        (binding.person_id, space_binding.space_id),
-    )
+        if space.name != group_name[:128]:
+            space.name = group_name[:128]
+            space.updated_at = now
+            space.revision += 1
+        if space_binding.display_name != group_name[:128]:
+            space_binding.display_name = group_name[:128]
+            space_binding.updated_at = now
+            space_binding.revision += 1
     if membership is None:
         membership = MembershipModel(
             canonical_person_id=binding.person_id,
             canonical_space_id=space_binding.space_id,
-            group_card=group_card if group_card_known else "",
+            group_card=group_card[:128] if group_card_known else "",
             first_seen_at=now,
             last_seen_at=now,
         )
@@ -215,8 +247,9 @@ async def observe_canonical_person(
             membership.group_card = group_card[:128]
         membership.last_seen_at = now
     if group_card:
-        await _upsert_alias(
+        _stage_alias(
             session,
+            card_alias,
             person_id=binding.person_id,
             space_id=space_binding.space_id,
             alias=group_card,

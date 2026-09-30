@@ -233,11 +233,9 @@ class AdminToolService(Protocol):
 
 
 class AutomationToolProvider(Protocol):
-    """Owner-scoped automation tools available to every real direct user turn."""
+    """Safe directory reads and authorized automation mutations for real user turns."""
 
     def definitions(self) -> tuple[ChatTool, ...]: ...
-
-    def owns(self, name: str) -> bool: ...
 
     async def execute(self, name: str, arguments_json: str, runtime: ToolRuntime) -> str: ...
 

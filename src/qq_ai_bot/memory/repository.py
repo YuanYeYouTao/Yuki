@@ -69,8 +69,6 @@ from qq_ai_bot.persistence.repository_helpers import _event_record, keeper_event
 
 logger = logging.getLogger(__name__)
 
-_EVIDENCE_SCAN_BATCH = 64
-
 
 def _sql_fact_conversation_aligns() -> Any:
     fact = MemoryFactModel
@@ -142,60 +140,57 @@ def _sql_fact_conversation_aligns() -> Any:
     )
 
 
-def readable_evidence_count_expression() -> Any:
-    """Correlated count of canonical readable evidence. Not a full-table scan."""
+def readable_evidence_predicate() -> Any:
+    """The three mutually exclusive canonical source chains, evaluated in SQL.
 
+    Correlation is explicit because the same predicate serves both a fact's
+    aggregate count and its evidence page. No owner or source is reconstructed
+    from an external account, and a run receipt never borrows a chat event.
+    """
     live = and_(
         ChatEventModel.canonical_event_id.is_not(None),
+        ChatEventModel.canonical_event_id != "",
         ChatEventModel.canonical_conversation_id.is_not(None),
-        ChatEventModel.author_kind.is_not(None),
+        func.trim(ChatEventModel.author_kind) != "",
         keeper_event_clause(),
         _sql_fact_conversation_aligns(),
     )
-    event_count = (
-        select(func.count())
-        .select_from(MemoryEvidenceModel)
-        .join(ChatEventModel, ChatEventModel.id == MemoryEvidenceModel.event_id)
+    event_source = (
+        select(literal(1))
+        .select_from(ChatEventModel)
         .join(
             CanonicalConversationModel,
             CanonicalConversationModel.id == ChatEventModel.canonical_conversation_id,
         )
-        .where(MemoryEvidenceModel.fact_id == MemoryFactModel.id, live)
-        .correlate(MemoryFactModel)
-        .scalar_subquery()
+        .where(ChatEventModel.id == MemoryEvidenceModel.event_id, live)
+        .correlate(MemoryEvidenceModel, MemoryFactModel)
+        .exists()
     )
-    receipt_count = (
-        select(func.count())
-        .select_from(MemoryEvidenceModel)
-        .join(
-            MemoryToolReceiptModel,
-            MemoryToolReceiptModel.id == MemoryEvidenceModel.tool_receipt_id,
-        )
+    tool_source = (
+        select(literal(1))
+        .select_from(MemoryToolReceiptModel)
         .join(ChatEventModel, ChatEventModel.id == MemoryToolReceiptModel.trigger_event_id)
         .join(
             CanonicalConversationModel,
             CanonicalConversationModel.id == ChatEventModel.canonical_conversation_id,
         )
         .where(
-            MemoryEvidenceModel.fact_id == MemoryFactModel.id,
-            MemoryEvidenceModel.event_id.is_(None),
+            MemoryToolReceiptModel.id == MemoryEvidenceModel.tool_receipt_id,
+            MemoryToolReceiptModel.initiative_run_id.is_(None),
             live,
         )
-        .correlate(MemoryFactModel)
-        .scalar_subquery()
+        .correlate(MemoryEvidenceModel, MemoryFactModel)
+        .exists()
     )
     from sqlalchemy import text
 
     from qq_ai_bot.memory.self_origin import sql_self_receipt_evidence_predicate
 
-    initiative_count = (
-        select(func.count())
-        .select_from(MemoryEvidenceModel)
-        .join(
-            MemoryToolReceiptModel, MemoryToolReceiptModel.id == MemoryEvidenceModel.tool_receipt_id
-        )
+    initiative_source = (
+        select(literal(1))
+        .select_from(MemoryToolReceiptModel)
         .where(
-            MemoryEvidenceModel.fact_id == MemoryFactModel.id,
+            MemoryToolReceiptModel.id == MemoryEvidenceModel.tool_receipt_id,
             text(
                 sql_self_receipt_evidence_predicate(
                     fact="memory_facts",
@@ -204,10 +199,27 @@ def readable_evidence_count_expression() -> Any:
                 )
             ),
         )
+        .correlate(MemoryEvidenceModel, MemoryFactModel)
+        .exists()
+    )
+    return or_(
+        event_source,
+        and_(MemoryEvidenceModel.event_id.is_(None), or_(tool_source, initiative_source)),
+    )
+
+
+def readable_evidence_count_expression() -> Any:
+    """Count using exactly the same source/owner gates as the evidence page."""
+    return (
+        select(func.count())
+        .select_from(MemoryEvidenceModel)
+        .where(
+            MemoryEvidenceModel.fact_id == MemoryFactModel.id,
+            readable_evidence_predicate(),
+        )
         .correlate(MemoryFactModel)
         .scalar_subquery()
     )
-    return event_count + receipt_count + initiative_count
 
 
 def _initial_activation(fact: MemoryFactCreate) -> float:
@@ -1085,50 +1097,18 @@ class MemoryFactRepository:
         if session is None:
             async with self._database.sessions() as owned:
                 return await self.list_evidence(fact_id, limit=limit, session=owned)
-        bound = max(1, limit)
-        from qq_ai_bot.identity.memory_guard import v2_evidence_row_readable
-
-        fact_row = await session.get(MemoryFactModel, fact_id)
-        if fact_row is None:
-            return ()
-        readable: list[MemoryEvidenceModel] = []
-        last_created_at: datetime | None = None
-        last_id: int | None = None
-        while len(readable) < bound:
-            conditions = [MemoryEvidenceModel.fact_id == fact_id]
-            if last_created_at is not None and last_id is not None:
-                conditions.append(
-                    or_(
-                        MemoryEvidenceModel.created_at < last_created_at,
-                        and_(
-                            MemoryEvidenceModel.created_at == last_created_at,
-                            MemoryEvidenceModel.id < last_id,
-                        ),
-                    )
+        rows = (
+            await session.scalars(
+                select(MemoryEvidenceModel)
+                .join(MemoryFactModel, MemoryFactModel.id == MemoryEvidenceModel.fact_id)
+                .where(
+                    MemoryEvidenceModel.fact_id == fact_id,
+                    readable_evidence_predicate(),
                 )
-            batch = (
-                await session.scalars(
-                    select(MemoryEvidenceModel)
-                    .where(*conditions)
-                    .order_by(
-                        MemoryEvidenceModel.created_at.desc(),
-                        MemoryEvidenceModel.id.desc(),
-                    )
-                    .limit(_EVIDENCE_SCAN_BATCH)
-                )
-            ).all()
-            if not batch:
-                break
-            for row in batch:
-                last_created_at = row.created_at
-                last_id = int(row.id)
-                if await v2_evidence_row_readable(session, fact_row, row):
-                    readable.append(row)
-                    if len(readable) >= bound:
-                        break
-            if len(batch) < _EVIDENCE_SCAN_BATCH:
-                break
-        rows = readable
+                .order_by(MemoryEvidenceModel.created_at.desc(), MemoryEvidenceModel.id.desc())
+                .limit(max(1, limit))
+            )
+        ).all()
         return tuple(
             MemoryEvidence(
                 id=row.id,

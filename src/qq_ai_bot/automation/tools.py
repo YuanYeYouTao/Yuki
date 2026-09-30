@@ -171,24 +171,6 @@ def _task_intent_schema() -> dict[str, object]:
 class AutomationToolService:
     """Expose global safe reads and owner-scoped mutations to the main Agent."""
 
-    _NAMES = frozenset(
-        {
-            "automation_create",
-            "automation_list",
-            "automation_list_history",
-            "automation_get",
-            "automation_update",
-            "automation_pause",
-            "automation_resume",
-            "automation_cancel",
-            "automation_run_now",
-            "automation_history",
-            "automation_diagnose",
-            "time_get_current",
-            "time_get_timezone",
-            "time_set_timezone",
-        }
-    )
     _ALLOWED_ARGUMENTS: ClassVar[dict[str, frozenset[str]]] = {
         "automation_create": frozenset({"task", "max_runs"}),
         "automation_list": frozenset({"match_task", "max_runs", "status", "limit", "cursor"}),
@@ -321,9 +303,6 @@ class AutomationToolService:
         if self._service.enabled:
             return definitions
         return tuple(tool for tool in definitions if tool.name.startswith("time_"))
-
-    def owns(self, name: str) -> bool:
-        return name in self._NAMES
 
     async def execute(self, name: str, arguments_json: str, runtime: ToolRuntime) -> str:
         if not self._valid_runtime(runtime):

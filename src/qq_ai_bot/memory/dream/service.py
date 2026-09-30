@@ -25,6 +25,7 @@ from qq_ai_bot.memory.dream.models import (
     DreamRun,
     DreamRunMode,
 )
+from qq_ai_bot.memory.dream.planning import PreparedDreamCluster, prepare_clusters_from_facts
 from qq_ai_bot.memory.dream.quality import episode_compression_limit, validate_output_lengths
 from qq_ai_bot.memory.dream.repository import (
     DreamCandidate,
@@ -127,7 +128,7 @@ SELF 合成正文
 @dataclass(frozen=True, slots=True)
 class PreparedDreamPlan:
     statistics: DreamPlanStatistics
-    clusters: tuple[tuple[str, str, str, str, tuple[int, ...], str], ...]
+    clusters: tuple[PreparedDreamCluster, ...]
     snapshot_max_fact_id: int
 
 
@@ -156,7 +157,10 @@ async def prepare_full_core(
     statistics = DreamService._statistics(loaded, clusters=clusters, isolated=isolated)
     return PreparedDreamPlan(
         statistics,
-        planner._stored_clusters(clusters),
+        prepare_clusters_from_facts(
+            planner._stored_clusters(clusters),
+            tuple(item.fact for group in clusters for item in group),
+        ),
         max((item.fact.id for item in loaded.candidates), default=0),
     )
 
@@ -274,7 +278,10 @@ class DreamService:
         return await self._repository.create_run(
             mode=DreamRunMode.INCREMENTAL,
             statistics=statistics,
-            clusters=self._stored_clusters(clusters),
+            clusters=prepare_clusters_from_facts(
+                self._stored_clusters(clusters),
+                tuple(item.fact for group in clusters for item in group),
+            ),
             snapshot_max_fact_id=max((item.fact.id for item in loaded.candidates), default=0),
             actor_user_id=None,
             scheduled_slot=scheduled_slot,

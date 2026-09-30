@@ -276,7 +276,7 @@ class PeopleRepository:
         """Update current values and retain historical aliases."""
 
         now = datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             await observe_canonical_person(
                 session,
                 user_id=user_id,
@@ -1033,9 +1033,6 @@ class UserProfileRepository(PeopleRepository):
             initial_trust=initial_trust,
             is_bot=is_bot,
         )
-
-    async def delete_user(self, user_id: str) -> bool:
-        return await self.delete_person(user_id)
 
 
 class GroupSettingsRepository:

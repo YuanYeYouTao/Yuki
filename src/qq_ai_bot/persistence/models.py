@@ -743,6 +743,11 @@ class MemoryEvidenceModel(Base):
         ),
         Index("ix_memory_evidence_fact", "fact_id"),
         Index("ix_memory_evidence_event", "event_id"),
+        Index(
+            "ix_memory_evidence_tool_receipt",
+            "tool_receipt_id",
+            sqlite_where=text("tool_receipt_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

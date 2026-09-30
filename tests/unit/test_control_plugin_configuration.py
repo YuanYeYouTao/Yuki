@@ -52,6 +52,7 @@ from qq_ai_bot.plugin_host.repository import (
     PluginConfigRepository,
     PluginInstallationRepository,
     PluginStateRepository,
+    PluginVersionConflictError,
 )
 from qq_ai_bot.plugin_host.storage import BoundStorageFacade
 from qq_ai_bot.webui.http import attach_webui
@@ -60,6 +61,79 @@ from yuki_plugin_sdk.observation import PluginObservationRequest
 from yuki_plugin_sdk.permissions import PluginPermission
 
 PLUGIN = "test.configuration"
+
+
+@pytest.mark.parametrize("expected_version", [0, 1])
+async def test_per_key_config_concurrent_cas_has_one_winner(
+    database, plugin, monkeypatch, expected_version
+):
+    from qq_ai_bot.plugin_host import ownership
+
+    repository = PluginConfigRepository(database)
+    arguments = dict(plugin_id=PLUGIN, scope_type="global", scope_id="", key="low")
+    if expected_version:
+        await repository.compare_and_set(**arguments, expected_version=0, value=1)
+    barrier = asyncio.Barrier(2)
+    original = ownership.find_config_lineage
+
+    async def read_same_version(*args, **kwargs):
+        row = await original(*args, **kwargs)
+        await barrier.wait()
+        return row
+
+    monkeypatch.setattr(ownership, "find_config_lineage", read_same_version)
+    outcomes = await asyncio.wait_for(
+        asyncio.gather(
+            repository.compare_and_set(**arguments, expected_version=expected_version, value=3),
+            repository.compare_and_set(**arguments, expected_version=expected_version, value=5),
+            return_exceptions=True,
+        ),
+        timeout=5,
+    )
+    assert sum(isinstance(result, PluginVersionConflictError) for result in outcomes) == 1
+    winners = [result for result in outcomes if not isinstance(result, BaseException)]
+    assert len(winners) == 1
+    assert winners[0].version == expected_version + 1
+    monkeypatch.setattr(ownership, "find_config_lineage", original)
+    stored = await repository.get(**arguments)
+    assert stored is not None and stored.version == winners[0].version
+    assert stored.value == winners[0].value
+
+
+async def test_per_key_config_stale_delete_cannot_remove_new_version(database, plugin, monkeypatch):
+    from qq_ai_bot.plugin_host import ownership
+
+    repository = PluginConfigRepository(database)
+    arguments = dict(plugin_id=PLUGIN, scope_type="global", scope_id="", key="low")
+    await repository.compare_and_set(**arguments, expected_version=0, value=1)
+    observed = asyncio.Event()
+    resume = asyncio.Event()
+    original = ownership.require_config_readable
+
+    async def pause_delete(session, row):
+        await original(session, row)
+        if asyncio.current_task().get_name() == "stale-config-delete":
+            observed.set()
+            await resume.wait()
+
+    monkeypatch.setattr(ownership, "require_config_readable", pause_delete)
+    deletion = asyncio.create_task(
+        repository.delete(**arguments, expected_version=1), name="stale-config-delete"
+    )
+    try:
+        await asyncio.wait_for(observed.wait(), timeout=5)
+        replacement = await repository.compare_and_set(**arguments, expected_version=1, value=5)
+        resume.set()
+        with pytest.raises(PluginVersionConflictError):
+            await asyncio.wait_for(deletion, timeout=5)
+        stored = await repository.get(**arguments)
+        assert stored is not None and stored.version == replacement.version == 2
+        assert stored.value == 5
+    finally:
+        resume.set()
+        if not deletion.done():
+            deletion.cancel()
+        await asyncio.gather(deletion, return_exceptions=True)
 
 
 @pytest.fixture

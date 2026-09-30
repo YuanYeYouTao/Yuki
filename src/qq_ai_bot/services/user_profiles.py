@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ from qq_ai_bot.persistence.repositories import UserProfileRepository
 logger = logging.getLogger(__name__)
 
 _PROFILE_NAME_LIMIT = 128
+PROFILE_LOOKUP_TIMEOUT_SECONDS = 0.25
 _CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]")
 _WHITESPACE = re.compile(r"\s+")
 
@@ -53,13 +55,13 @@ class ProfileResolution:
 
     @classmethod
     def from_sender(cls, sender: SenderIdentity) -> ProfileResolution:
-        """Treat non-empty event fields as known and empty fields as missing."""
+        """Preserve authoritative empty cards supplied by the adapter."""
 
         return cls(
             nickname=sender.nickname,
             group_card=sender.group_card,
             nickname_known=bool(sender.nickname),
-            group_card_known=bool(sender.group_card),
+            group_card_known=sender.group_card_known or bool(sender.group_card),
         )
 
 
@@ -84,7 +86,8 @@ class UserProfileService:
         resolved = ProfileResolution.from_sender(message.sender)
         if resolver is not None:
             try:
-                resolved = await resolver.resolve(message)
+                async with asyncio.timeout(PROFILE_LOOKUP_TIMEOUT_SECONDS):
+                    resolved = await resolver.resolve(message)
             except Exception as exc:
                 logger.warning(
                     "profile_resolve_failed exception_category=%s",
@@ -146,15 +149,3 @@ class UserProfileService:
                 type(exc).__name__,
             )
         return profile
-
-    async def forget(self, user_id: str) -> bool | None:
-        """Delete only the caller's profile, returning None on storage failure."""
-
-        try:
-            return await self._repository.delete_user(user_id)
-        except (OSError, RuntimeError, SQLAlchemyError) as exc:
-            logger.warning(
-                "profile_delete_failed exception_category=%s",
-                type(exc).__name__,
-            )
-            return None

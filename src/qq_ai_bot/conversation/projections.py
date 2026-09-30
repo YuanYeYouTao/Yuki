@@ -9,6 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import delete, func, select, text, update
+from sqlalchemy.orm import defer
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.conversation.projection_models import PromptProjectionModel
@@ -129,6 +130,9 @@ class PromptProjectionRepository:
         size = len(payload.encode("utf-8"))
         if size > self.view_bytes:
             raise ProjectionCapacityError("projection view budget exceeded")
+        prepared_prefix = (
+            await self._prepare_prefix(view_key, payload) if rebuild_reason is None else None
+        )
         async with self.database.sessions() as session:
             # SQLite is the supported deployment store. Reserve its writer before
             # checking global limits and CAS, including across repository instances.
@@ -141,7 +145,9 @@ class PromptProjectionRepository:
                 raise ProjectionConflict("projection source generation changed")
             if source.prompt_source_revision != expected_source_revision:
                 raise ProjectionConflict("projection source revision changed")
-            old = await session.get(PromptProjectionModel, view_key)
+            old = await session.get(
+                PromptProjectionModel, view_key, options=[defer(PromptProjectionModel.payload_json)]
+            )
             if old is None:
                 if expected_epoch is not None or expected_revision != 0 or rebuild_reason is None:
                     raise ProjectionConflict("missing projection requires explicit bootstrap")
@@ -179,15 +185,9 @@ class PromptProjectionRepository:
                         contract_revision,
                     ):
                         raise ProjectionConflict("projection change requires a new epoch")
-                    previous = json.loads(old.payload_json)
-                    # Compare serialization, not dict equality: key order is wire data.
-                    prefix = json.dumps(
-                        items[: len(previous)],
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                        allow_nan=False,
-                    )
-                    if prefix != old.payload_json:
+                    if prepared_prefix is None or prepared_prefix[0] != _prefix_version(old):
+                        raise ProjectionConflict("projection changed after prefix preparation")
+                    if not prepared_prefix[1]:
                         raise ProjectionConflict("committed projection prefix cannot be rewritten")
             used, count = (
                 await session.execute(
@@ -283,6 +283,24 @@ class PromptProjectionRepository:
             await session.commit()
             return _snapshot(row)
 
+    async def _prepare_prefix(
+        self, view_key: str, payload: str
+    ) -> tuple[tuple[object, ...], bool] | None:
+        """Compare immutable wire data before reserving the SQLite writer."""
+        async with self.database.sessions() as session:
+            old = await session.get(PromptProjectionModel, view_key)
+            if old is None:
+                return None
+            previous = json.loads(old.payload_json)
+            # Compare serialization, not dict equality: key order is wire data.
+            prefix = json.dumps(
+                json.loads(payload)[: len(previous)],
+                ensure_ascii=False,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            return _prefix_version(old), prefix == old.payload_json
+
     async def invalidate(self, conversation_id: str) -> None:
         """Remove model-input copies when a source is deleted/reset; leave the ledger intact."""
         async with self.database.sessions() as session:
@@ -312,6 +330,20 @@ class PromptProjectionRepository:
                     updated_at=datetime.now(UTC),
                 )
             )
+
+
+def _prefix_version(row: PromptProjectionModel) -> tuple[object, ...]:
+    return (
+        row.conversation_id,
+        row.epoch_id,
+        row.revision,
+        row.generation,
+        row.source_revision,
+        row.starts_after_event_id,
+        row.context_key,
+        row.contract_revision,
+        row.invalidated_reason,
+    )
 
 
 def _snapshot(row: PromptProjectionModel) -> ProjectionSnapshot:

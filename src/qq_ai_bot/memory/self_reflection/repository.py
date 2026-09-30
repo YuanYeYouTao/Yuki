@@ -1087,39 +1087,51 @@ class SelfReflectionRepository:
             ).all()
             return {(r.result_kind, r.result_index) for r in rows}
 
-    async def cleanup_receipts(self) -> int:
+    async def cleanup_receipts(self, *, limit: int = 500) -> int:
         from sqlalchemy import delete
 
         from qq_ai_bot.memory.self_reflection.db_models import (
             InitiativeReflectionWindowModel as Window,
         )
 
-        async with self._database.sessions() as session, session.begin():
-            session.autoflush = False
-            referenced = (
-                select(MemoryEvidenceModel.id)
-                .where(MemoryEvidenceModel.tool_receipt_id == MemoryToolReceiptModel.id)
-                .exists()
+        # Discovery never acquires the writer. Reuse the complete eligibility
+        # predicate in DELETE so a new evidence/window/expiry change wins.
+        conditions = (
+            MemoryToolReceiptModel.expires_at <= datetime.now(UTC),
+            ~select(MemoryEvidenceModel.id)
+            .where(MemoryEvidenceModel.tool_receipt_id == MemoryToolReceiptModel.id)
+            .exists(),
+            ~select(Window.reflection_run_id)
+            .join(
+                MemorySelfReflectionRunModel,
+                MemorySelfReflectionRunModel.id == Window.reflection_run_id,
             )
-            result = await session.execute(
-                delete(MemoryToolReceiptModel).where(
-                    MemoryToolReceiptModel.expires_at <= datetime.now(UTC),
-                    ~referenced,
-                    ~select(Window.reflection_run_id)
-                    .join(
-                        MemorySelfReflectionRunModel,
-                        MemorySelfReflectionRunModel.id == Window.reflection_run_id,
-                    )
-                    .where(
-                        Window.initiative_run_id == MemoryToolReceiptModel.initiative_run_id,
-                        MemoryToolReceiptModel.id >= Window.first_receipt_id,
-                        MemoryToolReceiptModel.id <= Window.last_receipt_id,
-                        MemorySelfReflectionRunModel.status != "completed",
-                    )
-                    .exists(),
+            .where(
+                Window.initiative_run_id == MemoryToolReceiptModel.initiative_run_id,
+                MemoryToolReceiptModel.id >= Window.first_receipt_id,
+                MemoryToolReceiptModel.id <= Window.last_receipt_id,
+                MemorySelfReflectionRunModel.status != "completed",
+            )
+            .exists(),
+        )
+        async with self._database.sessions() as session:
+            ids = tuple(
+                await session.scalars(
+                    select(MemoryToolReceiptModel.id)
+                    .where(*conditions)
+                    .order_by(MemoryToolReceiptModel.expires_at, MemoryToolReceiptModel.id)
+                    .limit(max(1, min(limit, 500)))
                 )
             )
-            return int(cast(CursorResult[object], result).rowcount)
+        if not ids:
+            return 0
+        async with self._database.sessions() as session, session.begin():
+            result = await session.execute(
+                delete(MemoryToolReceiptModel).where(
+                    MemoryToolReceiptModel.id.in_(ids), *conditions
+                )
+            )
+        return int(cast(CursorResult[object], result).rowcount)
 
     @staticmethod
     async def _state(

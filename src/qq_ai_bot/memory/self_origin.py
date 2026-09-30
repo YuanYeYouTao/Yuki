@@ -154,6 +154,11 @@ def sql_self_receipt_evidence_predicate(
     EXISTS needs no event join: a silent SELF run has no human event to borrow.
     """
     f, e, t = fact, evidence, receipt
+    # SQLite's default trim removes only ASCII spaces; match the Python
+    # readability guard's str.strip() whitespace set (runtime Python 3.12).
+    whitespace = "char(9,10,11,12,13,28,29,30,31,32,133,160,5760," + (
+        "8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288)"
+    )
     return (
         f"({t}.initiative_run_id IS NOT NULL AND {t}.trigger_event_id IS NULL "
         f"AND {e}.event_id IS NULL AND {f}.scope_type='self' "
@@ -162,7 +167,7 @@ def sql_self_receipt_evidence_predicate(
         f"AND {f}.canonical_visibility_person_id IS NULL "
         f"AND {e}.relation='agent_reflection' AND {e}.authority='agent_reflection' "
         f"AND {e}.source_speaker_user_id={t}.bot_user_id "
-        f"AND trim({e}.excerpt)!='' AND instr({t}.result_excerpt,{e}.excerpt)>0 "
+        f"AND trim({e}.excerpt,{whitespace})!='' AND instr({t}.result_excerpt,{e}.excerpt)>0 "
         "AND EXISTS (SELECT 1 FROM autonomy_initiative_runs ir "
         "JOIN canonical_conversations ic ON ic.id=ir.conversation_id "
         "JOIN presences ip ON ip.id=ir.presence_id "

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -12,6 +11,7 @@ from typing import Any
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from qq_ai_bot.runtime.lease_heartbeat import supervise_lease
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
 
@@ -41,51 +41,50 @@ async def activate_work(
     control = WorkControl(repository, lease, source_key, source, validate, resolve_child)
     token = current_work_control.set(control)
 
-    async def heartbeat() -> None:
-        while True:
-            await asyncio.sleep(15)
-            if not await repository.renew(lease):
-                return
-            await control.meter_active_time()
-
-    pulse = asyncio.create_task(heartbeat(), name="work-lease-renew")
     try:
-        # Authority is reconstructed by the caller, not copied out of a prior work.
-        # A different actor cannot silently take over the original actor's goal.
-        candidates = await repository.active(conversation_id, generation)
-        candidates.sort(key=lambda candidate: candidate["source_key"] != source_key)
-        for candidate in candidates:
-            if work_id is not None and candidate["id"] != work_id:
-                continue
-            if work_id is None and candidate["source_key"] != source_key:
-                continue
-            if work_id is None and json.loads(candidate["checkpoint_json"]).get("handoff_work_id"):
-                # A later message cannot select the old owner ahead of the work
-                # it just registered. Explicit execution wakeups retain its ID.
-                continue
-            previous = json.loads(candidate["source_json"])
-            if all(
-                previous.get(key) == source.get(key)
-                for key in (
-                    "actor_user_id",
-                    "origin",
-                    "plugin_id",
-                    "delegation_id",
-                    "execution_boundary",
-                    "principal_kind",
-                    "initiative_run_id",
+        async with supervise_lease(
+            lambda: repository.renew(lease),
+            lambda: repository.lease_expiry(lease),
+            meter=control.meter_active_time,
+        ):
+            # Authority is reconstructed by the caller, not copied out of a prior work.
+            # A different actor cannot silently take over the original actor's goal.
+            candidates = await repository.active(conversation_id, generation)
+            candidates.sort(key=lambda candidate: candidate["source_key"] != source_key)
+            for candidate in candidates:
+                if work_id is not None and candidate["id"] != work_id:
+                    continue
+                if work_id is None and candidate["source_key"] != source_key:
+                    continue
+                if work_id is None and json.loads(candidate["checkpoint_json"]).get(
+                    "handoff_work_id"
+                ):
+                    # A later message cannot select the old owner ahead of the work
+                    # it just registered. Explicit execution wakeups retain its ID.
+                    continue
+                previous = json.loads(candidate["source_json"])
+                if all(
+                    previous.get(key) == source.get(key)
+                    for key in (
+                        "actor_user_id",
+                        "origin",
+                        "plugin_id",
+                        "delegation_id",
+                        "execution_boundary",
+                        "principal_kind",
+                        "initiative_run_id",
+                    )
+                ):
+                    control.current = candidate
+                    break
+            if control.current is not None and control.current["state"] != "running":
+                control.current = await repository.transition(
+                    lease,
+                    control.current["id"],
+                    control.current["revision"],
+                    "running",
                 )
-            ):
-                control.current = candidate
-                break
-        if control.current is not None and control.current["state"] != "running":
-            control.current = await repository.transition(
-                lease,
-                control.current["id"],
-                control.current["revision"],
-                "running",
-            )
-        yield control
+            yield control
     except BaseException as exc:
         if control.current is not None and not control.settled and not control.recovery_deferred:
             try:
@@ -104,14 +103,13 @@ async def activate_work(
                 raise WorkActivationHandled("owned_activation_recovered") from exc
         raise
     finally:
-        pulse.cancel()
-        await asyncio.gather(pulse, return_exceptions=True)
         current_work_control.reset(token)
         try:
             if (
                 await repository.valid(lease)
                 and control.current is not None
                 and not control.recovery_deferred
+                and not control.settled
             ):
                 await control.meter_active_time()
                 pending = bool(await control.pending())

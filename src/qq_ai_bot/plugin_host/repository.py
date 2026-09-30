@@ -414,7 +414,7 @@ class PluginConfigRepository:
         if row is None:
             if expected_version != 0:
                 raise PluginVersionConflictError("plugin config version changed")
-            row = PluginConfigValueModel(
+            statement = insert(PluginConfigValueModel).values(
                 plugin_id=plugin_id,
                 scope_type=scope_type,
                 key=key[:128],
@@ -424,19 +424,40 @@ class PluginConfigRepository:
                 canonical_person_id=person_id,
                 canonical_space_id=space_id,
             )
-            session.add(row)
             try:
-                await session.flush()
+                row = await session.scalar(
+                    statement.on_conflict_do_nothing().returning(PluginConfigValueModel)
+                )
             except IntegrityError as exc:
                 raise PluginOwnershipError(STATE_MISMATCH) from exc
+            if row is None:
+                raise PluginVersionConflictError("plugin config version changed")
             return _config_record(row, scope_id=scope_id)
         if expected_version == 0 or row.version != expected_version:
             raise PluginVersionConflictError("plugin config version changed")
         await require_config_readable(session, row)
-        row.value_json = value_json
-        row.version = expected_version + 1
-        row.updated_at = next_updated_at(row.updated_at, timestamp)
-        return _config_record(row, scope_id=scope_id)
+        replacement = await session.scalar(
+            update(PluginConfigValueModel)
+            .where(
+                PluginConfigValueModel.id == row.id,
+                PluginConfigValueModel.plugin_id == plugin_id,
+                PluginConfigValueModel.scope_type == scope_type,
+                PluginConfigValueModel.key == key,
+                PluginConfigValueModel.canonical_person_id == person_id,
+                PluginConfigValueModel.canonical_space_id == space_id,
+                PluginConfigValueModel.version == expected_version,
+            )
+            .values(
+                value_json=value_json,
+                version=expected_version + 1,
+                updated_at=next_updated_at(row.updated_at, timestamp),
+            )
+            .returning(PluginConfigValueModel)
+            .execution_options(populate_existing=True)
+        )
+        if replacement is None:
+            raise PluginVersionConflictError("plugin config version changed")
+        return _config_record(replacement, scope_id=scope_id)
 
     async def delete(
         self,
@@ -474,8 +495,21 @@ class PluginConfigRepository:
             await require_config_readable(session, row)
             if expected_version is not None and row.version != expected_version:
                 raise PluginVersionConflictError("plugin config version changed")
-            await session.delete(row)
-            return True
+            statement = delete(PluginConfigValueModel).where(
+                PluginConfigValueModel.id == row.id,
+                PluginConfigValueModel.plugin_id == plugin_id,
+                PluginConfigValueModel.scope_type == scope_type,
+                PluginConfigValueModel.key == key,
+                PluginConfigValueModel.canonical_person_id == person_id,
+                PluginConfigValueModel.canonical_space_id == space_id,
+            )
+            if expected_version is not None:
+                statement = statement.where(PluginConfigValueModel.version == expected_version)
+            result = await session.execute(statement)
+            deleted = bool(cast(CursorResult[Any], result).rowcount)
+            if expected_version is not None and not deleted:
+                raise PluginVersionConflictError("plugin config version changed")
+            return deleted
 
 
 class PluginStateRepository:

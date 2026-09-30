@@ -139,7 +139,7 @@ async def test_repository_persists_versions_and_owner_scope(database) -> None:
     assert (await repository.get(row.id)).script_hash == row.script_hash  # type: ignore[union-attr]
     assert len(await service.list("10001")) == 1
     with pytest.raises(PermissionError, match="永久主体绑定"):
-        await service.require_owned(row.id, "20002")
+        await service.require_manageable(row.id, ToolActor.from_inbound(_inbound("20002")))
 
     assert [item.id for item in await service.list_current("10001")] == [row.id]
     assert await service.list_completed("10001") == ()
@@ -450,7 +450,9 @@ async def test_create_tool_compiles_and_confirms_database_persistence(database) 
     assert result["data"]["confirmation"] == "persisted"
     assert result["data"]["compiled_strategy"] == "static"
     automation_id = result["data"]["automation_id"]
-    assert (await service.require_owned(automation_id, "10001")).id == automation_id
+    assert (
+        await service.require_manageable(automation_id, ToolActor.from_inbound(inbound))
+    ).id == automation_id
     from qq_ai_bot.identity.canonical_repository import ensure_person
 
     async with database.sessions.begin() as session:
