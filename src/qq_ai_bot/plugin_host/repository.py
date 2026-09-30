@@ -627,14 +627,18 @@ class PluginStateRepository:
         timestamp = _aware_utc(now or datetime.now(UTC))
         expiry = _aware_utc(expires_at) if expires_at is not None else None
         value_json = _json(value)
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             from qq_ai_bot.plugin_host.ownership import (
                 CANONICAL_OWNER_MISMATCH,
                 PluginOwnershipError,
+                project_person_external_id,
                 resolve_state_owner,
             )
 
             owner_id = await resolve_state_owner(session, subject_user_id)
+            projected_subject = (
+                await project_person_external_id(session, owner_id) if owner_id else None
+            )
             if expected_version == 0:
                 await session.execute(
                     delete(PluginStateModel).where(
@@ -697,7 +701,7 @@ class PluginStateRepository:
                 )
             )
             assert row is not None
-            return await _state_record(session, row)
+            return await _state_record(session, row, subject_user_id=projected_subject)
 
     async def delete(
         self,
@@ -829,9 +833,10 @@ def _config_record(
     )
 
 
-async def _state_record(session: AsyncSession, row: PluginStateModel) -> PluginStateRecord:
-    subject_user_id: str | None = None
-    if row.canonical_person_id:
+async def _state_record(
+    session: AsyncSession, row: PluginStateModel, *, subject_user_id: str | None = None
+) -> PluginStateRecord:
+    if row.canonical_person_id and subject_user_id is None:
         from qq_ai_bot.plugin_host.ownership import project_person_external_id
 
         subject_user_id = await project_person_external_id(session, row.canonical_person_id)

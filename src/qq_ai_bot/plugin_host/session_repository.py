@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -118,7 +118,7 @@ class PluginAgentSessionRepository:
         if context_profile not in {"none", "current_user", "current_group"}:
             raise ValueError("unsupported plugin Agent context profile")
         capabilities = _capabilities(allowed_capabilities)
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             person_id, space_id = await resolve_session_owners(
                 session,
                 scope_type=scope_type,
@@ -147,9 +147,10 @@ class PluginAgentSessionRepository:
                 canonical_owner_person_id=person_id,
                 canonical_space_id=space_id,
             )
+            record = await _session_record(session, row)
             session.add(row)
             await session.flush()
-            return await _session_record(session, row)
+            return record
 
     async def get(
         self,
@@ -304,7 +305,14 @@ class PluginAgentSessionRepository:
             sort_keys=True,
             separators=(",", ":"),
         )
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
+            parent = await session.get(PluginAgentSessionModel, session_id)
+            if parent is None or parent.plugin_id != plugin_id:
+                raise PluginSessionUnavailableError("plugin Agent session is unavailable")
+            await require_session_readable(session, parent)
+            sender_person = await inherit_message_sender_person(
+                session, parent, role=role, sender_user_id=sender_user_id
+            )
             values: dict[str, object] = {
                 "next_sequence": PluginAgentSessionModel.next_sequence + 1,
                 "updated_at": timestamp,
@@ -329,15 +337,6 @@ class PluginAgentSessionRepository:
             next_sequence = result.scalar_one_or_none()
             if next_sequence is None:
                 raise PluginSessionUnavailableError("plugin Agent session is unavailable")
-            parent = await session.get(PluginAgentSessionModel, session_id)
-            if parent is None or parent.plugin_id != plugin_id:
-                raise PluginSessionUnavailableError("plugin Agent session is unavailable")
-            sender_person = await inherit_message_sender_person(
-                session,
-                parent,
-                role=role,
-                sender_user_id=sender_user_id,
-            )
             row = PluginAgentMessageModel(
                 session_id=session_id,
                 sequence=int(next_sequence) - 1,
@@ -415,7 +414,7 @@ class PluginAgentSessionRepository:
         """Atomically clear only this plugin session's isolated transcript."""
 
         timestamp = _aware_utc(now or datetime.now(UTC))
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             row = await session.scalar(
                 select(PluginAgentSessionModel).where(
                     PluginAgentSessionModel.plugin_id == plugin_id,
@@ -430,6 +429,7 @@ class PluginAgentSessionRepository:
             if row is None:
                 return None
             await require_session_readable(session, row)
+            record = await _session_record(session, row)
             await session.execute(
                 delete(PluginAgentMessageModel).where(
                     PluginAgentMessageModel.session_id == session_id
@@ -440,7 +440,13 @@ class PluginAgentSessionRepository:
             row.updated_at = timestamp
             row.last_active_at = timestamp
             await session.flush()
-            return await _session_record(session, row)
+            return replace(
+                record,
+                next_sequence=1,
+                turn_count=0,
+                updated_at=timestamp,
+                last_active_at=timestamp,
+            )
 
     async def delete(self, *, plugin_id: str, session_id: str) -> bool:
         async with self._database.sessions() as session, session.begin():

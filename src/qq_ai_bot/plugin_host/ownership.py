@@ -579,6 +579,7 @@ async def project_person_external_id(session: AsyncSession, person_id: str | Non
                 IdentityBindingModel.status == "active",
             )
             .order_by(IdentityBindingModel.external_account_id, IdentityBindingModel.id)
+            .limit(1)
         )
     )
     if not rows:
@@ -599,6 +600,7 @@ async def project_space_external_id(session: AsyncSession, space_id: str | None)
                 SpaceBindingModel.status == "active",
             )
             .order_by(SpaceBindingModel.external_space_id, SpaceBindingModel.id)
+            .limit(1)
         )
     )
     if not rows:
