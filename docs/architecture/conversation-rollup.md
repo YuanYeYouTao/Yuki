@@ -59,6 +59,13 @@ checkpoint 与 raw tail 不能重叠或留洞。当前触发事件只在 current
 3.8.0 存量计数必须在停写副本和 live 数据库上执行
 `qq-ai-bot-cli conversation recount-uncovered` 后才能由 3.8.1 恢复写入。
 
+ASR/视觉派生文本先在显式只读快照中计算字符差额；只有差额导致负计数或晚 ASR 的来源已被
+覆盖时，才读取相应保留事件区间重算，并在计算中替换原内部事件的派生文本。短 writer 在首次
+事件更新前复核 generation、prompt source revision、起点、末尾、coverage、revision、计数和
+checkpoint 版本。竞争时重新准备快照，不能提交过期计数；generation 已失效的 ASR 不落账。
+晚 ASR 仍原子清除派生 Rollup、把 coverage 退回当前 generation 起点并提交完整重算计数，
+再按原规则发出 job 信号。重算不在写入或 flush 之后扫描历史，也不截断保留事件。
+
 事件 floor 和字符预算共同决定 protected tail：
 
 - 长消息先碰字符上限时，允许保留少于事件 floor 的尾部并压缩更早前缀。

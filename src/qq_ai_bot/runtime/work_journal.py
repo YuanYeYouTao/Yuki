@@ -283,15 +283,49 @@ class WorkJournal:
                     select(media_refs.c.sha256).where(media_refs.c.work_id == work_id)
                 )
             )
-            for digest, content in blobs.items():
-                await session.execute(
-                    insert(media).values(sha256=digest, content=content).on_conflict_do_nothing()
+            # Prepared inputs own their images until staged inputs are paired
+            # into the journal. Saving the current transcript must retain them.
+            input_media: set[str] = set()
+            for value in await session.scalars(
+                select(inputs.c.payload_json).where(
+                    inputs.c.conversation_id == lease.conversation_id,
+                    inputs.c.generation == lease.generation,
+                    inputs.c.work_id == work_id,
+                    inputs.c.state.in_(("pending", "staged")),
                 )
-            await session.execute(delete(media_refs).where(media_refs.c.work_id == work_id))
-            for digest in blobs:
-                await session.execute(insert(media_refs).values(work_id=work_id, sha256=digest))
-            stale = previous_media - blobs.keys()
+            ):
+                input_media.update(references(json.loads(value)))
+            next_media = set(blobs) | input_media
+            existing_blobs = (
+                set(await session.scalars(select(media.c.sha256).where(media.c.sha256.in_(blobs))))
+                if blobs
+                else set()
+            )
+            missing = tuple(sorted(blobs.keys() - existing_blobs))
+            for offset in range(0, len(missing), 256):
+                await session.execute(
+                    insert(media).on_conflict_do_nothing(),
+                    [
+                        {"sha256": digest, "content": blobs[digest]}
+                        for digest in missing[offset : offset + 256]
+                    ],
+                )
+            added = tuple(sorted(next_media - previous_media))
+            for offset in range(0, len(added), 256):
+                await session.execute(
+                    insert(media_refs).on_conflict_do_nothing(),
+                    [
+                        {"work_id": work_id, "sha256": digest}
+                        for digest in added[offset : offset + 256]
+                    ],
+                )
+            stale = previous_media - next_media
             if stale:
+                await session.execute(
+                    delete(media_refs).where(
+                        media_refs.c.work_id == work_id, media_refs.c.sha256.in_(stale)
+                    )
+                )
                 await session.execute(
                     delete(media).where(
                         media.c.sha256.in_(stale),
