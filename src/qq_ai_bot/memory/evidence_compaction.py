@@ -9,8 +9,9 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, tuple_, update
 from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy.exc import OperationalError
 
 from qq_ai_bot.config import Settings
 from qq_ai_bot.memory.dream.db_models import (
@@ -98,7 +99,7 @@ class EvidenceCompactionService:
         return processed
 
     async def _backfill_reflection_results(self) -> None:
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.sessions() as session:
             receipts = tuple(
                 (
                     await session.scalars(
@@ -119,6 +120,7 @@ class EvidenceCompactionService:
                     )
                 ).all()
             )
+            prepared = {}
             for receipt in receipts:
                 parts = receipt.delegation_mode.split(":")
                 if len(parts) != 3:
@@ -127,30 +129,98 @@ class EvidenceCompactionService:
                     first_event_id, last_event_id = int(parts[1]), int(parts[2])
                 except ValueError:
                     continue
-                runs = tuple(
-                    (
-                        await session.scalars(
-                            select(MemorySelfReflectionRunModel).where(
-                                MemorySelfReflectionRunModel.bot_user_id
-                                == receipt.executed_by_bot_user_id,
-                                MemorySelfReflectionRunModel.first_event_id == first_event_id,
-                                MemorySelfReflectionRunModel.last_event_id == last_event_id,
+                prepared[receipt.id] = (
+                    receipt.executed_by_bot_user_id,
+                    first_event_id,
+                    last_event_id,
+                )
+            if not prepared:
+                return
+            run_query = select(MemorySelfReflectionRunModel).where(
+                tuple_(
+                    MemorySelfReflectionRunModel.bot_user_id,
+                    MemorySelfReflectionRunModel.first_event_id,
+                    MemorySelfReflectionRunModel.last_event_id,
+                ).in_(tuple(set(prepared.values())))
+            )
+            runs = tuple((await session.scalars(run_query)).all())
+            expected_runs = {
+                key: tuple(
+                    row.id
+                    for row in runs
+                    if (row.bot_user_id, row.first_event_id, row.last_event_id) == key
+                )
+                for key in set(prepared.values())
+            }
+            original_receipts = {row.id: row for row in receipts if row.id in prepared}
+
+        # Only bounded identity checks precede the single write. Recheck ambiguous
+        # runs and receipts under the writer so a changed mapping is never inferred.
+        async with self._database.immediate_session() as session:
+            current_receipts = tuple(
+                (
+                    await session.scalars(
+                        select(MemoryMutationReceiptModel).where(
+                            MemoryMutationReceiptModel.id.in_(tuple(prepared))
+                        )
+                    )
+                ).all()
+            )
+            current_runs = tuple((await session.scalars(run_query)).all())
+            current_run_ids = {
+                key: tuple(
+                    row.id
+                    for row in current_runs
+                    if (row.bot_user_id, row.first_event_id, row.last_event_id) == key
+                )
+                for key in expected_runs
+            }
+            existing_facts = set(
+                await session.scalars(
+                    select(MemorySelfReflectionResultModel.fact_id).where(
+                        MemorySelfReflectionResultModel.fact_id.in_(
+                            tuple(
+                                row.new_fact_id
+                                for row in current_receipts
+                                if row.new_fact_id is not None
                             )
                         )
-                    ).all()
-                )
-                if len(runs) != 1 or receipt.new_fact_id is None:
-                    continue
-                await session.execute(
-                    insert(MemorySelfReflectionResultModel)
-                    .values(
-                        run_id=runs[0].id,
-                        fact_id=receipt.new_fact_id,
-                        result_kind="episode",
-                        result_index=1,
-                        created_at=receipt.created_at,
                     )
-                    .on_conflict_do_nothing()
+                )
+            )
+            values = []
+            for receipt in current_receipts:
+                original = original_receipts[receipt.id]
+                if any(
+                    getattr(receipt, field) != getattr(original, field)
+                    for field in (
+                        "executed_by_bot_user_id",
+                        "delegation_mode",
+                        "decision_actor_type",
+                        "new_fact_id",
+                        "created_at",
+                    )
+                ):
+                    continue
+                key = prepared[receipt.id]
+                run_ids = current_run_ids[key]
+                if len(run_ids) != 1 or set(run_ids) != set(expected_runs[key]):
+                    continue
+                if receipt.new_fact_id is None or receipt.new_fact_id in existing_facts:
+                    continue
+                existing_facts.add(receipt.new_fact_id)
+                values.append(
+                    {
+                        "run_id": run_ids[0],
+                        "fact_id": receipt.new_fact_id,
+                        "result_kind": "episode",
+                        "result_index": 1,
+                        "created_at": receipt.created_at,
+                    }
+                )
+            if values:
+                await session.execute(
+                    insert(MemorySelfReflectionResultModel).values(values).on_conflict_do_nothing()
                 )
 
     async def _ensure_run(self) -> int:
@@ -252,6 +322,18 @@ class EvidenceCompactionService:
                             & (counts.c.evidence_count > 12)
                         )
                     )
+                    .where(
+                        ~select(MemoryEvidenceCompactionItemModel.id)
+                        .where(
+                            MemoryEvidenceCompactionItemModel.fact_id == counts.c.fact_id,
+                            MemoryEvidenceCompactionItemModel.evidence_before
+                            == counts.c.evidence_count,
+                            MemoryEvidenceCompactionItemModel.status.in_(
+                                ("completed", "skipped", "failed")
+                            ),
+                        )
+                        .exists()
+                    )
                     .order_by(counts.c.fact_id)
                     .limit(max(1, limit))
                 )
@@ -261,21 +343,6 @@ class EvidenceCompactionService:
                 fact_id = int(row.fact_id)
                 provenance = "dream" if row.operation_id is not None else "self_reflection"
                 operation_id = int(row.operation_id) if row.operation_id is not None else None
-                previous = await session.scalar(
-                    select(MemoryEvidenceCompactionItemModel)
-                    .where(
-                        MemoryEvidenceCompactionItemModel.fact_id == int(row.fact_id),
-                        MemoryEvidenceCompactionItemModel.evidence_before
-                        == int(row.evidence_count),
-                        MemoryEvidenceCompactionItemModel.status.in_(
-                            ("completed", "skipped", "failed")
-                        ),
-                    )
-                    .order_by(MemoryEvidenceCompactionItemModel.id.desc())
-                    .limit(1)
-                )
-                if previous is not None:
-                    continue
                 result.append((fact_id, provenance, operation_id, int(row.evidence_count)))
                 if len(result) >= limit:
                     break
@@ -332,7 +399,22 @@ class EvidenceCompactionService:
     async def _compact_fact(
         self, *, fact_id: int, provenance: str, operation_id: int | None
     ) -> int:
-        async with self._facts.repository.transaction() as session:
+        # Only the pure database preparation is repeated. The already claimed
+        # compaction item and its original operation identity remain unchanged.
+        for attempt in range(3):
+            try:
+                return await self._compact_fact_snapshot(
+                    fact_id=fact_id, provenance=provenance, operation_id=operation_id
+                )
+            except OperationalError as exc:
+                if getattr(exc.orig, "sqlite_errorcode", None) != 517 or attempt == 2:
+                    raise
+        raise AssertionError("unreachable compaction retry")
+
+    async def _compact_fact_snapshot(
+        self, *, fact_id: int, provenance: str, operation_id: int | None
+    ) -> int:
+        async with self._facts.repository.transaction(read_snapshot=True) as session:
             fact = await self._facts.repository.get_fact(fact_id, session=session)
             if fact is None:
                 raise ValueError("compaction fact disappeared")
@@ -362,6 +444,20 @@ class EvidenceCompactionService:
             delete_ids = tuple(row.id for row in evidence if row.id not in keep_ids)
             if not delete_ids:
                 return len(evidence)
+            readable = await self._facts.repository.list_evidence(
+                fact_id, limit=100_000, session=session
+            )
+            remaining = tuple(row for row in readable if row.id in keep_ids)
+            prepared = await self._facts.prepare_evidence_metadata(fact, remaining)
+            rebase = None
+            if provenance == "dream" and operation_id is not None:
+                rebase = await self._prepare_dream_rebase(
+                    fact_id=fact_id,
+                    operation_id=operation_id,
+                    deleted_ids=delete_ids,
+                    session=session,
+                )
+            updated_at = datetime.now(UTC)
             await session.execute(
                 delete(MemoryEvidenceModel).where(MemoryEvidenceModel.id.in_(delete_ids))
             )
@@ -369,13 +465,21 @@ class EvidenceCompactionService:
                 fact_id,
                 confirmed_at=fact.last_confirmed_at,
                 session=session,
+                prepared=prepared,
+                updated_at=updated_at,
             )
-            if provenance == "dream" and operation_id is not None:
-                await self._rebase_dream_operation(
-                    fact_id=fact_id,
-                    operation_id=operation_id,
-                    deleted_ids=delete_ids,
-                    session=session,
+            if rebase is not None:
+                refreshed = fact.model_copy(
+                    update={
+                        "authority": prepared[0],
+                        "confidence": prepared[1],
+                        "evidence_count": len(remaining),
+                        "updated_at": updated_at,
+                    }
+                )
+                self._apply_dream_rebase(
+                    rebase=rebase,
+                    signature=fact_signature(refreshed),
                 )
             return len(evidence) - len(delete_ids)
 
@@ -521,18 +625,20 @@ class EvidenceCompactionService:
             )
         )
         chosen: list[Any] = list(original)
+        source_rows = (
+            await session.execute(
+                select(
+                    MemoryEvidenceModel.fact_id,
+                    MemoryEvidenceModel.event_id,
+                    MemoryEvidenceModel.tool_receipt_id,
+                ).where(MemoryEvidenceModel.fact_id.in_(source_ids))
+            )
+        ).all()
+        source_keys_by_id: dict[int, set[tuple[int | None, int | None]]] = {}
+        for source_id, event_id, receipt_id in source_rows:
+            source_keys_by_id.setdefault(source_id, set()).add((event_id, receipt_id))
         for source_id in source_ids:
-            source_keys = {
-                (event_id, tool_receipt_id)
-                for event_id, tool_receipt_id in (
-                    await session.execute(
-                        select(
-                            MemoryEvidenceModel.event_id,
-                            MemoryEvidenceModel.tool_receipt_id,
-                        ).where(MemoryEvidenceModel.fact_id == source_id)
-                    )
-                ).all()
-            }
+            source_keys = source_keys_by_id.get(source_id, set())
             matches = [
                 row
                 for row in evidence
@@ -553,49 +659,51 @@ class EvidenceCompactionService:
                 break
         return {row.id for row in unique}
 
-    async def _rebase_dream_operation(
+    async def _prepare_dream_rebase(
         self,
         *,
         fact_id: int,
         operation_id: int,
         deleted_ids: tuple[int, ...],
         session: Any,
-    ) -> None:
-        fact = await self._facts.repository.get_fact(fact_id, session=session)
-        if fact is None:
-            raise RuntimeError("compacted Dream result disappeared")
-        signature = fact_signature(fact)
+    ) -> tuple[Any, Any, Any, Any, str]:
         operation = await session.get(MemoryDreamOperationModel, operation_id)
         if operation is None:
             raise RuntimeError("Dream provenance operation disappeared")
-        deleted = set(deleted_ids)
-        operation.added_evidence_ids_json = json.dumps(
-            [
-                int(item)
-                for item in json.loads(operation.added_evidence_ids_json)
-                if int(item) not in deleted
-            ]
-        )
         result = await session.scalar(
             select(MemoryDreamOperationResultModel).where(
                 MemoryDreamOperationResultModel.operation_id == operation_id,
                 MemoryDreamOperationResultModel.fact_id == fact_id,
             )
         )
-        if result is not None:
-            result.result_signature = signature
-            if result.position == 0:
-                operation.result_signature = signature
         source = await session.scalar(
             select(MemoryDreamOperationSourceModel).where(
                 MemoryDreamOperationSourceModel.operation_id == operation_id,
                 MemoryDreamOperationSourceModel.fact_id == fact_id,
             )
         )
+        checkpoint = await session.get(MemoryDreamFactCheckpointModel, fact_id)
+        deleted = set(deleted_ids)
+        added_json = json.dumps(
+            [
+                int(item)
+                for item in json.loads(operation.added_evidence_ids_json)
+                if int(item) not in deleted
+            ]
+        )
+        return operation, result, source, checkpoint, added_json
+
+    @staticmethod
+    def _apply_dream_rebase(*, rebase: tuple[Any, Any, Any, Any, str], signature: str) -> None:
+        operation, result, source, checkpoint, added_json = rebase
+        operation.added_evidence_ids_json = added_json
+        if result is not None:
+            result.result_signature = signature
+            if result.position == 0:
+                operation.result_signature = signature
         if source is not None:
             source.after_signature = signature
-        checkpoint = await session.get(MemoryDreamFactCheckpointModel, fact_id)
-        if checkpoint is not None and checkpoint.last_operation_id == operation_id:
+        if checkpoint is not None and checkpoint.last_operation_id == operation.id:
             checkpoint.signature = signature
             checkpoint.checked_at = datetime.now(UTC)
 

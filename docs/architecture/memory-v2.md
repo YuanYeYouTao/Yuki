@@ -150,6 +150,12 @@ Plugin/Admin 纯查询不产生强化或使用回执。详见
   不降低原调用的证据上限。authority/confidence 仍用原 policy 计算。
   当前聚合仍在原原子 mutation 事务中完成；仅有 fact.updated_at 不足以覆盖证据级联删除、
   来源隐藏及 owner 变化，不能据此把旧聚合移到锁外后无围栏写回。
+  Evidence compaction 单独使用同连接的 SQLite WAL 显式读快照：删除集合、保留证据聚合
+  和 Dream provenance 回写资料均在首个 DELETE 前准备。若任意并发提交使快照过期，
+  写入升级失败并整体回滚，最多重新准备三次；不重新领取 item、不更换 operation ID。
+  DELETE 后只应用已准备的聚合与 provenance，不扫描证据历史。反思结果回填最多读取
+  200 个 receipt，批量映射 run 后在短 writer 中复核身份及唯一映射，单次批量插入；
+  歧义来源不推断归属。候选的已处理过滤在 LIMIT 前完成，避免不可缩减前缀阻塞后续 fact。
 - 不用 /ai new、清空事实或重建 embedding 掩盖队列/召回问题。
 - 0051 仅增加 recall 观测列；不改事实、证据、身份、正文或路由。
 - 未来 WebUI 复用 Control Plane，不直接查询 ORM；读取、content、mutation、destructive

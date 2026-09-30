@@ -820,10 +820,33 @@ class MemoryFactService:
         *,
         confirmed_at: datetime,
         session: AsyncSession,
+        prepared: tuple[MemoryAuthority, float] | None = None,
+        updated_at: datetime | None = None,
     ) -> None:
         """Recompute aggregate authority/confidence after controlled evidence removal."""
 
-        await self._refresh_evidence(fact_id, confirmed_at=confirmed_at, session=session)
+        if prepared is None:
+            await self._refresh_evidence(fact_id, confirmed_at=confirmed_at, session=session)
+        else:
+            authority, confidence = prepared
+            await self._repository.update_confirmation_metadata(
+                fact_id,
+                authority=authority.value,
+                confidence=confidence,
+                confirmed_at=confirmed_at,
+                updated_at=updated_at,
+                session=session,
+            )
+
+    async def prepare_evidence_metadata(
+        self, fact: MemoryFact, evidence: tuple[MemoryEvidence, ...]
+    ) -> tuple[MemoryAuthority, float]:
+        """Compute complete readable evidence metadata before the first write."""
+        policy = await self._effective_evidence_policy(fact)
+        authority = policy.strongest_authority(
+            (fact.authority, *(row.authority for row in evidence)), default=fact.authority
+        )
+        return authority, policy.aggregate(evidence, authority=authority)
 
     async def correct_fact(
         self,

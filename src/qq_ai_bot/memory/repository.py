@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import and_, case, delete, func, literal, or_, select, update
+from sqlalchemy import and_, case, delete, func, literal, or_, select, text, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -335,8 +335,17 @@ class MemoryFactRepository:
         return list((await session.execute(statement)).all())
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[AsyncSession]:
+    async def transaction(self, *, read_snapshot: bool = False) -> AsyncIterator[AsyncSession]:
         async with self._database.sessions() as session, session.begin():
+            if read_snapshot:
+                if not self._database.url.startswith("sqlite+"):
+                    raise RuntimeError(
+                        "memory evidence preparation requires SQLite snapshot isolation"
+                    )
+                # aiosqlite's legacy transaction mode does not BEGIN for SELECT.
+                # An explicit deferred BEGIN keeps preparation and the eventual
+                # write on one snapshot; WAL rejects stale upgrades atomically.
+                await session.execute(text("BEGIN"))
             yield session
 
     async def count_active_for_create(self, fact: MemoryFactCreate) -> int:
@@ -904,6 +913,7 @@ class MemoryFactRepository:
         confidence: float,
         confirmed_at: datetime,
         session: AsyncSession,
+        updated_at: datetime | None = None,
     ) -> None:
         current = await session.get(MemoryFactModel, fact_id)
         if current is None:
@@ -920,7 +930,7 @@ class MemoryFactRepository:
                 authority=authority,
                 confidence=confidence,
                 last_confirmed_at=max(previous, confirmed_at),
-                updated_at=datetime.now(UTC),
+                updated_at=updated_at or datetime.now(UTC),
             )
         )
 
