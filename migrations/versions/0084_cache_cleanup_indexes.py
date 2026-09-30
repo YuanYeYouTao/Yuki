@@ -9,12 +9,13 @@ branch_labels = None
 depends_on = None
 
 INDEXES = (
-    ("ix_media_analyses_expires_at", "media_analyses", "expires_at"),
-    ("ix_web_search_runs_created_at", "web_search_runs", "created_at"),
+    ("ix_media_analyses_expires_at", "media_analyses", ("expires_at",)),
+    ("ix_web_search_runs_created_at", "web_search_runs", ("created_at",)),
+    ("ix_runtime_work_state_updated", "runtime_work", ("state", "updated")),
 )
 
 
-def _retained_index(name: str, table: str, column: str) -> bool:
+def _retained_index(name: str, table: str, columns: tuple[str, ...]) -> bool:
     bind = op.get_bind()
     existing = bind.execute(
         sa.text("SELECT tbl_name, sql FROM sqlite_master WHERE type='index' AND name=:name"),
@@ -38,7 +39,7 @@ def _retained_index(name: str, table: str, column: str) -> bool:
         or index[2] != 0
         or index[3] != "c"
         or index[4] != 0
-        or keys != ((column, 0, "BINARY"),)
+        or keys != tuple((column, 0, "BINARY") for column in columns)
     ):
         raise RuntimeError(f"cache cleanup index shape mismatch: {name}")
     return True
@@ -47,15 +48,15 @@ def _retained_index(name: str, table: str, column: str) -> bool:
 def upgrade() -> None:
     # Current-metadata historical fixtures may already contain these indexes.
     # Validate every retained shape before creating any missing index.
-    present = {name for name, table, column in INDEXES if _retained_index(name, table, column)}
-    for name, table, column in INDEXES:
+    present = {name for name, table, columns in INDEXES if _retained_index(name, table, columns)}
+    for name, table, columns in INDEXES:
         if name not in present:
-            op.create_index(name, table, [column])
+            op.create_index(name, table, list(columns))
 
 
 def downgrade() -> None:
-    for name, table, column in INDEXES:
-        if not _retained_index(name, table, column):
+    for name, table, columns in INDEXES:
+        if not _retained_index(name, table, columns):
             raise RuntimeError(f"cache cleanup index is missing: {name}")
     for name, table, _column in reversed(INDEXES):
         op.drop_index(name, table_name=table)

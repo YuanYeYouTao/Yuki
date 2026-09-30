@@ -66,10 +66,28 @@ async def test_cleanup_index_real_round_trip_matches_metadata_and_covers_discove
             ).fetchall()
             assert any(f"SEARCH {table} USING COVERING INDEX {name}" in row[3] for row in plan)
             assert not any("TEMP B-TREE" in row[3] for row in plan)
+        work_plan = db.execute(
+            "EXPLAIN QUERY PLAN SELECT runtime_work.id FROM runtime_work "
+            "JOIN canonical_conversations c ON c.id=runtime_work.conversation_id "
+            "WHERE runtime_work.state='waiting_external' AND runtime_work.generation=c.generation "
+            "AND json_extract(runtime_work.checkpoint_json,'$.context_rollup.coverage') IS NOT NULL "
+            "ORDER BY runtime_work.updated LIMIT 32"
+        ).fetchall()
+        assert any(
+            "SEARCH runtime_work USING INDEX ix_runtime_work_state_updated" in row[3]
+            for row in work_plan
+        )
+        assert not any("TEMP B-TREE" in row[3] for row in work_plan)
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []
         assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
     await asyncio.to_thread(command.downgrade, config, "0083")
     with sqlite3.connect(path) as db:
+        assert (
+            db.execute(
+                "SELECT name FROM sqlite_master WHERE name='ix_runtime_work_state_updated'"
+            ).fetchone()
+            is None
+        )
         for name, table, _column in INDEXES:
             assert (
                 db.execute(
@@ -132,3 +150,26 @@ async def test_cleanup_index_upgrade_accepts_exact_current_metadata(database, mo
 
     async with database.engine.begin() as connection:
         await connection.run_sync(exercise)
+
+
+@pytest.mark.parametrize("keys", ["updated,state", "state COLLATE NOCASE,updated"])
+async def test_work_wait_discovery_index_rejects_changed_order_or_collation(
+    database, monkeypatch, keys
+):
+    migration = importlib.import_module("migrations.versions.0084_cache_cleanup_indexes")
+
+    def exercise(connection):
+        monkeypatch.setattr(migration, "op", Operations(MigrationContext.configure(connection)))
+        connection.exec_driver_sql("DROP INDEX ix_runtime_work_state_updated")
+        connection.exec_driver_sql(
+            f"CREATE INDEX ix_runtime_work_state_updated ON runtime_work({keys})"
+        )
+        with pytest.raises(RuntimeError, match="index shape mismatch"):
+            migration.upgrade()
+        connection.exec_driver_sql("CREATE TABLE alembic_version (version_num VARCHAR(32))")
+        connection.exec_driver_sql("INSERT INTO alembic_version VALUES ('0084')")
+
+    async with database.engine.begin() as connection:
+        await connection.run_sync(exercise)
+    with pytest.raises(CanonicalSchemaError, match="cache cleanup index"):
+        await require_canonical_schema(database.url)

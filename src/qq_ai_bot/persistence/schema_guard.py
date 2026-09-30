@@ -270,9 +270,10 @@ async def require_canonical_schema(database_url: str) -> None:
                 raise CanonicalSchemaError(
                     "database memory receipt reference index is missing or changed"
                 )
-            for index_name, table, column in (
-                ("ix_media_analyses_expires_at", "media_analyses", "expires_at"),
-                ("ix_web_search_runs_created_at", "web_search_runs", "created_at"),
+            for index_name, table, index_columns in (
+                ("ix_media_analyses_expires_at", "media_analyses", ("expires_at",)),
+                ("ix_web_search_runs_created_at", "web_search_runs", ("created_at",)),
+                ("ix_runtime_work_state_updated", "runtime_work", ("state", "updated")),
             ):
                 retained = (
                     await connection.execute(
@@ -298,7 +299,7 @@ async def require_canonical_schema(database_url: str) -> None:
                     or index[2] != 0
                     or index[3] != "c"
                     or index[4] != 0
-                    or index_keys != ((column, 0, "BINARY"),)
+                    or index_keys != tuple((column, 0, "BINARY") for column in index_columns)
                 ):
                     raise CanonicalSchemaError("database cache cleanup index is missing or changed")
             trigger_rows = await connection.execute(

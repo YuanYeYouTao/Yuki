@@ -65,6 +65,18 @@ class Database:
         from qq_ai_bot.runtime import work_recovery_schema as _recovery
         from qq_ai_bot.runtime import work_schema_v1 as _work_schema  # noqa: F401
 
+        # Declare current read indexes without changing the frozen 0056 schema.
+        from sqlalchemy import Index
+
+        if not any(
+            index.name == "ix_runtime_work_state_updated" for index in _work_schema.work.indexes
+        ):
+            Index(
+                "ix_runtime_work_state_updated",
+                _work_schema.work.c.state,
+                _work_schema.work.c.updated,
+            )
+
         async with self.engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
             await connection.run_sync(_recovery.install_quota)
