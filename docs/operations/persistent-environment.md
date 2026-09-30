@@ -42,6 +42,9 @@ writer, rechecks their metadata/references in a short transaction and unlinks at
 most 128 unreferenced blobs after commit. The legacy Manager prepares files in a
 worker thread, then publishes and finishes its job on the original event loop
 without an intervening cancellation point; its jobs connection never crosses threads.
+Publication errors discard only private pending files. A commit error can occur
+after a successful commit, so renamed blobs remain until reference-checked GC
+proves they are unreferenced; an uncertain result does not delete committed files.
 
 `terminal_exec` starts a durable task, returns after about five seconds, and exposes
 incremental byte cursors through `terminal_read`. `terminal_write` sends raw input;

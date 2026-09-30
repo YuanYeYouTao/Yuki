@@ -7,6 +7,7 @@ import sqlite3
 import threading
 from pathlib import Path
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 from tests.support.sandbox_completion_cases import pending_job
@@ -15,6 +16,42 @@ from qq_ai_bot.sandbox.manager import Manager
 from qq_ai_bot.web.bridge_state import BridgeState
 from qq_ai_bot.web.models import WebSearchResponse
 from qq_ai_bot.workspace.store import WorkspaceError, WorkspaceStore
+
+
+@pytest.mark.parametrize("operation", ["write", "snapshot"])
+def test_committed_blob_survives_lost_commit_ack(tmp_path, monkeypatch, operation):
+    store = WorkspaceStore(tmp_path / "artifacts")
+    original = store.write("initial", b"old")
+    identity = original["artifact_id"] if operation == "write" else str(uuid4())
+    connect = sqlite3.connect
+
+    class AckLostConnection(sqlite3.Connection):
+        def commit(self):
+            changed = self.total_changes > 0
+            super().commit()
+            if changed:
+                raise OSError("commit acknowledgement lost")
+
+    def fault_connection(*args, **kwargs):
+        return connect(*args, **kwargs, factory=AckLostConnection)
+
+    monkeypatch.setattr("qq_ai_bot.workspace.store.sqlite3.connect", fault_connection)
+    with pytest.raises(OSError, match="commit acknowledgement lost"):
+        if operation == "write":
+            store.write("new", b"committed", artifact_id=identity, expected_revision=1)
+        else:
+            source = tmp_path / "source"
+            source.write_bytes(b"committed")
+            with source.open("rb") as stream:
+                store.snapshot(stream.fileno(), "new", artifact_id=identity)
+    monkeypatch.setattr("qq_ai_bot.workspace.store.sqlite3.connect", connect)
+    metadata, data = store.read_bytes(identity)
+    assert data == b"committed"
+    assert metadata["revision"] == (2 if operation == "write" else 1)
+    assert metadata["immutable"] == (operation == "snapshot")
+    store.cleanup()
+    assert store.read_bytes(identity)[1] == b"committed"
+    assert not list(store.root.glob("*.pending"))
 
 
 def test_file_hash_and_fsync_release_physical_writer(tmp_path, monkeypatch):

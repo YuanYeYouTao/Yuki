@@ -254,7 +254,6 @@ class WorkspaceStore:
                     return self._metadata(self._row(db, artifact_id))
         prepared = self._prepare_files([(name, data)], digests=[digest])
         item = prepared[0]
-        published = False
         retired: list[Path] = []
         try:
             with self._transaction() as db:
@@ -303,13 +302,12 @@ class WorkspaceStore:
                     if old:
                         retired.append(self._blob(old["blob"]))
                     result = self._metadata(self._row(db, identity))
-            published = True
             self._unlink(retired)
             return result
         finally:
             self.discard_prepared(prepared)
-            if not published:
-                self._unlink([self._blob(item.blob)])
+            # A lost commit acknowledgement does not prove rollback. Renamed
+            # blobs are reclaimed only by reference-checked GC, never here.
 
     def publish_prepared_batch(self, prepared: list[PreparedArtifact]) -> list[dict[str, Any]]:
         """Short synchronous finish; the whole batch becomes visible in one commit.
@@ -462,9 +460,6 @@ class WorkspaceStore:
                     db.execute("INSERT INTO artifact_snapshots VALUES (?)", (identity,))
                     result = self._metadata(self._row(db, identity))
             return result
-        except BaseException:
-            self._unlink([self._blob(blob)])
-            raise
         finally:
             self._unlink([path])
 
