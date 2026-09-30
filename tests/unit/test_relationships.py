@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from tests.conftest import MemorySender, build_harness, make_settings
 from tests.fakes import FakeWebSearchProvider
 
@@ -107,6 +107,28 @@ def test_effective_trust_and_relationship_weight() -> None:
     assert effective_trust(20, 100) == 30
     assert effective_trust(85, 80) == 80
     assert relationship_weight(85, 80) == 83
+
+
+@pytest.mark.asyncio
+async def test_existing_relationship_does_not_reserve_writer(database: Database) -> None:
+    async with database.immediate_session() as session:
+        await ensure_person(session, "1001")
+    repository = RelationshipRepository(database)
+    await repository.get_or_create("1001")
+    expected = await repository.get("1001")
+    statements: list[str] = []
+
+    def capture(_conn, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement.strip().upper())
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
+    try:
+        async with database.immediate_session():
+            assert await asyncio.wait_for(repository.get_or_create("1001"), timeout=1) == expected
+    finally:
+        event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
+    assert sum(sql.startswith("BEGIN IMMEDIATE") for sql in statements) == 1
+    assert not any(sql.startswith(("INSERT", "UPDATE", "DELETE")) for sql in statements)
 
 
 def test_relationship_style_policy_for_affectionate_and_bonded_scopes() -> None:

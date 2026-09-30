@@ -69,6 +69,7 @@ class AutomationRepository:
         misfire_grace_seconds: int,
         now: datetime,
         creation_source_key: str | None = None,
+        max_active: int | None = None,
         session: AsyncSession | None = None,
     ) -> AutomationRecord:
         script_json = validated.script.model_dump_json(exclude_none=True)
@@ -105,6 +106,11 @@ class AutomationRepository:
                 creator = await active_person_id_for(active, authority.creator_user_id)
                 if creator != creator_person_id or authority.principal_kind != "person":
                     raise ValueError("创建者没有对应的永久主体")
+            if (
+                max_active is not None
+                and await self.active_count(creator_person_id, session=active) >= max_active
+            ):
+                raise ValueError(f"当前主体最多同时启用 {max_active} 个自动化任务")
             target_person, target_space = await _bind_canonical_send_targets(
                 active,
                 validated,
@@ -617,6 +623,17 @@ class AutomationRepository:
                 .values(claimed_until=None)
             )
 
+    async def claim_expiry(self, automation_id: int, worker_id: str) -> float | None:
+        async with self._database.sessions() as session:
+            value = await session.scalar(
+                select(AutomationModel.claimed_until).where(
+                    AutomationModel.id == automation_id,
+                    AutomationModel.claimed_by == worker_id,
+                    AutomationModel.status == AutomationStatus.ACTIVE.value,
+                )
+            )
+        return _aware_utc(value).timestamp() if value is not None else None
+
     async def renew_claim(self, automation_id: int, worker_id: str, until: datetime) -> bool:
         async with self._database.immediate_session() as session:
             result = await session.execute(
@@ -625,6 +642,7 @@ class AutomationRepository:
                     AutomationModel.id == automation_id,
                     AutomationModel.claimed_by == worker_id,
                     AutomationModel.status == AutomationStatus.ACTIVE.value,
+                    func.julianday(AutomationModel.claimed_until) > func.julianday("now"),
                 )
                 .values(claimed_until=until)
             )

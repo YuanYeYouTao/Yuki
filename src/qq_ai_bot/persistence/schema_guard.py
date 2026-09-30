@@ -10,7 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-from qq_ai_bot.asr.schema import PROJECTION_TRIGGERS_0055
+from qq_ai_bot.conversation.projection_revision_schema import PROJECTION_TRIGGERS_CURRENT
 
 
 def canonical_schema_revision(root: Path | None = None) -> str:
@@ -248,13 +248,67 @@ async def require_canonical_schema(database_url: str) -> None:
             foreign_key_rows = await connection.execute(text("PRAGMA foreign_key_check"))
             if foreign_key_rows.first() is not None:
                 raise CanonicalSchemaError("database canonical foreign-key integrity check failed")
+            index_name = "ix_memory_evidence_tool_receipt"
+            index_rows = await connection.execute(text('PRAGMA index_list("memory_evidence")'))
+            index = next((row for row in index_rows if row[1] == index_name), None)
+            index_sql = await connection.scalar(
+                text("SELECT sql FROM sqlite_master WHERE type='index' AND name=:name"),
+                {"name": index_name},
+            )
+            index_columns = tuple(
+                row[2]
+                for row in await connection.execute(text(f'PRAGMA index_info("{index_name}")'))
+            )
+            if (
+                index is None
+                or index[2] != 0
+                or index[4] != 1
+                or index_columns != ("tool_receipt_id",)
+                or " ".join(str(index_sql).lower().split()).split(" where ", 1)[-1]
+                != "tool_receipt_id is not null"
+            ):
+                raise CanonicalSchemaError(
+                    "database memory receipt reference index is missing or changed"
+                )
+            for index_name, table, index_columns in (
+                ("ix_media_analyses_expires_at", "media_analyses", ("expires_at",)),
+                ("ix_web_search_runs_created_at", "web_search_runs", ("created_at",)),
+                ("ix_runtime_work_state_updated", "runtime_work", ("state", "updated")),
+            ):
+                retained = (
+                    await connection.execute(
+                        text(
+                            "SELECT tbl_name, sql FROM sqlite_master "
+                            "WHERE type='index' AND name=:name"
+                        ),
+                        {"name": index_name},
+                    )
+                ).first()
+                indexes = await connection.execute(text(f'PRAGMA index_list("{table}")'))
+                index = next((row for row in indexes if row[1] == index_name), None)
+                index_keys = tuple(
+                    (row[2], row[3], row[4])
+                    for row in await connection.execute(text(f'PRAGMA index_xinfo("{index_name}")'))
+                    if row[5] == 1
+                )
+                if (
+                    retained is None
+                    or retained[0] != table
+                    or retained[1] is None
+                    or index is None
+                    or index[2] != 0
+                    or index[3] != "c"
+                    or index[4] != 0
+                    or index_keys != tuple((column, 0, "BINARY") for column in index_columns)
+                ):
+                    raise CanonicalSchemaError("database cache cleanup index is missing or changed")
             trigger_rows = await connection.execute(
                 text("SELECT name, sql FROM sqlite_master WHERE type='trigger'")
             )
             triggers = {str(row[0]): str(row[1]) for row in trigger_rows}
             from qq_ai_bot.runtime.work_recovery_schema import quota_trigger_sql
 
-            for name, expected in {**PROJECTION_TRIGGERS_0055, **quota_trigger_sql()}.items():
+            for name, expected in {**PROJECTION_TRIGGERS_CURRENT, **quota_trigger_sql()}.items():
                 actual = triggers.get(name, "").replace("IF NOT EXISTS ", "")
                 expected = expected.replace("IF NOT EXISTS ", "")
                 if " ".join(actual.split()) != " ".join(expected.split()):

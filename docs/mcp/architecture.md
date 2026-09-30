@@ -43,3 +43,24 @@ DSL。远端 annotations 只保留作描述元数据；风险、只读与幂等�
 MCP 工具成功结果的提交状态默认未知，由 Tool Kernel 按目标 effect 解析；只读成功为 false，
 写入成功为 true；上游 `isError=true` 时，`mutation_committed` 为 false。普通工具/业务错误、4xx 和 429 不会销毁连接；
 只有会话失效、网络断开、协议或初始化失败才断开。协程取消原样传播，不记为失败或触发重连。
+
+## 工具结果、来源证据与诊断记账
+
+主 Agent 的 Work 调用先按原 journal call key 提交 accepted 结果，再执行该调用栈中的
+次级记账；提交结果未知时不运行次级记账。记账失败只报告 coverage_incomplete，不能把
+已确认的 Social 投递或 Work effect 改成 unknown，也不授权再次执行工具。取消仍传播。
+无 Work 的调用及独立 SDK 路径保留同步来源校验，不能借诊断降级绕过真实来源合同。
+
+MemoryToolReceipt 是有来源的证据，不进入可丢弃的诊断队列。结果先在锁外脱敏，短
+INSERT 再核验原内部事件或 initiative run、canonical owner、generation 和隐私删除代次。
+无效来源拒绝补写。事件回执固定到原内部事件所属 Conversation 的 kind/person/space，
+QQ Binding 迁移不能把旧事件重新归属到新 owner；锁外准备及短写入都核对该原分区。
+原 SELF call key 保持不变；有原 execution/call identity 的事件回执也用既有
+source_call_key 去重，可只重做原 effect 的证据记账而不重做工具。失败没有
+独立永久重试队列，进程终止时的缺口仍须按原持久 effect 及可信来源确认后补建。
+
+内容无关的 ToolInvocation 单独复用 [执行过程查看](../architecture/execution-trace.md)
+的有界诊断队列，Work 在派发前冻结原 Conversation、generation 和删除代次，审计登记
+保留此 token，不能在 accepted 后重新读取代次作为旧调用的授权；证据与诊断写入再次核验
+原 token。聚合仅含已落盘
+样本，队列拒绝或异步失败报告覆盖缺失；统计失败不会回滚已经提交的来源证据。

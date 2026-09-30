@@ -12,6 +12,7 @@ from qq_ai_bot.automation.executor import AutomationExecutor
 from qq_ai_bot.automation.models import RunStatus
 from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.config import Settings
+from qq_ai_bot.runtime.lease_heartbeat import supervise_lease
 from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.runtime.work_wait import WorkWaitRepository
 from qq_ai_bot.time.schedules import schedule_after_completion
@@ -71,6 +72,11 @@ class AutomationWorker:
         while not self._stop.is_set():
             try:
                 await self._waits.deliver_due(self._time.clock.now().timestamp())
+            except Exception as exc:
+                logger.error(
+                    "automation_wait_poll_failed category=%s", type(exc).__name__, exc_info=exc
+                )
+            try:
                 if not self._settings.automation_enabled:
                     await asyncio.sleep(self._settings.automation_poll_seconds)
                     continue
@@ -101,25 +107,24 @@ class AutomationWorker:
     async def _process_guarded(self, automation: Any) -> None:
         """Contain unexpected task failures and release the lease for recovery."""
 
-        owner = asyncio.current_task()
+        worker_id = automation.claimed_by or self._worker_id
 
-        async def heartbeat() -> None:
-            while True:
-                await asyncio.sleep(max(1, self._settings.automation_lease_seconds / 3))
-                valid = await self._repository.renew_claim(
-                    automation.id,
-                    automation.claimed_by or self._worker_id,
-                    self._time.clock.now()
-                    + timedelta(seconds=self._settings.automation_lease_seconds),
-                )
-                if not valid:
-                    if owner is not None:
-                        owner.cancel()
-                    return
+        async def renew() -> bool:
+            return await self._repository.renew_claim(
+                automation.id,
+                worker_id,
+                self._time.clock.now() + timedelta(seconds=self._settings.automation_lease_seconds),
+            )
 
-        pulse = asyncio.create_task(heartbeat())
         try:
-            await self._process(automation)
+            async with supervise_lease(
+                renew,
+                lambda: self._repository.claim_expiry(automation.id, worker_id),
+                seconds=self._settings.automation_lease_seconds,
+                interval=max(1, self._settings.automation_lease_seconds / 3),
+                clock=lambda: self._time.clock.now().timestamp(),
+            ):
+                await self._process(automation)
         except asyncio.CancelledError:
             await self._repository.release_claim(
                 automation.id,
@@ -146,9 +151,6 @@ class AutomationWorker:
                     getattr(automation, "id", "unknown"),
                     type(release_exc).__name__,
                 )
-        finally:
-            pulse.cancel()
-            await asyncio.gather(pulse, return_exceptions=True)
 
     async def _process(self, automation: Any) -> None:
         scheduled_for = automation.next_run_at

@@ -801,10 +801,26 @@ class ProcessedEventRepository:
         except IntegrityError:
             return False
 
-    async def cleanup_expired(self, *, now: datetime | None = None) -> int:
+    async def cleanup_expired(self, *, now: datetime | None = None, limit: int = 128) -> int:
         cutoff = now or datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
+        if not 1 <= limit <= 128:
+            raise ValueError("cleanup page must be between 1 and 128")
+        async with self._database.sessions() as session:
+            keys = tuple(
+                await session.scalars(
+                    select(ProcessedEventModel.event_key)
+                    .where(ProcessedEventModel.expires_at <= cutoff)
+                    .order_by(ProcessedEventModel.expires_at, ProcessedEventModel.event_key)
+                    .limit(limit)
+                )
+            )
+        if not keys:
+            return 0
+        async with self._database.immediate_session() as session:
             result = await session.execute(
-                delete(ProcessedEventModel).where(ProcessedEventModel.expires_at <= cutoff)
+                delete(ProcessedEventModel).where(
+                    ProcessedEventModel.event_key.in_(keys),
+                    ProcessedEventModel.expires_at <= cutoff,
+                )
             )
             return int(cast(CursorResult[Any], result).rowcount or 0)

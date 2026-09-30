@@ -153,8 +153,9 @@ class SubagentRepository:
             return identity
 
     async def acquire(self, identity: str, *, reconcile: bool = False) -> WorkLease | None:
-        now, owner = time.time(), str(uuid4())
+        owner = str(uuid4())
         async with self.database.immediate_session() as session:
+            now = time.time()
             row = (
                 (await session.execute(select(work).where(work.c.id == identity)))
                 .mappings()

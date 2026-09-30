@@ -2,23 +2,19 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import delete, exists, func, select, update
+from sqlalchemy import exists, func, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from qq_ai_bot.memory.enums import (
-    MemoryProcessingSource,
     MemoryRebuildCommitStatus,
     MemoryRebuildItemStatus,
-    MemoryRebuildJobOutcome,
     MemoryRebuildReviewStatus,
     MemoryRebuildRunStatus,
 )
@@ -29,6 +25,7 @@ from qq_ai_bot.memory.rebuild.models import (
     MemoryRebuildRun,
     MemoryRebuildSelection,
 )
+from qq_ai_bot.memory.rebuild.privacy import PreparedRebuildForget
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
@@ -445,21 +442,6 @@ class MemoryRebuildRepository:
                 or 0
             )
 
-    async def proposal_counts(self, public_id: str) -> dict[str, int]:
-        async with self.database.sessions() as session:
-            rows = (
-                await session.execute(
-                    select(MemoryRebuildProposalModel.review_status, func.count())
-                    .join(
-                        MemoryRebuildRunModel,
-                        MemoryRebuildRunModel.id == MemoryRebuildProposalModel.run_id,
-                    )
-                    .where(MemoryRebuildRunModel.public_id == public_id)
-                    .group_by(MemoryRebuildProposalModel.review_status)
-                )
-            ).all()
-        return {str(key): int(value) for key, value in rows}
-
     async def statistics(self, public_id: str) -> dict[str, Any]:
         """Return bounded, content-free execution counters derived from indexed staging rows."""
 
@@ -833,120 +815,39 @@ class MemoryRebuildRepository:
         public_id: str,
         *,
         include_failed_live_jobs: bool,
+        item_ids: tuple[int, ...] | None = None,
+        limit: int = 128,
     ) -> int:
-        now = datetime.now(UTC)
-        completed = 0
-        async with self.database.sessions() as session, session.begin():
-            run_id = await session.scalar(
-                select(MemoryRebuildRunModel.id).where(MemoryRebuildRunModel.public_id == public_id)
-            )
-            if run_id is None:
-                return 0
-            items = (
-                await session.scalars(
-                    select(MemoryRebuildItemModel).where(MemoryRebuildItemModel.run_id == run_id)
-                )
-            ).all()
-            for item in items:
-                pending = int(
-                    await session.scalar(
-                        select(func.count())
-                        .select_from(MemoryRebuildProposalModel)
-                        .where(
-                            MemoryRebuildProposalModel.item_id == item.id,
-                            MemoryRebuildProposalModel.review_status
-                            == MemoryRebuildReviewStatus.APPROVED.value,
-                            MemoryRebuildProposalModel.commit_status.in_(
-                                (
-                                    MemoryRebuildCommitStatus.PENDING.value,
-                                    MemoryRebuildCommitStatus.FAILED.value,
-                                )
-                            ),
-                        )
-                    )
-                    or 0
-                )
-                if pending:
-                    continue
-                proposals = (
-                    await session.scalars(
-                        select(MemoryRebuildProposalModel).where(
-                            MemoryRebuildProposalModel.item_id == item.id
-                        )
-                    )
-                ).all()
-                outcome = (
-                    MemoryRebuildJobOutcome.NO_CLAIMS
-                    if not proposals
-                    else (
-                        MemoryRebuildJobOutcome.ALL_REJECTED
-                        if all(
-                            row.review_status == MemoryRebuildReviewStatus.REJECTED.value
-                            for row in proposals
-                        )
-                        else MemoryRebuildJobOutcome.CLAIMS_APPLIED
-                    )
-                )
-                receipt = await session.scalar(
-                    select(MemoryJobModel).where(MemoryJobModel.event_id == item.event_id)
-                )
-                if receipt is not None and receipt.status in {"done", "pending", "processing"}:
-                    item.status = MemoryRebuildItemStatus.SKIPPED.value
-                    item.error_category = (
-                        "already_processed" if receipt.status == "done" else "live_job_active"
-                    )
-                    item.updated_at = now
-                    continue
-                if (
-                    receipt is not None
-                    and receipt.status == "failed"
-                    and not include_failed_live_jobs
-                ):
-                    item.status = MemoryRebuildItemStatus.SKIPPED.value
-                    item.error_category = "failed_live_job_not_selected"
-                    item.updated_at = now
-                    continue
-                event = await session.get(ChatEventModel, item.event_id)
-                from qq_ai_bot.identity.ownership import optional_xor_owner_for_event
+        from qq_ai_bot.memory.rebuild.receipt_finalization import complete_receipts
 
-                person_id, space_id = await optional_xor_owner_for_event(session, event)
-                statement = insert(MemoryJobModel).values(
-                    event_id=item.event_id,
-                    conversation_key=f"rebuild:{public_id}",
-                    canonical_person_id=person_id,
-                    canonical_space_id=space_id,
-                    status="done",
-                    attempts=0,
-                    next_attempt_at=now,
-                    created_at=now,
-                    updated_at=now,
-                    error_category=None,
-                    processing_source=MemoryProcessingSource.REBUILD.value,
-                    rebuild_run_id=run_id,
-                    outcome=outcome.value,
-                    completed_at=now,
-                )
-                await session.execute(
-                    statement.on_conflict_do_update(
-                        index_elements=[MemoryJobModel.event_id],
-                        where=(MemoryJobModel.status == "failed"),
-                        set_={
-                            "status": "done",
-                            "updated_at": now,
-                            "error_category": None,
-                            "processing_source": MemoryProcessingSource.REBUILD.value,
-                            "rebuild_run_id": run_id,
-                            "outcome": outcome.value,
-                            "completed_at": now,
-                            "canonical_person_id": person_id,
-                            "canonical_space_id": space_id,
-                        },
+        return await complete_receipts(
+            self.database,
+            public_id,
+            include_failed_live_jobs=include_failed_live_jobs,
+            item_ids=item_ids,
+            limit=limit,
+        )
+
+    async def remaining_item_receipt_count(self, public_id: str) -> int:
+        """Keep the run active until all bounded receipt pages have settled."""
+        from qq_ai_bot.memory.rebuild.receipt_finalization import READY_STATUSES
+
+        async with self.database.sessions() as session:
+            return int(
+                await session.scalar(
+                    select(func.count())
+                    .select_from(MemoryRebuildItemModel)
+                    .join(
+                        MemoryRebuildRunModel,
+                        MemoryRebuildRunModel.id == MemoryRebuildItemModel.run_id,
+                    )
+                    .where(
+                        MemoryRebuildRunModel.public_id == public_id,
+                        MemoryRebuildItemModel.status.in_(READY_STATUSES),
                     )
                 )
-                item.status = MemoryRebuildItemStatus.COMMITTED.value
-                item.updated_at = now
-                completed += 1
-        return completed
+                or 0
+            )
 
     async def failed_commit_count(self, public_id: str) -> int:
         async with self.database.sessions() as session:
@@ -1055,66 +956,40 @@ class MemoryRebuildRepository:
             await session.delete(run)
             return True
 
-    async def forget_person(
+    async def prepare_forget_people(
+        self, aliases: tuple[str, ...], *, session: AsyncSession | None = None
+    ) -> PreparedRebuildForget:
+        from qq_ai_bot.memory.rebuild.privacy import prepare_forget
+
+        async with optional_session(self.database, session, write=False) as reader:
+            from sqlalchemy import text
+
+            if session is None:
+                await reader.execute(text("BEGIN"))
+            return await prepare_forget(reader, aliases)
+
+    async def forget_people(
         self,
-        user_id: str,
+        aliases: tuple[str, ...],
         *,
+        prepared: PreparedRebuildForget | None = None,
         session: AsyncSession | None = None,
     ) -> int:
-        """Cancel person-only runs and remove exact QQ values from stored selections."""
+        from qq_ai_bot.memory.rebuild.privacy import apply_forget
 
-        if session is None:
-            async with self.database.sessions() as owned_session, owned_session.begin():
-                return await self.forget_person(user_id, session=owned_session)
-        now = datetime.now(UTC)
-        changed = 0
-        deleted_proposals = await session.execute(
-            delete(MemoryRebuildProposalModel).where(
-                MemoryRebuildProposalModel.subject_user_id == user_id
-            )
+        if prepared is None:
+            if session is not None:
+                raise ValueError("memory_rebuild_privacy_preparation_required")
+            prepared = await self.prepare_forget_people(aliases)
+        if prepared.aliases != tuple(sorted(set(aliases))):
+            raise ValueError("memory_rebuild_privacy_aliases_changed")
+        transaction = (
+            self.database.immediate_session()
+            if session is None
+            else optional_session(self.database, session, write=True)
         )
-        changed += int(cast(CursorResult[Any], deleted_proposals).rowcount or 0)
-        rows = (await session.scalars(select(MemoryRebuildRunModel))).all()
-        for row in rows:
-            selection = MemoryRebuildSelection.model_validate_json(row.selection_json)
-            if user_id not in selection.sender_user_ids and user_id not in selection.bot_user_ids:
-                continue
-            remaining = tuple(item for item in selection.sender_user_ids if item != user_id)
-            remaining_bots = tuple(item for item in selection.bot_user_ids if item != user_id)
-            other_bounds = bool(
-                selection.all_events
-                or remaining_bots
-                or selection.scope_types
-                or selection.group_ids
-                or selection.after
-                or selection.before
-                or selection.minimum_event_id
-                or selection.maximum_event_id
-                or remaining
-            )
-            if not other_bounds:
-                remaining = ("[deleted-user]",)
-            sanitized = selection.model_copy(
-                update={
-                    "sender_user_ids": remaining,
-                    "bot_user_ids": remaining_bots,
-                }
-            )
-            encoded = json.dumps(
-                sanitized.model_dump(mode="json"),
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            row.selection_json = encoded
-            row.selection_hash = hashlib.sha256(encoded.encode()).hexdigest()
-            if not other_bounds and row.status not in TERMINAL_STATUSES:
-                row.status = MemoryRebuildRunStatus.CANCELLED.value
-                row.cancelled_at = now
-                row.error_category = "privacy_deletion"
-            row.updated_at = now
-            changed += 1
-        return changed
+        async with transaction as writer:
+            return await apply_forget(writer, prepared)
 
     async def health(
         self,

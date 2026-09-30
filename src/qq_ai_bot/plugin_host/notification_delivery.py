@@ -168,7 +168,10 @@ class OneBotNotificationTransport:
                 canonical_target_space_id=canonical_target_space_id,
             )
         except RouteSendError as exc:
-            raise ProactiveGatewayError(exc.category) from exc
+            # Resolution failed before entering the transport: retry certainty
+            # is explicit here, including the registry's actual disconnect code.
+            category = "gateway_disconnected" if exc.category == "disconnected" else exc.category
+            raise ProactiveGatewayError(category) from exc
         if resolved.kind == "person" and target_type == "group":
             raise ProactiveGatewayError("capability")
         if resolved.kind == "space" and target_type != "group":
@@ -349,10 +352,17 @@ class PluginNotificationOutboxWorker:
                     status="uncertain",
                     error_category=exc.category,
                 )
-            else:
+            elif exc.category in {"bot_unavailable", "gateway_disconnected", "effect_gate_timeout"}:
                 await self._repository.retry_outbox(
                     item.id,
                     attempt=item.attempts,
+                    error_category=exc.category,
+                )
+            else:
+                await self._repository.finish_outbox(
+                    item.id,
+                    attempt=item.attempts,
+                    status="failed",
                     error_category=exc.category,
                 )
             return
@@ -363,9 +373,10 @@ class PluginNotificationOutboxWorker:
                 item.part_type,
                 type(exc).__name__,
             )
-            await self._repository.retry_outbox(
+            await self._repository.finish_outbox(
                 item.id,
                 attempt=item.attempts,
+                status="uncertain",
                 error_category=type(exc).__name__,
             )
             return

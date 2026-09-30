@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
@@ -13,7 +14,15 @@ from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.conversation.canonical_db_models import (
+    CanonicalConversationModel,
+    CanonicalConversationRollupEmergencyOverlayModel,
+    CanonicalConversationRollupJobModel,
+    CanonicalConversationRollupModel,
+)
+from qq_ai_bot.domain.messages import ChatImage
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.event_repository import ConversationReadVersion
 from qq_ai_bot.runtime.subagent_schema import children, media, media_refs
 from qq_ai_bot.runtime.work_recovery_schema import recovery
 from qq_ai_bot.runtime.work_schema_v1 import (
@@ -80,7 +89,7 @@ class WorkRepository:
                 children.c.cancel_epoch == lease.cancel_epoch,
                 children.c.fence == lease.fence,
                 children.c.owner == lease.owner,
-                children.c.lease_until > time.time(),
+                children.c.lease_until > (func.julianday("now") - 2440587.5) * 86400,
                 children.c.archived_at.is_(None),
                 select(CanonicalConversationModel.id)
                 .where(
@@ -96,7 +105,7 @@ class WorkRepository:
             scope.c.cancel_epoch == lease.cancel_epoch,
             scope.c.fence == lease.fence,
             scope.c.owner == lease.owner,
-            scope.c.lease_until > time.time(),
+            scope.c.lease_until > (func.julianday("now") - 2440587.5) * 86400,
         )
 
     async def acquire(
@@ -104,10 +113,11 @@ class WorkRepository:
     ) -> WorkLease | None:
         if not 1 <= seconds <= 300:
             raise ValueError("invalid_work_lease_duration")
-        now, owner = time.time(), str(uuid4())
+        owner = str(uuid4())
         from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 
         async with self.database.immediate_session() as session:
+            now = time.time()
             actual_generation = await session.scalar(
                 select(CanonicalConversationModel.generation).where(
                     CanonicalConversationModel.id == conversation_id
@@ -153,10 +163,18 @@ class WorkRepository:
                 await session.execute(
                     update(self._lease_table(lease))
                     .where(self._fence(lease))
-                    .values(lease_until=time.time() + seconds)
+                    .values(lease_until=(func.julianday("now") - 2440587.5) * 86400 + seconds)
                     .returning(self._lease_table(lease).c.fence)
                 )
             ).first() is not None
+
+    async def lease_expiry(self, lease: WorkLease) -> float | None:
+        """Read the confirmed deadline for this owner without acquiring a writer."""
+        async with self.database.sessions() as session:
+            value = await session.scalar(
+                select(self._lease_table(lease).c.lease_until).where(self._fence(lease))
+            )
+        return float(value) if value is not None else None
 
     async def release(self, lease: WorkLease) -> None:
         async with self.database.sessions() as session, session.begin():
@@ -389,16 +407,16 @@ class WorkRepository:
         async with self.database.sessions() as session, session.begin():
             await self._assert_lease(session, lease)
             if state in {"completed", "waiting_user", "waiting_external"}:
-                mailbox = await session.scalar(
-                    select(inputs.c.id)
+                mailbox_ready = await session.scalar(
+                    select(inputs.c.ready)
                     .where(
                         inputs.c.work_id == identity,
                         inputs.c.state.in_(("pending", "staged")),
-                        inputs.c.ready.is_(True),
                     )
+                    .order_by(inputs.c.id)
                     .limit(1)
                 )
-                if mailbox is not None:
+                if mailbox_ready:
                     values.update(state="queued", reason="work_input_arrived")
                     if exit_reason is not None:
                         exit_reason = "waiting_input"
@@ -600,18 +618,70 @@ class WorkRepository:
                     raise WorkConflict("work_resume_obsolete")
             return int(row["id"])
 
-    async def prepare_input(self, identity: int, payload: dict[str, Any]) -> None:
-        serialized = bounded_json(payload, 32768)
-        async with self.database.sessions() as session, session.begin():
-            await session.execute(
-                update(inputs)
-                .where(
-                    inputs.c.id == identity,
-                    inputs.c.state == "pending",
-                    inputs.c.ready.is_(False),
-                )
-                .values(payload_json=serialized, ready=True)
+    async def prepare_input(
+        self, identity: int, payload: dict[str, Any], *, images: tuple[ChatImage, ...] = ()
+    ) -> bool:
+        from qq_ai_bot.runtime.work_media import externalize
+
+        blobs: dict[str, bytes] = {}
+        prepared = externalize({**payload, "images": [asdict(image) for image in images]}, blobs)
+        serialized = bounded_json(prepared, 32768)
+        live_owner = (
+            select(work.c.id)
+            .join(
+                CanonicalConversationModel,
+                CanonicalConversationModel.id == work.c.conversation_id,
             )
+            .where(
+                work.c.id == inputs.c.work_id,
+                work.c.generation == inputs.c.generation,
+                work.c.conversation_id == inputs.c.conversation_id,
+                work.c.state.not_in(TERMINAL),
+                CanonicalConversationModel.generation == inputs.c.generation,
+            )
+            .exists()
+        )
+        async with self.database.immediate_session() as session:
+            changed = (
+                await session.execute(
+                    update(inputs)
+                    .where(
+                        inputs.c.id == identity,
+                        inputs.c.state == "pending",
+                        inputs.c.ready.is_(False),
+                        or_(inputs.c.work_id.is_(None), live_owner),
+                    )
+                    .values(payload_json=serialized, ready=True)
+                    .returning(inputs.c.work_id)
+                )
+            ).first()
+            if changed is None:
+                # A wakeup may already carry a ready control signal, or a retry
+                # may arrive after the original input was staged/consumed.
+                # Acknowledge that durable input without replacing its payload.
+                return bool(
+                    await session.scalar(
+                        select(inputs.c.ready).where(
+                            inputs.c.id == identity,
+                            inputs.c.state.in_(("pending", "staged", "consumed")),
+                            inputs.c.ready.is_(True),
+                        )
+                    )
+                )
+            work_id = changed.work_id
+            if blobs:
+                if work_id is None:
+                    raise WorkConflict("work_input_media_owner_missing")
+                await session.execute(
+                    insert(media).on_conflict_do_nothing(index_elements=[media.c.sha256]),
+                    [{"sha256": digest, "content": data} for digest, data in blobs.items()],
+                )
+                await session.execute(
+                    insert(media_refs).on_conflict_do_nothing(
+                        index_elements=[media_refs.c.work_id, media_refs.c.sha256]
+                    ),
+                    [{"work_id": work_id, "sha256": digest} for digest in blobs],
+                )
             await session.execute(
                 update(work)
                 .where(
@@ -627,6 +697,195 @@ class WorkRepository:
                     reason="input_prepared",
                     updated=time.time(),
                     revision=work.c.revision + 1,
+                )
+            )
+        return True
+
+    async def input_images(self, item: dict[str, Any]) -> tuple[ChatImage, ...]:
+        """Hydrate media owned by the original input, independent of its activation."""
+        from qq_ai_bot.runtime.work_media import hydrate, references
+
+        payload = json.loads(item["payload_json"])
+        encoded = payload.get("images", [])
+        refs = references(encoded)
+        if not refs:
+            return tuple(ChatImage(**image) for image in encoded)
+        async with self.database.sessions() as session:
+            blobs = {
+                row.sha256: bytes(row.content)
+                for row in await session.execute(
+                    select(media)
+                    .join(media_refs, media_refs.c.sha256 == media.c.sha256)
+                    .where(
+                        media.c.sha256.in_(refs),
+                        media_refs.c.work_id == item["work_id"],
+                    )
+                )
+            }
+        try:
+            return tuple(ChatImage(**image) for image in hydrate(encoded, blobs))
+        except (KeyError, ValueError) as exc:
+            raise WorkConflict("work_input_media_missing") from exc
+
+    async def defer_context_rollup(
+        self,
+        lease: WorkLease,
+        identity: str,
+        version: ConversationReadVersion,
+        coverage: int,
+        timeout_seconds: float,
+    ) -> bool:
+        """Park only pre-history work; the existing rollup job owns preparation."""
+        async with self.database.immediate_session() as session:
+            await self._assert_lease(session, lease)
+            current = (
+                (
+                    await session.execute(
+                        select(work).where(
+                            work.c.id == identity,
+                            work.c.conversation_id == lease.conversation_id,
+                            work.c.generation == lease.generation,
+                            work.c.state.not_in(TERMINAL),
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            source = await session.get(CanonicalConversationModel, lease.conversation_id)
+            if (
+                current is None
+                or source is None
+                or (
+                    source.id,
+                    source.generation,
+                    source.starts_after_event_id,
+                    source.prompt_source_revision,
+                )
+                != (
+                    version.conversation_id,
+                    version.generation,
+                    version.starts_after_event_id,
+                    version.prompt_source_revision,
+                )
+            ):
+                raise WorkConflict("work_context_source_changed")
+            if current["model_requests"] or await session.scalar(
+                select(journal.c.work_id).where(journal.c.work_id == identity)
+            ):
+                raise WorkConflict("work_journal_source_changed")
+            checkpoint = json.loads(current["checkpoint_json"])
+            previous = checkpoint.get("context_rollup", {})
+            deadline = previous.get("deadline", time.time() + timeout_seconds)
+            job = await session.get(CanonicalConversationRollupJobModel, source.id)
+            if deadline <= time.time() or (
+                job is not None and job.generation == source.generation and job.last_error_category
+            ):
+                return False  # Reuse the existing bounded extractive fallback.
+            now = datetime.now(UTC)
+            await session.execute(
+                insert(CanonicalConversationRollupJobModel)
+                .values(
+                    conversation_id=source.id,
+                    generation=source.generation,
+                    signal_revision=1,
+                    status="pending",
+                    failure_count=0,
+                    next_attempt_at=now,
+                    created_at=now,
+                    updated_at=now,
+                )
+                .on_conflict_do_update(
+                    index_elements=["conversation_id"],
+                    where=CanonicalConversationRollupJobModel.generation != source.generation,
+                    set_={
+                        "generation": source.generation,
+                        "signal_revision": CanonicalConversationRollupJobModel.signal_revision + 1,
+                        "status": "pending",
+                        "failure_count": 0,
+                        "lease_owner": None,
+                        "lease_token": None,
+                        "lease_until": None,
+                        "next_attempt_at": now,
+                        "last_error_category": None,
+                        "updated_at": now,
+                    },
+                )
+            )
+            checkpoint["context_rollup"] = {
+                "coverage": coverage,
+                "deadline": deadline,
+                "starts_after": source.starts_after_event_id,
+            }
+            await session.execute(
+                update(work)
+                .where(work.c.id == identity)
+                .values(checkpoint_json=bounded_json(checkpoint, 1024 * 1024))
+            )
+        return True
+
+    async def finish_context_rollup(self, lease: WorkLease, identity: str) -> None:
+        async with self.database.immediate_session() as session:
+            await self._assert_lease(session, lease)
+            await session.execute(
+                update(work)
+                .where(
+                    work.c.id == identity,
+                    work.c.conversation_id == lease.conversation_id,
+                    work.c.generation == lease.generation,
+                    work.c.state.not_in(TERMINAL),
+                )
+                .values(
+                    checkpoint_json=func.json_remove(work.c.checkpoint_json, "$.context_rollup")
+                )
+            )
+
+    async def wake_context_rollups(self) -> None:
+        """Discover one bounded completion page; empty polls never take a writer."""
+        semantic = CanonicalConversationRollupModel
+        overlay = CanonicalConversationRollupEmergencyOverlayModel
+        job = CanonicalConversationRollupJobModel
+        source = CanonicalConversationModel
+        coverage = func.json_extract(work.c.checkpoint_json, "$.context_rollup.coverage")
+        deadline = func.json_extract(work.c.checkpoint_json, "$.context_rollup.deadline")
+        eligible = (
+            select(work.c.id)
+            .join(source, source.id == work.c.conversation_id)
+            .outerjoin(semantic, semantic.conversation_id == source.id)
+            .outerjoin(overlay, overlay.conversation_id == source.id)
+            .outerjoin(job, job.conversation_id == source.id)
+            .where(
+                work.c.state == "waiting_external",
+                work.c.generation == source.generation,
+                coverage.is_not(None),
+                func.json_extract(work.c.checkpoint_json, "$.context_rollup.starts_after")
+                == source.starts_after_event_id,
+                or_(
+                    (semantic.generation == source.generation)
+                    & (semantic.covered_through_event_id > coverage),
+                    (overlay.generation == source.generation)
+                    & (overlay.covered_through_event_id > coverage),
+                    job.conversation_id.is_(None),
+                    job.last_error_category.is_not(None),
+                    deadline <= time.time(),
+                ),
+            )
+            .order_by(work.c.updated)
+            .limit(32)
+        )
+        async with self.database.sessions() as reader:
+            identities = tuple(await reader.scalars(eligible))
+        if not identities:
+            return
+        async with self.database.immediate_session() as writer:
+            await writer.execute(
+                update(work)
+                .where(work.c.id.in_(identities), work.c.id.in_(eligible))
+                .values(
+                    state="queued",
+                    reason="context_prepared",
+                    revision=work.c.revision + 1,
+                    updated=time.time(),
                 )
             )
 
@@ -884,6 +1143,23 @@ class WorkRepository:
     async def repair_abandoned_inputs(self, process_id: str) -> None:
         from qq_ai_bot.persistence.models import ChatEventModel
 
+        async with self.database.sessions() as discovery:
+            candidate_ids = tuple(
+                await discovery.scalars(
+                    select(inputs.c.id)
+                    .where(
+                        inputs.c.state == "pending",
+                        inputs.c.ready.is_(False),
+                        or_(
+                            inputs.c.prepare_owner != process_id,
+                            inputs.c.created < time.time() - 120,
+                        ),
+                    )
+                    .limit(128)
+                )
+            )
+        if not candidate_ids:
+            return
         async with self.database.immediate_session() as session:
             rows = (
                 (
@@ -891,6 +1167,7 @@ class WorkRepository:
                         select(inputs)
                         .where(
                             inputs.c.state == "pending",
+                            inputs.c.id.in_(candidate_ids),
                             inputs.c.ready.is_(False),
                             or_(
                                 inputs.c.prepare_owner != process_id,
@@ -943,6 +1220,29 @@ class WorkRepository:
         """Keep the latest 128 terminal work receipts; never evict an active work."""
         from qq_ai_bot.runtime.subagent_schema import media, media_refs
 
+        def terminal_query() -> Any:
+            return (
+                select(work.c.id)
+                .where(
+                    work.c.state.in_(TERMINAL),
+                    func.json_extract(work.c.checkpoint_json, "$.archived").is_(None),
+                    # Synchronous callers can return before their work finishes.
+                    # Give stable handles seven days for result consumption even
+                    # when a busy conversation creates more than 128 other works.
+                    or_(
+                        func.json_extract(work.c.source_json, "$.delivery_contract")
+                        != "return_to_caller",
+                        func.json_extract(work.c.source_json, "$.delivery_contract").is_(None),
+                        work.c.updated < time.time() - 7 * 86400,
+                    ),
+                    work.c.id.not_in(select(children.c.work_id)),
+                    work.c.id.not_in(select(children.c.root_id)),
+                )
+                .order_by(work.c.updated.desc())
+                .offset(128)
+                .limit(256)
+            )
+
         async with self.database.sessions() as session:
             orphaned = list(
                 await session.scalars(
@@ -955,6 +1255,9 @@ class WorkRepository:
                     .limit(64)
                 )
             )
+            terminal_candidate = await session.scalar(terminal_query().limit(1))
+        if not orphaned and terminal_candidate is None:
+            return
         async with self.database.immediate_session() as session:
             if orphaned:
                 await session.execute(
@@ -963,29 +1266,7 @@ class WorkRepository:
                         media.c.sha256.not_in(select(media_refs.c.sha256)),
                     )
                 )
-            selected = list(
-                await session.scalars(
-                    select(work.c.id)
-                    .where(
-                        work.c.state.in_(TERMINAL),
-                        func.json_extract(work.c.checkpoint_json, "$.archived").is_(None),
-                        # Synchronous callers can return before their work finishes.
-                        # Give stable handles seven days for result consumption even
-                        # when a busy conversation creates more than 128 other works.
-                        or_(
-                            func.json_extract(work.c.source_json, "$.delivery_contract")
-                            != "return_to_caller",
-                            func.json_extract(work.c.source_json, "$.delivery_contract").is_(None),
-                            work.c.updated < time.time() - 7 * 86400,
-                        ),
-                        work.c.id.not_in(select(children.c.work_id)),
-                        work.c.id.not_in(select(children.c.root_id)),
-                    )
-                    .order_by(work.c.updated.desc())
-                    .offset(128)
-                    .limit(256)
-                )
-            )
+            selected = list(await session.scalars(terminal_query()))
             if not selected:
                 return
             await session.execute(delete(journal).where(journal.c.work_id.in_(selected)))

@@ -389,6 +389,15 @@ def normalize_event(
             nickname=event.sender.nickname or "",
             group_card=event.sender.card or "",
             is_bot=sender_user_id in ignored_bot_users,
+            nickname_known=(
+                "nickname" in event.sender.model_fields_set
+                and isinstance(event.sender.nickname, str)
+            ),
+            group_card_known=(
+                group_id is not None
+                and "card" in event.sender.model_fields_set
+                and isinstance(event.sender.card, str)
+            ),
         ),
         text=projection.text,
         bot_user_id=self_id,

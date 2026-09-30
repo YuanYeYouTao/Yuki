@@ -21,7 +21,7 @@ from yuki_participation.autonomy_parameters import (
     DEFAULT_AUTONOMY_PARAMETERS,
     AutonomyParameters,
 )
-from yuki_participation.controller import Controller
+from yuki_participation.controller import Controller, State
 from yuki_participation.models import (
     CandidateKind,
     Feedback,
@@ -33,7 +33,6 @@ from yuki_participation.models import (
 )
 from yuki_participation.observer import JevObserver
 from yuki_participation.session import ObservationSession
-from yuki_participation.store import SnapshotStore
 
 from qq_ai_bot.conversation.autonomy_binding import (
     AcceptedInitiative,
@@ -58,6 +57,7 @@ from qq_ai_bot.persistence.models import ChatEventModel, MemoryEvidenceModel
 from qq_ai_bot.persistence.repository_helpers import keeper_event_clause
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.runtime.work_repository import WorkRepository
+from qq_ai_bot.services.participation_snapshot import AsyncSnapshotStore
 
 logger = logging.getLogger(__name__)
 
@@ -114,13 +114,15 @@ class SemanticParticipationService:
         self.database = app.database
         self.repository = AutonomyRepository(self.database)
         self.work = WorkRepository(self.database)
-        self._store: SnapshotStore | None = None
+        self._store: AsyncSnapshotStore | None = None
         self._observer: JevObserver | None = None
         self._traces = traces
         self._sessions: dict[tuple[str, int], _Session] = {}
         self._dirty: dict[str, dict[int, bool]] = {}
         self._task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
+        self._session_lock = asyncio.Lock()
+        self._save_lock = asyncio.Lock()
         self._failures = 0
         self._dirty_overflows = 0
         self._last_discovery_at = 0.0
@@ -166,7 +168,9 @@ class SemanticParticipationService:
 
     async def start(self) -> None:
         self._refresh_model_parameters()
-        self._store = SnapshotStore(self.app.settings.semantic_participation_state_path)
+        self._store = await AsyncSnapshotStore.open(
+            self.app.settings.semantic_participation_state_path
+        )
         key = self.app.settings.semantic_participation_api_key.get_secret_value()
         if key:
             self._observer = JevObserver(key, model=self.app.settings.semantic_participation_model)
@@ -175,7 +179,7 @@ class SemanticParticipationService:
                 break
             scene = await self._scene(conversation_id)
             if scene is not None and scene.generation == generation:
-                self._session(scene)
+                await self._session(scene)
                 self._discovery_cursor += 1
         self._task = asyncio.create_task(self._loop(), name="semantic-participation")
 
@@ -183,14 +187,16 @@ class SemanticParticipationService:
         if self._task is not None:
             self._task.cancel()
             await asyncio.gather(self._task, return_exceptions=True)
-        for item in self._sessions.values():
-            self._save(item)
-        if self._observer is not None:
-            await self._observer.aclose()
-        if self._store is not None:
-            self._store.close()
-        self._sessions.clear()
-        self._dirty.clear()
+        async with self._lock, self._session_lock:
+            for item in self._sessions.values():
+                await self._save(item)
+            if self._observer is not None:
+                await self._observer.aclose()
+            if self._store is not None:
+                await self._store.close()
+                self._store = None
+            self._sessions.clear()
+            self._dirty.clear()
 
     async def control_snapshot(self) -> dict[str, object]:
         """Read current bounded host state without ticking, saving or re-evaluating Jev."""
@@ -307,13 +313,18 @@ class SemanticParticipationService:
                     )
                 ).all()
             )
-        for key in keys:
-            item = self._sessions.get(key)
-            if item is not None and generations.get(key[0]) != key[1] and not self._held(item):
-                self._save(item)
-                self._sessions.pop(key)
+        async with self._session_lock:
+            for key in keys:
+                item = self._sessions.get(key)
+                if item is not None and generations.get(key[0]) != key[1] and not self._held(item):
+                    await self._save(item)
+                    self._sessions.pop(key)
 
-    def _session(self, scene: Scene) -> _Session:
+    async def _session(self, scene: Scene) -> _Session:
+        async with self._session_lock:
+            return await self._load_session(scene)
+
+    async def _load_session(self, scene: Scene) -> _Session:
         key = (scene.conversation_id, scene.generation)
         if key in self._sessions:
             item = self._sessions[key]
@@ -324,18 +335,20 @@ class SemanticParticipationService:
             raise RuntimeError("participation_not_started")
         for old_key, old in tuple(self._sessions.items()):
             if old_key[0] == scene.conversation_id and old_key != key and not self._held(old):
-                self._save(old)
+                await self._save(old)
                 self._sessions.pop(old_key)
         if len(self._sessions) >= 32:
             idle = [k for k, value in self._sessions.items() if not self._held(value)]
             if not idle:
                 raise _ScopeCapacityBusy("participation_scope_capacity_busy")
             oldest = min(idle, key=lambda k: self._sessions[k].last_seen)
-            self._save(self._sessions[oldest])
+            await self._save(self._sessions[oldest])
             self._sessions.pop(oldest)
-        loaded = self._store.load(scene.scope)
+        loaded = await self._store.load(scene.scope)
         controller = (
-            Controller.restore(loaded[1], time.time(), self._model_parameters)
+            Controller.restore(
+                State.model_validate_json(loaded[1]), time.time(), self._model_parameters
+            )
             if loaded
             else Controller(scene.scope, time.time(), self._model_parameters)
         )
@@ -351,21 +364,44 @@ class SemanticParticipationService:
             controller,
             observation,
             loaded[0] if loaded else 0,
-            loaded[1].model_dump_json() if loaded else "",
+            loaded[1] if loaded else "",
             time.time(),
         )
         self._sessions[key] = item
         return item
 
-    def _save(self, item: _Session) -> None:
-        if self._store is None:
-            return
-        if item.observation is not None:
-            item.observation.checkpoint()
-        payload = item.controller.state.model_dump_json()
-        if payload != item.saved:
-            item.revision = self._store.save(item.controller.state, expected_revision=item.revision)
+    async def _save(self, item: _Session) -> None:
+        async with self._save_lock:
+            if self._store is None:
+                return
+            if item.observation is not None:
+                item.observation.checkpoint()
+            # The controller stays on the event loop; only immutable JSON crosses threads.
+            payload = item.controller.state.model_dump_json()
+            if payload == item.saved:
+                return
+            save = asyncio.create_task(self._store.save(payload, expected_revision=item.revision))
+            cancelled = False
+            try:
+                while not save.done():
+                    try:
+                        await asyncio.shield(save)
+                    except asyncio.CancelledError:
+                        # A running SQLite commit cannot be cancelled. Keep its actual revision,
+                        # then propagate cancellation, rather than retry a committed snapshot.
+                        cancelled = True
+                revision = save.result()
+            except Exception as exc:
+                if cancelled:
+                    logger.warning(
+                        "participation_snapshot_save_failed category=%s", type(exc).__name__
+                    )
+                    raise asyncio.CancelledError from exc
+                raise
+            item.revision = revision
             item.saved = payload
+            if cancelled:
+                raise asyncio.CancelledError
 
     async def _binding(self, item: _Session) -> AutonomyBinding:
         scene = item.scene
@@ -911,7 +947,7 @@ class SemanticParticipationService:
             if scene is None:
                 return False
             try:
-                item = self._session(scene)
+                item = await self._session(scene)
             except _ScopeCapacityBusy:
                 self.observe_context(message, direct=False)
                 return False
@@ -923,7 +959,7 @@ class SemanticParticipationService:
                 await self._hydrate(item)
                 await self._validate_boundaries(item)
                 binding = await self._binding(item)
-                self._save(item)
+                await self._save(item)
                 return binding.effective_owner is AutonomyOwner.LEGACY
             finally:
                 item.pins -= 1
@@ -937,7 +973,7 @@ class SemanticParticipationService:
             if scene is None:
                 return False
             try:
-                item = self._session(scene)
+                item = await self._session(scene)
             except _ScopeCapacityBusy:
                 self.observe_context(message, direct=False)
                 return False
@@ -968,10 +1004,10 @@ class SemanticParticipationService:
                 )
                 if result.run is not None:
                     item.controller.state.consumed[event.ref.event_id] = event.ref.revision
-                    self._save(item)
+                    await self._save(item)
                     await self._dispatch(result.run)
                     return True
-                self._save(item)
+                await self._save(item)
                 return False
             finally:
                 item.pins -= 1
@@ -1120,7 +1156,7 @@ class SemanticParticipationService:
                 scene = await self._scene(unseen[0])
                 if scene is not None and scene.generation == unseen[1]:
                     try:
-                        self._session(scene)
+                        await self._session(scene)
                     except _ScopeCapacityBusy:
                         pass
         pinned: dict[tuple[str, int], _Session] = {}
@@ -1139,7 +1175,7 @@ class SemanticParticipationService:
                     self._dirty.pop(conversation_id, None)
                     continue
                 try:
-                    item = self._session(scene)
+                    item = await self._session(scene)
                 except _ScopeCapacityBusy:
                     continue  # Keep this scope's dirty signal for the next available slot.
                 retain(item)
@@ -1158,9 +1194,11 @@ class SemanticParticipationService:
                         pending.pop(event_id)
                 if not pending:
                     self._dirty.pop(conversation_id, None)
-            # Pin synchronously before any task is scheduled or waits on the semaphore.
-            for item in tuple(self._sessions.values()):
-                retain(item)
+            # Eviction owns this same lock through checkpoint commit. Acquire it
+            # only for the synchronous pin batch, never while advancing a scope.
+            async with self._session_lock:
+                for item in tuple(self._sessions.values()):
+                    retain(item)
             semaphore = asyncio.Semaphore(2)
 
             async def advance(item: _Session) -> None:
@@ -1234,10 +1272,10 @@ class SemanticParticipationService:
             host_available=binding.effective_owner is AutonomyOwner.SEMANTIC,
             intrinsic_allowed=binding.effective_owner is AutonomyOwner.SEMANTIC,
         )
-        self._save(item)
+        await self._save(item)
         if proposal is not None:
             await self._admit(item, binding, proposal)
-            self._save(item)
+            await self._save(item)
 
     async def _loop(self) -> None:
         while True:

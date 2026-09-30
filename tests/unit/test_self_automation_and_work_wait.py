@@ -5,7 +5,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select, update
 from tests.conftest import make_settings
 from tests.support.social_identity_cases import social_env
 from tests.unit.test_automation_runtime import FakeClock, _script
@@ -28,6 +28,97 @@ from qq_ai_bot.runtime.work_wait import WorkWaitRepository
 from qq_ai_bot.runtime.work_wait_schema import waits
 from qq_ai_bot.social.db_models import SocialOperationModel
 from qq_ai_bot.time.service import TimeContextService
+
+
+@pytest.mark.asyncio
+async def test_future_wait_poll_is_read_only_but_invalidates_generation(database, tmp_path):
+    from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+
+    env = await social_env(database, tmp_path)
+    repository = WorkRepository(database)
+    waiting = WorkWaitRepository(repository)
+    lease = await repository.acquire(env.context.conversation_id, 1)
+    assert lease
+    source = {"principal_kind": "person", "actor_person_id": env.person}
+    item = await repository.accept(lease, source_key="future", source=source, goal="wait")
+    binding = await waiting.register(
+        lease,
+        work_id=item["id"],
+        source=source,
+        call_key="future-wait",
+        mode="any",
+        conditions=[{"kind": "time_due", "at": "2099-01-01T00:00:00+00:00"}],
+        deadline_at=None,
+    )
+    await repository.transition(lease, item["id"], 1, "waiting_external")
+    statements = []
+
+    def capture(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement.lstrip().upper())
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
+    try:
+        assert await waiting.deliver_due() == 0
+        await repository.repair_abandoned_inputs("current-process")
+        await repository.reclaim_terminal()
+    finally:
+        event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
+    assert not any(
+        s.startswith(("BEGIN IMMEDIATE", "UPDATE", "INSERT", "DELETE")) for s in statements
+    )
+    async with database.immediate_session() as session:
+        await session.execute(
+            update(CanonicalConversationModel)
+            .where(CanonicalConversationModel.id == env.context.conversation_id)
+            .values(generation=2)
+        )
+    assert await waiting.deliver_due() == 0
+    async with database.sessions() as session:
+        assert (
+            await session.scalar(select(waits.c.status).where(waits.c.id == binding["id"]))
+            == "invalidated"
+        )
+
+
+@pytest.mark.asyncio
+async def test_owned_run_wait_uses_child_work_state_once(database, tmp_path):
+    from sqlalchemy.dialects.sqlite import insert
+
+    from qq_ai_bot.runtime.subagent_schema import children
+    from qq_ai_bot.runtime.work_schema_v1 import work
+
+    env = await social_env(database, tmp_path)
+    repository = WorkRepository(database)
+    waiting = WorkWaitRepository(repository)
+    lease = await repository.acquire(env.context.conversation_id, 1)
+    assert lease
+    source = {"principal_kind": "person", "actor_person_id": env.person}
+    parent = await repository.accept(lease, source_key="parent", source=source, goal="wait")
+    child = await repository.accept(lease, source_key="child", source=source, goal="compute")
+    async with database.immediate_session() as session:
+        await session.execute(
+            insert(children).values(
+                work_id=child["id"], root_id=parent["id"], source_key="child-owner", brief_json="{}"
+            )
+        )
+    await waiting.register(
+        lease,
+        work_id=parent["id"],
+        source=source,
+        call_key="child-wait",
+        mode="any",
+        conditions=[{"kind": "owned_run", "run_id": child["id"]}],
+        deadline_at=None,
+    )
+    await repository.transition(lease, parent["id"], 1, "waiting_external")
+    assert await waiting.deliver_due() == 0
+    async with database.immediate_session() as session:
+        await session.execute(
+            update(work).where(work.c.id == child["id"]).values(state="completed")
+        )
+    assert await waiting.deliver_due() == 1
+    assert await waiting.deliver_due() == 0
+    assert (await repository.get(parent["id"]))["state"] == "queued"
 
 
 @pytest.mark.asyncio

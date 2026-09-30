@@ -112,7 +112,7 @@ async def test_silent_self_evidence_survives_audit_hygiene_lineage_and_dream_ide
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("corruption", ["excerpt", "speaker", "private_visibility"])
+@pytest.mark.parametrize("corruption", ["excerpt", "speaker", "private_visibility", "whitespace"])
 async def test_self_receipt_sql_and_python_reject_invalid_provenance_identically(
     database, corruption
 ):
@@ -128,6 +128,9 @@ async def test_self_receipt_sql_and_python_reject_invalid_provenance_identically
         )
         if corruption == "excerpt":
             evidence.excerpt = "不在真实工具回执中的内容"
+        elif corruption == "whitespace":
+            evidence.excerpt = "\n\t\u3000"
+            receipt.result_excerpt += evidence.excerpt
         elif corruption == "speaker":
             evidence.source_speaker_user_id = "1001"
         else:

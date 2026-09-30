@@ -1,6 +1,6 @@
 # Memory V2 受控历史重建
 
-Yuki 3.0.0rc1 可以从永久事件账本 `chat_events` 重新提取历史事实。重建是管理员主动发起的
+Yuki 可以从永久事件账本 `chat_events` 重新提取历史事实。重建是管理员主动发起的
 离线工作流，不是启动任务：Alembic、应用启动、Bot 重启和 Worker 启动都不会创建或恢复 run。
 `MEMORY_REBUILD_ENABLED=true` 只开放入口，仍需当前真实消息发送者属于 `SUPERUSERS` 并显式
 执行 start 或 resume。
@@ -14,6 +14,8 @@ Yuki 3.0.0rc1 可以从永久事件账本 `chat_events` 重新提取历史事实
   原始输出或完整上下文。
 - `memory_jobs.status=done` 仍是一个事件已完成记忆处理的唯一 receipt；`processing_source` 标明
   live 或 rebuild。没有第二套事实表或 receipt 表。
+- 回执收尾只处理 staged/no_claims 的 item；已 committed/skipped 的 item 不重扫、不重写，
+  同一 run 的已提交 receipt 不会被再次解释为实时任务冲突。重复收尾保留原状态、item/job ID 和回执。
 
 状态流为：
 
@@ -76,6 +78,21 @@ invalidated 历史事实。Rebuild 不调用 active 容量驱逐路径；容量�
 FTS 由现有触发器同步；active 新事实只排队现有 Embedding job。Embedding 故障不会回滚事实，
 run completed 也不表示异步向量已经生成完毕。
 
+每批 proposal 提交后，仅收尾该批涉及的 item，并额外处理一页可以收尾的 item，页大小不超过
+`MEMORY_REBUILD_COMMIT_BATCH_SIZE`。额外扫尾覆盖全部拒绝和 no_claims 的事件，不新增持久 cursor。
+只读准备批量加载 proposal 状态计数、事件与 canonical owner、已有实时回执；短写事务重新核验，
+再按真实回执结果更新 item。pending、processing、done 的实时任务不得被覆盖；只有 selection
+明确包含 failed live jobs 时才允许接管 failed。
+来源正文和指纹也在只读阶段按候选页核验；`trusted_metadata` 继续复用既有主体补全，
+可能增加只读查询，不在 writer 内补全或解析正文。没有候选或重复收尾时不申请 writer。
+可信引用的 Person、Binding、Presence 和内部 reply 事件元数据也纳入同一页的核验，
+包括被过滤的原始引用；准备后引用状态改变时延后该 item，下一轮重新准备。
+单项主体失效只将该 item 标记为来源变化，不阻塞其他 item，也不清空引用或改写来源哈希。
+
+只有待提交和失败 proposal、以及尚未收尾的 staged/no_claims item 均为空，run 才能进入 completed。
+单轮返回值仍是处理的 proposal 数；只有回执扫尾的轮次可以返回 0 并继续保持 committing，
+后续轮询继续处理剩余页。中途暂停或重启按已有 run、item 与 receipt 恢复，不重新执行已提交事实。
+
 ## 管理命令
 
 ```text
@@ -103,8 +120,8 @@ run completed 也不表示异步向量已经生成完毕。
 只有 completed/cancelled/failed run 可 purge。purge 只删除 staging；已提交事实、证据和事件
 receipt 保留。cancel 只停止后续处理，不回滚已提交事实。
 
-Tool Kernel 还提供十个 `admin_memory_rebuild_*` 工具，共用同一服务和真实事件权限绑定；工具不能
-跳过 review。Plugin API 保持 2.0，未暴露 rebuild。
+Tool Kernel 的 `admin_memory_rebuild_*` 工具共用同一服务和真实事件权限绑定，不能
+跳过 review。Plugin API 3.0 未暴露 rebuild。
 
 ## 配置
 
@@ -118,6 +135,11 @@ Tool Kernel 还提供十个 `admin_memory_rebuild_*` 工具，共用同一服务
 输入输出或密钥。review 是超级管理员主动请求的有界审阅页。`/ai forgetme` 会由事件外键级联
 清理 staging，删除以该人物为 subject 的 proposal，取消仅针对该人物的非终态 run，并从其余
 selection 中删除精确 QQ；已提交人物事实继续按现有 forgetme 规则删除。
+所有别名合并为一个 readonly prepared plan，精确匹配 JSON 数组成员并在 writer 前完成 selection
+重写和 hash。共享隐私 writer 必须传入 prepared；writer 复核完整 run 目录的 id/hash/status/
+updated_at，再按原行 token 删除 proposal 和更新 selection。目录或原行变更会使整个隐私事务
+回滚并要求重新准备；不通过 LIKE 匹配平台 ID，也不将多个别名拆为独立提交。
+
 
 `status` 的 token 数仅累计供应商实际返回的 usage；供应商不返回时保持 0，不做字符数伪估算。
 延迟以累计毫秒记录，Embedding 任务数按本 run 提交后实际关联的新任务统计。
@@ -132,5 +154,5 @@ selection 中删除精确 QQ；已提交人物事实继续按现有 forgetme 规
 - `rebuild_capacity_preserved`：当前 active 容量已满；调整容量、清理事实或拒绝 proposal 后重试。
 - `historical_claim_expired`：selection 使用默认 skip，过期历史不会成为 active。
 
-升级前必须停止写入并同步备份 DB/WAL/SHM。当前 canonical head 为 `0051`；`0049` 不提供
-downgrade，生产回退只能恢复升级前同一时点的完整快照，不能依赖旧施工期 revision 的降级语义。
+升级按生产手册停止写入并保存一致性数据库与配置备份，schema 以当前包的 Alembic head 为准。
+代码回退核对相应迁移的降级能力与镜像要求，不能覆盖上线后新增的消息、事实和回执。

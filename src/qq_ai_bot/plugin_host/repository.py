@@ -414,7 +414,7 @@ class PluginConfigRepository:
         if row is None:
             if expected_version != 0:
                 raise PluginVersionConflictError("plugin config version changed")
-            row = PluginConfigValueModel(
+            statement = insert(PluginConfigValueModel).values(
                 plugin_id=plugin_id,
                 scope_type=scope_type,
                 key=key[:128],
@@ -424,19 +424,40 @@ class PluginConfigRepository:
                 canonical_person_id=person_id,
                 canonical_space_id=space_id,
             )
-            session.add(row)
             try:
-                await session.flush()
+                row = await session.scalar(
+                    statement.on_conflict_do_nothing().returning(PluginConfigValueModel)
+                )
             except IntegrityError as exc:
                 raise PluginOwnershipError(STATE_MISMATCH) from exc
+            if row is None:
+                raise PluginVersionConflictError("plugin config version changed")
             return _config_record(row, scope_id=scope_id)
         if expected_version == 0 or row.version != expected_version:
             raise PluginVersionConflictError("plugin config version changed")
         await require_config_readable(session, row)
-        row.value_json = value_json
-        row.version = expected_version + 1
-        row.updated_at = next_updated_at(row.updated_at, timestamp)
-        return _config_record(row, scope_id=scope_id)
+        replacement = await session.scalar(
+            update(PluginConfigValueModel)
+            .where(
+                PluginConfigValueModel.id == row.id,
+                PluginConfigValueModel.plugin_id == plugin_id,
+                PluginConfigValueModel.scope_type == scope_type,
+                PluginConfigValueModel.key == key,
+                PluginConfigValueModel.canonical_person_id == person_id,
+                PluginConfigValueModel.canonical_space_id == space_id,
+                PluginConfigValueModel.version == expected_version,
+            )
+            .values(
+                value_json=value_json,
+                version=expected_version + 1,
+                updated_at=next_updated_at(row.updated_at, timestamp),
+            )
+            .returning(PluginConfigValueModel)
+            .execution_options(populate_existing=True)
+        )
+        if replacement is None:
+            raise PluginVersionConflictError("plugin config version changed")
+        return _config_record(replacement, scope_id=scope_id)
 
     async def delete(
         self,
@@ -474,8 +495,21 @@ class PluginConfigRepository:
             await require_config_readable(session, row)
             if expected_version is not None and row.version != expected_version:
                 raise PluginVersionConflictError("plugin config version changed")
-            await session.delete(row)
-            return True
+            statement = delete(PluginConfigValueModel).where(
+                PluginConfigValueModel.id == row.id,
+                PluginConfigValueModel.plugin_id == plugin_id,
+                PluginConfigValueModel.scope_type == scope_type,
+                PluginConfigValueModel.key == key,
+                PluginConfigValueModel.canonical_person_id == person_id,
+                PluginConfigValueModel.canonical_space_id == space_id,
+            )
+            if expected_version is not None:
+                statement = statement.where(PluginConfigValueModel.version == expected_version)
+            result = await session.execute(statement)
+            deleted = bool(cast(CursorResult[Any], result).rowcount)
+            if expected_version is not None and not deleted:
+                raise PluginVersionConflictError("plugin config version changed")
+            return deleted
 
 
 class PluginStateRepository:
@@ -593,14 +627,18 @@ class PluginStateRepository:
         timestamp = _aware_utc(now or datetime.now(UTC))
         expiry = _aware_utc(expires_at) if expires_at is not None else None
         value_json = _json(value)
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             from qq_ai_bot.plugin_host.ownership import (
                 CANONICAL_OWNER_MISMATCH,
                 PluginOwnershipError,
+                project_person_external_id,
                 resolve_state_owner,
             )
 
             owner_id = await resolve_state_owner(session, subject_user_id)
+            projected_subject = (
+                await project_person_external_id(session, owner_id) if owner_id else None
+            )
             if expected_version == 0:
                 await session.execute(
                     delete(PluginStateModel).where(
@@ -663,7 +701,7 @@ class PluginStateRepository:
                 )
             )
             assert row is not None
-            return await _state_record(session, row)
+            return await _state_record(session, row, subject_user_id=projected_subject)
 
     async def delete(
         self,
@@ -691,12 +729,24 @@ class PluginStateRepository:
 
     async def cleanup_expired(self, *, now: datetime | None = None) -> int:
         timestamp = _aware_utc(now or datetime.now(UTC))
-        async with self._database.sessions() as session, session.begin():
-            result = await session.execute(
-                delete(PluginStateModel).where(
-                    PluginStateModel.expires_at.is_not(None),
-                    PluginStateModel.expires_at <= timestamp,
+        eligible = (
+            PluginStateModel.expires_at.is_not(None),
+            PluginStateModel.expires_at <= timestamp,
+        )
+        async with self._database.sessions() as reader:
+            ids = tuple(
+                await reader.scalars(
+                    select(PluginStateModel.id)
+                    .where(*eligible)
+                    .order_by(PluginStateModel.expires_at, PluginStateModel.id)
+                    .limit(128)
                 )
+            )
+        if not ids:
+            return 0
+        async with self._database.immediate_session() as session:
+            result = await session.execute(
+                delete(PluginStateModel).where(PluginStateModel.id.in_(ids), *eligible)
             )
             return int(cast(CursorResult[Any], result).rowcount or 0)
 
@@ -795,9 +845,10 @@ def _config_record(
     )
 
 
-async def _state_record(session: AsyncSession, row: PluginStateModel) -> PluginStateRecord:
-    subject_user_id: str | None = None
-    if row.canonical_person_id:
+async def _state_record(
+    session: AsyncSession, row: PluginStateModel, *, subject_user_id: str | None = None
+) -> PluginStateRecord:
+    if row.canonical_person_id and subject_user_id is None:
         from qq_ai_bot.plugin_host.ownership import project_person_external_id
 
         subject_user_id = await project_person_external_id(session, row.canonical_person_id)

@@ -365,6 +365,7 @@ async def test_derived_audio_updates_revision_and_survives_migration_rollback(
     from alembic import command
     from alembic.config import Config
 
+    from qq_ai_bot.conversation.projection_revision_schema import PROJECTION_ADDITIONS_0082
     from qq_ai_bot.persistence.schema_guard import require_canonical_schema
 
     harness = build_harness(database, make_settings(database.url))
@@ -390,6 +391,12 @@ async def test_derived_audio_updates_revision_and_survives_migration_rollback(
         assert conversation.uncovered_character_count > count
     monkeypatch.setenv("DATABASE_URL", database.url)
     config = Config("alembic.ini")
+    # create_schema uses current triggers. Reconstruct the stamped 0055
+    # fixture before exercising its downgrade/upgrade, rather than leaving
+    # 0082 triggers installed on a database declared to predate them.
+    async with database.engine.begin() as connection:
+        for name in PROJECTION_ADDITIONS_0082:
+            await connection.execute(text(f"DROP TRIGGER {name}"))
     await asyncio.to_thread(command.stamp, config, "0055")
     await asyncio.to_thread(command.downgrade, config, "0054")
     # Original chat text still works with the previous FTS schema; no speech is erased.

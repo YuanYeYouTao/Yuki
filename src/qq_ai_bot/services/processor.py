@@ -118,6 +118,7 @@ from qq_ai_bot.services.turn_coordinator import (
     TurnSupersededError,
 )
 from qq_ai_bot.services.user_profiles import (
+    PROFILE_LOOKUP_TIMEOUT_SECONDS,
     UserProfileResolver,
     UserProfileService,
     sanitize_profile_name,
@@ -767,7 +768,9 @@ class MessageProcessor:
                 group_policy,
                 profile_resolver,
             )
-            profile = await self._user_profiles.capture(message, profile_resolver)
+            profile = await self._user_profiles.capture(
+                message, profile_resolver, runtime=runtime_snapshot
+            )
         if is_authorized_new:
             await self._turn_coordinator.cancel_running_before_boundary(coordinator_key)
             try:
@@ -1337,7 +1340,7 @@ class MessageProcessor:
                 self._group_name_refreshes.popitem(last=False)
             resolve_name = cast(Callable[[str], Awaitable[str]], method)
             try:
-                async with asyncio.timeout(3):
+                async with asyncio.timeout(PROFILE_LOOKUP_TIMEOUT_SECONDS):
                     group_name = sanitize_profile_name(await resolve_name(message.group_id))
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 logger.warning(

@@ -136,6 +136,43 @@ SDK 回调等待约 5 秒可返回 `work_id/state/pending`；等待不是模型�
 上下文不得替换旧前缀。来源或合同变化走显式链边界，保留工作、预算和执行证据。
 结果由调用方取得不代表 QQ 已发送；只有实际网关回执可以确认发送。
 
+Journal 保留 dispatched、response、paired 的独立持久边界。不可变媒体只批量插入缺少的 blob，
+按引用差额增删当前 Work 的 refs；其 pending/staged 输入尚未并入 transcript 时仍保留媒体引用。
+其他 Work 的引用不被当前保存回收。恢复仍按原 call、response、预算和执行回执，不因减少媒体
+写放大而跳过请求意图、实际响应或成对工具结果的记录。
+
+Work 发现首个 pending 输入尚未准备完时，立即按原 `WorkInputsPreparing` 退出本轮，
+由既有结算提交 `waiting_external` 并释放 activation，不轮询等待附件处理。
+准备提交按原输入 ID、Work 和 canonical generation 核验所有权，原输入的图像使用既有
+媒体 blob/引用持久化；即使旧 activation 已退出或进程重启，也能恢复。准备完成与结算
+在同一 SQLite writer 边界串行核验首个输入：先准备或先结算均续原 Work 入队；后面的
+ready 输入不能越过未准备的首项。已准备或消费的输入重试只确认原记录，不覆盖内容或预算。
+
+普通聊天的 context prepare 与前台 rollup 等待在 effect gate 外执行。准备完成后，
+gate 内只复核 turn snapshot、read version 或原 Work source guard 并提交有界 projection；
+模型请求继续使用同一来源核验。reset/privacy 在准备等待期间可取得 gate，失效的旧链
+不能继续 dispatch 或发送。
+
+尚无模型 journal 的原 Work 遇到 required rollup 时，在原 checkpoint 中记录准备水位与
+原期限，交给既有 canonical rollup job，随即按原 `waiting_external` 结算并释放 activation。
+WorkScheduler 每轮先只读发现至多 32 个已完成、失败或到期的准备，再在短写事务复核并
+将原 Work 入队；空页无写事务。完成先于结算、进程重启和取消都按原 Work/generation
+恢复，不补造输入或重置预算。真实原 Work 的压缩前置需求保留 REQUIRED 模型优先级，
+已有 processing claim 和失败 backoff 不被接管；原期限或失败仍使用既有 extractive fallback。
+已有模型 history 不走这个准备等待，不通过压缩改写已冻结前缀；来源冲突使用现行显式链边界。
+
+旧来源核验先在显式 SQLite 只读快照中读取事件、rollup 及其指纹，结束读事务后才核验
+原执行租约，并在短写事务复查 generation、起点、canonical owner 和既有
+`prompt_source_revision`。读与写之间有来源变动时拒绝本次核验；失败不更新进程内
+指纹或已接纳事件记录。新事件首次加入前可完成 ASR/视觉补充，加入后仍禁止旧来源
+变更；不能用减少指纹字段换取缩短写锁。
+
+0082 为既有 revision 补齐 canonical owner、事件元数据更新、rollup 移出原会话的
+触发器闭包，没有新增持久字段。升级和降级只创建/删除这四个触发器，不清理聊天、
+Work 或发送回执。
+旧镜像的启动检查要求旧迁移 head，因此回退到 0081 镜像前需用新镜像执行
+`alembic downgrade 0081`，再替换镜像；不能直接恢复旧数据库覆盖上线后产生的事实。
+
 Work 冲突在恢复记录和运维日志中保留受控的具体原因码，不把任意异常文本发到聊天。
 `work_journal_source_changed` 若尚无效果或投递回执，可用原 Work ID 有界重试，并在新来源
 上建立显式链边界；已有任何效果记录时暂停并提示核对状态，不自动重放已创建的自动任务、
@@ -168,14 +205,30 @@ SubagentScheduler 同样启动以恢复原子任务；新子任务接纳关闭�
 
 ## 预算、等待与异常
 
+自动化创建在最终短 writer 中复核永久创建者、当前权限、SELF 场景及 active 数量上限；
+同 creation key 的原结果先于容量拒绝。普通 create/update/pause/resume/cancel/run_now
+与强制管理审计共用事务，审计失败一同回滚，before 使用写时实际版本；resume/run_now
+保留原准入 policy。读取目录不授予修改权限，修改按当前 canonical owner 或 superuser 核验。
+
 每段默认 24 次模型请求、32 次业务工具调用，单段用尽排队续跑。主任务与工作者仍共用
 120/160 总额及工作者收尾预留。一次自动化 run 内的多个主生成工作额外共用 120/160，
 同一事务预留，不能换步骤、重启或取结果获得新额度。纯 DSL 保留原声明限制。
 旧含 Yuki 生成步骤的脚本采用 runtime 预算，不因旧外层 1 次模型 / 2 次工具限制拒绝已完成工作。
 自动化的旧累计激活时间限制不再作为主 Agent 总寿命；Provider 请求超时和总预算仍有效。
 
-后台模型入口共用有界并发，配置总并发大于 1 时保留一个前台名额；总并发为 1 时无法同时运行。
+真实 Provider 请求只在 `TaskModelExecutor` 统一接纳。后台与维护请求合计不超过
+`max(1, N-1)`，总请求不超过 N；N 大于 1 时保留一个前台名额，N 为 1 时串行并优先
+接纳已排队的前台。普通持久后台请求使用不可抢占的 `BACKGROUND`；关系评价和
+attribution 等最佳努力任务仍可被前台抢占，`REQUIRED` 压缩按前台必需工作接纳。
+`ConcurrencyManager` 只保留会话互斥和排队/执行中的取消登记。Runner 在实际请求
+接纳后复核来源、登记一次逻辑请求预算和 dispatched 检查点；HTTP 重试不重复预留
+这笔预算，额外真实请求沿原 transport accounting 计费。
 自动化 claim 使用每次唯一所有者并续期，提交时再次核验；忙任务延迟接纳，不创建新 run。
+Work、工作者与自动化的续租任务由原激活 task 监督。续租返回失效、非瞬态数据库错误
+或计量失败会停止该激活，并交回原 Work/run 的恢复；不新建执行身份、不清空预算或 journal。
+续租只对具有明确 SQLite `BUSY` 扩展错误码的错误，在最后确认的租约到期前有界重试；
+`LOCKED` 不按外部 writer 繁忙重试。renew 与 meter 分别记录失败阶段，meter 写入失败
+不在心跳中重放。等待 writer 后的自动化续租也在 SQL 执行时检查原 claim 尚未到期。
 新 run 与保存原 script_hash 的初始 ready 游标在同一事务登记；登记后重启恢复同一个 run。
 恢复当前时段的历史 running run 若缺少游标，明确记为 uncertain/missing_initial_run_cursor，
 保留已有计数、预算与结果，不补造空游标或重新执行业务步骤。旧版本已经跳过时段的历史
@@ -187,6 +240,11 @@ SubagentScheduler 同样启动以恢复原子任务；新子任务接纳关闭�
 `uncertain` 回执，后续副作用受现有 WorkSession 围栏阻止。读取可按声明重试。
 自动化收到插件任务句柄后查询该 work，不重新执行产生句柄的 handler。
 未取得可核验结果的外层 dispatch 恢复为 uncertain，不猜测成功或重跑。
+DSL 外层 deadline 在权限复核后区分实际进入 handler 的 SEND/MUTATE 与纯 READ、
+尚未通过验证的步骤：前者没有终态效果证据时保留 uncertain，后两者保持 failed。
+原 cursor、run/step 请求键和 Social receipt 不重建；单效果的已确认回执可以说明
+accepted/failed，部分复合交付不充当整个步骤已完成的证据。效果已确认但步骤记账失败
+仍报告运行失败，并保留已确认投递计数；恢复只读原 dispatch，不再次调用 handler。
 
 普通回答无需先调用 task_control.answer。模型最终文字可结束内部循环，但不触发发送；
 工作完成仍由同一回执校验检查未结束执行和 artifact。发送是否成功只看显式发送回执，
@@ -208,6 +266,13 @@ SubagentScheduler 同样启动以恢复原子任务；新子任务接纳关闭�
 命中原 Work 的事件不会同时启动独立的插件 Agent 轮。
 `task_control.wait_status` 查看原 Work 的绑定及未满足条件，`cancel_wait` 撤销它；
 `waiting_user` 只由原提问内部发送事件所收到的同一 Person 回复自动恢复，普通群消息仍按新输入处理。
+
+时钟轮询先分页只读观察等待条件、原 Work 终态及 Conversation/Work generation，
+没有变化时不取得 SQLite 写锁。有变化的最多 128 个候选在短写事务中重新核验，
+再更新部分命中、失效状态或向原 Work 投递；所属子 Agent 的状态取自原 Work。
+输入准备修复、终态回收及 Emoji 分析领取也先只读发现候选，空轮询不产生写事务。
+Emoji 只接管候选中的到期分析租约，不全局清扫过期行。Work 激活的有效期在执行
+数据库语句时核验；等待写锁期间到期的旧租约不能续期或提交状态。
 
 ## 持久化与验证
 
@@ -246,12 +311,12 @@ SELF 工具证据以 event/run 二选一归属，
 成功请求之后的统计身份校验错误或编程错误仍会抛出。任务取消照常传播，不承诺
 取消或进程终止时仍能交还、持久化已经收到的 Provider 响应。
 
-统计仍在返回模型结果前同步写入，SQLite 锁竞争可能等待当前默认 5 秒 busy timeout；
-此处处理异常对结果的影响，尚未消除统计造成的请求等待。不盲目重试提交结果未知的
-统计 INSERT。日志 `model_invocation_record_failed` 标记 coverage_incomplete 与本进程
-写入报错次数；提交结果可能未知，不把报错次数当作确定缺失数。该区间数据库聚合
-只代表已落盘样本，不能宣称完整命中率。预算、授权、请求检查点和工具回执仍按
-原持久化合同失败关闭。
+生产统计由调用任务先盖入可信身份和时间，再提交到共享有界诊断队列；模型返回和
+并发名额释放不等待统计写锁。数据库聚合只代表已经落盘的样本，队列中仍可能有待写记录，
+不能宣称完整命中率。入队拒绝、异步写入失败及关闭丢弃通过内容无关日志和诊断 health
+报告 coverage_incomplete；报错可能发生在真实提交后，不把失败次数当作确定缺失数，也不重试
+结果未知的 INSERT。容量、隐私删除围栏及生命周期见 [执行过程查看](execution-trace.md)。
+预算、授权、请求检查点和工具回执仍按原持久化合同失败关闭。
 
 尚未接纳工作的普通聊天，对原本发送运维反馈的 Provider、校验及其他内部异常分支
 复用 RuntimeFailure 分类，区分数据库繁忙、内部错误、认证/请求配置问题和 Provider
@@ -267,5 +332,6 @@ Provider 实际返回的可读思考、重试与工具批次结果。它独立�
 没有重放、预算重置或发送权限。Chat 在组装历史和 Memory 前绑定诊断删除代次，
 隐私删除后旧调用不能再写回旧上下文。
 诊断数据库/编码失败只报告 coverage_incomplete；取消及进程终止照常传播，
-不承诺取消时仍能保存或交还已收到的响应。SQLite 同步写入仍可能等待现有 busy timeout，
-本轮没有引入异步诊断队列或额外恢复状态机。
+不承诺取消时仍能保存或交还已收到的响应。过程记录复用上述有界诊断队列，
+异步提交失败由诊断日志和 health 报告；轮次结束标记只反映当时已知的记录缺口。
+诊断可以丢弃，不建立额外持久恢复状态，也不替代任何真实效果回执。

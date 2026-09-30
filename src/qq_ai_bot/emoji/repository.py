@@ -6,9 +6,9 @@ import json
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Literal
+from typing import Literal, cast
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -49,6 +49,21 @@ class EmojiJob:
     emoji_id: str
     job_type: EmojiJobType
     attempts: int
+    claimed_by: str
+    claimed_until: datetime
+
+
+class EmojiClaimLostError(RuntimeError):
+    """A derived analysis belongs to an attempt that no longer owns its job."""
+
+
+def _job_claim(job: EmojiJob) -> ColumnElement[bool]:
+    return (
+        (EmojiJobModel.id == job.id)
+        & (EmojiJobModel.status == "processing")
+        & (EmojiJobModel.claimed_by == job.claimed_by)
+        & (EmojiJobModel.claimed_until == job.claimed_until)
+    )
 
 
 class EmojiRepository:
@@ -155,7 +170,26 @@ class EmojiRepository:
             "created_at": timestamp,
             "updated_at": timestamp,
         }
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
+            existing = await session.scalar(
+                select(EmojiAssetModel).where(EmojiAssetModel.sha256 == media.sha256)
+            )
+            person_id = (
+                await try_live_person_id(
+                    session, existing.first_seen_user_id if existing else user_id
+                )
+                if existing is None or existing.canonical_first_seen_person_id is None
+                else None
+            )
+            space_id = (
+                await try_live_space_id(
+                    session, existing.first_seen_group_id if existing else group_id
+                )
+                if existing is None or existing.canonical_first_seen_space_id is None
+                else None
+            )
+            values["canonical_first_seen_person_id"] = person_id
+            values["canonical_first_seen_space_id"] = space_id
             statement = (
                 insert(EmojiAssetModel)
                 .values(**values)
@@ -169,6 +203,12 @@ class EmojiRepository:
                         "preview_relative_path": media.preview_relative_path,
                         "perceptual_hash": media.perceptual_hash,
                         "missing_since": None,
+                        "canonical_first_seen_person_id": func.coalesce(
+                            EmojiAssetModel.canonical_first_seen_person_id, person_id
+                        ),
+                        "canonical_first_seen_space_id": func.coalesce(
+                            EmojiAssetModel.canonical_first_seen_space_id, space_id
+                        ),
                         "status": func.iif(
                             EmojiAssetModel.status == EmojiLifecycleStatus.MISSING.value,
                             EmojiLifecycleStatus.CANDIDATE.value,
@@ -179,25 +219,12 @@ class EmojiRepository:
             )
             result = await session.execute(statement)
             row = await session.scalar(
-                select(EmojiAssetModel).where(EmojiAssetModel.sha256 == media.sha256)
+                select(EmojiAssetModel)
+                .where(EmojiAssetModel.sha256 == media.sha256)
+                .execution_options(populate_existing=True)
             )
             if row is None:
                 raise RuntimeError("emoji candidate upsert did not return a row")
-            stamp_canonical_owners(
-                row,
-                person_attr="canonical_first_seen_person_id",
-                space_attr="canonical_first_seen_space_id",
-                person_id=(
-                    None
-                    if row.canonical_first_seen_person_id is not None
-                    else await try_live_person_id(session, row.first_seen_user_id)
-                ),
-                space_id=(
-                    None
-                    if row.canonical_first_seen_space_id is not None
-                    else await try_live_space_id(session, row.first_seen_group_id)
-                ),
-            )
             created = row.id == asset_id and _rowcount(result) == 1
             return self._asset(row), created
 
@@ -208,19 +235,18 @@ class EmojiRepository:
         *,
         status: EmojiLifecycleStatus,
         now: datetime | None = None,
+        job: EmojiJob | None = None,
     ) -> EmojiAsset:
         timestamp = now or datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
+            if job is not None and (
+                job.emoji_id != emoji_id
+                or await session.scalar(select(EmojiJobModel.id).where(_job_claim(job))) is None
+            ):
+                raise EmojiClaimLostError("emoji analysis claim changed")
             row = await session.get(EmojiAssetModel, emoji_id)
             if row is None:
                 raise LookupError("emoji asset not found")
-            row.description = analysis.description
-            row.emotion_tags_json = json.dumps(analysis.emotion_tags, ensure_ascii=False)
-            row.usage_scenarios_json = json.dumps(analysis.usage_scenarios, ensure_ascii=False)
-            row.ocr_text = analysis.ocr_text
-            row.intensity = analysis.intensity
-            row.confidence = analysis.confidence
-            row.analysis_version = analysis.analysis_version
             enabled_scope_count = await session.scalar(
                 select(func.count())
                 .select_from(EmojiScopeStateModel)
@@ -229,6 +255,13 @@ class EmojiRepository:
                     EmojiScopeStateModel.enabled.is_(True),
                 )
             )
+            row.description = analysis.description
+            row.emotion_tags_json = json.dumps(analysis.emotion_tags, ensure_ascii=False)
+            row.usage_scenarios_json = json.dumps(analysis.usage_scenarios, ensure_ascii=False)
+            row.ocr_text = analysis.ocr_text
+            row.intensity = analysis.intensity
+            row.confidence = analysis.confidence
+            row.analysis_version = analysis.analysis_version
             if status is EmojiLifecycleStatus.RECOGNIZED and enabled_scope_count:
                 row.status = EmojiLifecycleStatus.ADOPTED.value
             else:
@@ -284,12 +317,21 @@ class EmojiRepository:
         scope_id: str = "",
         weight: float = 1.0,
         now: datetime | None = None,
+        job: EmojiJob | None = None,
+        replacement_id: str | None = None,
+        capacity: int | None = None,
+        require_recognized: bool = False,
     ) -> EmojiScopeState:
         self._validate_scope(scope_type, scope_id)
         if weight < 0:
             raise ValueError("emoji scope weight must be non-negative")
         timestamp = now or datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
+            if job is not None and (
+                job.emoji_id != emoji_id
+                or await session.scalar(select(EmojiJobModel.id).where(_job_claim(job))) is None
+            ):
+                raise EmojiClaimLostError("emoji adoption claim changed")
             asset = await session.get(EmojiAssetModel, emoji_id)
             if asset is None:
                 raise LookupError("emoji asset not found")
@@ -298,9 +340,72 @@ class EmojiRepository:
                 EmojiLifecycleStatus.MISSING.value,
             }:
                 raise ValueError("banned or missing emoji cannot be adopted")
+            if require_recognized and asset.status not in {
+                EmojiLifecycleStatus.RECOGNIZED.value,
+                EmojiLifecycleStatus.ADOPTED.value,
+            }:
+                raise ValueError("only recognized emoji can be adopted")
             space_id = None
             if scope_type == "group":
                 space_id = await resolve_live_space_id(session, scope_id)
+            scope_filter = (EmojiScopeStateModel.scope_type == scope_type) & (
+                EmojiScopeStateModel.canonical_space_id == space_id
+            )
+            existing = await session.scalar(
+                select(EmojiScopeStateModel).where(
+                    scope_filter, EmojiScopeStateModel.emoji_id == emoji_id
+                )
+            )
+            replacement = None
+            remaining = 0
+            if capacity is not None and not (existing and existing.enabled):
+                count = int(
+                    await session.scalar(
+                        select(func.count(func.distinct(EmojiScopeStateModel.emoji_id))).where(
+                            scope_filter, EmojiScopeStateModel.enabled.is_(True)
+                        )
+                    )
+                    or 0
+                )
+                if count >= capacity:
+                    if replacement_id is None:
+                        raise ValueError("emoji pool changed or is full")
+                    replacement = await session.scalar(
+                        select(EmojiAssetModel)
+                        .join(
+                            EmojiScopeStateModel,
+                            EmojiScopeStateModel.emoji_id == EmojiAssetModel.id,
+                        )
+                        .where(
+                            scope_filter,
+                            EmojiScopeStateModel.enabled.is_(True),
+                            EmojiAssetModel.id == replacement_id,
+                            EmojiAssetModel.pinned.is_(False),
+                        )
+                    )
+                    if replacement is None:
+                        raise ValueError("emoji replacement candidate changed")
+                    remaining = int(
+                        await session.scalar(
+                            select(func.count())
+                            .select_from(EmojiScopeStateModel)
+                            .where(EmojiScopeStateModel.emoji_id == replacement_id, ~scope_filter)
+                        )
+                        or 0
+                    )
+            # Resolve the return projection before the first mutation as well.
+            scope = await self._scope(
+                session,
+                EmojiScopeStateModel(
+                    emoji_id=emoji_id,
+                    scope_type=scope_type,
+                    canonical_space_id=space_id,
+                    enabled=True,
+                    weight=weight,
+                    adopted_at=existing.adopted_at if existing else timestamp,
+                    updated_at=timestamp,
+                ),
+            )
             statement = insert(EmojiScopeStateModel).values(
                 emoji_id=emoji_id,
                 scope_type=scope_type,
@@ -325,19 +430,20 @@ class EmojiRepository:
                     index_where=EmojiScopeStateModel.scope_type == "group",
                     set_={"enabled": True, "weight": weight, "updated_at": timestamp},
                 )
+            if replacement is not None:
+                await session.execute(
+                    delete(EmojiScopeStateModel).where(
+                        scope_filter, EmojiScopeStateModel.emoji_id == replacement_id
+                    )
+                )
+                if not remaining:
+                    replacement.status = EmojiLifecycleStatus.RECOGNIZED.value
+                    replacement.updated_at = timestamp
             await session.execute(statement)
             asset.status = EmojiLifecycleStatus.ADOPTED.value
             asset.updated_at = timestamp
-            row = await session.scalar(
-                select(EmojiScopeStateModel).where(
-                    EmojiScopeStateModel.emoji_id == emoji_id,
-                    EmojiScopeStateModel.scope_type == scope_type,
-                    EmojiScopeStateModel.canonical_space_id == space_id,
-                )
-            )
-            if row is None:
-                raise RuntimeError("emoji scope upsert did not return a row")
-            return await self._scope(session, row)
+            await session.flush()
+            return scope
 
     async def remove_scope(
         self,
@@ -680,32 +786,32 @@ class EmojiRepository:
         if limit <= 0 or lease_seconds <= 0:
             raise ValueError("job limits must be positive")
         now = datetime.now(UTC)
-        lease = now + timedelta(seconds=lease_seconds)
-        async with self._database.sessions() as session, session.begin():
-            await session.execute(
-                update(EmojiJobModel)
-                .where(
-                    EmojiJobModel.status == "processing",
-                    EmojiJobModel.claimed_until < now,
-                )
-                .values(status="pending", claimed_until=None, claimed_by=None, updated_at=now)
-            )
+
+        def eligible(at: datetime) -> ColumnElement[bool]:
+            return or_(
+                EmojiJobModel.status == "pending",
+                (EmojiJobModel.status == "processing") & (EmojiJobModel.claimed_until < at),
+            ) & (EmojiJobModel.next_attempt_at <= at)
+
+        # No writer reservation for empty polls; analysis jobs can be retried after
+        # an expired lease without first rewriting every expired row in the table.
+        async with self._database.sessions() as discovery:
             ids = tuple(
-                await session.scalars(
+                await discovery.scalars(
                     select(EmojiJobModel.id)
-                    .where(
-                        EmojiJobModel.status == "pending",
-                        EmojiJobModel.next_attempt_at <= now,
-                    )
-                    .order_by(EmojiJobModel.created_at)
-                    .limit(limit)
+                    .where(eligible(now))
+                    .order_by(EmojiJobModel.created_at, EmojiJobModel.id)
+                    .limit(min(limit, 128))
                 )
             )
-            if not ids:
-                return ()
+        if not ids:
+            return ()
+        async with self._database.immediate_session() as session:
+            now = datetime.now(UTC)
+            lease = now + timedelta(seconds=lease_seconds)
             await session.execute(
                 update(EmojiJobModel)
-                .where(EmojiJobModel.id.in_(ids), EmojiJobModel.status == "pending")
+                .where(EmojiJobModel.id.in_(ids), eligible(now))
                 .values(
                     status="processing", claimed_until=lease, claimed_by=worker_id, updated_at=now
                 )
@@ -713,20 +819,32 @@ class EmojiRepository:
             rows = (
                 await session.scalars(
                     select(EmojiJobModel).where(
-                        EmojiJobModel.id.in_(ids), EmojiJobModel.claimed_by == worker_id
+                        EmojiJobModel.id.in_(ids),
+                        EmojiJobModel.claimed_by == worker_id,
+                        EmojiJobModel.claimed_until == lease,
                     )
                 )
             ).all()
-            return tuple(
-                EmojiJob(row.id, row.emoji_id, row.job_type, row.attempts)  # type: ignore[arg-type]
-                for row in rows
-            )
+            result = []
+            for row in rows:
+                assert row.claimed_by is not None and row.claimed_until is not None
+                result.append(
+                    EmojiJob(
+                        row.id,
+                        row.emoji_id,
+                        cast(EmojiJobType, row.job_type),
+                        row.attempts,
+                        row.claimed_by,
+                        row.claimed_until,
+                    )
+                )
+            return tuple(result)
 
-    async def complete_job(self, job_id: int) -> None:
+    async def complete_job(self, job: EmojiJob) -> bool:
         async with self._database.sessions() as session, session.begin():
-            await session.execute(
+            result = await session.execute(
                 update(EmojiJobModel)
-                .where(EmojiJobModel.id == job_id)
+                .where(_job_claim(job))
                 .values(
                     status="completed",
                     claimed_until=None,
@@ -735,29 +853,36 @@ class EmojiRepository:
                     updated_at=datetime.now(UTC),
                 )
             )
+            return bool(_rowcount(result))
 
     async def fail_job(
         self,
-        job_id: int,
+        job: EmojiJob,
         *,
         error_category: str,
         max_attempts: int,
         retry_delay_seconds: float,
-    ) -> None:
+    ) -> bool:
         if max_attempts <= 0 or retry_delay_seconds < 0:
             raise ValueError("retry policy is invalid")
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
-            row = await session.get(EmojiJobModel, job_id)
-            if row is None:
-                return
-            row.attempts += 1
-            row.status = "failed" if row.attempts >= max_attempts else "pending"
-            row.next_attempt_at = now + timedelta(seconds=retry_delay_seconds)
-            row.claimed_until = None
-            row.claimed_by = None
-            row.error_category = error_category[:64]
-            row.updated_at = now
+            result = await session.execute(
+                update(EmojiJobModel)
+                .where(_job_claim(job))
+                .values(
+                    attempts=EmojiJobModel.attempts + 1,
+                    status=case(
+                        (EmojiJobModel.attempts + 1 >= max_attempts, "failed"), else_="pending"
+                    ),
+                    next_attempt_at=now + timedelta(seconds=retry_delay_seconds),
+                    claimed_until=None,
+                    claimed_by=None,
+                    error_category=error_category[:64],
+                    updated_at=now,
+                )
+            )
+            return bool(_rowcount(result))
 
     async def mark_used(
         self,
@@ -769,7 +894,11 @@ class EmojiRepository:
         source: str,
     ) -> None:
         now = datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
+            person_id = (
+                await resolve_live_person_id(session, actor_user_id) if actor_user_id else None
+            )
+            space_id = await resolve_live_space_id(session, group_id) if group_id else None
             await session.execute(
                 update(EmojiAssetModel)
                 .where(EmojiAssetModel.id == emoji_id)
@@ -787,12 +916,6 @@ class EmojiRepository:
                 source=source[:32],
                 created_at=now,
             )
-            session.add(usage)
-            await session.flush()
-            person_id = (
-                await resolve_live_person_id(session, actor_user_id) if actor_user_id else None
-            )
-            space_id = await resolve_live_space_id(session, group_id) if group_id else None
             stamp_canonical_owners(
                 usage,
                 person_attr="canonical_actor_person_id",
@@ -800,6 +923,8 @@ class EmojiRepository:
                 person_id=person_id,
                 space_id=space_id,
             )
+            session.add(usage)
+            await session.flush()
 
     async def counts(self) -> dict[str, int]:
         async with self._database.sessions() as session:

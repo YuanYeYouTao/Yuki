@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.unit_of_work import optional_session
 from qq_ai_bot.social.db_models import SocialOperationModel
 from qq_ai_bot.social.models import OperationStatus, SocialError, SocialReceipt, SocialTarget
 from qq_ai_bot.social.source_keys import social_source_key
@@ -104,10 +105,12 @@ class SocialOperationRepository:
                 raise SocialError("idempotency_conflict")
             return self._receipt(row)
 
-    async def claim(self, operation_id: str, *, presence_id: str) -> bool:
+    async def claim(
+        self, operation_id: str, *, presence_id: str, session: AsyncSession | None = None
+    ) -> bool:
         """Commit the send boundary before issuing any network action."""
-        async with self.database.sessions() as session, session.begin():
-            result = await session.execute(
+        async with optional_session(self.database, session, write=True) as active:
+            result = await active.execute(
                 update(SocialOperationModel)
                 .where(
                     SocialOperationModel.id == operation_id,

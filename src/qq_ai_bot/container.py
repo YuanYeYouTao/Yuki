@@ -186,6 +186,7 @@ class ApplicationContainer:
             lifecycle=self.lifecycle,
         ).build()
         self.model_runtime = model_runtime
+        self.mcp_repository.writer = model_runtime.invocations.writer
         self.model_profiles = model_runtime.profiles
         self.model_clients = model_runtime.clients
         self.model_invocations = model_runtime.invocations

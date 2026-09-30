@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from qq_ai_bot.admin.models import EmojiRuntimeConfig
 from qq_ai_bot.emoji.models import EmojiAnalysis, EmojiAsset, EmojiLifecycleStatus
 from qq_ai_bot.emoji.replacement import EmojiReplacementService
-from qq_ai_bot.emoji.repository import EmojiRepository
+from qq_ai_bot.emoji.repository import EmojiJob, EmojiRepository
 from qq_ai_bot.services.plugin_events import LifecycleEventPublisher, publish_notification
 from yuki_plugin_sdk.events import EventName
 
@@ -79,11 +79,12 @@ class EmojiLifecycleService:
         analysis: EmojiAnalysis,
         *,
         runtime: EmojiRuntimeConfig,
+        job: EmojiJob | None = None,
     ) -> EmojiAsset:
         status = (
             EmojiLifecycleStatus.RECOGNIZED if analysis.is_emoji else EmojiLifecycleStatus.REJECTED
         )
-        updated = await self._repository.save_analysis(asset.id, analysis, status=status)
+        updated = await self._repository.save_analysis(asset.id, analysis, status=status, job=job)
         await publish_notification(
             self._event_publisher,
             EventName.EMOJI_ANALYZED,
@@ -112,6 +113,7 @@ class EmojiLifecycleService:
                 scope_type="global",
                 scope_id="",
                 runtime=runtime,
+                job=job,
             )
             refreshed = await self._repository.get(updated.id)
             if refreshed is None:
@@ -151,6 +153,7 @@ class EmojiLifecycleService:
         scope_type: Literal["global", "group"],
         scope_id: str,
         runtime: EmojiRuntimeConfig,
+        job: EmojiJob | None = None,
     ) -> None:
         asset = await self._require(emoji_id)
         if asset.status not in {
@@ -165,6 +168,7 @@ class EmojiLifecycleService:
         ):
             return
         capacity = runtime.pool_capacity
+        replacement_id = None
         if capacity is not None:
             count = await self._repository.adopted_count(
                 group_id=scope_id if scope_type == "group" else None
@@ -183,15 +187,15 @@ class EmojiLifecycleService:
                 )
                 if replaceable is None:
                     raise ValueError("emoji pool is full and contains only pinned assets")
-                await self._repository.remove_scope(
-                    replaceable.id,
-                    scope_type=scope_type,
-                    scope_id=scope_id,
-                )
+                replacement_id = replaceable.id
         await self._repository.adopt_scope(
             emoji_id,
             scope_type=scope_type,
             scope_id=scope_id,
+            job=job,
+            replacement_id=replacement_id,
+            capacity=capacity,
+            require_recognized=True,
         )
         await publish_notification(
             self._event_publisher,

@@ -63,6 +63,11 @@ cycle、每日请求预算、检查点、退避与隔离机制；管理输出以
 统计成聊天事件。已领取未完成窗口保护其源回执，完成后仍被 Memory evidence 引用的
 回执不会过期删除。未讲话的失败也可以参与判断，但仅能支持真实失败或尝试的经历。
 
+回执清理每次先只读发现最多 500 个过期且未引用的候选，空页不取得写锁。
+短 DELETE 再核验过期时间、全部 Memory evidence 引用及未完成 initiative reflection 窗口，
+选择后新增引用、窗口或延长保留期都会阻止该条删除。回执引用查询使用 0083 的
+tool_receipt_id 非空索引；原 receipt、run 和证据仍是唯一事实来源。
+
 主 SELF 入口使用 actorless TurnMemorySession，自动读取当前群与该群可见的 SELF 资料，
 不借最近发言者或目标人的身份准备上下文。纯工具自省经同一 MutationService 验证、
 冲突处理和原子回执写入；只能影响有相应证据的 SELF global/当前群范围，不能写私人事实。

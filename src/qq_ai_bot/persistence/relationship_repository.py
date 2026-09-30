@@ -143,6 +143,9 @@ class RelationshipRepository:
         session: AsyncSession | None = None,
     ) -> RelationshipSnapshot:
         if session is None:
+            existing = await self.get(user_id)
+            if existing is not None:
+                return existing
             async with self._database.immediate_session() as owned_session:
                 return await self.get_or_create(
                     user_id,

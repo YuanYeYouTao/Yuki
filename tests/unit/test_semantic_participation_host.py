@@ -21,7 +21,6 @@ from yuki_participation.models import (
     Snapshot,
 )
 from yuki_participation.rubric import CRITERIA, REVISION
-from yuki_participation.store import SnapshotStore
 
 from qq_ai_bot.conversation.autonomy_binding import AutonomyOwner
 from qq_ai_bot.conversation.autonomy_db_models import InitiativeRunModel
@@ -39,6 +38,7 @@ from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.runtime.work_schema_v1 import work
+from qq_ai_bot.services.participation_snapshot import AsyncSnapshotStore
 from qq_ai_bot.services.policies import EffectiveGroupPolicy, evaluate_message
 from qq_ai_bot.services.semantic_participation import SemanticParticipationService
 
@@ -169,7 +169,7 @@ async def _host(database, tmp_path, *, observer=True):
         ),
     )
     host = SemanticParticipationService(app)
-    host._store = SnapshotStore(tmp_path / f"participation-{uuid4()}.db")
+    host._store = await AsyncSnapshotStore.open(tmp_path / f"participation-{uuid4()}.db")
     host._observer = Observer() if observer else None
     return host, policy
 
@@ -206,7 +206,7 @@ async def test_model_profile_hot_reload_preserves_state_and_last_good_value(data
             before_rate
         )
     finally:
-        host._store.close()
+        await host._store.close()
 
 
 async def test_human_activity_bootstraps_from_current_generation_without_replaying_work(
@@ -249,13 +249,13 @@ async def test_human_activity_bootstraps_from_current_generation_without_replayi
         await host._hydrate(item)
         assert item.controller._human_activity(time.time()) == pytest.approx(trace, rel=0.001)
     finally:
-        host._store.close()
+        await host._store.close()
 
 
 async def _item(host, event):
     scene = await host._scene(event.canonical_conversation_id)
     assert scene is not None, "fixture must use the real route resolver"
-    item = host._session(scene)
+    item = await host._session(scene)
     await host._hydrate(item)
     return item
 
@@ -752,7 +752,7 @@ async def test_accepted_pending_recovery_after_mode_and_route_change_uses_origin
         binding = await host._binding(item)
         source = item.controller.state.events[f"event:{event.id}"]
         proposal = _proposal(item, binding, source)
-        host._save(item)
+        await host._save(item)
         # Simulate crash after host admission committed, before controller accepted feedback.
         result = await host.repository.accept_host_proposal(
             proposal_id=proposal.proposal_id,
@@ -774,7 +774,7 @@ async def test_accepted_pending_recovery_after_mode_and_route_change_uses_origin
             route.route_generation += 1
             route.revision += 1
         host._sessions.clear()
-        recovered = host._session(await host._scene(event.canonical_conversation_id))
+        recovered = await host._session(await host._scene(event.canonical_conversation_id))
         await host._advance_scene(recovered)
         await host._reconcile(result.run)
         await host._reconcile(result.run)

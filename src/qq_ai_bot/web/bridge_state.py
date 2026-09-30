@@ -16,17 +16,19 @@ class BridgeState:
         self.path = path
 
     def access(self, key: str, value: WebSearchResponse | None = None) -> WebSearchResponse | None:
+        payload = json.dumps(asdict(value), ensure_ascii=False, default=str) if value else None
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(sqlite3.connect(self.path, timeout=5)) as db, db:
             self.path.chmod(0o600)
-            db.execute(
-                "CREATE TABLE IF NOT EXISTS cache "
-                "(key TEXT PRIMARY KEY, payload TEXT NOT NULL, expires REAL NOT NULL)"
-            )
-            db.execute("BEGIN IMMEDIATE")
-            db.execute("DELETE FROM cache WHERE expires <= ?", (time.time(),))
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='cache'").fetchone() is None:
+                db.execute(
+                    "CREATE TABLE IF NOT EXISTS cache "
+                    "(key TEXT PRIMARY KEY, payload TEXT NOT NULL, expires REAL NOT NULL)"
+                )
             if value is not None:
-                payload = json.dumps(asdict(value), ensure_ascii=False, default=str)
+                assert payload is not None
+                db.execute("BEGIN IMMEDIATE")
+                db.execute("DELETE FROM cache WHERE expires <= ?", (time.time(),))
                 if len(payload.encode()) <= 32768:
                     db.execute(
                         "INSERT OR REPLACE INTO cache VALUES (?,?,?)",
@@ -37,12 +39,14 @@ class BridgeState:
                         "(SELECT key FROM cache ORDER BY expires DESC LIMIT 128)"
                     )
                 return None
-            row = db.execute("SELECT payload FROM cache WHERE key=?", (key,)).fetchone()
+            row = db.execute(
+                "SELECT payload FROM cache WHERE key=? AND expires>?", (key, time.time())
+            ).fetchone()
             if row is None:
                 return None
-            result = json.loads(row[0])
-            for source in result["sources"]:
-                if source["published_at"]:
-                    source["published_at"] = datetime.fromisoformat(source["published_at"])
-            result["sources"] = tuple(WebSearchSource(**source) for source in result["sources"])
-            return WebSearchResponse(**result)
+        result = json.loads(row[0])
+        for source in result["sources"]:
+            if source["published_at"]:
+                source["published_at"] = datetime.fromisoformat(source["published_at"])
+        result["sources"] = tuple(WebSearchSource(**source) for source in result["sources"])
+        return WebSearchResponse(**result)

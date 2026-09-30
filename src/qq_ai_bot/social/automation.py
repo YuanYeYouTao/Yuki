@@ -6,6 +6,7 @@ from copy import deepcopy
 from typing import Any, cast
 
 from jsonschema import Draft202012Validator
+from sqlalchemy import select
 
 from qq_ai_bot.automation.authority import PermissionLevel
 from qq_ai_bot.automation.models import RetryPolicy, RiskClass, TurnOrigin
@@ -20,10 +21,13 @@ from qq_ai_bot.automation.registry import (
 )
 from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.domain.tool_actor import ToolActor
+from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.sandbox.client import SandboxClient, sandbox_tools
 from qq_ai_bot.sandbox.environment_tools import EXECUTION_TOOLS, READ_TOOLS, SANDBOX_TOOLS
+from qq_ai_bot.social.db_models import SocialOperationModel
 from qq_ai_bot.social.models import SocialError
 from qq_ai_bot.social.service import SocialContext, SocialService
+from qq_ai_bot.social.source_keys import social_source_key
 from qq_ai_bot.social.tools import social_tool_definitions
 from qq_ai_bot.workspace.service import WorkspaceService, workspace_tools
 from qq_ai_bot.workspace.tools import WORKSPACE_READ_TOOLS, WORKSPACE_TOOLS
@@ -37,6 +41,42 @@ def automation_name(name: str) -> str:
     if name in SANDBOX_TOOLS:
         return "sandbox." + name
     return "social." + name
+
+
+async def inspect_dispatch_receipt(
+    database: Database,
+    capability: str,
+    arguments: dict[str, Any],
+    context: CapabilityExecutionContext,
+) -> tuple[str, int, str] | None:
+    """Read the original single effect only; a partial composite proves no total outcome."""
+    action = capability.removeprefix("social.")
+    if action not in {"send_message", "poke_person", "recall_own_message"}:
+        return None
+    if arguments.get("attachment_kind") == "file" and (
+        arguments.get("text") or arguments.get("mentions")
+    ):
+        return None
+    async with database.sessions() as session:
+        receipt = (
+            await session.execute(
+                select(SocialOperationModel.id, SocialOperationModel.status).where(
+                    SocialOperationModel.source_turn_id
+                    == social_source_key(f"automation:{context.automation_run_id}"),
+                    SocialOperationModel.tool_call_id == context.step_id,
+                    SocialOperationModel.source_conversation_id
+                    == context.canonical_conversation_id,
+                    SocialOperationModel.action == action,
+                )
+            )
+        ).first()
+    if receipt is None:
+        return None
+    return (
+        receipt.status,
+        int(action == "send_message" and receipt.status == "succeeded"),
+        receipt.id,
+    )
 
 
 def _validator(tool: ChatTool) -> CapabilityArgumentValidator:

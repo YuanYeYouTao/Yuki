@@ -85,6 +85,19 @@ keep 成功。显式事实、来源覆盖、scope、重复/未知引用与原子
 增量优先未尝试或指纹变化的簇，已尝试按最久未尝试优先；预算延期不当作已执行，不推进
 成功 checkpoint。输入超限、执行失败和预算延期有独立的错误类别。
 
+Dream 计划先在写事务外准备每簇的 canonical subject/visibility shape 和 fact 版本，
+服务复用已加载的事实；独立仓库调用只批量读取必要的 owner、scope、kind、状态和
+`updated_at` 列，不为 owner 解析完整 DTO 或统计可读 evidence。共享写会话必须提供
+已准备的计划。短写事务按有界主键批量复核 shape 和版本后，原子登记 run 与全部
+clusters；事实删除、owner 或版本变化时拒绝，不遗留半个 run。FULL 仍先为 PLANNED，
+完整计划确认后才 start；INCREMENTAL 仍按原 RUNNING 和持久预算执行。
+
+baseline 和 checkpoint 按 256 条批量 upsert，初始化 marker 在对应 checkpoint 全部
+可用后写入，同一事务失败整体回滚。重启恢复按 128 个 processing clusters 聚合
+committed operations 并批量读取 runs，全部读取完成后才更新状态和计数；已提交
+operation 仍是恢复事实源，不重放 mutation、不重置模型预算或原回执 ID。
+
+
 ## 历史共同群读取
 
 所有普通用户结构化读取使用后端 `MemoryReadScopeResolver`。设请求者 R，目标人物 P，
@@ -131,6 +144,38 @@ Plugin/Admin 纯查询不产生强化或使用回执。详见
 
 ## 维护与变更边界
 
+- 证据明细及 readable evidence count 共用同一 SQL 来源谓词，按 canonical event、普通
+  tool receipt 或无事件 SELF initiative 分支核验来源、owner、隐藏状态及 SELF 可见范围。
+  明细在 SQL 中过滤后排序，公开分页继续应用请求的 limit，不逐 evidence 查来源。
+  内部聚合和完整 lineage 读取全部可读证据；移除旧查询的 100000 条保护截断，因此超过
+  该规模的历史尾部现在也参与聚合与复制。这是极端规模的行为修正，权重乘积公式、
+  authority 继承、authority cap 和来源资格保持原 policy。
+  Memory mutation、Dream 与维护批次在同连接显式只读 BEGIN 中先准备完整证据、聚合、
+  来源和目标归属，再升级为短写事务。SQLite WAL 快照是本次准备的完整依赖围栏；
+  任何竞争提交都使旧快照的首次写入被拒绝，不能仅用 fact.updated_at 推断来源未改变。
+  只对原生 SQLITE_BUSY_SNAPSHOT（517）结束整个失败事务并用新 session 至多重备 3 次。
+  重备仅执行纯数据库单元，复用原 mutation/operation/request ID，不重跑 classifier、
+  模型或外部效果；提交后的 embedding 调度不在重试范围内。模型判断所引用的事实还须
+  在准备阶段比较原 fact signature 和 canonical target，拒绝已经改变的候选；请求目标与
+  操作人的 canonical owner、原内部事件和 tool receipt／SELF 来源证明也必须与原计划一致。
+  来源隐藏、擦除、换绑或会话 generation 变化时拒绝旧计划，不能成功写入一个无证据事实。
+  Dream 将实际模型输入、选中证据身份与内容及 canonical 分区纳入输入指纹，持久 preview
+  复用同一指纹；每次新快照首写前核验，证据数量不变不能证明原模型来源仍然有效。
+  准备缓存和聚合乘积仅属于当前事务，提交或回滚后释放，不增加持久 revision 或事实源。
+  后续写入只累计实际新增证据；版本复制同时批量核验原来源与新目标资格，批量插入后
+  更新临时计数和聚合，写入期间不重新扫描历史。必要的主键、状态、来源／owner 最终
+  复核及两跳关系短查询保留，不以 writer 内零 SELECT 作为验收条件。
+  共享事务调用者必须在其最早的领取围栏、
+  回执或状态写入前准备整个批次，缺少准备时拒绝，不能退回写后历史读取。
+  Control 的确认／隔离保留原能力判定；revision 核验、savepoint、审计和回执仍共用
+  同一事务，证据准备早于本次首写，不拆分提交。旧管理入口的新增／修改／删除同样
+  将记忆变更和管理审计作为一个纯数据库单元准备与提交。
+  Evidence compaction 也使用同连接的 SQLite WAL 显式读快照：删除集合、保留证据聚合
+  和 Dream provenance 回写资料均在首个 DELETE 前准备。若任意并发提交使快照过期，
+  写入升级失败并整体回滚，最多重新准备三次；不重新领取 item、不更换 operation ID。
+  DELETE 后只应用已准备的聚合与 provenance，不扫描证据历史。反思结果回填最多读取
+  200 个 receipt，批量映射 run 后在短 writer 中复核身份及唯一映射，单次批量插入；
+  歧义来源不推断归属。候选的已处理过滤在 LIMIT 前完成，避免不可缩减前缀阻塞后续 fact。
 - 不用 /ai new、清空事实或重建 embedding 掩盖队列/召回问题。
 - 0051 仅增加 recall 观测列；不改事实、证据、身份、正文或路由。
 - 未来 WebUI 复用 Control Plane，不直接查询 ORM；读取、content、mutation、destructive
@@ -141,9 +186,10 @@ Plugin/Admin 纯查询不产生强化或使用回执。详见
 
 ## 后台归因与关系评估
 
-关系评估和记忆归因都使用 BEST_EFFORT_BACKGROUND，关系请求同时占用外层后台
-并发名额；它们在共享执行器后台槽中排队，不彼此伪装成前台抢占。真正的前台
-请求仍可抢占后台；总并发为 1 时外层没有可保留的前台名额，不能承诺立即抢占。
+关系评估和记忆归因都使用 BEST_EFFORT_BACKGROUND，在共享 Executor admission 中排队，
+没有额外会话层 semaphore。前台与后台由同一容量计数原子准入；并发大于 1 时，
+非前台最多占总容量减 1，排队前台优先。BEST_EFFORT 请求仍可被真正前台抢占，
+普通 durable 后台 Work 不因该预留而被抢占；总并发为 1 时不能保留额外前台名额。
 关系批次被抢占或工作者关闭时释放原 claim，立即回到 pending，30 秒后具备再次领取资格；
 实际领取仍受轮询和前台负载影响，不承诺 30 秒内恢复。这些让出不增加失败 attempts。
 关闭工作者会取消等待中或执行中的关系评估，不等待无关前台请求结束；取消原样传播，

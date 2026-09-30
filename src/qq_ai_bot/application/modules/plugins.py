@@ -207,6 +207,12 @@ class PluginModule:
             close=bundle.session_repository.delete_ephemeral,
         )
         lifecycle.register(
+            "plugin_events",
+            start=bundle.events.start,
+            close=bundle.events.close,
+            health=bundle.events.health,
+        )
+        lifecycle.register(
             "plugins",
             start=bundle.manager.start,
             close=bundle.manager.stop,

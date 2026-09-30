@@ -13,7 +13,7 @@ self-reflection 新增同样执行价值门槛，正常跳过推进水位；已�
 Memory V2 正式版用四层机制防止“把人记串”：
 
 1. 版本化合成 fixture 描述事件、Fake Model 输出、预期事实、证据、检索、上下文与 rebuild。
-2. `MemoryQualityRunner` 为每个 case 建立一个已迁移到 Alembic `0051` 的独立临时 SQLite，
+2. `MemoryQualityRunner` 为每个 case 建立一个已迁移到当前 Alembic head 的独立临时 SQLite，
    复用生产 EventExtractor、ClaimProcessor、FactService、FTS、Fake Embedding、Retriever、
    ContextService 和 rebuild 状态机。
 3. Evaluator 只做 symbolic stable key 精确比较；Metrics 按固定分母聚合；外部 TOML 门禁与
@@ -28,7 +28,7 @@ Memory V2 正式版用四层机制防止“把人记串”：
 PersonGroup；无直接关系和传递关系拒绝。它不以合成 fixture 中的目标字段替代后端授权。
 
 正式契约由 `config/memory_contracts.toml` 和
-`tests/contracts/memory_v2/contracts.json` 冻结。Plugin API 保持 `2.0`，插件只能通过受作用域
+`tests/contracts/memory_v2/contracts.json` 冻结。Plugin API 保持 `3.0`，插件只能通过受作用域
 限制的 MemoryFacade list/search/add/update/delete；不能访问向量、rebuild、全局 audit、其他人物
 证据、质量数据集或 Provider Secret。
 
@@ -43,3 +43,11 @@ baseline 保留旧版固定 100 用户、10,000 facts、10 个群和 100,000 条
 
 运行和故障处理参见 [Memory V2 质量运维](../operations/memory-quality.md)，指标定义参见
 [质量指标与分母](memory-v2-quality-metrics.md)。
+
+治理 apply 维持每轮最多 500 facts、1000 embedding candidates、500 terminal runs，并以 128 条页
+在显式 SQLite readonly snapshot 内完成 provenance/状态准备，再升级同一事务写入。并发提交
+会使陈旧快照整页回滚；管理员重新 scan 后继续，不扩大自动治理策略或重置 embedding 重试预算。
+事实正常内容更新继续依赖既有 FTS trigger，检索仍按事实资格过滤；普通 apply 不执行全量 FTS
+rebuild。检测到索引缺陷时 plan.rebuild_fts 保留为 true，必须在独立维护窗口显式执行
+`memory hygiene rebuild-fts <fingerprint> --database-url ...`；该命令会重新核对 scan 指纹，并明确
+持有 writer 完成全索引重建。

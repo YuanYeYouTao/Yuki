@@ -9,6 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import delete, func, select, text, update
+from sqlalchemy.orm import defer
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.conversation.projection_models import PromptProjectionModel
@@ -129,6 +130,9 @@ class PromptProjectionRepository:
         size = len(payload.encode("utf-8"))
         if size > self.view_bytes:
             raise ProjectionCapacityError("projection view budget exceeded")
+        prepared_prefix = (
+            await self._prepare_prefix(view_key, payload) if rebuild_reason is None else None
+        )
         async with self.database.sessions() as session:
             # SQLite is the supported deployment store. Reserve its writer before
             # checking global limits and CAS, including across repository instances.
@@ -141,7 +145,9 @@ class PromptProjectionRepository:
                 raise ProjectionConflict("projection source generation changed")
             if source.prompt_source_revision != expected_source_revision:
                 raise ProjectionConflict("projection source revision changed")
-            old = await session.get(PromptProjectionModel, view_key)
+            old = await session.get(
+                PromptProjectionModel, view_key, options=[defer(PromptProjectionModel.payload_json)]
+            )
             if old is None:
                 if expected_epoch is not None or expected_revision != 0 or rebuild_reason is None:
                     raise ProjectionConflict("missing projection requires explicit bootstrap")
@@ -179,57 +185,69 @@ class PromptProjectionRepository:
                         contract_revision,
                     ):
                         raise ProjectionConflict("projection change requires a new epoch")
-                    previous = json.loads(old.payload_json)
-                    # Compare serialization, not dict equality: key order is wire data.
-                    prefix = json.dumps(
-                        items[: len(previous)],
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                        allow_nan=False,
-                    )
-                    if prefix != old.payload_json:
+                    if prepared_prefix is None or prepared_prefix[0] != _prefix_version(old):
+                        raise ProjectionConflict("projection changed after prefix preparation")
+                    if not prepared_prefix[1]:
                         raise ProjectionConflict("committed projection prefix cannot be rewritten")
             used, count = (
                 await session.execute(
                     select(
                         func.coalesce(func.sum(PromptProjectionModel.byte_size), 0),
-                        func.count(),
+                        func.count().filter(PromptProjectionModel.invalidated_reason.is_(None))
+                        if self.reclaim
+                        else func.count(),
                     ).where(PromptProjectionModel.view_key != view_key)
                 )
             ).one()
             if self.reclaim:
-                others = list(
+                # Capacity decisions need metadata, never another view's payload.
+                others = (
                     (
-                        await session.scalars(
-                            select(PromptProjectionModel)
+                        await session.execute(
+                            select(
+                                PromptProjectionModel.view_key,
+                                PromptProjectionModel.byte_size,
+                                PromptProjectionModel.invalidated_reason,
+                            )
                             .where(PromptProjectionModel.view_key != view_key)
                             .order_by(
                                 PromptProjectionModel.updated_at, PromptProjectionModel.view_key
                             )
                         )
                     ).all()
+                    if used + size > self.total_bytes or count >= self.maximum_views
+                    else []
                 )
-                count = sum(row.invalidated_reason is None for row in others)
                 for victim in others:
                     if used + size <= self.total_bytes and count < self.maximum_views:
                         break
                     if victim.invalidated_reason is not None:
                         if used + size > self.total_bytes:
                             used -= victim.byte_size
-                            await session.delete(victim)
+                            await session.execute(
+                                delete(PromptProjectionModel).where(
+                                    PromptProjectionModel.view_key == victim.view_key
+                                )
+                            )
                         continue
                     used -= victim.byte_size - 2
                     count -= 1
-                    victim.payload_json, victim.byte_size = "[]", 2
-                    victim.invalidated_reason = "capacity"
-                    victim.revision += 1
-                    # Keep the eviction boundary until marker retention expires.
-                    victim.updated_at = datetime.now(UTC)
+                    await session.execute(
+                        update(PromptProjectionModel)
+                        .where(PromptProjectionModel.view_key == victim.view_key)
+                        .values(
+                            payload_json="[]",
+                            byte_size=2,
+                            invalidated_reason="capacity",
+                            revision=PromptProjectionModel.revision + 1,
+                            updated_at=datetime.now(UTC),
+                        )
+                    )
                 await session.flush()
                 markers = list(
                     (
-                        await session.scalars(
-                            select(PromptProjectionModel)
+                        await session.execute(
+                            select(PromptProjectionModel.view_key, PromptProjectionModel.byte_size)
                             .where(
                                 PromptProjectionModel.view_key != view_key,
                                 PromptProjectionModel.invalidated_reason.is_not(None),
@@ -238,12 +256,17 @@ class PromptProjectionRepository:
                                 PromptProjectionModel.updated_at.desc(),
                                 PromptProjectionModel.view_key,
                             )
+                            .offset(self.maximum_views)
                         )
                     ).all()
                 )
-                for marker in markers[self.maximum_views :]:
+                for marker in markers:
                     used -= marker.byte_size
-                    await session.delete(marker)
+                    await session.execute(
+                        delete(PromptProjectionModel).where(
+                            PromptProjectionModel.view_key == marker.view_key
+                        )
+                    )
             if used + size > self.total_bytes or count >= self.maximum_views:
                 raise ProjectionCapacityError("projection global budget exceeded")
             row = old or PromptProjectionModel(view_key=view_key, conversation_id=conversation_id)
@@ -259,6 +282,24 @@ class PromptProjectionRepository:
             session.add(row)
             await session.commit()
             return _snapshot(row)
+
+    async def _prepare_prefix(
+        self, view_key: str, payload: str
+    ) -> tuple[tuple[object, ...], bool] | None:
+        """Compare immutable wire data before reserving the SQLite writer."""
+        async with self.database.sessions() as session:
+            old = await session.get(PromptProjectionModel, view_key)
+            if old is None:
+                return None
+            previous = json.loads(old.payload_json)
+            # Compare serialization, not dict equality: key order is wire data.
+            prefix = json.dumps(
+                json.loads(payload)[: len(previous)],
+                ensure_ascii=False,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            return _prefix_version(old), prefix == old.payload_json
 
     async def invalidate(self, conversation_id: str) -> None:
         """Remove model-input copies when a source is deleted/reset; leave the ledger intact."""
@@ -289,6 +330,20 @@ class PromptProjectionRepository:
                     updated_at=datetime.now(UTC),
                 )
             )
+
+
+def _prefix_version(row: PromptProjectionModel) -> tuple[object, ...]:
+    return (
+        row.conversation_id,
+        row.epoch_id,
+        row.revision,
+        row.generation,
+        row.source_revision,
+        row.starts_after_event_id,
+        row.context_key,
+        row.contract_revision,
+        row.invalidated_reason,
+    )
 
 
 def _snapshot(row: PromptProjectionModel) -> ProjectionSnapshot:

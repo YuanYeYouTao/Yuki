@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import json
+import re
 import unicodedata
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import String, case, cast, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import InstrumentedAttribute
+from sqlalchemy.sql.elements import ColumnElement
 
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
@@ -47,6 +51,7 @@ from qq_ai_bot.identity.person_state import (
 )
 from qq_ai_bot.identity.write_settings import identity_write_settings
 from qq_ai_bot.memory.dream.db_models import MemoryDreamClusterModel
+from qq_ai_bot.memory.rebuild.privacy import PreparedRebuildForget
 from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
 from qq_ai_bot.model_runtime.db_models import ModelInvocationModel
 from qq_ai_bot.persistence.database import Database
@@ -107,6 +112,48 @@ def normalize_person_name(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value).casefold()
     return "".join(
         character for character in normalized if unicodedata.category(character)[0] in {"L", "N"}
+    )
+
+
+def _redact_privacy_json(value: str, pattern: re.Pattern[str], marker: str) -> str:
+    """Redact parsed values without corrupting numeric or escaped JSON tokens."""
+    if not value:
+        return value
+
+    def redact(item: object) -> object:
+        if isinstance(item, str):
+            return pattern.sub(lambda _match: marker, item)
+        if isinstance(item, list):
+            return [redact(child) for child in item]
+        if isinstance(item, dict):
+            return {
+                pattern.sub(lambda _match: marker, str(key)): redact(child)
+                for key, child in item.items()
+            }
+        if isinstance(item, int) and not isinstance(item, bool) and pattern.fullmatch(str(item)):
+            return marker
+        return item
+
+    return json.dumps(redact(json.loads(value)), ensure_ascii=False, separators=(",", ":"))
+
+
+def _privacy_json_match(
+    column: InstrumentedAttribute[str], aliases: tuple[str, ...]
+) -> ColumnElement[bool]:
+    """Match decoded JSON keys/values, retaining malformed matching rows for rollback."""
+    decoded = func.json_tree(
+        case((func.json_valid(column) == 1, column), else_="null")
+    ).table_valued("key", "atom")
+    return or_(
+        *[column.contains(alias) for alias in aliases],
+        select(decoded.c.atom)
+        .where(
+            or_(
+                *[cast(decoded.c.atom, String).contains(alias) for alias in aliases],
+                *[cast(decoded.c.key, String).contains(alias) for alias in aliases],
+            )
+        )
+        .exists(),
     )
 
 
@@ -238,8 +285,8 @@ class PeopleRepository:
                             ChatEventModel.private_peer_user_id == user_id,
                             ChatEventModel.content.contains(user_id),
                             ChatEventModel.visual_summary.contains(user_id),
-                            ChatEventModel.audio_transcript.contains(user_id),
-                            ChatEventModel.segments_json.contains(user_id),
+                            _privacy_json_match(ChatEventModel.audio_transcript, (user_id,)),
+                            _privacy_json_match(ChatEventModel.segments_json, (user_id,)),
                         )
                     )
                     .distinct()
@@ -272,11 +319,16 @@ class PeopleRepository:
         is_bot: bool = False,
         initial_affection: int | None = None,
         initial_trust: int | None = None,
+        expected_person_id: str | None = None,
     ) -> None:
         """Update current values and retain historical aliases."""
 
         now = datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
+            if expected_person_id is not None:
+                current_binding = await find_identity_binding(session, external_id(user_id))
+                if current_binding is None or current_binding.person_id != expected_person_id:
+                    raise CanonicalIdentityError("canonical_owner_mismatch")
             await observe_canonical_person(
                 session,
                 user_id=user_id,
@@ -458,8 +510,45 @@ class PeopleRepository:
     async def delete_person(self, user_id: str, *, marker: str = "[已删除用户]") -> bool:
         """Delete all attributable data and redact exact QQ text elsewhere."""
 
-        async with self._database.immediate_session() as session:
-            return await self._delete_person_canonical(session, user_id, marker=marker)
+        expected_person_id: str | None = None
+        for _attempt in range(3):
+            try:
+                async with self._database.sessions() as reader:
+                    binding = await find_identity_binding(reader, external_id(user_id))
+                    if binding is None:
+                        return False
+                    if expected_person_id is not None and binding.person_id != expected_person_id:
+                        raise CanonicalIdentityError("source_event_changed")
+                    expected_person_id = binding.person_id
+                    aliases = tuple(
+                        sorted(
+                            {
+                                item.external_account_id
+                                for item in await bindings_for_person(reader, expected_person_id)
+                            }
+                        )
+                    )
+                prepared = (
+                    await self._memory_rebuilds.prepare_forget_people(aliases)
+                    if self._memory_rebuilds is not None
+                    else None
+                )
+                async with self._database.immediate_session() as writer:
+                    return await self._delete_person_canonical(
+                        writer,
+                        user_id,
+                        marker=marker,
+                        expected_person_id=expected_person_id,
+                        expected_aliases=aliases,
+                        prepared_rebuild=prepared,
+                    )
+            except ValueError as exc:
+                if str(exc) not in {
+                    "memory_rebuild_privacy_preparation_changed",
+                    "privacy_aliases_changed",
+                }:
+                    raise
+        raise ValueError("privacy_preparation_changed")
 
     async def _delete_person_canonical(
         self,
@@ -467,12 +556,17 @@ class PeopleRepository:
         user_id: str,
         *,
         marker: str,
+        expected_person_id: str,
+        expected_aliases: tuple[str, ...],
+        prepared_rebuild: PreparedRebuildForget | None,
     ) -> bool:
         external = external_id(user_id)
         binding = await find_identity_binding(session, external)
         if binding is None:
             return False
         person_id = binding.person_id
+        if person_id != expected_person_id:
+            raise CanonicalIdentityError("source_event_changed")
         owner_externals = tuple(
             dict.fromkeys(
                 item.external_account_id for item in await bindings_for_person(session, person_id)
@@ -480,14 +574,22 @@ class PeopleRepository:
         )
         if not owner_externals:
             raise CanonicalIdentityError("unclassified")
+        if tuple(sorted(owner_externals)) != expected_aliases:
+            raise ValueError("privacy_aliases_changed")
+        if self._memory_rebuilds is not None:
+            await self._memory_rebuilds.forget_people(
+                owner_externals,
+                prepared=prepared_rebuild,
+                session=session,
+            )
         affected_scopes = await self._affected_scopes_for_owners(session, owner_externals)
         privacy_event_match = or_(
             ChatEventModel.sender_user_id.in_(owner_externals),
             ChatEventModel.private_peer_user_id.in_(owner_externals),
             *[ChatEventModel.content.contains(item) for item in owner_externals],
             *[ChatEventModel.visual_summary.contains(item) for item in owner_externals],
-            *[ChatEventModel.audio_transcript.contains(item) for item in owner_externals],
-            *[ChatEventModel.segments_json.contains(item) for item in owner_externals],
+            _privacy_json_match(ChatEventModel.audio_transcript, owner_externals),
+            _privacy_json_match(ChatEventModel.segments_json, owner_externals),
         )
         private_scope_keys = tuple(
             scope.key
@@ -541,9 +643,6 @@ class PeopleRepository:
         trip("after_forget_memory")
         await self._forget_person_conversation(session, person_id, owner_externals)
         trip("after_forget_conversation")
-        if self._memory_rebuilds is not None:
-            for owner in owner_externals:
-                await self._memory_rebuilds.forget_person(owner, session=session)
         remaining = (
             await session.scalars(
                 select(ChatEventModel).where(
@@ -555,26 +654,25 @@ class PeopleRepository:
                     or_(
                         *[ChatEventModel.content.contains(item) for item in owner_externals],
                         *[ChatEventModel.visual_summary.contains(item) for item in owner_externals],
-                        *[
-                            ChatEventModel.audio_transcript.contains(item)
-                            for item in owner_externals
-                        ],
-                        *[ChatEventModel.segments_json.contains(item) for item in owner_externals],
+                        _privacy_json_match(ChatEventModel.audio_transcript, owner_externals),
+                        _privacy_json_match(ChatEventModel.segments_json, owner_externals),
                     ),
                 )
             )
         ).all()
+        owner_pattern = re.compile(
+            "|".join(re.escape(owner) for owner in sorted(owner_externals, key=len, reverse=True))
+        )
         for event in remaining:
-            for owner in owner_externals:
-                event.content = event.content.replace(owner, marker)
-                event.visual_summary = event.visual_summary.replace(owner, marker)
-                event.audio_transcript = serialize_transcripts(
-                    tuple(
-                        replace(item, text=item.text.replace(owner, marker))
-                        for item in parse_transcripts(event.audio_transcript)
-                    )
+            event.content = owner_pattern.sub(lambda _match: marker, event.content)
+            event.visual_summary = owner_pattern.sub(lambda _match: marker, event.visual_summary)
+            event.audio_transcript = serialize_transcripts(
+                tuple(
+                    replace(item, text=owner_pattern.sub(lambda _match: marker, item.text))
+                    for item in parse_transcripts(event.audio_transcript)
                 )
-                event.segments_json = event.segments_json.replace(owner, marker)
+            )
+            event.segments_json = _redact_privacy_json(event.segments_json, owner_pattern, marker)
         await session.execute(
             delete(RuntimeConfigOverrideModel).where(
                 RuntimeConfigOverrideModel.scope_type == "user",
@@ -591,21 +689,22 @@ class PeopleRepository:
             AdminOperationEventModel.actor_user_id.in_(owner_externals),
             AdminOperationEventModel.target_id.in_(owner_externals),
             *[AdminOperationEventModel.conversation_key.contains(item) for item in owner_externals],
-            *[AdminOperationEventModel.before_json.contains(item) for item in owner_externals],
-            *[AdminOperationEventModel.after_json.contains(item) for item in owner_externals],
+            _privacy_json_match(AdminOperationEventModel.before_json, owner_externals),
+            _privacy_json_match(AdminOperationEventModel.after_json, owner_externals),
         )
         audit_rows = (
             await session.scalars(select(AdminOperationEventModel).where(audit_match))
         ).all()
         for audit in audit_rows:
-            for owner in owner_externals:
-                if audit.actor_user_id == owner:
-                    audit.actor_user_id = marker
-                if audit.target_id == owner:
-                    audit.target_id = marker
-                audit.conversation_key = audit.conversation_key.replace(owner, marker)
-                audit.before_json = audit.before_json.replace(owner, marker)
-                audit.after_json = audit.after_json.replace(owner, marker)
+            if audit.actor_user_id in owner_externals:
+                audit.actor_user_id = marker
+            if audit.target_id in owner_externals:
+                audit.target_id = marker
+            audit.conversation_key = owner_pattern.sub(
+                lambda _match: marker, audit.conversation_key
+            )
+            audit.before_json = _redact_privacy_json(audit.before_json, owner_pattern, marker)
+            audit.after_json = _redact_privacy_json(audit.after_json, owner_pattern, marker)
         await session.execute(
             delete(EmojiUsageEventModel).where(
                 or_(
@@ -674,21 +773,6 @@ class PeopleRepository:
         return True
 
     @staticmethod
-    def _queued_target_belongs_to_forgotten_person(
-        row: PluginNotificationOutboxModel | PluginBackgroundTurnJobModel,
-        person_id: str,
-        space_keys: set[tuple[str, str]],
-    ) -> bool:
-        """Match queues by their canonical target ownership."""
-
-        if row.canonical_target_person_id == person_id:
-            return True
-        space_id = row.canonical_target_space_id
-        if space_id is not None and (str(row.plugin_id), str(space_id)) in space_keys:
-            return True
-        return False
-
-    @staticmethod
     async def _forget_person_plugin(
         session: AsyncSession,
         person_id: str,
@@ -700,34 +784,22 @@ class PeopleRepository:
         Q-created grants targeting the same Space are preserved.
         """
 
-        space_grant_rows = (
-            await session.execute(
-                select(
-                    PluginBackgroundTargetGrantModel.plugin_id,
-                    PluginBackgroundTargetGrantModel.canonical_target_space_id,
-                ).where(
+        for model in (PluginNotificationOutboxModel, PluginBackgroundTurnJobModel):
+            owned_space_grant = (
+                select(PluginBackgroundTargetGrantModel.id)
+                .where(
                     PluginBackgroundTargetGrantModel.canonical_created_by_person_id == person_id,
-                    PluginBackgroundTargetGrantModel.canonical_target_space_id.is_not(None),
+                    PluginBackgroundTargetGrantModel.plugin_id == model.plugin_id,
+                    PluginBackgroundTargetGrantModel.canonical_target_space_id
+                    == model.canonical_target_space_id,
+                )
+                .exists()
+            )
+            await session.execute(
+                delete(model).where(
+                    or_(model.canonical_target_person_id == person_id, owned_space_grant)
                 )
             )
-        ).all()
-        space_keys = {
-            (str(plugin_id), str(space_id))
-            for plugin_id, space_id in space_grant_rows
-            if plugin_id and space_id
-        }
-        outbox_rows = (await session.scalars(select(PluginNotificationOutboxModel))).all()
-        job_rows = (await session.scalars(select(PluginBackgroundTurnJobModel))).all()
-        for row in outbox_rows:
-            if PeopleRepository._queued_target_belongs_to_forgotten_person(
-                row, person_id, space_keys
-            ):
-                await session.delete(row)
-        for job in job_rows:
-            if PeopleRepository._queued_target_belongs_to_forgotten_person(
-                job, person_id, space_keys
-            ):
-                await session.delete(job)
         await session.execute(
             delete(PluginBackgroundTargetGrantModel).where(
                 or_(
@@ -984,8 +1056,8 @@ class PeopleRepository:
                         ChatEventModel.private_peer_user_id == user_id,
                         ChatEventModel.content.contains(user_id),
                         ChatEventModel.visual_summary.contains(user_id),
-                        ChatEventModel.audio_transcript.contains(user_id),
-                        ChatEventModel.segments_json.contains(user_id),
+                        _privacy_json_match(ChatEventModel.audio_transcript, (user_id,)),
+                        _privacy_json_match(ChatEventModel.segments_json, (user_id,)),
                     )
                 )
                 .distinct()
@@ -1021,6 +1093,7 @@ class UserProfileRepository(PeopleRepository):
         initial_affection: int | None = None,
         initial_trust: int | None = None,
         is_bot: bool = False,
+        expected_person_id: str | None = None,
     ) -> None:
         await self.observe(
             user_id=user_id,
@@ -1032,10 +1105,8 @@ class UserProfileRepository(PeopleRepository):
             initial_affection=initial_affection,
             initial_trust=initial_trust,
             is_bot=is_bot,
+            expected_person_id=expected_person_id,
         )
-
-    async def delete_user(self, user_id: str) -> bool:
-        return await self.delete_person(user_id)
 
 
 class GroupSettingsRepository:

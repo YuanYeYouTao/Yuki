@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
+import uuid
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -25,6 +27,7 @@ from qq_ai_bot.memory.dream.models import (
     DreamRun,
     DreamRunMode,
 )
+from qq_ai_bot.memory.dream.planning import PreparedDreamCluster, prepare_clusters_from_facts
 from qq_ai_bot.memory.dream.quality import episode_compression_limit, validate_output_lengths
 from qq_ai_bot.memory.dream.repository import (
     DreamCandidate,
@@ -127,7 +130,7 @@ SELF 合成正文
 @dataclass(frozen=True, slots=True)
 class PreparedDreamPlan:
     statistics: DreamPlanStatistics
-    clusters: tuple[tuple[str, str, str, str, tuple[int, ...], str], ...]
+    clusters: tuple[PreparedDreamCluster, ...]
     snapshot_max_fact_id: int
 
 
@@ -156,7 +159,10 @@ async def prepare_full_core(
     statistics = DreamService._statistics(loaded, clusters=clusters, isolated=isolated)
     return PreparedDreamPlan(
         statistics,
-        planner._stored_clusters(clusters),
+        prepare_clusters_from_facts(
+            planner._stored_clusters(clusters),
+            tuple(item.fact for group in clusters for item in group),
+        ),
         max((item.fact.id for item in loaded.candidates), default=0),
     )
 
@@ -209,22 +215,29 @@ class DreamService:
         self._codec = Float32VectorCodec()
 
     async def rollback_operation(self, public_id: str) -> bool:
-        async with self._facts.repository.transaction() as session:
-            affected_ids = await self._mutations.rollback_dream_operation(
-                public_id=public_id,
-                session=session,
+        mutation_id = str(uuid.uuid4())
+        affected_ids = await self._facts.repository.apply_evidence_write(
+            lambda session: self._rollback_operation_in_session(
+                public_id, mutation_id=mutation_id, session=session
             )
-            for fact_id in affected_ids:
-                fact = await self._facts.repository.get_fact(fact_id, session=session)
-                if fact is not None:
-                    await self._repository.checkpoint_fact(
-                        fact,
-                        operation_id=None,
-                        session=session,
-                    )
+        )
         for fact_id in affected_ids:
             await self._facts.schedule_embedding(fact_id)
         return bool(affected_ids)
+
+    async def _rollback_operation_in_session(
+        self, public_id: str, *, mutation_id: str, session: AsyncSession
+    ) -> tuple[int, ...]:
+        affected_ids = await self._mutations.rollback_dream_operation(
+            public_id=public_id,
+            mutation_id=mutation_id,
+            session=session,
+        )
+        for fact_id in affected_ids:
+            fact = await self._facts.repository.get_fact(fact_id, session=session)
+            if fact is not None:
+                await self._repository.checkpoint_fact(fact, operation_id=None, session=session)
+        return affected_ids
 
     async def rollback_run(self, public_id: str) -> int:
         if not await self._repository.mark_run_rolling_back(public_id):
@@ -274,7 +287,10 @@ class DreamService:
         return await self._repository.create_run(
             mode=DreamRunMode.INCREMENTAL,
             statistics=statistics,
-            clusters=self._stored_clusters(clusters),
+            clusters=prepare_clusters_from_facts(
+                self._stored_clusters(clusters),
+                tuple(item.fact for group in clusters for item in group),
+            ),
             snapshot_max_fact_id=max((item.fact.id for item in loaded.candidates), default=0),
             actor_user_id=None,
             scheduled_slot=scheduled_slot,
@@ -296,7 +312,7 @@ class DreamService:
             or self._cluster_fingerprint(facts) != cluster.fingerprint
         ):
             raise RuntimeError("Dream 候选簇快照已经变化，请重新 plan")
-        payload, _ref_map = await self._input(facts)
+        payload, _ref_map, input_fingerprint = await self._input(facts)
         output, calls = await self._preview_decide(
             payload,
             self_memory=facts[0].scope_type.value == "self",
@@ -306,7 +322,7 @@ class DreamService:
         output_characters = self._output_characters(output)
         preview_public_id = await self._repository.save_preview(
             cluster_id=cluster.id,
-            source_fingerprint=cluster.fingerprint,
+            source_fingerprint=input_fingerprint,
             proposal=output,
             model_calls=calls,
             source_characters=source_characters,
@@ -340,10 +356,10 @@ class DreamService:
         ):
             await self._repository.stale_previews(cluster.id)
             return 0, 0, False
-        payload, ref_map = await self._input(facts)
+        payload, ref_map, input_fingerprint = await self._input(facts)
         ready_preview = await self._repository.ready_preview(
             cluster_id=cluster.id,
-            source_fingerprint=cluster.fingerprint,
+            source_fingerprint=input_fingerprint,
         )
         preview_id: int | None = None
         if ready_preview is not None:
@@ -357,106 +373,166 @@ class DreamService:
                 cluster=cluster,
             )
         self._validate_output(payload, output)
+        operation_public_ids = tuple(str(uuid.uuid4()) for _ in output.actions)
+        mutation_ids = tuple(str(uuid.uuid4()) for _ in output.actions)
+        embedding_ids, operation_count = await self._facts.repository.apply_evidence_write(
+            lambda session: self._commit_cluster_decision(
+                run=run,
+                cluster=cluster,
+                ref_map=ref_map,
+                input_fingerprint=input_fingerprint,
+                output=output,
+                preview_id=preview_id,
+                operation_public_ids=operation_public_ids,
+                mutation_ids=mutation_ids,
+                session=session,
+            )
+        )
+        for fact_id in embedding_ids:
+            await self._facts.schedule_embedding(fact_id)
+        return calls, operation_count, True
+
+    async def _commit_cluster_decision(
+        self,
+        *,
+        run: DreamRun,
+        cluster: DreamCluster,
+        ref_map: dict[str, MemoryFact],
+        input_fingerprint: str,
+        output: DreamOutput,
+        preview_id: int | None,
+        operation_public_ids: tuple[str, ...],
+        mutation_ids: tuple[str, ...],
+        session: AsyncSession,
+    ) -> tuple[set[int], int]:
         embedding_ids: set[int] = set()
         operation_count = 0
-        async with self._facts.repository.transaction() as session:
-            current_map: dict[str, MemoryFact] = {}
-            for ref, snapshot in ref_map.items():
-                current = await self._facts.repository.get_fact(snapshot.id, session=session)
-                if current is None or fact_signature(current) != fact_signature(snapshot):
-                    raise RuntimeError("dream_cluster_stale")
-                current_map[ref] = current
-            used: set[str] = set()
-            for action_index, action in enumerate(output.actions, start=1):
-                sources = tuple(
-                    current_map[ref] for ref in action.source_refs if ref in current_map
-                )
-                if len(sources) != len(action.source_refs):
-                    raise ValueError("dream output referenced an unknown memory alias")
-                if used.intersection(action.source_refs):
-                    raise ValueError("dream output reused a memory alias")
-                used.update(action.source_refs)
-                anchor = self._anchor(action, sources, current_map)
-                recompose_outputs = tuple(
+        current_map: dict[str, MemoryFact] = {}
+        for ref, snapshot in ref_map.items():
+            current = await self._facts.repository.get_fact(snapshot.id, session=session)
+            if (
+                current is None
+                or fact_signature(current) != fact_signature(snapshot)
+                or self._mutations._dream_partition(current)
+                != self._mutations._dream_partition(snapshot)
+                or current.review_state != snapshot.review_state
+            ):
+                raise RuntimeError("dream_cluster_stale")
+            current_map[ref] = current
+        await self._facts.prepare_evidence_write(
+            tuple(fact.id for fact in current_map.values()),
+            targets=tuple(current_map.values()),
+            session=session,
+        )
+        # The model and any saved preview consumed these exact readable sources.
+        # Equal evidence counts do not prove that the original evidence is live.
+        _, _, current_input_fingerprint = await self._input(
+            tuple(current_map.values()), session=session
+        )
+        if current_input_fingerprint != input_fingerprint:
+            raise RuntimeError("dream_input_snapshot_changed")
+        for action in output.actions:
+            sources = tuple(current_map[ref] for ref in action.source_refs)
+            anchor = self._anchor(action, sources, current_map)
+            await self._mutations.prepare_dream_evidence(
+                sources,
+                anchor_fact_id=anchor.id if anchor is not None else None,
+                recompose_outputs=tuple(
                     DreamRecomposePlan(
                         source_facts=tuple(current_map[ref] for ref in item.source_refs),
                         content=item.content,
                         importance=item.importance,
                     )
                     for item in action.outputs
+                ),
+                session=session,
+            )
+        used: set[str] = set()
+        for action_index, action in enumerate(output.actions, start=1):
+            sources = tuple(current_map[ref] for ref in action.source_refs if ref in current_map)
+            if len(sources) != len(action.source_refs):
+                raise ValueError("dream output referenced an unknown memory alias")
+            if used.intersection(action.source_refs):
+                raise ValueError("dream output reused a memory alias")
+            used.update(action.source_refs)
+            anchor = self._anchor(action, sources, current_map)
+            recompose_outputs = tuple(
+                DreamRecomposePlan(
+                    source_facts=tuple(current_map[ref] for ref in item.source_refs),
+                    content=item.content,
+                    importance=item.importance,
                 )
-                operation = await self._repository.create_operation(
-                    cluster_id=cluster.id,
-                    action_index=action_index,
-                    operation_type=action.operation,
-                    source_facts=sources,
-                    anchor_fact_id=anchor.id if anchor is not None else None,
-                    session=session,
-                    decision_focuses=tuple(item.focus for item in action.outputs),
-                )
-                result = await self._mutations.mutate_dream(
-                    dream_operation_id=operation.id,
-                    operation_type=action.operation,
-                    source_facts=sources,
-                    anchor_fact_id=anchor.id if anchor is not None else None,
-                    content=action.content,
-                    importance=action.importance,
-                    recompose_outputs=recompose_outputs,
-                    bot_user_id=cluster.bot_user_id,
-                    run_public_id=run.public_id,
-                    session=session,
-                )
-                if result.changed:
-                    embedding_ids.update(source.id for source in sources)
-                loaded_outputs: list[MemoryFact] = []
-                for fact_id in result.output_fact_ids:
-                    loaded_output = await self._facts.repository.get_fact(fact_id, session=session)
-                    if loaded_output is not None:
-                        loaded_outputs.append(loaded_output)
-                output_facts = tuple(loaded_outputs)
-                if len(output_facts) != len(result.output_fact_ids):
-                    raise RuntimeError("dream output fact disappeared before commit")
-                latest_sources: dict[int, MemoryFact] = {}
-                for source in sources:
-                    latest = await self._facts.repository.get_fact(source.id, session=session)
-                    if latest is not None:
-                        latest_sources[source.id] = latest
-                await self._repository.commit_operation(
-                    operation.id,
-                    output_fact_id=result.output_fact_id,
-                    output_results=tuple((fact.id, fact_signature(fact)) for fact in output_facts),
-                    added_evidence_ids=result.added_evidence_ids,
-                    added_relation_ids=result.added_relation_ids,
-                    result_signature=(fact_signature(output_facts[0]) if output_facts else None),
-                    source_signatures={
-                        fact_id: fact_signature(latest)
-                        for fact_id, latest in latest_sources.items()
-                    },
-                    session=session,
-                )
-                for latest in latest_sources.values():
-                    await self._repository.checkpoint_fact(
-                        latest, operation_id=operation.id, session=session
-                    )
-                for output_fact in output_facts:
-                    await self._repository.checkpoint_fact(
-                        output_fact, operation_id=operation.id, session=session
-                    )
-                    embedding_ids.add(output_fact.id)
-                operation_count += 1
-            for ref, fact in current_map.items():
-                if ref in used:
-                    continue
-                latest = await self._facts.repository.get_fact(fact.id, session=session)
+                for item in action.outputs
+            )
+            operation = await self._repository.create_operation(
+                cluster_id=cluster.id,
+                action_index=action_index,
+                operation_type=action.operation,
+                source_facts=sources,
+                anchor_fact_id=anchor.id if anchor is not None else None,
+                session=session,
+                decision_focuses=tuple(item.focus for item in action.outputs),
+                public_id=operation_public_ids[action_index - 1],
+            )
+            result = await self._mutations.mutate_dream(
+                dream_operation_id=operation.id,
+                operation_type=action.operation,
+                source_facts=sources,
+                anchor_fact_id=anchor.id if anchor is not None else None,
+                content=action.content,
+                importance=action.importance,
+                recompose_outputs=recompose_outputs,
+                bot_user_id=cluster.bot_user_id,
+                run_public_id=run.public_id,
+                session=session,
+                mutation_id=mutation_ids[action_index - 1],
+            )
+            if result.changed:
+                embedding_ids.update(source.id for source in sources)
+            loaded_outputs: list[MemoryFact] = []
+            for fact_id in result.output_fact_ids:
+                loaded_output = await self._facts.repository.get_fact(fact_id, session=session)
+                if loaded_output is not None:
+                    loaded_outputs.append(loaded_output)
+            output_facts = tuple(loaded_outputs)
+            if len(output_facts) != len(result.output_fact_ids):
+                raise RuntimeError("dream output fact disappeared before commit")
+            latest_sources: dict[int, MemoryFact] = {}
+            for source in sources:
+                latest = await self._facts.repository.get_fact(source.id, session=session)
                 if latest is not None:
-                    await self._repository.checkpoint_fact(
-                        latest, operation_id=None, session=session
-                    )
-            if preview_id is not None:
-                await self._repository.mark_preview_applied(preview_id, session=session)
-        for fact_id in embedding_ids:
-            await self._facts.schedule_embedding(fact_id)
-        return calls, operation_count, True
+                    latest_sources[source.id] = latest
+            await self._repository.commit_operation(
+                operation.id,
+                output_fact_id=result.output_fact_id,
+                output_results=tuple((fact.id, fact_signature(fact)) for fact in output_facts),
+                added_evidence_ids=result.added_evidence_ids,
+                added_relation_ids=result.added_relation_ids,
+                result_signature=(fact_signature(output_facts[0]) if output_facts else None),
+                source_signatures={
+                    fact_id: fact_signature(latest) for fact_id, latest in latest_sources.items()
+                },
+                session=session,
+            )
+            for latest in latest_sources.values():
+                await self._repository.checkpoint_fact(
+                    latest, operation_id=operation.id, session=session
+                )
+            for output_fact in output_facts:
+                await self._repository.checkpoint_fact(
+                    output_fact, operation_id=operation.id, session=session
+                )
+                embedding_ids.add(output_fact.id)
+            operation_count += 1
+        for ref, fact in current_map.items():
+            if ref in used:
+                continue
+            latest = await self._facts.repository.get_fact(fact.id, session=session)
+            if latest is not None:
+                await self._repository.checkpoint_fact(latest, operation_id=None, session=session)
+        if preview_id is not None:
+            await self._repository.mark_preview_applied(preview_id, session=session)
+        return embedding_ids, operation_count
 
     async def _load(self) -> DreamCandidateLoad:
         if not self._settings.memory_embedding_enabled:
@@ -623,16 +699,22 @@ class DreamService:
         )
 
     async def _input(
-        self, facts: tuple[MemoryFact, ...]
-    ) -> tuple[DreamInput, dict[str, MemoryFact]]:
+        self, facts: tuple[MemoryFact, ...], *, session: AsyncSession | None = None
+    ) -> tuple[DreamInput, dict[str, MemoryFact], str]:
         ref_map = {f"memory_{index}": fact for index, fact in enumerate(facts, start=1)}
         remaining = self._settings.memory_dream_max_input_characters
         rows: list[DreamMemoryInput] = []
+        evidence_proofs: list[tuple[int, tuple[dict[str, Any], ...]]] = []
         for ref, fact in ref_map.items():
             content = fact.content
             remaining -= len(content)
-            evidence_rows = await self._facts.list_evidence(fact.id, limit=100_000)
+            evidence_rows = await self._facts.repository.list_evidence(
+                fact.id, limit=100_000, session=session
+            )
             selected = self._select_evidence(evidence_rows)
+            evidence_proofs.append(
+                (fact.id, tuple(item.model_dump(mode="json") for item in selected))
+            )
             evidence: list[DreamEvidenceInput] = []
             for item in selected:
                 if remaining <= 0:
@@ -682,7 +764,19 @@ class DreamService:
             kind=first.kind.value,
             memories=tuple(rows),
         )
-        return self._fit_input(payload), ref_map
+        fitted = self._fit_input(payload)
+        proof = {
+            "input": fitted.model_dump(mode="json"),
+            "evidence": evidence_proofs,
+            "facts": tuple(
+                (fact_signature(fact), self._mutations._dream_partition(fact), fact.review_state)
+                for fact in facts
+            ),
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(proof, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        return fitted, ref_map, fingerprint
 
     def _validate_output(self, payload: DreamInput, output: DreamOutput) -> None:
         contents = tuple(

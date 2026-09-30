@@ -46,11 +46,11 @@ class OneBotUserProfileResolver:
 
         nickname = message.sender.nickname
         group_card = message.sender.group_card
-        nickname_known = bool(nickname)
-        group_card_known = bool(group_card)
+        nickname_known = message.sender.nickname_known or bool(nickname)
+        group_card_known = message.sender.group_card_known or bool(group_card)
         try:
             if message.scope_type is ScopeType.GROUP and message.group_id is not None:
-                if not nickname or not group_card:
+                if not nickname_known or not group_card_known:
                     payload = await self._bot.call_api(
                         "get_group_member_info",
                         group_id=int(message.group_id),
@@ -64,7 +64,7 @@ class OneBotUserProfileResolver:
                         nickname_known=nickname_known,
                         group_card_known=group_card_known,
                     )
-            elif not nickname:
+            elif not nickname_known:
                 payload = await self._bot.call_api(
                     "get_stranger_info",
                     user_id=int(message.sender.user_id),

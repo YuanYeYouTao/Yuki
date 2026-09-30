@@ -421,11 +421,30 @@ class Manager:
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or total > 100 * 1024 * 1024:
                 raise ValueError("unsafe_output")
         files = [(path.name, await asyncio.to_thread(path.read_bytes)) for path in paths]
-        if identity in self.cancelled:
-            return
-        # Publish and commit the final status without an intervening cancellation point.
-        result["artifacts"] = self.store.publish_batch(files)
-        self.finish(identity, "succeeded", result)
+        preparing = asyncio.create_task(asyncio.to_thread(self.store.prepare_batch, files))
+        try:
+            prepared = await asyncio.shield(preparing)
+        except asyncio.CancelledError:
+            # A thread keeps running after cancellation. Recover its owned files
+            # before allowing job cleanup to proceed; never publish that batch.
+            try:
+                prepared = await preparing
+            except Exception:
+                # Preparation already disposes its own incomplete files.
+                pass
+            else:
+                await asyncio.to_thread(self.store.discard_prepared, prepared)
+            raise
+        try:
+            if identity in self.cancelled:
+                return
+            # Hash/fsync are complete. SQLite publication and the original job
+            # connection finish on this loop, without a cancellation point.
+            result["artifacts"] = self.store.publish_prepared_batch(prepared)
+            self.finish(identity, "succeeded", result)
+        finally:
+            await asyncio.to_thread(self.store.discard_prepared, prepared)
+            await asyncio.to_thread(self.store.cleanup)
 
     async def cleanup(self, identity: str) -> None:
         directory = self.root / identifier(identity)

@@ -583,6 +583,7 @@ class ControlManagementGateway:
         except ValueError as exc:
             raise ManagementFailure(ProblemCode.VALIDATION_ERROR) from exc
         facts = self._facts()
+        await facts.prepare_evidence_write((fact_id,), session=session)
         current = await facts.get_fact(fact_id, session=session)
         if current is None:
             raise ManagementFailure(ProblemCode.NOT_FOUND)

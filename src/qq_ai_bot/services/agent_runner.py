@@ -40,8 +40,9 @@ from qq_ai_bot.llm.base import (
     LLMTimeoutError,
     LLMUnavailableError,
 )
+from qq_ai_bot.model_runtime.dispatch_guard import model_dispatch_guard
 from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
-from qq_ai_bot.model_runtime.models import ModelCapability, ModelTask
+from qq_ai_bot.model_runtime.models import ModelCapability, ModelExecutionPriority, ModelTask
 from qq_ai_bot.runtime.activation_outcome import ActivationOutcome
 from qq_ai_bot.runtime.execution_receipts import ExecutionReceipts, current_receipts
 from qq_ai_bot.runtime.work_control import WORK_CONTROL_NAMES, WorkControl, WorkInputsPreparing
@@ -222,6 +223,17 @@ class AgentRunner:
                 budget_errors, other_errors = exc.split(WorkBudgetExceeded)
                 if budget_errors is not None and other_errors is None:
                     raise WorkBudgetExceeded("work_total_budget_exhausted") from exc
+                if control is None or control.current is None:
+                    from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
+
+                    source_errors, other_errors = exc.split(HistorySourceChangedError)
+                    if source_errors is not None and other_errors is None:
+                        # Parallel read tools retain the original source version
+                        # for the caller's coalesced, uncommitted chat wakeup.
+                        original: BaseException = source_errors
+                        while isinstance(original, BaseExceptionGroup):
+                            original = original.exceptions[0]
+                        raise original from exc
                 raise
         except (WorkBudgetExceeded, WorkCapacityError) as exc:
             if control is None or control.current is None:
@@ -458,47 +470,61 @@ class AgentRunner:
                     finalization=False,
                     web_mode=web_mode.value,
                 )
+                priority = (
+                    ModelExecutionPriority.BACKGROUND
+                    if runtime.origin
+                    in {
+                        TurnOrigin.SCHEDULED_AUTOMATION,
+                        TurnOrigin.PLUGIN_BACKGROUND,
+                        TurnOrigin.AUTONOMOUS_GROUP,
+                        TurnOrigin.SELF_INITIATIVE,
+                        TurnOrigin.SYSTEM_TASK,
+                    }
+                    or bool(runtime.work_control and runtime.work_control.lease.work_id)
+                    else ModelExecutionPriority.FOREGROUND
+                )
                 execute = (
                     partial(
                         self._models.execute,
                         self._task,
                         request,
+                        priority=priority,
                         canonical_conversation_id=runtime.canonical_conversation_id,
                     )
                     if runtime.canonical_conversation_id is not None
-                    else partial(self._models.execute, self._task, request)
+                    else partial(self._models.execute, self._task, request, priority=priority)
                 )
 
                 async def dispatch(
                     execute: Callable[[], Awaitable[ChatResponse]] = execute,
                     sequence: TranscriptRequest = sequence,
                 ) -> ChatResponse:
-                    # Admission can wait behind other conversations. Validate
-                    # only after acquiring the slot, immediately before execution.
-                    if runtime.before_model_request is not None:
-                        try:
-                            with validating_request(sequence):
-                                await runtime.before_model_request()
-                        except LLMError as exc:
-                            raise _RequestNotStarted(exc) from exc
-                    if runtime.work_control is not None:
-                        await runtime.work_control.reserve_request()
-                        if runtime.work_control.session is not None:
-                            await runtime.work_control.session.save("dispatched")
-                    return await execute()
+                    prepared = False
+
+                    async def prepare_dispatch() -> None:
+                        nonlocal prepared
+                        if prepared:
+                            return
+                        # The executor invokes this only after real admission.
+                        # HTTP retries must not reserve this logical request again.
+                        if runtime.before_model_request is not None:
+                            try:
+                                with validating_request(sequence):
+                                    await runtime.before_model_request()
+                            except LLMError as exc:
+                                raise _RequestNotStarted(exc) from exc
+                        if runtime.work_control is not None:
+                            await runtime.work_control.reserve_request()
+                            if runtime.work_control.session is not None:
+                                await runtime.work_control.session.save("dispatched")
+                        prepared = True
+
+                    with model_dispatch_guard(prepare_dispatch):
+                        return await execute()
 
                 response = await self._concurrency.run_llm(
                     runtime.conversation_key,
                     dispatch,
-                    background=(
-                        runtime.origin
-                        in {
-                            TurnOrigin.SCHEDULED_AUTOMATION,
-                            TurnOrigin.PLUGIN_BACKGROUND,
-                            TurnOrigin.PLUGIN_SESSION,
-                        }
-                        or bool(runtime.work_control and runtime.work_control.lease.work_id)
-                    ),
                 )
                 if runtime.work_control is not None:
                     await runtime.work_control.confirm_inputs()

@@ -88,8 +88,18 @@ class VoiceProfileRepository:
         now: datetime | None = None,
     ) -> VoiceProfile:
         timestamp = now or datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             row = await session.get(SpeechVoiceProfileModel, profile_id)
+            existing = {
+                item.reference_key: item
+                for item in (
+                    await session.scalars(
+                        select(SpeechVoiceReferenceModel).where(
+                            SpeechVoiceReferenceModel.profile_id == profile_id
+                        )
+                    )
+                ).all()
+            }
             if row is None:
                 row = SpeechVoiceProfileModel(
                     profile_id=profile_id,
@@ -115,16 +125,6 @@ class VoiceProfileRepository:
             row.license_note = license_note
             row.manifest_hash = manifest_hash
             row.updated_at = timestamp
-            existing = {
-                item.reference_key: item
-                for item in (
-                    await session.scalars(
-                        select(SpeechVoiceReferenceModel).where(
-                            SpeechVoiceReferenceModel.profile_id == profile_id
-                        )
-                    )
-                ).all()
-            }
             incoming: set[str] = set()
             for values in references:
                 key = str(values["reference_key"])
@@ -192,12 +192,12 @@ class VoiceProfileRepository:
             row = await active.get(SpeechVoiceProfileModel, profile_id)
             if row is None:
                 raise LookupError("voice profile not found")
+            references = await self._references_for(active, [profile_id])
             row.enabled = enabled
             if not enabled:
                 row.is_default = False
             row.updated_at = datetime.now(UTC)
             await active.flush()
-            references = await self._references_for(active, [profile_id])
             profile = self._profile(row, references.get(profile_id, ()))
         if profile is None:
             raise RuntimeError("updated voice profile disappeared")
@@ -353,12 +353,12 @@ class SpeechGenerationRepository:
             created_at=datetime.now(UTC),
             expires_at=expires_at,
         )
-        async with self._database.sessions() as session, session.begin():
-            session.add(row)
-            await session.flush()
+        async with self._database.immediate_session() as session:
             await stamp_conversation_correlation(session, row, canonical_conversation_id)
             proven = await resolve_conversation_id_for_event(session, trigger_event_id)
             await stamp_conversation_correlation(session, row, proven)
+            session.add(row)
+            await session.flush()
             return self._generation(row)
 
     async def get(self, generation_id: int) -> SpeechGeneration | None:
@@ -430,47 +430,39 @@ class SpeechGenerationRepository:
     async def mark_sent(self, generation_id: int) -> SpeechGeneration:
         return await self._set_status(generation_id, SpeechGenerationStatus.SENT)
 
-    async def expire_before(self, now: datetime) -> tuple[SpeechGeneration, ...]:
-        async with self._database.sessions() as session, session.begin():
-            rows = (
-                await session.scalars(
-                    select(SpeechGenerationModel).where(
-                        SpeechGenerationModel.expires_at.is_not(None),
-                        SpeechGenerationModel.expires_at <= now,
-                        SpeechGenerationModel.status.in_(
-                            (
-                                SpeechGenerationStatus.SUCCEEDED.value,
-                                SpeechGenerationStatus.SENT.value,
-                            )
-                        ),
-                    )
-                )
-            ).all()
-            for row in rows:
-                row.status = SpeechGenerationStatus.EXPIRED.value
-            await session.flush()
-            return tuple(self._generation(row) for row in rows)
-
-    async def expire_created_before(self, cutoff: datetime) -> tuple[SpeechGeneration, ...]:
+    async def expire_created_before(
+        self, cutoff: datetime, *, limit: int = 128
+    ) -> tuple[SpeechGeneration, ...]:
         """Expire successful cache rows using the current HOT retention policy."""
 
-        async with self._database.sessions() as session, session.begin():
+        if not 1 <= limit <= 128:
+            raise ValueError("cleanup page must be between 1 and 128")
+        eligible = (
+            SpeechGenerationModel.created_at <= cutoff,
+            SpeechGenerationModel.status.in_(
+                (SpeechGenerationStatus.SUCCEEDED.value, SpeechGenerationStatus.SENT.value)
+            ),
+        )
+        async with self._database.sessions() as session:
+            ids = tuple(
+                await session.scalars(
+                    select(SpeechGenerationModel.id)
+                    .where(*eligible)
+                    .order_by(SpeechGenerationModel.created_at, SpeechGenerationModel.id)
+                    .limit(limit)
+                )
+            )
+        if not ids:
+            return ()
+        async with self._database.immediate_session() as session:
             rows = (
                 await session.scalars(
-                    select(SpeechGenerationModel).where(
-                        SpeechGenerationModel.created_at <= cutoff,
-                        SpeechGenerationModel.status.in_(
-                            (
-                                SpeechGenerationStatus.SUCCEEDED.value,
-                                SpeechGenerationStatus.SENT.value,
-                            )
-                        ),
-                    )
+                    update(SpeechGenerationModel)
+                    .where(SpeechGenerationModel.id.in_(ids), *eligible)
+                    .values(status=SpeechGenerationStatus.EXPIRED.value)
+                    .returning(SpeechGenerationModel)
                 )
             ).all()
-            for row in rows:
-                row.status = SpeechGenerationStatus.EXPIRED.value
-            await session.flush()
             return tuple(self._generation(row) for row in rows)
 
     async def queue_depth(self) -> int:

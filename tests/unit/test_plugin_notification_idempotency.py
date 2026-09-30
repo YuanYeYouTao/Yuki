@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from sqlalchemy.exc import IntegrityError
 
 from qq_ai_bot.identity.errors import CanonicalIdentityError
@@ -710,3 +710,98 @@ async def test_unique_event_key_is_unchanged(database: Database) -> None:
         assert group_row.external_target_id == "2001"
         assert group_row.scope_type == "group"
         assert other_row.external_event_key == "other-key"
+
+
+@pytest.mark.asyncio
+async def test_idle_notification_poll_does_not_reserve_writer(database: Database) -> None:
+    repository = await _install(database)
+    statements: list[str] = []
+
+    def capture(_conn, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement.strip().upper())
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
+    try:
+        assert await repository.claim_outbox() is None
+        assert await repository.claim_turn() is None
+    finally:
+        event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
+    assert not any(
+        sql.startswith(("BEGIN IMMEDIATE", "INSERT", "UPDATE", "DELETE")) for sql in statements
+    )
+
+
+@pytest.mark.asyncio
+async def test_expired_send_is_quarantined_and_late_original_receipt_is_retained(
+    database: Database,
+) -> None:
+    repository = await _install(database)
+    await repository.publish(
+        plugin_id=_PLUGIN_ID, request=_request(ask_agent=False, agent_intent="")
+    )
+    claimed = await repository.claim_outbox()
+    assert claimed is not None
+    async with database.immediate_session() as session:
+        row = await session.get(PluginNotificationOutboxModel, claimed.id)
+        assert row is not None
+        row.lease_until = datetime.now(UTC) - timedelta(seconds=1)
+    assert await repository.claim_outbox() is None
+    assert not await repository.retry_outbox(
+        claimed.id,
+        attempt=claimed.attempts,
+        error_category="gateway_disconnected",
+    )
+    assert not await repository.finish_outbox(
+        claimed.id,
+        attempt=claimed.attempts + 1,
+        status="sent",
+        platform_message_id="wrong",
+    )
+    assert await repository.finish_outbox(
+        claimed.id,
+        attempt=claimed.attempts,
+        status="uncertain",
+        platform_message_id="accepted",
+        error_category="post_send_persistence_failed",
+    )
+    assert not await repository.finish_outbox(
+        claimed.id,
+        attempt=claimed.attempts,
+        status="sent",
+        platform_message_id="conflicting",
+    )
+    assert await repository.finish_outbox(
+        claimed.id,
+        attempt=claimed.attempts,
+        status="sent",
+        platform_message_id="accepted",
+    )
+    assert await repository.claim_outbox() is None
+    async with database.sessions() as session:
+        row = await session.get(PluginNotificationOutboxModel, claimed.id)
+        assert row is not None
+        assert (row.status, row.platform_message_id, row.attempts) == (
+            "sent",
+            "accepted",
+            claimed.attempts,
+        )
+
+
+@pytest.mark.asyncio
+async def test_only_proven_presend_failures_can_retry(database: Database) -> None:
+    repository = await _install(database)
+    await repository.publish(
+        plugin_id=_PLUGIN_ID, request=_request(ask_agent=False, agent_intent="")
+    )
+    claimed = await repository.claim_outbox()
+    assert claimed is not None
+    assert not await repository.retry_outbox(
+        claimed.id,
+        attempt=claimed.attempts,
+        error_category="RuntimeError",
+    )
+    assert await repository.retry_outbox(
+        claimed.id,
+        attempt=claimed.attempts,
+        error_category="bot_unavailable",
+    )

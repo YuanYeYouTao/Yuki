@@ -11,7 +11,7 @@ _current: ContextVar[Callable[[], Awaitable[None]] | None] = ContextVar(
 
 @contextmanager
 def model_dispatch_guard(check: Callable[[], Awaitable[None]]) -> Iterator[None]:
-    """Scope a read-only guard to this operation and its child request tasks."""
+    """Scope task-owned checks and one-time preparation to child request tasks."""
     token = _current.set(check)
     try:
         yield
@@ -20,7 +20,7 @@ def model_dispatch_guard(check: Callable[[], Awaitable[None]]) -> Iterator[None]
 
 
 async def check_model_dispatch() -> None:
-    """Reject stale input without retrying it or changing request accounting."""
+    """Recheck validity and run the operation's guarded dispatch preparation."""
     check = _current.get()
     if check is not None:
         await check()

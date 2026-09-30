@@ -662,7 +662,11 @@ class MainAgentBackend(AgentToolBackend):
                         artifact_created=budgeted.artifact_id is not None,
                         error_category=outcome.error_code,
                         result_excerpt=result,
-                        tool_call_id=receipt_call_id,
+                        tool_call_id=(
+                            control.session.call_key(call.id)
+                            if control is not None and control.session is not None
+                            else receipt_call_id
+                        ),
                     )
             if contains_internal_capability_payload(result):
                 self._capability_was_used = True

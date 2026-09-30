@@ -217,13 +217,28 @@ class MediaAnalysisRepository:
             )
             return bool(cast(CursorResult[Any], result).rowcount)
 
-    async def cleanup_expired(self, *, now: datetime | None = None) -> int:
+    async def cleanup_expired(self, *, now: datetime | None = None, limit: int = 128) -> int:
         """Delete cache rows whose expiry has been reached."""
 
         cutoff = now or datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
+        if not 1 <= limit <= 128:
+            raise ValueError("cleanup page must be between 1 and 128")
+        async with self._database.sessions() as session:
+            ids = tuple(
+                await session.scalars(
+                    select(MediaAnalysisModel.id)
+                    .where(MediaAnalysisModel.expires_at <= cutoff)
+                    .order_by(MediaAnalysisModel.expires_at, MediaAnalysisModel.id)
+                    .limit(limit)
+                )
+            )
+        if not ids:
+            return 0
+        async with self._database.immediate_session() as session:
             result = await session.execute(
-                delete(MediaAnalysisModel).where(MediaAnalysisModel.expires_at <= cutoff)
+                delete(MediaAnalysisModel).where(
+                    MediaAnalysisModel.id.in_(ids), MediaAnalysisModel.expires_at <= cutoff
+                )
             )
             return int(cast(CursorResult[Any], result).rowcount or 0)
 

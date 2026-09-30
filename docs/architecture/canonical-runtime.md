@@ -136,6 +136,18 @@ QQ 消息证明伪造成 Web 请求。分页使用 opaque cursor；mutation 使�
 
 ## 数据库与安全边界
 
+人物资料刷新复用入站已取得的 runtime snapshot。已确认的空 nickname/card 仅以
+bot、账号和群为键缓存 known 标记，最多 256 项、60 秒，命中不续期；该缓存不保存
+名字或身份权威。明确入站资料优先，网络异常不产生成功空值。异步资料返回后的写入
+核对原 Person，遗忘并重建同一 QQ Binding 后不能写入迟到的旧资料。
+
+人物遗忘保留一整个隐私事务，包含 Work、投影失效、trace 隐私代次、领域删除与脱敏。
+Rebuild selection 在锁外一次准备全部 Binding 别名，写入前核原 Person、别名和完整
+Rebuild 目录；变化则整个事务回滚并有限重备，不逐个别名在 writer 中解析历史。
+插件队列使用 canonical Person 或同 plugin/Space 的原创建者 grant 集合删除。
+JSON 候选检查解码后的键和值，脱敏先解析再序列化，数字账号与转义文本保持有效 JSON；
+损坏的旧 JSON 导致整个遗忘回滚，不能报告部分遗忘成功。
+
 - 新数据库从无父 revision 的 `0048` canonical baseline 创建表，再依次执行后续迁移至当前 head。
 - 历史桥接只接受已经完成 canonical v2 的旧 `0048` 数据库；更早或过渡态数据库失败关闭。
 - 运行时没有 v1、dual-write、backfill 或 cutover 分支。

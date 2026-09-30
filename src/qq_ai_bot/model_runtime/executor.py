@@ -326,11 +326,12 @@ class TaskModelExecutor:
         self._invocations = invocations
         self.traces = traces
         self._invocation_record_failures = 0
-        self._semaphore = (
-            asyncio.Semaphore(max_concurrency) if max_concurrency is not None else None
-        )
+        self._max_concurrency = max_concurrency
+        self._provider_active = 0
+        self._nonforeground_active = 0
+        self._provider_foreground_waiting = 0
         self._priority_condition = asyncio.Condition()
-        self._foreground_active = 0
+        self._ordinary_active = 0
         self._foreground_waiting = 0
         self._exclusive_active = 0
         self._exclusive_waiting = 0
@@ -761,8 +762,10 @@ class TaskModelExecutor:
             return await self._execute_background_provider(provider, request)
         if priority is ModelExecutionPriority.EXCLUSIVE:
             return await self._execute_exclusive_provider(provider, request)
-        if priority in {ModelExecutionPriority.MAINTENANCE, ModelExecutionPriority.REQUIRED}:
+        if priority is ModelExecutionPriority.MAINTENANCE:
             return await self._execute_maintenance_provider(provider, request)
+        if priority is ModelExecutionPriority.BACKGROUND:
+            return await self._execute_foreground_provider(provider, request, background=True)
         return await self._execute_foreground_provider(provider, request)
 
     def _cancel_best_effort_background(self) -> None:
@@ -774,28 +777,38 @@ class TaskModelExecutor:
         self,
         provider: ModelCompleter,
         request: ChatRequest,
+        *,
+        background: bool = False,
     ) -> ChatResponse:
         waiting = False
         active = False
         try:
             async with self._priority_condition:
-                self._foreground_waiting += 1
-                waiting = True
-                self._cancel_best_effort_background()
+                if not background:
+                    self._foreground_waiting += 1
+                    waiting = True
+                    self._cancel_best_effort_background()
                 self._priority_condition.notify_all()
                 await self._priority_condition.wait_for(
-                    lambda: self._exclusive_active == 0 and self._exclusive_waiting == 0
+                    lambda: (
+                        self._exclusive_active == 0
+                        and self._exclusive_waiting == 0
+                        and (not background or self._foreground_waiting == 0)
+                    )
                 )
-                self._foreground_waiting -= 1
-                waiting = False
-                self._foreground_active += 1
+                if waiting:
+                    self._foreground_waiting -= 1
+                    waiting = False
+                # Ordinary calls include durable background work: exclusive
+                # operations drain them rather than cancelling their execution.
+                self._ordinary_active += 1
                 active = True
                 self._priority_condition.notify_all()
-            return await self._complete_provider(provider, request)
+            return await self._complete_provider(provider, request, background=background)
         finally:
             async with self._priority_condition:
                 if active:
-                    self._foreground_active -= 1
+                    self._ordinary_active -= 1
                 elif waiting:
                     self._foreground_waiting -= 1
                 self._priority_condition.notify_all()
@@ -819,7 +832,9 @@ class TaskModelExecutor:
                     self._priority_condition.notify_all()
                     await self._priority_condition.wait_for(
                         lambda: (
-                            self._foreground_active == 0 and self._maintenance_provider_task is None
+                            self._ordinary_active == 0
+                            and self._maintenance_provider_task is None
+                            and self._background_provider_task is None
                         )
                     )
                     self._exclusive_waiting -= 1
@@ -845,14 +860,14 @@ class TaskModelExecutor:
             async with self._priority_condition:
                 await self._priority_condition.wait_for(
                     lambda: (
-                        self._foreground_active == 0
+                        self._ordinary_active == 0
                         and self._foreground_waiting == 0
                         and self._exclusive_active == 0
                         and self._exclusive_waiting == 0
                     )
                 )
                 provider_task = asyncio.create_task(
-                    self._complete_provider(provider, request),
+                    self._complete_provider(provider, request, background=True),
                     name="best-effort-model-provider",
                 )
                 self._background_provider_task = provider_task
@@ -878,7 +893,9 @@ class TaskModelExecutor:
                 await self._priority_condition.wait_for(
                     lambda: self._exclusive_active == 0 and self._exclusive_waiting == 0
                 )
-                task = asyncio.create_task(self._complete_provider(provider, request))
+                task = asyncio.create_task(
+                    self._complete_provider(provider, request, background=True)
+                )
                 self._maintenance_provider_task = task
             try:
                 return await task
@@ -898,13 +915,48 @@ class TaskModelExecutor:
         self,
         provider: ModelCompleter,
         request: ChatRequest,
+        *,
+        background: bool = False,
     ) -> ChatResponse:
-        if self._semaphore is None:
+        async with self._priority_condition:
+            if not background:
+                self._provider_foreground_waiting += 1
+            try:
+                await self._priority_condition.wait_for(
+                    lambda: (
+                        (
+                            self._max_concurrency is None
+                            or self._provider_active < self._max_concurrency
+                        )
+                        and (
+                            not background
+                            or (
+                                self._provider_foreground_waiting == 0
+                                and (
+                                    self._max_concurrency is None
+                                    or self._nonforeground_active
+                                    < max(1, self._max_concurrency - 1)
+                                )
+                            )
+                        )
+                    )
+                )
+                self._provider_active += 1
+                if background:
+                    self._nonforeground_active += 1
+            finally:
+                if not background:
+                    self._provider_foreground_waiting -= 1
+                self._priority_condition.notify_all()
+        try:
             await check_model_dispatch()
             return await provider.complete(request)
-        async with self._semaphore:
-            await check_model_dispatch()
-            return await provider.complete(request)
+        finally:
+            async with self._priority_condition:
+                self._provider_active -= 1
+                if background:
+                    self._nonforeground_active -= 1
+                self._priority_condition.notify_all()
 
     def profile_id(self, task: ModelTask) -> str:
         route, _profile = self._runtime()[0].route(task)

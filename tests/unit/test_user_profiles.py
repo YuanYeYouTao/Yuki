@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, cast
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from tests.conftest import MemorySender, build_harness, make_settings
 
 from qq_ai_bot.adapters.onebot.profiles import OneBotUserProfileResolver
@@ -23,6 +24,89 @@ from qq_ai_bot.services.user_profiles import (
     UserProfileResolver,
     UserProfileService,
 )
+
+
+async def test_profile_observation_reads_before_write_and_preserves_unchanged_revisions(database):
+    from qq_ai_bot.identity.db_models import (
+        CanonicalSpaceModel,
+        IdentityBindingModel,
+        SpaceBindingModel,
+    )
+
+    profiles = UserProfileRepository(database)
+    arguments = dict(
+        user_id="1001", nickname="昵称", group_id="2001", group_card="名片", group_name="群名"
+    )
+    await profiles.observe(**arguments)
+    async with database.sessions() as session:
+        binding = await session.scalar(
+            select(IdentityBindingModel).where(IdentityBindingModel.external_account_id == "1001")
+        )
+        space = await session.scalar(
+            select(CanonicalSpaceModel)
+            .join(SpaceBindingModel, SpaceBindingModel.space_id == CanonicalSpaceModel.id)
+            .where(SpaceBindingModel.external_space_id == "2001")
+        )
+        assert binding is not None and space is not None
+        before = (binding.revision, space.id, space.revision)
+    statements = []
+
+    def record(connection, cursor, statement, parameters, context, executemany):
+        statements.append(statement.lstrip().split(None, 1)[0].upper())
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", record)
+    try:
+        await profiles.observe(**arguments)
+    finally:
+        event.remove(database.engine.sync_engine, "before_cursor_execute", record)
+    first_write = next(i for i, keyword in enumerate(statements) if keyword in {"INSERT", "UPDATE"})
+    assert "SELECT" in statements[:first_write]
+    assert "SELECT" not in statements[first_write:]
+    async with database.sessions() as session:
+        binding = await session.scalar(
+            select(IdentityBindingModel).where(IdentityBindingModel.external_account_id == "1001")
+        )
+        space = await session.get(CanonicalSpaceModel, before[1])
+        assert binding is not None and space is not None
+        assert (binding.revision, space.revision) == (before[0], before[2])
+
+
+async def test_first_profile_observations_share_relationship_membership_and_aliases(database):
+    from qq_ai_bot.identity.db_models import IdentityBindingModel
+    from qq_ai_bot.persistence.models import PersonAliasModel, PersonRelationshipModel
+
+    profiles = UserProfileRepository(database)
+    arguments = dict(user_id="1001", nickname="昵称", group_id="2001", group_card="名片")
+    await asyncio.gather(profiles.observe(**arguments), profiles.observe(**arguments))
+    async with database.sessions() as session:
+        binding = await session.scalar(
+            select(IdentityBindingModel).where(IdentityBindingModel.external_account_id == "1001")
+        )
+        assert binding is not None
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(PersonRelationshipModel)
+                .where(PersonRelationshipModel.canonical_person_id == binding.person_id)
+            )
+            == 1
+        )
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(MembershipModel)
+                .where(MembershipModel.canonical_person_id == binding.person_id)
+            )
+            == 1
+        )
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(PersonAliasModel)
+                .where(PersonAliasModel.canonical_person_id == binding.person_id)
+            )
+            == 2
+        )
 
 
 def inbound(
@@ -78,6 +162,51 @@ class TrackingResolver(UserProfileResolver):
         return ProfileResolution.from_sender(message.sender)
 
 
+async def test_authoritative_empty_inbound_card_skips_repeated_gateway_lookup():
+    from nonebot.adapters.onebot.v11 import Message
+    from nonebot.adapters.onebot.v11.event import Sender
+    from tests.unit.test_normalizer import group_event
+
+    from qq_ai_bot.adapters.onebot.normalizer import normalize_event
+
+    event = group_event(Message("hello"))
+    event.sender = Sender(user_id=1001, nickname="昵称", card="")
+    message = normalize_event(event)
+    assert message.sender.group_card_known
+    bot = FakeOneBot({"nickname": "API昵称", "card": "旧名片"})
+    resolver = OneBotUserProfileResolver(cast(Any, bot))
+    for _ in range(2):
+        profile = await resolver.resolve(message)
+        assert profile.group_card_known and profile.group_card == ""
+        assert profile.nickname == "昵称"
+    assert not bot.calls
+
+
+async def test_optional_profile_lookup_deadline_keeps_capture_running(database, monkeypatch):
+    from qq_ai_bot.services import user_profiles
+
+    monkeypatch.setattr(user_profiles, "PROFILE_LOOKUP_TIMEOUT_SECONDS", 0.01)
+    cancelled = asyncio.Event()
+
+    class StalledResolver:
+        async def resolve(self, message):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    service = UserProfileService(UserProfileRepository(database))
+    profile = await asyncio.wait_for(
+        service.capture(
+            inbound("hello", message_id="deadline", nickname="事件昵称"), StalledResolver()
+        ),
+        timeout=1,
+    )
+    assert profile.nickname == "事件昵称" and cancelled.is_set()
+    persisted = await service._repository.get(user_id="1001")
+    assert persisted is not None and persisted.nickname == "事件昵称"
+
+
 @pytest.mark.asyncio
 async def test_repository_keeps_distinct_group_cards_and_cascades_delete(
     database: Database,
@@ -112,7 +241,7 @@ async def test_repository_keeps_distinct_group_cards_and_cascades_delete(
     cleared = await repository.get(user_id="1001", group_id="2001")
     assert cleared is not None and not cleared.group_card
 
-    assert await repository.delete_user("1001")
+    assert await repository.delete_person("1001")
     async with database.sessions() as session:
         count = await session.scalar(select(func.count()).select_from(MembershipModel))
     assert count == 0

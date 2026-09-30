@@ -540,18 +540,47 @@ class PluginNotificationRepository:
         lease_seconds: int = OUTBOX_LEASE_SECONDS,
     ) -> OutboxRecord | None:
         now = datetime.now(UTC)
+        eligible = (
+            (PluginNotificationOutboxModel.status == "pending")
+            & (PluginNotificationOutboxModel.next_attempt_at <= now)
+        ) | (
+            (PluginNotificationOutboxModel.status == "processing")
+            & (PluginNotificationOutboxModel.lease_until < now)
+        )
+        async with self._database.sessions() as discovery:
+            ids = tuple(
+                await discovery.scalars(
+                    select(PluginNotificationOutboxModel.id)
+                    .where(eligible)
+                    .order_by(
+                        PluginNotificationOutboxModel.created_at, PluginNotificationOutboxModel.id
+                    )
+                    .limit(128)
+                )
+            )
+        if not ids:
+            return None
         async with self._database.immediate_session() as session:
+            now = datetime.now(UTC)
+            expired = await session.scalars(
+                select(PluginNotificationOutboxModel).where(
+                    PluginNotificationOutboxModel.id.in_(ids),
+                    PluginNotificationOutboxModel.status == "processing",
+                    PluginNotificationOutboxModel.lease_until < now,
+                )
+            )
+            for item in expired:
+                item.status = "uncertain"
+                item.last_error_category = "processing_lease_expired"
+                item.lease_until = None
+                item.updated_at = now
+            await session.flush()
             row = await session.scalar(
                 select(PluginNotificationOutboxModel)
                 .where(
+                    PluginNotificationOutboxModel.id.in_(ids),
                     PluginNotificationOutboxModel.next_attempt_at <= now,
-                    or_(
-                        PluginNotificationOutboxModel.status == "pending",
-                        (
-                            (PluginNotificationOutboxModel.status == "processing")
-                            & (PluginNotificationOutboxModel.lease_until < now)
-                        ),
-                    ),
+                    PluginNotificationOutboxModel.status == "pending",
                 )
                 .order_by(
                     PluginNotificationOutboxModel.created_at, PluginNotificationOutboxModel.id
@@ -583,10 +612,17 @@ class PluginNotificationRepository:
         platform_message_id: str | None = None,
         error_category: str | None = None,
     ) -> bool:
-        now = datetime.now(UTC)
         async with self._database.immediate_session() as session:
+            now = datetime.now(UTC)
             row = await session.get(PluginNotificationOutboxModel, item_id)
-            if not _owns_processing_attempt(row, attempt=attempt):
+            if not _owns_processing_attempt(row, attempt=attempt) and not (
+                row is not None
+                and row.attempts == attempt
+                and row.status == "uncertain"
+                and status in {"sent", "uncertain"}
+                and platform_message_id
+                and row.platform_message_id in {None, platform_message_id}
+            ):
                 return False
             assert row is not None
             row.status = status
@@ -605,13 +641,25 @@ class PluginNotificationRepository:
         error_category: str,
         session: AsyncSession | None = None,
     ) -> bool:
-        now = datetime.now(UTC)
-
         async def mutate(active: AsyncSession) -> bool:
+            now = datetime.now(UTC)
             row = await active.get(PluginNotificationOutboxModel, item_id)
             if attempt is not None and not _owns_processing_attempt(row, attempt=attempt):
                 return False
             if row is None:
+                return False
+            safe_errors = {"bot_unavailable", "gateway_disconnected", "effect_gate_timeout"}
+            if row.platform_message_id is not None:
+                return False
+            if attempt is None:
+                if (
+                    error_category != "manual_retry"
+                    or row.status != "failed"
+                    or row.last_error_category not in safe_errors
+                    or row.attempts >= row.max_attempts
+                ):
+                    return False
+            elif error_category not in safe_errors:
                 return False
             # Historical terminal rows may legitimately lack canonical owners.
             # They remain auditable, but can never re-enter the live queue by
@@ -637,10 +685,28 @@ class PluginNotificationRepository:
         self, *, lease_seconds: int = TURN_LEASE_SECONDS
     ) -> BackgroundTurnJobRecord | None:
         now = datetime.now(UTC)
+        async with self._database.sessions() as discovery:
+            candidate_id = await discovery.scalar(
+                select(PluginBackgroundTurnJobModel.id)
+                .where(
+                    PluginBackgroundTurnJobModel.next_attempt_at <= now,
+                    or_(
+                        PluginBackgroundTurnJobModel.status == "pending",
+                        (PluginBackgroundTurnJobModel.status == "processing")
+                        & (PluginBackgroundTurnJobModel.lease_until < now),
+                    ),
+                )
+                .order_by(PluginBackgroundTurnJobModel.created_at, PluginBackgroundTurnJobModel.id)
+                .limit(1)
+            )
+        if candidate_id is None:
+            return None
         async with self._database.immediate_session() as session:
+            now = datetime.now(UTC)
             row = await session.scalar(
                 select(PluginBackgroundTurnJobModel)
                 .where(
+                    PluginBackgroundTurnJobModel.id == candidate_id,
                     PluginBackgroundTurnJobModel.next_attempt_at <= now,
                     or_(
                         PluginBackgroundTurnJobModel.status == "pending",

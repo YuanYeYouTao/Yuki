@@ -1,11 +1,12 @@
 """Real durable Host feedback; no API calls or QQ sends are performed."""
 
+import asyncio
 import hashlib
 import json
 import time
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -72,8 +73,9 @@ async def setup(database, *, owner=AutonomyOwner.SEMANTIC):
         repository=repository,
         work=WorkRepository(database),
         _sessions={(scene.conversation, 1): item},
+        _session_lock=asyncio.Lock(),
         _dispatch=AsyncMock(),
-        _save=Mock(),
+        _save=AsyncMock(),
     )
     lease = await service.work.acquire(scene.conversation, 1)
     task = await service.work.accept(

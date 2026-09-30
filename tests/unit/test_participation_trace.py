@@ -160,7 +160,7 @@ async def test_host_admission_records_original_outcome_and_does_not_duplicate_wo
         assert len(await host.repository.list_active()) == 1
         assert (await rows(database))[-1].origin == "participation_decision"
     finally:
-        host._store.close()
+        await host._store.close()
 
 
 async def test_diagnostic_failure_never_discards_successful_jev_response(database, monkeypatch):

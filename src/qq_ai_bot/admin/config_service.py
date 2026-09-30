@@ -2015,45 +2015,75 @@ class RuntimeConfigService:
                     canonical_space_id=scope_id if scope_type is ConfigScopeType.GROUP else None,
                 )
             )
-        user_ids = {row.scope_id for row in records if row.scope_type is ConfigScopeType.USER}
-        group_ids = {row.scope_id for row in records if row.scope_type is ConfigScopeType.GROUP}
-        combinations = {
-            (None, None),
-            *((user_id, None) for user_id in user_ids),
-            *((None, group_id) for group_id in group_ids),
-            *((user_id, group_id) for user_id in user_ids for group_id in group_ids),
-        }
-        min_spec = self.registry.get("reply.delay_min_seconds")
-        max_spec = self.registry.get("reply.delay_max_seconds")
-        for user_id, group_id in combinations:
-            minimum = float(
-                cast(
-                    float | int,
-                    self._resolve(
-                        min_spec,
-                        tuple(records),
-                        user_id=None,
-                        group_id=None,
-                        person_id=user_id,
-                        space_id=group_id,
-                    ).value,
-                )
-            )
-            maximum = float(
-                cast(
-                    float | int,
-                    self._resolve(
-                        max_spec,
-                        tuple(records),
-                        user_id=None,
-                        group_id=None,
-                        person_id=user_id,
-                        space_id=group_id,
-                    ).value,
-                )
-            )
+        self._validate_reply_delay_records(tuple(records))
+
+    def _validate_reply_delay_records(
+        self, records: tuple[RuntimeConfigOverrideRecord, ...]
+    ) -> None:
+        """Check USER > GROUP > GLOBAL precedence in linear space and time.
+
+        A user override wins in every group. When only one endpoint is
+        overridden, the other endpoint's group extrema cover every pairing.
+        Keep this check in the caller's transaction with mutation and audit.
+        """
+        minimum_key = "reply.delay_min_seconds"
+        maximum_key = "reply.delay_max_seconds"
+        values: dict[tuple[str, ConfigScopeType, str], float] = {}
+        users: set[str] = set()
+        groups: set[str] = set()
+        for row in records:
+            if row.config_key not in {minimum_key, maximum_key} or not self._valid_stored_record(
+                row
+            ):
+                continue
+            if row.scope_type is ConfigScopeType.USER:
+                owner = row.canonical_person_id
+                if owner is None:
+                    continue
+                users.add(owner)
+            elif row.scope_type is ConfigScopeType.GROUP:
+                owner = row.canonical_space_id
+                if owner is None:
+                    continue
+                groups.add(owner)
+            else:
+                if row.canonical_person_id is not None or row.canonical_space_id is not None:
+                    continue
+                owner = ""
+            index = (row.config_key, row.scope_type, owner)
+            if index in values:
+                raise CanonicalIdentityError("canonical_owner_mismatch")
+            values[index] = float(cast(float | int, row.value))
+        global_min = values.get(
+            (minimum_key, ConfigScopeType.GLOBAL, ""),
+            float(cast(float | int, self.registry.get(minimum_key).default_getter(self._settings))),
+        )
+        global_max = values.get(
+            (maximum_key, ConfigScopeType.GLOBAL, ""),
+            float(cast(float | int, self.registry.get(maximum_key).default_getter(self._settings))),
+        )
+
+        def require_order(minimum: float, maximum: float) -> None:
             if minimum > maximum:
                 raise ValueError("reply.delay_min_seconds 不能大于 reply.delay_max_seconds")
+
+        require_order(global_min, global_max)
+        highest_group_min, lowest_group_max = global_min, global_max
+        for group in groups:
+            minimum = values.get((minimum_key, ConfigScopeType.GROUP, group), global_min)
+            maximum = values.get((maximum_key, ConfigScopeType.GROUP, group), global_max)
+            require_order(minimum, maximum)
+            highest_group_min = max(highest_group_min, minimum)
+            lowest_group_max = min(lowest_group_max, maximum)
+        for user in users:
+            user_minimum = values.get((minimum_key, ConfigScopeType.USER, user))
+            user_maximum = values.get((maximum_key, ConfigScopeType.USER, user))
+            if user_minimum is not None and user_maximum is not None:
+                require_order(user_minimum, user_maximum)
+            elif user_minimum is not None:
+                require_order(user_minimum, lowest_group_max)
+            elif user_maximum is not None:
+                require_order(highest_group_min, user_maximum)
 
     @staticmethod
     def _matches_state(

@@ -55,10 +55,23 @@ class MemoryEvidencePolicy:
         *,
         authority: MemoryAuthority,
     ) -> float:
-        weights = tuple(self._positive_weight(row) for row in evidence)
+        return self.prepare(evidence, authority=authority).confidence
+
+    def prepare(
+        self,
+        evidence: Iterable[MemoryEvidence | MemoryEvidenceCreate],
+        *,
+        authority: MemoryAuthority,
+    ) -> PreparedEvidenceAggregate:
+        rows = tuple(evidence)
+        weights = tuple(self._positive_weight(row) for row in rows)
         positive = tuple(value for value in weights if value > 0)
-        combined = 0.0 if not positive else 1.0 - math.prod(1.0 - value for value in positive)
-        return min(self.authority_cap(authority), max(0.0, combined))
+        return PreparedEvidenceAggregate(
+            policy=self,
+            authority=authority,
+            product=math.prod(1.0 - value for value in positive),
+            has_positive=bool(positive),
+        )
 
     def authority_cap(self, authority: MemoryAuthority) -> float:
         return {
@@ -83,3 +96,27 @@ class MemoryEvidencePolicy:
             MemoryEvidenceRelation.AGENT_REFLECTION: self.weights.self_report,
         }[evidence.relation]
         return min(1.0, max(0.0, base * evidence.confidence))
+
+
+@dataclass(slots=True)
+class PreparedEvidenceAggregate:
+    """Transaction-local accumulator; never persisted or reused across snapshots."""
+
+    policy: MemoryEvidencePolicy
+    authority: MemoryAuthority
+    product: float
+    has_positive: bool
+
+    @property
+    def confidence(self) -> float:
+        combined = 1.0 - self.product if self.has_positive else 0.0
+        return min(self.policy.authority_cap(self.authority), max(0.0, combined))
+
+    def append(self, evidence: MemoryEvidence | MemoryEvidenceCreate) -> None:
+        self.authority = self.policy.strongest_authority(
+            (self.authority, evidence.authority), default=self.authority
+        )
+        weight = self.policy._positive_weight(evidence)
+        if weight > 0:
+            self.product *= 1.0 - weight
+            self.has_positive = True

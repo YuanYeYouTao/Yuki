@@ -61,9 +61,21 @@ class Database:
 
     async def create_schema(self) -> None:
         """Create all tables for tests; deployments use Alembic migrations."""
+        # Declare current read indexes without changing the frozen 0056 schema.
+        from sqlalchemy import Index
+
         from qq_ai_bot.conversation.rollup import signals as _signals  # noqa: F401
         from qq_ai_bot.runtime import work_recovery_schema as _recovery
-        from qq_ai_bot.runtime import work_schema_v1 as _work_schema  # noqa: F401
+        from qq_ai_bot.runtime import work_schema_v1 as _work_schema
+
+        if not any(
+            index.name == "ix_runtime_work_state_updated" for index in _work_schema.work.indexes
+        ):
+            Index(
+                "ix_runtime_work_state_updated",
+                _work_schema.work.c.state,
+                _work_schema.work.c.updated,
+            )
 
         async with self.engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)

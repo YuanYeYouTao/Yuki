@@ -83,12 +83,14 @@ class EmojiWorker:
         try:
             asset = await self._repository.get(job.emoji_id)
             if asset is None:
-                await self._repository.complete_job(job.id)
+                await self._repository.complete_job(job)
                 return
             if job.job_type == "rebuild_preview":
                 if not asset.preview_relative_path:
                     raise RuntimeError("emoji preview path is missing")
-                self._storage.restore_preview(asset.relative_path, asset.preview_relative_path)
+                await asyncio.to_thread(
+                    self._storage.restore_preview, asset.relative_path, asset.preview_relative_path
+                )
             else:
                 # RuntimeConfigSnapshot.emoji is deliberately passed as one immutable policy.
                 analysis = await self._classifier.classify(
@@ -102,8 +104,9 @@ class EmojiWorker:
                     asset,
                     analysis,
                     runtime=emoji_runtime,
+                    job=job,
                 )
-            await self._repository.complete_job(job.id)
+            await self._repository.complete_job(job)
         except (OSError, RuntimeError, ValueError) as exc:
             logger.warning(
                 "emoji_job_failed job_type=%s error_category=%s",
@@ -111,7 +114,7 @@ class EmojiWorker:
                 type(exc).__name__,
             )
             await self._repository.fail_job(
-                job.id,
+                job,
                 error_category=getattr(exc, "code", type(exc).__name__),
                 max_attempts=emoji_runtime.worker_max_attempts,
                 retry_delay_seconds=emoji_runtime.worker_retry_delay_seconds,

@@ -207,7 +207,9 @@ class ConversationRollupWorker:
         """Await model summary; model failures write overlay without moving coverage."""
 
         summary_task = asyncio.create_task(
-            self._service.summarize_candidate(candidate),
+            self._service.summarize_candidate(
+                candidate, required=await self._repository.has_required_work(claim)
+            ),
             name="conversation-rollup-model",
         )
         try:

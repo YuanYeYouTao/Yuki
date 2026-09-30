@@ -96,3 +96,16 @@ uv run qq-ai-bot-cli memory release-check
 时先执行 `memory hygiene scan` 保存 fingerprint，再由管理员人工审阅并显式执行
 `memory hygiene apply <fingerprint>`。fingerprint 变化会拒绝执行，explicit fact、ambiguous
 evidence 与 contested conflict 永不自动处理。
+
+普通 `memory hygiene apply <fingerprint> --database-url ...` 按 128 条页修复事实来源、补缺失派生
+任务和清理仍为终态的 staging，不执行全量 FTS 重建，也不重置同内容失败/处理中 embedding
+预算。若 SQLite 报陈旧快照或锁冲突，整页回滚；重新 scan 后用新 fingerprint 继续。
+
+scan 输出 `rebuild_fts=true` 时安排独立维护窗口，重新 scan 后执行：
+
+```text
+uv run qq-ai-bot-cli memory hygiene rebuild-fts <fingerprint> --database-url <explicit database URL>
+```
+
+此命令会持有 SQLite writer 完成全索引 rebuild；应在暂停常规写入的窗口执行。普通内容修改的
+FTS insert/update/delete trigger 仍正常运行，治理 invalidated 事实继续由检索资格过滤排除。

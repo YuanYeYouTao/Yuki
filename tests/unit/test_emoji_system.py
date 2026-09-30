@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 from dataclasses import replace
@@ -11,6 +12,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 from pydantic import ValidationError
+from sqlalchemy import event, update
 
 from qq_ai_bot.admin.models import EmojiRuntimeConfig, VisionRuntimeConfig
 from qq_ai_bot.automation.authority import PermissionLevel
@@ -47,6 +49,51 @@ from qq_ai_bot.vision.models import VisualItemObservation, VisualObservation
 from yuki_plugin_sdk.models import EmojiSelectionSignal
 from yuki_plugin_sdk.permissions import PluginPermission
 from yuki_plugin_sdk.registrar import EmojiSelectionSignalRegistration
+
+
+@pytest.mark.asyncio
+async def test_emoji_claim_empty_poll_and_expired_analysis_recovery(database, tmp_path):
+    from qq_ai_bot.emoji.db_models import EmojiJobModel
+
+    repository = EmojiRepository(database)
+    statements = []
+
+    def capture(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement.lstrip().upper())
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
+    try:
+        assert await repository.claim_jobs(worker_id="idle", limit=1, lease_seconds=30) == ()
+    finally:
+        event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
+    assert not any(
+        s.startswith(("BEGIN IMMEDIATE", "UPDATE", "INSERT", "DELETE")) for s in statements
+    )
+    storage = EmojiStorage(tmp_path / "emoji")
+    media = storage.inspect(_image_bytes(), near_duplicate_enabled=True)
+    asset, _ = await repository.record_candidate(
+        media, source_event_id=None, user_id=None, group_id=None
+    )
+    await repository.enqueue(asset.id)
+    claims = await asyncio.gather(
+        *[
+            repository.claim_jobs(worker_id=worker, limit=1, lease_seconds=30)
+            for worker in ("first", "second")
+        ]
+    )
+    assert sum(len(batch) for batch in claims) == 1
+    job = next(batch[0] for batch in claims if batch)
+    async with database.immediate_session() as session:
+        await session.execute(
+            update(EmojiJobModel)
+            .where(EmojiJobModel.id == job.id)
+            .values(claimed_until=datetime.now(UTC) - timedelta(seconds=1), attempts=2)
+        )
+    recovered = await repository.claim_jobs(worker_id="recovered", limit=1, lease_seconds=30)
+    assert len(recovered) == 1 and recovered[0].id == job.id and recovered[0].attempts == 2
+    async with database.sessions() as session:
+        row = await session.get(EmojiJobModel, job.id)
+        assert row.status == "processing" and row.claimed_by == "recovered"
 
 
 def _runtime(**updates: object) -> EmojiRuntimeConfig:

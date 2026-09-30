@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import time
@@ -10,7 +9,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from qq_ai_bot.domain.messages import ChatImage, ChatMessage, ChatTool
+from qq_ai_bot.domain.messages import ChatMessage, ChatTool
 from qq_ai_bot.runtime.activation_outcome import ActivationOutcome
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkLease, WorkRepository
 
@@ -127,7 +126,6 @@ class WorkControl:
     recovery_deferred: bool = False
     outcome: ActivationOutcome | None = None
     staged_attempt: str | None = None
-    input_images: dict[int, tuple[ChatImage, ...]] = field(default_factory=dict)
 
     metered_at: float = field(default_factory=time.monotonic)
 
@@ -222,12 +220,8 @@ class WorkControl:
 
     async def take_inputs(self, attempt: str) -> tuple[ChatMessage, ...]:
         pending = await self.pending()
-        deadline = time.monotonic() + 15
-        while pending and not pending[0]["ready"]:
-            if time.monotonic() >= deadline:
-                raise WorkInputsPreparing("work_input_preparing")
-            await asyncio.sleep(0.2)
-            pending = await self.pending()
+        if pending and not pending[0]["ready"]:
+            raise WorkInputsPreparing("work_input_preparing")
         selected: list[int] = []
         messages = []
         size = 0
@@ -261,7 +255,9 @@ class WorkControl:
                     self.session.event_ids.append(item["event_id"])
             messages.append(
                 ChatMessage(
-                    role="user", content=content, images=self.input_images.pop(item["id"], ())
+                    role="user",
+                    content=content,
+                    images=await self.repository.input_images(item),
                 )
             )
         if selected:

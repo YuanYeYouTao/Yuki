@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import (
@@ -27,7 +27,7 @@ from qq_ai_bot.conversation.rollup.models import ConversationScopeState, RollupP
 from qq_ai_bot.conversation.rollup.prompt_accounting import (
     durable_uncovered_event_characters,
 )
-from qq_ai_bot.conversation.rollup.repository import recount_canonical_uncovered
+from qq_ai_bot.conversation.rollup.repository import calculate_canonical_uncovered
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.identity.canonical_repository import (
@@ -65,6 +65,42 @@ class NewGenerationResult:
     event: EventRecord
     scope: ConversationScopeState
     generation_changed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _DerivedTextUpdate:
+    event: EventRecord
+    source_token: tuple[Any, ...] | None
+    rollup_token: tuple[int, int, int] | None
+    counters: tuple[int, int] | None
+    repaired: bool
+    reset_rollup: bool
+
+
+def _derived_source_token(conversation: CanonicalConversationModel) -> tuple[Any, ...]:
+    return (
+        conversation.generation,
+        conversation.prompt_source_revision,
+        conversation.starts_after_event_id,
+        conversation.last_event_id,
+        conversation.covered_through_event_id,
+        conversation.revision,
+        conversation.uncovered_event_count,
+        conversation.uncovered_character_count,
+        conversation.kind,
+        conversation.person_id,
+        conversation.space_id,
+    )
+
+
+def _derived_rollup_token(
+    rollup: CanonicalConversationRollupModel | None,
+) -> tuple[int, int, int] | None:
+    return (
+        (rollup.generation, rollup.covered_through_event_id, rollup.revision)
+        if rollup is not None
+        else None
+    )
 
 
 class ScopedEventLedgerUnitOfWork:
@@ -327,26 +363,26 @@ class ScopedEventLedgerUnitOfWork:
             raise ValueError("audio transcript must not be empty")
         return await self._set_derived_text(event_id, normalized, audio=True, generation=generation)
 
-    async def _set_derived_text(
+    async def _prepare_derived_text(
         self,
         event_id: int,
         normalized: str,
         *,
         audio: bool,
-        generation: int | None = None,
-    ) -> bool:
-        now = datetime.now(UTC)
-        signalled = False
-        async with self._database.immediate_session() as session:
-            row = await session.get(ChatEventModel, event_id)
+        generation: int | None,
+    ) -> _DerivedTextUpdate | bool:
+        # Keep the conditional history scan and all rendering outside the writer.
+        async with self._database.sessions() as reader:
+            await reader.execute(text("BEGIN"))
+            row = await reader.get(ChatEventModel, event_id)
             if row is None:
                 return False
+            conversation = (
+                await reader.get(CanonicalConversationModel, row.canonical_conversation_id)
+                if row.canonical_conversation_id
+                else None
+            )
             if audio:
-                if not row.canonical_conversation_id:
-                    return False
-                conversation = await session.get(
-                    CanonicalConversationModel, row.canonical_conversation_id
-                )
                 if (
                     conversation is None
                     or conversation.generation != generation
@@ -356,77 +392,131 @@ class ScopedEventLedgerUnitOfWork:
                 if row.audio_transcript:
                     return row.audio_transcript == normalized
             old = _event_record(row)
-            old_characters = durable_uncovered_event_characters(
-                old,
-                bot_display_name=self._config.bot_display_name,
-                timezone=self._config.timezone,
+            if conversation is None:
+                return _DerivedTextUpdate(old, None, None, None, False, False)
+            rollup = await reader.get(CanonicalConversationRollupModel, conversation.id)
+            coverage = (
+                rollup.covered_through_event_id
+                if rollup is not None and rollup.generation == conversation.generation
+                else conversation.starts_after_event_id
             )
-            if audio:
-                row.audio_transcript = normalized
-            else:
-                row.visual_summary = normalized
-            await session.flush()
-            new = _event_record(row)
-            conversation_id = row.canonical_conversation_id
-            if conversation_id:
-                conversation = await session.get(CanonicalConversationModel, conversation_id)
+            new = (
+                replace(old, audio_transcript=normalized)
+                if audio
+                else replace(old, visual_summary=normalized)
+            )
+            counters = None
+            repaired = False
+            reset_rollup = audio and row.id <= coverage
+            if row.id > coverage:
+                kwargs = {
+                    "bot_display_name": self._config.bot_display_name,
+                    "timezone": self._config.timezone,
+                }
+                next_characters = conversation.uncovered_character_count + (
+                    durable_uncovered_event_characters(new, **kwargs)
+                    - durable_uncovered_event_characters(old, **kwargs)
+                )
+                if next_characters < 0:
+                    counters = await calculate_canonical_uncovered(
+                        reader, conversation, self._config, event_override=new
+                    )
+                    repaired = True
+                else:
+                    counters = (conversation.uncovered_event_count, next_characters)
+            elif reset_rollup:
+                counters = await calculate_canonical_uncovered(
+                    reader,
+                    conversation,
+                    self._config,
+                    coverage=conversation.starts_after_event_id,
+                    event_override=new,
+                )
+            return _DerivedTextUpdate(
+                old,
+                _derived_source_token(conversation),
+                _derived_rollup_token(rollup),
+                counters,
+                repaired,
+                reset_rollup,
+            )
+
+    async def _set_derived_text(
+        self,
+        event_id: int,
+        normalized: str,
+        *,
+        audio: bool,
+        generation: int | None = None,
+    ) -> bool:
+        from qq_ai_bot.conversation.canonical_rollup import signal_canonical_rollup_if_needed
+        from qq_ai_bot.conversation.hydrate import delete_canonical_rollup_projections
+
+        for _attempt in range(3):
+            prepared = await self._prepare_derived_text(
+                event_id, normalized, audio=audio, generation=generation
+            )
+            if isinstance(prepared, bool):
+                return prepared
+            signalled = False
+            async with self._database.immediate_session() as session:
+                row = await session.get(ChatEventModel, event_id)
+                if row is None:
+                    return False
+                conversation = (
+                    await session.get(CanonicalConversationModel, row.canonical_conversation_id)
+                    if row.canonical_conversation_id
+                    else None
+                )
+                if audio and (
+                    conversation is None
+                    or conversation.generation != generation
+                    or row.id <= conversation.starts_after_event_id
+                ):
+                    return False
+                if audio and row.audio_transcript:
+                    return row.audio_transcript == normalized
+                rollup = (
+                    await session.get(CanonicalConversationRollupModel, conversation.id)
+                    if conversation is not None
+                    else None
+                )
+                if (
+                    _event_record(row) != prepared.event
+                    or (_derived_source_token(conversation) if conversation is not None else None)
+                    != prepared.source_token
+                    or _derived_rollup_token(rollup) != prepared.rollup_token
+                ):
+                    continue
+                # The writer has validated the exact snapshot; only bounded PK
+                # writes and job signalling remain. Never recount after flush.
+                if audio:
+                    row.audio_transcript = normalized
+                else:
+                    row.visual_summary = normalized
+                await session.flush()
                 if conversation is not None:
-                    canonical_rollup = await session.get(
-                        CanonicalConversationRollupModel, conversation.id
-                    )
-                    coverage = (
-                        canonical_rollup.covered_through_event_id
-                        if canonical_rollup is not None
-                        and canonical_rollup.generation == conversation.generation
-                        else conversation.starts_after_event_id
-                    )
-                    if row.id > coverage:
-                        next_characters = conversation.uncovered_character_count + (
-                            durable_uncovered_event_characters(
-                                new,
-                                bot_display_name=self._config.bot_display_name,
-                                timezone=self._config.timezone,
-                            )
-                            - old_characters
-                        )
-                        if next_characters < 0:
-                            await recount_canonical_uncovered(session, conversation, self._config)
-                            self.metrics.counter_repairs += 1
-                            if conversation.uncovered_character_count < 0:
-                                self.metrics.counter_reconcile_failures += 1
-                                raise RuntimeError("visual projection counter recount failed")
-                        else:
-                            conversation.uncovered_character_count = next_characters
-                        conversation.updated_at = now
-                        from qq_ai_bot.conversation.canonical_rollup import (
-                            signal_canonical_rollup_if_needed,
-                        )
-
-                        signalled = await signal_canonical_rollup_if_needed(
-                            session, conversation, self._config, force_existing=True
-                        )
-                    elif audio:
-                        # A busy group may have compacted the source during ASR.
-                        # Rebuild derived rollups from the retained ledger instead
-                        # of silently losing the newly understood speech.
-                        from qq_ai_bot.conversation.canonical_rollup import (
-                            signal_canonical_rollup_if_needed,
-                        )
-                        from qq_ai_bot.conversation.hydrate import (
-                            delete_canonical_rollup_projections,
-                        )
-
+                    now = datetime.now(UTC)
+                    if prepared.reset_rollup:
                         await delete_canonical_rollup_projections(session, conversation.id)
                         conversation.covered_through_event_id = conversation.starts_after_event_id
                         conversation.revision += 1
-                        await recount_canonical_uncovered(session, conversation, self._config)
+                    if prepared.counters is not None:
+                        (
+                            conversation.uncovered_event_count,
+                            conversation.uncovered_character_count,
+                        ) = prepared.counters
+                        conversation.updated_at = now
                         signalled = await signal_canonical_rollup_if_needed(
                             session, conversation, self._config, force_existing=True
                         )
                     else:
                         self.metrics.late_visual_after_coverage += 1
-        self._notify_after_commit(signalled)
-        return True
+            if prepared.repaired:
+                self.metrics.counter_repairs += 1
+            self._notify_after_commit(signalled)
+            return True
+        raise RuntimeError("derived text source changed during preparation")
 
     async def _find_existing_live(
         self,

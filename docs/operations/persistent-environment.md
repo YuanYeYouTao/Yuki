@@ -32,6 +32,20 @@ arguments remain supported. Migration records map old IDs to paths and preserve
 layout for rollback. Published artifacts retain the existing 512 MiB/1,000-object
 store limit independently of the 2 GiB writable home. Explicit deletion reclaims them.
 
+The private artifact manifest is a separate SQLite database. File preparation,
+SHA256 and fsync run outside its writer transaction. Publication rechecks revision,
+immutability and quotas before renaming private pending files and committing the
+whole batch's metadata. Artifact reads/listings use read transactions; reads open
+and validate the selected regular, single-link file descriptor before releasing
+SQLite, then read and verify its content hash. Cleanup discovers files outside the
+writer, rechecks their metadata/references in a short transaction and unlinks at
+most 128 unreferenced blobs after commit. The legacy Manager prepares files in a
+worker thread, then publishes and finishes its job on the original event loop
+without an intervening cancellation point; its jobs connection never crosses threads.
+Publication errors discard only private pending files. A commit error can occur
+after a successful commit, so renamed blobs remain until reference-checked GC
+proves they are unreferenced; an uncertain result does not delete committed files.
+
 `terminal_exec` starts a durable task, returns after about five seconds, and exposes
 incremental byte cursors through `terminal_read`. `terminal_write` sends raw input;
 `terminal_control` interrupts/cancels/closes. A real PTY running Bash retains shell

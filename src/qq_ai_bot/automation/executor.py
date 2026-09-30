@@ -311,6 +311,55 @@ class AutomationExecutor:
                 automation.script, index, send_capabilities=send_capabilities
             )
         }
+        dispatched = False
+        completed_result: CapabilityResult | None = None
+        result_usage_recorded = False
+        active_definition: AutomationCapability | None = None
+        active_context: CapabilityExecutionContext | None = None
+        active_arguments: dict[str, Any] = {}
+        effect_evidence: dict[str, Any] = {}
+
+        def mark_dispatch() -> None:
+            nonlocal dispatched
+            dispatched = True
+
+        async def failure_evidence() -> tuple[bool, int, dict[str, Any]]:
+            """Read existing effect facts; never invoke a handler to reconcile."""
+            uncertain = (
+                dispatched
+                and completed_result is None
+                and active_definition is not None
+                and active_definition.risk_class in {RiskClass.SEND, RiskClass.MUTATE}
+            )
+            confirmed_messages = completed_result.messages_sent if completed_result else 0
+            summary: dict[str, Any] = {}
+            if (
+                active_context is not None
+                and active_definition is not None
+                and active_definition.name.startswith("social.")
+            ):
+                from qq_ai_bot.social.automation import inspect_dispatch_receipt
+
+                try:
+                    receipt = await inspect_dispatch_receipt(
+                        self._repository._database,
+                        active_definition.name,
+                        active_arguments,
+                        active_context,
+                    )
+                except Exception as exc:
+                    # An unavailable read does not prove a send failed.
+                    logger.warning(
+                        "automation_effect_reconciliation_deferred category=%s", type(exc).__name__
+                    )
+                else:
+                    if receipt is not None:
+                        status, count, operation_id = receipt
+                        uncertain = status in {"executing", "uncertain"}
+                        confirmed_messages = max(confirmed_messages, count)
+                        summary = {"effect_operation_id": operation_id, "effect_status": status}
+            return uncertain, 0 if result_usage_recorded else confirmed_messages, summary
+
         try:
             async with asyncio.timeout(
                 None
@@ -320,6 +369,13 @@ class AutomationExecutor:
                 for index, step in enumerate(automation.script.steps):
                     if index < next_step:
                         continue
+                    dispatched = False
+                    completed_result = None
+                    result_usage_recorded = False
+                    active_definition = None
+                    active_context = None
+                    active_arguments = {}
+                    effect_evidence = {}
                     if index in model_deliveries:
                         raise AutomationExecutionError("model_delivery_requires_agent_send")
                     if (
@@ -329,6 +385,7 @@ class AutomationExecutor:
                     ):
                         raise AutomationExecutionError("model_delivery_requires_agent_send")
                     definition = self._registry.require(step.call)
+                    active_definition = definition
                     if step.call not in allowed:
                         raise AutomationExecutionError("capability_not_delegated")
                     try:
@@ -372,6 +429,7 @@ class AutomationExecutor:
                             gateway=self._gateway_factory(context),
                         )
                     started = self._time.clock.now()
+                    active_context, active_arguments = context, arguments
                     resume_plugin = bool(
                         phase == "agent"
                         and index == next_step
@@ -422,7 +480,10 @@ class AutomationExecutor:
                                 pending_usage,
                             )
                         else:
-                            result = await self._execute_capability(definition, arguments, context)
+                            result = await self._execute_capability(
+                                definition, arguments, context, on_dispatch=mark_dispatch
+                            )
+                        completed_result = result
                         delivery_target = arguments.get("delivery_target")
                         if (
                             step.call == "yuki.agent"
@@ -443,6 +504,10 @@ class AutomationExecutor:
                                     messages_sent=result.messages_sent,
                                 )
                     except AutomationExecutionError as exc:
+                        if exc.uncertain and definition.name.startswith("social."):
+                            unknown, confirmed, effect_evidence = await failure_evidence()
+                            exc.uncertain = unknown
+                            exc.messages_sent = max(exc.messages_sent, confirmed)
                         if (
                             exc.category == "agent_work_blocked"
                             and arguments.get("delivery_target")
@@ -461,6 +526,7 @@ class AutomationExecutor:
                         llm_calls += exc.llm_calls
                         tool_calls += exc.tool_calls
                         messages_sent += exc.messages_sent
+                        result_usage_recorded = True
                         finished = self._time.clock.now()
                         await self._repository.record_step(
                             run_id=run.id,
@@ -491,6 +557,7 @@ class AutomationExecutor:
                         llm_calls += result.llm_calls
                         tool_calls += result.tool_calls
                         messages_sent += result.messages_sent
+                        result_usage_recorded = True
                         self._enforce_runtime_limits(
                             automation,
                             llm_calls=llm_calls,
@@ -534,6 +601,7 @@ class AutomationExecutor:
                     llm_calls += result.llm_calls
                     tool_calls += result.tool_calls
                     messages_sent += result.messages_sent
+                    result_usage_recorded = True
                     web_was_used = web_was_used or step.call in {"web.search", "web.read_page"}
                     self._enforce_runtime_limits(
                         automation,
@@ -544,13 +612,25 @@ class AutomationExecutor:
                     pending_usage = {"models": 0, "tools": 0}
                     await checkpoint("ready", index + 1)
         except TimeoutError:
+            uncertain, confirmed, evidence = await failure_evidence()
             return ExecutionResult(
-                status=RunStatus.FAILED,
+                status=RunStatus.UNCERTAIN if uncertain else RunStatus.FAILED,
                 steps_completed=steps_completed,
-                llm_calls=llm_calls,
-                tool_calls=tool_calls,
-                messages_sent=messages_sent,
+                llm_calls=llm_calls
+                + (
+                    completed_result.llm_calls
+                    if completed_result and not result_usage_recorded
+                    else 0
+                ),
+                tool_calls=tool_calls
+                + (
+                    completed_result.tool_calls
+                    if completed_result and not result_usage_recorded
+                    else 0
+                ),
+                messages_sent=messages_sent + confirmed,
                 error_category="runtime_timeout",
+                summary=evidence,
             )
         except AutomationExecutionError as exc:
             if exc.category == "conversation_activation_busy":
@@ -592,6 +672,29 @@ class AutomationExecutor:
                 tool_calls=tool_calls,
                 messages_sent=messages_sent,
                 error_category=exc.category,
+                summary=effect_evidence,
+            )
+        except Exception as exc:
+            uncertain, confirmed, evidence = await failure_evidence()
+            logger.error("automation_step_failed category=%s", type(exc).__name__)
+            return ExecutionResult(
+                status=RunStatus.UNCERTAIN if uncertain else RunStatus.FAILED,
+                steps_completed=steps_completed,
+                llm_calls=llm_calls
+                + (
+                    completed_result.llm_calls
+                    if completed_result and not result_usage_recorded
+                    else 0
+                ),
+                tool_calls=tool_calls
+                + (
+                    completed_result.tool_calls
+                    if completed_result and not result_usage_recorded
+                    else 0
+                ),
+                messages_sent=messages_sent + confirmed,
+                error_category="step_recording_failed",
+                summary=evidence,
             )
         return ExecutionResult(
             status=RunStatus.SUCCEEDED,
@@ -857,6 +960,8 @@ class AutomationExecutor:
         definition: AutomationCapability,
         arguments: dict[str, Any],
         context: CapabilityExecutionContext,
+        *,
+        on_dispatch: Callable[[], None],
     ) -> CapabilityResult:
         if definition.handler is None:
             raise AutomationExecutionError("capability_handler_unavailable")
@@ -868,9 +973,12 @@ class AutomationExecutor:
             else 1
         )
         for attempt in range(attempts):
+            dispatched = False
             try:
                 if context.revalidate_authority is not None:
                     await context.revalidate_authority(definition.name)
+                dispatched = True
+                on_dispatch()
                 return await definition.handler(arguments, context)
             except ProactiveGatewayError as exc:
                 raise AutomationExecutionError(exc.category, uncertain=exc.uncertain) from exc
@@ -887,7 +995,11 @@ class AutomationExecutor:
                     definition.name,
                     type(exc).__name__,
                 )
-                raise AutomationExecutionError("capability_execution_failed") from exc
+                raise AutomationExecutionError(
+                    "capability_execution_failed",
+                    uncertain=dispatched
+                    and definition.risk_class in {RiskClass.SEND, RiskClass.MUTATE},
+                ) from exc
         raise AutomationExecutionError("capability_failed")
 
     @staticmethod

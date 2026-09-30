@@ -9,8 +9,10 @@ from typing import Any
 import pytest
 
 from qq_ai_bot.domain.identity import AuthorKind
+from qq_ai_bot.identity.routing import RouteSendError
 from qq_ai_bot.plugin_host.notification_delivery import (
     NotificationDeliveryReceipt,
+    OneBotNotificationTransport,
     PluginNotificationOutboxWorker,
 )
 from qq_ai_bot.plugin_host.notification_repository import (
@@ -187,3 +189,49 @@ async def test_direct_notification_ignores_conversation_gate_and_requires_receip
     await worker._deliver(_item(part_type="text"))
     assert ledger.append_calls == 0
     assert repository.finishes == [("uncertain", "delivery_receipt_invalid")]
+
+
+@pytest.mark.asyncio
+async def test_unclassified_transport_exception_never_requeues_send() -> None:
+    class BrokenTransport(_Transport):
+        async def send_text(self, **_kwargs: object) -> Any:
+            self.calls += 1
+            raise RuntimeError("connection closed after accepting send")
+
+    repository = _Repository()
+    transport = BrokenTransport(None)
+    worker = PluginNotificationOutboxWorker(
+        repository=repository,  # type: ignore[arg-type]
+        artifacts=SimpleNamespace(),  # type: ignore[arg-type]
+        ledger=_Ledger(),  # type: ignore[arg-type]
+        transport=transport,
+        effect_gate=ConversationEffectGate(),
+    )
+    await worker._deliver(_item(part_type="text"))
+    assert transport.calls == 1
+    assert repository.finishes == [("uncertain", "RuntimeError")]
+    assert repository.retries == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("category", ["disconnected", "paused", "ambiguous", "none"])
+async def test_route_resolution_retry_uses_real_presend_disconnect_category(category) -> None:
+    class Router:
+        async def resolve_send_for_person(self, _person_id):
+            raise RouteSendError(category)
+
+    repository = _Repository()
+    worker = PluginNotificationOutboxWorker(
+        repository=repository,  # type: ignore[arg-type]
+        artifacts=SimpleNamespace(),  # type: ignore[arg-type]
+        ledger=_Ledger(),  # type: ignore[arg-type]
+        transport=OneBotNotificationTransport(router=Router()),  # type: ignore[arg-type]
+        effect_gate=ConversationEffectGate(),
+    )
+    await worker._deliver(_item(part_type="text"))
+    if category == "disconnected":
+        assert repository.retries == ["gateway_disconnected"]
+        assert repository.finishes == []
+    else:
+        assert repository.retries == []
+        assert repository.finishes == [("failed", category)]

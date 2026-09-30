@@ -10,7 +10,7 @@ from time import monotonic
 from uuid import uuid4
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.admin.config_files import ConfigFileService
@@ -262,6 +262,7 @@ class ControlCommandAdapter:
         if type(database) is not Database:
             raise TypeError("database must be Database")
         self._database = database
+        self._memories = memories
         self._after_audit_flush: Callable[[], None] | None = None
         self._management = ControlManagementGateway(
             database,
@@ -1018,75 +1019,97 @@ class ControlCommandAdapter:
         result: ControlResult | None = None
         validation = parse_problem or target_problem
         failure_target_type = failure_audit_target_type(operation)
+        memory_snapshot = (
+            operation == CommandOperation.MEMORY_MUTATE.value and self._memories is not None
+        )
         try:
-            async with self._database.immediate_session() as session:
-                existing = await self._load_receipt(session, principal, command)
-                if existing is not None:
-                    replay = await self._replay_receipt(
-                        session,
-                        existing,
-                        bound_hash,
-                        principal=principal,
-                        command=command,
-                        operation=operation,
-                        capability=capability,
-                        semantic_target_id=target_id,
-                        material=material,
-                        failure_target_type=failure_target_type,
-                    )
-                    if type(replay) is ControlResult:
-                        result = replay
-                    else:
-                        pending = replay
-                elif validation is not None:
-                    pending = await self._record_failure(
-                        session,
-                        principal=principal,
-                        command=command,
-                        operation=operation,
-                        capability=capability,
-                        target_type=failure_target_type,
-                        target_id=target_id,
-                        payload_hash=bound_hash,
-                        problem=validation,
-                        before={},
-                        started=started,
-                    )
-                else:
-                    try:
-                        # A domain rejection may follow a partial database write.
-                        # Roll it back before committing the original failure receipt.
-                        async with session.begin_nested():
-                            success = await mutate(session)
-                    except _CachedFailure as failure:
-                        if failure.problem.code not in CACHEABLE_COMMAND_FAILURES:
-                            raise ControlCommandError(failure.problem) from None
-                        pending = await self._record_failure(
-                            session,
-                            principal=principal,
-                            command=command,
-                            operation=operation,
-                            capability=capability,
-                            target_type=failure_target_type,
-                            target_id=target_id,
-                            payload_hash=bound_hash,
-                            problem=failure.problem,
-                            before=failure.before,
-                            started=started,
-                        )
-                    else:
-                        result = await self._record_success(
-                            session,
-                            principal=principal,
-                            command=command,
-                            operation=operation,
-                            capability=capability,
-                            payload_hash=bound_hash,
-                            success=success,
-                            semantic_target_id=target_id,
-                            material=material,
-                            started=started,
-                        )
+            for attempt in range(3 if memory_snapshot else 1):
+                pending = None
+                result = None
+                transaction = (
+                    self._memories.repository.transaction(read_snapshot=True)
+                    if memory_snapshot and self._memories is not None
+                    else self._database.immediate_session()
+                )
+                try:
+                    async with transaction as session:
+                        existing = await self._load_receipt(session, principal, command)
+                        if existing is not None:
+                            replay = await self._replay_receipt(
+                                session,
+                                existing,
+                                bound_hash,
+                                principal=principal,
+                                command=command,
+                                operation=operation,
+                                capability=capability,
+                                semantic_target_id=target_id,
+                                material=material,
+                                failure_target_type=failure_target_type,
+                            )
+                            if type(replay) is ControlResult:
+                                result = replay
+                            else:
+                                pending = replay
+                        elif validation is not None:
+                            pending = await self._record_failure(
+                                session,
+                                principal=principal,
+                                command=command,
+                                operation=operation,
+                                capability=capability,
+                                target_type=failure_target_type,
+                                target_id=target_id,
+                                payload_hash=bound_hash,
+                                problem=validation,
+                                before={},
+                                started=started,
+                            )
+                        else:
+                            try:
+                                # A domain rejection may follow a partial database write.
+                                # Roll it back before committing the original failure receipt.
+                                async with session.begin_nested():
+                                    success = await mutate(session)
+                            except _CachedFailure as failure:
+                                if failure.problem.code not in CACHEABLE_COMMAND_FAILURES:
+                                    raise ControlCommandError(failure.problem) from None
+                                pending = await self._record_failure(
+                                    session,
+                                    principal=principal,
+                                    command=command,
+                                    operation=operation,
+                                    capability=capability,
+                                    target_type=failure_target_type,
+                                    target_id=target_id,
+                                    payload_hash=bound_hash,
+                                    problem=failure.problem,
+                                    before=failure.before,
+                                    started=started,
+                                )
+                            else:
+                                result = await self._record_success(
+                                    session,
+                                    principal=principal,
+                                    command=command,
+                                    operation=operation,
+                                    capability=capability,
+                                    payload_hash=bound_hash,
+                                    success=success,
+                                    semantic_target_id=target_id,
+                                    material=material,
+                                    started=started,
+                                )
+                    break
+                except OperationalError as exc:
+                    if (
+                        not memory_snapshot
+                        or getattr(exc.orig, "sqlite_errorcode", None) != 517
+                        or attempt == 2
+                    ):
+                        raise
+                    # Retry only the rolled-back database work with the original
+                    # command identity, revision and receipt on a fresh snapshot.
         except ControlCommandError:
             raise
         except IntegrityError as exc:

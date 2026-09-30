@@ -264,8 +264,6 @@ class AutomationService:
             if permission.value == "superuser"
             else self._settings.automation_max_active_per_user
         )
-        if await self._repository.active_count(creator_person_id) >= maximum:
-            raise ValueError(f"当前用户最多同时启用 {maximum} 个自动化任务")
         authority = DelegatedAuthority(
             creator_user_id=actor.user_id,
             bot_user_id=actor.bot_user_id,
@@ -282,23 +280,36 @@ class AutomationService:
             principal_kind=actor.principal_kind,
             **(await self._self_scene_fields(actor) if actor.principal_kind == "self" else {}),
         )
-        row = await self._repository.create(
-            validated,
-            authority,
-            creation_source_key=_creation_key(actor.source_key),
-            creator_person_id=creator_person_id,
-            max_runs=max_runs,
-            misfire_grace_seconds=self._settings.automation_default_misfire_grace_seconds,
-            now=now,
-        )
-        await self._audit_event(
-            actor,
-            conversation_key,
-            operation="create",
-            automation_id=row.id,
-            after={"name": row.name, "status": row.status.value},
-            started=started,
-        )
+        async with self._repository._database.immediate_session() as session:
+            current_owner, current_permission, _ = await self._creator_context(
+                actor, session=session
+            )
+            if (current_owner, current_permission) != (creator_person_id, permission):
+                raise PermissionError("automation_creation_authority_changed")
+            if actor.principal_kind == "self":
+                current_scene = await self._self_scene_fields(actor, session=session)
+                if any(getattr(authority, key) != value for key, value in current_scene.items()):
+                    raise PermissionError("self_automation_scene_changed")
+            row = await self._repository.create(
+                validated,
+                authority,
+                creation_source_key=_creation_key(actor.source_key),
+                creator_person_id=creator_person_id,
+                max_runs=max_runs,
+                max_active=maximum,
+                misfire_grace_seconds=self._settings.automation_default_misfire_grace_seconds,
+                now=now,
+                session=session,
+            )
+            await self._audit_event(
+                actor,
+                conversation_key,
+                operation="create",
+                automation_id=row.id,
+                after={"name": row.name, "status": row.status.value},
+                started=started,
+                session=session,
+            )
         return row
 
     async def update(
@@ -377,23 +388,31 @@ class AutomationService:
                 else {}
             ),
         )
-        row = await self._repository.update_script(
-            existing.id,
-            creator_person_id=owner_person_id,
-            validated=validated,
-            authority=authority,
-            now=now,
-        )
-        if row is None:
-            raise ValueError("该任务已经结束，不能更新")
-        await self._audit_event(
-            actor,
-            conversation_key,
-            operation="update",
-            automation_id=row.id,
-            before={"script_hash": existing.script_hash},
-            after={"script_hash": row.script_hash},
-        )
+        async with self._repository._database.immediate_session() as session:
+            current = await self.require_manageable(existing.id, actor, session=session)
+            if actor.principal_kind == "self":
+                current_scene = await self._self_scene_fields(actor, session=session)
+                if any(getattr(authority, key) != value for key, value in current_scene.items()):
+                    raise PermissionError("self_automation_scene_changed")
+            row = await self._repository.update_script(
+                existing.id,
+                creator_person_id=owner_person_id,
+                validated=validated,
+                authority=authority,
+                now=now,
+                session=session,
+            )
+            if row is None:
+                raise ValueError("该任务已经结束，不能更新")
+            await self._audit_event(
+                actor,
+                conversation_key,
+                operation="update",
+                automation_id=row.id,
+                before={"script_hash": current.script_hash},
+                after={"script_hash": row.script_hash},
+                session=session,
+            )
         return row
 
     async def list(self, creator_user_id: str) -> tuple[AutomationRecord, ...]:
@@ -458,25 +477,24 @@ class AutomationService:
         )
         return await self._repository.list_terminal_for_creator(creator_person_id)
 
-    async def require_owned(self, automation_id: int, creator_user_id: str) -> AutomationRecord:
-        self._require_enabled()
-        creator_person_id = await self._resolve_creator_person(creator_user_id)
-        return await self._require_owned_person(automation_id, creator_person_id)
-
     async def require_manageable(
         self,
         automation_id: int,
         actor: ToolActor,
+        *,
+        session: AsyncSession | None = None,
     ) -> AutomationRecord:
         """Allow the canonical owner or a current superuser to manage one task."""
 
         self._require_enabled()
-        actor_person_id, permission, _provenance = await self._creator_context(actor)
-        row = await self._repository.get(automation_id)
+        actor_person_id, permission, _provenance = await self._creator_context(
+            actor, session=session
+        )
+        row = await self._repository.get(automation_id, session=session)
         if row is None:
             raise ValueError("自动化任务不存在")
         if actor.principal_kind == "self" and row.creator_kind == "self":
-            scene = await self._self_scene_fields(actor)
+            scene = await self._self_scene_fields(actor, session=session)
             if (
                 scene["canonical_conversation_id"]
                 != row.authority_snapshot.get("canonical_conversation_id")
@@ -493,74 +511,90 @@ class AutomationService:
     async def pause(self, automation_id: int, *, actor: ToolActor, conversation_key: str) -> bool:
         row = await self.require_manageable(automation_id, actor)
         creator_person_id = self._canonical_owner(row)
-        changed = await self._repository.set_status(
-            automation_id,
-            creator_person_id=creator_person_id,
-            status=AutomationStatus.PAUSED,
-            now=self._time.clock.now(),
-        )
-        await self._audit_event(
-            actor,
-            conversation_key,
-            operation="pause",
-            automation_id=automation_id,
-            after={"changed": changed},
-        )
+        async with self._repository._database.immediate_session() as session:
+            await self.require_manageable(automation_id, actor, session=session)
+            changed = await self._repository.set_status(
+                automation_id,
+                creator_person_id=creator_person_id,
+                status=AutomationStatus.PAUSED,
+                now=self._time.clock.now(),
+                session=session,
+            )
+            await self._audit_event(
+                actor,
+                conversation_key,
+                operation="pause",
+                automation_id=automation_id,
+                after={"changed": changed},
+                session=session,
+            )
         return changed
 
     async def resume(self, automation_id: int, *, actor: ToolActor, conversation_key: str) -> bool:
         row = await self.require_manageable(automation_id, actor)
         creator_person_id = self._canonical_owner(row)
         now = self._time.clock.now()
-        next_run = initial_run_at(row.script.schedule, now, row.timezone)
-        changed = await self._repository.resume(
-            automation_id,
-            creator_person_id=creator_person_id,
-            next_run_at=next_run,
-            now=now,
-        )
-        await self._audit_event(
-            actor,
-            conversation_key,
-            operation="resume",
-            automation_id=automation_id,
-            after={"changed": changed},
-        )
+        async with self._repository._database.immediate_session() as session:
+            current = await self.require_manageable(automation_id, actor, session=session)
+            next_run = initial_run_at(current.script.schedule, now, current.timezone)
+            changed = await self._repository.resume(
+                automation_id,
+                creator_person_id=creator_person_id,
+                next_run_at=next_run,
+                now=now,
+                session=session,
+            )
+            await self._audit_event(
+                actor,
+                conversation_key,
+                operation="resume",
+                automation_id=automation_id,
+                after={"changed": changed},
+                session=session,
+            )
         return changed
 
     async def cancel(self, automation_id: int, *, actor: ToolActor, conversation_key: str) -> bool:
         row = await self.require_manageable(automation_id, actor)
         creator_person_id = self._canonical_owner(row)
-        changed = await self._repository.set_status(
-            automation_id,
-            creator_person_id=creator_person_id,
-            status=AutomationStatus.CANCELLED,
-            now=self._time.clock.now(),
-        )
-        await self._audit_event(
-            actor,
-            conversation_key,
-            operation="cancel",
-            automation_id=automation_id,
-            after={"changed": changed},
-        )
+        async with self._repository._database.immediate_session() as session:
+            await self.require_manageable(automation_id, actor, session=session)
+            changed = await self._repository.set_status(
+                automation_id,
+                creator_person_id=creator_person_id,
+                status=AutomationStatus.CANCELLED,
+                now=self._time.clock.now(),
+                session=session,
+            )
+            await self._audit_event(
+                actor,
+                conversation_key,
+                operation="cancel",
+                automation_id=automation_id,
+                after={"changed": changed},
+                session=session,
+            )
         return changed
 
     async def run_now(self, automation_id: int, *, actor: ToolActor, conversation_key: str) -> bool:
         row = await self.require_manageable(automation_id, actor)
         creator_person_id = self._canonical_owner(row)
-        changed = await self._repository.schedule_now(
-            automation_id,
-            creator_person_id=creator_person_id,
-            now=self._time.clock.now(),
-        )
-        await self._audit_event(
-            actor,
-            conversation_key,
-            operation="run_now",
-            automation_id=automation_id,
-            after={"changed": changed},
-        )
+        async with self._repository._database.immediate_session() as session:
+            await self.require_manageable(automation_id, actor, session=session)
+            changed = await self._repository.schedule_now(
+                automation_id,
+                creator_person_id=creator_person_id,
+                now=self._time.clock.now(),
+                session=session,
+            )
+            await self._audit_event(
+                actor,
+                conversation_key,
+                operation="run_now",
+                automation_id=automation_id,
+                after={"changed": changed},
+                session=session,
+            )
         return changed
 
     async def history(
@@ -615,7 +649,12 @@ class AutomationService:
         self._require_enabled()
         script = AutomationScript.model_validate(script_payload)
         now = self._time.clock.now()
-        async with optional_session(self._repository._database, session, write=True) as active:
+        transaction = (
+            self._repository._database.immediate_session()
+            if session is None
+            else optional_session(self._repository._database, session, write=True)
+        )
+        async with transaction as active:
             context = await resolve_control_context(
                 active, self._settings, owner_id=owner_id, conversation_id=conversation_id
             )
@@ -625,14 +664,13 @@ class AutomationService:
                 if context.provenance.permission is PermissionLevel.SUPERUSER
                 else self._settings.automation_max_active_per_user
             )
-            if await self._repository.active_count(owner_id, session=active) >= maximum:
-                raise ValueError(f"当前主体最多同时启用 {maximum} 个自动化任务")
             return await self._repository.create(
                 validated,
                 self._control_authority(context, validated),
                 creator_person_id=owner_id,
                 creation_source_key=creation_source_key,
                 max_runs=max_runs,
+                max_active=maximum,
                 misfire_grace_seconds=self._settings.automation_default_misfire_grace_seconds,
                 now=now,
                 session=active,
@@ -761,16 +799,20 @@ class AutomationService:
     async def _creator_context(
         self,
         actor: ToolActor,
+        *,
+        session: AsyncSession | None = None,
     ) -> tuple[str, PermissionLevel, CreationProvenance]:
         if actor.principal_kind == "self":
             if not actor.group_id or not actor.conversation_id or not actor.presence_id:
                 raise PermissionError("self_automation_scene_required")
             permission = PermissionLevel.SELF
             return "self", permission, self._creation_provenance(actor, permission=permission)
-        creator_person_id = await self._resolve_creator_person(actor.user_id)
+        creator_person_id = await self._resolve_creator_person(actor.user_id, session=session)
         if actor.person_id is not None and actor.person_id != creator_person_id:
             raise PermissionError("actor_identity_changed")
-        accounts = await self._repository.active_creator_accounts(creator_person_id)
+        accounts = await self._repository.active_creator_accounts(
+            creator_person_id, session=session
+        )
         if not accounts:
             raise PermissionError("当前永久主体没有活动 QQ 绑定")
         permission = permission_for_accounts(self._settings, accounts)
@@ -780,7 +822,9 @@ class AutomationService:
             self._creation_provenance(actor, permission=permission),
         )
 
-    async def _self_scene_fields(self, actor: ToolActor) -> dict[str, object]:
+    async def _self_scene_fields(
+        self, actor: ToolActor, *, session: AsyncSession | None = None
+    ) -> dict[str, object]:
         from sqlalchemy import select
 
         from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
@@ -789,7 +833,7 @@ class AutomationService:
 
         if not actor.conversation_id or not actor.presence_id or not actor.group_id:
             raise PermissionError("self_automation_scene_required")
-        async with self._repository._database.sessions() as session:
+        async with optional_session(self._repository._database, session, write=False) as session:
             if actor.origin is TurnOrigin.SCHEDULED_AUTOMATION:
                 run = await session.get(AutomationRunModel, actor.automation_run_id)
                 owner = await session.get(AutomationModel, run.automation_id) if run else None
@@ -821,6 +865,7 @@ class AutomationService:
                     conversation_id=actor.conversation_id,
                     space_id=conversation.space_id,
                     presence_id=actor.presence_id,
+                    session=session,
                 )
             bindings = (
                 await session.scalars(
@@ -907,18 +952,6 @@ class AutomationService:
             raise PermissionError("自动化任务没有永久创建者，不能修改")
         return row.canonical_creator_person_id
 
-    async def _require_owned_person(
-        self,
-        automation_id: int,
-        creator_person_id: str,
-    ) -> AutomationRecord:
-        row = await self._repository.get(automation_id)
-        if row is None:
-            raise ValueError("自动化任务不存在")
-        if row.canonical_creator_person_id != creator_person_id:
-            raise PermissionError("任务存在，但当前主体不是任务所有者，不能修改")
-        return row
-
     def _require_enabled(self) -> None:
         if not self._settings.automation_enabled:
             raise ValueError("自动化功能当前未启用")
@@ -979,6 +1012,7 @@ class AutomationService:
         before: object = None,
         after: object = None,
         started: float | None = None,
+        session: AsyncSession | None = None,
     ) -> None:
         if self._audit is None:
             return
@@ -992,4 +1026,5 @@ class AutomationService:
             after=after,
             success=True,
             duration_seconds=(time.perf_counter() - started if started is not None else 0),
+            session=session,
         )

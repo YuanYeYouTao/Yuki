@@ -201,6 +201,78 @@ class PresenceRouter:
             sender_account_id=presence.external_account_id,
         )
 
+    async def validate_prepared_send(
+        self,
+        session: AsyncSession,
+        prepared: ResolvedSend,
+        *,
+        target_kind: str,
+        target_id: str,
+    ) -> None:
+        """Recheck an observed route without network probes or route provisioning."""
+        presence = await session.get(PresenceModel, prepared.presence_id)
+        if (
+            presence is None
+            or not presence.enabled
+            or presence.platform != prepared.platform
+            or presence.external_account_id != prepared.sender_account_id
+        ):
+            raise RouteSendError("route_changed")
+        if prepared.binding_id:
+            binding = (
+                await session.get(IdentityBindingModel, prepared.binding_id)
+                if target_kind == "person"
+                else await session.get(SpaceBindingModel, prepared.binding_id)
+            )
+            if (
+                binding is None
+                or binding.status != "active"
+                or binding.platform != prepared.platform
+                or (
+                    binding.person_id
+                    if isinstance(binding, IdentityBindingModel)
+                    else binding.space_id
+                )
+                != target_id
+                or (
+                    binding.external_account_id
+                    if isinstance(binding, IdentityBindingModel)
+                    else binding.external_space_id
+                )
+                != prepared.external_target_id
+            ):
+                raise RouteSendError("route_changed")
+        if prepared.kind in {"person", "space"}:
+            route = (
+                await session.get(PersonActiveRouteModel, target_id)
+                if target_kind == "person"
+                else await session.get(SpaceActiveRouteModel, target_id)
+            )
+            if (
+                route is None
+                or route.paused
+                or route.presence_id != prepared.presence_id
+                or route.route_generation != prepared.route_generation
+                or (
+                    route.identity_binding_id
+                    if isinstance(route, PersonActiveRouteModel)
+                    else route.space_binding_id
+                )
+                != prepared.binding_id
+            ):
+                raise RouteSendError("route_changed")
+        self.validate_prepared_connection(prepared)
+
+    def validate_prepared_connection(self, prepared: ResolvedSend) -> None:
+        """Check the exact live connection without I/O or changing the route."""
+
+        try:
+            current = self._registry.resolve_active(prepared.presence_id)
+        except RegistryClosed as exc:
+            raise RouteSendError(exc.category) from exc
+        if current.snapshot != prepared.connection.snapshot:
+            raise RouteSendError("route_changed")
+
     async def accessible_group_connections(
         self, space_id: str, *, binding_id: str | None = None
     ) -> list[ResolvedSend]:

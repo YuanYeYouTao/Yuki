@@ -16,6 +16,7 @@ from typing import Any, Literal, cast
 from uuid import uuid4
 
 from sqlalchemy import and_, or_, select, tuple_, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.autonomy_binding import (
     AcceptedInitiative,
@@ -33,6 +34,7 @@ from qq_ai_bot.conversation.autonomy_db_models import (
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.identity.db_models import CanonicalSpaceModel, PresenceModel
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.unit_of_work import optional_session
 
 _ACTIVE = ("accepted", "running")
 _OUTCOMES = frozenset({"running", "completed", "no_reply", "interrupted", "failed"})
@@ -425,10 +427,12 @@ class AutonomyRepository:
             )
             return AdmissionResult("accepted", _run(row))
 
-    async def get_run(self, run_id: str) -> AcceptedInitiative | None:
+    async def get_run(
+        self, run_id: str, *, session: AsyncSession | None = None
+    ) -> AcceptedInitiative | None:
         """Read factual admission after restart/switch; callers still must authorize execution."""
-        async with self._database.sessions() as session:
-            row = await session.get(InitiativeRunModel, run_id)
+        async with optional_session(self._database, session, write=False) as active:
+            row = await active.get(InitiativeRunModel, run_id)
             return _run(row) if row is not None else None
 
     async def list_active(self) -> tuple[AcceptedInitiative, ...]:
