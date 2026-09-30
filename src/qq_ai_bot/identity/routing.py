@@ -261,6 +261,11 @@ class PresenceRouter:
                 != prepared.binding_id
             ):
                 raise RouteSendError("route_changed")
+        self.validate_prepared_connection(prepared)
+
+    def validate_prepared_connection(self, prepared: ResolvedSend) -> None:
+        """Check the exact live connection without I/O or changing the route."""
+
         try:
             current = self._registry.resolve_active(prepared.presence_id)
         except RegistryClosed as exc:

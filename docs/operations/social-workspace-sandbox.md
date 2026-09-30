@@ -107,7 +107,12 @@ Route and live membership preparation does not hold a global Social lock. A slow
 cross-group probe leaves independent current-conversation sends available. A short
 claim transaction rechecks the canonical target, active binding, exact Presence,
 route generation and live connection snapshot before the existing receipt CAS
-selects one dispatch owner. Immediate replies and recall retain their original
+selects one dispatch owner. After the claim SQL, a synchronous connection check
+rejects changes during that SQL and rolls back the claim. A second synchronous
+check after commit and immediately before dispatch rejects disconnects or
+reconnections during commit; the already claimed receipt becomes `uncertain` and
+replay only reads it. Neither check selects a replacement connection.
+Immediate replies and recall retain their original
 Presence rules; no reachability cache or automatic resend is introduced.
 Ordinary message sends require a nonempty scalar OneBot message ID. Empty, boolean,
 or object-valued IDs after dispatch produce a durable `uncertain` receipt; replay

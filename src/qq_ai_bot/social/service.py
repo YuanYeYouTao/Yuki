@@ -1363,6 +1363,8 @@ class SocialService:
             claimed = await self.receipts.claim(
                 receipt.operation_id, presence_id=route.presence_id, session=session
             )
+            if claimed:
+                self.router.validate_prepared_connection(route)
         if not claimed:
             current = await self.receipts.get(receipt.operation_id)
             await self._record_work_delivery(current)
@@ -1372,6 +1374,7 @@ class SocialService:
                 else await self._receipt_result(current, context)
             )
         try:
+            self.router.validate_prepared_connection(route)
             result = await self._call(route, action, params)
             reference = None
             if action in {"send_private_msg", "send_group_msg"}:
