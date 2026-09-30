@@ -950,10 +950,11 @@ class DreamRepository:
         anchor_fact_id: int | None,
         session: AsyncSession,
         decision_focuses: tuple[str, ...] = (),
+        public_id: str | None = None,
     ) -> MemoryDreamOperationModel:
         now = datetime.now(UTC)
         row = MemoryDreamOperationModel(
-            public_id=str(uuid.uuid4()),
+            public_id=public_id or str(uuid.uuid4()),
             cluster_id=cluster_id,
             action_index=action_index,
             operation_type=operation_type.value,

@@ -7,6 +7,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
@@ -166,8 +167,21 @@ class MemoryMaintenanceWorker:
                     )
             self.metrics.record_maintenance_success(now)
             return changed
-        async with self._facts.repository.transaction() as owned:
-            changed = await self._invalidate_candidates(rows, now=now, config=config, session=owned)
+        for attempt in range(3):
+            try:
+                async with self._facts.repository.transaction(read_snapshot=True) as owned:
+                    await self._facts.prepare_evidence_write(
+                        tuple(candidate.id for candidate in rows), session=owned, targets=rows
+                    )
+                    changed = await self._invalidate_candidates(
+                        rows, now=now, config=config, session=owned
+                    )
+                break
+            except OperationalError as exc:
+                if getattr(exc.orig, "sqlite_errorcode", None) != 517 or attempt == 2:
+                    raise
+                # Only reprepare this original DB batch on a fresh snapshot.
+                # The lifecycle scan, cutoff and any external work stay unchanged.
         self.metrics.record_maintenance_success(now)
         return changed
 

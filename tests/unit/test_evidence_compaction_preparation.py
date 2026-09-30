@@ -206,3 +206,29 @@ async def test_compaction_reprepares_stale_snapshot_and_stops_history_reads_afte
     assert current.confidence == MemoryEvidencePolicy().aggregate(
         remaining, authority=current.authority
     )
+
+
+async def test_compaction_aggregates_all_retained_evidence_beyond_a_read_page(
+    database, monkeypatch
+):
+    facts, service, fact, _, _ = await _seed(database)
+    await service._backfill_reflection_results()
+    read_evidence = facts.repository.list_evidence
+
+    async def bounded_public_page(fact_id, *, limit=100, session=None):
+        # Scale the public page boundary down instead of constructing 100001 rows.
+        return await read_evidence(
+            fact_id, limit=None if limit is None else min(limit, 3), session=session
+        )
+
+    monkeypatch.setattr(facts.repository, "list_evidence", bounded_public_page)
+    kept = await service._compact_fact(
+        fact_id=fact.id, provenance="self_reflection", operation_id=None
+    )
+    current = await facts.get_fact(fact.id)
+    remaining = await read_evidence(fact.id, limit=None)
+    assert kept == len(remaining) == 8
+    assert current.evidence_count == len(remaining)
+    assert current.confidence == MemoryEvidencePolicy().aggregate(
+        remaining, authority=current.authority
+    )

@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from qq_ai_bot.admin.audit import AdminAuditService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import AdminActor
@@ -231,7 +233,7 @@ class MemoryAdminService:
                 duration_seconds=time.perf_counter() - started,
             )
             return row
-        async with self._audit.transaction() as session:
+        async def write(session: AsyncSession) -> MemoryFact:
             if (
                 await self._memories.count_person(target, session=session)
                 >= self._settings.person_memory_max_entries
@@ -256,6 +258,9 @@ class MemoryAdminService:
                 duration_seconds=time.perf_counter() - started,
                 session=session,
             )
+            return row
+
+        row = await self._memories.repository.apply_evidence_write(write)
         await self._memories.schedule_embedding(row.id)
         return row
 
@@ -303,7 +308,7 @@ class MemoryAdminService:
                 duration_seconds=time.perf_counter() - started,
             )
             return updated
-        async with self._audit.transaction() as session:
+        async def write(session: AsyncSession) -> MemoryFact | None:
             before = next(
                 (
                     row
@@ -336,9 +341,12 @@ class MemoryAdminService:
                 duration_seconds=time.perf_counter() - started,
                 session=session,
             )
+            return updated_row
+
+        updated_row = await self._memories.repository.apply_evidence_write(write)
         if updated_row is not None:
             await self._memories.schedule_embedding(updated_row.id)
-        return updated
+        return updated_row is not None
 
     async def delete_memory(
         self,
@@ -374,7 +382,7 @@ class MemoryAdminService:
                 duration_seconds=time.perf_counter() - started,
             )
             return deleted
-        async with self._audit.transaction() as session:
+        async def write(session: AsyncSession) -> bool:
             before = next(
                 (
                     row
@@ -405,7 +413,9 @@ class MemoryAdminService:
                 duration_seconds=time.perf_counter() - started,
                 session=session,
             )
-        return deleted
+            return deleted
+
+        return await self._memories.repository.apply_evidence_write(write)
 
     async def list_evidence(
         self,

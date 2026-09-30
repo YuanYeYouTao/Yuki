@@ -146,11 +146,31 @@ Plugin/Admin 纯查询不产生强化或使用回执。详见
 
 - 证据明细及 readable evidence count 共用同一 SQL 来源谓词，按 canonical event、普通
   tool receipt 或无事件 SELF initiative 分支核验来源、owner、隐藏状态及 SELF 可见范围。
-  明细在 SQL 中过滤后排序和应用 limit，不再为每条证据逐项读取 event、receipt 和 Conversation；
-  不降低原调用的证据上限。authority/confidence 仍用原 policy 计算。
-  当前聚合仍在原原子 mutation 事务中完成；仅有 fact.updated_at 不足以覆盖证据级联删除、
-  来源隐藏及 owner 变化，不能据此把旧聚合移到锁外后无围栏写回。
-  Evidence compaction 单独使用同连接的 SQLite WAL 显式读快照：删除集合、保留证据聚合
+  明细在 SQL 中过滤后排序，公开分页继续应用请求的 limit，不逐 evidence 查来源。
+  内部聚合和完整 lineage 读取全部可读证据；移除旧查询的 100000 条保护截断，因此超过
+  该规模的历史尾部现在也参与聚合与复制。这是极端规模的行为修正，权重乘积公式、
+  authority 继承、authority cap 和来源资格保持原 policy。
+  Memory mutation、Dream 与维护批次在同连接显式只读 BEGIN 中先准备完整证据、聚合、
+  来源和目标归属，再升级为短写事务。SQLite WAL 快照是本次准备的完整依赖围栏；
+  任何竞争提交都使旧快照的首次写入被拒绝，不能仅用 fact.updated_at 推断来源未改变。
+  只对原生 SQLITE_BUSY_SNAPSHOT（517）结束整个失败事务并用新 session 至多重备 3 次。
+  重备仅执行纯数据库单元，复用原 mutation/operation/request ID，不重跑 classifier、
+  模型或外部效果；提交后的 embedding 调度不在重试范围内。模型判断所引用的事实还须
+  在准备阶段比较原 fact signature 和 canonical target，拒绝已经改变的候选；请求目标与
+  操作人的 canonical owner、原内部事件和 tool receipt／SELF 来源证明也必须与原计划一致。
+  来源隐藏、擦除、换绑或会话 generation 变化时拒绝旧计划，不能成功写入一个无证据事实。
+  Dream 将实际模型输入、选中证据身份与内容及 canonical 分区纳入输入指纹，持久 preview
+  复用同一指纹；每次新快照首写前核验，证据数量不变不能证明原模型来源仍然有效。
+  准备缓存和聚合乘积仅属于当前事务，提交或回滚后释放，不增加持久 revision 或事实源。
+  后续写入只累计实际新增证据；版本复制同时批量核验原来源与新目标资格，批量插入后
+  更新临时计数和聚合，写入期间不重新扫描历史。必要的主键、状态、来源／owner 最终
+  复核及两跳关系短查询保留，不以 writer 内零 SELECT 作为验收条件。
+  共享事务调用者必须在其最早的领取围栏、
+  回执或状态写入前准备整个批次，缺少准备时拒绝，不能退回写后历史读取。
+  Control 的确认／隔离保留原能力判定；revision 核验、savepoint、审计和回执仍共用
+  同一事务，证据准备早于本次首写，不拆分提交。旧管理入口的新增／修改／删除同样
+  将记忆变更和管理审计作为一个纯数据库单元准备与提交。
+  Evidence compaction 也使用同连接的 SQLite WAL 显式读快照：删除集合、保留证据聚合
   和 Dream provenance 回写资料均在首个 DELETE 前准备。若任意并发提交使快照过期，
   写入升级失败并整体回滚，最多重新准备三次；不重新领取 item、不更换 operation ID。
   DELETE 后只应用已准备的聚合与 provenance，不扫描证据历史。反思结果回填最多读取

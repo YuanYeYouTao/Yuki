@@ -464,7 +464,7 @@ class EvidenceCompactionService:
             if not delete_ids:
                 return len(evidence)
             readable = await self._facts.repository.list_evidence(
-                fact_id, limit=100_000, session=session
+                fact_id, limit=None, session=session
             )
             remaining = tuple(row for row in readable if row.id in keep_ids)
             prepared = await self._facts.prepare_evidence_metadata(fact, remaining)

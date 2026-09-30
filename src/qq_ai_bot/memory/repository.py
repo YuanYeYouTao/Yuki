@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 
-from sqlalchemy import and_, case, delete, func, literal, or_, select, text, update
+from sqlalchemy import and_, case, delete, event, func, literal, or_, select, text, true, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
@@ -68,10 +70,18 @@ from qq_ai_bot.persistence.models import (
 from qq_ai_bot.persistence.repository_helpers import _event_record, keeper_event_clause
 
 logger = logging.getLogger(__name__)
+_Result = TypeVar("_Result")
 
 
-def _sql_fact_conversation_aligns() -> Any:
-    fact = MemoryFactModel
+@dataclass(frozen=True, slots=True)
+class PreparedEvidenceCopy:
+    identity: tuple[object, ...]
+    values: tuple[dict[str, Any], ...]
+    by_source: dict[tuple[int | None, int | None], MemoryEvidenceCreate]
+    created_at: datetime
+
+
+def _sql_fact_conversation_aligns(fact: Any = MemoryFactModel) -> Any:
     conv = CanonicalConversationModel
     conv_xor = or_(
         and_(conv.person_id.is_not(None), conv.space_id.is_(None)),
@@ -140,7 +150,15 @@ def _sql_fact_conversation_aligns() -> Any:
     )
 
 
-def readable_evidence_predicate() -> Any:
+def readable_evidence_predicate(
+    *,
+    fact: Any = MemoryFactModel,
+    fact_table: Any = MemoryFactModel,
+    fact_alias: str = "memory_facts",
+    evidence: Any = MemoryEvidenceModel,
+    evidence_table: Any = MemoryEvidenceModel,
+    evidence_alias: str = "memory_evidence",
+) -> Any:
     """The three mutually exclusive canonical source chains, evaluated in SQL.
 
     Correlation is explicit because the same predicate serves both a fact's
@@ -153,7 +171,7 @@ def readable_evidence_predicate() -> Any:
         ChatEventModel.canonical_conversation_id.is_not(None),
         func.trim(ChatEventModel.author_kind) != "",
         keeper_event_clause(),
-        _sql_fact_conversation_aligns(),
+        _sql_fact_conversation_aligns(fact),
     )
     event_source = (
         select(literal(1))
@@ -162,8 +180,8 @@ def readable_evidence_predicate() -> Any:
             CanonicalConversationModel,
             CanonicalConversationModel.id == ChatEventModel.canonical_conversation_id,
         )
-        .where(ChatEventModel.id == MemoryEvidenceModel.event_id, live)
-        .correlate(MemoryEvidenceModel, MemoryFactModel)
+        .where(ChatEventModel.id == evidence.event_id, live)
+        .correlate(evidence_table, fact_table)
         .exists()
     )
     tool_source = (
@@ -175,11 +193,11 @@ def readable_evidence_predicate() -> Any:
             CanonicalConversationModel.id == ChatEventModel.canonical_conversation_id,
         )
         .where(
-            MemoryToolReceiptModel.id == MemoryEvidenceModel.tool_receipt_id,
+            MemoryToolReceiptModel.id == evidence.tool_receipt_id,
             MemoryToolReceiptModel.initiative_run_id.is_(None),
             live,
         )
-        .correlate(MemoryEvidenceModel, MemoryFactModel)
+        .correlate(evidence_table, fact_table)
         .exists()
     )
     from sqlalchemy import text
@@ -190,21 +208,21 @@ def readable_evidence_predicate() -> Any:
         select(literal(1))
         .select_from(MemoryToolReceiptModel)
         .where(
-            MemoryToolReceiptModel.id == MemoryEvidenceModel.tool_receipt_id,
+            MemoryToolReceiptModel.id == evidence.tool_receipt_id,
             text(
                 sql_self_receipt_evidence_predicate(
-                    fact="memory_facts",
-                    evidence="memory_evidence",
+                    fact=fact_alias,
+                    evidence=evidence_alias,
                     receipt="memory_tool_receipts",
                 )
             ),
         )
-        .correlate(MemoryEvidenceModel, MemoryFactModel)
+        .correlate(evidence_table, fact_table)
         .exists()
     )
     return or_(
         event_source,
-        and_(MemoryEvidenceModel.event_id.is_(None), or_(tool_source, initiative_source)),
+        and_(evidence.event_id.is_(None), or_(tool_source, initiative_source)),
     )
 
 
@@ -327,6 +345,20 @@ class MemoryFactRepository:
         order_by: tuple[Any, ...],
         limit: int | None = None,
     ) -> list[Any]:
+        counts = session.info.get("memory_evidence_counts")
+        if counts is not None:
+            statement = select(MemoryFactModel).where(*conditions)
+            if order_by:
+                statement = statement.order_by(*order_by)
+            if limit is not None:
+                statement = statement.limit(limit)
+            facts = list((await session.scalars(statement)).all())
+            missing = tuple(row.id for row in facts if row.id not in counts)
+            if missing:
+                if session.info.get("memory_evidence_write_started"):
+                    raise RuntimeError("memory evidence count was not prepared before writing")
+                await self.prepare_evidence_rows(missing, session=session)
+            return [(row, counts[row.id]) for row in facts]
         statement = select(MemoryFactModel, readable_evidence_count_expression()).where(*conditions)
         if order_by:
             statement = statement.order_by(*order_by)
@@ -337,6 +369,26 @@ class MemoryFactRepository:
     @asynccontextmanager
     async def transaction(self, *, read_snapshot: bool = False) -> AsyncIterator[AsyncSession]:
         async with self._database.sessions() as session, session.begin():
+            connection = None
+
+            def mark_write(
+                _connection: Any,
+                _cursor: Any,
+                _statement: str,
+                _parameters: Any,
+                context: Any,
+                _executemany: bool,
+            ) -> None:
+                if (
+                    context.isinsert
+                    or context.isupdate
+                    or context.isdelete
+                    or _statement.lstrip()
+                    .upper()
+                    .startswith(("INSERT", "UPDATE", "DELETE", "REPLACE"))
+                ):
+                    session.info["memory_evidence_write_started"] = True
+
             if read_snapshot:
                 if not self._database.url.startswith("sqlite+"):
                     raise RuntimeError(
@@ -346,7 +398,60 @@ class MemoryFactRepository:
                 # An explicit deferred BEGIN keeps preparation and the eventual
                 # write on one snapshot; WAL rejects stale upgrades atomically.
                 await session.execute(text("BEGIN"))
-            yield session
+                session.info["memory_evidence_counts"] = {}
+                session.info["memory_evidence_rows"] = {}
+                session.info["memory_evidence_additions"] = {}
+                session.info["memory_added_relation_ids"] = []
+                connection = (await session.connection()).sync_connection
+                event.listen(connection, "before_cursor_execute", mark_write)
+            try:
+                yield session
+            finally:
+                if connection is not None:
+                    event.remove(connection, "before_cursor_execute", mark_write)
+
+    async def prepare_evidence_rows(
+        self, fact_ids: tuple[int, ...], *, session: AsyncSession
+    ) -> None:
+        """Load complete readable evidence in bounded SQL pages before first DML."""
+        counts = session.info.setdefault("memory_evidence_counts", {})
+        rows_by_fact = session.info.setdefault("memory_evidence_rows", {})
+        session.info.setdefault("memory_evidence_additions", {})
+        missing = tuple(dict.fromkeys(i for i in fact_ids if i not in rows_by_fact))
+        if not missing:
+            return
+        if session.info.get("memory_evidence_write_started"):
+            raise RuntimeError("memory evidence was not prepared before writing")
+        for offset in range(0, len(missing), 256):
+            page = missing[offset : offset + 256]
+            rows = (
+                await session.scalars(
+                    select(MemoryEvidenceModel)
+                    .join(MemoryFactModel, MemoryFactModel.id == MemoryEvidenceModel.fact_id)
+                    .where(MemoryEvidenceModel.fact_id.in_(page), readable_evidence_predicate())
+                    .order_by(MemoryEvidenceModel.created_at.desc(), MemoryEvidenceModel.id.desc())
+                )
+            ).all()
+            grouped: dict[int, list[MemoryEvidence]] = {i: [] for i in page}
+            for row in rows:
+                grouped[row.fact_id].append(self._evidence_record(row))
+            for fact_id, evidence in grouped.items():
+                rows_by_fact[fact_id] = tuple(evidence)
+                counts[fact_id] = len(evidence)
+
+    async def apply_evidence_write(
+        self, operation: Callable[[AsyncSession], Awaitable[_Result]]
+    ) -> _Result:
+        """Run only a pure database mutation; post-commit work belongs to its caller."""
+        for attempt in range(3):
+            try:
+                async with self.transaction(read_snapshot=True) as session:
+                    result = await operation(session)
+                return result
+            except OperationalError as exc:
+                if getattr(exc.orig, "sqlite_errorcode", None) != 517 or attempt == 2:
+                    raise
+        raise AssertionError("unreachable evidence snapshot retry")
 
     async def count_active_for_create(self, fact: MemoryFactCreate) -> int:
         """Count current active facts in the exact target without mutating capacity."""
@@ -433,6 +538,16 @@ class MemoryFactRepository:
         )
         projected = await project_memory_fact_rows(session, rows)
         return projected[0] if projected else None
+
+    async def get_facts(
+        self, fact_ids: tuple[int, ...], *, session: AsyncSession
+    ) -> tuple[MemoryFact, ...]:
+        if not fact_ids:
+            return ()
+        rows = await self._execute_facts_with_count(
+            session, [MemoryFactModel.id.in_(fact_ids)], order_by=()
+        )
+        return await project_memory_fact_rows(session, rows)
 
     async def get_active_for_target(
         self,
@@ -824,6 +939,15 @@ class MemoryFactRepository:
         )
         session.add(row)
         await session.flush()
+        if "memory_evidence_counts" in session.info:
+            session.info["memory_evidence_counts"][row.id] = 0
+            session.info["memory_evidence_rows"][row.id] = ()
+            policies = session.info.get("memory_evidence_policies", {})
+            policy = policies.get((fact.subject_user_id, fact.group_id))
+            if policy is not None:
+                session.info["memory_evidence_aggregates"][row.id] = policy.prepare(
+                    (), authority=fact.authority
+                )
         session.add(
             MemoryActivationStateModel(
                 fact_id=row.id,
@@ -989,16 +1113,18 @@ class MemoryFactRepository:
             source_event_id=source_event_id,
             created_at=datetime.now(UTC),
         )
-        result = await session.execute(
+        relation_id = await session.scalar(
             statement.on_conflict_do_nothing(
                 index_elements=[
                     MemoryFactRelationModel.source_fact_id,
                     MemoryFactRelationModel.target_fact_id,
                     MemoryFactRelationModel.relation_type,
                 ]
-            )
+            ).returning(MemoryFactRelationModel.id)
         )
-        return bool(cast(CursorResult[Any], result).rowcount)
+        if relation_id is not None and "memory_added_relation_ids" in session.info:
+            session.info["memory_added_relation_ids"].append(relation_id)
+        return relation_id is not None
 
     async def refresh_fact(
         self,
@@ -1017,6 +1143,183 @@ class MemoryFactRepository:
                 updated_at=datetime.now(UTC),
             )
         )
+
+    async def prepare_evidence_copy(
+        self,
+        source_fact_ids: tuple[int, ...],
+        *,
+        identity: tuple[object, ...],
+        authority: MemoryAuthority | None,
+        session: AsyncSession,
+    ) -> PreparedEvidenceCopy:
+        """Apply both source and replacement owner predicates before the writer."""
+        if session.info.get("memory_evidence_write_started"):
+            raise RuntimeError("memory evidence copy was not prepared before writing")
+        target = select(
+            *(
+                literal(value).label(name)
+                for name, value in zip(
+                    (
+                        "scope_type",
+                        "visibility_type",
+                        "canonical_subject_person_id",
+                        "canonical_subject_space_id",
+                        "canonical_visibility_person_id",
+                        "canonical_visibility_space_id",
+                    ),
+                    identity,
+                    strict=True,
+                )
+            )
+        ).cte("prepared_memory_fact")
+        source_ids = tuple(dict.fromkeys(source_fact_ids))
+        copied = (
+            select(
+                *(
+                    (
+                        literal(authority.value)
+                        if column.name == "authority" and authority is not None
+                        else literal("third_party_statement")
+                        if column.name == "relation" and authority is MemoryAuthority.THIRD_PARTY
+                        else column
+                    ).label(column.name)
+                    for column in MemoryEvidenceModel.__table__.columns
+                )
+            )
+            .where(MemoryEvidenceModel.fact_id.in_(source_ids))
+            .cte("prepared_memory_evidence")
+        )
+        statement = (
+            select(copied)
+            .select_from(MemoryEvidenceModel)
+            .join(MemoryFactModel, MemoryFactModel.id == MemoryEvidenceModel.fact_id)
+            .join(copied, copied.c.id == MemoryEvidenceModel.id)
+            .join(target, true())
+            .where(
+                readable_evidence_predicate(),
+                readable_evidence_predicate(
+                    fact=target.c,
+                    fact_table=target,
+                    fact_alias="prepared_memory_fact",
+                    evidence=copied.c,
+                    evidence_table=copied,
+                    evidence_alias="prepared_memory_evidence",
+                ),
+            )
+            .order_by(
+                case(
+                    {i: position for position, i in enumerate(source_ids)},
+                    value=MemoryEvidenceModel.fact_id,
+                ),
+                MemoryEvidenceModel.created_at.desc(),
+                MemoryEvidenceModel.id.desc(),
+            )
+        )
+        rows = (await session.execute(statement)).mappings().all()
+        by_source: dict[tuple[int | None, int | None], MemoryEvidenceCreate] = {}
+        for row in rows:
+            evidence = MemoryEvidenceCreate(
+                **{
+                    name: row[name]
+                    for name in (
+                        "event_id",
+                        "tool_receipt_id",
+                        "source_speaker_user_id",
+                        "relation",
+                        "confidence",
+                        "authority",
+                        "excerpt",
+                    )
+                }
+            )
+            reflection = evidence.authority is MemoryAuthority.AGENT_REFLECTION
+            if reflection != (evidence.relation.value == "agent_reflection"):
+                raise ValueError("agent reflection evidence relation and authority must match")
+            if reflection and identity[0] != MemoryScopeType.SELF.value:
+                raise ValueError("agent reflection evidence is only valid for self memory")
+            by_source.setdefault((evidence.event_id, evidence.tool_receipt_id), evidence)
+        created_at = datetime.now(UTC)
+        values = tuple(
+            {
+                **item.model_dump(mode="json"),
+                "excerpt": item.excerpt[:500],
+                "created_at": created_at,
+            }
+            for item in by_source.values()
+        )
+        return PreparedEvidenceCopy(identity, values, by_source, created_at)
+
+    async def copy_prepared_evidence(
+        self,
+        fact_id: int,
+        prepared: PreparedEvidenceCopy,
+        *,
+        session: AsyncSession,
+        selected: tuple[MemoryEvidenceCreate, ...] | None = None,
+    ) -> int:
+        """Insert a snapshot-validated bundle without per-source reads in the writer."""
+        fact = await session.get(MemoryFactModel, fact_id)
+        if fact is None:
+            return 0
+        identity = tuple(
+            getattr(fact, name)
+            for name in (
+                "scope_type",
+                "visibility_type",
+                "canonical_subject_person_id",
+                "canonical_subject_space_id",
+                "canonical_visibility_person_id",
+                "canonical_visibility_space_id",
+            )
+        )
+        if identity != prepared.identity:
+            raise RuntimeError("memory evidence copy target changed")
+        values = prepared.values
+        if selected is not None:
+            values = tuple(
+                {
+                    **prepared.by_source[key].model_dump(mode="json"),
+                    "created_at": prepared.created_at,
+                }
+                for key in dict.fromkeys((item.event_id, item.tool_receipt_id) for item in selected)
+                if key in prepared.by_source
+            )
+        aggregate = session.info["memory_evidence_aggregates"].get(fact_id)
+        if aggregate is None:
+            raise RuntimeError("memory evidence copy aggregate was not prepared")
+        added = 0
+        for offset in range(0, len(values), 128):
+            rows = (
+                await session.execute(
+                    insert(MemoryEvidenceModel)
+                    .values([dict(item, fact_id=fact_id) for item in values[offset : offset + 128]])
+                    .on_conflict_do_nothing()
+                    .returning(
+                        MemoryEvidenceModel.id,
+                        MemoryEvidenceModel.event_id,
+                        MemoryEvidenceModel.tool_receipt_id,
+                    )
+                )
+            ).all()
+            for evidence_id, event_id, receipt_id in rows:
+                item = prepared.by_source[(event_id, receipt_id)]
+                aggregate.append(item)
+                session.info["memory_evidence_additions"].setdefault(fact_id, []).append(
+                    MemoryEvidence(
+                        id=evidence_id,
+                        fact_id=fact_id,
+                        created_at=prepared.created_at.replace(tzinfo=None),
+                        **item.model_dump(),
+                    )
+                )
+            added += len(rows)
+        if added:
+            session.info["memory_evidence_counts"][fact_id] += added
+            previous = fact.updated_at
+            if previous.tzinfo is None:
+                previous = previous.replace(tzinfo=UTC)
+            fact.updated_at = max(datetime.now(UTC), previous + timedelta(microseconds=1))
+        return added
 
     async def add_evidence(
         self,
@@ -1068,6 +1371,7 @@ class MemoryFactRepository:
                     session, fact_row, trigger
                 ):
                     return False
+        created_at = datetime.now(UTC)
         statement = insert(MemoryEvidenceModel).values(
             fact_id=fact_id,
             event_id=evidence.event_id,
@@ -1077,18 +1381,36 @@ class MemoryFactRepository:
             confidence=evidence.confidence,
             authority=evidence.authority.value,
             excerpt=evidence.excerpt[:500],
-            created_at=datetime.now(UTC),
+            created_at=created_at,
         )
         index_elements = (
             [MemoryEvidenceModel.fact_id, MemoryEvidenceModel.event_id]
             if evidence.event_id is not None
             else [MemoryEvidenceModel.fact_id, MemoryEvidenceModel.tool_receipt_id]
         )
-        result = await session.execute(
-            statement.on_conflict_do_nothing(index_elements=index_elements)
+        evidence_id = await session.scalar(
+            statement.on_conflict_do_nothing(index_elements=index_elements).returning(
+                MemoryEvidenceModel.id
+            )
         )
-        added = bool(cast(CursorResult[Any], result).rowcount)
+        added = evidence_id is not None
         if added:
+            if "memory_evidence_counts" in session.info:
+                counts = session.info["memory_evidence_counts"]
+                if fact_id not in counts:
+                    raise RuntimeError("memory evidence was not prepared before writing")
+                counts[fact_id] += 1
+                session.info["memory_evidence_additions"].setdefault(fact_id, []).append(
+                    MemoryEvidence(
+                        id=evidence_id,
+                        fact_id=fact_id,
+                        created_at=created_at.replace(tzinfo=None),
+                        **evidence.model_dump(),
+                    )
+                )
+                aggregate = session.info.get("memory_evidence_aggregates", {}).get(fact_id)
+                if aggregate is not None:
+                    aggregate.append(evidence)
             # Evidence may make an earlier unreadable fact usable. Advance its
             # change cursor atomically, but do not wake readers for duplicate evidence.
             previous = fact_row.updated_at
@@ -1101,12 +1423,21 @@ class MemoryFactRepository:
         self,
         fact_id: int,
         *,
-        limit: int = 100,
+        limit: int | None = 100,
         session: AsyncSession | None = None,
     ) -> tuple[MemoryEvidence, ...]:
         if session is None:
             async with self._database.sessions() as owned:
                 return await self.list_evidence(fact_id, limit=limit, session=owned)
+        prepared = session.info.get("memory_evidence_rows")
+        if prepared is not None:
+            await self.prepare_evidence_rows((fact_id,), session=session)
+            additions = session.info["memory_evidence_additions"].get(fact_id, ())
+            if not additions:
+                cached_rows = cast(tuple[MemoryEvidence, ...], prepared[fact_id])
+                return cached_rows if limit is None else cached_rows[: max(1, limit)]
+            combined = (*reversed(additions), *prepared[fact_id])
+            return combined if limit is None else combined[: max(1, limit)]
         rows = (
             await session.scalars(
                 select(MemoryEvidenceModel)
@@ -1116,23 +1447,24 @@ class MemoryFactRepository:
                     readable_evidence_predicate(),
                 )
                 .order_by(MemoryEvidenceModel.created_at.desc(), MemoryEvidenceModel.id.desc())
-                .limit(max(1, limit))
+                .limit(max(1, limit) if limit is not None else None)
             )
         ).all()
-        return tuple(
-            MemoryEvidence(
-                id=row.id,
-                fact_id=row.fact_id,
-                event_id=row.event_id,
-                tool_receipt_id=row.tool_receipt_id,
-                source_speaker_user_id=row.source_speaker_user_id,
-                relation=row.relation,
-                confidence=row.confidence,
-                authority=row.authority,
-                excerpt=row.excerpt,
-                created_at=row.created_at,
-            )
-            for row in rows
+        return tuple(self._evidence_record(row) for row in rows)
+
+    @staticmethod
+    def _evidence_record(row: MemoryEvidenceModel) -> MemoryEvidence:
+        return MemoryEvidence(
+            id=row.id,
+            fact_id=row.fact_id,
+            event_id=row.event_id,
+            tool_receipt_id=row.tool_receipt_id,
+            source_speaker_user_id=row.source_speaker_user_id,
+            relation=row.relation,
+            confidence=row.confidence,
+            authority=row.authority,
+            excerpt=row.excerpt,
+            created_at=row.created_at,
         )
 
     async def list_relations(
@@ -1305,7 +1637,30 @@ class MemoryFactRepository:
         *,
         session: AsyncSession | None = None,
     ) -> int:
-        return len(await self.list_facts(query, limit=100_000, session=session))
+        if session is None:
+            async with self._database.sessions() as owned:
+                return await self.count_active(query, session=owned)
+        conditions = [
+            MemoryFactModel.scope_type == query.scope_type.value,
+            MemoryFactModel.status == query.status.value,
+            MemoryFactModel.review_state != "quarantined",
+            *(await self._query_identity_conditions(session, query)),
+        ]
+        if query.kind is not None:
+            conditions.append(MemoryFactModel.kind == query.kind.value)
+        if query.status is MemoryStatus.ACTIVE:
+            conditions.append(
+                or_(
+                    MemoryFactModel.valid_until.is_(None),
+                    MemoryFactModel.valid_until > datetime.now(UTC),
+                )
+            )
+        return int(
+            await session.scalar(
+                select(func.count()).select_from(MemoryFactModel).where(*conditions)
+            )
+            or 0
+        )
 
     async def make_room(
         self,
