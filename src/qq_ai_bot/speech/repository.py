@@ -88,8 +88,18 @@ class VoiceProfileRepository:
         now: datetime | None = None,
     ) -> VoiceProfile:
         timestamp = now or datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
             row = await session.get(SpeechVoiceProfileModel, profile_id)
+            existing = {
+                item.reference_key: item
+                for item in (
+                    await session.scalars(
+                        select(SpeechVoiceReferenceModel).where(
+                            SpeechVoiceReferenceModel.profile_id == profile_id
+                        )
+                    )
+                ).all()
+            }
             if row is None:
                 row = SpeechVoiceProfileModel(
                     profile_id=profile_id,
@@ -115,16 +125,6 @@ class VoiceProfileRepository:
             row.license_note = license_note
             row.manifest_hash = manifest_hash
             row.updated_at = timestamp
-            existing = {
-                item.reference_key: item
-                for item in (
-                    await session.scalars(
-                        select(SpeechVoiceReferenceModel).where(
-                            SpeechVoiceReferenceModel.profile_id == profile_id
-                        )
-                    )
-                ).all()
-            }
             incoming: set[str] = set()
             for values in references:
                 key = str(values["reference_key"])
@@ -192,12 +192,12 @@ class VoiceProfileRepository:
             row = await active.get(SpeechVoiceProfileModel, profile_id)
             if row is None:
                 raise LookupError("voice profile not found")
+            references = await self._references_for(active, [profile_id])
             row.enabled = enabled
             if not enabled:
                 row.is_default = False
             row.updated_at = datetime.now(UTC)
             await active.flush()
-            references = await self._references_for(active, [profile_id])
             profile = self._profile(row, references.get(profile_id, ()))
         if profile is None:
             raise RuntimeError("updated voice profile disappeared")
@@ -353,12 +353,12 @@ class SpeechGenerationRepository:
             created_at=datetime.now(UTC),
             expires_at=expires_at,
         )
-        async with self._database.sessions() as session, session.begin():
-            session.add(row)
-            await session.flush()
+        async with self._database.immediate_session() as session:
             await stamp_conversation_correlation(session, row, canonical_conversation_id)
             proven = await resolve_conversation_id_for_event(session, trigger_event_id)
             await stamp_conversation_correlation(session, row, proven)
+            session.add(row)
+            await session.flush()
             return self._generation(row)
 
     async def get(self, generation_id: int) -> SpeechGeneration | None:
