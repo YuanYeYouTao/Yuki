@@ -136,6 +136,31 @@ SDK 回调等待约 5 秒可返回 `work_id/state/pending`；等待不是模型�
 上下文不得替换旧前缀。来源或合同变化走显式链边界，保留工作、预算和执行证据。
 结果由调用方取得不代表 QQ 已发送；只有实际网关回执可以确认发送。
 
+Journal 保留 dispatched、response、paired 的独立持久边界。不可变媒体只批量插入缺少的 blob，
+按引用差额增删当前 Work 的 refs；其 pending/staged 输入尚未并入 transcript 时仍保留媒体引用。
+其他 Work 的引用不被当前保存回收。恢复仍按原 call、response、预算和执行回执，不因减少媒体
+写放大而跳过请求意图、实际响应或成对工具结果的记录。
+
+Work 发现首个 pending 输入尚未准备完时，立即按原 `WorkInputsPreparing` 退出本轮，
+由既有结算提交 `waiting_external` 并释放 activation，不轮询等待附件处理。
+准备提交按原输入 ID、Work 和 canonical generation 核验所有权，原输入的图像使用既有
+媒体 blob/引用持久化；即使旧 activation 已退出或进程重启，也能恢复。准备完成与结算
+在同一 SQLite writer 边界串行核验首个输入：先准备或先结算均续原 Work 入队；后面的
+ready 输入不能越过未准备的首项。已准备或消费的输入重试只确认原记录，不覆盖内容或预算。
+
+普通聊天的 context prepare 与前台 rollup 等待在 effect gate 外执行。准备完成后，
+gate 内只复核 turn snapshot、read version 或原 Work source guard 并提交有界 projection；
+模型请求继续使用同一来源核验。reset/privacy 在准备等待期间可取得 gate，失效的旧链
+不能继续 dispatch 或发送。
+
+尚无模型 journal 的原 Work 遇到 required rollup 时，在原 checkpoint 中记录准备水位与
+原期限，交给既有 canonical rollup job，随即按原 `waiting_external` 结算并释放 activation。
+WorkScheduler 每轮先只读发现至多 32 个已完成、失败或到期的准备，再在短写事务复核并
+将原 Work 入队；空页无写事务。完成先于结算、进程重启和取消都按原 Work/generation
+恢复，不补造输入或重置预算。真实原 Work 的压缩前置需求保留 REQUIRED 模型优先级，
+已有 processing claim 和失败 backoff 不被接管；原期限或失败仍使用既有 extractive fallback。
+已有模型 history 不走这个准备等待，不通过压缩改写已冻结前缀；来源冲突使用现行显式链边界。
+
 旧来源核验先在显式 SQLite 只读快照中读取事件、rollup 及其指纹，结束读事务后才核验
 原执行租约，并在短写事务复查 generation、起点、canonical owner 和既有
 `prompt_source_revision`。读与写之间有来源变动时拒绝本次核验；失败不更新进程内

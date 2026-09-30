@@ -768,7 +768,9 @@ class MessageProcessor:
                 group_policy,
                 profile_resolver,
             )
-            profile = await self._user_profiles.capture(message, profile_resolver)
+            profile = await self._user_profiles.capture(
+                message, profile_resolver, runtime=runtime_snapshot
+            )
         if is_authorized_new:
             await self._turn_coordinator.cancel_running_before_boundary(coordinator_key)
             try:

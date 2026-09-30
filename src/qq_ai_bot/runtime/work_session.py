@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
@@ -23,6 +26,32 @@ from qq_ai_bot.web.base import WebSearchValidationError, normalize_public_url
 
 if TYPE_CHECKING:
     from qq_ai_bot.runtime.work_control import WorkControl
+
+logger = logging.getLogger(__name__)
+_TOOL_AUDITS: ContextVar[
+    tuple[str, tuple[str, int, int], list[Callable[[], Awaitable[None]]]] | None
+] = ContextVar("work_tool_post_effect_audits", default=None)
+
+
+def defer_tool_audit(call_key: str, audit: Callable[[], Awaitable[None]]) -> bool:
+    """Defer only this call's derived audit until its durable effect commits."""
+    current = _TOOL_AUDITS.get()
+    if current is None:
+        return False
+    if current[0] != call_key:
+        raise ValueError("tool_audit_effect_key_mismatch")
+    current[2].append(audit)
+    return True
+
+
+def tool_audit_source(call_key: str) -> tuple[str, int, int] | None:
+    """Original Conversation/generation/privacy authority, frozen before dispatch."""
+    current = _TOOL_AUDITS.get()
+    if current is None:
+        return None
+    if current[0] != call_key:
+        raise ValueError("tool_audit_effect_key_mismatch")
+    return current[1]
 
 
 class WorkSession:
@@ -439,6 +468,22 @@ class WorkSession:
                 },
             )
             raise
+        from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
+
+        async with control.repository.database.sessions() as reader:
+            privacy_generation = (
+                await reader.scalar(
+                    select(ExecutionTraceStateModel.privacy_generation).where(
+                        ExecutionTraceStateModel.id == 1
+                    )
+                )
+                or 0
+            )
+        # An erasure during invoke or accepted persistence cannot authorize this
+        # old result under the deletion generation observed by its later audit.
+        audit_source = (control.lease.conversation_id, control.lease.generation, privacy_generation)
+        audits: list[Callable[[], Awaitable[None]]] = []
+        audit_token = _TOOL_AUDITS.set((key, audit_source, audits))
         try:
             result = await invoke()
         except BaseException as exc:
@@ -451,7 +496,19 @@ class WorkSession:
             except Exception as secondary:
                 exc.add_note(f"effect receipt persistence deferred: {type(secondary).__name__}")
             raise
+        finally:
+            _TOOL_AUDITS.reset(audit_token)
         await control.repository.record_effect(key, "accepted", {"result": result})
+        # No audit runs after an uncertain effect commit. Cancellation after this
+        # commit propagates without replacing its already-confirmed effect.
+        for audit in audits:
+            try:
+                await audit()
+            except Exception as exc:
+                logger.warning(
+                    "tool_evidence_record_failed category=%s coverage_incomplete=true",
+                    type(exc).__name__,
+                )
         return result
 
 

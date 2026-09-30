@@ -103,6 +103,7 @@ class WorkScheduler:
         from qq_ai_bot.runtime.execution_receipts import PROCESS_ID
 
         await self.repository.repair_abandoned_inputs(PROCESS_ID)
+        await self.repository.wake_context_rollups()
         if time.monotonic() - self._last_reclaim > 600:
             await self.repository.reclaim_terminal()
             self._last_reclaim = time.monotonic()

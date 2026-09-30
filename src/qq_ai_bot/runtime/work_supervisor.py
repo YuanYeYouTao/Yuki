@@ -246,7 +246,8 @@ async def settle(control: WorkControl, *, delivered: bool, pending_inputs: bool)
     elif control.yield_segment:
         state, reason = "queued", ExitReason.SEGMENT
     elif pending_inputs:
-        ready = any(item.get("ready") for item in await control.pending())
+        pending = await control.pending()
+        ready = bool(pending and pending[0]["ready"])
         state, reason = ("queued" if ready else "waiting_external"), ExitReason.INPUT
     elif control.ending in {"waiting_external", "waiting_user"}:
         state = control.ending

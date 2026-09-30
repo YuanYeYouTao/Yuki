@@ -584,6 +584,28 @@ class ConversationRollupRepository:
                 session, lease_owner=lease_owner, lease_until=lease_until, token=token, now=now
             )
 
+    async def has_required_work(self, claim: RollupJobClaim) -> bool:
+        """A live original Work prerequisite retains foreground model priority."""
+        from qq_ai_bot.runtime.work_schema_v1 import work
+
+        async with self._database.sessions() as session:
+            return bool(
+                await session.scalar(
+                    select(work.c.id)
+                    .where(
+                        work.c.conversation_id == claim.conversation_id,
+                        work.c.generation == claim.generation,
+                        work.c.state.in_(("running", "waiting_external", "queued")),
+                        func.json_extract(
+                            work.c.checkpoint_json, "$.context_rollup.coverage"
+                        ).is_not(None),
+                        func.json_extract(work.c.checkpoint_json, "$.context_rollup.deadline")
+                        > (func.julianday("now") - 2440587.5) * 86400,
+                    )
+                    .limit(1)
+                )
+            )
+
     async def claim_scope_for_foreground(
         self,
         scope: ConversationScope,

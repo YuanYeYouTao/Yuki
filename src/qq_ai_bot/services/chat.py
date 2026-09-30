@@ -287,6 +287,7 @@ class ToolInvocationRecorder(Protocol):
         initiative_run_id: str | None = None,
         tool_call_id: str | None = None,
         execution_id: str | None = None,
+        audit_source: tuple[str, int, int] | None = None,
     ) -> None: ...
 
 
@@ -761,12 +762,10 @@ class ChatService:
         text: str,
         images: tuple[ChatImage, ...] = (),
     ) -> bool:
-        await self._work_repository.prepare_input(identity, {"text": text[:7000]})
-        control = self._active_work.get(conversation_key)
-        if control is not None:
-            control.input_images[identity] = images
         # The durable parent owns this input even if its activation just yielded.
-        return True
+        return await self._work_repository.prepare_input(
+            identity, {"text": text[:7000]}, images=images
+        )
 
     async def respond(
         self,
@@ -909,8 +908,12 @@ class ChatService:
                 )
             )
             work_control = None
+            start_work = None
             if self._settings.runtime_work_enabled and inbound.conversation_id and turn_snapshot:
                 from qq_ai_bot.runtime.work_activation import activate_work, current_work_control
+                from qq_ai_bot.runtime.work_control import WorkControl
+
+                work_conversation_id = inbound.conversation_id
 
                 async def validate_work() -> None:
                     if not await self._validate_turn_snapshot(turn_snapshot):
@@ -937,33 +940,45 @@ class ChatService:
                         ),
                     )
 
-                work_control = await memory_cleanup.enter_async_context(
-                    activate_work(
-                        self._work_repository,
-                        inbound.conversation_id,
-                        turn_snapshot.generation,
-                        f"event:{inbound.conversation_id}:{turn_snapshot.trigger_event_id}",
-                        {
-                            "actor_user_id": inbound.sender.user_id,
-                            "actor_person_id": inbound.person_id,
-                            "principal_kind": "person",
-                            "origin": turn_origin.value,
-                            "trigger_event_id": turn_snapshot.trigger_event_id,
-                            "bot_user_id": inbound.bot_user_id,
-                            "generation": turn_snapshot.generation,
-                            "conversation_id": inbound.conversation_id,
-                            "allow_admin_actions": inbound.sender.user_id
-                            in self._settings.superusers,
-                            "allow_automation": True,
-                            "actor_is_superuser": inbound.sender.user_id
-                            in self._settings.superusers,
-                            "presence_id": inbound.presence_id,
-                        },
-                        validate_work,
-                        resolve_child,
+                work_scope = await memory_cleanup.enter_async_context(AsyncExitStack())
+
+                async def start_work() -> WorkControl:
+                    return await work_scope.enter_async_context(
+                        activate_work(
+                            self._work_repository,
+                            work_conversation_id,
+                            turn_snapshot.generation,
+                            f"event:{inbound.conversation_id}:{turn_snapshot.trigger_event_id}",
+                            {
+                                "actor_user_id": inbound.sender.user_id,
+                                "actor_person_id": inbound.person_id,
+                                "principal_kind": "person",
+                                "origin": turn_origin.value,
+                                "trigger_event_id": turn_snapshot.trigger_event_id,
+                                "bot_user_id": inbound.bot_user_id,
+                                "generation": turn_snapshot.generation,
+                                "conversation_id": inbound.conversation_id,
+                                "allow_admin_actions": inbound.sender.user_id
+                                in self._settings.superusers,
+                                "allow_automation": True,
+                                "actor_is_superuser": inbound.sender.user_id
+                                in self._settings.superusers,
+                                "presence_id": inbound.presence_id,
+                            },
+                            validate_work,
+                            resolve_child,
+                        )
                     )
-                )
-                self._active_work[conversation_key] = work_control
+
+                work_control = await start_work()
+                if work_control.current is None:
+                    # Ordinary chat has not admitted a Work yet. Release this
+                    # empty lease while preparing context, then activate the
+                    # same source only after its prerequisite is complete.
+                    await work_scope.aclose()
+                    work_control = None
+                else:
+                    self._active_work[conversation_key] = work_control
 
                 def release_work_registration() -> None:
                     if self._active_work.get(conversation_key) is work_control:
@@ -991,31 +1006,6 @@ class ChatService:
 
                 await repair_receipt_ledger(work_control, self._ledger)
 
-            async def build_messages() -> tuple[
-                tuple[ChatMessage, ...],
-                frozenset[int],
-                str,
-                tuple[MemoryExposure, ...],
-                MemoryQueryIntent | None,
-                PromptRequestDiagnostics,
-                ConversationReadVersion | None,
-                Callable[[], Awaitable[None]] | None,
-            ]:
-                return await self._build_messages(
-                    inbound,
-                    identity,
-                    profile,
-                    content,
-                    runtime_config,
-                    visual_observation=visual_observation,
-                    native_images=native_images,
-                    attachment_text=attachment_text,
-                    visual_failure=visual_failure,
-                    turn_origin=turn_origin,
-                    memory_session=memory_session,
-                    turn_snapshot=turn_snapshot,
-                )
-
             (
                 messages,
                 visible_event_ids,
@@ -1025,7 +1015,30 @@ class ChatService:
                 prompt_diagnostics,
                 read_version,
                 commit_projection,
-            ) = await self._run_effect(turn_snapshot, build_messages)
+            ) = await self._build_messages(
+                inbound,
+                identity,
+                profile,
+                content,
+                runtime_config,
+                visual_observation=visual_observation,
+                native_images=native_images,
+                attachment_text=attachment_text,
+                visual_failure=visual_failure,
+                turn_origin=turn_origin,
+                memory_session=memory_session,
+                turn_snapshot=turn_snapshot,
+            )
+            if start_work is not None and work_control is None:
+                work_control = await start_work()
+                self._active_work[conversation_key] = work_control
+            # Required rollup/model preparation must not hold reset/privacy's
+            # effect gate. Linearize only the completed snapshot and projection;
+            # dispatch retains this same source guard across subsequent requests.
+            validate_context = self._context_validator(
+                read_version, commit_projection=commit_projection
+            )
+            await self._run_effect(turn_snapshot, validate_context)
             gateway = (
                 cast(OneBotToolGateway, sender)
                 if callable(getattr(sender, "call_api", None))
@@ -1063,9 +1076,7 @@ class ChatService:
                 memory_intent=memory_intent,
                 memory_session=memory_session,
                 prompt_diagnostics=prompt_diagnostics,
-                before_model_request=self._context_validator(
-                    read_version, commit_projection=commit_projection
-                ),
+                before_model_request=validate_context,
             )
             if turn_token is not None:
                 async with self._turn_coordinator.track(turn_token, "generation"):
@@ -1224,25 +1235,37 @@ class ChatService:
     ) -> None:
         if self._tool_invocations is None:
             return
-        await self._tool_invocations.record_invocation(
-            conversation_key=runtime.conversation_key,
-            provider_id=provider_id,
-            tool_name=tool_name,
-            success=success,
-            latency_seconds=latency_seconds,
-            result_size=result_size,
-            artifact_created=artifact_created,
-            error_category=error_category,
-            trigger_message_id=runtime.trigger_message_id,
-            trigger_event_id=runtime.effective_trigger_event_id,
-            bot_user_id=runtime.effective_bot_user_id or "bot",
-            result_excerpt=result_excerpt,
-            canonical_conversation_id=runtime.effective_conversation_id,
-            ingress_presence_id=runtime.effective_presence_id,
-            initiative_run_id=runtime.initiative_run_id,
-            tool_call_id=tool_call_id,
-            execution_id=runtime.effective_execution_id,
-        )
+        from qq_ai_bot.runtime.work_session import defer_tool_audit, tool_audit_source
+
+        audit_source = tool_audit_source(tool_call_id) if tool_call_id is not None else None
+
+        async def record() -> None:
+            assert self._tool_invocations is not None
+            await self._tool_invocations.record_invocation(
+                conversation_key=runtime.conversation_key,
+                provider_id=provider_id,
+                tool_name=tool_name,
+                success=success,
+                latency_seconds=latency_seconds,
+                result_size=result_size,
+                artifact_created=artifact_created,
+                error_category=error_category,
+                trigger_message_id=runtime.trigger_message_id,
+                trigger_event_id=runtime.effective_trigger_event_id,
+                bot_user_id=runtime.effective_bot_user_id or "bot",
+                result_excerpt=result_excerpt,
+                canonical_conversation_id=runtime.effective_conversation_id,
+                ingress_presence_id=runtime.effective_presence_id,
+                initiative_run_id=runtime.initiative_run_id,
+                tool_call_id=tool_call_id,
+                execution_id=runtime.effective_execution_id,
+                audit_source=audit_source,
+            )
+
+        if tool_call_id is None or not defer_tool_audit(tool_call_id, record):
+            # Independent SDK/non-Work calls still enforce their source contract
+            # synchronously; only a committed original Work effect permits deferral.
+            await record()
 
     async def handle_turn(
         self,
