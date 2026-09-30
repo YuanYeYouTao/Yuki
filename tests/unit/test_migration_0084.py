@@ -52,9 +52,12 @@ async def test_cleanup_index_real_round_trip_matches_metadata_and_covers_discove
         }
     with sqlite3.connect(path) as db:
         for name, table, column in INDEXES:
-            assert db.execute(
-                "SELECT sql FROM sqlite_master WHERE type='index' AND name=?", (name,)
-            ).fetchone()[0] == metadata_sql[name]
+            assert (
+                db.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='index' AND name=?", (name,)
+                ).fetchone()[0]
+                == metadata_sql[name]
+            )
             comparison = "<=" if column == "expires_at" else "<"
             plan = db.execute(
                 f"EXPLAIN QUERY PLAN SELECT id FROM {table} WHERE {column}{comparison}? "
@@ -68,9 +71,12 @@ async def test_cleanup_index_real_round_trip_matches_metadata_and_covers_discove
     await asyncio.to_thread(command.downgrade, config, "0083")
     with sqlite3.connect(path) as db:
         for name, table, _column in INDEXES:
-            assert db.execute(
-                "SELECT sql FROM sqlite_master WHERE type='index' AND name=?", (name,)
-            ).fetchone() is None
+            assert (
+                db.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='index' AND name=?", (name,)
+                ).fetchone()
+                is None
+            )
             assert db.execute(f"SELECT * FROM {table}").fetchall() == before[table]
     await asyncio.to_thread(command.upgrade, config, "0084")
     await require_canonical_schema(url)

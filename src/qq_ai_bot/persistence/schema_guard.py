@@ -287,9 +287,7 @@ async def require_canonical_schema(database_url: str) -> None:
                 index = next((row for row in indexes if row[1] == index_name), None)
                 index_keys = tuple(
                     (row[2], row[3], row[4])
-                    for row in await connection.execute(
-                        text(f'PRAGMA index_xinfo("{index_name}")')
-                    )
+                    for row in await connection.execute(text(f'PRAGMA index_xinfo("{index_name}")'))
                     if row[5] == 1
                 )
                 if (
@@ -302,9 +300,7 @@ async def require_canonical_schema(database_url: str) -> None:
                     or index[4] != 0
                     or index_keys != ((column, 0, "BINARY"),)
                 ):
-                    raise CanonicalSchemaError(
-                        "database cache cleanup index is missing or changed"
-                    )
+                    raise CanonicalSchemaError("database cache cleanup index is missing or changed")
             trigger_rows = await connection.execute(
                 text("SELECT name, sql FROM sqlite_master WHERE type='trigger'")
             )
