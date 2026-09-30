@@ -341,6 +341,7 @@ class MediaAnalysisModel(Base):
             name="uq_media_analyses_cache_key",
         ),
         Index("ix_media_analyses_content_hash", "content_hash"),
+        Index("ix_media_analyses_expires_at", "expires_at"),
         Index(
             "ix_media_analyses_source_event_segment",
             "source_event_id",
@@ -1867,6 +1868,7 @@ class WebSearchRunModel(Base):
 
     __tablename__ = "web_search_runs"
     __table_args__ = (
+        Index("ix_web_search_runs_created_at", "created_at"),
         Index(
             "ix_web_search_runs_conversation_created",
             "conversation_key",

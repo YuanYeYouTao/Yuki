@@ -270,6 +270,41 @@ async def require_canonical_schema(database_url: str) -> None:
                 raise CanonicalSchemaError(
                     "database memory receipt reference index is missing or changed"
                 )
+            for index_name, table, column in (
+                ("ix_media_analyses_expires_at", "media_analyses", "expires_at"),
+                ("ix_web_search_runs_created_at", "web_search_runs", "created_at"),
+            ):
+                retained = (
+                    await connection.execute(
+                        text(
+                            "SELECT tbl_name, sql FROM sqlite_master "
+                            "WHERE type='index' AND name=:name"
+                        ),
+                        {"name": index_name},
+                    )
+                ).first()
+                indexes = await connection.execute(text(f'PRAGMA index_list("{table}")'))
+                index = next((row for row in indexes if row[1] == index_name), None)
+                index_keys = tuple(
+                    (row[2], row[3], row[4])
+                    for row in await connection.execute(
+                        text(f'PRAGMA index_xinfo("{index_name}")')
+                    )
+                    if row[5] == 1
+                )
+                if (
+                    retained is None
+                    or retained[0] != table
+                    or retained[1] is None
+                    or index is None
+                    or index[2] != 0
+                    or index[3] != "c"
+                    or index[4] != 0
+                    or index_keys != ((column, 0, "BINARY"),)
+                ):
+                    raise CanonicalSchemaError(
+                        "database cache cleanup index is missing or changed"
+                    )
             trigger_rows = await connection.execute(
                 text("SELECT name, sql FROM sqlite_master WHERE type='trigger'")
             )

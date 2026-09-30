@@ -32,7 +32,7 @@ async def test_receipt_index_real_upgrade_downgrade_matches_metadata_and_query_p
         before_events = db.execute("SELECT * FROM chat_events").fetchall()
         before_receipts = db.execute("SELECT * FROM memory_tool_receipts").fetchall()
         before_evidence = db.execute("SELECT * FROM memory_evidence").fetchall()
-    await asyncio.to_thread(command.upgrade, config, "0083")
+    await asyncio.to_thread(command.upgrade, config, "head")
     await require_canonical_schema(url)
     async with database.engine.connect() as connection:
         metadata_sql = await connection.scalar(
@@ -64,7 +64,7 @@ async def test_receipt_index_real_upgrade_downgrade_matches_metadata_and_query_p
         assert db.execute("SELECT * FROM chat_events").fetchall() == before_events
         assert db.execute("SELECT * FROM memory_tool_receipts").fetchall() == before_receipts
         assert db.execute("SELECT * FROM memory_evidence").fetchall() == before_evidence
-    await asyncio.to_thread(command.upgrade, config, "0083")
+    await asyncio.to_thread(command.upgrade, config, "head")
     with sqlite3.connect(path) as db:
         db.execute(f"DROP INDEX {INDEX}")
         db.execute(f"CREATE INDEX {INDEX} ON memory_evidence(event_id)")
