@@ -103,6 +103,17 @@ MEMORY_HYBRID_RRF_K=60
 当前实现只接受 `qwen_dashscope`、dense 与 1024 维，避免 profile 声明和真实向量不一致。
 查询缓存只存在于 Bot 进程内，重启即清空；TTL 和容量是启动配置，不影响数据库 schema。
 
+普通 reconcile 按内部 fact ID 做 128 条 keyset 页，集合连接当前 profile 的任务与向量；已有
+向量只在事实 updated_at 较新时重新准备 hash。每页在只读连接读取小列并算 hash，writer 只按
+事实字段快照及任务 id/profile/content_hash/status/updated_at 做 CAS。相同内容的 processing
+与 failed 任务保留原领取和尝试预算；显式 rebuild 也不会夺取相同内容的在飞请求。
+
+完成按 128 条页一次读取任务、一次读取事实小列，hash 在锁外计算；短 writer 复核原 claim 的
+updated_at 和 attempts，仅成功 CAS 的结果批量 upsert 向量。late complete/fail/skip 都必须携带
+原 claim。输入在准备后变化时只将该原领取返回 pending，下一次重新读取，不写旧向量。
+启动恢复单独按 128 条页接管 interrupted processing，保留 attempts；同一 worker 重复 start
+不执行恢复，普通 reconcile 也不会把在飞任务重置。
+
 ## 运维命令
 
 ```text

@@ -135,6 +135,11 @@ Tool Kernel 的 `admin_memory_rebuild_*` 工具共用同一服务和真实事件
 输入输出或密钥。review 是超级管理员主动请求的有界审阅页。`/ai forgetme` 会由事件外键级联
 清理 staging，删除以该人物为 subject 的 proposal，取消仅针对该人物的非终态 run，并从其余
 selection 中删除精确 QQ；已提交人物事实继续按现有 forgetme 规则删除。
+所有别名合并为一个 readonly prepared plan，精确匹配 JSON 数组成员并在 writer 前完成 selection
+重写和 hash。共享隐私 writer 必须传入 prepared；writer 复核完整 run 目录的 id/hash/status/
+updated_at，再按原行 token 删除 proposal 和更新 selection。目录或原行变更会使整个隐私事务
+回滚并要求重新准备；不通过 LIKE 匹配平台 ID，也不将多个别名拆为独立提交。
+
 
 `status` 的 token 数仅累计供应商实际返回的 usage；供应商不返回时保持 0，不做字符数伪估算。
 延迟以累计毫秒记录，Embedding 任务数按本 run 提交后实际关联的新任务统计。

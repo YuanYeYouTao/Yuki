@@ -312,6 +312,9 @@ def _add_memory_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     apply = hygiene_commands.add_parser("apply")
     apply.add_argument("fingerprint")
     apply.add_argument("--database-url", required=True)
+    rebuild_fts = hygiene_commands.add_parser("rebuild-fts", help="在独立维护窗口全量重建 FTS 索引")
+    rebuild_fts.add_argument("fingerprint")
+    rebuild_fts.add_argument("--database-url", required=True)
     release = commands.add_parser("release-check", help="组合正式发布只读门禁")
     release.add_argument("--database-url")
 
@@ -1056,7 +1059,11 @@ async def _memory_command(settings: Settings, args: argparse.Namespace) -> int:
             result = (
                 await hygiene.scan()
                 if args.hygiene_command == "scan"
-                else await hygiene.apply(str(args.fingerprint))
+                else (
+                    await hygiene.rebuild_fts(str(args.fingerprint))
+                    if args.hygiene_command == "rebuild-fts"
+                    else await hygiene.apply(str(args.fingerprint))
+                )
             )
             print(result.model_dump_json(indent=2))
             return 0

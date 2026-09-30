@@ -38,15 +38,18 @@ class MemoryEmbeddingWorker:
         self._wake = asyncio.Event()
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
+        self._start_lock = asyncio.Lock()
 
     @property
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
 
     async def start(self) -> None:
-        await self._jobs.reconcile()
-        if self._task is None:
-            self._task = asyncio.create_task(self._run(), name="memory-embedding-worker")
+        async with self._start_lock:
+            if self._task is None:
+                await self._jobs.recover_interrupted()
+                await self._jobs.reconcile()
+                self._task = asyncio.create_task(self._run(), name="memory-embedding-worker")
 
     async def close(self) -> None:
         self._stop.set()
@@ -87,7 +90,7 @@ class MemoryEmbeddingWorker:
         for job in jobs:
             fact = facts.get(job.fact_id)
             if fact is None:
-                await self._jobs.skip(job.id)
+                await self._jobs.skip(job)
                 continue
             current_hash = self._jobs.documents.content_hash_fields(
                 kind=fact.kind,
@@ -124,16 +127,17 @@ class MemoryEmbeddingWorker:
                     fact_id=job.fact_id,
                     content_hash=job.content_hash,
                     vector_blob=self._codec.encode(vector),
+                    claimed_at=job.updated_at,
                 )
                 for job, vector in zip(valid_jobs, result.vectors, strict=True)
             )
-            await self._jobs.complete(writes)
+            completed = await self._jobs.complete(writes)
             self.metrics.record_documents(
                 input_count=result.usage.input_count,
                 input_tokens=result.usage.input_tokens,
                 latency=time.perf_counter() - started,
             )
-            return len(writes)
+            return completed
         except asyncio.CancelledError:
             raise
         except EmbeddingProviderError as exc:

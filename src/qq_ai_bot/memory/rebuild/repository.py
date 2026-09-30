@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import delete, exists, func, select, update
+from sqlalchemy import exists, func, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +25,7 @@ from qq_ai_bot.memory.rebuild.models import (
     MemoryRebuildRun,
     MemoryRebuildSelection,
 )
+from qq_ai_bot.memory.rebuild.privacy import PreparedRebuildForget
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
@@ -957,66 +956,49 @@ class MemoryRebuildRepository:
             await session.delete(run)
             return True
 
+    async def prepare_forget_people(
+        self, aliases: tuple[str, ...], *, session: AsyncSession | None = None
+    ) -> PreparedRebuildForget:
+        from qq_ai_bot.memory.rebuild.privacy import prepare_forget
+
+        async with optional_session(self.database, session, write=False) as reader:
+            from sqlalchemy import text
+
+            if session is None:
+                await reader.execute(text("BEGIN"))
+            return await prepare_forget(reader, aliases)
+
+    async def forget_people(
+        self,
+        aliases: tuple[str, ...],
+        *,
+        prepared: PreparedRebuildForget | None = None,
+        session: AsyncSession | None = None,
+    ) -> int:
+        from qq_ai_bot.memory.rebuild.privacy import apply_forget
+
+        if prepared is None:
+            if session is not None:
+                raise ValueError("memory_rebuild_privacy_preparation_required")
+            prepared = await self.prepare_forget_people(aliases)
+        if prepared.aliases != tuple(sorted(set(aliases))):
+            raise ValueError("memory_rebuild_privacy_aliases_changed")
+        transaction = (
+            self.database.immediate_session()
+            if session is None
+            else optional_session(self.database, session, write=True)
+        )
+        async with transaction as writer:
+            return await apply_forget(writer, prepared)
+
     async def forget_person(
         self,
         user_id: str,
         *,
+        prepared: PreparedRebuildForget | None = None,
         session: AsyncSession | None = None,
     ) -> int:
-        """Cancel person-only runs and remove exact QQ values from stored selections."""
-
-        if session is None:
-            async with self.database.sessions() as owned_session, owned_session.begin():
-                return await self.forget_person(user_id, session=owned_session)
-        now = datetime.now(UTC)
-        changed = 0
-        deleted_proposals = await session.execute(
-            delete(MemoryRebuildProposalModel).where(
-                MemoryRebuildProposalModel.subject_user_id == user_id
-            )
-        )
-        changed += int(cast(CursorResult[Any], deleted_proposals).rowcount or 0)
-        rows = (await session.scalars(select(MemoryRebuildRunModel))).all()
-        for row in rows:
-            selection = MemoryRebuildSelection.model_validate_json(row.selection_json)
-            if user_id not in selection.sender_user_ids and user_id not in selection.bot_user_ids:
-                continue
-            remaining = tuple(item for item in selection.sender_user_ids if item != user_id)
-            remaining_bots = tuple(item for item in selection.bot_user_ids if item != user_id)
-            other_bounds = bool(
-                selection.all_events
-                or remaining_bots
-                or selection.scope_types
-                or selection.group_ids
-                or selection.after
-                or selection.before
-                or selection.minimum_event_id
-                or selection.maximum_event_id
-                or remaining
-            )
-            if not other_bounds:
-                remaining = ("[deleted-user]",)
-            sanitized = selection.model_copy(
-                update={
-                    "sender_user_ids": remaining,
-                    "bot_user_ids": remaining_bots,
-                }
-            )
-            encoded = json.dumps(
-                sanitized.model_dump(mode="json"),
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            row.selection_json = encoded
-            row.selection_hash = hashlib.sha256(encoded.encode()).hexdigest()
-            if not other_bounds and row.status not in TERMINAL_STATUSES:
-                row.status = MemoryRebuildRunStatus.CANCELLED.value
-                row.cancelled_at = now
-                row.error_category = "privacy_deletion"
-            row.updated_at = now
-            changed += 1
-        return changed
+        return await self.forget_people((user_id,), prepared=prepared, session=session)
 
     async def health(
         self,
