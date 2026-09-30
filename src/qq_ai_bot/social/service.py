@@ -118,10 +118,12 @@ class SocialService:
                 or context.inbound is not None
                 or context.actor is None
                 or context.actor.principal_kind != "self"
+                or context.actor.automation_run_id != context.automation_run_id
                 or context.actor.conversation_id != context.conversation_id
                 or context.actor.presence_id != context.presence_id
             ):
                 raise SocialError("invalid_self_context")
+            from qq_ai_bot.automation.authority import DelegatedAuthority, PermissionLevel
             from qq_ai_bot.persistence.models import AutomationModel, AutomationRunModel
 
             async with optional_session(self.database, session, write=False) as session:
@@ -137,9 +139,32 @@ class SocialService:
                     or run.status != "running"
                     or owner.status != "active"
                     or owner.creator_kind != "self"
+                    or owner.creator_user_id
+                    or owner.canonical_creator_person_id is not None
+                    or owner.canonical_target_person_id is not None
                     or owner.canonical_target_space_id != context.space_id
                     or owner.canonical_presence_id != context.presence_id
+                    or conversation.kind != "space"
                     or conversation.space_id != context.space_id
+                ):
+                    raise SocialError("self_automation_scene_changed")
+                try:
+                    authority = DelegatedAuthority.model_validate_json(
+                        owner.authority_snapshot_json
+                    )
+                except ValueError:
+                    raise SocialError("self_automation_scene_changed") from None
+                if (
+                    authority.principal_kind != "self"
+                    or authority.permission_level is not PermissionLevel.SELF
+                    or authority.origin.value != context.origin
+                    or authority.bot_user_id != owner.bot_user_id
+                    or authority.bot_user_id != context.actor.bot_user_id
+                    or authority.current_group_id != context.actor.group_id
+                    or authority.canonical_conversation_id != context.conversation_id
+                    or authority.conversation_generation != conversation.generation
+                    or authority.canonical_space_id != context.space_id
+                    or authority.canonical_presence_id != context.presence_id
                 ):
                     raise SocialError("self_automation_scene_changed")
             return

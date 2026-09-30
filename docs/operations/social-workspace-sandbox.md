@@ -114,6 +114,9 @@ reconnections during commit; the already claimed receipt becomes `uncertain` and
 replay only reads it. Neither check selects a replacement connection.
 Immediate replies and recall retain their original
 Presence rules; no reachability cache or automatic resend is introduced.
+Scheduled SELF effects recheck the owner's original frozen canonical conversation,
+generation, Space and Presence in the claim transaction. A reset during route
+preparation invalidates the effect; it does not rebase the task onto the new generation.
 Ordinary message sends require a nonempty scalar OneBot message ID. Empty, boolean,
 or object-valued IDs after dispatch produce a durable `uncertain` receipt; replay
 reads that result instead of sending again. File uploads retain their separate
