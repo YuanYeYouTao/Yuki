@@ -729,12 +729,24 @@ class PluginStateRepository:
 
     async def cleanup_expired(self, *, now: datetime | None = None) -> int:
         timestamp = _aware_utc(now or datetime.now(UTC))
-        async with self._database.sessions() as session, session.begin():
-            result = await session.execute(
-                delete(PluginStateModel).where(
-                    PluginStateModel.expires_at.is_not(None),
-                    PluginStateModel.expires_at <= timestamp,
+        eligible = (
+            PluginStateModel.expires_at.is_not(None),
+            PluginStateModel.expires_at <= timestamp,
+        )
+        async with self._database.sessions() as reader:
+            ids = tuple(
+                await reader.scalars(
+                    select(PluginStateModel.id)
+                    .where(*eligible)
+                    .order_by(PluginStateModel.expires_at, PluginStateModel.id)
+                    .limit(128)
                 )
+            )
+        if not ids:
+            return 0
+        async with self._database.immediate_session() as session:
+            result = await session.execute(
+                delete(PluginStateModel).where(PluginStateModel.id.in_(ids), *eligible)
             )
             return int(cast(CursorResult[Any], result).rowcount or 0)
 

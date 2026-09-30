@@ -698,7 +698,7 @@ async def test_forget_person_removes_staging_and_redacts_selection(database: Dat
     )
     await worker.process_once()
     await worker.process_once()
-    assert await service.forget_person("1001") >= 1
+    assert await service.repository.forget_people(("1001",)) >= 1
     async with database.sessions() as session:
         proposal_count = int(
             await session.scalar(select(func.count()).select_from(MemoryRebuildProposalModel)) or 0

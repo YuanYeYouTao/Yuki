@@ -516,9 +516,6 @@ class MemoryRebuildService:
         self._authorize(actor_user_id)
         return await self.repository.purge(run_id)
 
-    async def forget_person(self, user_id: str) -> int:
-        return await self.repository.forget_person(user_id)
-
     async def process_extraction_once(self, run: MemoryRebuildRun) -> int:
         if run.status is not MemoryRebuildRunStatus.EXTRACTING:
             return 0

@@ -111,7 +111,7 @@ async def test_shared_privacy_writer_requires_preparation_and_rolls_back_as_one_
     prepared = await repo.prepare_forget_people(("1001",))
     with pytest.raises(ValueError, match="preparation_required"):
         async with database.immediate_session() as writer:
-            await repo.forget_person("1001", session=writer)
+            await repo.forget_people(("1001",), session=writer)
     with pytest.raises(RuntimeError, match="outer privacy failure"):
         async with database.immediate_session() as writer:
             await repo.forget_people(("1001",), prepared=prepared, session=writer)

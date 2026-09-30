@@ -991,15 +991,6 @@ class MemoryRebuildRepository:
         async with transaction as writer:
             return await apply_forget(writer, prepared)
 
-    async def forget_person(
-        self,
-        user_id: str,
-        *,
-        prepared: PreparedRebuildForget | None = None,
-        session: AsyncSession | None = None,
-    ) -> int:
-        return await self.forget_people((user_id,), prepared=prepared, session=session)
-
     async def health(
         self,
         *,

@@ -70,7 +70,8 @@ async def test_cleanup_index_real_round_trip_matches_metadata_and_covers_discove
             "EXPLAIN QUERY PLAN SELECT runtime_work.id FROM runtime_work "
             "JOIN canonical_conversations c ON c.id=runtime_work.conversation_id "
             "WHERE runtime_work.state='waiting_external' AND runtime_work.generation=c.generation "
-            "AND json_extract(runtime_work.checkpoint_json,'$.context_rollup.coverage') IS NOT NULL "
+            "AND json_extract(runtime_work.checkpoint_json,'$.context_rollup.coverage') "
+            "IS NOT NULL "
             "ORDER BY runtime_work.updated LIMIT 32"
         ).fetchall()
         assert any(

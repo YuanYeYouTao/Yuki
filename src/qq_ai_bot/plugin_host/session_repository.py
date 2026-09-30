@@ -25,8 +25,6 @@ from qq_ai_bot.plugin_host.ownership import (
     project_space_external_id,
     require_live_actor,
     require_session_readable,
-    resolve_active_space_id,
-    resolve_human_person_id,
     resolve_session_owners,
 )
 
@@ -227,58 +225,6 @@ class PluginAgentSessionRepository:
             )
             return await _session_record(session, row)
 
-    async def list_scope(
-        self,
-        *,
-        plugin_id: str,
-        scope_type: str,
-        scope_id: str,
-        limit: int = 100,
-        include_closed: bool = False,
-        now: datetime | None = None,
-    ) -> tuple[PluginAgentSessionRecord, ...]:
-        if scope_type not in _SESSION_SCOPES:
-            raise ValueError("unsupported plugin Agent session scope")
-        timestamp = _aware_utc(now or datetime.now(UTC))
-        async with self._database.sessions() as session:
-            statement = select(PluginAgentSessionModel).where(
-                PluginAgentSessionModel.plugin_id == plugin_id,
-                PluginAgentSessionModel.scope_type == scope_type,
-                or_(
-                    PluginAgentSessionModel.expires_at.is_(None),
-                    PluginAgentSessionModel.expires_at > timestamp,
-                ),
-            )
-            if scope_type == "user":
-                person_id = await resolve_human_person_id(
-                    session,
-                    scope_id,
-                    missing_message="session owner has no Person",
-                )
-                statement = statement.where(
-                    PluginAgentSessionModel.canonical_owner_person_id == person_id
-                )
-            elif scope_type == "group":
-                space_id = await resolve_active_space_id(session, scope_id)
-                statement = statement.where(PluginAgentSessionModel.canonical_space_id == space_id)
-            else:
-                if scope_id:
-                    raise ValueError("plugin-scoped sessions use an empty scope_id")
-                statement = statement.where(
-                    PluginAgentSessionModel.canonical_owner_person_id.is_(None),
-                    PluginAgentSessionModel.canonical_space_id.is_(None),
-                )
-            if not include_closed:
-                statement = statement.where(PluginAgentSessionModel.status == "active")
-            statement = statement.order_by(
-                PluginAgentSessionModel.last_active_at.desc(),
-                PluginAgentSessionModel.session_id,
-            ).limit(max(1, min(limit, 1_000)))
-            rows = (await session.scalars(statement)).all()
-            for row in rows:
-                await require_session_readable(session, row)
-            return tuple([await _session_record(session, row) for row in rows])
-
     async def append_message(
         self,
         *,
@@ -460,14 +406,28 @@ class PluginAgentSessionRepository:
 
     async def expire_due(self, *, now: datetime | None = None) -> int:
         timestamp = _aware_utc(now or datetime.now(UTC))
-        async with self._database.sessions() as session, session.begin():
+        eligible = (
+            PluginAgentSessionModel.status == "active",
+            PluginAgentSessionModel.expires_at.is_not(None),
+            PluginAgentSessionModel.expires_at <= timestamp,
+        )
+        async with self._database.sessions() as reader:
+            identities = tuple(
+                await reader.scalars(
+                    select(PluginAgentSessionModel.session_id)
+                    .where(*eligible)
+                    .order_by(
+                        PluginAgentSessionModel.expires_at, PluginAgentSessionModel.session_id
+                    )
+                    .limit(128)
+                )
+            )
+        if not identities:
+            return 0
+        async with self._database.immediate_session() as session:
             result = await session.execute(
                 update(PluginAgentSessionModel)
-                .where(
-                    PluginAgentSessionModel.status == "active",
-                    PluginAgentSessionModel.expires_at.is_not(None),
-                    PluginAgentSessionModel.expires_at <= timestamp,
-                )
+                .where(PluginAgentSessionModel.session_id.in_(identities), *eligible)
                 .values(status="expired", updated_at=timestamp)
             )
             return int(cast(CursorResult[Any], result).rowcount or 0)
