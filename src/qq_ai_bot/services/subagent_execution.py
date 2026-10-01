@@ -64,6 +64,11 @@ class WorkerBackend:
     def work_control_allowed(self, name: str) -> bool:
         return name in self.names
 
+    def work_query_allowed(self, action: str) -> bool:
+        # A worker's lifecycle view is fenced to its own Work by WorkQueries;
+        # it does not inherit the main Agent's global Automation read authority.
+        return "task_control" in self.names and action in {"get", "list"}
+
     async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str:
         if name not in self.names:
             return '{"ok":false,"error":"worker_tool_not_declared"}'

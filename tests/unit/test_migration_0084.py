@@ -11,7 +11,11 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import text
 
-from qq_ai_bot.persistence.schema_guard import CanonicalSchemaError, require_canonical_schema
+from qq_ai_bot.persistence.schema_guard import (
+    CanonicalSchemaError,
+    canonical_schema_revision,
+    require_canonical_schema,
+)
 
 INDEXES = (
     ("ix_media_analyses_expires_at", "media_analyses", "expires_at"),
@@ -40,7 +44,7 @@ async def test_cleanup_index_real_round_trip_matches_metadata_and_covers_discove
             ("2026-01-01",),
         )
         before = {table: db.execute(f"SELECT * FROM {table}").fetchall() for _, table, _ in INDEXES}
-    await asyncio.to_thread(command.upgrade, config, "0084")
+    await asyncio.to_thread(command.upgrade, config, "head")
     await require_canonical_schema(url)
     async with database.engine.connect() as connection:
         metadata_sql = {
@@ -97,7 +101,7 @@ async def test_cleanup_index_real_round_trip_matches_metadata_and_covers_discove
                 is None
             )
             assert db.execute(f"SELECT * FROM {table}").fetchall() == before[table]
-    await asyncio.to_thread(command.upgrade, config, "0084")
+    await asyncio.to_thread(command.upgrade, config, "head")
     await require_canonical_schema(url)
 
 
@@ -132,7 +136,9 @@ async def test_cleanup_index_retained_drift_fails_migration_and_startup(
         with pytest.raises(RuntimeError, match=r"index (shape mismatch|is missing)"):
             migration.downgrade()
         connection.exec_driver_sql("CREATE TABLE alembic_version (version_num VARCHAR(32))")
-        connection.exec_driver_sql("INSERT INTO alembic_version VALUES ('0084')")
+        connection.exec_driver_sql(
+            "INSERT INTO alembic_version VALUES (?)", (canonical_schema_revision(),)
+        )
 
     async with database.engine.begin() as connection:
         await connection.run_sync(exercise)
@@ -168,7 +174,9 @@ async def test_work_wait_discovery_index_rejects_changed_order_or_collation(
         with pytest.raises(RuntimeError, match="index shape mismatch"):
             migration.upgrade()
         connection.exec_driver_sql("CREATE TABLE alembic_version (version_num VARCHAR(32))")
-        connection.exec_driver_sql("INSERT INTO alembic_version VALUES ('0084')")
+        connection.exec_driver_sql(
+            "INSERT INTO alembic_version VALUES (?)", (canonical_schema_revision(),)
+        )
 
     async with database.engine.begin() as connection:
         await connection.run_sync(exercise)
