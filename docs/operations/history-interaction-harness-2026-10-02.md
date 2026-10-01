@@ -21,7 +21,7 @@ PR 合并及上线；具体能力验收由用户完成。本记录随进度更�
 AGM 仍为 `antigravity-manager:gemini-request-correlation-v4.8.4`，运行中。
 本轮没有切路由或追加测试模型/QQ 请求。
 
-Bot 只读最近最多 5000 条 invocation，并限定上一版部署后成功 `chat_agent`：
+Bot 只读最近最多 5000 条 invocation，并限定上一版部署后成功、input 有计量的 `chat_agent`：
 
 | 指标 | 数值 |
 | --- | --- |
@@ -50,7 +50,7 @@ actor/read-scope 匹配样本，不能把它当作所有跨轮必须完全相同
 
 ## 实施、验证与部署
 
-首批实现已提交为 `dac7619c`，PR #218 已创建，尚未合并或部署。主 Agent 在首批收束代码上独立运行
+首批实现提交为 `dac7619c`，补修提交为 `84ccc135`。主 Agent 在首批收束代码上独立运行
 15 个相关套件：233 passed（226.97s）；覆盖新历史/沟通/游标/实际 wire 及原 Work、
 交付、输入准备、来源守卫、压缩、子并行、主入口和固定工具面。
 全仓 Ruff、format（1056 文件）、Linux 平台 mypy（683 源文件）、release_validate v3.9.0
@@ -113,7 +113,7 @@ journal 提前加估算门禁；只有编译器真实的 required-dynamic 容量
 及 diff 检查通过。最后 fresh-hard/编译器交叉新例由主 Agent 独立验证 1 passed；
 子 Agent 的该文件完整 5 passed。使用隔离的模拟连接容量和 HTTP/网关回执，证明无新增
 HTTP/Work/重发、原 epoch/revision/payload 和已发送事件保持；不冒充线上数值预算。
-最新 head 全量 CI 仍待重跑。
+最新 head 全量 CI 结果见下方交付核验；这些模拟检查不替代真实模型行为验收。
 
 05:25:10（Asia/Taipei）部署前再次只读复核，Bot 仍为 `ops-ea446d6`，健康且零重启，
 34 个 Compose 标签文件存在，SnowLuma 原 ID/运行状态保持。原 6 Work（5 suspended、
@@ -124,4 +124,54 @@ HTTP/Work/重发、原 epoch/revision/payload 和已发送事件保持；不冒�
 首批全量 CI 为 2261 passed、7 failed、1 skipped：7 项失败均为新 accept 初始化
 `communication.input_feedback_through_id=0` 后，旧测试的 checkpoint 精确期望缺该字段。
 独立复现确认原 checkpoint 其余内容、预算、journal 和 unknown effect 保留；仅更新精确期望，
-不删除或忽略字段，相关三套重跑 31 passed。最新 head 的全量结果另补。
+不删除或忽略字段，相关三套重跑 31 passed。
+
+## 合并与交付核验
+
+最新 head `84ccc135c4e140a588ce11f63897affd4eb37d5f` 的
+[CI 36928934111](https://github.com/YuanYeYouTao/Yuki/actions/runs/36928934111)
+六个 job 全部通过；全量 pytest 为 2281 passed、1 skipped（1030.92s），
+包含固定安全门禁、插件合同、WebUI、类型/格式检查和 0088 fresh install。
+[PR #218](https://github.com/YuanYeYouTao/Yuki/pull/218) 于 2026-10-02 05:48:19（Asia/Taipei）
+合并为 `8ca2e17a893f3b46b50b09f7a8e335ee9f624543`；合并树与已验证 head 完全相同。
+
+正式镜像 `ghcr.io/yuanyeyoutao/yuki-qqbot:ops-8ca2e17` 从该合并提交构建，
+amd64、包版本 3.9.0、完整 OCI revision 与合并提交一致。
+13 个关键已安装源码文件按 LF 归一化后与合并源逐项一致。
+传输归档 SHA256 为 `d23af5ac4e4db6c7abaee0e1b15e9abb979046ee504ace594498466e8475e536`。
+正式部署仅停止/重建 Bot；停写备份路径为
+`/opt/yuki-qqbot/backups/pre-history-harness-8ca2e17-20261001T215053Z`。
+备份包含原 Compose/配置、数据库和工作证据目录；SQLite backup 的 integrity、外键及
+schema 0088 校验通过，引用核验确认 774 个 protocol objects、0 个 tool artifacts。
+
+新 Bot 实际 StartedAt 为 `2026-10-01T21:55:23.469019063Z`（台北 05:55:23），
+镜像 `ops-8ca2e17`、healthy/running、0 restart。部署 SSH 输出连接中断后没有重跑部署；
+重新只读核实停写/启动后的持久对账文件，`comparison.ok=true`、errors 和 changed_counts
+均为空，随后再次按原停写基线对在线库复核也一致。原 6 Work、60 effects、20 inputs、
+6 journals、6 budgets、6 recoveries 保留原事实；没有重置预算、原 ID 或重发旧回执。
+SnowLuma 原 ID 保持 running/0 restart；AGM 原镜像仍 healthy，没有路由更换。
+
+上线后健康核验：`/healthz` 的 status/database=ok、OneBot 已连接，automation/emoji/
+runtime-work/wait/subagent workers 正常运行，runtime error category 为 NULL；
+`/livez` 200、`/ui/` 200。启动后截至 06:01 的有界日志共 104 行，包含 startup complete
+和 OneBot connected 标记，没有 ERROR/CRITICAL 或非 JSON traceback 行。
+记忆诊断 `memory_consistency_healthy=false` 单列核查：现行谓词唯一非零项是
+superseded_without_chain_count=162，停写备份与在线库计数相同，其余六项均为 0；
+该旧数据指标不是本轮新增，不将它包装为系统全部健康，也未扩展修改记忆数据。
+
+补齐 T13 的 Gemini interactive wire 组合：新增独立测试验证原 Work 关联 reply 后
+继续业务、内部正文获得一次退出反馈、显式 complete；五次真实 serializer/MockTransport
+请求的 system、全部 tools、toolConfig、generationConfig 稳定，展开的完整 role/parts
+只追加，原 thoughtSignature 与 functionResponse ID 保留。原 Work ID 及累计 5 requests /
+3 tools 不重置，发送次数不增加。主 Agent 独立重跑 1 passed（1.06s）。这仍是模拟协议
+证据，不冒充真实模型或 QQ 行为验收。
+
+自然缓存观察使用实际启动 UTC `2026-10-01 21:55:23` 作为 cutoff。
+截至 05:59:40 的有界查询没有上线后的 invocation，因此命中率为 NULL、普通首请求
+比较 0 对；投影当前仍是旧失效行，没有自然新轮可以验收。本轮不制造保温/测试请求，
+不宣称上线后缓存改善或达到某个百分比。
+计量缺失不得记作 0；input 缺失的成功请求不在使用量样本中。普通初始请求比较按
+内部 actor/conversation/generation 分组，是样本内下一条可核实请求，可能跳过 UNKNOWN
+记录，不声称实际相邻；相同 source 的重试另看，read-scope/epoch 无严格关联时为 UNKNOWN。
+同轮 prepared snapshots 仅作为辅助，不能替代实际 ordinary initial 的 operation/response
+关联，更不能将私有工具尾部跨轮复用。最终阶段报告、连续 steer 和真实 QQ 能力由用户验收。
