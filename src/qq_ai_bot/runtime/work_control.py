@@ -32,7 +32,12 @@ def work_control_tools() -> tuple[ChatTool, ...]:
             name="task_control",
             result_cacheable=False,
             description=(
-                "管理当前持续工作。没有 work_id 而需要执行操作时，第一步单独调用 "
+                "管理和查询持久工作。get 用原 work_id 查询真实状态；"
+                "list 查询 Yuki 的工作简表，默认 active；终态用 status=terminal，全部用 all。"
+                "get/list 返回安全目录元数据，读取不授予修改权限；"
+                "原 ID 可查询已完成、失败和取消的工作；查询不要求 accept，不会续跑或重新登记。"
+                "询问原工作的用途、进度或是否完成时先查原 ID，不能因本轮没有激活工作而重复 accept。"
+                "没有 work_id 而需要执行新的操作时，第一步单独调用 "
                 "action=accept，并填写 goal、output_kind；成功后下一步才调用执行工具。"
                 "已有 work_id 的同一工作直接继续，不重复 accept；不要先试执行再补登记。"
                 "新一轮要续接 available_work 中的原目标，单独使用 resume 和 work_id；不重复登记。"
@@ -54,6 +59,8 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                     "action": {
                         "type": "string",
                         "enum": [
+                            "get",
+                            "list",
                             "accept",
                             "resume",
                             "update",
@@ -66,7 +73,14 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                         ],
                     },
                     "goal": {"type": "string", "maxLength": 8192},
-                    "work_id": {"type": "string", "maxLength": 36},
+                    "work_id": {
+                        "type": "string",
+                        "maxLength": 36,
+                        "description": "get 查询或 resume 续接原工作的内部 ID。",
+                    },
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                    "status": {"type": "string", "enum": ["active", "terminal", "all"]},
+                    "cursor": {"type": "string", "maxLength": 256},
                     "output_kind": {
                         "type": "string",
                         "enum": ["answer", "artifact", "state_change"],
@@ -433,6 +447,32 @@ class WorkControl:
         action = args.get("action")
         if not isinstance(action, str):
             raise ValueError("work_action_required")
+        if action in {"get", "list"}:
+            from qq_ai_bot.runtime.work_queries import WorkQueries
+
+            queries = WorkQueries(self.repository)
+            if action == "get":
+                identity = args.get("work_id")
+                if not isinstance(identity, str) or not identity.strip() or len(identity) > 36:
+                    raise ValueError("work_id_required")
+                row = await queries.get(self.lease, self.source, identity)
+                if row is None:
+                    raise ValueError("work_not_found_or_not_authorized")
+                return {"work": row}
+            limit = args.get("limit", 8)
+            if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
+                raise ValueError("work_list_limit_invalid")
+            status = args.get("status", "active")
+            if not isinstance(status, str) or status not in {"active", "terminal", "all"}:
+                raise ValueError("work_list_status_invalid")
+            cursor = args.get("cursor")
+            if cursor is not None and (
+                not isinstance(cursor, str) or not cursor or len(cursor) > 256
+            ):
+                raise ValueError("work_list_cursor_invalid")
+            return await queries.list(
+                self.lease, self.source, limit=limit, status=status, cursor=cursor
+            )
         if self.lease.work_id:
             if action == "accept":
                 raise ValueError("worker_already_registered")
@@ -773,6 +813,23 @@ class WorkControl:
                 "新工作已交给 queued_work_id，本轮立即让出执行位置。"
                 "后续由新工作的原始请求开始执行和交付；当前工作不得代做、代发。"
             ),
+        }
+
+    async def runtime_state(self) -> dict[str, Any]:
+        """Append fresh scoped facts without replacing any submitted request prefix."""
+        active = self.current
+        recent: dict[str, Any] | None = None
+        if active is None:
+            from qq_ai_bot.runtime.work_queries import WorkQueries
+
+            recent = await WorkQueries(self.repository).recent(self.lease, self.source)
+        return {
+            "work_id": active["id"] if active else None,
+            "goal": active["goal"] if active else None,
+            "state": active["state"] if active else "no_active_work",
+            "state_scope": "current_activation",
+            "available_work": await self.available_work() if active is None else [],
+            "recent_work": recent,
         }
 
     async def available_work(self) -> list[dict[str, Any]]:

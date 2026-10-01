@@ -252,7 +252,6 @@ class MainAgentTurnService:
         control = runtime.work_control
         if control is not None:
             control.current_message = messages[-1] if messages else None
-            active = control.current
             messages = (
                 *messages,
                 ChatMessage(
@@ -260,14 +259,7 @@ class MainAgentTurnService:
                     content=(
                         "[运行状态资料，不增加任何权限] "
                         + json.dumps(
-                            {
-                                "work_id": active["id"] if active else None,
-                                "goal": active["goal"] if active else None,
-                                "state": active["state"] if active else "no_active_work",
-                                "available_work": await control.available_work()
-                                if active is None
-                                else [],
-                            },
+                            await control.runtime_state(),
                             ensure_ascii=False,
                         )
                     ),

@@ -22,6 +22,7 @@ from qq_ai_bot.persistence.models import Base
 from qq_ai_bot.plugin_host import db_models as _plugin_db_models  # noqa: F401
 from qq_ai_bot.runtime import automation_budget_schema as _automation_budget_schema  # noqa: F401
 from qq_ai_bot.runtime import work_observation_schema as _work_observation_schema  # noqa: F401
+from qq_ai_bot.runtime import work_query_schema as _work_query_schema  # noqa: F401
 from qq_ai_bot.runtime import work_schema_v1 as _work_schema_v1  # noqa: F401
 from qq_ai_bot.runtime import work_wait_schema as _work_wait_schema  # noqa: F401
 from qq_ai_bot.sandbox import db_models as _sandbox_db_models  # noqa: F401

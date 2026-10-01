@@ -167,6 +167,25 @@ class MainAgentBackend(AgentToolBackend):
             or self._admin_retry_constraint is not None
         )
 
+    def work_query_allowed(self, action: str) -> bool:
+        """Use the automation directory's read authority, without executing it."""
+        name = "automation_get" if action == "get" else "automation_list"
+        if self._allowed_tools is not None and name not in self._allowed_tools:
+            return False
+        if self._prompt_tools_closed() or self._admin_retry_constraint is not None:
+            return False
+        request_runtime = self._request_runtime()
+        if not request_runtime.allow_automation:
+            return False
+        try:
+            _ = request_runtime.require_actor().source_key
+        except (PermissionError, ValueError):
+            return False
+        capability_runtime = self._ensure_capability_runtime()
+        arguments = '{"automation_id":1}' if action == "get" else "{}"
+        permitted, _ = capability_runtime.validate_call(name, arguments)
+        return permitted
+
     def _prompt_tools_closed(self) -> bool:
         if self._tools_closed:
             return True

@@ -1151,14 +1151,26 @@ class AgentRunner:
                     result = json.dumps({"ok": False, "error": "invalid_work_arguments"})
                     executed = False
                 else:
-                    result = await control.execute(
-                        call.function.name,
-                        arguments,
-                        control.session.call_key(call.id)
-                        if control.session
-                        else f"{control.lease.owner}:{call.id}",
-                    )
-                    executed = True
+                    query_allowed = getattr(tools, "work_query_allowed", None)
+                    action = arguments.get("action")
+                    if (
+                        call.function.name == "task_control"
+                        and isinstance(action, str)
+                        and action in {"get", "list"}
+                        and callable(query_allowed)
+                        and not query_allowed(action)
+                    ):
+                        result = json.dumps({"ok": False, "error": "work_query_not_authorized"})
+                        executed = False
+                    else:
+                        result = await control.execute(
+                            call.function.name,
+                            arguments,
+                            control.session.call_key(call.id)
+                            if control.session
+                            else f"{control.lease.owner}:{call.id}",
+                        )
+                        executed = True
             return CoordinatedToolResult(
                 calls=((call, result, executed),),
                 # Lifecycle controls use the model and message budgets, not

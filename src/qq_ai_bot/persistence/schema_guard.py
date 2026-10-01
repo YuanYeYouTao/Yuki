@@ -232,6 +232,27 @@ async def require_canonical_schema(database_url: str) -> None:
                     f"{expected_revision}"
                 )
 
+            from qq_ai_bot.runtime.work_query_schema import query_index_sql
+
+            for index_name, expected_sql in query_index_sql().items():
+                row = (
+                    await connection.execute(
+                        text(
+                            "SELECT tbl_name, sql FROM sqlite_master "
+                            "WHERE type='index' AND name=:name"
+                        ),
+                        {"name": index_name},
+                    )
+                ).first()
+                if (
+                    row is None
+                    or row[0] != "runtime_work"
+                    or row[1] is None
+                    or "".join(row[1].replace('"', "").split())
+                    != "".join(expected_sql.replace('"', "").split())
+                ):
+                    raise CanonicalSchemaError("database Work query index is missing or changed")
+
             forbidden = sorted(tables & _FORBIDDEN_TABLES)
             if forbidden:
                 raise CanonicalSchemaError("database still contains retired identity storage")
