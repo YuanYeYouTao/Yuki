@@ -73,6 +73,8 @@ jobs:
   memory-quality:
     needs: baseline
     runs-on: ubuntu-latest
+    env:
+      UV_PYTHON_PREFERENCE: only-managed
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -80,15 +82,29 @@ jobs:
           version: "0.11.31"
           enable-cache: true
       - name: Install dependencies
-        run: uv sync --frozen --all-extras
+        run: uv sync --frozen --all-extras --python 3.12.13
+      - name: Record benchmark runtime and frozen baseline
+        run: |
+          uv run python - <<'PY'
+          import json
+          import sqlite3
+          import sys
+          from pathlib import Path
+          baseline = json.loads(Path("tests/benchmarks/memory_v2/v1/baseline.json").read_text())
+          print(json.dumps({"runtime_python": sys.version.split()[0], "runtime_sqlite": sqlite3.sqlite_version,
+                            "baseline_python": baseline["python_version"], "baseline_sqlite": baseline["sqlite_version"]}))
+          PY
       - name: Validate versioned synthetic dataset
         run: uv run qq-ai-bot-cli memory quality validate-dataset
       - name: Run deterministic Memory V2 benchmark
-        env:
-          YUKI_MEMORY_QUALITY_DIAGNOSTICS: "1"
         run: uv run qq-ai-bot-cli memory quality run --suite full
       - name: Compare frozen baseline
         run: uv run qq-ai-bot-cli memory quality compare
+      - name: Attribute failed benchmark latency without replacing its report
+        if: failure()
+        env:
+          YUKI_MEMORY_QUALITY_DIAGNOSTICS: "1"
+        run: uv run qq-ai-bot-cli memory quality run --suite full --output artifacts/memory-quality-diagnostics
       - name: Upload content-free quality reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -98,6 +114,9 @@ jobs:
             artifacts/memory-quality/report.json
             artifacts/memory-quality/report.md
             artifacts/memory-quality/junit.xml
+            artifacts/memory-quality-diagnostics/report.json
+            artifacts/memory-quality-diagnostics/report.md
+            artifacts/memory-quality-diagnostics/junit.xml
           if-no-files-found: warn
 
   python:

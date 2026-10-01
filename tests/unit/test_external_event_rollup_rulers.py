@@ -35,12 +35,12 @@ from qq_ai_bot.conversation.rollup.repository import (
 from qq_ai_bot.conversation.rollup.service import ConversationRollupService
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
+from qq_ai_bot.domain.messages import ChatRequest, InboundMessage, SenderIdentity
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
 from qq_ai_bot.memory.enums import MemoryRetrievalMode
 from qq_ai_bot.memory.models import MemoryRetrievalResult
-from qq_ai_bot.model_runtime.capacity import estimate_text_tokens
+from qq_ai_bot.model_runtime.capacity import estimate_request_tokens, estimate_text_tokens
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.persistence.repository_records import EventRecord
@@ -67,6 +67,27 @@ def _durable_kwargs(policy: RollupPolicyConfig) -> dict[str, str]:
         "bot_display_name": policy.bot_display_name,
         "timezone": policy.timezone,
     }
+
+
+def _assert_prefix_exceeds_request_budget(
+    first: EventRecord, recent: EventRecord, policy: RollupPolicyConfig
+) -> None:
+    def request(events: tuple[EventRecord, ...]) -> ChatRequest:
+        renderer = ChatEventPromptRenderer(
+            events, bot_display_name=policy.bot_display_name, timezone=policy.timezone
+        )
+        return ChatRequest(
+            messages=tuple(item for _, _, item in renderer.main_agent_history(events))
+        )
+
+    # The recent complete message fits the current target; the original full
+    # history really exceeds the trigger under the common request token ruler.
+    assert estimate_request_tokens(request((recent,))) < (
+        policy.context_token_budget * policy.target_ratio
+    )
+    assert estimate_request_tokens(request((first, recent))) > (
+        policy.context_token_budget * policy.trigger_ratio
+    )
 
 
 def _message(event_id: int, content: str = "hello") -> EventRecord:
@@ -156,20 +177,20 @@ def test_take_batch_serialized_source_respects_cap_and_separators() -> None:
 
 
 async def test_mixed_coverage_is_contiguous_across_external_ids(database: Database) -> None:
-    policy = _policy(context_token_budget=60, batch_max_events=8)
+    policy = _policy(context_token_budget=1_024, batch_max_events=8)
     uow = ScopedEventLedgerUnitOfWork(database, config=policy)
     repository = ConversationRollupRepository(database, policy)
     service = ConversationRollupService(models=None, config=policy, timeout_seconds=0.1)
     scope = await _prepare_private(database)
-    await uow.append(
+    first = await uow.append(
         scope=scope,
         platform_message_id="human-1",
         sender_user_id="1001",
         direction="inbound",
-        content="hello",
+        content="hello " * 800,
         occurred_at=_NOW,
     )
-    await uow.append_external(
+    external = await uow.append_external(
         scope=scope,
         platform_message_id="ext-1",
         source_plugin_id="github-monitor",
@@ -181,7 +202,7 @@ async def test_mixed_coverage_is_contiguous_across_external_ids(database: Databa
         content="push one",
         occurred_at=_NOW + timedelta(seconds=1),
     )
-    await uow.append(
+    recent = await uow.append(
         scope=scope,
         platform_message_id="human-2",
         sender_user_id="1001",
@@ -201,6 +222,7 @@ async def test_mixed_coverage_is_contiguous_across_external_ids(database: Databa
         content="push two",
         occurred_at=_NOW + timedelta(seconds=3),
     )
+    _assert_prefix_exceeds_request_budget(first.event, recent.event, policy)
     committed = await service.ensure_extractive_coverage(
         repository=repository,
         scope=scope,
@@ -209,6 +231,8 @@ async def test_mixed_coverage_is_contiguous_across_external_ids(database: Databa
     )
     assert committed >= 1
     snapshot = await repository.load_prompt_snapshot(scope)
+    assert snapshot.effective_coverage == external.event.id
+    assert snapshot.raw_events[0].id == recent.event.id
     keeper_ids = tuple(event.id for event in snapshot.raw_events)
     assert keeper_ids
     assert keeper_ids == tuple(range(keeper_ids[0], keeper_ids[-1] + 1))
@@ -516,22 +540,22 @@ async def test_durable_uncovered_characters_stay_equal_across_live_paths(
 
 async def test_candidate_projection_characters_equal_source_cost(database: Database) -> None:
     policy = _policy(
-        context_token_budget=60,
+        context_token_budget=1_024,
         batch_max_events=4,
         batch_max_characters=10_000,
     )
     uow = ScopedEventLedgerUnitOfWork(database, config=policy)
     repository = ConversationRollupRepository(database, policy)
     scope = await _prepare_private(database, peer="1005")
-    await uow.append(
+    first = await uow.append(
         scope=scope,
         platform_message_id="src-human",
         sender_user_id="1005",
         direction="inbound",
-        content="human",
+        content="human " * 800,
         occurred_at=_NOW,
     )
-    await uow.append_external(
+    external = await uow.append_external(
         scope=scope,
         platform_message_id="src-ext",
         source_plugin_id="github-monitor",
@@ -543,7 +567,7 @@ async def test_candidate_projection_characters_equal_source_cost(database: Datab
         content="external summary",
         occurred_at=_NOW + timedelta(seconds=1),
     )
-    await uow.append(
+    recent = await uow.append(
         scope=scope,
         platform_message_id="src-human-2",
         sender_user_id="1005",
@@ -551,12 +575,14 @@ async def test_candidate_projection_characters_equal_source_cost(database: Datab
         content="later",
         occurred_at=_NOW + timedelta(seconds=2),
     )
+    _assert_prefix_exceeds_request_budget(first.event, recent.event, policy)
     claim = await repository.claim_scope_for_foreground(
         scope, lease_owner="source", lease_seconds=30
     )
     assert claim is not None
     candidate = await repository.candidate_for_claim(claim)
     assert candidate is not None
+    assert tuple(event.id for event in candidate.events) == (first.event.id, external.event.id)
     assert candidate.projection_characters == source_accounting_characters(
         candidate.events,
         timezone=policy.timezone,

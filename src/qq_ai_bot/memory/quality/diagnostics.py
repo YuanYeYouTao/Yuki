@@ -6,24 +6,18 @@ warm caches, rerun queries, filter samples, or change wall-clock quality gates.
 
 from __future__ import annotations
 
-import asyncio
-import gc
-import json
 import os
-import sys
 import time
-from collections import Counter
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import wraps
 from typing import Any
-from unittest.mock import patch
-
-from sqlalchemy import event
-from sqlalchemy.sql.elements import ClauseElement
 
 _case: ContextVar[str] = ContextVar("quality_diagnostic_case", default="unknown")
+_observer: ContextVar[QualityLatencyDiagnostics | None] = ContextVar(
+    "quality_diagnostic_observer", default=None
+)
 
 
 @contextmanager
@@ -32,7 +26,12 @@ def diagnostic_case(case_id: str) -> Iterator[None]:
     try:
         yield
     finally:
-        _case.reset(token)
+        try:
+            observer = _observer.get()
+            if observer is not None:
+                observer.release_engines()
+        finally:
+            _case.reset(token)
 
 
 def benchmark_diagnostics[**P, T](
@@ -68,7 +67,13 @@ class QualityLatencyDiagnostics:
 
     @contextmanager
     def install(self) -> Iterator[None]:
+        import asyncio
+        import gc
+        from unittest.mock import patch
+
         import aiosqlite
+        from sqlalchemy import event
+        from sqlalchemy.sql.elements import ClauseElement
 
         from qq_ai_bot.memory.context import MemoryContextService
         from qq_ai_bot.persistence.database import Database
@@ -213,6 +218,7 @@ class QualityLatencyDiagnostics:
                     self.dropped += 1
 
         gc.callbacks.append(self._gc_callback)
+        observer_token = _observer.set(self)
         try:
             with (
                 patch.object(aiosqlite.Connection, "_execute", measured_execute),
@@ -223,15 +229,25 @@ class QualityLatencyDiagnostics:
                 yield
         finally:
             gc.callbacks.remove(self._gc_callback)
-            for engine, pool, before, after, checkout, ping, pool_get in self._engine_hooks:
-                event.remove(engine, "before_cursor_execute", before)
-                event.remove(engine, "after_cursor_execute", after)
-                event.remove(pool, "checkout", checkout)
-                engine.dialect.do_ping = ping
-                pool._do_get = pool_get
-            self._engine_hooks.clear()
+            self.release_engines()
+            _observer.reset(observer_token)
+
+    def release_engines(self) -> None:
+        from sqlalchemy import event
+
+        # Match the normal per-case lifetime: retaining disposed engines for the
+        # entire suite would move collection costs away from the measured query.
+        for engine, pool, before, after, checkout, ping, pool_get in self._engine_hooks:
+            event.remove(engine, "before_cursor_execute", before)
+            event.remove(engine, "after_cursor_execute", after)
+            event.remove(pool, "checkout", checkout)
+            engine.dialect.do_ping = ping
+            pool._do_get = pool_get
+        self._engine_hooks.clear()
 
     def _new_sample(self) -> dict[str, Any]:
+        from collections import Counter
+
         sample: dict[str, Any] = {
             "case_id": _case.get(),
             "query_index": 1 + sum(item["case_id"] == _case.get() for item in self.samples),
@@ -259,6 +275,8 @@ class QualityLatencyDiagnostics:
         return sample
 
     async def _loop_probe(self, sample: dict[str, Any], started: float) -> None:
+        import asyncio
+
         expected = started + 0.005
         while True:
             await asyncio.sleep(max(0.0, expected - time.perf_counter()))
@@ -279,6 +297,9 @@ class QualityLatencyDiagnostics:
             self._gc_started = None
 
     def emit(self) -> None:
+        import json
+        import sys
+
         payload = {
             "schema_version": 1,
             "diagnostic_only": True,

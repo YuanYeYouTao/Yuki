@@ -66,6 +66,11 @@ async def test_diagnostics_observe_sql_and_restore_every_hook_on_exit(monkeypatc
             with diagnostic_case("synthetic_case"):
                 return await MemoryContextService.search(object())
         finally:
+            # Per-case exit restores engine methods before the overall benchmark
+            # exits, including the exception path, so it cannot retain old engines.
+            engine, pool, original_ping, original_pool_get = originals[0]
+            assert engine.dialect.do_ping == original_ping
+            assert pool._do_get == original_pool_get
             await database.close()
 
     if fail:

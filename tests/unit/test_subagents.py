@@ -565,12 +565,21 @@ async def test_cancel_fences_media_recovery_and_privacy_cleanup(database, tmp_pa
         TurnTranscript((ChatMessage("user", "changed dynamic data"),))
     )
     assert restored.request() == transcript.request()
+    from qq_ai_bot.admin.models import WorkStorageRuntimeConfig
     from qq_ai_bot.runtime.work_repository import WorkCapacityError
 
-    recovered.journal.objects.max_total_bytes = 1
-    restored.append(ChatMessage("user", "x" * (4 * 1024 * 1024)))
-    with pytest.raises(WorkCapacityError):
+    async def storage_policy():
+        return WorkStorageRuntimeConfig(object_max_bytes=16 * 1024)
+
+    database.protocol_storage_policy = storage_policy
+    restored.append(ChatMessage("user", "x" * (32 * 1024)))
+    with pytest.raises(WorkCapacityError, match="work_protocol_object_capacity"):
         await recovered.save("paired")
+    async with database.sessions() as db:
+        assert (
+            await db.scalar(select(journal.c.payload_json).where(journal.c.work_id == identity))
+            == payload
+        )
     intact = await WorkSession(control, "fixed").restore(TurnTranscript(()))
     assert intact.request() == transcript.request()
     async with database.immediate_session() as db:

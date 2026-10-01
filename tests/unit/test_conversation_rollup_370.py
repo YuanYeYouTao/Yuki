@@ -1000,16 +1000,33 @@ async def _append_v2(
     start: int = 1,
     origin: str = "user_message",
 ) -> None:
+    from qq_ai_bot.event_prompt import ChatEventPromptRenderer
+    from qq_ai_bot.model_runtime.capacity import estimate_text_tokens
+
+    prompt_tokens = 0
     for index in range(start, start + count):
-        await uow.append(
+        appended = await uow.append(
             scope=scope,
             platform_message_id=f"v2-message-{index}",
             sender_user_id="1001",
             direction="inbound",
-            content=f"event-{index}",
+            # Four bare event-N messages occupy only 88 tokens, below the
+            # current 90-token trigger in this 100-token test window.
+            content=f"event-{index}: rollup capacity fixture",
             occurred_at=datetime(2026, 8, 20, 0, index % 60, tzinfo=UTC),
             origin=origin,
         )
+        renderer = ChatEventPromptRenderer(
+            (appended.event,),
+            bot_display_name=uow._config.bot_display_name,
+            timezone=uow._config.timezone,
+        )
+        prompt_tokens += sum(
+            estimate_text_tokens(message.content or "") + 8
+            for _, _, message in renderer.main_agent_history((appended.event,))
+        )
+    if count >= 4:
+        assert prompt_tokens >= int(uow._config.context_token_budget * uow._config.trigger_ratio)
 
 
 async def test_v2_new_generation_replay_deletes_canonical_checkpoint(
