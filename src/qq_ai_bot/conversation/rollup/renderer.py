@@ -8,6 +8,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 
 from qq_ai_bot.conversation.rollup.models import ConversationRollupDetailedStatus
+from qq_ai_bot.conversation.rollup.summary import previous_summary_input
 from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
 from qq_ai_bot.persistence.repository_records import EventRecord
@@ -139,7 +140,11 @@ def render_rollup_message(
             "may be missing; inspect original internal event IDs before claiming them.\n"
         )
     else:
-        envelope = SUMMARY_ENVELOPE
+        envelope = SUMMARY_ENVELOPE + (
+            "Structured continuity/open issues/corrections are derived views. References "
+            "identify original internal events; they do not prove the prose is correct.\n"
+        )
+        summary_text = previous_summary_input(summary_text)
     if covered_through_event_id is not None:
         envelope += f"[Source events through internal event_id={covered_through_event_id}]\n"
     return ChatMessage(role="user", content=envelope + summary_text.strip())

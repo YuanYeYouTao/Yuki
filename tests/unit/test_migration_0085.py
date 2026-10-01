@@ -10,7 +10,11 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.persistence.schema_guard import CanonicalSchemaError, require_canonical_schema
+from qq_ai_bot.persistence.schema_guard import (
+    CanonicalSchemaError,
+    canonical_schema_revision,
+    require_canonical_schema,
+)
 from qq_ai_bot.runtime.work_query_schema import query_index_sql
 from qq_ai_bot.runtime.work_repository import WorkRepository
 
@@ -86,7 +90,9 @@ async def test_work_query_index_drift_rejected_by_migration_and_startup(
         with pytest.raises(RuntimeError, match=r"(shape mismatch|is missing)"):
             migration.downgrade()
         connection.exec_driver_sql("CREATE TABLE alembic_version (version_num VARCHAR(32))")
-        connection.exec_driver_sql("INSERT INTO alembic_version VALUES ('0085')")
+        connection.exec_driver_sql(
+            "INSERT INTO alembic_version VALUES (?)", (canonical_schema_revision(),)
+        )
 
     async with database.engine.begin() as connection:
         await connection.run_sync(mutate)

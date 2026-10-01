@@ -103,6 +103,7 @@ class JournalSnapshot:
     portable_search_truncated: bool = False
     pending_calls: tuple[dict[str, str], ...] = ()
     pending_sequence: int = 0
+    task_material: dict[str, Any] | None = None
 
 
 class WorkJournal:
@@ -231,6 +232,9 @@ class WorkJournal:
                     else False,
                     pending_calls=pending_calls,
                     pending_sequence=pending_sequence,
+                    task_material=progress.get("task_material")
+                    if isinstance(progress, dict)
+                    else None,
                 )
             return JournalSnapshot("resume", result, row["chain_id"])
 
@@ -245,7 +249,9 @@ class WorkJournal:
         pending: list[dict[str, Any]],
         source_revision: int,
         metadata: dict[str, Any],
+        compaction_versions: tuple[int, int] | None = None,
     ) -> None:
+        await self.objects.refresh_policy()
         blobs: dict[str, bytes] = {}
         # Opaque Responses items retain insertion order all the way to the next
         # HTTP request; generic bounded_json sorts keys and changes that prefix.
@@ -262,7 +268,7 @@ class WorkJournal:
                 raise ValueError("work_protocol_media_hash_mismatch")
         prepared["file_media"] = list(blobs)
         payload = json.dumps(
-            await self.objects.manifest(prepared),
+            await self.objects.manifest(prepared, refresh_policy=False),
             ensure_ascii=False,
             allow_nan=False,
         )
@@ -289,6 +295,23 @@ class WorkJournal:
                     raise WorkConflict("work_journal_generation_changed")
                 if not lease.work_id and source.prompt_source_revision != source_revision:
                     raise WorkConflict("work_journal_source_changed")
+                if compaction_versions is not None:
+                    from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
+
+                    frozen_revision, frozen_privacy = compaction_versions
+                    privacy = (
+                        await session.scalar(
+                            select(ExecutionTraceStateModel.privacy_generation).where(
+                                ExecutionTraceStateModel.id == 1,
+                            )
+                        )
+                        or 0
+                    )
+                    if (
+                        source.prompt_source_revision != frozen_revision
+                        or privacy != frozen_privacy
+                    ):
+                        raise WorkConflict("work_compaction_source_changed")
                 if phase == "response":
                     from qq_ai_bot.runtime.work_recovery_schema import recovery
 

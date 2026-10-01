@@ -649,11 +649,6 @@ class ContextAssembler:
                     )
                     for hit in hits_by_role.get(MemoryTargetRole.CURRENT_PERSON, ())
                 ],
-                **(
-                    {"relationship": self.relationship_json(current_relationship)}
-                    if current_relationship is not None
-                    else {}
-                ),
             },
             "scene": {
                 "type": inbound.scope_type.value,
@@ -948,11 +943,6 @@ class ContextAssembler:
                     )
                     for hit in hits_by_role.get(MemoryTargetRole.CURRENT_PERSON, ())
                 ],
-                **(
-                    {"relationship": self.relationship_json(current_relationship)}
-                    if current_relationship is not None
-                    else {}
-                ),
             }
         group_hits = hits_by_role.get(MemoryTargetRole.CURRENT_GROUP, ())
         if event.group_id is not None:
@@ -1255,16 +1245,6 @@ class ContextAssembler:
                 }
             )
         return subjects
-
-    @staticmethod
-    def relationship_json(snapshot: RelationshipSnapshot) -> dict[str, Any]:
-        return {
-            "affection_score": snapshot.affection_score,
-            "trust_score": snapshot.trust_score,
-            "effective_trust": snapshot.effective_trust,
-            "relationship_weight": snapshot.relationship_weight,
-            "stage": snapshot.stage.value,
-        }
 
     def _memory_exposures(
         self,

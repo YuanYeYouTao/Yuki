@@ -675,6 +675,15 @@ def _schema_shape(path: Path) -> dict[str, Any]:
 
 def _assert_orm_shape(path: Path) -> None:
     from qq_ai_bot.persistence.metadata import Base
+    from qq_ai_bot.runtime.work_budget_schema import automation_budgets, budgets
+
+    # Historical budget declarations stay frozen for 0057/0060. Current runtime
+    # contracts carry the nullable limits introduced by 0087.
+    current_tables = {
+        **Base.metadata.tables,
+        budgets.name: budgets,
+        automation_budgets.name: automation_budgets,
+    }
 
     with sqlite3.connect(path) as connection:
         physical_tables = {
@@ -685,8 +694,8 @@ def _assert_orm_shape(path: Path) -> None:
             and not name.startswith("chat_events_fts")
             and not name.startswith("memory_facts_fts")
         }
-        assert physical_tables == set(Base.metadata.tables)
-        for name, table in Base.metadata.tables.items():
+        assert physical_tables == set(current_tables)
+        for name, table in current_tables.items():
             physical_columns = {
                 str(row[1]): (str(row[2]).upper(), bool(row[3]), bool(row[5]))
                 for row in connection.execute(f'PRAGMA table_info("{name}")')

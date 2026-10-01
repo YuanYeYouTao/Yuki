@@ -23,10 +23,22 @@ legacy/semantic 自主机会均以正式 SELF 来源进入这条执行链；
 运行状态用 `state_scope=current_activation` 区分本轮激活与持久 Work 生命周期。
 `no_active_work` 只表示本轮没有激活的 Work，不表示过去未接纳工作或工具失败。
 没有当前 Work 时，`recent_work` 追加最近一项获准 Work 的有界简表，包括终态、真实 ID、
-目标、revision 和创建/更新时间；有当前 Work 时不混入另一项工作的状态。
+目标摘录、三项执行计数和创建者显示名；有当前 Work 时不混入另一项工作的状态。
+`available_work` 至多 16 项，只提供内部 ID、状态、目标摘录、创建者显示名和 `has_wait`。
+两种目录投影的目标摘录最多 160 字符、显示名最多 64 字符；`goal_complete=false` 明确表示
+摘录不完整，不能代替原目标。读取使用有界 SQL 最小投影，不逐项预载完整等待 JSON。
+续接目标或等待内容不清楚时先用 `get` 读取完整 goal 与 wait，活动 Work 原目标不截断。
+目录中的 revision、owner/Conversation/generation、来源与审计时间等详情不常驻 Prompt，
+需要核实再调用既有 `task_control(action=get/list)`；get 同时提供存在的完整等待登记。
+后端身份、权限和恢复事实仍保持完整。
 自动注入按原 actor、Conversation、generation 及执行来源核验可见范围，
 不因为查询工具能读全局目录就自动注入其他会话的工作。
 不注入完整 journal、工具正文或其他主体的任务。既有请求链只追加当前视图，不重写历史状态。
+
+人物与场景块保留当前说话人、群及可信引用；关系仅在 `context.relationship` 提供当前阶段、
+风格和未验证陈述规则，不在人物块重复注入好感/信任等数值详情，详情使用 `get_relationship`。
+短期记录继续保留 CAS revision，权限、时间、当前 Work、最近投递、当前媒体和固定工具合同
+不因显示精简而改变。文件、终端、完整自动化目录和长期记忆均使用已有工具按需查询。
 
 主 Agent 的 `task_control(action=get, work_id=...)` 按原内部 Work ID 只读查询全局安全目录，
 与 Automation 目录读取一致，不按创建者、当前会话或 generation 过滤；
@@ -247,7 +259,9 @@ paired 检查点。失败、无缩减或候选完整请求不能装入窗口时�
 容量分开；存储压力不能触发模型摘要。备份必须包含 DB 和协议/工具证据目录并核验引用。
 
 热配置 `context.window_tokens` / `context.work_window_tokens` 初始为 96000 / 128000；
-触发与目标水位初始 0.85 / 0.50，两种摘要输出上限初始 8192。这些是成本模拟后的可调政策，
+聊天/群史触发与目标初始 0.90 / 0.60，Work 使用独立热配置
+`context.work_compaction_trigger_ratio` / `context.work_compaction_target_ratio`，初始 0.90 / 0.50。
+两种摘要输出上限初始 8192。这些是成本模拟后的可调政策，
 不是模型硬上限或必须填满的长度。连接 Profile 的 `max_input_tokens`、
 `context_window_tokens` 与输出限额独立核验，联合窗口才扣输出预留。
 

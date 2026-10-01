@@ -44,6 +44,7 @@ from qq_ai_bot.admin.models import (
     ToolingRuntimeConfig,
     VisionRuntimeConfig,
     WebRuntimeConfig,
+    WorkStorageRuntimeConfig,
 )
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.memory_config import MemoryConfigScope
@@ -1455,6 +1456,12 @@ class RuntimeConfigService:
                 compaction_target_ratio=float(
                     cast(float, value("context.compaction_target_ratio"))
                 ),
+                work_compaction_trigger_ratio=float(
+                    cast(float, value("context.work_compaction_trigger_ratio"))
+                ),
+                work_compaction_target_ratio=float(
+                    cast(float, value("context.work_compaction_target_ratio"))
+                ),
                 compaction_output_tokens=int(cast(int, value("context.compaction_output_tokens"))),
                 rollup_output_tokens=int(cast(int, value("context.rollup_output_tokens"))),
                 rollup_summary_characters=int(
@@ -1633,6 +1640,11 @@ class RuntimeConfigService:
                 result_artifact_retention_seconds=int(
                     cast(int, value("tooling.result_artifact_retention_seconds"))
                 ),
+            ),
+            work_storage=WorkStorageRuntimeConfig(
+                total_max_bytes=int(cast(int, value("storage.protocol_total_max_bytes"))),
+                object_max_bytes=int(cast(int, value("storage.protocol_object_max_bytes"))),
+                disk_reserve_bytes=int(cast(int, value("storage.protocol_disk_reserve_bytes"))),
             ),
             mcp=MCPRuntimeConfig(
                 enabled=bool(value("mcp.enabled")),
@@ -1996,8 +2008,15 @@ class RuntimeConfigService:
     ) -> None:
         if key in {"context.compaction_target_ratio", "context.compaction_trigger_ratio"}:
             pair = ("context.compaction_target_ratio", "context.compaction_trigger_ratio")
+        elif key in {
+            "context.work_compaction_target_ratio",
+            "context.work_compaction_trigger_ratio",
+        }:
+            pair = ("context.work_compaction_target_ratio", "context.work_compaction_trigger_ratio")
         elif key in {"reply.delay_min_seconds", "reply.delay_max_seconds"}:
             pair = ("reply.delay_min_seconds", "reply.delay_max_seconds")
+        elif key in {"storage.protocol_object_max_bytes", "storage.protocol_total_max_bytes"}:
+            pair = ("storage.protocol_object_max_bytes", "storage.protocol_total_max_bytes")
         else:
             return
         records = list(
@@ -2057,7 +2076,7 @@ class RuntimeConfigService:
         overridden, the other endpoint's group extrema cover every pairing.
         Keep this check in the caller's transaction with mutation and audit.
         """
-        values: dict[tuple[str, ConfigScopeType, str], float] = {}
+        values: dict[tuple[str, ConfigScopeType, str], int | float] = {}
         users: set[str] = set()
         groups: set[str] = set()
         for row in records:
@@ -2082,17 +2101,17 @@ class RuntimeConfigService:
             index = (row.config_key, row.scope_type, owner)
             if index in values:
                 raise CanonicalIdentityError("canonical_owner_mismatch")
-            values[index] = float(cast(float | int, row.value))
+            values[index] = cast(float | int, row.value)
         global_min = values.get(
             (minimum_key, ConfigScopeType.GLOBAL, ""),
-            float(cast(float | int, self.registry.get(minimum_key).default_getter(self._settings))),
+            cast(float | int, self.registry.get(minimum_key).default_getter(self._settings)),
         )
         global_max = values.get(
             (maximum_key, ConfigScopeType.GLOBAL, ""),
-            float(cast(float | int, self.registry.get(maximum_key).default_getter(self._settings))),
+            cast(float | int, self.registry.get(maximum_key).default_getter(self._settings)),
         )
 
-        def require_order(minimum: float, maximum: float) -> None:
+        def require_order(minimum: int | float, maximum: int | float) -> None:
             if minimum > maximum or (strict and minimum == maximum):
                 raise ValueError(
                     f"{minimum_key} 必须小于{'或等于' if not strict else ''} {maximum_key}"

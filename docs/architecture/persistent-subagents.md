@@ -76,7 +76,13 @@ child 使用自己的 lease，在取得执行权后复用 root 的激活监督�
 
 恢复检查点是最多 1 MiB 的协议 manifest；原协议项、图片、模型观察和压缩前链分别
 存放为不可变文件对象，按原 Work 持有引用，shared hash 在最后拥有者释放后才可清理。
-对象单件最多 64 MiB，总登记容量默认 2 GiB；计量属于资源约束，容量不足暂停并保留
+对象单件默认 64 MiB，总登记容量默认 2 GiB，写新文件保留 64 MiB 空闲磁盘。
+启动配置为 `WORK_PROTOCOL_OBJECT_MAX_BYTES`、`WORK_PROTOCOL_TOTAL_MAX_BYTES`、
+`WORK_PROTOCOL_DISK_RESERVE_BYTES`，均为正整数且单件上限不超过总容量；
+对应 `storage.protocol_object_max_bytes`、`storage.protocol_total_max_bytes`、
+`storage.protocol_disk_reserve_bytes` 只允许全局热覆盖，在下一次检查点准备批次读取同一快照。
+降低限额保留已有对象、读取与引用复用，只拒绝超限的新对象发布；调整政策后可原位重试。
+计量属于资源约束，容量不足暂停并保留
 最后可用检查点，不能因磁盘配额触发语义压缩。活动 Work 的旧输入媒体引用保留到归档或隐私删除，
 不能由较早的 save 准备快照删除并发新输入。终态归档及 canonical 隐私清理释放对应引用，
 GC 有界标记未引用对象 deleting，再在 SQLite writer 外删除文件并收尾；中断可续清。

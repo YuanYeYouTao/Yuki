@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import select
 from tests.unit.test_work_protocol_continuity import _control
 
+from qq_ai_bot.admin.models import WorkStorageRuntimeConfig
 from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.runtime.protocol_schema import objects, refs
 from qq_ai_bot.runtime.protocol_store import ProtocolStore
@@ -49,7 +50,7 @@ async def test_active_shared_protocol_refs_survive_gc_and_privacy_releases_last_
 @pytest.mark.asyncio
 async def test_batch_admission_refuses_quota_without_losing_existing_owned_data(database, tmp_path):
     control = await _control(database, tmp_path)
-    store = ProtocolStore(database, max_total_bytes=8)
+    store = ProtocolStore(database, policy=WorkStorageRuntimeConfig(8, 8, 1))
     digest = await store.put("a")
 
     async def publish():
@@ -58,7 +59,7 @@ async def test_batch_admission_refuses_quota_without_losing_existing_owned_data(
                 await store.publish_refs(writer, control.current["id"], prepared)
 
     await publish()
-    await store.put("too large")
+    await store.put("large")
     with pytest.raises(ValueError, match="work_protocol_storage_capacity"):
         await publish()
     assert await store.get(digest) == "a"

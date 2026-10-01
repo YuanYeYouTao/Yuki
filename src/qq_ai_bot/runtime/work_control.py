@@ -41,6 +41,8 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                 "action=accept，并填写 goal、output_kind；成功后下一步才调用执行工具。"
                 "已有 work_id 的同一工作直接继续，不重复 accept；不要先试执行再补登记。"
                 "新一轮要续接 available_work 中的原目标，单独使用 resume 和 work_id；不重复登记。"
+                "运行状态的 goal_excerpt 不完整时先 get 读取完整 goal；"
+                "has_wait 的完整条件也用 get 查看。"
                 "普通聊天不必登记；需要发言用 send_message。"
                 "新输入另提独立工作时再次 accept 排队，不能用 update 覆盖旧目标；"
                 "update 仅修正当前目标；wait 可等待所属 run_id，"
@@ -779,34 +781,9 @@ class WorkControl:
         }
 
     async def available_work(self) -> list[dict[str, Any]]:
-        if self.lease.work_id:
-            return []
-        result = []
-        for row in await self.repository.active(self.lease.conversation_id, self.lease.generation):
-            source = json.loads(row["source_json"])
-            if all(
-                source.get(k) == self.source.get(k)
-                for k in (
-                    "actor_user_id",
-                    "origin",
-                    "plugin_id",
-                    "delegation_id",
-                    "execution_boundary",
-                    "principal_kind",
-                    "initiative_run_id",
-                )
-            ):
-                from qq_ai_bot.runtime.work_wait import WorkWaitRepository
+        from qq_ai_bot.runtime.work_queries import WorkQueries
 
-                result.append(
-                    {
-                        "work_id": row["id"],
-                        "goal": row["goal"],
-                        "state": row["state"],
-                        "wait": await WorkWaitRepository(self.repository).describe(row["id"]),
-                    }
-                )
-        return result[:16]
+        return await WorkQueries(self.repository).available(self.lease, self.source)
 
     async def settle(self, *, delivered: bool, pending_inputs: bool) -> None:
         from qq_ai_bot.runtime.work_supervisor import settle

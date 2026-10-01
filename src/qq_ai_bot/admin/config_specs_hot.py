@@ -18,6 +18,38 @@ def hot_config_specs() -> tuple[ConfigSpec, ...]:
             _spec(
                 key,
                 title,
+                "全局物理存储政策，下一次协议检查点准备生效；不改变模型窗口或触发语义压缩。"
+                "降低容量不删除已有对象，仅暂停超限的新对象发布。单件上限不得超过总额。",
+                value_type="integer",
+                minimum=1,
+                maximum=2**63 - 1,
+                scopes=_G,
+                getter=_field(field),
+                settings_fields=(field,),
+                category="storage",
+            )
+            for key, title, field in (
+                (
+                    "storage.protocol_total_max_bytes",
+                    "协议对象总容量（字节）",
+                    "work_protocol_total_max_bytes",
+                ),
+                (
+                    "storage.protocol_object_max_bytes",
+                    "协议对象单件上限（字节）",
+                    "work_protocol_object_max_bytes",
+                ),
+                (
+                    "storage.protocol_disk_reserve_bytes",
+                    "协议存储磁盘预留（字节）",
+                    "work_protocol_disk_reserve_bytes",
+                ),
+            )
+        ),
+        *tuple(
+            _spec(
+                key,
+                title,
                 "运行时请求容量政策；模型实际输入/联合窗口上限仍在执行前核验。",
                 value_type="integer",
                 minimum=minimum,
@@ -75,13 +107,23 @@ def hot_config_specs() -> tuple[ConfigSpec, ...]:
             for key, title, field in (
                 (
                     "context.compaction_trigger_ratio",
-                    "压缩触发水位",
+                    "聊天/群史压缩触发水位",
                     "conversation_rollup_trigger_ratio",
                 ),
                 (
                     "context.compaction_target_ratio",
-                    "压缩目标水位",
+                    "聊天/群史压缩目标水位",
                     "conversation_rollup_target_ratio",
+                ),
+                (
+                    "context.work_compaction_trigger_ratio",
+                    "Work 压缩触发水位",
+                    "work_compaction_trigger_ratio",
+                ),
+                (
+                    "context.work_compaction_target_ratio",
+                    "Work 压缩目标水位",
+                    "work_compaction_target_ratio",
                 ),
             )
         ),

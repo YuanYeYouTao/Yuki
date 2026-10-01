@@ -67,6 +67,17 @@ async def test_context_windows_are_hot_and_watermarks_validate_inherited_scopes(
     runtime, person, space = await setup(database)
     original = await runtime.snapshot(user_id=person.text, group_id=space.text)
     assert original.context.window_tokens == 96000
+    assert (
+        original.context.compaction_trigger_ratio,
+        original.context.compaction_target_ratio,
+    ) == (
+        0.90,
+        0.60,
+    )
+    assert (
+        original.context.work_compaction_trigger_ratio,
+        original.context.work_compaction_target_ratio,
+    ) == (0.90, 0.50)
     assert (await set_value(runtime, "context.window_tokens", 160000)).success
     assert (
         await set_value(runtime, "context.work_window_tokens", 192000, "group", space.text)
@@ -90,6 +101,37 @@ async def test_context_windows_are_hot_and_watermarks_validate_inherited_scopes(
         0.7,
     )
     assert original.context.window_tokens == 96000
+
+
+@pytest.mark.asyncio
+async def test_work_watermarks_are_hot_independent_and_validate_inherited_scopes(database):
+    runtime, person, space = await setup(database)
+    original = await runtime.snapshot(user_id=person.text, group_id=space.text)
+    assert (await set_value(runtime, "context.work_compaction_trigger_ratio", 0.8)).success
+    assert (
+        await set_value(runtime, "context.work_compaction_target_ratio", 0.7, "user", person.text)
+    ).success
+    refused = await set_value(
+        runtime, "context.work_compaction_trigger_ratio", 0.65, "group", space.text
+    )
+    assert not refused.success and refused.error_category == "validation_error"
+    actual = await runtime.snapshot(user_id=person.text, group_id=space.text)
+    assert (
+        actual.context.work_compaction_trigger_ratio,
+        actual.context.work_compaction_target_ratio,
+    ) == (
+        0.8,
+        0.7,
+    )
+    assert (actual.context.compaction_trigger_ratio, actual.context.compaction_target_ratio) == (
+        0.9,
+        0.6,
+    )
+    assert (await set_value(runtime, "context.compaction_target_ratio", 0.4)).success
+    changed = await runtime.snapshot(user_id=person.text, group_id=space.text)
+    assert changed.context.compaction_target_ratio == 0.4
+    assert changed.context.work_compaction_target_ratio == 0.7
+    assert original.context.work_compaction_target_ratio == 0.5
 
 
 @pytest.mark.asyncio

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import event, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -19,6 +19,9 @@ from sqlalchemy.ext.asyncio import (
 
 from qq_ai_bot.persistence.metadata import Base
 
+if TYPE_CHECKING:
+    from qq_ai_bot.admin.models import WorkStorageRuntimeConfig
+
 _SQLITE_BUSY_TIMEOUT_MS = 5_000
 
 
@@ -29,6 +32,9 @@ class Database:
         self.url = url
         self.subagents_enabled = False
         self.work_result_store: Any = None
+        self.protocol_storage_policy: Callable[[], Awaitable[WorkStorageRuntimeConfig]] | None = (
+            None
+        )
         self.subagent_concurrency = 2
         self.subagent_max_queued = 8
         self.subagent_max_active_per_root = 8

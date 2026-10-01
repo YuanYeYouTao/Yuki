@@ -5,6 +5,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
+from tests.unit.rollup_test_helpers import model_summary
 
 from qq_ai_bot.conversation.rollup.models import RollupCandidate, RollupPolicyConfig
 from qq_ai_bot.conversation.rollup.renderer import (
@@ -77,7 +78,9 @@ class RecordingModel:
         )
         if self.fail_at == len(self.sources):
             raise RuntimeError("model disconnected")
-        return ChatResponse(content="Continuity: #42; pending approval.", latency_seconds=0)
+        return ChatResponse(
+            content=model_summary(request, "Continuity: pending approval."), latency_seconds=0
+        )
 
 
 def candidate() -> RollupCandidate:
@@ -92,7 +95,7 @@ async def test_model_reads_every_source_chunk_before_returning_semantic_result()
     service = ConversationRollupService(models=model, config=policy, timeout_seconds=2)
     text, kind = await service.summarize_candidate(candidate())
     assert kind.value == "model"
-    assert text.startswith("Continuity")
+    assert '"continuity":"Continuity' in text
     assert "".join(model.sources) == serialize_compaction_source_events(candidate().events)
     assert len(model.sources) > 1
     assert all(len(source) <= 256 for source in model.sources)

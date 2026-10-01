@@ -39,8 +39,8 @@ POLICY_PARK_DELAY = timedelta(days=30)
 @dataclass(frozen=True, slots=True)
 class RollupPolicyConfig:
     context_token_budget: int = 96_000
-    trigger_ratio: float = 0.85
-    target_ratio: float = 0.50
+    trigger_ratio: float = 0.90
+    target_ratio: float = 0.60
     batch_max_events: int = 256
     batch_max_characters: int = 32_768
     summary_max_characters: int = 16384

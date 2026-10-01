@@ -64,7 +64,6 @@ def activation_details(control: WorkControl) -> dict[str, Any]:
 
 async def recover_failure(control: WorkControl, exc: BaseException) -> ActivationOutcome:
     assert control.current is not None
-    await control.refresh_effects()
     observed = await control.repository.get(control.current["id"])
     if observed is not None and observed["state"] == "cancelled":
         return _cancelled(control, observed)
@@ -91,6 +90,7 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
                 retryable=False,
                 diagnostics={**failure.diagnostics, "effect_receipt_recorded": True},
             )
+    await control.refresh_effects()
     assert control.current is not None
     verified = (
         control.ending == "completed"

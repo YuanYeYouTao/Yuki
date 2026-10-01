@@ -173,8 +173,10 @@ class Settings(BaseSettings):
     context_window_tokens: int = Field(default=96000, ge=8192)
     work_context_window_tokens: int = Field(default=128000, ge=8192)
     work_compaction_max_output_tokens: int = Field(default=8192, ge=1024)
-    conversation_rollup_trigger_ratio: float = Field(default=0.85, gt=0, lt=1)
-    conversation_rollup_target_ratio: float = Field(default=0.50, gt=0, lt=1)
+    work_compaction_trigger_ratio: float = Field(default=0.90, gt=0, lt=1)
+    work_compaction_target_ratio: float = Field(default=0.50, gt=0, lt=1)
+    conversation_rollup_trigger_ratio: float = Field(default=0.90, gt=0, lt=1)
+    conversation_rollup_target_ratio: float = Field(default=0.60, gt=0, lt=1)
     context_metadata_budget_ratio: float = Field(default=0.04, gt=0, lt=1)
 
     global_llm_concurrency: int = 4
@@ -379,6 +381,9 @@ class Settings(BaseSettings):
     semantic_participation_state_path: Path = Path("data/participation.sqlite3")
     semantic_participation_model_config_file: Path = Path("config/autonomous-model.json")
     runtime_work_enabled: bool = False
+    work_protocol_total_max_bytes: int = Field(default=2 * 1024**3, gt=0, le=2**63 - 1)
+    work_protocol_object_max_bytes: int = Field(default=64 * 1024**2, gt=0, le=2**63 - 1)
+    work_protocol_disk_reserve_bytes: int = Field(default=64 * 1024**2, gt=0, le=2**63 - 1)
     subagents_enabled: bool = False
     subagent_concurrency: int = Field(default=2, ge=1)
     subagent_max_queued: int = Field(default=8, ge=1)
@@ -733,9 +738,17 @@ class Settings(BaseSettings):
         return value
 
     @model_validator(mode="after")
+    def _validate_work_storage_settings(self) -> Self:
+        if self.work_protocol_object_max_bytes > self.work_protocol_total_max_bytes:
+            raise ValueError("work protocol object limit must not exceed total capacity")
+        return self
+
+    @model_validator(mode="after")
     def _validate_conversation_rollup_settings(self) -> Self:
         if self.conversation_rollup_target_ratio >= self.conversation_rollup_trigger_ratio:
             raise ValueError("rollup target ratio must be below trigger ratio")
+        if self.work_compaction_target_ratio >= self.work_compaction_trigger_ratio:
+            raise ValueError("work compaction target ratio must be below trigger ratio")
         if (
             self.conversation_rollup_lease_heartbeat_seconds
             > self.conversation_rollup_lease_seconds / 3

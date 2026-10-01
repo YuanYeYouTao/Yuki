@@ -196,6 +196,25 @@ async def test_source_change_never_lets_expired_owner_commit_recovery(database, 
 
 
 @pytest.mark.asyncio
+async def test_committed_cancellation_is_read_before_lease_guarded_effects(database, tmp_path):
+    control = await setup(database, tmp_path)
+    identity = control.current["id"]
+    await control.repository.cancel(control.lease.conversation_id)
+    assert not await control.repository.valid(control.lease)
+    outcome = await recover_failure(control, WorkConflict("work_journal_source_changed"))
+    assert outcome.reason is ExitReason.CANCELLED
+    assert outcome.work_id == identity
+    assert control.current["state"] == "cancelled"
+    async with database.sessions() as session:
+        assert (
+            await session.scalar(select(recovery.c.work_id).where(recovery.c.work_id == identity))
+        ) is None
+        assert (
+            await session.scalar(select(deliveries.c.id).where(deliveries.c.work_id == identity))
+        ) is None
+
+
+@pytest.mark.asyncio
 async def test_unthrottled_plan_recovers_without_model_and_preserves_replay_guards(
     database, tmp_path
 ):

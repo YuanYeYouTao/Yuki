@@ -4,7 +4,7 @@
 
 - 编制日期：2026-10-01。代码基线：`ffca08a1255ea8b4fff8d403c7467e7c43cc51ef`。
 - 开发分支：`codex/long-task-harness-compaction`。
-- 本文状态：代码审计与待实施方案。本文落盘不代表限制已取消、缺陷已修复、PR 已合并或已上线。
+- 本文状态：代码审计、实施设计与本轮交付清单。实现已进入开发分支，PR #216 待最新提交 CI、合并与部署；本文中的原代码证据保留其基线，生产状态以本轮上线记录为准。
 - 用户已同意取消累计步数等硬上限、增强长任务能力，允许子 Agent 协助；既有交付授权为新分支开发、PR、合并及按现行运维流程上线。
 - 测试按风险定向执行；终局之前不跑全量测试。普通群聊效果、正在回复时的 steer 和统一执行入口必须保留。
 - 用户说明反复压缩失败可能已经修复。本轮审查针对压缩逻辑及长期运行边界，不将历史现象认定为当前线上故障。
@@ -63,7 +63,7 @@ Google 官方为 Gemini 3.8 Flash 列出输入 1048576、输出 65536 token；�
 
 聊天与持续 Work 分别配置活动输入预算，262144 token 只是模拟候选上界，不是预定的最终默认值。初始值按 §2.5 的真实流量成本模型选择，仍受已核实的所选模型/代理输入上限约束。预算包含固定合同、工具、媒体、历史、摘要和本轮输入，不是仅给 history 的配额。普通群聊无需填满预算，也不改变发送风格。
 
-有效输入预算为所选连接输入上限、操作方活动预算及总窗口扣除输出预留（若该协议有共享总窗口约束）的最小值，再留估算误差与下一批输入增长余量。输入/输出独立限额的协议不能重复扣输出。以约 80%–85% 有效输入容量为整理高水位、约 55%–65% 为整理目标，形成可解释的余量；它们是可调政策，不是正确性不变量。新一批结果已预期超出余量时可以提前整理。
+有效输入预算为所选连接输入上限、操作方活动预算及总窗口扣除输出预留（若该协议有共享总窗口约束）的最小值，再留估算误差与下一批输入增长余量。输入/输出独立限额的协议不能重复扣输出。本次比例校准后，聊天 96k 采用 0.90/0.60，Work 128k 使用独立 0.90/0.50；约 1.8 估算/usage 比例下分别保留约 32k/35.6k usage，满足模拟 31,064 usage 的假设下限。Work 不沿用更高聊天 target，以减少无依据的热输入携带；新 Work 策略减少该模拟压缩次数，但并不保证所有比例费用更低。比例 2 的聊天目标仍低于该假设，不能声称全部流量保持已证明。它们是可调启动政策，不是正确性不变量；硬 Profile 容量先核验，新一批结果预计越界时可提前整理。
 
 摘要使用独立 token 预算，首版可从 4k–8k token 上限评估，按实际开放事项和来源规模生成；不能因为把窗口放大就把每轮摘要或 QQ 回复写得更长。计数优先使用可用的 tokenizer/Provider countTokens，后备估算按实际 usage 校准；中文、工具 schema、媒体和 opaque 协议项不得统一视为 chars/4。[Google token 计量](https://ai.google.dev/gemini-api/docs/tokens) 不为每次请求无条件增加一次远端计数调用，可对增量和稳定前缀缓存计算结果。
 
@@ -73,7 +73,9 @@ Google 官方为 Gemini 3.8 Flash 列出输入 1048576、输出 65536 token；�
 
 同一任务 chat_agent、各取最近 200 次：Gemini（10 月 1 日 10:46–20:13）168 次有完整缓存计量，按该子集加权 85.05%，全部已上报输入的已确认份额 72.69%；DeepSeek（9 月 28 日 18:46 至 9 月 29 日 03:16）199 次有完整计量，加权 97.23%。样本时期、协议和请求内容不同，是生产历史对照，不能冒充同 payload A/B 实验。
 
-抽查三轮真实 Gemini 执行的四对同链 Provider 请求：systemInstruction、完整 tools/toolConfig 与 generationConfig 一致，旧 contents 均为下一请求的完整前缀；诊断中 opaque 项按原哈希引用比较，没有输出私密正文。另抽查同一 Conversation 的三对新聊天轮，静态字段一致，历史分别有 107/108、109/110、111/112 项相同前缀，上一轮尾部变化。代码 `main_agent_turns.py:185–210` 对非 Responses 私有 continuation 使投影视图失效并在新轮重建；它是应审核的跨轮缓存/权限取舍，不能以同链稳定推导所有跨轮完全稳定。
+抽查三轮真实 Gemini 执行的四对同链 Provider 请求：systemInstruction、完整 tools/toolConfig 与 generationConfig 一致，旧 contents 均为下一请求的完整前缀；诊断中 opaque 项按原哈希引用比较，没有输出私密正文。另抽查同一 Conversation 的三对新聊天轮，静态字段一致，历史分别有 107/108、109/110、111/112 项相同前缀，上一轮尾部变化。原实现遇到非 Responses 私有 continuation 即使普通历史投影视图整体失效，下轮重渲染早先已提交的公开输入，这是本轮确认并修复的不必要跨轮重建路径。
+
+本地修复在 native tail 边界停止扩展普通投影，保留之前已提交且当前 read scope 仍认可的普通输入前缀；签名、思维和工具调用/回执仍留在原 Work journal 和原 provider chain，不写入公共群史，也不假装为公开摘要。`test_gemini_history_prefix.py` 经真实入口、Gemini HTTP serializer 和 SQLite 重开，以七次请求覆盖读工具、发送回执、同 actor 下一轮和换 actor：旧输入 parts 逐字保留，新的公开事件与当前动态资料追加，system/tools/toolConfig/generationConfig 一致，旧 signature 不进入新普通轮，换 actor 不继承旧动态 envelope。容量、图片、generation/来源编辑、合同/Profile/权限及当前 read scope 缩窄仍是必要边界；此项本地回归不能替代上线后请求序列和缓存计量验收。
 
 实施与验收要求：
 
@@ -86,6 +88,8 @@ Google 官方为 Gemini 3.8 Flash 列出输入 1048576、输出 65536 token；�
 Gemini 隐式缓存由上游决定，官方明确无节省保证；显式缓存属于独立能力，当前代理未核实支持，本轮不凭猜测启用，也不靠额外保温请求刷命中率。[Google 缓存合同](https://ai.google.dev/gemini-api/docs/generate-content/caching)
 
 ### 2.4 Antigravity Manager 代理侧核查（本轮必做）
+
+只读核查证据见 [代理逐跳审计（2026-10-01）](../operations/provider-compaction-audit-2026-10-01.md)。真实同一 turn 的三请求已关联至代理 UUID 与最终发送点，并逐项核对 payload/usage；报告另列脱敏、原始 Google wire usage、实际容量认证和上线后自然缓存观察的证据边界。`countTokens` 可达但当前实测只数 contents，列表 `inputTokenLimit` 不能当完整实际请求容量认证；这些能力边界不冒充已完成在线容量/缓存验收。
 
 用户已指定实施期间读取代理服务器数据，不能只凭 Yuki 侧日志归因缓存差距。2026-10-01 已从本机以 `ssh antigravity-server` 只读连通，当前容器为 `antigravity-manager`、镜像标签 `antigravity-manager:gemini-request-correlation-v4.8.4`，同机有 `mihomo-host`；当前挂载为宿主 `/opt/antigravity-manager/data` → 容器 `/root/.antigravity_tools`。这些是入口快照，采集前再次核对实际镜像 digest、容器、挂载与服务配置。历史补丁/回滚记录见 [供应商切换记录](../operations/provider-cutover-worklist-2026-09-29.md)；不照搬历史 schema、版本或账户状态，也不重复引入已修复的缓存缺失/显式零混同。
 
@@ -106,6 +110,36 @@ Gemini 隐式缓存由上游决定，官方明确无节省保证；显式缓存�
 优化受完整当前输入、近期原文、目标/约束/未决事实、压缩次数与延迟约束限制；最短窗口的最低费用不是可用方案。报告给参数候选、数据范围、假设、可复现脚本、成本差异及推荐初始值，无法从数据识别的最优值明确说明。AGM 订阅/代理真实账单与官方 API 公开参考价分开，不能冒称已验证实际费用。
 
 窗口、触发/目标水位和摘要输出预算接现有热配置目录及 WebUI；聊天和 Work 独立配置。热更改作用于下一次准备的请求/activation，已经提交的工具、协议前缀和 source candidate 不被改写。模型输入/输出及联合窗口数字上限另放连接 Profile，容量核验不能被政策上调绕开；跨作用域水位关系在配置写入前验证。
+聊天/群史使用 `context.compaction_trigger_ratio`/`context.compaction_target_ratio`；Work 使用
+`context.work_compaction_trigger_ratio`/`context.work_compaction_target_ratio`。每对独立校验 user/group/global
+继承后的 target < trigger，修改一对不改变另一对，也不改已持久候选或效果。
+
+### 本轮动态资料精简补充
+
+按数字生命研究所 Yuki 的真实建议（内部事件 78944、78945、78947、78948），每轮无活动 Work
+时的最近工作投影只保留内部 work_id、目标摘录、state、model_requests/tool_calls/sent_messages
+简略统计及 creator_display_name。创建/更新时间、revision、creator_person_id、conversation_id、
+generation、来源等审计详情仍在后端和既有 get/list 目录中，不删除业务身份或授权链。
+活动 Work 的原目标、恢复身份和执行状态保持完整；已提交 Provider 前缀不重写。
+
+可续接目录同样精简为内部 ID、状态、目标摘录、创建者显示名和是否有活动等待，至多 16 项。
+目标最多 160 字符、显示名最多 64 字符，`goal_complete=false` 标识不完整摘录；摘录不是目标
+覆盖或新的恢复授权。不预载完整等待条件，既有 get 按需读取完整 goal 和 wait，list 保留原
+目录详情。查询使用有界 SQL 列投影和活动等待 EXISTS，避免先全读16项大目标和等待JSON再裁。
+原活动 Work 的完整目标与恢复 anchor 不受这个显示预算影响。
+
+检查所有当前动态块后，删除人物块里与可信 `context.relationship` 重复的关系数值；保留阶段和
+风格，详情通过 `get_relationship`。时间、权限、投递、当前媒体、事件绑定引用和短期状态保留；
+ShortState 的整体 512 UTF-8 字节资源限及 CAS revision 继续生效。文件/终端/自动化总目录和记忆
+全文本来没有每轮载入，不新增意图分类或另一套状态装配。插件片段按已有注册和资源预算处理，
+没有证据证明片段冗余时不删除。
+
+采用实际序列化数据和公共 token 估算器衡量，不能沿用模型口头估值。代表样例（短中文目标、
+真实目录字段形状）最近 Work 原目录 536 字符/212 估算 token。短目标优化只是小幅节省，核心
+是让16项大目标目录保持有界；数字仅为合成字段样例，生产目标长度和语言分布另计。8192 字符
+完整中文目标仍会占明显容量，不能为节省显示费用偷偷截断当前 Work 的约束。少量回归验证原
+稳定前缀不变、终态仍可查询、16项完整大目标及等待按需可回查、动态目录有界、活动目标不被
+截断和关系只有一个常驻风格块。
 
 ## 3. 当前代码审计
 
@@ -176,6 +210,12 @@ Claude API 的服务端 compaction 与按规则清理工具/思考块是两类�
 
 任务资料包含当前目标、用户明确追加限制/交付要求及来源 input/event ID。输入日志是原要求的来源；小型资料为其可追溯投影，不再独立复制每项事实。必要的版本更新复用原 Work checkpoint 子路径/CAS，避免与 journal/等待字段整份覆盖；不增加 Goal 表、通用 stages 状态机或每步思考持久化。模型计划与下一步建议是可更新、可重建的上下文，不是完成门禁。自由摘要不得覆盖用户要求、生命周期或原回执；结构化资料也不能自动证明语义完备。
 
+本轮实现：`WorkSession` 在原 journal progress 保存 `task_material/covered_input_id`，摘要源只读取水位后的已 staged/consumed 真人输入；原 `runtime_work_inputs` 全部正文不改写，普通续跑仍追加原输入。当前资料保存原始 immutable goal/anchor、有效约束及 input 引用、明确更正记录和最新两份完整原文。辅助输出使用现有 `json_schema` 格式与严格本地 schema：派生事实、未决问题、失败/未知、产物和下一步均有快照内来源引用，逐项说明新输入属于约束、更正或普通上下文；已有有效约束须保留原 text/refs，更正须引用新增 input 且保留改前资料。普通进度/继续输入不自动变成累计永久约束。候选只带一份本地任务资料；执行状态仍从真实 effect/run/回执读取，摘要不能解除未决围栏。结构/引用/遗漏或最终存储失败保留原 paired checkpoint 与 progress，Profile/合同变化在来源未变时保留原资料，来源变化不迁移旧资料；旧自由文本 checkpoint 的恢复仍兼容，新辅助输出不接受自由文本兜底。
+
+资料整理使用有界分页：每页新增输入最多 16 条且完整原文总计 64 KiB，未读的下一条留给后页，不截断单条。首页发送原 records/effects，后页只带原 goal、上一页生成的资料与派生观察、该页新增原文；独立辅助 chain 逐页计原模型预算，全部成功后才一次提交新 paired/progress。每页验证后，在原 paired journal 的非权威 `progress.compaction_staging` 保存下一页资料/水位、冻结 input 上界及原 chain/sequence、canonical transcript 指纹、contract/Profile、source revision/generation、privacy generation 与 source scope。partial 不进入主模型的生效业务上下文；原 activation 公平 quantum 不变，让出或重启后只在同源标记匹配时续下一页，不重复支付已验证页面。末页也先保存已验证候选，最终提交失败可继续原候选；成功换链时一次启用完整资料并清除 staging。真实边界变化丢弃 partial，原事实仍按原 ID 恢复；非法或失败页面不覆盖主 transcript/生效资料，已成功的 partial 和已发生的模型计量仍保留。最新两份原文及最多 32 项有效约束、最近 16 项更正共同受 64 KiB 资料预算约束，每条派生事实正文上限 1024 字符、最多八个原引用；摘要本身与最终完整请求另行计量。真实必要资料或单条输入超容量时明确暂停，不截断后冒充覆盖完整来源；页大小不是任务寿命。schema/引用只能验证所供来源与结构，不能证明模型提取约束或更正的语义完整性。定向回归覆盖 20 次长 steer/压缩与三次重启、34 次仅上下文追加无累计寿命门槛、17/40 条短 steer 一次分页整理和第二页失败后重启续页、普通及 Gemini opaque checkpoint 在小 quantum 让出后重启仅支付剩余页面、原负约束、明确更正与 Profile 边界，以及坏引用、漏约束/输入、虚构生命周期字段和保存失败不覆盖。
+
+staging 与最终候选在事务外完成 manifest/文件准备后，原短 writer 在发布 refs/journal 前再次核对冻结 source revision/generation 与 privacy generation，包括后台 child lease。准备期间发生真实边界变化会拒绝发布，保留原 paired/已提交 staging 与实际页预算；回归覆盖真实 child 的 stage/final × source/privacy 四种竞态及原链恢复。
+
 整体 JSON journal 存储作为本轮替换目标：数据库检查点保留原 phase、chain、logical sequence、request/call/effect key、source/contract 版本、输入消费水位、必要 pending calls 和稳定协议对象引用；较大的实际协议内容按不可变段/对象保存于现有文件存储，保持字段顺序、opaque 原貌及 call/result 配对。新对象 ID 不能代替原 `chain_id + sequence + call_id` 执行键。对象化覆盖 dispatched、response、paired 各提交边界，不只保存已配对回合；写增量对象、短 CAS 发布可恢复视图。正常模型请求仍发送符合其协议的活动窗口，不承诺 Provider 原生增量传输。对象发布失败不切换恢复点，读取有完整性校验，文件 I/O 不进入写事务。存储配额与引用清理由原 Work 所有者决定，不再以 64 MiB 全局媒体压力要求其他 Work 写摘要。
 
 压缩流程：
@@ -197,6 +237,7 @@ Claude API 的服务端 compaction 与按规则清理工具/思考块是两类�
 2. 来源投影与 raw history 共用事件事实口径：原内部 event ID、Person/author、方向、时间、回复目标、提及以及正文/必要派生内容。所有聊天和外部内容仍是 untrusted data；不得把平台 ID、昵称或模型总结当业务身份。
 3. 超大原事件分片读取/总结并在完整来源就绪后推进事件级 semantic coverage；片段边界与来源指纹可恢复。若暂不能完整处理，只允许显式不完整 fallback，不能把未读尾部覆盖掉。
 4. 用连续性叙述与有界开放事项/关键更正/来源引用表达群史，避免只有一条无限递归自由摘要。开放事项是派生视图，不是新 Memory 或 Work；原始账本始终可按内部引用有界回查。模型质量不可能由形式校验保证，但重要来源不能在输入投影时被确定性丢弃。
+   本地实现使用 `conversation_rollup_v1` JSON：连续叙述、内部来源、最多各 16 项开放事项/更正（单项 1024 字符，全局 128 个不同引用）。更正携带新来源和已知旧来源，提示词要求更新叙述/已解决事项。新输出校验结构、引用来源集合与总容量，提交前核验事件真实存在及当前 Conversation/generation/覆盖归属，原 fingerprint/hold CAS 继续负责完整来源。历史自由文本仍以来源未验证标记读取，在下次成功压缩替换；不猜测语义或历史引用。递归更正回归验证结构和 carry 链，不代替真实 LLM 群史质量或上线验收。
 5. 主模型可见 envelope 区分 semantic/emergency，说明来源范围、缺失及回查方式；emergency 仍不晋升为 semantic。不能让截断尾部宣称完整历史已总结。
 6. 候选读取、尾部计量和提交复核改为有索引的有界区间/分页及 revision/CAS；模型、文件处理和历史扫描在写事务外。不得用过小 LIMIT 放弃连续性证明。
 7. 前台保留现有 required 调度优先级与有界等待。记录等待原因、批数、容量变化和错误类别，不能把所有几十秒等待归为 Provider 慢；不新建压缩专用 runtime。

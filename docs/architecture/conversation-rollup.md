@@ -37,7 +37,7 @@ raw tail = (effective_coverage, snapshot.last_event_id]
 checkpoint 与 raw tail 不能重叠或留洞。当前触发事件只在 current message 出现一次，不得同时
 进入历史。duplicate/suppressed canonical event 不参与候选或 Prompt。
 
-后台模型只返回纯文本，不开放工具。旧摘要、新事件、外部事件和 visual observation 都放在明确的
+后台模型返回版本化 JSON 摘要，不开放工具。旧摘要、新事件、外部事件和 visual observation 都放在明确的
 不可信 input envelope。模型 timeout、空响应、超长或质量失败可以写 emergency overlay；overlay
 不能覆盖或伪装语义 checkpoint。
 
@@ -53,7 +53,7 @@ checkpoint 与 raw tail 不能重叠或留洞。当前触发事件只在 current
 后台每次检测信号、锁定候选时从 canonical Conversation 的固定 primary alias 解析相应 scope，
 再读取热配置；候选携带不可变 policy，模型执行和结果校验使用同一快照，不共享会话可变 policy。
 
-只保留一套容量策略：默认达到活动窗口 85% 时启动后台压缩，目标保留最近约 50% 的可见历史。
+只保留一套容量策略：默认达到活动窗口 90% 时启动后台压缩，目标保留最近约 60% 的可见历史。
 删除事件数量寿命上限、覆盖前后两套 near/admit/target 分支。大量短消息可以超过 512 条继续保留；
 后台信号不能仅因未覆盖 keeper 总数或外部通知风暴启动模型。前台最终 fit 使用实际分组消息，
 连同摘要和当前消息计算 token。后台按逐条可见消息做保守容量估算，查询按内部事件 ID 分页，
@@ -74,6 +74,28 @@ Main Turn 的可重建投影缓存使用独立的物理资源上限：单视图�
 
 压缩来源保留内部 event/person ID、说话人、direction、reply_to_event_id、事件时间、提及及
 派生视觉/语音内容。压缩提示词要求保留决定、否定约束、最新纠正、开放问题和可检索引用。
+新语义摘要使用 `conversation_rollup_v1`：`continuity` 连续叙述、`source_event_ids` 内部来源、
+`open_issues` 开放事项及 `corrections` 最新更正。开放事项、更正各最多 16 项，单项正文最多
+1024 字符，全摘要最多 128 个不同内部事件引用，仍受候选热配置的总字符/输出 token 限制。
+每项携带来源；更正另有 `supersedes_event_ids`，明确旧说法的来源（未知时留空）。提示词要求
+更新已解决事项、让新更正替换连续叙述中的旧说法，不能将它们无限累积为原始事实日志。
+这些都是可重建派生视图，不新建 Memory、Work 或独立事项表。
+
+模型输出需通过 schema、条数、字段类型、引用与总容量检查。引用只能来自本批事件或原结构
+摘要携带的内部引用；提交前按有界主键集合核验引用仍属于当前 Conversation/generation 的
+有效覆盖范围。该查证与 JSON 校验发生在首次 DML 前，并沿用原来源 fingerprint、lease、
+generation 和 hold CAS。引用存在不证明摘要忠实，更不替代完整来源覆盖校验。
+辅助请求同时使用既有 `response_format=json_schema`、`structured_output=True`，不添加结果工具。
+Gemini 适配器转换为 `generationConfig.responseMimeType=application/json` 与 `responseJsonSchema`；
+Responses/Chat/Claude 使用各自既有 schema 格式。有效 Profile 必须支持 structured output，
+不支持时由既有执行器明确拒绝，不能改能力声明或隐式换路由。Provider 的结构约束不替代
+本地有界/合法来源校验；代理源码保留该格式也不等于实际上游已验收其支持。
+2026-10-01 的一次无 QQ、无工具微小能力请求通过当前 Gemini 3.8/AGM 路由接受
+`responseMimeType`/`responseJsonSchema` 并返回可校验 JSON；它只确认结构输出能力，
+不构成群史摘要质量、长窗口容量或缓存改善验收。
+历史自由文本 checkpoint 继续作为标注“来源引用未验证”的不可信叙述读取；下一次成功
+模型压缩才写结构摘要，不猜测历史引用，不重置 coverage。非法新结构或引用不提交语义水位。
+
 超大单条来源按完整字符串分块，全部块成功后才能提交连续语义覆盖；任意块失败都不提交。
 不增加普通事件分片持久状态，也不截头后宣称覆盖整个事件。每块的输入包含前块所得摘要，
 以完成当前批次；摘要质量仍需针对真实长会话验收，完整读取不等于无损摘要。

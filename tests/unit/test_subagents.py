@@ -123,7 +123,7 @@ async def test_worker_independent_lease_messages_and_dormant_resume(database, tm
     assert child_lease and await repo.valid(parent_lease)
     with pytest.raises(ValueError, match="recursive"):
         await workers.start(child_lease, identity, "recursive", {"goal": "nested"})
-    for index in range(3):
+    for index in range(workers.max_active_per_root - 1):
         await workers.start(
             parent_lease,
             parent["id"],
@@ -352,13 +352,24 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
     elif scenario == "question":
         leading = [("subagent_message", {"text": "Which color?", "ask": True})]
     elif scenario == "compaction":
-        from unittest.mock import AsyncMock
-
+        from qq_ai_bot.domain.messages import ChatMessage
         from qq_ai_bot.runtime.work_session import WorkSession
 
-        monkeypatch.setattr(
-            WorkSession, "needs_compaction", AsyncMock(side_effect=[True] + [False] * 8)
-        )
+        original_restore = WorkSession.restore
+        grown = False
+
+        async def restore_with_history(session, *args, **kwargs):
+            nonlocal grown
+            transcript = await original_restore(session, *args, **kwargs)
+            if session.control.current["id"] == identity and not grown:
+                grown = True
+                for _ in range(20):
+                    transcript.append(ChatMessage("assistant", "Prior evidence. " * 1100))
+                for _ in range(16):
+                    transcript.append(ChatMessage("assistant", "Recent completed check."))
+            return transcript
+
+        monkeypatch.setattr(WorkSession, "restore", restore_with_history)
         leading = [(None, None)]
     elif scenario == "business":
         leading = [("batch", None)]
@@ -366,6 +377,10 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
 
     def respond(request):
         name, args = next(steps)
+        if scenario == "compaction" and not provider.requests[:-1]:
+            from tests.support.work_compaction import summary_json
+
+            return ChatResponse(summary_json(request.messages[-1].content), 0)
         if name == "batch":
             return ChatResponse(
                 "",
@@ -467,7 +482,9 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
         )
         await executor.run(identity)
     assert (await repo.get(identity))["state"] == "completed"
-    first_tools = provider.requests[0].tools
+    main_requests = provider.requests[1:] if scenario == "compaction" else provider.requests
+    main_wire = wire[1:] if scenario == "compaction" else wire
+    first_tools = main_requests[0].tools
     names = {t.name for t in first_tools}
     from qq_ai_bot.runtime.subagent_tools import WORKER_REQUIRED_NAMES
 
@@ -478,23 +495,24 @@ async def test_worker_scheduler_uses_fixed_tools_and_recovers_history(
     await executor.run(identity)
     assert (await repo.get(identity))["state"] == "completed"
     assert len(provider.requests) == 4 + len(leading)
-    assert all(r.tools == first_tools for r in provider.requests)
+    assert all(r.tools == first_tools for r in main_requests)
     before, after = provider.requests[1], provider.requests[2]
     assert after.messages[: len(before.messages)] == before.messages
     field = "input" if protocol == "responses" else "messages"
     assert len(wire) == 4 + len(leading)
-    assert all(payload["tools"] == wire[0]["tools"] for payload in wire)
+    assert all(payload["tools"] == main_wire[0]["tools"] for payload in main_wire)
     if native:
-        assert any(t["type"] == "web_search" for t in wire[0]["tools"])
+        assert any(t["type"] == "web_search" for t in main_wire[0]["tools"])
     compared = wire[1:] if scenario == "compaction" else wire
     for previous, following in pairwise(compared):
         assert following[field][: len(previous[field])] == previous[field]
     assert (await repo.get(identity))["model_requests"] == len(wire)
     if scenario == "compaction":
         assert provider.requests[0].request_chain_id != provider.requests[1].request_chain_id
-        assert wire[0]["tools"] == wire[1]["tools"]
+        assert not provider.requests[0].tools and not provider.requests[0].native_tools
+        assert not wire[0].get("tools")
         assert "explicit_context_compaction" in json.dumps(wire[1])
-        assert provider.requests[0].messages[:2] == provider.requests[1].messages[:2]
+        assert "你是原工作的上下文摘要器" in provider.requests[0].messages[0].content
     await client.aclose()
     await repo.release(lease)
 
@@ -536,8 +554,12 @@ async def test_cancel_fences_media_recovery_and_privacy_cleanup(database, tmp_pa
         payload = await db.scalar(
             select(journal.c.payload_json).where(journal.c.work_id == identity)
         )
-        assert "data:image" not in payload and "$work_media" in payload
-        assert len((await db.execute(select(media))).all()) == 1
+        assert "data:image" not in payload
+        assert len(json.loads(payload)["file_media"]) == 1
+        assert "$work_media" in json.dumps(
+            await session.journal.objects.hydrate(json.loads(payload))
+        )
+        assert not (await db.execute(select(media))).all()
     recovered = WorkSession(control, "fixed")
     restored = await recovered.restore(
         TurnTranscript((ChatMessage("user", "changed dynamic data"),))
@@ -545,6 +567,7 @@ async def test_cancel_fences_media_recovery_and_privacy_cleanup(database, tmp_pa
     assert restored.request() == transcript.request()
     from qq_ai_bot.runtime.work_repository import WorkCapacityError
 
+    recovered.journal.objects.max_total_bytes = 1
     restored.append(ChatMessage("user", "x" * (4 * 1024 * 1024)))
     with pytest.raises(WorkCapacityError):
         await recovered.save("paired")

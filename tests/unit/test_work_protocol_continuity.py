@@ -149,7 +149,9 @@ async def test_compaction_keeps_explicit_task_after_restart(database, tmp_path, 
         restored.append(ChatMessage("assistant", "Completed public investigation notes. " * 200))
     for _ in range(16):
         restored.append(ChatMessage("assistant", "Recent completed check."))
-    compacted = await resumed.compact("Completed checks, pending execution remains")
+    from tests.support.work_compaction import session_summary
+
+    compacted = await resumed.compact(await session_summary(resumed))
     assert compacted.chain_id != restored.chain_id
     assert compacted.request().messages[:2] == (fresh_system, task)
     assert len(compacted.request().messages) == 3
@@ -163,7 +165,7 @@ async def test_compaction_keeps_explicit_task_after_restart(database, tmp_path, 
         again.transcript.append(ChatMessage("assistant", "Further completed checks. " * 200))
     for _ in range(16):
         again.transcript.append(ChatMessage("assistant", "Recent completed check."))
-    twice = await again.compact("A second bounded summary")
+    twice = await again.compact(await session_summary(again))
     assert twice.request().messages[:2] == (fresh_system, task)
     await control.repository.release(control.lease)
 

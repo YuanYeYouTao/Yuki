@@ -164,16 +164,16 @@ class MainAgentTurnService:
             fragments = prepared.fragments.append_current(
                 context.current_event_id, composition.messages[-1]
             )
-            representation_retired = False
+            projection_closed = False
 
             async def commit_projection() -> None:
-                nonlocal representation_retired
+                nonlocal projection_closed
                 sequence = dispatch_request()
-                if sequence is None or representation_retired:
+                if sequence is None or projection_closed:
                     return
                 if sequence.messages[: len(composition.messages)] != composition.messages:
                     await prepared.repository.invalidate_view(view_key, reason="protocol_changed")
-                    representation_retired = True
+                    projection_closed = True
                     return
                 try:
                     submitted = fragments.append_protocol(
@@ -182,8 +182,12 @@ class MainAgentTurnService:
                     if sequence.continuation is not None:
                         if sequence.continuation.protocol != "responses":
                             # Signed native reasoning stays in the private Work journal.
-                            # A new conversation turn establishes its own projection boundary.
-                            raise ProjectionConflict("opaque native checkpoint requires a boundary")
+                            # Stop extending this public projection at that boundary,
+                            # while retaining its already submitted, scope-approved
+                            # input prefix. Retiring the whole view would needlessly
+                            # rerender those old events on the next ordinary turn.
+                            projection_closed = True
+                            return
                         provider = {
                             "deepseek": DeepSeekResponsesProvider,
                             "openai": OpenAIResponsesProvider,
@@ -206,13 +210,13 @@ class MainAgentTurnService:
                     # Hidden reasoning and opaque continuation stay turn-local. The
                     # next turn must not claim this discarded sequence's epoch.
                     await prepared.repository.invalidate_view(view_key, reason="protocol_changed")
-                    representation_retired = True
+                    projection_closed = True
                     return
                 try:
                     await prepared.commit(submitted)
                 except ProjectionCapacityError:
                     await prepared.repository.invalidate_view(view_key, reason="capacity")
-                    representation_retired = True
+                    projection_closed = True
 
             return replace(composition, commit_projection=commit_projection)
 
@@ -259,6 +263,7 @@ class MainAgentTurnService:
                         + json.dumps(
                             await control.runtime_state(),
                             ensure_ascii=False,
+                            separators=(",", ":"),
                         )
                     ),
                 ),

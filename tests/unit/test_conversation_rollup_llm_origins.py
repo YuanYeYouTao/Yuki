@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import cast
 
 import pytest
+from tests.unit.rollup_test_helpers import model_summary
 
 from qq_ai_bot.conversation.rollup.models import (
     RollupCandidate,
@@ -42,7 +43,7 @@ class RecordingExecutor:
         del task, priority
         self.calls += 1
         self.requests.append(request)
-        return ChatResponse(content="model summary", latency_seconds=0)
+        return ChatResponse(content=model_summary(request, "model summary"), latency_seconds=0)
 
 
 def _event(event_id: int, *, origin: str) -> EventRecord:

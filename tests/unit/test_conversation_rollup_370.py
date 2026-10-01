@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from tests.conftest import make_settings
+from tests.unit.rollup_test_helpers import candidate_summary
 
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationRollupEmergencyOverlayModel as ConversationRollupEmergencyOverlayModel,
@@ -229,7 +230,9 @@ class _HangingModels:
 
 class _SuccessModels:
     async def execute(self, *_args: object, **_kwargs: object) -> ChatResponse:
-        return ChatResponse(content="semantic catch-up summary", latency_seconds=0)
+        from tests.unit.rollup_test_helpers import model_summary
+
+        return ChatResponse(content=model_summary(_args[1]), latency_seconds=0)
 
 
 def _background_worker(
@@ -426,7 +429,7 @@ async def _assert_worker_model_failure_overlay(
     assert caught.rewrite_pending is False
     assert caught.rollup is not None
     assert caught.rollup.summary_kind is RollupKind.MODEL
-    assert caught.rollup.summary_text == "semantic catch-up summary"
+    assert '"continuity":"semantic catch-up summary"' in caught.rollup.summary_text
     assert caught.effective_coverage == caught.rollup.covered_through_event_id
     assert success.metrics.coverage_commits == 1
     assert success.metrics.extractive_fallbacks == 0
@@ -500,7 +503,7 @@ async def test_visual_projection_change_rejects_locked_candidate(database: Datab
         await repository.commit_candidate(
             claim,
             candidate,
-            summary_text="stale summary",
+            summary_text=candidate_summary(candidate, "stale summary"),
             summary_kind=RollupKind.MODEL,
         )
 
@@ -641,7 +644,7 @@ async def test_foreground_claim_prevents_background_result_overwrite(database: D
         await repository.commit_candidate(
             background,
             stale_candidate,
-            summary_text="stale background",
+            summary_text=candidate_summary(stale_candidate, "stale background"),
             summary_kind=RollupKind.MODEL,
         )
 
@@ -1339,7 +1342,9 @@ class _CountingSuccessModels:
 
     async def execute(self, *_args: object, **_kwargs: object) -> ChatResponse:
         self.calls += 1
-        return ChatResponse(content="semantic catch-up summary", latency_seconds=0)
+        from tests.unit.rollup_test_helpers import model_summary
+
+        return ChatResponse(content=model_summary(_args[1]), latency_seconds=0)
 
 
 def _aware(value: datetime) -> datetime:
@@ -1432,7 +1437,7 @@ async def _assert_policy_park_then_mixed_catchup(database: Database, *, v2: bool
     assert caught.rewrite_pending is False
     assert caught.rollup is not None
     assert caught.rollup.summary_kind is RollupKind.MODEL
-    assert caught.rollup.summary_text == "semantic catch-up summary"
+    assert '"continuity":"semantic catch-up summary"' in caught.rollup.summary_text
     assert caught.effective_coverage == caught.rollup.covered_through_event_id
 
 
@@ -1562,7 +1567,7 @@ async def _assert_model_failure_backoff(database: Database, *, v2: bool) -> None
     assert caught.overlay is None
     assert caught.rollup is not None
     assert caught.rollup.summary_kind is RollupKind.MODEL
-    assert caught.rollup.summary_text == "semantic catch-up summary"
+    assert '"continuity":"semantic catch-up summary"' in caught.rollup.summary_text
 
 
 async def _assert_model_failure_keeps_backoff_when_signal_arrives(
@@ -1696,7 +1701,7 @@ async def _assert_stale_reset_rejects(database: Database, *, v2: bool) -> None:
         await repository.commit_candidate(
             claim,
             candidate,
-            summary_text="stale semantic",
+            summary_text=candidate_summary(candidate, "stale semantic"),
             summary_kind=RollupKind.MODEL,
         )
     snapshot = await repository.load_prompt_snapshot(scope)

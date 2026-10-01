@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
+from qq_ai_bot.admin.models import WorkStorageRuntimeConfig
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.rollup.metrics import ConversationRollupMetrics
@@ -107,6 +108,12 @@ class PersistenceModule:
             settings=settings,
             database=database,
         )
+
+        async def protocol_storage_policy() -> WorkStorageRuntimeConfig:
+            # Physical capacity has one owner: the deployment, never a chat scope.
+            return (await runtime_config.snapshot()).work_storage
+
+        database.protocol_storage_policy = protocol_storage_policy
         initial = {
             "initial_affection": settings.relationship_initial_affection,
             "initial_trust": settings.relationship_initial_trust,

@@ -14,6 +14,27 @@ from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, scope
 
 
+async def _persisted_tool_receipt(
+    control, key, name, result, *, arguments="{}", side_effecting=True, owner=None
+):
+    from qq_ai_bot.capabilities.results import normalize_legacy_result
+    from qq_ai_bot.runtime.effect_outcomes import execution_evidence
+
+    owner = owner or control.current["id"]
+    outcome = normalize_legacy_result(result, provider_id="core", tool_name=name)
+    assert await control.repository.prepare_effect(control.lease, owner, key, "tool")
+    await control.repository.record_effect(
+        key,
+        "accepted",
+        {
+            "result": result,
+            "outcome": execution_evidence(
+                outcome, tool=name, side_effecting=side_effecting, arguments=arguments
+            ),
+        },
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["renew", "transition"])
 async def test_lease_expiring_during_writer_wait_is_not_revived(database, tmp_path, operation):
@@ -184,6 +205,34 @@ async def test_work_control_has_no_progress_tool_and_preserves_checkpoint(databa
         side_effecting=False,
     )
     assert control.known_effects[-1]["side_effecting"] is True
+    # The display cache cannot prove a mutation. Only the original persisted
+    # invocation and its resolved run receipt permit state-change completion.
+    assert not json.loads(await control.execute("task_control", {"action": "complete"}, "c3"))["ok"]
+    assert await repository.prepare_effect(
+        lease,
+        identity,
+        "verified-launch",
+        "tool",
+        outcome={"tool": "terminal_exec", "side_effecting": True},
+    )
+    await repository.record_effect(
+        "verified-launch",
+        "accepted",
+        {"result": json.dumps({"ok": True, "data": {"run_id": "verified-run", "pending": True}})},
+    )
+    await repository.resolve_run_effects(
+        lease,
+        identity,
+        "verified-run",
+        {
+            "tool": "get_code_run",
+            "side_effecting": False,
+            "run_id": "verified-run",
+            "pending": False,
+            "uncertain": False,
+            "ok": True,
+        },
+    )
     assert json.loads(await control.execute("task_control", {"action": "complete"}, "c3"))["ok"]
     assert (await repository.get(identity))["state"] == "running"
     await repository.enqueue(
@@ -856,12 +905,15 @@ async def test_artifact_completion_requires_verified_delivery(database, tmp_path
     )["ok"]
     finish = {"action": "complete", "artifact_ids": ["png"]}
     assert not json.loads(await control.execute("task_control", finish, "missing"))["ok"]
-    control.observe_result("workspace_publish", '{"ok":true,"data":{"artifact_id":"png"}}', True)
+    await _persisted_tool_receipt(
+        control, "publish-original", "workspace_publish", '{"ok":true,"data":{"artifact_id":"png"}}'
+    )
     assert not json.loads(await control.execute("task_control", finish, "unsent"))["ok"]
-    control.observe_result(
+    await _persisted_tool_receipt(
+        control,
+        "send-original",
         "send_message",
         '{"ok":true,"data":{"status":"succeeded"}}',
-        True,
         arguments='{"artifact_id":"png"}',
     )
     assert json.loads(await control.execute("task_control", finish, "sent"))["ok"]
@@ -940,7 +992,12 @@ async def test_new_epoch_retains_execution_evidence_and_budget(database, tmp_pat
     await first.restore(TurnTranscript((brief,)), compaction_brief=brief)
     await first.save("paired")
     await repo.checkpoint(lease, control.current["id"], None, models=3, tools=2, active_seconds=61)
-    control.known_effects = [{"run_id": "original", "pending": True, "ok": True}]
+    await _persisted_tool_receipt(
+        control,
+        "original-pending",
+        "terminal_exec",
+        '{"ok":true,"data":{"run_id":"original","pending":true}}',
+    )
     await first.save("paired")
     control.current = await repo.get(control.current["id"])
     second = WorkSession(control, "new-contract")
@@ -1145,12 +1202,15 @@ async def test_completed_receipts_reconcile_pending_evidence_without_model_poll(
 
     async with database.sessions() as session:
         event_id = await session.scalar(select(ChatEventModel.id))
+    foreign = await repo.accept(
+        lease, source_key="foreign-parent", source={}, goal="another parent"
+    )
     runs = [str(uuid4()) for _ in range(3)]
     for index, run_id in enumerate(runs):
         source = {
             "conversation_id": lease.conversation_id,
             "generation": lease.generation,
-            "work_id": control.current["id"] if index < 2 else "another-parent",
+            "work_id": control.current["id"] if index < 2 else foreign["id"],
             "origin": "user_message",
             "actor_user_id": "10001",
             "trigger_event_id": event_id,
@@ -1168,18 +1228,12 @@ async def test_completed_receipts_reconcile_pending_evidence_without_model_poll(
                 },
             }
         )
-        control.observe_result(
+        await _persisted_tool_receipt(
+            control,
+            f"original-launch-{index}",
             "terminal_exec",
-            json.dumps(
-                {
-                    "ok": True,
-                    "data": {
-                        "run_id": run_id,
-                        "pending": True,
-                    },
-                }
-            ),
-            True,
+            json.dumps({"ok": True, "data": {"run_id": run_id, "pending": True}}),
+            owner=control.current["id"] if index < 2 else foreign["id"],
         )
     # Forged message text cannot clear another parent's execution evidence.
     identity = await repo.enqueue(
@@ -1196,11 +1250,9 @@ async def test_completed_receipts_reconcile_pending_evidence_without_model_poll(
     evidence = {row["run_id"]: row for row in control.known_effects}
     assert not evidence[runs[0]]["pending"] and evidence[runs[0]]["ok"]
     assert not evidence[runs[1]]["pending"] and not evidence[runs[1]]["ok"]
-    assert evidence[runs[2]]["pending"]
-    assert not json.loads(await control.execute("task_control", {"action": "complete"}, "blocked"))[
-        "ok"
-    ]
-    control.known_effects = [evidence[runs[0]], evidence[runs[1]]]
+    assert runs[2] not in evidence
+    foreign_evidence = await repo.effect_evidence(lease, foreign["id"])
+    assert foreign_evidence[0]["run_id"] == runs[2] and foreign_evidence[0]["pending"]
     await control.confirm_inputs()
     # Restore a stale private checkpoint whose completion input was already consumed.
     evidence[runs[0]]["pending"] = True

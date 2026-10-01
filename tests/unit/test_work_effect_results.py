@@ -89,8 +89,12 @@ async def test_large_uncertain_survives_projection_and_seventy_reads(database, t
             side_effecting=False,
         )
     await control.refresh_effects()
-    assert len(control.known_effects) == 64
-    assert not any(item.get("uncertain") for item in control.known_effects)
+    assert len(control.known_effects) <= 65
+    recent = await control.repository.effect_evidence(
+        control.lease, control.current["id"], limit=64
+    )
+    assert len(recent) == 64 and not any(item.get("uncertain") for item in recent)
+    assert any(item.get("uncertain") for item in control.known_effects)
     assert await control.has_unresolved_effects()
     resumed = WorkControl(control.repository, control.lease, "result-test", {}, control.validate)
     resumed.current = await control.repository.get(control.current["id"])

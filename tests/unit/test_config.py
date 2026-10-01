@@ -210,6 +210,14 @@ def test_rollup_token_watermarks_are_ordered() -> None:
     settings = Settings(_env_file=None)
     assert settings.context_window_tokens == 96000
     assert settings.work_context_window_tokens == 128000
+    assert settings.conversation_rollup_trigger_ratio == 0.90
+    assert settings.conversation_rollup_target_ratio == 0.60
+    assert settings.work_compaction_trigger_ratio == 0.90
+    assert settings.work_compaction_target_ratio == 0.50
+    with pytest.raises(ValidationError, match="work compaction target ratio must be below"):
+        Settings(
+            _env_file=None, work_compaction_target_ratio=0.90, work_compaction_trigger_ratio=0.90
+        )
 
 
 def test_daily_chat_delay_range_must_be_ordered() -> None:

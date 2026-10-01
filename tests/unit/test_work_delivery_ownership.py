@@ -9,6 +9,7 @@ from sqlalchemy import select
 from tests.conftest import build_harness, make_settings
 from tests.support.runtime_wire import install_wire
 from tests.support.social_identity_cases import social_env
+from tests.unit.test_runtime_work import _persisted_tool_receipt
 
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ConversationScope
@@ -282,7 +283,9 @@ async def test_file_receipt_survives_caption_failure_and_other_targets_still_nee
     await control.execute(
         "task_control", {"action": "accept", "goal": "file", "output_kind": "artifact"}, "accept"
     )
-    control.observe_result(
+    await _persisted_tool_receipt(
+        control,
+        "original-file",
         "send_message",
         json.dumps(
             {
@@ -303,7 +306,6 @@ async def test_file_receipt_survives_caption_failure_and_other_targets_still_nee
                 },
             }
         ),
-        True,
         arguments='{"artifact_id":"doc","attachment_kind":"file","text":"done"}',
     )
     result = json.loads(

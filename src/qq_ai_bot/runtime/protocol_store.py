@@ -24,14 +24,17 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.admin.models import WorkStorageRuntimeConfig
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.runtime.protocol_schema import objects, refs, usage
 
 
 class ProtocolStore:
-    def __init__(self, database: Database, *, max_total_bytes: int = 2 * 1024**3) -> None:
+    def __init__(
+        self, database: Database, *, policy: WorkStorageRuntimeConfig | None = None
+    ) -> None:
         self.database = database
-        self.max_total_bytes = max_total_bytes
+        self.policy = policy or WorkStorageRuntimeConfig()
         self.prepared_refs: set[str] = set()
         self.prepared_sizes: dict[str, int] = {}
         if getattr(database, "_protocol_storage_lock", None) is None:
@@ -48,6 +51,12 @@ class ProtocolStore:
             root = Path(database_path).resolve().parent / "work-protocol"
         self.root = Path(root)
 
+    async def refresh_policy(self) -> None:
+        """Resolve one global snapshot before file preparation, never per object/write."""
+        resolver = self.database.protocol_storage_policy
+        if resolver is not None:
+            self.policy = await resolver()
+
     def _path(self, digest: str) -> Path:
         if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
             raise ValueError("invalid_protocol_reference")
@@ -59,8 +68,6 @@ class ProtocolStore:
 
     async def put_bytes(self, content: bytes) -> str:
         digest = hashlib.sha256(content).hexdigest()
-        if len(content) > 64 * 1024 * 1024:
-            raise ValueError("work_protocol_object_capacity")
         if digest not in self.prepared_refs or not await asyncio.to_thread(
             self._path(digest).is_file
         ):
@@ -74,10 +81,10 @@ class ProtocolStore:
         target = self._path(digest)
         if target.exists():
             return  # Read/backup verifies full hashes; repeated save reuses immutable bytes.
-        if len(content) > 64 * 1024 * 1024:
+        if len(content) > self.policy.object_max_bytes:
             raise ValueError("work_protocol_object_capacity")
         target.parent.mkdir(parents=True, exist_ok=True)
-        if shutil.disk_usage(target.parent).free < len(content) + 64 * 1024 * 1024:
+        if shutil.disk_usage(target.parent).free < len(content) + self.policy.disk_reserve_bytes:
             raise ValueError("work_protocol_storage_capacity")
         descriptor, temporary = tempfile.mkstemp(prefix=".publishing-", dir=target.parent)
         try:
@@ -98,7 +105,11 @@ class ProtocolStore:
             raise ValueError("work_protocol_object_corrupt")
         return content
 
-    async def manifest(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def manifest(
+        self, payload: dict[str, Any], *, refresh_policy: bool = True
+    ) -> dict[str, Any]:
+        if refresh_policy:
+            await self.refresh_policy()
         transcript = dict(payload["transcript"])
         transcript["items"] = [await self.put(item) for item in transcript["items"]]
         transcript["continuation"] = (
@@ -174,10 +185,18 @@ class ProtocolStore:
         self, session: AsyncSession, work_id: str, prepared: tuple[dict[str, Any], ...]
     ) -> None:
         """Batch metadata/ref CAS under the journal's original Work lease."""
+        added_objects = False
         for offset in range(0, len(prepared), 128):
             batch = prepared[offset : offset + 128]
             digests = tuple(item["sha256"] for item in batch)
-            await session.execute(insert(objects).on_conflict_do_nothing(), batch)
+            added_sizes = tuple(
+                await session.scalars(
+                    insert(objects).on_conflict_do_nothing().returning(objects.c.byte_size), batch
+                )
+            )
+            if any(size > self.policy.object_max_bytes for size in added_sizes):
+                raise ValueError("work_protocol_object_capacity")
+            added_objects = added_objects or bool(added_sizes)
             live = set(
                 await session.scalars(
                     select(objects.c.sha256).where(
@@ -192,9 +211,9 @@ class ProtocolStore:
                 insert(refs).on_conflict_do_nothing(),
                 [{"work_id": work_id, "sha256": digest} for digest in digests],
             )
-        if prepared:
+        if added_objects:
             used = await session.scalar(select(usage.c.byte_size).where(usage.c.id == 1))
-            if used is None or used > self.max_total_bytes:
+            if used is None or used > self.policy.total_max_bytes:
                 raise ValueError("work_protocol_storage_capacity")
 
     def _orphan_candidates(self, cutoff: float) -> list[dict[str, Any]]:

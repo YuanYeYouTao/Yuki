@@ -465,7 +465,6 @@ async def test_self_worker_uses_existing_runner_without_synthetic_inbound(databa
         database=database,
         chat=chat,
         runtime_config=SimpleNamespace(snapshot=AsyncMock(return_value=SimpleNamespace())),
-        settings=SimpleNamespace(subagent_context_token_limit=64000),
     )
     from tests.support.runtime_execution import make_child_executor
 
@@ -477,10 +476,8 @@ async def test_self_worker_uses_existing_runner_without_synthetic_inbound(databa
         load_tools=AsyncMock(
             return_value=tuple(SimpleNamespace(name=name) for name in sorted(WORKER_NAMES))
         ),
-        context_token_limit=64000,
     )
-    await executor.run(child_id)
-    assert executor.last_error is None
+    assert await executor.run(child_id) is None
     runner.run.assert_awaited_once()
     chat.open_memory_session.assert_not_called()
     memory.close.assert_awaited_once()

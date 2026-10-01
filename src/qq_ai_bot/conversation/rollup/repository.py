@@ -64,6 +64,7 @@ from qq_ai_bot.conversation.rollup.renderer import (
     serialize_compaction_source_events,
     source_fingerprint,
 )
+from qq_ai_bot.conversation.rollup.summary import parse_summary, summary_references
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.model_runtime.capacity import estimate_text_tokens
 from qq_ai_bot.persistence.database import Database
@@ -818,6 +819,13 @@ class ConversationRollupRepository:
             or len(normalized) > (candidate.policy or self.config).summary_max_characters
         ):
             raise ValueError("summary violates configured output bounds")
+        # Historical migration/extractive checkpoints remain readable. All new
+        # model checkpoints use the single structured write contract.
+        references = (
+            summary_references(parse_summary(normalized))
+            if summary_kind is RollupKind.MODEL
+            else set()
+        )
         now = _utcnow()
         if not claim.conversation_id:
             raise RollupLeaseLostError("canonical rollup claim has no conversation")
@@ -830,6 +838,7 @@ class ConversationRollupRepository:
                 summary_kind=summary_kind,
                 retain_lease=retain_lease,
                 now=now,
+                summary_references=references,
             )
 
     async def commit_emergency_overlay(
@@ -1362,6 +1371,7 @@ class ConversationRollupRepository:
         summary_kind: RollupKind,
         retain_lease: bool,
         now: datetime,
+        summary_references: set[int],
     ) -> RollupCommitResult:
         if summary_kind is RollupKind.EMERGENCY:
             raise ValueError("emergency summaries cannot write the semantic rollup checkpoint")
@@ -1371,6 +1381,23 @@ class ConversationRollupRepository:
         conversation = await session.get(CanonicalConversationModel, claim.conversation_id)
         if conversation is None or conversation.generation != candidate.generation:
             raise RollupSourceChangedError("scope generation changed")
+        if summary_references:
+            # Bounded primary-key lookup in the same pre-DML snapshot as the
+            # coverage/fingerprint checks. A known ID from another conversation,
+            # reset generation or suppressed event is not a valid citation.
+            existing = set(
+                await session.scalars(
+                    select(ChatEventModel.id).where(
+                        ChatEventModel.id.in_(summary_references),
+                        ChatEventModel.canonical_conversation_id == conversation.id,
+                        ChatEventModel.id > conversation.starts_after_event_id,
+                        ChatEventModel.id <= candidate.events[-1].id,
+                        keeper_event_clause(),
+                    )
+                )
+            )
+            if existing != summary_references:
+                raise RollupSourceChangedError("rollup_summary_reference_missing_or_out_of_scope")
         current_rollup = await session.get(CanonicalConversationRollupModel, claim.conversation_id)
         current_overlay = await session.get(
             CanonicalConversationRollupEmergencyOverlayModel, claim.conversation_id

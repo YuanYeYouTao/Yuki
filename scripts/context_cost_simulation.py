@@ -13,6 +13,7 @@ from pathlib import Path
 WINDOWS = (64_000, 96_000, 128_000, 160_000, 192_000, 256_000)
 TRIGGERS = (0.75, 0.80, 0.85, 0.90)
 TARGETS = (0.40, 0.50, 0.60, 0.65)
+ESTIMATE_RATIOS = (1.0, 1.25, 1.5, 1.8, 2.0)
 
 
 def percentile(values: list[int], fraction: float) -> int:
@@ -78,13 +79,27 @@ def simulate(
     summary_cache_ratio: float,
     requests: int = 800,
     prefix_survives: bool = True,
+    estimate_ratio: float = 1.0,
+    input_margin_tokens: int = 0,
+    model_input_limit: int | None = None,
+    model_context_limit: int | None = None,
+    output_reserve_tokens: int = 4096,
 ) -> dict:
-    if target * window < retention_floor:
+    if estimate_ratio <= 0 or input_margin_tokens < 0 or output_reserve_tokens < 0:
+        raise ValueError("invalid_capacity_assumption")
+    capacity = {
+        "window": window,
+        "trigger": trigger,
+        "target": target,
+        "estimate_ratio": estimate_ratio,
+        "window_unit": "estimated_input_tokens",
+    }
+    # Measured increments and costs stay in provider usage units. Runtime policy
+    # windows use conservative estimates, which need not equal provider usage.
+    if target * window / estimate_ratio < retention_floor:
         return {
+            **capacity,
             "feasible": False,
-            "window": window,
-            "trigger": trigger,
-            "target": target,
             "reason": "below_assumed_information_retention_floor",
         }
     context = retention_floor
@@ -94,21 +109,31 @@ def simulate(
     peak = 0
     for index in range(requests):
         delta = growth[(index * 37 + 17) % len(growth)]
-        if context + delta >= window * trigger:
+        if (context + delta) * estimate_ratio >= window * trigger:
             summary_input += context
             summary_cached += int(context * summary_cache_ratio)
             compactions += 1
-            context = int(target * window)
+            context = int(target * window / estimate_ratio)
             fresh = True
         context += delta
-        # A watermark isn't the model's hard limit. Reserve 4096 output + 2048 error tokens.
-        if context + 6144 > window:
+        # An independent input budget never subtracts output again. Only an
+        # explicitly supplied joint model context limit includes output reserve.
+        estimated = math.ceil(context * estimate_ratio)
+        reason = None
+        if estimated + input_margin_tokens > window:
+            reason = "predicted_estimated_input_exceeds_policy_budget"
+        elif model_input_limit is not None and context > model_input_limit:
+            reason = "predicted_usage_input_exceeds_model_input_limit"
+        elif (
+            model_context_limit is not None
+            and context + output_reserve_tokens > model_context_limit
+        ):
+            reason = "predicted_usage_input_and_output_exceed_joint_model_context"
+        if reason is not None:
             return {
+                **capacity,
                 "feasible": False,
-                "window": window,
-                "trigger": trigger,
-                "target": target,
-                "reason": "predicted_request_exceeds_reserved_window",
+                "reason": reason,
             }
         peak = max(peak, context)
         input_tokens += context
@@ -127,13 +152,12 @@ def simulate(
     cached = cached_tokens + summary_cached
     cost = (uncached + cached * cache_price + total_output * 5) / 1_000_000
     return {
+        **capacity,
         "feasible": True,
-        "window": window,
-        "trigger": trigger,
-        "target": target,
         "compactions": compactions,
         "requests": requests,
         "peak_input": peak,
+        "peak_estimated_input": math.ceil(peak * estimate_ratio),
         "execution_input": input_tokens,
         "execution_cached": cached_tokens,
         "summary_input": summary_input,
@@ -148,6 +172,11 @@ def main() -> None:
     parser.add_argument("--yuki", type=Path, required=True)
     parser.add_argument("--agm", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--estimate-ratios", nargs="+", type=float, default=ESTIMATE_RATIOS)
+    parser.add_argument("--input-margin-tokens", type=int, default=0)
+    parser.add_argument("--model-input-limit", type=int)
+    parser.add_argument("--model-context-limit", type=int)
+    parser.add_argument("--output-reserve-tokens", type=int, default=4096)
     args = parser.parse_args()
     yuki = json.loads(args.yuki.read_text(encoding="utf-8-sig"))
     agm = json.loads(args.agm.read_text(encoding="utf-8-sig"))
@@ -156,40 +185,58 @@ def main() -> None:
     prefix = 12_000
     retention_floor = prefix + 4000 + 8 * summary["growth_p95"]
     scenarios = {}
+    capacity_options = {
+        "input_margin_tokens": args.input_margin_tokens,
+        "model_input_limit": args.model_input_limit,
+        "model_context_limit": args.model_context_limit,
+        "output_reserve_tokens": args.output_reserve_tokens,
+    }
     for price in (0.1, 0.25, 0.5, 1.0):
         for hit in (summary["known_cache_ratio"], 0.5, 0.0):
             for summary_hit in (0.0, 0.5):
-                key = f"cacheprice={price}:hit={hit:.4f}:summaryhit={summary_hit}"
-                scenarios[key] = [
-                    simulate(
-                        summary["growth"],
-                        window=window,
-                        trigger=trigger,
-                        target=target,
-                        cache_ratio=hit,
-                        cache_price=price,
-                        fixed_prefix=prefix,
-                        retention_floor=retention_floor,
-                        summary_output=2000,
-                        summary_cache_ratio=summary_hit,
+                for ratio in args.estimate_ratios:
+                    key = (
+                        f"cacheprice={price}:hit={hit:.4f}:summaryhit={summary_hit}"
+                        f":estimate_ratio={ratio}"
                     )
-                    for window in WINDOWS
-                    for trigger in TRIGGERS
-                    for target in TARGETS
-                ]
+                    scenarios[key] = [
+                        simulate(
+                            summary["growth"],
+                            window=window,
+                            trigger=trigger,
+                            target=target,
+                            cache_ratio=hit,
+                            cache_price=price,
+                            fixed_prefix=prefix,
+                            retention_floor=retention_floor,
+                            summary_output=2000,
+                            summary_cache_ratio=summary_hit,
+                            estimate_ratio=ratio,
+                            **capacity_options,
+                        )
+                        for window in WINDOWS
+                        for trigger in TRIGGERS
+                        for target in TARGETS
+                    ]
     chat_thresholds = [
         {
             "window": window,
             "trigger": trigger,
-            "observed_inputs_above_trigger": sum(v >= window * trigger for v in summary["inputs"]),
+            "estimate_ratio": ratio,
+            "observed_inputs_above_trigger": sum(
+                v * ratio >= window * trigger for v in summary["inputs"]
+            ),
         }
         for window in WINDOWS
         for trigger in TRIGGERS
+        for ratio in args.estimate_ratios
     ]
     retention_sensitivity = []
     for floor in (retention_floor, 48_000, 64_000):
         for summary_tokens in (500, 2000, 8000):
-            for prefix_survives in (True, False):
+            for prefix_survives, ratio in (
+                (survives, ratio) for survives in (True, False) for ratio in args.estimate_ratios
+            ):
                 grid = [
                     simulate(
                         summary["growth"],
@@ -203,6 +250,8 @@ def main() -> None:
                         summary_output=summary_tokens,
                         summary_cache_ratio=0.0,
                         prefix_survives=prefix_survives,
+                        estimate_ratio=ratio,
+                        **capacity_options,
                     )
                     for window in WINDOWS
                     for trigger in TRIGGERS
@@ -211,12 +260,14 @@ def main() -> None:
                 winner = min(
                     (row for row in grid if row["feasible"]),
                     key=lambda row: row["relative_input_price_millions"],
+                    default=None,
                 )
                 retention_sensitivity.append(
                     {
                         "floor": floor,
                         "summary_output": summary_tokens,
                         "prefix_survives": prefix_survives,
+                        "estimate_ratio": ratio,
                         "winner": winner,
                     }
                 )
@@ -236,7 +287,12 @@ def main() -> None:
             "task_facts_tokens": 4000,
             "recent_rounds": 8,
             "retention_floor": retention_floor,
-            "output_and_error_reserve": 6144,
+            "window_unit": "estimated_input_tokens",
+            "measured_increment_and_cost_unit": "provider_usage_tokens",
+            "model_capacity_limit_unit": "provider_usage_tokens_if_certified",
+            "output_reserve_applies_only_to_joint_model_context": True,
+            "estimate_ratios": args.estimate_ratios,
+            **capacity_options,
             "summary_output_tokens": 2000,
             "execution_output_tokens": 46,
             "long_requests": 800,
@@ -246,12 +302,67 @@ def main() -> None:
         "chat_observed_thresholds": chat_thresholds,
         "long_scenarios": scenarios,
         "retention_sensitivity": retention_sensitivity,
+        "work_initial_policy_sensitivity": [
+            simulate(
+                summary["growth"],
+                window=128_000,
+                trigger=0.90,
+                target=0.50,
+                cache_ratio=summary["known_cache_ratio"],
+                cache_price=0.1,
+                fixed_prefix=prefix,
+                retention_floor=retention_floor,
+                summary_output=8192,
+                summary_cache_ratio=0.0,
+                estimate_ratio=ratio,
+                **capacity_options,
+            )
+            for ratio in args.estimate_ratios
+        ],
+        "work_previous_policy_sensitivity": [
+            simulate(
+                summary["growth"],
+                window=128_000,
+                trigger=0.85,
+                target=0.50,
+                cache_ratio=summary["known_cache_ratio"],
+                cache_price=0.1,
+                fixed_prefix=prefix,
+                retention_floor=retention_floor,
+                summary_output=8192,
+                summary_cache_ratio=0.0,
+                estimate_ratio=ratio,
+                **capacity_options,
+            )
+            for ratio in args.estimate_ratios
+        ],
+        "chat_initial_policy_retention_sensitivity": [
+            simulate(
+                summary["growth"],
+                window=96_000,
+                trigger=0.90,
+                target=0.60,
+                cache_ratio=summary["known_cache_ratio"],
+                cache_price=0.1,
+                fixed_prefix=prefix,
+                retention_floor=retention_floor,
+                summary_output=8192,
+                summary_cache_ratio=0.0,
+                estimate_ratio=ratio,
+                **capacity_options,
+            )
+            for ratio in args.estimate_ratios
+        ],
     }
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     primary = next(iter(scenarios.values()))
     for window in WINDOWS:
         valid = [row for row in primary if row["feasible"] and row["window"] == window]
-        print(json.dumps(min(valid, key=lambda row: row["relative_input_price_millions"])))
+        print(
+            json.dumps(
+                min(valid, key=lambda row: row["relative_input_price_millions"], default=None)
+            )
+        )
 
 
 if __name__ == "__main__":
