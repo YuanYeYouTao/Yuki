@@ -320,7 +320,7 @@ DSL 外层 deadline 在权限复核后区分实际进入 handler 的 SEND/MUTATE
 accepted/failed，部分复合交付不充当整个步骤已完成的证据。效果已确认但步骤记账失败
 仍报告运行失败，并保留已确认投递计数；恢复只读原 dispatch，不再次调用 handler。
 
-普通回答无需先调用 task_control.answer。模型最终文字可结束内部循环，但不触发发送；
+普通回答无需先调用 task_control.answer。未采用 interactive 的工作，模型最终文字可结束内部循环，但不触发发送；
 工作完成仍由同一回执校验检查未结束执行和 artifact。发送是否成功只看显式发送回执，
 不自动把工具 JSON 或固定成功句发到聊天中。
 分条 `send_message` 在首条网关调用前持久记录计划段数，并按原调用的确定性子调用 ID
@@ -329,6 +329,34 @@ accepted/failed，部分复合交付不充当整个步骤已完成的证据。�
 原 Work 工具结果，也不解除通用 WorkSession 对未知效果的围栏；要自动续原 Work，
 必须先建立首写时持久的 Work effect 与 Social 父回执所有权关联。
 明确管理命令和模型完全不可用时的运行状态反馈与普通 Agent 正文区分。
+
+较长的用户交互任务可在 `task_control.accept` 声明 `reporting=interactive`；
+省略沿用原节奏，`quiet` 用于用户要求安静执行。主 Agent 合同固定包含可选字段，
+不按每次任务修改 schema。子任务、SELF 和禁止外发/内部返回来源不采用 interactive。
+`update` 仅改变 reporting 时不修改目标或解除等待；quiet 可提升为 interactive，
+已采用 interactive 的原 Work 不接受模型自行降为 quiet。该元数据保存于原 checkpoint 的
+有界 `communication` 子路径，原 wait/need_input/fail 检查点不会擦除它。
+
+`send_message.work_report` 只声明 `start/progress/reply/final` 用途和至多八个原内部事件
+引用；它不进入平台消息字段，不授予权限。引用只可指向原 trigger 或同 Work 获准的
+staged/consumed 输入；目标须为当前 canonical 目标。派发前在原 prepared effect 保存关联，
+结果仍取原 Social/Work effect 回执；prepared、失败和 unknown 不当作用户已收到。
+查询原效果事实不依赖最近 64 条展示窗口，不新建投递状态副本。
+
+interactive 的首次可控业务工具在真实 start 回执前不执行、不计工具消耗、不登记业务效果。
+原调用顺序保持：send 是串行屏障；先业务后 send 的前项返回未执行，随后发送照常处理。
+任务登记、原 Work 查询等安全准备可先进行，调查读取和子任务委派也受顺序检查。
+同一开始缺口只有一次纠正；失败/未知保留原围栏，不能靠换目标或重复发送解决。
+Provider 原生工具发生于服务端，后端只提供派发前机会，不能宣称逐次硬拦截。
+
+阶段报告由模型按实质发现、阻塞和目标调整判断，不建立阶段事项台账或定时群发。
+已有 steer 接入、输入消费及完成 CAS 不变；新真人输入按原输入水位提供有限非阻断答复
+机会，quiet 与旧 Work 也适用。消费/提醒并不证明答复，相关发送仍看真实回执。
+interactive 无工具内部正文不自动完成，须继续执行或显式 complete/wait/need_input/fail；
+缺少意图只有一次反馈，之后按原 no-progress 有界收束。明确 answer 交付只接受 final 用途
+的当前目标成功回执，开始、进度和插话回复不代替最终答复。带 work_report 的纯沟通
+发送不充当 state_change 的业务修改证据。文件、业务变更、SELF
+静默及内部返回继续各自交付合同，不额外群发。标签和传输成功都不能证明语义目标完成。
 
 `task_control.wait` 保留单一所属 `run_id` 路径，也可登记一次性 `conditions`：
 `time_due`、当前 canonical Conversation 的新消息、获准插件发布的事件或所属 run。

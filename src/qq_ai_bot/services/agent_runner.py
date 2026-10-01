@@ -51,7 +51,20 @@ from qq_ai_bot.runtime.work_repository import WorkCapacityError
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.evidence_observation import EVIDENCE_TOOLS, EvidenceObservation
 from qq_ai_bot.services.native_tool_binder import NativeToolBinder
-from qq_ai_bot.services.turn_transcript import TranscriptRequest, TurnTranscript, validating_request
+from qq_ai_bot.services.turn_transcript import (
+    DispatchOrigin,
+    TranscriptRequest,
+    TurnTranscript,
+    validating_request,
+)
+from qq_ai_bot.services.work_reporting import (
+    append_input_feedback,
+    before_work_tool,
+    initialize_input_feedback,
+    require_interactive_exit,
+    stage_feedback_opportunity,
+    start_feedback_updates,
+)
 from qq_ai_bot.time.models import TimeContext
 from qq_ai_bot.web.models import WebMode
 from qq_ai_bot.web.route_context import web_model_task
@@ -405,6 +418,10 @@ class AgentRunner:
         repeated_batch_count = 0
         no_progress_recovery = False
         reusable_tool_results: dict[tuple[str, str], str] = {}
+        input_feedback_watermark = 0
+        stage_feedback_batch: str | None = None
+        pending_stage_feedback: str | None = None
+        provider_pause_replay = False
         await self._prepare_tools(tools, runtime)
         if runtime.work_control is not None:
             from dataclasses import asdict
@@ -430,6 +447,17 @@ class AgentRunner:
                 transcript, compaction_brief=runtime.compaction_brief
             )
             repeated_batch_count = int(runtime.work_control.session.progress.get("repeats", 0))
+            provider_pause_replay = bool(
+                runtime.work_control.session.progress.get("provider_pause_replay", False)
+            )
+            await initialize_input_feedback(runtime.work_control)
+            observations = runtime.work_control.session.progress.get("model_observations", [])
+            if observations:
+                opportunity = await stage_feedback_opportunity(
+                    runtime.work_control, observations[-1]
+                )
+                if opportunity is not None:
+                    stage_feedback_batch, pending_stage_feedback = opportunity
             if runtime.work_control.handoff_work_id is not None:
                 await runtime.work_control.session.save("paired")
             if (
@@ -451,7 +479,7 @@ class AgentRunner:
                 and control.requests_started >= runtime.max_model_requests
             ):
                 break
-            if control is not None:
+            if control is not None and not provider_pause_replay:
                 try:
                     added = await control.take_inputs(f"{transcript.chain_id}:{request_index}")
                 except WorkInputsPreparing:
@@ -480,6 +508,13 @@ class AgentRunner:
                     )
                 for message in added:
                     transcript.append(message)
+                input_feedback_watermark = await append_input_feedback(
+                    control,
+                    transcript,
+                    input_feedback_watermark,
+                    extra_feedback=pending_stage_feedback,
+                )
+                pending_stage_feedback = None
             definitions = (
                 tools.definitions(runtime, web_was_used=web_was_used) if tools is not None else ()
             )
@@ -520,6 +555,15 @@ class AgentRunner:
             try:
                 diagnostics = runtime.prompt_diagnostics
                 sequence = transcript.request()
+                if control is not None and control.session is not None:
+                    sequence = replace(
+                        sequence,
+                        origin=(
+                            DispatchOrigin.WORK_RECOVERY
+                            if control.session.uses_recovery_transcript
+                            else DispatchOrigin.COMPOSED_INITIAL
+                        ),
+                    )
                 request = ChatRequest(
                     messages=sequence.messages,
                     request_chain_id=transcript.chain_id,
@@ -606,6 +650,8 @@ class AgentRunner:
                 async def dispatch(
                     execute: Callable[[], Awaitable[ChatResponse]] = execute,
                     sequence: TranscriptRequest = sequence,
+                    input_feedback_watermark: int = input_feedback_watermark,
+                    stage_feedback_batch: str | None = stage_feedback_batch,
                 ) -> ChatResponse:
                     prepared = False
 
@@ -623,8 +669,26 @@ class AgentRunner:
                                 raise _RequestNotStarted(exc) from exc
                         if runtime.work_control is not None:
                             await runtime.work_control.reserve_request()
+                            communication_updates: dict[str, Any] = {}
+                            communication = runtime.work_control.communication
+                            if input_feedback_watermark > communication.get(
+                                "input_feedback_through_id", 0
+                            ):
+                                communication_updates["input_feedback_through_id"] = (
+                                    input_feedback_watermark
+                                )
+                            if stage_feedback_batch and stage_feedback_batch != communication.get(
+                                "stage_feedback_batch"
+                            ):
+                                communication_updates["stage_feedback_batch"] = stage_feedback_batch
                             if runtime.work_control.session is not None:
-                                await runtime.work_control.session.save("dispatched")
+                                await runtime.work_control.session.save(
+                                    "dispatched", communication_updates=communication_updates
+                                )
+                            elif communication_updates:
+                                await runtime.work_control.patch_communication(
+                                    **communication_updates
+                                )
                         prepared = True
 
                     with model_dispatch_guard(prepare_dispatch):
@@ -680,7 +744,9 @@ class AgentRunner:
                     and callable(getattr(tools, "has_visible_effects", None))
                     and tools.has_visible_effects()  # type: ignore[attr-defined]
                 )
-                if has_visible_effects and (control is None or control.ending == "completed"):
+                if has_visible_effects and (
+                    control is None or control.current is None or control.ending == "completed"
+                ):
                     return AgentRunResult(
                         text="",
                         tool_calls_used=calls_used,
@@ -734,7 +800,12 @@ class AgentRunner:
                 await observe_response(response, runtime)
             if response.continuation is not None:
                 transcript.accept(response.continuation)
+            provider_pause_replay = response.incomplete_reason == "pause_turn"
             if control is not None and control.session is not None:
+                if provider_pause_replay:
+                    control.session.progress["provider_pause_replay"] = True
+                else:
+                    control.session.progress.pop("provider_pause_replay", None)
                 if control.lease.work_id:
                     last_tokens = control.session.progress.get("context_tokens", 0)
                     samples = control.session.progress.setdefault("cache_samples", [])
@@ -870,6 +941,15 @@ class AgentRunner:
                     raise LLMError("model repeated an invalid mention placeholder")
                 feedback = getattr(tools, "response_feedback", None)
                 issue = feedback(content, runtime) if callable(feedback) else None
+                if (
+                    control is not None
+                    and getattr(control, "reporting", None) == "interactive"
+                    and control.ending is None
+                ):
+                    if response.continuation is None:
+                        transcript.append(assistant_message)
+                    if await require_interactive_exit(control, transcript, extra_feedback=issue):
+                        continue
                 if issue:
                     if answer_recovery_used or request_index + 1 >= runtime.max_model_requests:
                         raise LLMError("model repeated an unsupported final response")
@@ -1086,6 +1166,11 @@ class AgentRunner:
                         }
                         for call, result, was_executed in batch
                     ]
+                    opportunity = await stage_feedback_opportunity(
+                        runtime.work_control, observations[-1]
+                    )
+                    if opportunity is not None:
+                        stage_feedback_batch, pending_stage_feedback = opportunity
                 repeats = (
                     int(persisted_progress.get("repeats", 0)) + 1
                     if (
@@ -1096,7 +1181,10 @@ class AgentRunner:
                     else 0
                 )
                 persisted_progress.update(fingerprint=batch_hash, repeats=repeats)
-                await runtime.work_control.session.save("paired")
+                communication_updates = await start_feedback_updates(runtime.work_control, batch)
+                await runtime.work_control.session.save(
+                    "paired", communication_updates=communication_updates
+                )
                 if runtime.work_control.handoff_work_id is not None:
                     return AgentRunResult(
                         text="",
@@ -1292,14 +1380,18 @@ class AgentRunner:
                         result = json.dumps({"ok": False, "error": "work_query_not_authorized"})
                         executed = False
                     else:
-                        result = await control.execute(
-                            call.function.name,
-                            arguments,
-                            control.session.call_key(call.id)
-                            if control.session
-                            else f"{control.lease.owner}:{call.id}",
-                        )
-                        executed = True
+                        rejection = await before_work_tool(control, call)
+                        if rejection is not None:
+                            result, executed = rejection, False
+                        else:
+                            result = await control.execute(
+                                call.function.name,
+                                arguments,
+                                control.session.call_key(call.id)
+                                if control.session
+                                else f"{control.lease.owner}:{call.id}",
+                            )
+                            executed = True
             return CoordinatedToolResult(
                 calls=((call, result, executed),),
                 # Lifecycle controls use the model and message budgets, not
@@ -1402,6 +1494,7 @@ class AgentRunner:
             runtime,
             remaining_calls=remaining_calls,
             max_parallel_calls=max_parallel_calls,
+            before_execute=partial(before_work_tool, control),
         )
         unique_results = {call.id: result for call, result, _executed in coordinated.calls}
         unique_executed = {call.id: executed for call, _result, executed in coordinated.calls}
@@ -1548,11 +1641,9 @@ class AgentRunner:
     ) -> tuple[ChatTool, ...]:
         merged = {item.name: item for item in previous}
         for item in current:
-            existing = merged.get(item.name)
-            if existing is None or existing.parameters == item.parameters:
-                merged[item.name] = item
-            # Responses declared schemas are append-only; never silently replace.
-        return tuple(sorted(merged.values(), key=lambda item: item.name))
+            # Preserve the submitted declaration and its exact position.
+            merged.setdefault(item.name, item)
+        return tuple(merged.values())
 
     @staticmethod
     def _merge_native_tools(
@@ -1560,5 +1651,6 @@ class AgentRunner:
         current: tuple[NativeToolDefinition, ...],
     ) -> tuple[NativeToolDefinition, ...]:
         merged = {item.type: item for item in previous}
-        merged.update({item.type: item for item in current})
-        return tuple(sorted(merged.values(), key=lambda item: item.type))
+        for item in current:
+            merged.setdefault(item.type, item)
+        return tuple(merged.values())

@@ -20,6 +20,10 @@ from qq_ai_bot.prompting.serializer import (
 )
 
 
+class PromptCapacityError(ValueError):
+    """Required dynamic contributions cannot fit the configured prompt capacity."""
+
+
 class PromptCompiler:
     """Deduplicate, budget, order, and serialize a prompt program."""
 
@@ -102,7 +106,9 @@ class PromptCompiler:
         required = tuple(item for item in contributions if item.required)
         used = len(serialize_dynamic(required))
         if used > budget:
-            raise ValueError("required dynamic prompt contributions exceed configured budget")
+            raise PromptCapacityError(
+                "required dynamic prompt contributions exceed configured budget"
+            )
         selected = list(required)
         for item in contributions:
             if item.required:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
@@ -47,6 +48,7 @@ class ToolInvocationCoordinator:
         *,
         remaining_calls: int,
         max_parallel_calls: int,
+        before_execute: Callable[[ToolCall], Awaitable[str | None]] | None = None,
     ) -> CoordinatedToolResult:
         if remaining_calls < 0 or max_parallel_calls <= 0:
             raise ValueError("tool call budgets must be non-negative and parallelism positive")
@@ -64,19 +66,27 @@ class ToolInvocationCoordinator:
             check = getattr(backend, "counts_toward_limit", None)
             return not callable(check) or bool(check(call.function.name, runtime))
 
-        executable_list: list[ToolCall] = []
         overflow_ids: set[str] = set()
+        rejected_ids: set[str] = set()
         counted_executions = 0
-        for call in calls:
+        results: dict[str, str] = {}
+
+        async def admit(call: ToolCall) -> bool:
+            nonlocal counted_executions
+            if before_execute is not None:
+                rejection = await before_execute(call)
+                if rejection is not None:
+                    results[call.id] = rejection
+                    rejected_ids.add(call.id)
+                    return False
             counted = counts_toward_limit(call)
             if counted and counted_executions >= remaining_calls:
                 overflow_ids.add(call.id)
-                continue
-            executable_list.append(call)
+                return False
             if counted:
                 counted_executions += 1
-        executable = tuple(executable_list)
-        results: dict[str, str] = {}
+            return True
+
         semaphore = asyncio.Semaphore(max_parallel_calls)
 
         async def execute_one(call: ToolCall) -> None:
@@ -86,6 +96,7 @@ class ToolInvocationCoordinator:
                     span.result = results[call.id]
 
         async def execute_recorded(call: ToolCall) -> None:
+            nonlocal counted_executions
 
             async def invoke() -> str:
                 return await backend.execute(call.function.name, call.function.arguments, runtime)
@@ -110,23 +121,36 @@ class ToolInvocationCoordinator:
                 if session
                 else await invoke()
             )
+            try:
+                receipt = json.loads(results[call.id])
+            except ValueError:
+                receipt = None
+            if isinstance(receipt, dict) and receipt.get("executed") is False:
+                rejected_ids.add(call.id)
+                if counts_toward_limit(call):
+                    counted_executions -= 1
 
         def is_parallel_safe(call: ToolCall) -> bool:
+            # Delivery must finish before a subsequent read-safe stretch can start.
+            if call.function.name == "send_message":
+                return False
             check = getattr(backend, "parallel_safe", None)
             return bool(callable(check) and check(call.function.name, runtime))
 
         index = 0
-        while index < len(executable):
-            call = executable[index]
+        while index < len(calls):
+            call = calls[index]
             if not is_parallel_safe(call):
-                await execute_one(call)
+                if await admit(call):
+                    await execute_one(call)
                 index += 1
                 continue
             end = index + 1
-            while end < len(executable) and is_parallel_safe(executable[end]):
+            while end < len(calls) and is_parallel_safe(calls[end]):
                 end += 1
+            admitted = [candidate for candidate in calls[index:end] if await admit(candidate)]
             async with asyncio.TaskGroup() as group:
-                for candidate in executable[index:end]:
+                for candidate in admitted:
                     group.create_task(execute_one(candidate))
             index = end
 
@@ -136,7 +160,11 @@ class ToolInvocationCoordinator:
         )
         return CoordinatedToolResult(
             _attach_batch_results(
-                calls, results=results, overflow_ids=overflow_ids, limited=limited
+                calls,
+                results=results,
+                overflow_ids=overflow_ids,
+                limited=limited,
+                rejected_ids=rejected_ids,
             ),
             counted_executions,
         )
@@ -148,6 +176,7 @@ def _attach_batch_results(
     results: dict[str, str],
     overflow_ids: set[str],
     limited: str,
+    rejected_ids: set[str] | None = None,
 ) -> tuple[tuple[ToolCall, str, bool], ...]:
     """Map each model call id back to a payload without raising on a missing key."""
 
@@ -161,5 +190,5 @@ def _attach_batch_results(
             logger.error("tool_result_missing call_id=%s", call.id)
             ordered.append((call, MISSING_TOOL_RESULT, False))
             continue
-        ordered.append((call, payload, True))
+        ordered.append((call, payload, call.id not in (rejected_ids or set())))
     return tuple(ordered)

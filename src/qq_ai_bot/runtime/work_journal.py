@@ -11,7 +11,7 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
@@ -250,7 +250,14 @@ class WorkJournal:
         source_revision: int,
         metadata: dict[str, Any],
         compaction_versions: tuple[int, int] | None = None,
-    ) -> None:
+        communication_updates: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        communication_patch = (
+            self.repository.encode_communication_updates(communication_updates)
+            if communication_updates
+            else None
+        )
+        updated_work = None
         await self.objects.refresh_policy()
         blobs: dict[str, bytes] = {}
         # Opaque Responses items retain insertion order all the way to the next
@@ -356,6 +363,34 @@ class WorkJournal:
                         set_=values,
                     )
                 )
+                if communication_patch is not None:
+                    from qq_ai_bot.runtime.work_repository import TERMINAL
+
+                    updated_work = (
+                        (
+                            await session.execute(
+                                update(work)
+                                .where(
+                                    work.c.id == work_id,
+                                    work.c.conversation_id == lease.conversation_id,
+                                    work.c.generation == lease.generation,
+                                    work.c.state.not_in(TERMINAL),
+                                )
+                                .values(
+                                    checkpoint_json=func.json_patch(
+                                        work.c.checkpoint_json, communication_patch
+                                    ),
+                                    updated=time.time(),
+                                )
+                                .returning(work)
+                            )
+                        )
+                        .mappings()
+                        .first()
+                    )
+                    if updated_work is None:
+                        raise WorkConflict("work_checkpoint_obsolete")
+        return dict(updated_work) if updated_work is not None else None
 
     async def invalidate(self, lease: WorkLease, work_id: str) -> None:
         async with self.repository.database.sessions() as session, session.begin():

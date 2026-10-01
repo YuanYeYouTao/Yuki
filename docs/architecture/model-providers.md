@@ -126,9 +126,11 @@ Gemini 3.8 Flash 的官方模型 ID 是 `gemini-3.8-flash`。WebUI 的 Google Ge
   原样保存，内部映射不发给上游。它不是平台 message_id。
 - WorkJournal 保存完整检查点；进程重启保持执行身份、请求链、预算、调用 ID 和实际 HTTP 请求。
   供应商、协议或 Profile 修订变化必须显式开新链，不能把旧签名状态拼入新模型。
-- 已冻结的公共聊天投影当前仅支持 Responses 原生块；其他协议的私有检查点只属于当前 Work。
-  提交公共投影时显式结束该缓存视图，下一任务从普通历史开始新链，不改写旧聊天事件。
-  因此不能宣称这些协议在跨 Work 的缓存复用上与 Responses 完全一样。
+- 普通聊天与获准动态快照可在各协议保留。公共投影扩展原生块仅支持 Responses；
+  其他协议的工具、签名和 continuation 私有检查点只属于当前 Work。
+  非 Work 普通投影遇到不可共享的原生块时结束该视图的扩展；开启 Work runtime 时只冻结获准的
+  初始普通输入，其后的工具和 continuation 留原 journal，下一普通轮仍复用普通投影。
+  合同或来源变化按原原因建立新链，不改写旧聊天事件；各协议的原生块跨 Work 复用并不等价。
 - Chat `length`、Claude `max_tokens`、Gemini `MAX_TOKENS` 均转为 INCOMPLETE；
   Runner 的既有截断处理不会执行其中的工具。不自动增加预算。
 - reasoning、签名、完整工具回执不进入对外消息或普通运行日志；只有显式 send_message 交付。

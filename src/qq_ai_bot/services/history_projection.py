@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from qq_ai_bot.conversation.frozen_fragments import FrozenFragments
@@ -10,6 +11,7 @@ from qq_ai_bot.conversation.projections import (
     ProjectionSnapshot,
     PromptProjectionRepository,
 )
+from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.services.context_assembler import AssembledContext
 
 logger = logging.getLogger(__name__)
@@ -71,7 +73,7 @@ async def prepare_history(
     view_key: str,
     context_key: str,
     contract_revision: str,
-    max_history_characters: int,
+    history_fits: Callable[[tuple[ChatMessage, ...]], bool],
 ) -> PreparedHistory:
     """The caller supplies the read-policy identity, never just a sending route.
 
@@ -101,11 +103,12 @@ async def prepare_history(
             reason = "source_changed"
             frozen = FrozenFragments.load([])
     extended = frozen.extend_history(context.history_fragments, context.history_event_fragments)
-    if sum(len(item.content or "") for item in extended.messages()) > max_history_characters:
+    fresh = FrozenFragments.load([]).extend_history(
+        context.history_fragments, context.history_event_fragments
+    )
+    if extended.items != fresh.items and not history_fits(extended.messages()):
         reason = "capacity"
-        extended = FrozenFragments.load([]).extend_history(
-            context.history_fragments, context.history_event_fragments
-        )
+        extended = fresh
     # The original assembler has already selected a bounded history. Its rollup
     # is compiled separately, before these event fragments, in every epoch.
     selected_context = replace(context, history_messages=extended.messages())

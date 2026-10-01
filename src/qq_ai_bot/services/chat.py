@@ -1455,6 +1455,7 @@ class ChatService:
     ) -> Callable[[], Awaitable[None]]:
         from qq_ai_bot.runtime.work_activation import current_work_control
         from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
+        from qq_ai_bot.services.turn_transcript import DispatchOrigin, dispatch_request
 
         active = current_work_control.get()
         if version is not None and active is not None:
@@ -1480,7 +1481,12 @@ class ChatService:
                 if version is not None:
                     raise HistorySourceChangedError(version)
                 raise TurnSupersededError("context source changed before model invocation")
-            if commit_projection is not None and control is None:
+            sequence = dispatch_request()
+            if (
+                commit_projection is not None
+                and sequence is not None
+                and sequence.origin is DispatchOrigin.COMPOSED_INITIAL
+            ):
                 await commit_projection()
 
         return validate

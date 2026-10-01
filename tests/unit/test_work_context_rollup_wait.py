@@ -96,7 +96,8 @@ async def test_rollup_wait_restarts_and_completion_before_settle_is_not_lost(
     lease = await repository.acquire(control.lease.conversation_id, 1)
     await repository.finish_context_rollup(lease, identity)
     assert json.loads((await repository.get(identity))["checkpoint_json"]) == {
-        "retain": "receipt-cursor"
+        "retain": "receipt-cursor",
+        "communication": {"input_feedback_through_id": 0},
     }
 
 
@@ -236,7 +237,8 @@ async def test_existing_model_history_is_not_recompressed_for_preparation(databa
         )
     current = await control.repository.get(control.current["id"])
     assert current["model_requests"] == 2 and json.loads(current["checkpoint_json"]) == {
-        "retained": "old"
+        "retained": "old",
+        "communication": {"input_feedback_through_id": 0},
     }
     async with database.sessions() as reader:
         assert (
@@ -316,7 +318,10 @@ async def test_successful_fallback_clears_only_original_preparation_and_restores
     assert modes == [ContextPreparationMode.DURABLE, ContextPreparationMode.FALLBACK]
     current = await control.repository.get(identity)
     assert current["id"] == identity and current["model_requests"] == 0
-    assert json.loads(current["checkpoint_json"]) == {"retain": "original-cursor"}
+    assert json.loads(current["checkpoint_json"]) == {
+        "retain": "original-cursor",
+        "communication": {"input_feedback_through_id": 0},
+    }
     assert context_preparation_mode.get() is ContextPreparationMode.FOREGROUND
     await control.repository.release(control.lease)
 

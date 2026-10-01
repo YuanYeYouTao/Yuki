@@ -173,7 +173,10 @@ async def test_original_work_journal_budget_and_unknown_effect_survive_heartbeat
     saved = await repository.get(item["id"])
     assert saved["state"] == "suspended"
     assert saved["model_requests"] == 2 and saved["tool_calls"] == 1
-    assert json.loads(saved["checkpoint_json"]) == checkpoint
+    assert json.loads(saved["checkpoint_json"]) == {
+        **checkpoint,
+        "communication": {"input_feedback_through_id": 0},
+    }
     async with database.sessions() as session:
         assert await session.scalar(select(journal.c.payload_json)) == original_payload
         assert await session.scalar(select(effects.c.state)) == "unknown"

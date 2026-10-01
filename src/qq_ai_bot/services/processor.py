@@ -62,6 +62,7 @@ from qq_ai_bot.persistence.repositories import (
 )
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from qq_ai_bot.plugin_host.direct_command_router import DirectCommandMatch
+from qq_ai_bot.prompting.compiler import PromptCapacityError
 from qq_ai_bot.runtime.activation_outcome import (
     WorkActivationHandled,
     WorkRecoveryDeferred,
@@ -77,7 +78,7 @@ from qq_ai_bot.runtime.observability import (
     new_runtime_turn_id,
     record_observation_safely,
 )
-from qq_ai_bot.runtime.work_repository import WorkConflict
+from qq_ai_bot.runtime.work_repository import WorkCapacityError, WorkConflict
 from qq_ai_bot.services.admin.config_admin import ConfigAdminService
 from qq_ai_bot.services.admin.group_admin import GroupAdminService
 from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
@@ -1135,6 +1136,15 @@ class MessageProcessor:
                 turn_snapshot=turn_snapshot,
             )
             result = ProcessResult(True, int(sent), "llm_failure")
+        except (WorkCapacityError, PromptCapacityError) as exc:
+            logger.warning("turn_capacity_failure exception_category=%s", type(exc).__name__)
+            sent = await self._send_text(
+                message,
+                sender,
+                failure_status_text(classify_failure(exc)),
+                turn_snapshot=turn_snapshot,
+            )
+            result = ProcessResult(True, int(sent), "capacity_failure")
         except ValidationError as exc:
             logger.error(
                 "turn_validation_failure exception_category=%s",

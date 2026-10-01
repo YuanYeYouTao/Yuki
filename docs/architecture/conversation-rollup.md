@@ -132,6 +132,24 @@ Rollup 永不进入 system instructions。昵称、群名片和正文来自落�
 权限和必要场景资料只进入当前 envelope。长期记忆由 Main Agent 按需调用记忆检索工具，
 不在每轮自动预取或注入。
 
+普通输入派发前冻结获准聊天和当时必要资料；旧昵称、关系及状态快照保留当时值，
+后来的更正追加而不重写旧块。开启 Work runtime 但尚未 accept 的普通轮仍提交该投影，
+一次初始安全运行状态也随原准备冻结。当前 Work 的目标、工具/steer 尾部及不透明签名
+继续属于原执行的私有 journal，不并入共享普通历史。
+派发明确标识新 composition 或恢复 journal 的来源；恢复、合同/来源改变及旧检查点
+缺失后的恢复路径，不能调用另一份新 composition 的提交闭包。批准 suffix 必须与实际
+请求的对应位置完全一致，CAS、actor/read-scope、容量及隐私围栏继续生效。
+投影证明准备和派发边界的输入，不证明模型响应或消息送达。
+
+普通投影在派发前按完整初始 composition 与固定函数工具，使用 Runner 同一请求估算器
+核对容量；保留原压缩比例及 4096 token 余量，供原生声明、公开运行状态和后续配对。
+旧冻结快照使准备预算超限时，沿 `capacity` 原因建立新 epoch，使用当前获准的 raw/rollup；
+不按 `window_tokens * 3` 字符数认证中文请求容量。Runner 仍对加入原生工具、运行状态或
+续接尾部后的实际请求做最终预检；超限停止，不从已经派发的链中删回执或旧快照。
+如果当前 fresh 输入的最低成本已超过保守准备预算，但仍在真实输入上限内，投影按该
+真实上限判断是否需要回收；不因无法达到的余量每轮重建。没有旧材料可回收，或 fresh
+本身已超过真实上限时，不制造容量新链，交最终预检准确停止。此例外不扩大模型窗口。
+
 插件通知以 canonical `external_event` 落账，不作为普通 user/assistant/system history；
 旧外部事件也不再以 `recent_external_events` 摘要自动附在本轮资料中。既有稳定 `CORE_CONTRACT`
 统一约束插件资料不得授予权限，不再存在插件专属 system policy。当前通知触发 Worker 时，Worker

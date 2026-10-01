@@ -20,6 +20,7 @@ from qq_ai_bot.llm.openai_responses import (
     OpenAICompatibleResponsesProvider,
     OpenAIResponsesProvider,
 )
+from qq_ai_bot.model_runtime.capacity import ModelCapacity, estimate_request_tokens
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.runtime.activation_tasks import ActivationTasks
 from qq_ai_bot.runtime.work_activation import current_work_control
@@ -33,7 +34,11 @@ from qq_ai_bot.services.context_assembler import AssembledContext
 from qq_ai_bot.services.durable_invocations import DurableInvocations
 from qq_ai_bot.services.history_projection import prepare_history
 from qq_ai_bot.services.prompt_composer import PromptComposer, PromptComposition
-from qq_ai_bot.services.turn_transcript import dispatch_request
+from qq_ai_bot.services.turn_transcript import (
+    DispatchOrigin,
+    dispatch_request,
+    validating_request,
+)
 from qq_ai_bot.vision.models import VisualObservation
 
 
@@ -97,7 +102,7 @@ class MainAgentTurnService:
                 or context.read_version.conversation_id is None
             ):
                 return composition
-            await contract.definitions()
+            definitions = await contract.definitions()
             version = context.read_version
             # Separate per-actor selected memory views. Actorless wakeups cannot inherit
             # the private dynamic context assembled for a preceding human turn.
@@ -139,16 +144,65 @@ class MainAgentTurnService:
                     asdict(runtime.web),
                 ]
             )
+            capacity_getter = getattr(self._runner._models, "capacity", None)
+            capacity = (
+                capacity_getter(self._runner._task)
+                if callable(capacity_getter)
+                else ModelCapacity()
+            )
+            input_budget = capacity.input_budget(
+                runtime.context.window_tokens, output_tokens=runtime.llm.max_output_tokens
+            )
+            # Plan before dispatch, using the same complete-request estimator.
+            # Keep the existing rollup margin and 4096-token reserve for native
+            # declarations/public runtime state and subsequent response pairing.
+            # Runner still checks its actual request, including those additions.
+            planning_budget = max(
+                1, int(input_budget * runtime.context.compaction_trigger_ratio) - 4096
+            )
+            # PromptCompiler emits system, optional rollup, raw history, current.
+            # Verify the actual history slot before substituting frozen entries.
+            history_end = len(composition.messages) - 1
+            history_start = history_end - len(context.history_messages)
+            if composition.messages[history_start:history_end] != context.history_messages:
+                raise ValueError("compiled history slot does not match assembled history")
+            compiled_prefix = composition.messages[:history_start]
+            compiled_current = composition.messages[-1:]
+            prepared_request = ChatRequest(
+                messages=composition.messages,
+                model=runtime.llm.model or "fake",
+                temperature=runtime.llm.temperature,
+                max_output_tokens=runtime.llm.max_output_tokens,
+                thinking_enabled=runtime.llm.thinking_enabled,
+                tools=definitions,
+                tool_choice="auto" if definitions else None,
+            )
+            fresh_tokens = estimate_request_tokens(prepared_request)
+            # A soft reserve below the fresh request's fixed cost cannot be met
+            # by dropping old snapshots. Use the hard bound in that case; if
+            # even fresh cannot fit, leave the epoch for Runner to stop honestly.
+            recovery_budget = planning_budget if fresh_tokens <= planning_budget else input_budget
+
+            def history_fits(history: tuple[ChatMessage, ...]) -> bool:
+                # Reuse the already compiled system/rollup and current envelope.
+                # Trying to compile an oversized old epoch first can hit the
+                # compiler's character limit before the capacity rebase occurs.
+                request = replace(
+                    prepared_request,
+                    messages=(*compiled_prefix, *history, *compiled_current),
+                )
+                return (
+                    fresh_tokens > input_budget
+                    or estimate_request_tokens(request) <= recovery_budget
+                )
+
             prepared = await prepare_history(
                 self._projections,
                 context,
                 view_key=view_key,
                 context_key=_hash([version.generation, context.rollup_text]),
                 contract_revision=contract_revision,
-                max_history_characters=max(
-                    0,
-                    runtime.context.window_tokens * 3 - len(composition.messages[-1].content or ""),
-                ),
+                history_fits=history_fits,
             )
             composition = self._composer.compose(
                 inbound=inbound,
@@ -169,17 +223,27 @@ class MainAgentTurnService:
             async def commit_projection() -> None:
                 nonlocal projection_closed
                 sequence = dispatch_request()
-                if sequence is None or projection_closed:
+                if (
+                    sequence is None
+                    or sequence.origin is DispatchOrigin.WORK_RECOVERY
+                    or projection_closed
+                ):
                     return
-                if sequence.messages[: len(composition.messages)] != composition.messages:
+                approved_initial = (
+                    *composition.messages,
+                    *(sequence.public_initial_suffix or ()),
+                )
+                if sequence.messages[: len(approved_initial)] != approved_initial:
                     await prepared.repository.invalidate_view(view_key, reason="protocol_changed")
                     projection_closed = True
                     return
                 try:
                     submitted = fragments.append_protocol(
-                        sequence.messages[len(composition.messages) :]
+                        sequence.public_initial_suffix
+                        if sequence.public_initial_suffix is not None
+                        else sequence.messages[len(composition.messages) :]
                     )
-                    if sequence.continuation is not None:
+                    if sequence.public_initial_suffix is None and sequence.continuation is not None:
                         if sequence.continuation.protocol != "responses":
                             # Signed native reasoning stays in the private Work journal.
                             # Stop extending this public projection at that boundary,
@@ -214,6 +278,11 @@ class MainAgentTurnService:
                     return
                 try:
                     await prepared.commit(submitted)
+                    if sequence.public_initial_suffix is not None:
+                        # The Work journal owns every subsequent tool/steer delta.
+                        # Do not inspect or invalidate this ordinary input view on
+                        # later requests, even when the Work accepts mid-turn.
+                        projection_closed = True
                 except ProjectionCapacityError:
                     await prepared.repository.invalidate_view(view_key, reason="capacity")
                     projection_closed = True
@@ -254,20 +323,35 @@ class MainAgentTurnService:
         control = runtime.work_control
         if control is not None:
             control.current_message = messages[-1] if messages else None
-            messages = (
-                *messages,
-                ChatMessage(
-                    role="user",
-                    content=(
-                        "[运行状态资料，不增加任何权限] "
-                        + json.dumps(
-                            await control.runtime_state(),
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                        )
-                    ),
+            state_message = ChatMessage(
+                role="user",
+                content=(
+                    "[运行状态资料，不增加任何权限] "
+                    + json.dumps(
+                        await control.runtime_state(),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
                 ),
             )
+            messages = (*messages, state_message)
+            public_suffix = (state_message,) if control.current is None else ()
+            validate = runtime.before_model_request
+
+            async def validate_prepared() -> None:
+                if validate is None:
+                    return
+                sequence = dispatch_request()
+                if sequence is None:
+                    await validate()
+                    return
+                # Capture the initial safe state once, before a model can accept
+                # a Work. Restored transcripts retain their own original state;
+                # their origin prevents this new composition from being frozen.
+                with validating_request(replace(sequence, public_initial_suffix=public_suffix)):
+                    await validate()
+
+            runtime = replace(runtime, before_model_request=validate_prepared)
         return await self._runner.run(
             messages,
             replace(

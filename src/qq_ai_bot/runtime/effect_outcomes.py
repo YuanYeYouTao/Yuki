@@ -96,6 +96,16 @@ def execution_evidence(
         "caption_delivered": caption_delivered,
         "delivered_message": delivered_message,
         "delivery_target": body.get("target") if delivered or delivered_message else None,
+        **(
+            {
+                "work_report": args["work_report"],
+                "report_target": body.get("target"),
+            }
+            if tool == "send_message"
+            and isinstance(args, dict)
+            and isinstance(args.get("work_report"), dict)
+            else {}
+        ),
         "run_id": body.get("run_id"),
         "ok": outcome.ok
         and not body.get("error")
