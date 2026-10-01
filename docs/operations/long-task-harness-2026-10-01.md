@@ -48,15 +48,48 @@
 与冻结基准一致。默认不启用探针执行原 gate；仅失败时另存诊断报告，原报告不覆盖。
 主 Python 回归仍保留系统 Python 的兼容性验证，不修改基准或放宽性能阈值。
 
-当前：本地实施及定向检查，PR 已创建；最终提交、最新 head CI、合并和 Bot 部署尚待完成。
+最终开发提交 `d83fd992e8219bbaf2333030f114cfdd9877975c` 的
+[Quality CI](https://github.com/YuanYeYouTao/Yuki/actions/runs/36893361046) 六项全部通过。
+Python 全量为 2204 passed / 1 skipped；未开启诊断探针的 Memory 19 案例通过，
+p50 16.797ms、p95 29.304ms，冻结基准无回归。
+PR #216 已合并为 `ea446d64edf8a428df5a760d6dcedb49ba13a086`；合并树与已验证开发提交一致。
 项目版本仍为 3.9.0 开发基线，未创建正式 Release。
 
 ## 线上验收边界
 
-上线准备从实际容器标签读取全部 Compose 叠加文件，只替换 Bot。
-停 Bot 后备份数据库、协议引用/工具正文、工作区及配置，先在无网络副本演练迁移；
-随后按原 Work ID 比较输入、回执、预算、等待和恢复链。SnowLuma 保持原容器身份。
-健康、schema、gateway、Manager、工作区、原事实与文件完整性分别核对。
+2026-10-02 01:07:37（Asia/Taipei）启动固定镜像
+`ghcr.io/yuanyeyoutao/yuki-qqbot:ops-ea446d6`，服务器 image ID
+`sha256:1c4ebb760b7862fb08ef9018d1f573c039d7f355100be64c5bd534964163a2c6`；
+架构 amd64、OCI revision 与合并提交一致。上传 tar 的本地/远端 SHA256 一致：
+`f1d8b1ebc24f9493e82132407dcd868b63fb62d6cd99ac50c570cd3ddaa46283`。
+
+从实际 Bot 标签读取 33 个 Compose 叠加文件，追加最终参数覆盖，只停止并替换 Bot。
+停写备份目录 `/opt/yuki-qqbot/backups/pre-harness-20261001T165936Z`，包括原配置、
+完整 data、工作区、环境工作区和 social-transfer；独立 SQLite backup SHA256 为
+`aa672667eec8264d327109020ea4c2b54e3e5a29f855a9d79c121b4e7785273e`。
+数据库完整性/外键和已有证据引用检查通过。先在无网络副本演练，再离线迁移生产库
+`0085 → 0088`，两次检查均通过。
+
+迁移前、迁移后、启动后按原 ID 对账：6 个活动 Work、60 条效果回执、20 条输入、
+6 份 journal、6 份预算、6 份恢复记录、15 条投递事实均保留，原回执/结果哈希一致，
+没有状态变化、缺失锚点或计数重置。新存储引用为 6 条。3 条历史 send_message 的证明
+不足，明确保留 `delivery_verification_required` 和 uncertain 围栏；没有重发或自动解除。
+此对账证明事实保留，不证明原 suspended/waiting Work 已实际继续推进。
+
+新 Bot ID `3e8150ec0ddd408f6912870167939c6c23ad7b680b6bd5acff47f40743cfceda`，
+SnowLuma ID `9e7a1a89696eae3922e4b40daee295edebc0fb60e18c7c9bf5a15efe7a1c8b85`
+保持原值。新 Bot healthy、零重启；livez/healthz、OneBot、Work/等待、子代理、
+自动化和插件 worker 正常。Manager 与 AGM tunnel 服务 active，持久环境容器 running，
+原挂载保留，WebUI `/ui/` HTTP 200。
+
+实际配置读取确认聊天 96000/.90/.60、Work 128000/.90/.50、摘要输出 8192、
+Rollup 字符 16384，协议存储 2 GiB/单对象 64 MiB/磁盘预留 64 MiB；现有配置目录
+254 项。累计无限与公平 quantum 分离，当前 quantum 32 tools/24 requests。
+活动模型 Profile 仍为 connection_2d4ba9aad301 / Gemini gemini-3.8-flash，显式 input/context
+硬容量为 NULL；政策窗口不是上游认证。Memory contested 12/active contested 25、
+dream failed 65 及 MCP 0 connected 是升级前已有状态，没有将其报告为全部健康。
+
+启动后首次只读自然流量观察没有新模型请求，因而不能报告新的缓存率或新请求路由验收。
 
 本地结构校验与模拟不能证明模型永远不遗漏语义、一定主动分工或阶段报告。
 单条小型无工具 JSON 格式探针只证明当前代理能接受摘要 schema，不是长期任务验收。
